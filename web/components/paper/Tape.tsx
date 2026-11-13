@@ -1,0 +1,2 @@
+// Scrapbook tape strip
+export {};
