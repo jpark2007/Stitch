@@ -1,1 +1,1 @@
-"""generate_layer, cut_out."""
+"""Image model calls and cut_out (background removal)."""

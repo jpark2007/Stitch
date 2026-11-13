@@ -1,3 +1,3 @@
 # Storyboarding
 
-How to split a story into 1 to 3 spreads with captions in the teller's own words.
+Choosing which moments of a story to show, as a shot list with a source sentence for each.

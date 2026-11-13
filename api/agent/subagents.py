@@ -1,1 +1,1 @@
-"""interviewer, storyboarder, set_designer, illustrator, checker, linker."""
+"""interviewer, storyboarder, prop_master, set_designer, director, narrator, checker, linker."""

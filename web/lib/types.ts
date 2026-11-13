@@ -1,2 +1,2 @@
-// Person, Memory, Telling, Spread, Layer (mirrors api/schemas.py)
+// Person, Memory, Prop, Set, Screenplay, Timeline (mirrors api/schemas.py)
 export {};

@@ -1,2 +1,2 @@
-// One flipping page (CSS 3D, two faces)
+// Bending page mesh for the page flip
 export {};

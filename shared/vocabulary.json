@@ -1,0 +1,6 @@
+{
+  "$comment": "Allowed screenplay verbs, camera moves, and effects (see ARCHITECTURE.md section 3)",
+  "actions": {},
+  "camera": [],
+  "effects": []
+}
