@@ -109,7 +109,22 @@ export interface Book3DProps {
   still?: boolean;
   /** Tests: expose the raw controller as `window.__book`, and stand a probe card in empty stage slots. */
   debug?: boolean;
+  /**
+   * The book's view (opened, cover settled, the spread it is on), each time
+   * it changes: rarely, never per frame. Called once with the starting view.
+   */
+  onView?: (view: BookView) => void;
+  /** The book's controls once it is drawn (null when it goes), for page chrome like a contents card. */
+  onControls?: (controls: BookControls | null) => void;
+  /** The way out in the top corner; default "Stitch", home. */
+  back?: { href: string; label: string };
+  /** Quiet controls beside the mute button (a contents tab). */
+  actions?: ReactNode;
+  /** Page chrome over the table, under the header (a contents card). */
+  children?: ReactNode;
 }
+
+export type { BookView };
 
 export interface BookControls {
   open(): void;
@@ -153,15 +168,33 @@ export function Book3D({
   onTelling,
   still = false,
   debug = false,
+  onView,
+  onControls: onControlsProp,
+  back,
+  actions,
+  children,
 }: Book3DProps) {
   // The starting view is read once; later prop changes do not reset the book.
   const [start] = useState(() => resolveStart(initial, spreads.length));
   const [art, setArt] = useState<BookArt | null>(null);
   const [view, setView] = useState<BookView>({ opened: start.opened, ready: start.opened, spread: start.spread });
   const controls = useRef<BookControls | null>(null);
+  const onControlsRef = useRef(onControlsProp);
+  useEffect(() => {
+    onControlsRef.current = onControlsProp;
+  }, [onControlsProp]);
   const onControls = useCallback((api: BookControls | null) => {
     controls.current = api;
+    onControlsRef.current?.(api);
   }, []);
+  // The page hears the view as the book does (a change of spread, the cover settling).
+  const onViewRef = useRef(onView);
+  useEffect(() => {
+    onViewRef.current = onView;
+  }, [onView]);
+  useEffect(() => {
+    onViewRef.current?.(view);
+  }, [view]);
   const muted = useSyncExternalStore(subscribeMuted, isMuted, () => false);
 
   // The art is drawn with the tellings of the moment it is built; later
@@ -280,13 +313,26 @@ export function Book3D({
 
       <header className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between px-4 pt-4 sm:px-6 sm:pt-5">
         <Link
-          href="/"
+          href={back?.href ?? "/"}
           className="pointer-events-auto font-display text-lg tracking-tight text-[#f3e6cf]/80 no-underline transition-colors hover:text-[#f3e6cf]"
         >
-          Stitch
+          {back ? (
+            <>
+              <span aria-hidden className="mr-1.5 inline-block -translate-y-px">
+                &larr;
+              </span>
+              {back.label}
+            </>
+          ) : (
+            "Stitch"
+          )}
         </Link>
-        <MuteButton muted={muted} />
+        <div className="flex items-center gap-3">
+          {actions}
+          <MuteButton muted={muted} />
+        </div>
       </header>
+      {children}
 
       <NavDots spreads={spreads} view={view} onPick={(i) => controls.current?.goTo(i)} />
 
