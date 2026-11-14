@@ -36,6 +36,16 @@ that importing this module, and serving read routes, never imports the agent pac
   ValueError (the answer does not fit the pending question) 409, and anything else,
   including the not-configured RuntimeError, 503 STUDIO_UNAVAILABLE.
 
+Error details are always fixed sentences from this module. An exception's own text (run
+ids, tool names, other families' ids) goes to the log, never to the client: a ValueError
+from start_run is 422 SUBMIT_REFUSED, and one from answer_run is 409 with the matching
+sentence from `_ANSWER_CONFLICTS` (else ANSWER_CONFLICT).
+
+Size limits (route level; schemas.py is unbounded): text MAX_TEXT_CHARS, question
+MAX_QUESTION_CHARS, title MAX_TITLE_CHARS, at most MAX_PARTICIPANTS participantIds, and
+an answer's text MAX_ANSWER_CHARS with at most MAX_PROP_EDITS prop edits. Over a limit is
+422 with a sentence naming the limit, before anything is stored or the agent is reached.
+
 STITCH_AGENT=off: main.py stores the resolved agent mode on `app.state.agent_mode`
 (AGENT_OFF_STATE). When it is "off", submit answers 503 START_FAILED and stream and
 answer 503 STUDIO_UNAVAILABLE, after the membership check (so 401 and 404 come first)
@@ -74,6 +84,14 @@ router = APIRouter(tags=["memories"])
 
 MIN_YEAR = 1800
 MAX_PHOTOS = 10
+# Route-level size limits (schemas.py stays unbounded). Generous for real memories, but a
+# pasted novel never reaches the compiler, narration or embeddings. Over a limit is 422.
+MAX_TEXT_CHARS = 20_000
+MAX_QUESTION_CHARS = 1_000
+MAX_TITLE_CHARS = 200
+MAX_PARTICIPANTS = 100
+MAX_ANSWER_CHARS = MAX_TEXT_CHARS
+MAX_PROP_EDITS = 100
 ALLOWED_PHOTO_TYPES: frozenset[str] = frozenset(
     {"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"}
 )
@@ -90,6 +108,8 @@ RUN_NOT_FOUND = "Run not found"
 NOT_RUN_OWNER = "Only the person who started this run can answer"
 NOT_WAITING = "This run is not waiting for an answer"
 ANSWER_CONFLICT = "Run cannot take that answer"
+ANSWER_WRONG_KIND = "That answer does not match what this run is waiting for"
+SUBMIT_REFUSED = "This memory could not be started with those details"
 STREAM_INVALID = "Internal stream error"
 STREAM_FAILED = "Something went wrong while making this memory"
 
@@ -132,6 +152,12 @@ def _dedupe(ids: list[str]) -> list[str]:
 
 def _unprocessable(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
+
+
+def _check_length(value: str | None, limit: int, what: str) -> None:
+    """422 when value is longer than limit characters."""
+    if value is not None and len(value) > limit:
+        raise _unprocessable(f"{what} must be at most {limit:,} characters")
 
 
 def _photo_type(upload: UploadFile) -> str:
@@ -193,6 +219,11 @@ async def submit_memory(
     # 1. Fields.
     if not text.strip():
         raise _unprocessable("Write the memory before submitting it")
+    _check_length(text, MAX_TEXT_CHARS, "The memory")
+    _check_length(question, MAX_QUESTION_CHARS, "The question")
+    _check_length(title, MAX_TITLE_CHARS, "The title")
+    if len(participant_ids) > MAX_PARTICIPANTS:
+        raise _unprocessable(f"A memory can have at most {MAX_PARTICIPANTS} people in it")
     max_year = datetime.now(UTC).year + 1
     if not MIN_YEAR <= year <= max_year:
         raise _unprocessable(f"Year must be between {MIN_YEAR} and {max_year}")
@@ -279,8 +310,9 @@ async def submit_memory(
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=NO_SCENE) from None
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found") from None
         if isinstance(exc, ValueError):
+            # The message can name ids and agent internals: it goes to the log only.
             log.info("start_run for family %s refused the submit: %s", fid, exc)
-            raise _unprocessable(str(exc) or "Invalid memory") from None
+            raise _unprocessable(SUBMIT_REFUSED) from None
         log.exception("Could not start a run for family %s", fid)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=START_FAILED) from None
 
@@ -498,6 +530,12 @@ def _check_answer(body: schemas.AnswerRequest) -> None:
         raise _unprocessable("A props review needs the props list")
     if body.kind == "merge" and body.approve is None:
         raise _unprocessable("A merge answer needs approve")
+    _check_length(body.text, MAX_ANSWER_CHARS, "The answer")
+    if body.props is not None:
+        if len(body.props) > MAX_PROP_EDITS:
+            raise _unprocessable(f"A props review can list at most {MAX_PROP_EDITS} props")
+        for edit in body.props:
+            _check_length(edit.name, MAX_TITLE_CHARS, "A prop name")
 
 
 @router.post(
@@ -546,6 +584,27 @@ def _exception_class(value: Any) -> type[BaseException] | None:
     return value if isinstance(value, type) and issubclass(value, BaseException) else None
 
 
+# (lowercase fragment of an agent ValueError message, the fixed detail sent instead).
+# The agents phrase these cases in agent/runs.py, agent/tools/ask.py and seed/fake_runs.py.
+_ANSWER_CONFLICTS: tuple[tuple[str, str], ...] = (
+    ("not waiting", NOT_WAITING),
+    ("waiting for kind", ANSWER_WRONG_KIND),
+    ("does not match the pending", ANSWER_WRONG_KIND),
+    ("needs text", "An answer needs text"),
+    ("props list", "A props review needs the props list"),
+    ("needs approve", "A merge answer needs approve"),
+)
+
+
+def _answer_conflict_detail(message: str) -> str:
+    """A fixed, user-facing 409 detail for an answer_run ValueError. Never echoes the message."""
+    lowered = message.lower()
+    for fragment, detail in _ANSWER_CONFLICTS:
+        if fragment in lowered:
+            return detail
+    return ANSWER_CONFLICT
+
+
 def _answer_error(exc: Exception, run_id: str, not_waiting: type[BaseException] | None) -> HTTPException:
     """The HTTP error for an exception from answer_run (see the module docstring)."""
     if not_waiting is not None and isinstance(exc, not_waiting):
@@ -555,6 +614,9 @@ def _answer_error(exc: Exception, run_id: str, not_waiting: type[BaseException] 
     if isinstance(exc, PermissionError):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_RUN_OWNER)
     if isinstance(exc, ValueError):
-        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc) or ANSWER_CONFLICT)
+        # The message can carry run ids, tool names and parser internals: log it, and send
+        # the client a fixed sentence for the cases it can act on.
+        log.info("answer_run for run %s refused the answer: %s", run_id, exc)
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_answer_conflict_detail(str(exc)))
     log.exception("Could not answer run %s", run_id, exc_info=exc)
     return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=STUDIO_UNAVAILABLE)

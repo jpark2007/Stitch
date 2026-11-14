@@ -19,6 +19,9 @@ from db.client import get_db
 
 router = APIRouter(tags=["ask"])
 
+# A question, not a document: longer queries are 422 before any search or embedding call.
+MAX_QUERY_CHARS = 1_000
+
 
 @router.post("/families/{fid}/ask", response_model=schemas.AskResponse)
 def ask_family(
@@ -26,11 +29,19 @@ def ask_family(
     access: auth.FamilyAccess = Depends(auth.family_member),
     db: Database = Depends(get_db),
 ) -> schemas.AskResponse:
-    """Search this family's memories and answer with quotes from the tellings. 422 on a blank query."""
+    """Search this family's memories and answer with quotes from the tellings.
+
+    422 on a blank query or one over MAX_QUERY_CHARS (after trimming).
+    """
     query = body.query.strip()
     if not query:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Ask a question"
+        )
+    if len(query) > MAX_QUERY_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Keep the question to {MAX_QUERY_CHARS:,} characters or fewer",
         )
     fid = access.family_id
     quotes = search_db.ask_quotes(db, fid, query)

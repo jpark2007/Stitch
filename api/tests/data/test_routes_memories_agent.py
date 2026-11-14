@@ -669,7 +669,8 @@ def test_submit_errors_from_the_real_seam_delete_the_photos(world: World, monkey
         monkeypatch.setattr(people_db, "get_person_for_user", lookup_then_remove)
         res = await w.submit(SAM, photos=2)
         assert res.status_code == 422
-        assert res.json() == {"detail": "person 'sam' is not in this family"}
+        # A fixed sentence: the agent's own message (ids, internals) goes to the log only.
+        assert res.json() == {"detail": memories_routes.SUBMIT_REFUSED}
         assert w.media_ids() == before
 
         assert w.studio.built == []  # no run was ever started
