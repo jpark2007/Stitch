@@ -56,6 +56,7 @@ SAVED = re.compile(r"\bsaved\s+(\S+)\s+v(\d+)\b")
 MAX_CHECK_FIX_ROUNDS = 2
 MAX_STUDIO_COMPILES = 3
 PAGE_TEXT_WORDS = 30
+WORD_SECONDS = 0.25  # screenplay.narration.WORD_SECONDS: spoken word spacing without TTS timings
 WALK_SPEED = 0.35  # stage units per second (shared/vocabulary.json speeds.walk)
 FRAME_TIMES = [1.0, 2.0]
 SECOND_TELLING = "second_telling"
@@ -379,7 +380,7 @@ def _studio_new_memory(s: _Script, ctx: dict[str, Any], story: FakeStory) -> Non
         "place": place,
         "cast": cast,
         "names": names,
-        "props": [{"id": p["id"], "name": p.get("name") or p["id"]} for p in props],
+        "props": [{"id": p["id"], "name": p.get("name") or p["id"], "size": p.get("size")} for p in props],
         "setId": set_info.get("setId"),
         "marks": set_info.get("marks") or {},
     }
@@ -540,13 +541,19 @@ def _storyboarder(s: _Script, ctx: dict[str, Any], story: FakeStory) -> None:
     teller = ctx.get("teller")
     names = ctx.get("names") or {}
     cast = ctx.get("cast") or [teller]
+    # Each photo sent with the telling is looked at once; its description backs the shot.
+    seen: list[str] = []
+    for photo_id in ctx.get("photoIds") or []:
+        described = s.one("describe_photo", {"photo_id": photo_id})
+        if described and not described.startswith(("unknown", "could not", "photo ")):
+            seen.append(f"photo:{photo_id} ({_words(described, 20)})")
     shotlist = "\n".join([
         "## s1",
         f"place: {ctx.get('place') or story.place} (from telling:{teller}:s1)",
         "who: " + ", ".join(cast),
         f"moment: {_words(ctx.get('text') or '', 25)}",
         f"objects: {_slug(story.prop)} ({names.get(teller, teller)} carries it)",
-        f"sources: telling:{teller}:s1",
+        "sources: " + ", ".join([f"telling:{teller}:s1", *seen]),
         "",
     ])
     s.one("write_file", {"file_path": SHOTLIST_PATH, "content": shotlist})
@@ -676,19 +683,37 @@ def _ground_marks(marks: dict[str, Any]) -> tuple[str, str]:
     return ordered[0], ordered[-1]
 
 
+WAVE_SECONDS = 1.0
+BIG_SIZES = ("furniture", "vehicle", "building")
+"""Prop sizes too big to carry (screenplay.validate TOO_BIG): they stand at PROP_MARK instead."""
+PROP_MARK = "prop_spot"
+
+
+def _wave(t: float, who: str) -> dict[str, Any]:
+    """A wave as the `pose` verb with the rig's 'wave' pose.
+
+    `pose` is a core verb of screenplay.compiler; the `wave` verb comes with the body
+    verbs, which a compiler build may not have yet. Both look the same on stage.
+    """
+    return {"t": t, "do": "pose", "who": who, "pose": "wave", "dur": WAVE_SECONDS, "id": "wave"}
+
+
 def build_screenplay(ctx: dict[str, Any]) -> dict[str, Any]:
     """The director's valid draft for one shot on the reported set (camelCase JSON).
 
     Cast is the teller plus at most one other person; the teller starts holding the first
-    kept prop. Actions: the teller walks to the other, hands the prop over (two people and
-    a prop), and the other waves. Every action has an id; one pull tab scrubs the main beat.
+    kept prop small enough to carry; sizes in BIG_SIZES, and any other props, stand on the
+    ground at PROP_MARK. Actions: the teller walks to the other, hands the carried prop over
+    (two people and a prop), and the other waves (the `wave` pose). Every action has an id;
+    one pull tab scrubs the main beat. It uses only core verbs of screenplay.compiler
+    (walk_to, hand_to, hold, pose).
     """
     teller: str = ctx["teller"]
     cast: list[str] = list(ctx.get("cast") or [teller])
     other = next((p for p in cast if p != teller), None)
     names: dict[str, str] = ctx.get("names") or {}
     props: list[dict[str, Any]] = ctx.get("props") or []
-    prop = props[0] if props else None
+    prop = next((p for p in props if p.get("size") not in BIG_SIZES), None)  # the one the teller carries
     marks: dict[str, Any] = ctx.get("marks") or {"left_spot": [0.3, 0], "right_spot": [0.7, 0]}
     left, right = _ground_marks(marks)
     lu = float(marks.get(left, [0.3, 0])[0])
@@ -698,6 +723,11 @@ def build_screenplay(ctx: dict[str, Any]) -> dict[str, Any]:
     start: dict[str, dict[str, Any]] = {teller: {"at": left, "facing": "right"}}
     if prop:
         start[teller]["holding"] = prop["id"]
+    # Every other prop (furniture, vehicles, buildings, extra small ones) stands on the
+    # ground between the two marks.
+    prop_start = {p["id"]: {"at": PROP_MARK} for p in props if p is not prop}
+    if prop_start:
+        shot_marks[PROP_MARK] = [round((lu + ru) / 2, 3), 0.0]
     actions: list[dict[str, Any]] = []
     walk_t = 0.5
     if other:
@@ -715,7 +745,7 @@ def build_screenplay(ctx: dict[str, Any]) -> dict[str, Any]:
         else:
             beat = (walk_t, round(walk_end, 2), [f"puppet:{teller}"],
                     f"Pull to walk {names.get(teller, teller)} across")
-        actions.append({"t": t, "do": "wave", "who": other, "id": "wave"})
+        actions.append(_wave(t, other))
     else:
         walk_end = walk_t + abs(2 * (ru - lu)) / WALK_SPEED
         actions.append({"t": walk_t, "do": "walk_to", "who": teller, "to": right, "id": "walk"})
@@ -724,12 +754,13 @@ def build_screenplay(ctx: dict[str, Any]) -> dict[str, Any]:
         if prop:
             actions.append({"t": t, "do": "hold", "who": teller, "what": prop["id"], "id": "hold"})
         else:
-            actions.append({"t": t, "do": "wave", "who": teller, "id": "wave"})
+            actions.append(_wave(t, teller))
 
     teller_name = names.get(teller, teller)
     place = ctx.get("place") or "the place"
     who = f"{teller_name} and {names.get(other, other)}" if other else teller_name
-    with_prop = f" with the {prop.get('name') or prop['id']}" if prop else ""
+    named = props[0] if props else None  # the page names the first prop, carried or not
+    with_prop = f" with the {named.get('name') or named['id']}" if named else ""
     page_text = _words(f"In {ctx.get('year')}, {who} at the {place}{with_prop}.", PAGE_TEXT_WORDS)
 
     explanations = [{"target": f"puppet:{teller}", "text": f"{teller_name} tells this story."}]
@@ -753,6 +784,8 @@ def build_screenplay(ctx: dict[str, Any]) -> dict[str, Any]:
     }
     if shot_marks:
         shot["marks"] = shot_marks
+    if prop_start:
+        shot["propStart"] = prop_start
     return {
         "memoryId": "draft",
         "cast": cast,
@@ -824,19 +857,46 @@ def _director_fix(s: _Script, ctx: dict[str, Any]) -> None:
 # ------------------------------------------------------------------ narrator
 
 
+def _cue_time(shots: list[dict[str, Any]], action_id: str) -> float | None:
+    """Shot time the shared action starts on, from the default telling's cued line.
+
+    The compiler moves a cued action onto its line's cue word (default: the last word),
+    spoken `WORD_SECONDS` apart when a line has no word timings. None if no default line
+    cues `action_id`.
+    """
+    for line in (shots[0].get("narration") or []) if shots else []:
+        if line.get("cue") == action_id:
+            words = line.get("words") or []
+            if words:
+                return float(line.get("t") or 0) + float(words[-1].get("t") or 0)
+            return float(line.get("t") or 0) + WORD_SECONDS * max(0, len(str(line.get("text") or "").split()) - 1)
+    return None
+
+
 def narration_lines(ctx: dict[str, Any], screenplay: dict[str, Any]) -> list[dict[str, Any]]:
-    """The teller's lines for shot s1: their sentences quoted, sourced, the first one cued."""
+    """The teller's lines for shot s1: their sentences quoted, sourced, the first one cued.
+
+    A second telling (`ctx["mode"] == "second_telling"`) shares the action, so the
+    compiler shifts its cued first line until the cue word lands on that action; the
+    later lines start only after the shifted line has been said, so no lines overlap.
+    """
     teller = ctx["teller"]
     shots = screenplay.get("shots") or []
     action_ids = [a["id"] for a in (shots[0].get("actions") or []) if a.get("id")] if shots else []
+    sentences = _sentences(ctx.get("text") or "")[:4]
     lines: list[dict[str, Any]] = []
     t = 0.0
-    for n, sentence in enumerate(_sentences(ctx.get("text") or "")[:4], start=1):
+    for n, sentence in enumerate(sentences, start=1):
         line: dict[str, Any] = {"t": round(t, 2), "text": sentence, "source": f"telling:{teller}:s{n}"}
+        words = len(sentence.split())
+        end = t + WORD_SECONDS * words
         if n == 1 and action_ids:
             line["cue"] = action_ids[0]
+            anchor = _cue_time(shots, action_ids[0]) if ctx.get("mode") == SECOND_TELLING else None
+            if anchor is not None:  # this line will be said ending on the shared action
+                end = max(end, anchor + WORD_SECONDS)
         lines.append(line)
-        t += 0.3 * len(sentence.split()) + 0.6
+        t = max(t + 0.3 * words, end) + 0.6
     return lines
 
 

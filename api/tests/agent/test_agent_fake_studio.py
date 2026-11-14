@@ -1,32 +1,28 @@
 """agent/fake_studio.py: the deterministic multi-agent brain, driving the real studio end to end.
 
-Every run builds the real studio graph (studio.build_studio with the eight sub-agents from
-build_subagents) over the real tools on fake services (InMemoryRepo seeded from the
-hymn_books sample, ArtService(None, None) placeholders, FakeTTS, FakeVision, the compiler
-from load_compiler()), and drives it through runs.RunManager with stream_run collected on
-asyncio. No keys, no network.
+Every run builds the real studio graph through agent.wiring (make_manager over
+fake_services: InMemoryRepo seeded from the hymn_books sample, ArtService(None, None)
+placeholders, FakeTTS, FakeVision, the fake frame renderer and critic, the compiler from
+load_compiler()), with fake_studio_model as the model, and drives it through
+runs.RunManager with stream_run collected on asyncio. No keys, no network.
 
-agent.wiring is written in parallel, so the graph is assembled here.
+These tests pin the fake brain's own behaviour (detours, pauses, loops); the public
+seam's end-to-end contract is in test_agent_e2e.py.
 """
 
 from __future__ import annotations
 
 import asyncio
-import importlib
-import inspect
 import json
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import BaseTool
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.store.memory import InMemoryStore
 from pydantic import BaseModel
 
 import schemas
-from agent import runs, studio
+from agent import wiring
 from agent.fake_studio import (
     FakeStory,
     bad_screenplay,
@@ -38,16 +34,8 @@ from agent.fake_studio import (
     role_of,
 )
 from agent.repo import InMemoryRepo, load_sample_family
-from agent.run_info import RunInfo
-from agent.subagents import STUDIO_PROMPT, SUBAGENT_NAMES, build_subagents, load_prompt
-from agent.tools import ask
-from agent.tools.art import ArtService, make_cut_out_tool
-from agent.tools.compile import SceneInputs, SceneLookupError, load_compiler, make_compile_tool
-from agent.tools.family import make_family_tools
-from agent.tools.narration import FakeTTS, make_narration_tool, voice_for
-from agent.tools.photos import FakeVision, make_photo_tools
-from agent.tools.props import SIZES, make_prop_tools
-from agent.tools.sets import make_set_tools
+from agent.subagents import STUDIO_PROMPT, SUBAGENT_NAMES, load_prompt
+from agent.tools.props import SIZES
 from screenplay.schema import Screenplay
 
 FAMILY = "fam_fake_studio"
@@ -60,103 +48,19 @@ MOM_STORY = (
 )
 DAD_STORY = "She dropped every single hymn book. I handed them back, and she would not look at me."
 
-
-# --------------------------------------------------------------------------- graph
-
-
-def _frame_tools(repo: InMemoryRepo, run: RunInfo, scene_for: Any) -> list[BaseTool]:
-    """render_frames + inspect_frames on fakes, when agent.tools.frames has them yet."""
-    frames = importlib.import_module("agent.tools.frames")
-    make = getattr(frames, "make_frame_tools", None)
-    renderer_cls = getattr(frames, "FakeFrameRenderer", None)
-    critic_cls = getattr(frames, "FakeFrameCritic", None)
-    if make is None or renderer_cls is None or critic_cls is None:
-        return []
-    available = {
-        "repo": repo, "run": run, "renderer": renderer_cls(), "vision": critic_cls(), "critic": critic_cls(),
-        "scene_for": scene_for,
-    }
-    params = inspect.signature(make).parameters
-    return list(make(**{name: available[name] for name in params if name in available}))
-
-
-FRAMES_AVAILABLE = bool(getattr(importlib.import_module("agent.tools.frames"), "make_frame_tools", None))
+FRAMES_AVAILABLE = wiring.frames_available()
 
 
 class Harness:
-    """One RunManager over one InMemoryRepo, building the real studio with the fake brain."""
+    """One RunManager from agent.wiring over one seeded InMemoryRepo, with the fake brain."""
 
     def __init__(self, story: FakeStory = FakeStory()) -> None:  # noqa: B008
         self.story = story
         self.repo = InMemoryRepo()
         load_sample_family(self.repo, FAMILY)
-        self.saver = InMemorySaver()
-        self.store = InMemoryStore()
         self.model = fake_studio_model(story)
-        self.manager = runs.RunManager(repo=self.repo, build_graph=self.build)
-        self.tool_names: list[str] = []
-
-    def scene_for(self, screenplay: Screenplay) -> SceneInputs:
-        scene = SceneInputs()
-        for shot in screenplay.shots:
-            set_def = self.repo.get_set(FAMILY, shot.set)
-            if set_def is None:
-                raise SceneLookupError("set", shot.set)
-            scene.sets[shot.set] = set_def
-        for prop_id in screenplay.props:
-            prop = self.repo.get_prop(FAMILY, prop_id)
-            if prop is None:
-                raise SceneLookupError("prop", prop_id)
-            scene.props[prop_id] = prop
-        for person_id in screenplay.cast:
-            person = self.repo.get_person(FAMILY, person_id)
-            if person is None:
-                raise SceneLookupError("person", person_id)
-            scene.people[person_id] = person
-        return scene
-
-    def build(self, run: RunInfo):
-        repo, fid = self.repo, run.family_id
-        art = ArtService(None, None)
-
-        def put_audio(data: bytes, content_type: str) -> str:
-            return repo.put_media(fid, data, content_type, kind="audio")
-
-        def put_cutout(data: bytes, content_type: str) -> str:
-            return repo.put_media(fid, data, content_type, kind="cutout")
-
-        def get_media(media_id: str) -> tuple[bytes, str] | None:
-            return repo.get_media(fid, media_id)
-
-        tools: list[BaseTool] = [
-            *make_family_tools(repo, run),
-            ask.ask_teller,
-            ask.merge_people,
-            *make_photo_tools(FakeVision(), get_media, run.photo_ids),
-            *make_prop_tools(repo, run, art),
-            *make_set_tools(repo, run, art),
-            make_cut_out_tool(art, put_cutout, get_media),
-            make_compile_tool(load_compiler(), self.scene_for),
-            make_narration_tool(
-                FakeTTS(),
-                put_audio,
-                author_id=run.author_id,
-                voice=voice_for(repo.get_person(fid, run.author_id)),
-                second_telling=run.is_second_telling,
-            ),
-            *_frame_tools(repo, run, self.scene_for),
-        ]
-        self.tool_names = [t.name for t in tools]
-        return studio.build_studio(
-            family_id=fid,
-            model=self.model,
-            tools=tools,
-            subagents=build_subagents({t.name: t for t in tools}),
-            interrupt_on=ask.INTERRUPT_ON,
-            checkpointer=self.saver,
-            store=self.store,
-            system_prompt=STUDIO_PROMPT,
-        )
+        self.services = wiring.fake_services(model=self.model, repo=self.repo)
+        self.manager = wiring.make_manager(self.services)
 
     # ---------------------------------------------------------------- driving
 
@@ -328,7 +232,7 @@ def test_new_memory_run_end_to_end(harnesses: list[Harness]) -> None:
     assert len(sp.explanations or []) == 3
     assert sp.interactions and sp.interactions[0].kind == "pull_tab"
     assert sp.interactions[0].drives.type == "scrub"
-    assert {a.do for a in sp.shots[0].actions} >= {"walk_to", "hand_to", "wave"}
+    assert {a.do for a in sp.shots[0].actions} >= {"walk_to", "hand_to", "pose"}
     assert all(a.id for a in sp.shots[0].actions)
     lines = sp.shots[0].narration
     assert lines and all(ln.source and ln.source.startswith("telling:mom:s") for ln in lines)
@@ -372,6 +276,11 @@ def test_new_place_and_prop_are_generated_as_placeholders(harnesses: list[Harnes
     assert all(layer.art is None and layer.color for layer in set_def.layers)
     assert set_def.marks["left_spot"] == [0.3, 0] and set_def.marks["right_spot"] == [0.7, 0]
     assert memory.screenplay.shots[0].start["mom"].at == "left_spot"
+    # A vehicle is too big to carry: it stands on its own mark, and nobody holds it.
+    shot = memory.screenplay.shots[0]
+    assert shot.prop_start[prop_id].at == "prop_spot" and "prop_spot" in shot.marks
+    assert all(s.holding is None for s in shot.start.values())
+    assert all(a.what != prop_id for a in shot.actions)
 
 
 # --------------------------------------------------------------------------- pauses
