@@ -50,7 +50,7 @@ export default function StyleGuidePage() {
       <Section kicker="01" title="Type">
         <div className="grid gap-10 md:grid-cols-[1.4fr_1fr]">
           <div className="space-y-5">
-            <h1 className="!text-4xl sm:!text-5xl">The green sedan</h1>
+            <h1 className="text-4xl sm:text-5xl">The green sedan</h1>
             <h2>How I met your mother</h2>
             <h3>Grandma&rsquo;s kitchen, 1968</h3>
             <p className="max-w-[var(--measure)] text-ink-soft">
