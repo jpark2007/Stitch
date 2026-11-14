@@ -181,6 +181,23 @@ export function classifyJoinFailure(err: unknown, body: JoinRequest): JoinFailur
   return "show";
 }
 
+/**
+ * After a "taken" or "recheck" failure and a fresh preview: what to tell the
+ * person. "taken" / "removed" when the person they picked has left the list
+ * (claimed by someone else, or taken off the tree); otherwise "as-is", the
+ * server's own message, for example a 409 because this account already has a
+ * person in the family, where the picked person is still free.
+ */
+export function afterRecheck(
+  body: JoinRequest,
+  fresh: Pick<InvitePreview, "unclaimedPeople">,
+  failure: Exclude<JoinFailure, "show">,
+): "taken" | "removed" | "as-is" {
+  if (body.personId == null) return "as-is";
+  if (fresh.unclaimedPeople.some((p) => p.id === body.personId)) return "as-is";
+  return failure === "taken" ? "taken" : "removed";
+}
+
 /** The note under the choices when the person picked was claimed first, or has gone. */
 export function takenMessage(name: string | null | undefined, gone = false): string {
   const who = name?.trim() || "That person";

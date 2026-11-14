@@ -16,6 +16,7 @@ import { JoinForm } from "@/components/flow/JoinForm";
 import { JoinRelationships } from "@/components/flow/JoinRelationships";
 import {
   addedSelf,
+  afterRecheck,
   classifyJoinFailure,
   familyPhrase,
   friendlyError,
@@ -134,10 +135,9 @@ export function JoinScreen(props: { code: string }) {
           throw err;
         }
         setPreview(fresh);
-        if (body.personId == null) throw err;
-        const stillThere = fresh.unclaimedPeople.some((p) => p.id === body.personId);
-        if (failure === "recheck" && stillThere) throw err;
-        const message = takenMessage(pickedName, failure === "recheck");
+        const outcome = afterRecheck(body, fresh, failure);
+        if (outcome === "as-is") throw err;
+        const message = takenMessage(pickedName, outcome === "removed");
         throw new ApiError(isApiError(err) ? err.status : 409, message, { personId: message });
       }
       rememberFamily(res.family.id);

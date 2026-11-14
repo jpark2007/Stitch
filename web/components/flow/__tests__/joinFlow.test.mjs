@@ -22,6 +22,7 @@ registerHooks({
 const { ApiError } = await import("@/lib/api");
 const {
   addedSelf,
+  afterRecheck,
   classifyJoinFailure,
   familyPhrase,
   firstName,
@@ -385,5 +386,23 @@ describe("takenMessage and firstName", () => {
     assert.equal(firstName("  Ana  "), "Ana");
     assert.equal(firstName(""), "");
     assert.equal(firstName(null), "");
+  });
+});
+
+describe("afterRecheck", () => {
+  const fresh = { unclaimedPeople: [{ id: "lily", name: "Lily", born: 1993 }] };
+
+  test("the picked person left the list: taken on a 409, removed on a 404", () => {
+    assert.equal(afterRecheck({ personId: "rosa" }, fresh, "taken"), "taken");
+    assert.equal(afterRecheck({ personId: "rosa" }, fresh, "recheck"), "removed");
+  });
+
+  test("still free: the server's own message (say, this account already has a person here)", () => {
+    assert.equal(afterRecheck({ personId: "lily" }, fresh, "taken"), "as-is");
+    assert.equal(afterRecheck({ personId: "lily" }, fresh, "recheck"), "as-is");
+  });
+
+  test("adding yourself never blames a pick", () => {
+    assert.equal(afterRecheck({ person: { name: "Nina", born: null } }, fresh, "recheck"), "as-is");
   });
 });
