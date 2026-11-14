@@ -6,7 +6,7 @@ import io
 import random
 from datetime import datetime, timedelta
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 from film.types import SourcePhoto
 
@@ -42,6 +42,50 @@ def photo(pid: str, im: Image.Image, **kw) -> SourcePhoto:
 
 def blurred(im: Image.Image) -> Image.Image:
     return im.filter(ImageFilter.GaussianBlur(3))
+
+
+def cropped(im: Image.Image, frac: float, side: str = "left") -> Image.Image:
+    """`frac` of the frame cut off one side ("left" or "top") or split over all four
+    ("centre"), scaled back to the original size: the same photo, re-framed."""
+    w, h = im.size
+    dx, dy = int(w * frac), int(h * frac)
+    box = {
+        "left": (dx, 0, w, h),
+        "top": (0, dy, w, h),
+        "centre": (dx // 2, dy // 2, w - dx // 2, h - dy // 2),
+    }[side]
+    return im.crop(box).resize((w, h))
+
+
+def brighter(im: Image.Image, factor: float = 1.2) -> Image.Image:
+    return ImageEnhance.Brightness(im).enhance(factor)
+
+
+def tinted_scene(seed: int, base: tuple[int, int, int], size: tuple[int, int] = (640, 480)) -> Image.Image:
+    """A busy picture whose every colour is within 40 of `base`: scenes of the same dominant
+    colour (a day at the beach, a green park) that are still different pictures."""
+    rng = random.Random(seed)
+
+    def colour() -> tuple[int, ...]:
+        return tuple(max(0, min(255, c + rng.randrange(-40, 41))) for c in base)
+
+    im = Image.new("RGB", size, colour())
+    draw = ImageDraw.Draw(im)
+    for _ in range(40):
+        x, y = rng.randrange(size[0]), rng.randrange(size[1])
+        w, h = rng.randrange(20, size[0] // 2), rng.randrange(20, size[1] // 2)
+        draw.rectangle([x, y, x + w, y + h], fill=colour())
+    return im
+
+
+def subject_moved(seed: int, frac: float = 0.3) -> Image.Image:
+    """scene(seed) with a band `frac` of its width replaced, as when someone steps into the
+    middle of the frame between two frames of a burst."""
+    im = scene(seed)
+    w, h = im.size
+    patch = scene(seed + 500).crop((0, 0, int(w * frac), h))
+    im.paste(patch, (int(w * (1 - frac)) // 2, 0))
+    return im
 
 
 def event(n: int, *, minutes_apart: int = 20, start_seed: int = 0) -> list[SourcePhoto]:

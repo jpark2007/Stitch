@@ -2,9 +2,15 @@
 
 For every photo it records the EXIF capture time (DateTimeOriginal, else DateTime), the
 upright width and height (EXIF orientations 5-8 swap them, as db.media.image_aspect does), a
-64-bit difference hash (dHash) of the upright image for near-duplicate detection, and a cheap
-sharpness score (variance of the Laplacian on a fixed-size grayscale copy, so photos of
-different resolutions compare fairly).
+cheap sharpness score (variance of the Laplacian on a fixed-size grayscale copy, so photos of
+different resolutions compare fairly) and two visual signatures of the upright image for
+look-alike detection (film.selection.looks_alike):
+
+- `dhash`: a 64-bit difference hash of the grayscale copy (fine structure; moves when the
+  framing shifts by a few percent);
+- `layout` and `tone`: a LAYOUT_GRID x LAYOUT_GRID colour thumbnail with each channel's mean
+  removed and divided by the photo's own contrast (so exposure, white balance and small
+  shifts or crops barely move it), and the photo's overall colour balance.
 
 A photo Pillow cannot open or decode is skipped (logged), never fatal.
 """
@@ -23,7 +29,16 @@ from film.types import SourcePhoto
 log = logging.getLogger(__name__)
 
 ANALYSIS_EDGE = 256
-"""Long edge (px) of the grayscale copy the hash and sharpness are computed on."""
+"""Long edge (px) of the copy the hash, sharpness and colour layout are computed on."""
+
+LAYOUT_GRID = 8
+"""The colour layout is LAYOUT_GRID x LAYOUT_GRID cells of RGB (box-averaged)."""
+LAYOUT_SCALE = 32
+"""Layout values are stored as 128 + LAYOUT_SCALE * (deviation / contrast), clipped to a byte."""
+LAYOUT_MIN_CONTRAST = 6.0
+"""The contrast a near-flat photo is divided by, so sensor noise is not blown up."""
+TONE_MIN_LEVEL = 8.0
+"""The brightness a near-black photo's tone is measured against."""
 
 _ORIENTATION = 0x0112
 _EXIF_IFD = 0x8769
@@ -57,6 +72,8 @@ class Ingested:
     height: int  # upright
     sharpness: float
     dhash: int  # 64-bit difference hash of the upright image
+    layout: bytes = b""  # contrast-normalised colour layout (see colour_layout); b"" = unknown
+    tone: tuple[float, float, float] = (1.0, 1.0, 1.0)  # each channel's mean over the overall mean
 
     @property
     def portrait(self) -> bool:
@@ -113,14 +130,38 @@ def sharpness(gray: Image.Image) -> float:
     return float(ImageStat.Stat(gray.filter(_LAPLACIAN)).var[0])
 
 
+def colour_layout(rgb: Image.Image) -> tuple[bytes, tuple[float, float, float]]:
+    """(layout, tone) of an RGB image.
+
+    layout: LAYOUT_GRID x LAYOUT_GRID box-averaged cells, RGB interleaved, each value
+    128 + LAYOUT_SCALE * (value - its channel's mean) / contrast, clipped to 0..255, where
+    contrast is the mean absolute deviation over all cells and channels (at least
+    LAYOUT_MIN_CONTRAST). Removing each channel's mean and dividing by the contrast makes it
+    blind to exposure and white balance; the coarse grid makes a few percent of shift or crop
+    move it only a little.
+
+    tone: each channel's mean over the mean of all three (1, 1, 1 for a neutral photo), so a
+    brighter or darker copy keeps its tone.
+    """
+    cells = LAYOUT_GRID * LAYOUT_GRID
+    px = rgb.resize((LAYOUT_GRID, LAYOUT_GRID), Image.Resampling.BOX).tobytes()
+    means = [sum(px[c::3]) / cells for c in range(3)]
+    dev = [v - means[i % 3] for i, v in enumerate(px)]
+    contrast = max(sum(abs(d) for d in dev) / len(dev), LAYOUT_MIN_CONTRAST)
+    layout = bytes(max(0, min(255, round(128 + LAYOUT_SCALE * d / contrast))) for d in dev)
+    level = max(sum(means) / 3, TONE_MIN_LEVEL)
+    tone = (means[0] / level, means[1] / level, means[2] / level)
+    return layout, tone
+
+
 def ingest_one(photo: SourcePhoto, order: int) -> Ingested | None:
     """What Pillow can read of one photo, or None when it cannot open or decode it."""
     try:
         with Image.open(io.BytesIO(photo.data)) as img:
             width, height = img.size
             orientation, taken = _exif_facts(img)
-            img.draft("L", (ANALYSIS_EDGE * 2, ANALYSIS_EDGE * 2))  # cheap JPEG downscale on decode
-            gray = img.convert("L")
+            img.draft("RGB", (ANALYSIS_EDGE * 2, ANALYSIS_EDGE * 2))  # cheap JPEG downscale on decode
+            rgb = img.convert("RGB")
     except Exception:  # noqa: BLE001 - any undecodable upload is skipped
         log.info("film ingest: skipping %s, not a readable image (%d bytes)", photo.id, len(photo.data))
         return None
@@ -128,9 +169,11 @@ def ingest_one(photo: SourcePhoto, order: int) -> Ingested | None:
         return None
     if orientation in _ROTATED:
         width, height = height, width
+    rgb.thumbnail((ANALYSIS_EDGE, ANALYSIS_EDGE), Image.Resampling.BILINEAR)
     if orientation in _TRANSPOSE:
-        gray = gray.transpose(_TRANSPOSE[orientation])
-    gray.thumbnail((ANALYSIS_EDGE, ANALYSIS_EDGE), Image.Resampling.BILINEAR)
+        rgb = rgb.transpose(_TRANSPOSE[orientation])
+    gray = rgb.convert("L")
+    layout, tone = colour_layout(rgb)
     return Ingested(
         id=photo.id,
         data=photo.data,
@@ -140,6 +183,8 @@ def ingest_one(photo: SourcePhoto, order: int) -> Ingested | None:
         height=height,
         sharpness=sharpness(gray),
         dhash=dhash(gray),
+        layout=layout,
+        tone=tone,
     )
 
 
@@ -153,4 +198,15 @@ def ingest(photos: list[SourcePhoto]) -> list[Ingested]:
     return out
 
 
-__all__ = ["ANALYSIS_EDGE", "Ingested", "dhash", "hamming", "ingest", "ingest_one", "sharpness"]
+__all__ = [
+    "ANALYSIS_EDGE",
+    "LAYOUT_GRID",
+    "LAYOUT_SCALE",
+    "Ingested",
+    "colour_layout",
+    "dhash",
+    "hamming",
+    "ingest",
+    "ingest_one",
+    "sharpness",
+]
