@@ -44,34 +44,14 @@ import {
 import { createCardEdgeMaterial, createPaperMaterial, getPaperTextures } from "@/components/paper/materials";
 import { markShadowsDirty, useStageTime } from "./clock";
 import type { Cutout } from "./cutout";
-import { clamp, followAt, linearAt, smootherstep, smoothstep, type LinearKeys, type Vec3 } from "./timeline";
+import { DEFAULT_TIMING, hingePath, riseAlong, type Flip, type PopUpTiming } from "./hinge";
+import { clamp, smootherstep, smoothstep, type LinearKeys, type Vec3 } from "./timeline";
+
+export type { PopUpTiming };
 
 /* ------------------------------------------------------------------------ */
 /* Pop-up controller                                                         */
 /* ------------------------------------------------------------------------ */
-
-export interface PopUpTiming {
-  /** Seconds between pieces when opening (back first). */
-  openStagger: number;
-  /** Seconds between pieces when closing (front first). */
-  closeStagger: number;
-  /** Seconds a unit-height piece takes to rise / fold down (taller is slower). */
-  openTime: number;
-  closeTime: number;
-  /** Hinge spring speed (rad/s): lower is looser, with a bigger pop. */
-  omega: number;
-  /** For scrubbed `open`: share of the 0..1 range between piece starts. */
-  scrubStagger: number;
-}
-
-const DEFAULT_TIMING: PopUpTiming = {
-  openStagger: 0.2,
-  closeStagger: 0.1,
-  openTime: 0.72,
-  closeTime: 0.55,
-  omega: 11,
-  scrubStagger: 0.16,
-};
 
 export interface PopUpValue {
   /**
@@ -79,32 +59,6 @@ export interface PopUpValue {
    * `size` stretches the motion: ~sqrt(height), so tall cards move slower.
    */
   rise(order: number, count: number, t: number, size: number): number;
-}
-
-/**
- * The hinge's target path for one piece: for each flip, a ramp from wherever
- * the target is towards 1 (open) or 0 (closed) that starts slowly and speeds
- * up, as a page opening drives a real mechanism. The spring following it
- * carries the final speed into one small overshoot (opening) or a soft landing
- * (closing, clamped at the page).
- */
-function hingePath(flips: readonly Flip[], order: number, count: number, size: number, t: PopUpTiming): LinearKeys {
-  const timed = flips
-    .map((f) => ({ ...f, at: f.at + (f.open ? order * t.openStagger : (count - 1 - order) * t.closeStagger) }))
-    .sort((a, b) => a.at - b.at);
-  let keys: LinearKeys = [];
-  for (const f of timed) {
-    const from = linearAt(keys, f.at, 0);
-    keys = keys.filter((k) => k[0] < f.at);
-    keys.push([f.at, from]);
-    const to = f.open ? 1 : 0;
-    const dist = Math.abs(to - from);
-    if (dist < 1e-3) continue;
-    const dur = (f.open ? t.openTime : t.closeTime) * size * (0.35 + 0.65 * dist);
-    keys.push([f.at + dur * 0.6, from + (to - from) * 0.3]);
-    keys.push([f.at + dur, to]);
-  }
-  return keys;
 }
 
 const PopUpContext = createContext<PopUpValue>({ rise: () => 1 });
@@ -122,11 +76,6 @@ export type OpenSource = number | ((t: number) => number) | { readonly current: 
 export function readOpen(src: OpenSource, t: number): number {
   const v = typeof src === "number" ? src : typeof src === "function" ? src(t) : src.current;
   return clamp(v, 0, 1);
-}
-
-interface Flip {
-  at: number;
-  open: boolean;
 }
 
 export interface PopUpProps {
@@ -188,7 +137,7 @@ export function PopUp({ open = true, openAt = 0.4, closeAt = null, timing, child
           hit = { v: version.current, keys: hingePath([...scheduled, ...live.current], order, count, size, timingRef) };
           cache.set(key, hit);
         }
-        return Math.max(0, followAt(hit.keys, time, timingRef.omega / Math.sqrt(size), 0));
+        return riseAlong(hit.keys, time, size, timingRef);
       },
     };
   }, [open, scheduled, timingRef, scrubStagger]);
