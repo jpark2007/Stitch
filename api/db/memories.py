@@ -13,6 +13,7 @@ family's id reads as "not found" (None, False or empty), never as an error.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any, get_args
 
@@ -22,7 +23,10 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
 import schemas
+from db import search as search_db
 from screenplay.schema import VOCABULARY, Screenplay, Timeline
+
+log = logging.getLogger(__name__)
 
 # Stored fields that are never part of an API model.
 _STORAGE_ONLY = ("embedding", "createdAt")
@@ -98,6 +102,50 @@ def _to_question(doc: dict[str, Any] | None) -> schemas.Question | None:
     )
 
 
+def _close_answered_questions(
+    db: Database, family_id: str, memory_id: str, telling: schemas.Telling
+) -> int:
+    """Mark the author's open questions that this telling answers as 'answered'.
+
+    A question is answered when it points at this memory, or when the telling was given in
+    reply to it (its text equals `telling.question` after strip()). Only the author's own
+    questions in this family are touched. Returns how many were closed.
+    """
+    matches: list[dict[str, Any]] = [{"memoryId": memory_id}]
+    question = (telling.question or "").strip()
+    if question:
+        matches.append({"text": question})
+    result = db["questions"].update_many(
+        {"familyId": family_id, "personId": telling.author_id, "status": "open", "$or": matches},
+        {"$set": {"status": "answered"}},
+    )
+    return result.modified_count
+
+
+def _refresh_embedding(db: Database, family_id: str, memory_id: str) -> None:
+    """Re-embed the memory's title and tellings for Vector Search. Never raises.
+
+    Does nothing when no embedder is installed (search_db.embed returns None), which is the
+    default and always the case in tests.
+    """
+    try:
+        doc = db["memories"].find_one(
+            {"_id": memory_id, "familyId": family_id}, {"title": 1, "tellings.text": 1}
+        )
+        if doc is None:
+            return
+        texts = [t.get("text") or "" for t in doc.get("tellings") or [] if isinstance(t, dict)]
+        vector = search_db.embed((doc.get("title") or "") + "\n\n" + "\n\n".join(texts))
+        if vector is None:
+            return
+        db["memories"].update_one(
+            {"_id": memory_id, "familyId": family_id},
+            {"$set": {"embedding": [float(x) for x in vector]}},
+        )
+    except Exception:
+        log.warning("could not refresh the embedding of memory %s", memory_id, exc_info=True)
+
+
 # ----------------------------------------------------------------------------- memories
 
 def create_memory(
@@ -113,7 +161,13 @@ def create_memory(
     memory_id: str | None = None,
     now: datetime | None = None,
 ) -> schemas.Memory:
-    """Insert a new moment at version 1. Participants and the telling's author must be in the family."""
+    """Insert a new moment at version 1. Participants and the telling's author must be in the family.
+
+    After the insert, the telling's author's open questions that it answers are closed (see
+    `_close_answered_questions`: the question points at this memory, or its text is the
+    telling's `question` after strip()), and the memory's embedding is refreshed when an
+    embedder is installed (`_refresh_embedding`, which never raises).
+    """
     if not title or not title.strip():
         raise ValueError("title is required")
     if not isinstance(year, int) or isinstance(year, bool):
@@ -138,6 +192,9 @@ def create_memory(
         db["memories"].insert_one(doc)
     except DuplicateKeyError as exc:
         raise ValueError(f"memory id already exists: {doc['_id']}") from exc
+    if telling is not None:
+        _close_answered_questions(db, family_id, doc["_id"], telling)
+    _refresh_embedding(db, family_id, doc["_id"])
     memory = _to_memory(doc)
     assert memory is not None
     return memory
@@ -170,7 +227,14 @@ def get_book(db: Database, family_id: str, person_id: str) -> list[schemas.Memor
 def add_telling(
     db: Database, family_id: str, memory_id: str, telling: schemas.Telling
 ) -> schemas.Memory | None:
-    """Replace the author's existing telling (editing your own), otherwise append it."""
+    """Replace the author's existing telling (editing your own), otherwise append it.
+
+    None when the memory is not in this family; nothing else is touched then. After a
+    successful write, the author's open questions that this telling answers are closed (the
+    question points at this memory, or its text is the telling's `question` after strip());
+    other people's and other families' questions are never touched. The memory's embedding
+    is then refreshed when an embedder is installed (never raises).
+    """
     memories = db["memories"]
     base = {"_id": memory_id, "familyId": family_id}
     if memories.count_documents(base, limit=1) == 0:
@@ -199,6 +263,8 @@ def add_telling(
             guard, update, projection={"embedding": 0}, return_document=ReturnDocument.AFTER
         )
         if updated is not None:
+            _close_answered_questions(db, family_id, memory_id, telling)
+            _refresh_embedding(db, family_id, memory_id)
             return _to_memory(updated)
     raise RuntimeError(f"telling for {author} on memory {memory_id} kept changing; try again")
 
