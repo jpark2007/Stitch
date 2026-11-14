@@ -1,6 +1,7 @@
 // Pure logic behind the family settings page: finding the family in the
 // signed-in user's list, reading the `?welcome=1` flag that starting a family
-// sets, and turning a failed load into what the page shows.
+// sets, naming who is signed in, and turning a failed load into what the page
+// shows.
 //
 // Erasable TypeScript only. The one runtime import (../../lib/api) is
 // extensionless for the Next build; __tests__/settingsPage.test.mjs adds a
@@ -57,6 +58,17 @@ export function inviteAskLine(rows: AdminCandidate[]): string {
   const admins = (rows ?? []).filter((r) => r && r.role === "admin" && !r.isYou && r.personId).map((r) => r.name);
   const who = listOfNames(admins) || "an admin";
   return `Ask ${who} to send them the invite link.`;
+}
+
+/**
+ * Who is signed in, as the settings and join footers show it: "Maya
+ * (maya3@example.com)" when the account has a name, else just the email.
+ */
+export function signedInLabel(user: { name?: string | null; email: string }): string {
+  const name = typeof user?.name === "string" ? user.name.trim() : "";
+  const email = typeof user?.email === "string" ? user.email.trim() : "";
+  if (!name) return email;
+  return email ? `${name} (${email})` : name;
 }
 
 /** What the page shows when loading the family failed. */

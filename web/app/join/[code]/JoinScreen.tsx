@@ -28,6 +28,7 @@ import {
 } from "@/components/flow/joinFlow";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { hrefs, rememberFamily } from "@/components/flow/session";
+import { signedInLabel } from "@/components/flow/settingsPage";
 import { isApiError } from "@/lib/api";
 import type { InvitePreview, JoinRequest, JoinResponse, MeResponse } from "@/lib/types";
 
@@ -270,7 +271,7 @@ function renderView(view: JoinView, p: ViewProps): ReactNode {
             />
             {p.me ? (
               <p className="mt-5 text-center text-[0.875rem] leading-snug break-words text-ink-soft">
-                Signed in as {p.me.user.email}.{" "}
+                Signed in as {signedInLabel(p.me.user)}.{" "}
                 <Link href={hrefs.login(backHere)} className="font-semibold">
                   Not you?
                 </Link>
