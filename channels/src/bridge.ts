@@ -155,7 +155,7 @@ async function readBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-export function createSendServer(secret: string, outbox: TerminalOutbox): Server {
+export function createSendServer(secret: string, outbox: Pick<TerminalOutbox, "send">): Server {
   const auth = new Authenticator(secret);
   const server = createServer(async (request, response) => {
     try {

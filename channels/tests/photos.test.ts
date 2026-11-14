@@ -115,11 +115,11 @@ test("exact photo JSON body cap accepted, one byte over refused; text limit stay
   assert.equal(sent, 1);
 });
 
-test("terminal remains default and drops inherited cloud credentials; cloud mode is explicit Stable only", () => {
+test("terminal remains default and drops inherited cloud credentials; Stable cloud is disabled", () => {
   const env: NodeJS.ProcessEnv = { SPECTRUM_PROJECT_ID: "old", SPECTRUM_PROJECT_SECRET: "private", SPECTRUM_WEBHOOK_SECRET: "private" };
   assert.equal(configureProviderEnvironment(env), "terminal");
   assert.deepEqual(env, {});
-  assert.equal(configureProviderEnvironment({ CHANNELS_PROVIDER: "imessage", SPECTRUM_PROJECT_ID: "stable-project", SPECTRUM_PROJECT_SECRET: "private" }), "imessage");
+  assert.throws(() => configureProviderEnvironment({ CHANNELS_PROVIDER: "imessage", SPECTRUM_PROJECT_ID: "stable-project", SPECTRUM_PROJECT_SECRET: "private" }));
   for (const bad of [{ CHANNELS_PROVIDER: "sms" }, { CHANNELS_PROVIDER: "imessage" }, { CHANNELS_PROVIDER: "imessage", SPECTRUM_PROJECT_ID: "pho_prj_beta", SPECTRUM_PROJECT_SECRET: "private" }]) assert.throws(() => configureProviderEnvironment(bad));
 });
 

@@ -1,8 +1,12 @@
 import { Spectrum } from "spectrum-ts";
 import { terminal } from "spectrum-ts/providers/terminal";
-import { imessage } from "spectrum-ts/providers/imessage";
 import { ApiClient, TerminalOutbox, createSendServer, forwardIncoming } from "./bridge.ts";
 import { configureProviderEnvironment, validateSecret } from "./protocol.ts";
+
+if (process.env.CHANNELS_PROVIDER === "imessage") {
+  const { startBeta } = await import("./beta-main.ts");
+  await startBeta();
+} else {
 
 const secret = validateSecret(process.env.CHANNELS_SHARED_SECRET ?? "");
 const client = new ApiClient(process.env.CHANNELS_API_URL ?? "http://127.0.0.1:8000", secret);
@@ -18,9 +22,7 @@ await new Promise<void>((resolve, reject) => {
 
 // Terminal is the default. Only explicit imessage configuration can connect a cloud line.
 // Flattening preserves SDK child IDs for combined text, photo and voice messages.
-const app = provider === "terminal"
-  ? await Spectrum({ providers: [terminal.config()], options: { flattenGroups: true } })
-  : await Spectrum({ providers: [imessage.config()], options: { flattenGroups: true } });
+const app = await Spectrum({ providers: [terminal.config()], options: { flattenGroups: true } });
 let stopping = false;
 let ticking = false;
 const interval = setInterval(async () => {
@@ -58,3 +60,4 @@ try {
     }
   }
 } finally { await stop(); }
+}
