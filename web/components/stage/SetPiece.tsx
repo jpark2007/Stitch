@@ -68,6 +68,15 @@ export function usePopUp(): PopUpValue {
   return useContext(PopUpContext);
 }
 
+/**
+ * Drive the pieces inside from your own source instead of a <PopUp>: every
+ * SetPiece and FloatingLayer below calls `value.rise(...)` each frame. The
+ * timeline stage uses it to play a layer's `fold` track. Keep `value` stable.
+ */
+export function RiseProvider({ value, children }: { value: PopUpValue; children?: ReactNode }) {
+  return <PopUpContext.Provider value={value}>{children}</PopUpContext.Provider>;
+}
+
 /** Scrubbed open progress (0 flat .. 1 risen): a fixed value, a function of
  *  stage time, or a ref the host updates every frame. */
 export type OpenSource = number | ((t: number) => number) | { readonly current: number };

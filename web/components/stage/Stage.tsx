@@ -442,8 +442,12 @@ export function StageScene({
 export interface StageProps extends Omit<StageSceneProps, "surface"> {
   /** Freeze stage time (seconds). Omit to play. */
   time?: number | null;
-  /** Camera pose or a path over stage time. Default: the reading view. */
-  camera?: CameraPose | CameraPath;
+  /**
+   * Camera pose or a path over stage time. Default: the reading view. `null`
+   * mounts no camera rig, for a child that drives the camera itself (the
+   * timeline stage's CameraBinding).
+   */
+  camera?: CameraPose | CameraPath | null;
   /** Drag to orbit a little, easing back on release. Default true. */
   orbit?: boolean;
   className?: string;
@@ -485,8 +489,9 @@ export function Stage({
     [scrub, open],
   );
   const closed = useMemo<OpenSource>(() => (scrub ? (t: number) => 1 - readOpen(open, t) / COVER_SPAN : 0), [scrub, open]);
-  const pose = camera ?? stagePoses(size).reading;
-  const initial = typeof pose === "function" ? pose(time ?? 0) : pose;
+  const pose = camera === undefined ? stagePoses(size).reading : camera;
+  const first = pose ?? stagePoses(size).reading;
+  const initial = typeof first === "function" ? first(time ?? 0) : first;
   // Render at up to 1.5x on retina screens and step down if frames run long:
   // paper reads fine at 1.25x, a dropped frame does not.
   const [dpr, setDpr] = useState(1.5);
@@ -510,7 +515,7 @@ export function Stage({
         <Table />
         <OpenBook size={size} closed={closed} />
         <StageScene {...scene} open={setOpen} size={size} surface={false} />
-        <CameraRig pose={pose} orbit={orbit} />
+        {pose && <CameraRig pose={pose} orbit={orbit} />}
         {dof && <DepthOfField />}
         {overlay}
       </StageClock>

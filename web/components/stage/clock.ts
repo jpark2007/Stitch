@@ -16,22 +16,39 @@ interface ClockValue {
   frozen: number | null;
   /** Seconds added to the Canvas clock (to start a scene mid-way). */
   offset: number;
+  /** An outside clock (a timeline player's scene time) that wins over both. */
+  source: (() => number) | null;
 }
 
-const ClockContext = createContext<ClockValue>({ frozen: null, offset: 0 });
+const ClockContext = createContext<ClockValue>({ frozen: null, offset: 0, source: null });
 
-export function StageClock({ time, offset = 0, children }: { time?: number | null; offset?: number; children?: ReactNode }) {
+export interface StageClockProps {
+  time?: number | null;
+  offset?: number;
+  /**
+   * Read stage time from this instead (e.g. `() => player.time`), so hinges,
+   * particles and the camera follow a timeline player's clock: paused,
+   * scrubbed or frozen. Keep it stable (useCallback / useMemo).
+   */
+  source?: (() => number) | null;
+  children?: ReactNode;
+}
+
+export function StageClock({ time, offset = 0, source = null, children }: StageClockProps) {
   const frozen = time ?? null;
-  const value = useMemo(() => ({ frozen, offset }), [frozen, offset]);
+  const value = useMemo(() => ({ frozen, offset, source }), [frozen, offset, source]);
   return createElement(ClockContext.Provider, { value }, children);
 }
 
 /** Read stage time from r3f state: `const now = useStageTime(); useFrame((s) => now(s))`. */
 export function useStageTime() {
-  const { frozen, offset } = useContext(ClockContext);
+  const { frozen, offset, source } = useContext(ClockContext);
   return useMemo(
-    () => (state: Pick<RootState, "clock">) => (frozen !== null ? frozen : state.clock.elapsedTime + offset),
-    [frozen, offset],
+    () =>
+      source
+        ? () => source()
+        : (state: Pick<RootState, "clock">) => (frozen !== null ? frozen : state.clock.elapsedTime + offset),
+    [frozen, offset, source],
   );
 }
 
