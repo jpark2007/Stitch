@@ -151,6 +151,243 @@ def test_seam_log_write(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     assert "line one" in rows[1] and "line two" not in rows[1]
 
 
+# --------------------------------------------------------------------------- start failures
+
+# What `next dev` 16 writes when another one holds web/'s dev lock (build/lockfile.js), colours
+# on. It prints its own banner (its own port) first, then the other server's details.
+NEXT_ALREADY_RUNNING_LOG = (
+    "▲ Next.js 16.4.6 (Turbopack)\n"
+    "- Local:         http://localhost:62219\n"
+    "- Network:       http://10.0.0.2:62219\n"
+    "✓ Ready in 319ms\n"
+    "\x1b[31m\x1b[1m⨯\x1b[22m\x1b[39m Another \x1b[36mnext dev\x1b[39m server is already running.\n"
+    "\n"
+    "- Local:        \x1b[36mhttp://localhost:3000\x1b[39m\n"
+    "- PID:          72902\n"
+    "- Dir:          /Users/someone/Stitch/web\n"
+    "- Log:          .next/dev/logs/next-development.log\n"
+    "\n"
+    "You can access the existing server at \x1b[36mhttp://localhost:3000\x1b[39m,\n"
+    "or run \x1b[36mkill 72902\x1b[39m to stop it and start a new one.\n"
+)
+
+
+def test_diagnose_another_next_dev_names_the_pid_and_the_kill() -> None:
+    line = harness.diagnose_start_failure(NEXT_ALREADY_RUNNING_LOG)
+    assert line == (
+        "Another next dev is already running in web/ (pid 72902, at http://localhost:3000): "
+        "stop it with kill 72902, then run again."
+    )
+    assert "\n" not in line
+
+
+def test_diagnose_another_next_dev_without_server_info() -> None:
+    line = harness.diagnose_start_failure(
+        " ⨯ Another next dev server is already running in this directory.\n"
+        "Stop the other server before starting a new one.\n"
+    )
+    assert line is not None
+    assert line.startswith("Another next dev is already running in web/")
+    assert "kill" not in line.split("(", 1)[0] and "then run again" in line
+
+
+def test_diagnose_web_port_in_use() -> None:
+    log = (
+        " ⨯ Failed to start server\n"
+        "Error: listen EADDRINUSE: address already in use :::3201\n"
+        "    at Server.setupListenHandle [as _listen2] (node:net:1940:16) {\n"
+        "  code: 'EADDRINUSE',\n"
+    )
+    line = harness.diagnose_start_failure(log)
+    assert line is not None and line.startswith("Port 3201 is already in use")
+    assert "lsof -i :3201" in line
+    ipv4 = harness.diagnose_start_failure("Error: listen EADDRINUSE: address already in use 127.0.0.1:3205\n")
+    assert ipv4 is not None and ipv4.startswith("Port 3205 is already in use")
+    bare = harness.diagnose_start_failure("Error: something EADDRINUSE\n")
+    assert bare is not None and "already in use" in bare
+
+
+def test_diagnose_api_port_in_use() -> None:
+    uvicorn = (
+        "INFO:     Started server process [4242]\n"
+        "INFO:     Waiting for application startup.\n"
+        "ERROR:    [Errno 48] error while attempting to bind on address ('127.0.0.1', 8201): "
+        "[errno 48] address already in use\n"
+        "INFO:     Waiting for application shutdown.\n"
+    )
+    line = harness.diagnose_start_failure(uvicorn)
+    assert line is not None
+    assert line.startswith("The API could not listen on port 8201") and "--api-port" in line
+    serve = harness.diagnose_start_failure("port 8201 is in use: is the API already running? pass --port\n")
+    assert serve is not None and serve.startswith("The API could not listen on port 8201")
+    errno_only = harness.diagnose_start_failure("OSError: [Errno 98] Address already in use\n")
+    assert errno_only is not None and errno_only.startswith("The API could not listen on its port")
+
+
+@pytest.mark.parametrize(
+    ("log", "module"),
+    [
+        ("Error: Cannot find module '/w/web/node_modules/next/dist/bin/next'\n    at Module._resolveFilename\n",
+         "next"),
+        ("Error: Cannot find module '@next/env'\n", "@next/env"),
+        ("sh: next: command not found\n", None),
+        ("npm warn exec The following package was not found and will be installed: next@16.0.0\n", None),
+    ],
+)
+def test_diagnose_missing_node_modules(log: str, module: str | None) -> None:
+    line = harness.diagnose_start_failure(log)
+    assert line is not None and "run npm ci in web/" in line
+    if module:
+        assert f"({module} is missing)" in line
+
+
+def test_diagnose_missing_python_package() -> None:
+    line = harness.diagnose_start_failure("ModuleNotFoundError: No module named 'uvicorn'\n")
+    assert line is not None and "uvicorn" in line and "uv sync in api/" in line
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        "",
+        "  ▲ Next.js 16.0.0 (Turbopack)\n  - Local: http://localhost:3201\n ✓ Ready in 1.2s\n",
+        "TypeError: Cannot read properties of undefined (reading 'map')\n",
+        "Module not found: Can't resolve './Missing'\n",
+    ],
+)
+def test_diagnose_unknown_logs_return_none(log: str) -> None:
+    assert harness.diagnose_start_failure(log) is None
+
+
+class _ExitedProc:
+    """A Popen stand-in for a server that has already exited."""
+
+    def __init__(self, code: int) -> None:
+        self.returncode = code
+
+    def poll(self) -> int:
+        return self.returncode
+
+
+def test_stack_error_puts_the_diagnosis_first(tmp_path: Path) -> None:
+    log = tmp_path / "web.log"
+    log.write_text(NEXT_ALREADY_RUNNING_LOG)
+    with pytest.raises(harness.StackError) as exc:
+        harness._wait_until(lambda: False, deadline=5.0, proc=_ExitedProc(1),  # type: ignore[arg-type]
+                            what="the web app (next dev)", log=log)
+    lines = str(exc.value).splitlines()
+    assert lines[0].startswith("Another next dev is already running in web/ (pid 72902")
+    assert "kill 72902" in lines[0]
+    assert lines[1] == "the web app (next dev) exited with code 1 before it was ready."
+    assert lines[2] == f"{log}:"
+    assert "or run" in str(exc.value)  # the log tail is still there
+
+
+def test_stack_error_timeout_has_the_diagnosis_first(tmp_path: Path) -> None:
+    class Running:
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    log = tmp_path / "api.log"
+    log.write_text("ERROR:    [Errno 48] error while attempting to bind on address ('127.0.0.1', 8201): "
+                   "[errno 48] address already in use\n")
+    with pytest.raises(harness.StackError) as exc:
+        harness._wait_until(lambda: False, deadline=0.0, proc=Running(),  # type: ignore[arg-type]
+                            what="the API (seed.serve)", log=log)
+    lines = str(exc.value).splitlines()
+    assert lines[0].startswith("The API could not listen on port 8201")
+    assert lines[1] == "the API (seed.serve) was not ready after 0 s."
+
+
+def test_stack_error_without_a_diagnosis_keeps_the_old_shape(tmp_path: Path) -> None:
+    log = tmp_path / "web.log"
+    log.write_text("something odd\n")
+    with pytest.raises(harness.StackError) as exc:
+        harness._wait_until(lambda: False, deadline=5.0, proc=_ExitedProc(3),  # type: ignore[arg-type]
+                            what="the web app (next dev)", log=log)
+    assert str(exc.value) == f"the web app (next dev) exited with code 3 before it was ready.\n{log}:\nsomething odd"
+
+
+def test_stack_error_ignores_an_older_run_in_the_same_log(tmp_path: Path) -> None:
+    """The log is appended to: only what this start wrote is diagnosed."""
+    log = tmp_path / "web.log"
+    log.write_text(NEXT_ALREADY_RUNNING_LOG)
+    since = log.stat().st_size
+    with log.open("a") as handle:
+        handle.write("Error: listen EADDRINUSE: address already in use :::3201\n")
+    with pytest.raises(harness.StackError) as exc:
+        harness._wait_until(lambda: False, deadline=5.0, proc=_ExitedProc(1),  # type: ignore[arg-type]
+                            what="the web app (next dev)", log=log, since=since)
+    message = str(exc.value)
+    assert message.splitlines()[0].startswith("Port 3201 is already in use")
+    assert "Another next dev" not in message and "72902" not in message
+
+
+def test_seam_log_prints_the_cause_and_some_context_for_a_pages_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    log = SeamLog()
+    detail = (
+        "Another next dev is already running in web/ (pid 72902): stop it with kill 72902, then run again.\n"
+        "the web app (next dev) exited with code 1 before it was ready.\n"
+        "\n"
+        "/tmp/out/web.log:\n"
+        "> web@0.1.0 dev\n"
+        "this line is not printed\n"
+    )
+    log.record("start the stack (seed.serve + next dev)", False, detail, "pages")
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == (
+        "  FAIL [pages] start the stack (seed.serve + next dev): Another next dev is already running in web/ "
+        "(pid 72902): stop it with kill 72902, then run again."
+    )
+    assert out[1:] == [
+        "         the web app (next dev) exited with code 1 before it was ready.",
+        "         /tmp/out/web.log:",
+        "         > web@0.1.0 dev",
+    ]
+    assert log.entries[0]["detail"] == detail  # seams.json keeps all of it
+
+
+def test_seam_log_prints_one_line_for_other_entries(capsys: pytest.CaptureFixture[str]) -> None:
+    log = SeamLog()
+    log.record("fine", True, "first\nsecond")
+    log.record("Ethan's page", False, "REQUEST for Ethan\nmore", "ethan")
+    log.record("API data", False, "missing\nmore", "api")
+    log.record("short", False, "only line", "pages")
+    assert capsys.readouterr().out.splitlines() == [
+        "  ok   [pages] fine: first",
+        "  FAIL [ethan] Ethan's page: REQUEST for Ethan",
+        "  FAIL [api] API data: missing",
+        "  FAIL [pages] short: only line",
+    ]
+
+
+def test_demo_path_prints_the_stack_diagnosis(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A stack that will not start puts the cause on demo_path's console and first in seams.json."""
+    import demo_path
+
+    monkeypatch.setattr(demo_path, "require_chromium", lambda: None)
+    log = tmp_path / "web.log"
+    log.write_text(NEXT_ALREADY_RUNNING_LOG)
+    message = harness.start_failure_message("the web app (next dev) exited with code 1 before it was ready.", log)
+
+    def busy_stack(**_: object) -> None:
+        raise harness.StackError(message)
+
+    monkeypatch.setattr(demo_path, "run_stack", busy_stack)
+    assert demo_path.main(["--out", str(tmp_path / "out"), "--keep-going"]) == 1
+    printed = capsys.readouterr().out
+    assert "FAIL [pages] start the stack (seed.serve + next dev): Another next dev is already running" in printed
+    assert "kill 72902" in printed
+    seam = json.loads((tmp_path / "out" / "seams.json").read_text())["seams"][0]
+    assert seam["detail"].splitlines()[0].startswith("Another next dev")
+
+
 def test_require_chromium_skips_cleanly(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(harness, "chromium_available", lambda: False)
     with pytest.raises(SystemExit) as exc:
@@ -882,6 +1119,37 @@ def test_run_all_read_counts(tmp_path: Path) -> None:
     assert run_all.read_counts(tmp_path) == log.to_json()["counts"]
 
 
+def test_run_all_read_first_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import run_all
+
+    assert run_all.read_first_failure(tmp_path) is None
+    (tmp_path / "seams.json").write_text("not json")
+    assert run_all.read_first_failure(tmp_path) is None
+
+    log = SeamLog()
+    log.record("fine", True, "ok")
+    log.record("stage", False, "REQUEST for Ethan: the stage", "ethan")
+    log.record("start the stack (seed.serve + next dev)", False,
+               "Another next dev is already running in web/ (pid 7): stop it with kill 7, then run again.\n"
+               "the web app (next dev) exited with code 1 before it was ready.", "pages")
+    log.write(tmp_path)
+    assert run_all.read_first_failure(tmp_path) == (
+        "[pages] start the stack (seed.serve + next dev): "
+        "Another next dev is already running in web/ (pid 7): stop it with kill 7, then run again."
+    )
+
+    only_ethan = SeamLog()
+    only_ethan.record("stage", False, "\nREQUEST for Ethan: the stage", "ethan")
+    only_ethan.write(tmp_path / "e")
+    assert run_all.read_first_failure(tmp_path / "e") == "[ethan] stage: REQUEST for Ethan: the stage"
+
+    all_ok = SeamLog()
+    all_ok.record("fine", True)
+    all_ok.write(tmp_path / "ok")
+    assert run_all.read_first_failure(tmp_path / "ok") is None
+    capsys.readouterr()
+
+
 def test_run_all_skips_without_chromium(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     import run_all
 
@@ -941,8 +1209,11 @@ def test_run_all_main_summary_and_exit(
     assert summary["runs"][0]["seams"] is None
     assert summary["runs"][1]["seams"]["failedByOwner"] == {"pages": 0, "ethan": 1, "api": 0}
     assert summary["failedByOwner"] == {"pages": 1, "ethan": 1, "api": 0}
+    assert [r["firstFailure"] for r in summary["runs"]] == [
+        None, "[ethan] stage: REQUEST for Ethan", "[pages] broken: boom"]
     printed = capsys.readouterr().out
     assert "sweep_add.py" in printed and "skipped" in printed
+    assert "join first failure: [pages] broken: boom" in printed
 
     monkeypatch.setattr(run_all, "run_one", lambda area, cmd, cwd, out: {
         "area": area, "exit": 0, "seconds": 0.1, "out": out})

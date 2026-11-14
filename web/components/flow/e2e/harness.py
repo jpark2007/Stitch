@@ -178,28 +178,158 @@ def _get(url: str, timeout: float = 5.0) -> tuple[int, bytes]:
         return exc.code, exc.read() if exc.fp else b""
 
 
-def _tail(path: Path, lines: int = 25) -> str:
+def _log_text(path: Path, since: int = 0) -> str | None:
+    """The log's text from byte offset `since` on (what this start wrote), or None when unreadable."""
     try:
-        text = path.read_text(errors="replace")
+        with path.open("rb") as handle:
+            handle.seek(since)
+            return handle.read().decode(errors="replace")
     except OSError:
+        return None
+
+
+def _tail(path: Path, lines: int = 25, since: int = 0) -> str:
+    text = _log_text(path, since)
+    if text is None:
         return "(no log)"
     return "\n".join(text.splitlines()[-lines:])
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+# Each pattern is matched against the server log with ANSI colours removed. Order matters:
+# the API's own "address in use" lines are tried before node's generic EADDRINUSE.
+_NEXT_ALREADY_RUNNING = re.compile(r"Another next dev server is already running", re.IGNORECASE)
+_NEXT_PID = re.compile(r"^\s*-\s*PID:\s*(\d+)", re.MULTILINE)
+_NEXT_KILL = re.compile(r"\b((?:kill|taskkill /PID) \d+(?: /F)?)")
+_NEXT_URL = re.compile(r"^\s*-\s*Local:\s*(\S+)", re.MULTILINE)
+_SERVE_PORT_IN_USE = re.compile(r"port (\d+) is in use: is the API already running")
+_UVICORN_BIND = re.compile(
+    r"error while attempting to bind on address \((?:'[^']*'|[^,]*), (\d+)[^)]*\).*address already in use",
+    re.IGNORECASE,
+)
+_PY_ADDR_IN_USE = re.compile(r"\[Errno (?:48|98)\] Address already in use")
+_NODE_ADDR_IN_USE = re.compile(r"EADDRINUSE(?::\s*address already in use\s+\S*?:(\d+))?")
+_ADDR_IN_USE = re.compile(r"address already in use(?:\s+\S*?:(\d+))?", re.IGNORECASE)
+_NODE_MISSING = re.compile(
+    r"Cannot find module '([^']+)'|\bnext: (?:command )?not found|"
+    r"Need to install the following packages|The following package was not found and will be installed"
+)
+_PY_MISSING = re.compile(r"ModuleNotFoundError: No module named '([^']+)'")
+
+
+def _module_name(spec: str) -> str:
+    """'next' for '/w/web/node_modules/next/dist/bin/next', the spec itself otherwise."""
+    m = re.search(r"node_modules/((?:@[^/]+/)?[^/]+)", spec)
+    return m.group(1) if m else spec
+
+
+def diagnose_start_failure(log_text: str) -> str | None:
+    """One plain, actionable line naming why a server did not start, from its log; None if unknown. Pure.
+
+    Knows: another `next dev` already running in web/ (with its pid and the kill command
+    when the log has them), the API's port already taken (seed.serve's own check, uvicorn's
+    bind error), any other port already taken (node's EADDRINUSE), and missing dependencies
+    (web/'s node_modules, the API's Python packages).
+    """
+    text = _ANSI.sub("", log_text or "")
+
+    running = _NEXT_ALREADY_RUNNING.search(text)
+    if running:
+        # The new server prints its own "- Local:" banner before it finds the lock: read the
+        # other server's details only after the "already running" line.
+        other = text[running.end() :]
+        pid = _NEXT_PID.search(other)
+        kill = _NEXT_KILL.search(other)
+        url = _NEXT_URL.search(other)
+        if pid:
+            command = kill.group(1) if kill else f"kill {pid.group(1)}"
+            where = f"pid {pid.group(1)}" + (f", at {url.group(1)}" if url else "")
+            return f"Another next dev is already running in web/ ({where}): stop it with {command}, then run again."
+        return (
+            "Another next dev is already running in web/: stop it (find it with `ps -ax | grep 'next dev'`), "
+            "then run again."
+        )
+
+    api_port = _SERVE_PORT_IN_USE.search(text) or _UVICORN_BIND.search(text)
+    if api_port or _PY_ADDR_IN_USE.search(text):
+        port = api_port.group(1) if api_port else None
+        named = f"port {port}" if port else "its port"
+        lookup = f" (find it with `lsof -i :{port}`)" if port else ""
+        return (
+            f"The API could not listen on {named}: another API (seed.serve or uvicorn) is already using it"
+            f"{lookup}. Stop it or pass --api-port, then run again."
+        )
+
+    node = _NODE_ADDR_IN_USE.search(text) or _ADDR_IN_USE.search(text)
+    if node:
+        port = node.group(1)
+        if port:
+            return (
+                f"Port {port} is already in use (find it with `lsof -i :{port}`): "
+                "stop whatever listens there or pass another port, then run again."
+            )
+        return "A port the server needs is already in use: stop whatever listens there or pass another port, then run again."
+
+    missing = _NODE_MISSING.search(text)
+    if missing:
+        what = f" ({_module_name(missing.group(1))} is missing)" if missing.group(1) else ""
+        return f"The web app's dependencies are not installed{what}: run npm ci in web/, then run again."
+
+    py_missing = _PY_MISSING.search(text)
+    if py_missing:
+        return (
+            f"The API's Python environment has no {py_missing.group(1)}: run uv sync in api/ and start the "
+            "script with `uv run` from api/, then run again."
+        )
+    return None
+
+
+DIAGNOSE_TAIL_LINES = 200
+"""How much of a server's log diagnose_start_failure() reads when it fails to start."""
+
+
+def start_failure_message(sentence: str, log: Path, since: int = 0) -> str:
+    """A StackError message: the diagnosis first (when there is one), then `sentence`, then the log tail.
+
+    `since` is the log's size before this start: only what this start wrote is read, so an
+    older run's output appended to the same log can never be the diagnosis.
+    """
+    diagnosis = diagnose_start_failure(_tail(log, DIAGNOSE_TAIL_LINES, since))
+    lines = [diagnosis] if diagnosis else []
+    lines += [sentence, f"{log}:", _tail(log, since=since)]
+    return "\n".join(lines)
+
+
 def _wait_until(
-    check: Callable[[], bool], *, deadline: float, proc: subprocess.Popen[bytes], what: str, log: Path
+    check: Callable[[], bool],
+    *,
+    deadline: float,
+    proc: subprocess.Popen[bytes],
+    what: str,
+    log: Path,
+    since: int = 0,
 ) -> None:
     end = time.monotonic() + deadline
     while time.monotonic() < end:
         if proc.poll() is not None:
-            raise StackError(f"{what} exited with code {proc.returncode} before it was ready.\n{log}:\n{_tail(log)}")
+            raise StackError(
+                start_failure_message(f"{what} exited with code {proc.returncode} before it was ready.", log, since)
+            )
         try:
             if check():
                 return
         except (OSError, urllib.error.URLError, ValueError):
             pass
         time.sleep(0.5)
-    raise StackError(f"{what} was not ready after {deadline:.0f} s.\n{log}:\n{_tail(log)}")
+    raise StackError(start_failure_message(f"{what} was not ready after {deadline:.0f} s.", log, since))
+
+
+def _log_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _start(cmd: list[str], *, cwd: Path, env: dict[str, str], log: Path) -> subprocess.Popen[bytes]:
@@ -347,6 +477,7 @@ def run_stack(
         if not mock:
             log = out / "api.log"
             env = {**base_env(), **api_env(api_port, web_url, run_step), "PYTHONUNBUFFERED": "1"}
+            since = _log_size(log)
             proc = _start([sys.executable, "-m", "seed.serve", "--port", str(api_port)], cwd=API_DIR, env=env, log=log)
             procs.append(proc)
 
@@ -354,10 +485,13 @@ def run_stack(
                 status, body = _get(f"{api_url}/health", timeout=2.0)
                 return status == 200 and json.loads(body or b"null") == {"status": "ok"}
 
-            _wait_until(api_ok, deadline=API_HEALTH_DEADLINE, proc=proc, what="the API (seed.serve)", log=log)
+            _wait_until(
+                api_ok, deadline=API_HEALTH_DEADLINE, proc=proc, what="the API (seed.serve)", log=log, since=since
+            )
 
         log = out / "web.log"
         env = {**base_env(), **web_env(mock=mock, api_url=api_url)}
+        since = _log_size(log)
         proc = _start(["npx", "next", "dev", "--port", str(web_port)], cwd=WEB_DIR, env=env, log=log)
         procs.append(proc)
         _wait_until(
@@ -366,6 +500,7 @@ def run_stack(
             proc=proc,
             what="the web app (next dev)",
             log=log,
+            since=since,
         )
         yield Stack(web_url=web_url, api_url=api_url, mock=mock, out_dir=out)
     finally:
@@ -555,13 +690,26 @@ class SeamLog:
     def __init__(self) -> None:
         self.entries: list[dict[str, Any]] = []
 
+    DETAIL_LINES = 3
+    """How many detail lines after the first a failing 'pages' seam prints (the rest is in seams.json)."""
+
     def record(self, step: str, ok: bool, detail: str = "", owner: str = "pages") -> None:
+        """Keep the entry and print it: the first detail line, which carries the cause.
+
+        A failing 'pages' seam also prints up to DETAIL_LINES more non-empty detail lines,
+        indented, so the context is on the console without opening seams.json.
+        """
         if owner not in OWNERS:
             raise ValueError(f"owner must be one of {', '.join(OWNERS)}, not {owner!r}")
         self.entries.append({"step": step, "ok": bool(ok), "owner": owner, "detail": detail})
         mark = "ok  " if ok else "FAIL"
-        first = detail.splitlines()[0] if detail else ""
+        lines = detail.splitlines()
+        first = lines[0] if lines else ""
         print(f"  {mark} [{owner}] {step}" + (f": {first}" if first else ""), flush=True)
+        if not ok and owner == "pages":
+            more = [line.rstrip() for line in lines[1:] if line.strip()][: self.DETAIL_LINES]
+            for line in more:
+                print(f"         {line}", flush=True)
 
     def failed(self, owner: str | None = None) -> list[dict[str, Any]]:
         if owner is not None and owner not in OWNERS:
