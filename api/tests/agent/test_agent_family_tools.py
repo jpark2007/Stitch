@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any, TypedDict
+from typing import Any
 
 import pytest
-from deepagents.backends.utils import create_file_data
+from deepagents.backends.utils import create_file_data, file_data_to_string
+from deepagents.middleware.filesystem import FilesystemState
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 import schemas
+from agent.fake_compiler import FakeCompiler
 from agent.repo import SAMPLE_MEMORY_PATH, InMemoryRepo, load_sample_family
 from agent.run_info import RunInfo
-from agent.tools.family import era_for_year, make_family_tools, save_scene
+from agent.tools.compile import ERRORS_PATH, SceneInputs, make_compile_tool
+from agent.tools.family import era_for_year, make_family_tools, save_scene, save_scene_with_report
 from schemas import Memory, MemoryResponse, SubmitMemoryFields
 from screenplay.schema import Caption, NarrationLine, Screenplay, Timeline
 
@@ -128,28 +131,22 @@ def mom_run(memory_id: str) -> RunInfo:
     )
 
 
-def _moms_draft(*, via_shot_narration: bool = False) -> tuple[Screenplay, Timeline]:
+def _moms_draft() -> tuple[Screenplay, Timeline]:
     """A draft scene carrying mom's narration, with action that must NOT replace the saved action."""
     screenplay, timeline = sample_scene()
     assert screenplay.narrations is not None and timeline.narrations is not None
-    moms_lines = screenplay.narrations["mom"]
     draft_sp = screenplay.model_copy(deep=True)
-    if via_shot_narration:
-        draft_sp.narrations = None
-        for shot in draft_sp.shots:
-            shot.narration = moms_lines.get(shot.id, [])
     draft_sp.shots[0].actions = draft_sp.shots[0].actions[:1]  # a different (wrong) action
     draft_tl = timeline.model_copy(deep=True)
     draft_tl.tracks = draft_tl.tracks[:1]  # different tracks
     return draft_sp, draft_tl
 
 
-@pytest.mark.parametrize("via_shot_narration", [False, True])
-def test_second_telling_adds_narration_over_the_existing_action(via_shot_narration: bool) -> None:
+def test_second_telling_adds_narration_over_the_existing_action() -> None:
     repo = make_repo()
     existing = _existing_memory_without_mom(repo)
     assert existing.screenplay is not None and existing.timeline is not None
-    draft_sp, draft_tl = _moms_draft(via_shot_narration=via_shot_narration)
+    draft_sp, draft_tl = _moms_draft()
     full_sp, full_tl = sample_scene()
 
     memory = save_scene(repo, mom_run(existing.id), title="ignored", participant_ids=[],
@@ -176,6 +173,29 @@ def test_second_telling_adds_narration_over_the_existing_action(via_shot_narrati
     # No new memory was created.
     assert [m.id for m in repo.find_memories(FAM)] == [existing.id]
     assert repo.get_memory(FAM, existing.id) == memory
+
+
+def _moms_draft_in_shot_narration_only() -> tuple[Screenplay, Timeline]:
+    """Mom's draft with no narrations["mom"]: the shots' `narration` holds dad's default telling."""
+    draft_sp, draft_tl = _moms_draft()
+    draft_sp.narrations = None
+    return draft_sp, draft_tl
+
+
+def test_second_telling_without_the_tellers_lines_is_refused() -> None:
+    """Finding 1: shot.narration is the default telling (dad's words); it is never saved as mom's."""
+    repo = make_repo()
+    existing = _existing_memory_without_mom(repo)
+    draft_sp, draft_tl = _moms_draft_in_shot_narration_only()
+    with pytest.raises(ValueError, match=r"no narrations\['mom'\]"):
+        save_scene_with_report(repo, mom_run(existing.id), title="x", participant_ids=[], screenplay=draft_sp,
+                               timeline=draft_tl)
+    assert repo.get_memory(FAM, existing.id) == existing
+
+    content, events = _run_save_memory(repo, mom_run(existing.id), _files(draft_sp, draft_tl))
+    assert content.startswith("error: could not save:") and "narrations['mom']" in content
+    assert events == []
+    assert repo.get_memory(FAM, existing.id) == existing
 
 
 def test_second_telling_requires_the_tellers_timeline_narration() -> None:
@@ -428,19 +448,22 @@ def test_link_participants_adds_people_and_asks_each_for_their_version() -> None
 # ---------------------------------------------------------- save_memory via ToolNode
 
 
-class _State(TypedDict, total=False):
-    messages: Annotated[list, add_messages]
-    files: dict[str, Any]
+SAVE_ARGS = {"title": "How I met your mother", "participant_ids": ["mom"]}
 
 
-def _run_save_memory(repo: InMemoryRepo, run: RunInfo, files: dict[str, Any]) -> tuple[str, list[dict]]:
-    graph = StateGraph(_State)
-    graph.add_node("tools", ToolNode(make_family_tools(repo, run)))
+def _call_tool(tools: list[BaseTool], files: dict[str, Any], name: str, args: dict[str, Any],
+               call_id: str = "call_1") -> tuple[str, list[dict], dict[str, Any]]:
+    """Run one tool call through a ToolNode over deepagents' FilesystemState.
+
+    Returns (tool message text, custom events, the state's files afterwards), so a test can
+    carry the files into the next call the way a run's state does.
+    """
+    graph = StateGraph(FilesystemState)
+    graph.add_node("tools", ToolNode(tools))
     graph.add_edge(START, "tools")
     graph.add_edge("tools", END)
     app = graph.compile()
-    call = {"name": "save_memory", "args": {"title": "How I met your mother", "participant_ids": ["mom"]},
-            "id": "call_1", "type": "tool_call"}
+    call = {"name": name, "args": args, "id": call_id, "type": "tool_call"}
     events: list[dict] = []
     final: dict[str, Any] = {}
     for mode, chunk in app.stream({"messages": [AIMessage(content="", tool_calls=[call])], "files": files},
@@ -450,16 +473,24 @@ def _run_save_memory(repo: InMemoryRepo, run: RunInfo, files: dict[str, Any]) ->
         else:
             final = chunk
     message = final["messages"][-1]
-    assert isinstance(message, ToolMessage) and message.tool_call_id == "call_1"
-    return str(message.content), events
+    assert isinstance(message, ToolMessage) and message.tool_call_id == call_id and message.name == name
+    return str(message.content), events, dict(final.get("files") or {})
 
 
-def _scene_files() -> dict[str, Any]:
-    screenplay, timeline = sample_scene()
+def _run_save_memory(repo: InMemoryRepo, run: RunInfo, files: dict[str, Any]) -> tuple[str, list[dict]]:
+    content, events, _ = _call_tool(make_family_tools(repo, run), files, "save_memory", SAVE_ARGS)
+    return content, events
+
+
+def _files(screenplay: Screenplay, timeline: Timeline) -> dict[str, Any]:
     return {
         "/screenplay.json": create_file_data(screenplay.model_dump_json(by_alias=True)),
         "/timeline.json": create_file_data(timeline.model_dump_json(by_alias=True)),
     }
+
+
+def _scene_files() -> dict[str, Any]:
+    return _files(*sample_scene())
 
 
 def test_save_memory_tool_saves_from_state_files_and_emits_scene_ready() -> None:
@@ -490,3 +521,348 @@ def test_save_memory_tool_reports_an_invalid_file() -> None:
     content, _ = _run_save_memory(repo, dad_run(), files)
     assert content.startswith("error") and "/screenplay.json" in content
     assert repo.find_memories(FAM) == []
+
+
+# ------------------------------------------------- save_memory guards (findings 4, 5, 6)
+
+
+def _scene_inputs() -> SceneInputs:
+    response = MemoryResponse.model_validate_json(SAMPLE_MEMORY_PATH.read_text())
+    return SceneInputs(
+        sets={s.id: s for s in response.sets},
+        props={p.id: p for p in response.props},
+        people={p.id: p for p in response.people},
+    )
+
+
+def _studio_tools(repo: InMemoryRepo, run: RunInfo) -> list[BaseTool]:
+    """What the studio holds: compile_screenplay beside the family tools."""
+    scene = _scene_inputs()
+    return [make_compile_tool(FakeCompiler(), lambda _: scene), *make_family_tools(repo, run)]
+
+
+def _sample_screenplay_text() -> str:
+    screenplay, _ = sample_scene()
+    return screenplay.model_dump_json(by_alias=True)
+
+
+def _bad_screenplay_text() -> str:
+    """The sample with dad handing back books nobody picked up: the compiler refuses it."""
+    bad = json.loads(_sample_screenplay_text())
+    bad["shots"][0]["actions"][4]["t"] = 5
+    bad["shots"][0]["actions"].pop(3)
+    return json.dumps(bad)
+
+
+def _text(files: dict[str, Any], path: str) -> str:
+    return file_data_to_string(files[path])
+
+
+def _compiled_files(repo: InMemoryRepo, run: RunInfo) -> dict[str, Any]:
+    files = {"/screenplay.json": create_file_data(_sample_screenplay_text())}
+    content, _, files = _call_tool(_studio_tools(repo, run), files, "compile_screenplay", {})
+    assert content.startswith("ok:"), content
+    assert "/timeline.json" in files and _text(files, ERRORS_PATH).strip() == ""
+    return files
+
+
+def test_save_memory_saves_a_fresh_compile() -> None:
+    repo = make_repo()
+    files = _compiled_files(repo, dad_run())
+    content, events, _ = _call_tool(_studio_tools(repo, dad_run()), files, "save_memory", SAVE_ARGS)
+    assert content == "saved memory_1 v1"
+    assert [e["event"] for e in events] == ["scene_ready"]
+
+
+def test_save_memory_refuses_after_a_failed_compile() -> None:
+    """Finding 4: a stale /timeline.json from an earlier good compile is never saved."""
+    repo = make_repo()
+    run = dad_run()
+    files = _compiled_files(repo, run)
+    files["/screenplay.json"] = create_file_data(_bad_screenplay_text())
+    content, _, files = _call_tool(_studio_tools(repo, run), files, "compile_screenplay", {})
+    assert not content.startswith("ok:")
+    assert _text(files, ERRORS_PATH).strip()
+    assert "/timeline.json" in files  # the earlier compile's timeline is still there
+
+    content, events, _ = _call_tool(_studio_tools(repo, run), files, "save_memory", SAVE_ARGS)
+
+    assert content == ("error: could not save: the last compile failed; fix /screenplay.json "
+                       "and compile again before saving")
+    assert events == []
+    assert repo.find_memories(FAM) == []
+
+
+def test_save_memory_refuses_an_unvoiced_timeline() -> None:
+    repo = make_repo()
+    run = dad_run()
+    files = _compiled_files(repo, run)
+    timeline = Timeline.model_validate_json(_text(files, "/timeline.json"))
+    for narrations in (None, {"mom": timeline.narrations["mom"]},  # type: ignore[index]
+                       {"dad": timeline.narrations["dad"].model_copy(update={"lines": []})}):  # type: ignore[index]
+        unvoiced = timeline.model_copy(update={"narrations": narrations})
+        files["/timeline.json"] = create_file_data(unvoiced.model_dump_json(by_alias=True))
+        content, events, _ = _call_tool(_studio_tools(repo, run), files, "save_memory", SAVE_ARGS)
+        assert content == ("error: could not save: the scene has no narration for dad; "
+                           "run the narrator's voice pass first")
+        assert events == []
+    assert repo.find_memories(FAM) == []
+
+
+def test_save_scene_refuses_an_unvoiced_new_memory() -> None:
+    repo = make_repo()
+    screenplay, timeline = sample_scene()
+    with pytest.raises(ValueError, match="no narration for dad"):
+        save_scene(repo, dad_run(), title="x", participant_ids=[], screenplay=screenplay,
+                   timeline=timeline.model_copy(update={"narrations": None}))
+    assert repo.find_memories(FAM) == []
+
+
+def test_save_memory_refuses_a_timeline_not_compiled_from_the_screenplay() -> None:
+    repo = make_repo()
+    screenplay, timeline = sample_scene()
+    stale = timeline.model_copy(deep=True)
+    stale.shots[0].id = "s0"
+    with pytest.raises(ValueError, match="compile /screenplay.json again"):
+        save_scene_with_report(repo, dad_run(), title="x", participant_ids=[], screenplay=screenplay,
+                               timeline=stale)
+    content, events = _run_save_memory(repo, dad_run(), _files(screenplay, stale))
+    assert content.startswith("error: could not save:") and "s0" in content
+    assert events == []
+
+    # A second shot in the screenplay that the timeline never compiled.
+    longer = screenplay.model_copy(deep=True)
+    longer.shots.append(longer.shots[0].model_copy(update={"id": "s2"}, deep=True))
+    content, _ = _run_save_memory(repo, dad_run(), _files(longer, timeline))
+    assert content.startswith("error: could not save:")
+    assert repo.find_memories(FAM) == []
+
+
+@pytest.mark.parametrize("rebuild_tools", [False, True])
+def test_saving_twice_in_one_run_updates_the_same_memory(rebuild_tools: bool) -> None:
+    """Finding 6: one memory per run, even when the tools are rebuilt (a resumed run)."""
+    repo = make_repo()
+    run = dad_run()
+    tools = make_family_tools(repo, run)
+    content, events, files = _call_tool(tools, _scene_files(), "save_memory", SAVE_ARGS)
+    assert content == "saved memory_1 v1"
+    first = repo.get_memory(FAM, "memory_1")
+    assert first is not None
+
+    if rebuild_tools:
+        tools = make_family_tools(repo, run)
+    content, events, files = _call_tool(tools, files, "save_memory",
+                                        {"title": "The hymn books", "participant_ids": ["mom"]}, call_id="call_2")
+
+    assert content == "saved memory_1 v2"
+    assert events == [{"event": "scene_ready", "data": {"memoryId": "memory_1", "version": 2}}]
+    memories = repo.find_memories(FAM)
+    assert [(m.id, m.version) for m in memories] == [("memory_1", 2)]
+    second = memories[0]
+    assert second.title == "The hymn books"
+    assert [t.author_id for t in second.tellings] == ["dad"]
+    assert second.participant_ids == ["dad", "mom"]
+    assert second.screenplay is not None and second.screenplay.memory_id == "memory_1"
+    assert json.loads(_text(files, "/saved_memory.json"))["memoryId"] == "memory_1"
+
+
+def test_a_second_save_keeps_people_the_linker_added() -> None:
+    repo = make_repo()
+    repo.add_person(FAM, schemas.Person(id="aunt", family_id=FAM, name="Aunt May",
+                                        character=schemas.CharacterSheet(color="#00aa00")))
+    run = dad_run()
+    tools = make_family_tools(repo, run)
+    _, _, files = _call_tool(tools, _scene_files(), "save_memory", SAVE_ARGS)
+    _, _, files = _call_tool(tools, files, "link_participants",
+                             {"memory_id": "memory_1", "person_ids": ["aunt"], "question": "What do you remember?"})
+    content, _, _ = _call_tool(tools, files, "save_memory", SAVE_ARGS, call_id="call_3")
+    assert content == "saved memory_1 v2"
+    saved = repo.get_memory(FAM, "memory_1")
+    assert saved is not None and saved.participant_ids == ["dad", "mom", "aunt"]
+
+
+def test_a_saved_memory_record_from_another_run_is_refused() -> None:
+    repo = make_repo()
+    files = _scene_files()
+    files["/saved_memory.json"] = create_file_data(json.dumps({"memoryId": "memory_9", "runId": "someone_else"}))
+    content, events = _run_save_memory(repo, dad_run(), files)
+    assert content.startswith("error: could not save:")
+    assert events == []
+    assert repo.find_memories(FAM) == []
+
+
+def test_a_second_telling_run_never_records_a_saved_memory() -> None:
+    repo = make_repo()
+    existing = _existing_memory_without_mom(repo)
+    content, _, files = _call_tool(make_family_tools(repo, mom_run(existing.id)), _files(*_moms_draft()),
+                                   "save_memory", SAVE_ARGS)
+    assert content == f"saved {existing.id} v2"
+    assert "/saved_memory.json" not in files
+
+
+# ------------------------------------------------- default-narrator retelling (finding 5)
+
+
+def _sample_memory(repo: InMemoryRepo, *, default_narrator: str | None = "dad") -> Memory:
+    m = sample().model_copy(deep=True)
+    m.family_id = FAM
+    m.id = "mem_hymns"
+    assert m.screenplay is not None and m.timeline is not None
+    m.screenplay.memory_id = m.id
+    m.timeline.default_narrator = default_narrator
+    return repo.save_memory(FAM, m)
+
+
+def dad_retell_run(memory_id: str) -> RunInfo:
+    return RunInfo(run_id="run_5", family_id=FAM, user_id="user_dad", author_id="dad",
+                   fields=SubmitMemoryFields(text="It was raining that Sunday.", year=1988, memory_id=memory_id))
+
+
+RETOLD = NarrationLine(t=0.5, text="It was raining that Sunday.")
+
+
+def _dads_retelling() -> tuple[Screenplay, Timeline]:
+    draft_sp, draft_tl = sample_scene()
+    draft_sp = draft_sp.model_copy(deep=True)
+    draft_tl = draft_tl.model_copy(deep=True)
+    assert draft_sp.narrations is not None and draft_tl.narrations is not None
+    draft_sp.narrations["dad"] = {"s1": [RETOLD]}
+    draft_tl.narrations["dad"] = draft_tl.narrations["dad"].model_copy(update={
+        "audio": "media/dad_take_two",
+        "captions": [Caption(t=1.7, text=RETOLD.text)],
+        "lines": [RETOLD.model_copy(update={"t": 1.7})],
+    })
+    return draft_sp, draft_tl
+
+
+@pytest.mark.parametrize("default_narrator", ["dad", None])
+def test_the_default_narrator_retelling_rewrites_the_default_telling(default_narrator: str | None) -> None:
+    repo = make_repo()
+    existing = _sample_memory(repo, default_narrator=default_narrator)
+    assert existing.screenplay is not None and existing.timeline is not None
+    assert existing.tellings[0].author_id == "dad"  # the fallback when defaultNarrator is unset
+    draft_sp, draft_tl = _dads_retelling()
+
+    memory = save_scene(repo, dad_retell_run(existing.id), title="x", participant_ids=[],
+                        screenplay=draft_sp, timeline=draft_tl)
+
+    sp, tl = memory.screenplay, memory.timeline
+    assert sp is not None and tl is not None
+    assert sp.shots[0].narration == [RETOLD]
+    assert sp.narrations is not None and "dad" not in sp.narrations
+    assert sp.narrations["mom"] == existing.screenplay.narrations["mom"]  # type: ignore[index]
+    assert [a for s in sp.shots for a in s.actions] == [a for s in existing.screenplay.shots for a in s.actions]
+    assert tl.captions == [Caption(t=1.7, text=RETOLD.text)]
+    assert tl.audio == "media/dad_take_two"
+    assert tl.narrations is not None and tl.narrations["dad"].audio == "media/dad_take_two"
+    assert tl.narrations["mom"] == existing.timeline.narrations["mom"]  # type: ignore[index]
+    assert [t.author_id for t in memory.tellings] == ["dad", "mom"]
+    assert memory.tellings[0].text == "It was raining that Sunday."
+    assert memory.version == existing.version + 1
+    Memory.model_validate(memory.model_dump(mode="json", by_alias=True))
+
+
+def test_a_default_narrator_retelling_clears_shots_it_has_no_lines_for() -> None:
+    repo = make_repo()
+    m = _sample_memory(repo).model_copy(deep=True)
+    assert m.screenplay is not None and m.timeline is not None
+    m.screenplay.shots.append(m.screenplay.shots[0].model_copy(update={"id": "s2"}, deep=True))
+    m.screenplay.narrations = {"dad": {"s1": [RETOLD]}}  # a stale entry for the default teller
+    existing = repo.save_memory(FAM, m)
+    draft_sp, draft_tl = _dads_retelling()
+
+    memory = save_scene(repo, dad_retell_run(existing.id), title="x", participant_ids=[],
+                        screenplay=draft_sp, timeline=draft_tl)
+
+    assert memory.screenplay is not None
+    assert [s.narration for s in memory.screenplay.shots] == [[RETOLD], []]
+    assert memory.screenplay.narrations is None
+
+
+def test_another_teller_still_goes_under_narrations() -> None:
+    repo = make_repo()
+    existing = _existing_memory_without_mom(repo)
+    assert existing.screenplay is not None
+    memory = save_scene(repo, mom_run(existing.id), title="x", participant_ids=[], screenplay=_moms_draft()[0],
+                        timeline=_moms_draft()[1])
+    assert memory.screenplay is not None and memory.screenplay.narrations is not None
+    assert "mom" in memory.screenplay.narrations
+    assert [s.narration for s in memory.screenplay.shots] == [s.narration for s in existing.screenplay.shots]
+
+
+# ------------------------------------------------- link_participants asks once (finding 14)
+
+
+@pytest.mark.parametrize("rebuild_tools", [False, True])
+def test_linking_the_same_person_twice_asks_once(rebuild_tools: bool) -> None:
+    repo = make_repo()
+    repo.save_memory(FAM, Memory(id="m1", family_id=FAM, title="Church", year=1988, participant_ids=["dad"],
+                                 tellings=[schemas.Telling(author_id="dad", text=DAD_TEXT)]))
+    args = {"memory_id": "m1", "person_ids": ["mom"], "question": "Dad says you met on the church steps."}
+    tools = make_family_tools(repo, dad_run())
+
+    first, _, files = _call_tool(tools, {}, "link_participants", args)
+    assert first == "linked mom to m1; asked mom"
+    if rebuild_tools:
+        tools = make_family_tools(repo, dad_run())
+    second, _, files = _call_tool(tools, files, "link_participants", args, call_id="call_2")
+
+    assert second == "linked mom to m1; no one new to ask; already asked: mom"
+    questions = repo.list_questions(FAM)
+    assert [(q.person_id, q.memory_id, q.status) for q in questions] == [("mom", "m1", "open")]
+    assert json.loads(_text(files, "/asked_questions.json")) == {"m1": ["mom"]}
+
+
+def test_the_asked_record_is_per_memory() -> None:
+    repo = make_repo()
+    for mid in ("m1", "m2"):
+        repo.save_memory(FAM, Memory(id=mid, family_id=FAM, title="Church", year=1988, participant_ids=["dad"],
+                                     tellings=[schemas.Telling(author_id="dad", text=DAD_TEXT)]))
+    tools = make_family_tools(repo, dad_run())
+    _, _, files = _call_tool(tools, {}, "link_participants",
+                             {"memory_id": "m1", "person_ids": ["mom"], "question": "?"})
+    content, _, files = _call_tool(tools, files, "link_participants",
+                                   {"memory_id": "m2", "person_ids": ["mom", "dad"], "question": "?"})
+    assert content == "linked mom, dad to m2; asked mom"
+    assert sorted((q.person_id, q.memory_id) for q in repo.list_questions(FAM)) == [("mom", "m1"), ("mom", "m2")]
+    assert json.loads(_text(files, "/asked_questions.json")) == {"m1": ["mom"], "m2": ["mom"]}
+
+
+def test_two_linker_passes_through_deepagents_task_ask_once() -> None:
+    """The linker runs as a sub-agent: its /asked_questions.json reaches the studio's state
+    through deepagents' `task`, so a second linker pass in the same run sees it."""
+    from deepagents import create_deep_agent
+    from langchain_core.messages import HumanMessage
+
+    from agent.fake_llm import ScriptedChatModel, tool_call
+
+    repo = make_repo()
+    repo.save_memory(FAM, Memory(id="m1", family_id=FAM, title="Church", year=1988, participant_ids=["dad"],
+                                 tellings=[schemas.Telling(author_id="dad", text=DAD_TEXT)]))
+    tools = {t.name: t for t in make_family_tools(repo, dad_run())}
+    studio_turns = iter([
+        tool_call("task", {"subagent_type": "linker", "description": "Ask mom about m1."}),
+        tool_call("task", {"subagent_type": "linker", "description": "Ask mom about m1 again."}),
+        AIMessage(content="Linked."),
+    ])
+
+    def responder(messages: list, names: list[str]) -> AIMessage:
+        if "task" in names:
+            return next(studio_turns)
+        if isinstance(messages[-1], HumanMessage):
+            return tool_call("link_participants",
+                             {"memory_id": "m1", "person_ids": ["mom"], "question": "What do you remember?"})
+        return AIMessage(content=str(messages[-1].content))
+
+    agent = create_deep_agent(
+        model=ScriptedChatModel(responder=responder),
+        tools=[],
+        subagents=[{"name": "linker", "description": "Links people.", "system_prompt": "Link.",
+                    "tools": [tools["get_person"], tools["link_participants"]]}],
+    )
+    final = agent.invoke({"messages": [HumanMessage(content="Go.")]})
+
+    replies = [str(m.content) for m in final["messages"] if isinstance(m, ToolMessage) and m.name == "task"]
+    assert replies == ["linked mom to m1; asked mom", "linked mom to m1; no one new to ask; already asked: mom"]
+    assert [(q.person_id, q.memory_id) for q in repo.list_questions(FAM)] == [("mom", "m1")]
+    assert json.loads(_text(final["files"], "/asked_questions.json")) == {"m1": ["mom"]}
