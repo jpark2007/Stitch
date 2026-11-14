@@ -47,12 +47,6 @@ export interface ThreadsViewProps {
    * family the viewer belongs to; left out for the demo family.
    */
   addHref?: string;
-  /**
-   * Where the Book of Family Traditions is, shown quietly in the crumb line:
-   * /traditions?family=<id> for a real family, /traditions?demo=1 for the
-   * demo family.
-   */
-  traditionsHref?: string;
   /** Raw query params: ?zoom=decade|year|<multiple>, ?focus=<year>, ?highlight=<personId>. */
   zoom?: string;
   focus?: string;
@@ -320,32 +314,6 @@ export default function ThreadsView(props: ThreadsViewProps) {
                 >
                   <span aria-hidden className="mr-1 opacity-70">+</span>
                   Add a memory
-                </Link>
-              </>
-            ) : null}
-            {props.traditionsHref ? (
-              <>
-                <span aria-hidden className="mx-2 opacity-60">
-                  &middot;
-                </span>
-                <Link
-                  href={props.traditionsHref}
-                  aria-label="Book of traditions"
-                  className="inline-flex items-baseline rounded-sm text-ink-faint no-underline transition-colors hover:text-ink-soft focus-visible:outline-1 focus-visible:outline-offset-4 focus-visible:outline-accent"
-                >
-                  {/* On a phone, with "Add a memory" beside it, the word would push the crumb onto a second line. */}
-                  <svg width="15" height="11" viewBox="0 0 17 13" aria-hidden className={`self-center ${props.addHref ? "sm:hidden" : "hidden"}`}>
-                    <path
-                      d="M1 2.2c2.4-1 4.9-1 7.5.7 2.6-1.7 5.1-1.7 7.5-.7v9.3c-2.4-1-4.9-1-7.5.7-2.6-1.7-5.1-1.7-7.5-.7z M8.5 2.9v9.2"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.4"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                  <span aria-hidden className={props.addHref ? "hidden sm:inline" : undefined}>
-                    Traditions
-                  </span>
                 </Link>
               </>
             ) : null}

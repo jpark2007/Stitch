@@ -37,9 +37,6 @@ const DEMO_HREF = "/?demo=1";
 // Links out of the demo tree say so, so the next screen shows the demo too.
 const DEMO_SCOPE = { demo: true } as const;
 const demoPersonHref = (id: string) => personHref(id, null, DEMO_SCOPE);
-/** The Book of Family Traditions, for this family (or the demo family), as threadsHref scopes it. */
-const traditionsHref = (familyId: string | null, scope?: { demo?: boolean }) =>
-  scope?.demo ? "/traditions?demo=1" : familyId ? `/traditions?family=${encodeURIComponent(familyId)}` : "/traditions";
 
 export function TreeHome() {
   const wantsDemo = useSearchParams().has("demo");
@@ -159,7 +156,6 @@ function FamilyHome(props: {
       caption={people.length ? "pick anyone to open their book" : undefined}
       threads={threadsHref(familyId)}
       add={hrefs.add({ familyId })}
-      traditions={traditionsHref(familyId)}
       switcher={
         <FamilySwitch families={view.families} currentId={familyId} busy={switching} onChange={onSwitch} />
       }
@@ -208,15 +204,8 @@ function DemoHome(props: { reason: "chosen" | "offline" | "mock"; onRetry?: () =
   // family too. Offline: plain /threads, which falls back by itself and shows
   // the real family once Stitch answers again. Demo people are always marked.
   const threads = reason === "offline" ? threadsHref(null) : threadsHref(null, DEMO_SCOPE);
-  const traditions = reason === "offline" ? traditionsHref(null) : traditionsHref(null, DEMO_SCOPE);
   return (
-    <HomeShell
-      title={demoFamily.name}
-      caption="pick anyone to open their book"
-      threads={threads}
-      traditions={traditions}
-      note={note}
-    >
+    <HomeShell title={demoFamily.name} caption="pick anyone to open their book" threads={threads} note={note}>
       <FamilyTree
         people={demoPeople}
         hrefFor={demoPersonHref}
@@ -302,13 +291,11 @@ function HomeShell(props: {
   switcher?: ReactNode;
   /** "Add a memory" link: only for a signed-in viewer on a real family. */
   add?: string;
-  /** The Book of Family Traditions, for a family with a tree (real or demo). */
-  traditions?: string;
   note?: ReactNode;
   busy?: boolean;
   children: ReactNode;
 }) {
-  const { title, caption, threads, add, traditions, switcher, note, busy, children } = props;
+  const { title, caption, threads, add, switcher, note, busy, children } = props;
   const placeholder = busy === true;
   return (
     <main className="mx-auto flex min-h-dvh max-w-6xl flex-col px-[var(--gutter)] pb-10 pt-8 sm:pt-12">
@@ -347,18 +334,6 @@ function HomeShell(props: {
                 </span>
               </Link>
             )}
-            {traditions && (
-              <Link
-                href={traditions}
-                aria-label="Book of traditions"
-                className="-my-2 inline-flex shrink-0 items-center gap-1.5 py-2 text-sm text-ink-faint no-underline transition-colors hover:text-ink"
-              >
-                <TraditionsGlyph />
-                <span aria-hidden className="hidden sm:inline">
-                  Traditions
-                </span>
-              </Link>
-            )}
           </div>
         </nav>
         {title !== undefined &&
@@ -394,21 +369,6 @@ function HomeShell(props: {
 
       {note && <p className="ft-note">{note}</p>}
     </main>
-  );
-}
-
-/** A small open book, for the traditions link (the word itself from sm up). */
-function TraditionsGlyph() {
-  return (
-    <svg width="17" height="13" viewBox="0 0 17 13" aria-hidden className="shrink-0">
-      <path
-        d="M1 2.2c2.4-1 4.9-1 7.5.7 2.6-1.7 5.1-1.7 7.5-.7v9.3c-2.4-1-4.9-1-7.5.7-2.6-1.7-5.1-1.7-7.5-.7z M8.5 2.9v9.2"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 
