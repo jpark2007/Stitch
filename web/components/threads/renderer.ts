@@ -585,6 +585,12 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
         break;
       }
     }
+    // Nowhere level (a thread still swinging as it ends): sign its end, if
+    // no other thread runs through the name there.
+    if (!spots.length && endX <= right && endX - w >= margin) {
+      const ey = baseline(n - 1);
+      if (!crossedBy(geom, i, endX - w - 2, endX + 2, ey - size, ey + 3)) spots.push({ x: endX - w, y: ey });
+    }
     const pinned = i === st.highlight;
     if (pinned) {
       // The followed name is always written: failing a clean spot, where its
