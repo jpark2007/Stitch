@@ -1,0 +1,101 @@
+name: Checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: API tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.8'
+          python-version: '3.14'
+      - run: uv sync --locked
+      # No repository secrets or .env files: optional real-service tests retain
+      # their own skip conditions; failures in offline tests fail this job.
+      - run: uv run --locked pytest -q
+
+  web:
+    name: Web checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Unit tests
+        run: node --test "**/*.test.mjs"
+      - run: npx next typegen
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npm run build
+
+  qa:
+    name: Live HTTP and Chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Detect QA suite
+        id: suite
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+        run: |
+          if [ -d qa ]; then
+            test -f qa/conftest.py
+            test -f qa/integration/test_live_api.py
+            test -f qa/e2e/test_browser_session.py
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          elif git cat-file -e "$BASE_SHA:qa/conftest.py" 2>/dev/null; then
+            echo '::error::QA suite existed on the base revision but is missing here.'
+            exit 1
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::Live HTTP/Chromium suite is not present yet (PR #68).'
+            echo 'Live HTTP/Chromium: not run; qa/ has not landed yet (PR #68).' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: steps.suite.outputs.present == 'true'
+        with:
+          version: '0.13.8'
+          python-version: '3.14'
+      - run: uv sync --locked
+        if: steps.suite.outputs.present == 'true'
+        working-directory: api
+      - run: uv run --locked playwright install --with-deps chromium
+        if: steps.suite.outputs.present == 'true'
+        working-directory: api
+      - run: uv run --locked pytest ../qa -q
+        if: steps.suite.outputs.present == 'true'
+        working-directory: api

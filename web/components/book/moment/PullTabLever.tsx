@@ -20,7 +20,9 @@
  *
  * A tab bound to a shot is out of its slit only while that shot is on stage
  * (after the telling, the last shot's); otherwise it rests home in its slit,
- * its pencilled label still printed, and takes no press. It slides out, and
+ * only its grip's end peeking out so the slit never reads as empty (a tab
+ * tucked away, waiting), its pencilled label still printed, and takes no
+ * press. It slides out, and
  * nudges, when its shot comes on. The scene is never seeked by a tab
  * (pullTabGate.ts). Its grab area takes pointer events only while it can be
  * pulled (its margin a steady few screen px, at any camera distance). While
@@ -57,7 +59,7 @@ import { PAGE_H, PAGE_W } from "../leafShape";
 import { PAGE_PX_W } from "../pageArt";
 import { pageHeightAt, usePageSurface } from "../pagePrint";
 import { OPEN_TO_PLAY } from "../playGate";
-import { endNudge, hitPad, printEats, printRects, stepTabAway, tabGate, worldPerPx } from "../pullTabGate";
+import { cardFold, endNudge, hitPad, printEats, printRects, stepTabAway, tabGate, worldPerPx } from "../pullTabGate";
 import { pageLand, paperLift } from "../sound";
 import { STAGE_SLOT } from "../StoryPage";
 import type { BookPullTab } from "../types";
@@ -71,6 +73,8 @@ const CARD_T = 0.003;
 const HOVER_OUT = 0.07;
 /** Length of the folded-back grip, world units. */
 const FOLD = 0.03;
+/** How much of the grip's end peeks out of the slit while the tab waits for its shot, world units. */
+const PEEK = 0.02;
 /** How far down the card the cut page's lip shades it, world units. */
 const LIP = 0.016;
 /** A drag across the tab (down or up the page) pulls this much as one along it. */
@@ -139,6 +143,8 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     // The strip runs from inside the slit (hidden by the clip) to the grip.
     const hidden = travel + 0.012;
     return {
+      /** The slit's page px (the label's place against the gutter). */
+      slitPx: g.slitX,
       slitX: g.slitX * PX - STAGE_SLOT.x,
       z: g.y * PX - PAGE_H / 2 - STAGE_SLOT.z,
       length,
@@ -158,7 +164,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     const hit = new PlaneGeometry(1, 1);
     hit.rotateX(-Math.PI / 2);
     // The printed slit and label, which eat a press while the tab is home.
-    const print = printRects(geo.length / PX, geo.width / PX, tab.label).map((r) => {
+    const print = printRects(geo.length / PX, geo.width / PX, tab.label, geo.slitPx).map((r) => {
       const p = new PlaneGeometry((r.x1 - r.x0) * PX, (r.y1 - r.y0) * PX);
       p.rotateX(-Math.PI / 2);
       p.translate(((r.x0 + r.x1) / 2) * PX, 0, ((r.y0 + r.y1) / 2) * PX);
@@ -300,9 +306,10 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
       s.hover = false;
       if (document.body.style.cursor === "grab") document.body.style.cursor = "";
     }
-    // Back into the slit as the page lifts to turn.
+    // Back into the slit as the page lifts to turn. Home, its grip still
+    // peeks out of the slit (cardFold).
     const r = reveal.current;
-    g.visible = r > 0.02 && s.away < 0.999;
+    g.visible = r > 0.02;
     // The lip shades card, not bare page: it fades as the card slides home.
     const lipMat = lipMesh.current?.material as MeshBasicMaterial | undefined;
     const lip = 0.5 * Math.min(1, Math.max(0, (r - 0.6) / 0.4)) * (1 - s.away);
@@ -359,7 +366,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
       }
     }
     const pos = Math.max(-0.04, s.value + out) * geo.travel;
-    const folded = Math.max(r < 1 ? 1 - r : 0, s.away) * (geo.length + geo.travel);
+    const folded = cardFold({ reveal: r, away: s.away, length: geo.length, travel: geo.travel, peek: PEEK });
     sl.position.x = pos - folded;
     // The folded grip lifts a touch while held.
     if (flapPivot.current) flapPivot.current.rotation.z = s.held ? -0.16 : -0.07;

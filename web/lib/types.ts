@@ -686,6 +686,10 @@ export interface SubmitMemoryFields {
   /** Set to add a second telling to an existing moment */
   memoryId?: string | null;
   participantIds?: string[];
+  /** Media id of the teller's own recording (same family), saved on the telling */
+  audioId?: string | null;
+  /** How the telling arrived, saved on the telling */
+  channel?: "web" | "text" | "voice" | null;
 }
 
 export interface SubmitMemoryResponse {
@@ -701,6 +705,10 @@ export interface Telling {
   text: string;
   photoIds?: string[];
   createdAt?: string | null;
+  /** Media id of the teller's own recording */
+  audioId?: string | null;
+  /** How the telling arrived */
+  channel?: "web" | "text" | "voice" | null;
 }
 
 /** GET /families/{fid}/threads: every moment in the family, ordered by year. */

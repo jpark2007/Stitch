@@ -155,12 +155,20 @@ def get_family(db: Database, family_id: str) -> schemas.Family | None:
 
 
 # Every collection whose documents carry a `familyId` and belong to exactly one family.
-FAMILY_SCOPED = ("people", "memories", "questions", "props", "sets", "traditions", "films")
+# The last four are Stitch Channels' (api/channels/README.md, "Integration hooks"); they are
+# purged whether or not Channels is on. Not here, on purpose: `channelEnrollmentLimits` and the
+# global `questionBank` hold no family data, and the auth-nonce and scan-marker rows in
+# `channelMessages` carry no familyId, so a familyId filter never reaches them.
+FAMILY_SCOPED = (
+    "people", "memories", "questions", "props", "sets", "traditions", "films",
+    "contacts", "channelMessages", "conversations", "notifications",
+)
 
 
 def purge_family(db: Database, family_id: str) -> None:
     """Delete a family and everything it owns: its document, its people, memories,
-    questions, props, sets, traditions and films, and its media. Nothing of any other family is touched.
+    questions, props, sets, traditions and films, its Channels contacts, messages,
+    conversations and notifications, and its media. Nothing of any other family is touched.
 
     Accounts are not family data and stay (see `users.delete_users`). ValueError on a
     blank family_id, so a bad argument can never widen a filter.

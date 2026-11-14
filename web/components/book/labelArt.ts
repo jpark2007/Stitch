@@ -16,6 +16,7 @@
 
 import { mix, shade, tint } from "@/components/tree/sketch";
 import { ACCENT, INK, INK_FAINT, INK_SOFT, canvas, drawStitchLine, drawTape, rng, setSpacing, type Ctx, type PageFonts } from "./paperArt";
+import { layoutPullLabel } from "./pullTabGate";
 import type { BookPullTab, BookTeller } from "./types";
 
 /** A label's place on its page, for hit testing (page px, unrotated box). */
@@ -416,35 +417,20 @@ export function drawPullTabPrint(ctx: Ctx, tab: BookPullTab, fonts: PageFonts, s
   ctx.font = `500 35px ${fonts.hand}`;
   ctx.textAlign = "right";
   ctx.textBaseline = "alphabetic";
+  // Wrapped, or slid right, so it never runs into the gutter (layoutPullLabel).
   const endX = g.slitX + g.length + 4;
-  const words = tab.label.trim();
-  const lines = ctx.measureText(words).width > 360 ? splitInTwo(words) : [words];
+  const { lines, right } = layoutPullLabel(tab.label, endX, (s) => ctx.measureText(s).width);
   const lineH = 35;
   const baseY = g.y + g.width / 2 + PULL_LABEL_GAP;
-  ctx.translate(endX, baseY);
+  ctx.translate(right, baseY);
   ctx.rotate(0.02);
   lines.forEach((l, i) => ctx.fillText(l, 0, i * lineH));
   ctx.restore();
-  const from: [number, number] = [endX + 10, baseY - 8];
-  const ctrl: [number, number] = [endX + 38, baseY - 6];
+  const from: [number, number] = [right + 10, baseY - 8];
+  const ctrl: [number, number] = [right + 38, baseY - 6];
   const to: [number, number] = [endX + 30, g.y + g.width / 2 + 10];
   pencilCurve(ctx, from, ctrl, to, seed, 0.62);
   pencilHead(ctx, to, Math.atan2(to[1] - ctrl[1], to[0] - ctrl[0]), 11, seed + 1, 0.62);
-}
-
-function splitInTwo(text: string): string[] {
-  const words = text.split(/\s+/);
-  let best = 1;
-  let bestDiff = Infinity;
-  for (let i = 1; i < words.length; i++) {
-    const a = words.slice(0, i).join(" ").length;
-    const b = words.slice(i).join(" ").length;
-    if (Math.abs(a - b) < bestDiff) {
-      bestDiff = Math.abs(a - b);
-      best = i;
-    }
-  }
-  return [words.slice(0, best).join(" "), words.slice(best).join(" ")];
 }
 
 /**
