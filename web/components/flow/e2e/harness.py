@@ -212,12 +212,81 @@ def _start(cmd: list[str], *, cwd: Path, env: dict[str, str], log: Path) -> subp
         handle.close()
 
 
+def _ps() -> list[tuple[int, int, str]]:
+    """(pid, pgid, command) for every process, or [] when ps is unavailable."""
+    try:
+        out = subprocess.run(  # noqa: S603, S607 - fixed command
+            ["ps", "-axo", "pid=,pgid=,command="], capture_output=True, text=True, timeout=10, check=False
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    rows = []
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+    return rows
+
+
+def _detached_flushes(group_pids: set[int]) -> list[int]:
+    """next's telemetry flush children of these pids.
+
+    On shutdown `next dev` spawns `node .../detached-flush.js dev <dir> _events_<pid>_<hex>.json`
+    detached (its own session, outside the group), even with telemetry off. The events
+    file names the server's pid, which ties each one to this stack and no other.
+    """
+    found = []
+    for pid, _pgid, cmd in _ps():
+        if "detached-flush" not in cmd:
+            continue
+        m = re.search(r"_events_(\d+)_", cmd)
+        if m and int(m.group(1)) in group_pids:
+            found.append(pid)
+    return found
+
+
+def _signal_pids(pids: list[int], sig: int) -> None:
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def stop_process_group(proc: subprocess.Popen[bytes], grace: float = STOP_GRACE) -> None:
-    """SIGTERM the process group, then SIGKILL it if it is still there after `grace` s."""
+    """SIGTERM the process group, then SIGKILL it if it is still there after `grace` s.
+
+    Then stop next's detached telemetry flush, if the group spawned one on the way out
+    (it gets a few seconds to finish by itself first), so no stray process outlives the stack.
+    """
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
         pgid = None
+    group_pids = {pid for pid, g, _ in _ps() if g == pgid} if pgid is not None else set()
+    group_pids.add(proc.pid)
+    _stop_group(proc, pgid, grace)
+    flushes = _detached_flushes(group_pids)
+    if flushes:
+        end = time.monotonic() + 5.0
+        while time.monotonic() < end and any(_alive(p) for p in flushes):
+            time.sleep(0.2)
+        _signal_pids([p for p in flushes if _alive(p)], signal.SIGTERM)
+        time.sleep(0.5)
+        _signal_pids([p for p in flushes if _alive(p)], signal.SIGKILL)
+
+
+def _stop_group(proc: subprocess.Popen[bytes], pgid: int | None, grace: float) -> None:
     if pgid is not None:
         try:
             os.killpg(pgid, signal.SIGTERM)
@@ -309,13 +378,51 @@ _EXPECTED_CONSOLE: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
 
 @dataclass
 class PageWatch:
-    """Collects what went wrong on the pages it is attached to, newest last."""
+    """Collects what went wrong on the pages it is attached to, newest last.
+
+    `problems` holds one line per problem, "[label] kind at <page URL>: text". The URL is
+    always the page's own URL when the problem happened (never a script's or a fetched
+    resource's), so a caller can tell whose page it was; a console error's source location
+    is kept in the text as "(source: ...)". `events` holds the same problems as dicts
+    (label, kind, pageUrl, source, text), index for index.
+    """
 
     problems: list[str] = field(default_factory=list)
+    events: list[dict[str, str]] = field(default_factory=list)
 
     def attach(self, page: Any, label: str) -> None:
-        def add(kind: str, text: str, url: str) -> None:
-            self.problems.append(f"[{label}] {kind} at {url}: {text.strip()}")
+        # Main-frame navigations so far, and the count when each request started: an
+        # ERR_ABORTED is only expected when a navigation came in between.
+        navs = [0]
+        started: dict[Any, int] = {}
+
+        def add(kind: str, text: str, source: str = "") -> None:
+            page_url = page.url
+            text = text.strip()
+            shown = f"{text} (source: {source})" if source and source != page_url else text
+            self.problems.append(f"[{label}] {kind} at {page_url}: {shown}")
+            self.events.append({"label": label, "kind": kind, "pageUrl": page_url, "source": source, "text": text})
+
+        def is_main(frame: Any) -> bool:
+            try:
+                return frame == page.main_frame
+            except Exception:  # noqa: BLE001 - a closed page has no frames
+                return True
+
+        def on_framenavigated(frame: Any) -> None:
+            if is_main(frame):  # client-side route changes (pushState) count too
+                navs[0] += 1
+
+        def on_request(req: Any) -> None:
+            try:
+                if req.is_navigation_request() and is_main(req.frame):
+                    navs[0] += 1  # a document navigation starts: it will cancel what is in flight
+            except Exception:  # noqa: BLE001
+                pass
+            started[req] = navs[0]
+
+        def on_requestfinished(req: Any) -> None:
+            started.pop(req, None)
 
         def on_console(msg: Any) -> None:
             if msg.type != "error":
@@ -324,22 +431,49 @@ class PageWatch:
             src = loc.get("url", "") if isinstance(loc, dict) else ""
             if any(t.search(msg.text) and u.search(src) for t, u in _EXPECTED_CONSOLE):
                 return
-            add("console.error", msg.text, src or page.url)
+            add("console.error", msg.text, src)
 
         def on_pageerror(err: Any) -> None:
-            add("pageerror", str(err), page.url)
+            add("pageerror", str(err))
+
+        def body_discarded(req: Any) -> bool:
+            """A 1xx-3xx answer (not an event stream) arrived and the page dropped its body.
+
+            lib/api.ts's requestVoid() cancels the body of a response it does not need
+            (POST /auth/signup, the run answer...), which Chromium reports as ERR_ABORTED.
+            The request itself went through. An event stream cut off midway still counts.
+            """
+            try:
+                res = getattr(req, "existing_response", None)
+                if res is None or res.status >= 400:
+                    return False
+                ctype = (res.headers or {}).get("content-type", "")
+            except Exception:  # noqa: BLE001
+                return False
+            return "text/event-stream" not in ctype
 
         def on_requestfailed(req: Any) -> None:
             failure = req.failure or ""
-            # A navigation (or an unmount) cancels fetches and event streams in flight.
+            at_start = started.pop(req, navs[0])
             if "ERR_ABORTED" in failure:
-                return
-            add("requestfailed", f"{req.method} {req.url} {failure}", page.url)
+                try:
+                    navigation = bool(req.is_navigation_request())
+                except Exception:  # noqa: BLE001
+                    navigation = False
+                # Cancelled by a navigation (the request itself was one, or the page moved on
+                # while it was in flight), or a finished answer whose body the page did not
+                # want: expected. Any other abort while the page stays put is not.
+                if navigation or navs[0] != at_start or body_discarded(req):
+                    return
+            add("requestfailed", f"{req.method} {req.url} {failure}")
 
         def on_response(res: Any) -> None:
             if res.status >= 500:
-                add("http", f"{res.status} {res.request.method} {res.url}", page.url)
+                add("http", f"{res.status} {res.request.method} {res.url}")
 
+        page.on("framenavigated", on_framenavigated)
+        page.on("request", on_request)
+        page.on("requestfinished", on_requestfinished)
         page.on("console", on_console)
         page.on("pageerror", on_pageerror)
         page.on("requestfailed", on_requestfailed)
@@ -349,20 +483,40 @@ class PageWatch:
         """Problems collected after `mark` (a previous len(problems))."""
         return self.problems[mark:]
 
+    def events_since(self, mark: int) -> list[dict[str, str]]:
+        """The structured events after `mark` (same indexes as problems)."""
+        return self.events[mark:]
+
 
 _SHOT_COUNTERS: dict[Path, int] = {}
+_SHOTS_TAKEN: dict[Path, list[Path]] = {}
+_SHOT_NUMBER = re.compile(r"^(\d+)-")
 
 
 def shot(page: Any, stack: Stack, name: str) -> Path:
-    """A full-page PNG at out_dir/shots/<NN>-<name>.png, numbered in call order per out_dir."""
+    """A full-page PNG at out_dir/shots/<NN>-<name>.png, numbered in call order per out_dir.
+
+    In a reused out dir the numbers carry on after the highest one already there, so a
+    new shot never overwrites or shares a number with an old one; shots_taken() lists only
+    this process's shots.
+    """
     shots = stack.out_dir / "shots"
     shots.mkdir(parents=True, exist_ok=True)
-    n = _SHOT_COUNTERS.get(stack.out_dir, 0) + 1
+    if stack.out_dir not in _SHOT_COUNTERS:
+        existing = [int(m.group(1)) for p in shots.glob("*.png") if (m := _SHOT_NUMBER.match(p.name))]
+        _SHOT_COUNTERS[stack.out_dir] = max(existing, default=0)
+    n = _SHOT_COUNTERS[stack.out_dir] + 1
     _SHOT_COUNTERS[stack.out_dir] = n
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "shot"
     path = shots / f"{n:02d}-{safe}.png"
     page.screenshot(path=str(path), full_page=True)
+    _SHOTS_TAKEN.setdefault(stack.out_dir, []).append(path)
     return path
+
+
+def shots_taken(out_dir: Path) -> list[Path]:
+    """The screenshots shot() wrote to out_dir in this process, in order."""
+    return list(_SHOTS_TAKEN.get(Path(out_dir), []))
 
 
 # --------------------------------------------------------------------------- seams

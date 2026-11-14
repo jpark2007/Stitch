@@ -61,6 +61,15 @@ In the out dir (printed at the start and the end):
   prop review and the second-telling form), numbered in the order taken.
 - `api.log` and `web.log`: the two servers' output.
 
+If `--out` points at a folder an earlier run used, that run's `seams.json`, `shots/` and logs
+are first moved into `previous-<time>/` inside it. Nothing is deleted, and the summary lists
+only this run's screenshots. In a sweep script, `shot()` keeps numbering after the highest
+number already in `shots/`, and `shots_taken(out_dir)` lists the shots this process took.
+
+When the stack stops, both process groups are terminated, then killed after 10 s. So is the
+telemetry flush that `next dev` spawns outside its group on the way out. No `uvicorn`, `next`
+or `node` process outlives the run.
+
 The same table is printed at the end, followed by every `REQUEST` for Ethan.
 
 ## Owners
@@ -72,10 +81,26 @@ The same table is printed at the end, followed by every `REQUEST` for Ethan.
 | `ethan` | Ethan's pages (`/`, `/people/[id]`, `/memories/[id]`). The detail starts with the exact `REQUEST` text to post. | No: reported only |
 
 A step that could not run because an earlier one failed is recorded as `not run: needs step(s) ...`.
+If the stack cannot start, or anything else goes wrong outside a step (a busy port, `npx`
+missing), that is one `pages` seam with the error, and `seams.json` and the summary are still
+written.
+
 Browser problems (console errors, uncaught errors, failed requests, 5xx responses) seen during
-a step are recorded as their own seam, owned by whoever owns the page they happened on (5xx:
-`api`). Two things are not problems: a 401 from `GET /me` (how a page learns nobody is signed
-in) and `net::ERR_ABORTED` (a navigation cancelling requests in flight).
+a step are recorded as their own seam, owned by whoever owns the page that was open when they
+happened (5xx: `api`). Each line reads `[A] kind at <page URL>: text`. A console error also
+names the script or resource that logged it as `(source: ...)`, but the owner always comes from
+the page URL, so a React warning on `/` is Ethan's even though a `/_next/static` chunk printed it.
+
+These are not problems:
+
+- a 401 from `GET /me`, which is how a page learns nobody is signed in;
+- `net::ERR_ABORTED` on a navigation request, or on a request that was in flight when the page
+  navigated (a `goto` or a client-side route change);
+- `net::ERR_ABORTED` after a 2xx/3xx answer that is not an event stream had already arrived.
+  `lib/api.ts`'s `requestVoid()` cancels bodies it does not need, such as `POST /auth/signup`.
+
+Every other abort is reported, for example an event stream that the page cuts off while it
+stays on the same URL.
 
 ## The harness's tests
 

@@ -28,6 +28,8 @@ import argparse  # noqa: E402
 import re  # noqa: E402
 import struct  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
+import traceback  # noqa: E402
 import uuid  # noqa: E402
 import zlib  # noqa: E402
 from collections.abc import Callable  # noqa: E402
@@ -45,6 +47,7 @@ from harness import (  # noqa: E402
     require_chromium,
     run_stack,
     shot,
+    shots_taken,
 )
 
 TIMEOUT_MS = 30_000
@@ -128,8 +131,16 @@ def first_lines(text: str, n: int = 6) -> str:
 
 
 def owner_for_url(url: str) -> str:
+    """Who owns the page at `url` (a page URL on the web app, not a script or an API URL)."""
     path = urlsplit(url).path or "/"
     return "ethan" if ETHAN_PATHS.search(path) else "pages"
+
+
+def problem_owner(event: dict[str, str]) -> str:
+    """Who looks at a PageWatch event: the API for a 5xx, else whoever owns the page it was on."""
+    if event.get("kind") == "http":
+        return "api"
+    return owner_for_url(event.get("pageUrl", ""))
 
 
 class DemoPath:
@@ -216,14 +227,13 @@ class DemoPath:
 
     def record_browser_problems(self, name: str, marks: dict[str, int]) -> None:
         for label, watch in (("A", self.watch_a), ("B", self.watch_b)):
-            new = watch.since(marks[label])
+            mark = marks[label]
+            new = watch.since(mark)
             if not new:
                 continue
             groups: dict[str, list[str]] = {}
-            for problem in new:
-                url = problem.split(" at ", 1)[1].split(": ", 1)[0] if " at " in problem else ""
-                owner = "api" if " http at " in problem else owner_for_url(url)
-                groups.setdefault(owner, []).append(problem)
+            for problem, event in zip(new, watch.events_since(mark), strict=True):
+                groups.setdefault(problem_owner(event), []).append(problem)
             for owner, problems in groups.items():
                 self.seams.record(f"{name}: browser problems ({label})", False, "\n".join(problems), owner)
 
@@ -560,7 +570,9 @@ class DemoPath:
             "Add a memory": re.compile(r"/add(\?|$)"),
             "Family settings": re.compile(r"/families/[^/]+/settings"),
         }
-        hrefs = [h or "" for h in page.locator("a[href]").evaluate_all("els => els.map(e => e.getAttribute('href'))")]
+        hrefs = [
+            h or "" for h in page.get_by_role("link").evaluate_all("els => els.map(e => e.getAttribute('href'))")
+        ]
         missing = [name for name, rx in wanted.items() if not any(rx.search(h) for h in hrefs)]
         if missing:
             self.seams.record(
@@ -630,9 +642,31 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+RUN_OUTPUTS = ("seams.json", "shots", "api.log", "web.log")
+
+
+def archive_previous_run(out: Path) -> Path | None:
+    """Move an earlier run's outputs in a reused --out dir into out/previous-<time>/.
+
+    Nothing is deleted; the out dir then holds only this run's seams, shots and logs.
+    """
+    old = [out / name for name in RUN_OUTPUTS if (out / name).exists()]
+    if not old:
+        return None
+    dest = out / f"previous-{time.strftime('%Y%m%d-%H%M%S')}"
+    n = 1
+    while dest.exists():
+        n += 1
+        dest = out / f"previous-{time.strftime('%Y%m%d-%H%M%S')}-{n}"
+    dest.mkdir(parents=True)
+    for path in old:
+        path.rename(dest / path.name)
+    return dest
+
+
 def summarize(seams: SeamLog, out: Path) -> int:
     path = seams.write(out)
-    shots = sorted((out / "shots").glob("*.png")) if (out / "shots").is_dir() else []
+    shots = shots_taken(out)
     print(f"\nout dir:     {out}")
     print(f"seams:       {path}")
     print(f"logs:        {out / 'api.log'}, {out / 'web.log'}")
@@ -660,9 +694,14 @@ def main(argv: list[str] | None = None) -> int:
     expect.set_options(timeout=TIMEOUT_MS)
     out = args.out.resolve() if args.out else Path(tempfile.mkdtemp(prefix="stitch-e2e-"))
     out.mkdir(parents=True, exist_ok=True)
+    moved = archive_previous_run(out)
+    if moved is not None:
+        print(f"(an earlier run's outputs in {out} were moved to {moved})", flush=True)
     seams = SeamLog()
+    started = False
     try:
         with run_stack(mock=False, web_port=args.web_port, api_port=args.api_port, run_step=0.1, out_dir=out) as stack:
+            started = True
             print(f"API {stack.api_url}   web {stack.web_url}   out {stack.out_dir}", flush=True)
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=not args.headed)
@@ -672,6 +711,10 @@ def main(argv: list[str] | None = None) -> int:
                     browser.close()
     except StackError as exc:
         seams.record("start the stack (seed.serve + next dev)", False, str(exc), "pages")
+    except Exception as exc:  # noqa: BLE001 - always end with seams.json and a summary
+        where = "run the demo path" if started else "start the stack (seed.serve + next dev)"
+        tb = "".join(traceback.format_exception(exc)[-6:]).rstrip()
+        seams.record(where, False, f"{type(exc).__name__}: {exc}\n{tb}", "pages")
     print()
     return summarize(seams, out)
 
