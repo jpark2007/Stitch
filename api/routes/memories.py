@@ -21,8 +21,11 @@ that importing this module, and serving read routes, never imports the agent pac
 - `stream_run(family_id, run_id) -> AsyncIterator[(event name, model)]` is called and
   iterated on the event loop. `RunNotFound(LookupError)` (unknown or other-family run)
   or PermissionError at the call or on the first item is 404; any other exception at the
-  call is 503 STUDIO_UNAVAILABLE. Each item becomes `event: <name>` with
-  `data: <model JSON by alias>`, `name` one of `schemas.RUN_EVENTS`.
+  call is 503 STUDIO_UNAVAILABLE. The real one raises RunNotFound on its first step,
+  at once, but yields nothing until the run's first event, so the route waits at most
+  FIRST_EVENT_WAIT for that item and then opens the stream anyway (headers, heartbeats).
+  Each item becomes `event: <name>` with `data: <model JSON by alias>`, `name` one of
+  `schemas.RUN_EVENTS`.
 - `answer_run(family_id, run_id, user_id, answer: schemas.AnswerRequest) -> None` may
   block (up to a few seconds on a threading.Condition while a question settles), so a
   sync one runs in the threadpool; a coroutine function is awaited. `RunNotFound` is 404,
@@ -37,7 +40,7 @@ import asyncio
 import importlib
 import inspect
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -66,6 +69,8 @@ ALLOWED_PHOTO_TYPES: frozenset[str] = frozenset(
 )
 # Seconds without an event before the stream sends a `: ping` comment. Monkeypatched in tests.
 HEARTBEAT_SECONDS: float = 15.0
+# Seconds the stream route waits for a run's first event before it sends the headers anyway.
+FIRST_EVENT_WAIT: float = 0.5
 
 NO_PERSON = "Add or claim your person in this family first"
 START_FAILED = "Could not start the studio"
@@ -269,6 +274,14 @@ async def _delete_media(db: Database, fid: str, media_ids: list[str]) -> None:
 _END = object()  # sentinel: the agent's generator is exhausted
 
 
+async def _next_item(agen: Any) -> Any:
+    """The agent generator's next item, or _END when it is exhausted."""
+    try:
+        return await anext(agen)
+    except StopAsyncIteration:
+        return _END
+
+
 def _sse(name: str, model: schemas.Model) -> str:
     return f"event: {name}\ndata: {model.model_dump_json(by_alias=True)}\n\n"
 
@@ -313,21 +326,14 @@ async def _close(agen: Any, pending: asyncio.Task | None) -> None:
                 log.exception("Run stream generator failed to close")
 
 
-async def sse_events(agen: Any, first: Any = _END) -> AsyncIterator[str]:
+async def sse_events(agen: Any, first: Any = _END, pending: asyncio.Future | None = None) -> AsyncIterator[str]:
     """SSE text for a run: `first` (already peeked), then the rest of `agen`.
 
-    Ends after a `done` or `error` event; a heartbeat comment is sent whenever no event
-    arrives for HEARTBEAT_SECONDS; the agent's generator is always closed on the way out,
-    including when the client disconnects.
+    `pending`, if given, is a `_next_item(agen)` step already in flight (the route started
+    it and stopped waiting); its item comes next. Ends after a `done` or `error` event; a
+    heartbeat comment is sent whenever no event arrives for HEARTBEAT_SECONDS; the agent's
+    generator is always closed on the way out, including when the client disconnects.
     """
-
-    async def step() -> Any:
-        try:
-            return await anext(agen)
-        except StopAsyncIteration:
-            return _END
-
-    pending: asyncio.Task | None = None
     try:
         if first is not _END:
             text, final = _frame(first)
@@ -335,7 +341,8 @@ async def sse_events(agen: Any, first: Any = _END) -> AsyncIterator[str]:
             if final:
                 return
         while True:
-            pending = asyncio.ensure_future(step())
+            if pending is None:
+                pending = asyncio.ensure_future(_next_item(agen))
             while True:
                 done, _ = await asyncio.wait({pending}, timeout=HEARTBEAT_SECONDS)
                 if done:
@@ -359,16 +366,36 @@ async def sse_events(agen: Any, first: Any = _END) -> AsyncIterator[str]:
 
 
 class _SSEResponse(StreamingResponse):
-    """A StreamingResponse that always closes its body iterator, even when a send fails."""
+    """A StreamingResponse that always closes its body iterator, even when a send fails.
+
+    `on_close` runs after that. It closes the agent's generator (and any step in flight)
+    when the body iterator was never started, since an unstarted async generator's
+    `finally` never runs.
+    """
+
+    def __init__(self, content: Any, *, on_close: Callable[[], Awaitable[None]] | None = None, **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._on_close = on_close
 
     async def stream_response(self, send: Any) -> None:
         try:
             await super().stream_response(send)
         finally:
-            aclose = getattr(self.body_iterator, "aclose", None)
-            if aclose is not None:
-                with anyio.CancelScope(shield=True):
+            with anyio.CancelScope(shield=True):
+                aclose = getattr(self.body_iterator, "aclose", None)
+                if aclose is not None:
                     await aclose()
+                if self._on_close is not None:
+                    await self._on_close()
+
+
+def _event_stream(agen: Any, first: Any = _END, pending: asyncio.Future | None = None) -> _SSEResponse:
+    return _SSEResponse(
+        sse_events(agen, first, pending),
+        on_close=lambda: _close(agen, pending),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @router.get(
@@ -397,11 +424,21 @@ async def stream_run_events(run_id: str, access: FamilyAccess = Depends(family_m
         log.exception("Could not open the stream for run %s", run_id)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=STUDIO_UNAVAILABLE) from None
 
+    # Peek at the first item: the real stream_run raises RunNotFound there, at once, and
+    # that must be a 404 rather than a 200 stream. A run that has said nothing yet (the
+    # studio is still on its first model call) does not hold the headers back: after
+    # FIRST_EVENT_WAIT the stream opens with that step still in flight, and heartbeats run.
+    first_step = asyncio.ensure_future(_next_item(agen))
     try:
-        first = await anext(agen)
-    except StopAsyncIteration:
-        await _close(agen, None)
-        return _SSEResponse(iter(()), media_type="text/event-stream", headers=SSE_HEADERS)
+        done, _ = await asyncio.wait({first_step}, timeout=FIRST_EVENT_WAIT)
+    except BaseException:  # the request was cancelled while waiting
+        await _close(agen, first_step)
+        raise
+    if not done:
+        return _event_stream(agen, pending=first_step)
+
+    try:
+        first = first_step.result()
     except (LookupError, PermissionError):
         await _close(agen, None)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=RUN_NOT_FOUND) from None
@@ -411,8 +448,11 @@ async def stream_run_events(run_id: str, access: FamilyAccess = Depends(family_m
         return _SSEResponse(
             iter([_error_frame(STREAM_FAILED)]), media_type="text/event-stream", headers=SSE_HEADERS
         )
+    if first is _END:
+        await _close(agen, None)
+        return _SSEResponse(iter(()), media_type="text/event-stream", headers=SSE_HEADERS)
 
-    return _SSEResponse(sse_events(agen, first), media_type="text/event-stream", headers=SSE_HEADERS)
+    return _event_stream(agen, first)
 
 
 # ------------------------------------------------------------------------------ answer
