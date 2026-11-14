@@ -24,8 +24,9 @@ HIP = RIG["hipHeight"]
 
 # ------------------------------------------------------------------ fixtures
 
-def person(pid: str, build: str = "average") -> schemas.Person:
-    return schemas.Person(id=pid, family_id="f", name=pid.title(), character={"color": "#123456", "build": build})
+def person(pid: str, build: str = "average", notes: str | None = None) -> schemas.Person:
+    return schemas.Person(id=pid, family_id="f", name=pid.title(),
+                          character={"color": "#123456", "build": build, "notes": notes})
 
 
 def prop(pid: str, size: str = "hand", sockets=None, aspect: float = 1.0) -> schemas.Prop:
@@ -511,3 +512,81 @@ def test_a_failing_handler_after_earlier_keys_changes_nothing(world):
     fails(world, tracks, "unknown_target", "ghost is not a person, prop or mark", 6.0, "point_at", who="dad", target="ghost")
     fails(world, tracks, "seated", "mom is seated in chair.seat", 6.0, "kneel", who="mom")
     fails(world, tracks, "not_sitting", "dad is not sitting or kneeling", 6.0, "stand_up", who="dad")
+
+
+# ------------------------------------------------------------- speed from the sheet's notes
+# The sit_on and hug approaches walk at World.people[who].speed_scale times the walk speed
+# (0.6 with a cane, 1.25 "quickly"); the sit, the hug pose, kneel and stand_up keep their timings.
+
+CANE, QUICK = "walks with a cane", "quickly"
+SCALED = [(CANE, 0.6), (QUICK, 1.25)]
+
+
+def noted_world(notes: dict[str, str | None]) -> World:
+    """The fixture's people and props, with CharacterSheet.notes from ``notes`` (by person id)."""
+    people = [person(p.id, p.character.build, notes.get(p.id)) for p in PEOPLE]
+    return World(people, PROPS)
+
+
+@pytest.mark.parametrize("notes,factor", SCALED)
+def test_sit_on_walks_to_the_seat_at_the_notes_speed(notes, factor):
+    world = begin(noted_world({"dad": notes}), {"dad": {"at": "left", "facing": "left"}}, {"chair": {"at": "chair_spot"}})
+    assert world.people["dad"].speed_scale == factor
+    tracks = TrackSet()
+    end = run(world, tracks, 3.0, "sit_on", who="dad", what="chair")
+    arrive = 3.0 + 0.9 / WALK / factor  # plain: 3.0 + 0.9 / WALK
+    assert end == pytest.approx(arrive + 0.4, abs=1e-3)  # the sit itself is still 0.4
+    assert at(tracks, "dad", "root.position", arrive) == pytest.approx([0.3, 0.0, 0.5], abs=1e-3)
+    s = scale("tall")
+    assert at(tracks, "dad", "root.position", end) == pytest.approx([0.3, SEAT_Y - HIP * s, 0.5], abs=1e-3)
+    assert world.people["dad"].seat == ("chair", "seat")
+
+
+@pytest.mark.parametrize("notes,factor", SCALED)
+def test_hug_approach_walks_at_the_notes_speed(notes, factor):
+    world = begin(noted_world({"dad": notes}),
+                  {"dad": {"at": "left", "facing": "right"}, "mom": {"at": "mid", "facing": "right"}})
+    tracks = TrackSet()
+    end = run(world, tracks, 3.0, "hug", who="dad", target="mom")
+    arrive = 3.0 + (0.6 - HUG_GAP) / WALK / factor
+    assert end == pytest.approx(arrive + 1.5, abs=1e-3)  # the hug itself is still 1.5
+    assert at(tracks, "dad", "root.position", arrive) == pytest.approx([-HUG_GAP, 0.0, 0.5], abs=1e-3)
+    assert keys(tracks, "puppet:mom", "root.facing") == [[round(arrive, 3), -1.0]]
+    assert world.people["mom"].busy_until == pytest.approx(end - AS)
+
+
+def test_hug_uses_the_huggers_speed_not_the_targets():
+    world = begin(noted_world({"mom": CANE}),
+                  {"dad": {"at": "left", "facing": "right"}, "mom": {"at": "mid", "facing": "right"}})
+    end = run(world, TrackSet(), 3.0, "hug", who="dad", target="mom")
+    assert end == pytest.approx(3.0 + (0.6 - HUG_GAP) / WALK + 1.5, abs=1e-3)
+
+
+def _same_with_any_notes(start: dict, prop_start: dict | None, *calls) -> None:
+    """Run ``calls`` with dad's notes None, cane and quickly: ends and tracks are identical."""
+    results = []
+    for notes in (None, CANE, QUICK):
+        world = begin(noted_world({"dad": notes}), start, prop_start)
+        tracks = TrackSet()
+        ends = [run(world, tracks, t, do, **params) for t, do, params in calls]
+        results.append((ends, [tr.model_dump() for tr in tracks.tracks()]))
+    assert results[1] == results[0]
+    assert results[2] == results[0]
+
+
+def test_kneel_and_stand_up_do_not_depend_on_notes():
+    _same_with_any_notes({"dad": {"at": "left"}}, None,
+                         (3.0, "kneel", {"who": "dad"}), (5.0, "stand_up", {"who": "dad"}))
+    _same_with_any_notes({"dad": {"at": "left"}}, None, (3.0, "kneel", {"who": "dad", "dur": 2.0}))
+
+
+def test_sitting_down_close_and_standing_up_from_a_seat_do_not_depend_on_notes():
+    _same_with_any_notes({"dad": {"at": "stage"}}, {"chair": {"at": "stage"}},
+                         (3.0, "sit_on", {"who": "dad", "what": "chair"}), (5.0, "stand_up", {"who": "dad"}))
+
+
+def test_gestures_do_not_depend_on_notes():
+    _same_with_any_notes({"dad": {"at": "left", "facing": "left"}, "mom": {"at": "mid"}}, None,
+                         (3.0, "wave", {"who": "dad", "target": "mom"}),
+                         (5.0, "point_at", {"who": "dad", "target": "right"}),
+                         (7.0, "lean_toward", {"who": "dad", "target": "mom"}))

@@ -114,6 +114,7 @@ def _travel_keys(world: World, tracks: TrackSet, who: str, t: float, dest: Vec3,
     move, t1, facing = motion.locomotion_keys(
         who, p.build, t0, start, dest, p.facing, gait,  # type: ignore[arg-type]
         skip_bones=sorted(held_arm_bones(world, who)),
+        speed_scale=p.speed_scale,
     )
     return keys + move, t1, facing
 
@@ -146,7 +147,8 @@ def apply_enter(world: World, tracks: TrackSet, action: Action, t: float, action
         raise StateError("already_on_stage", f"{who} is already on stage; use walk_to")
     p = world.people[who]
     keys, t1, facing = motion.enter_keys(
-        who, p.build, t, src, to, p.facing, "walk", skip_bones=sorted(held_arm_bones(world, who))
+        who, p.build, t, src, to, p.facing, "walk", skip_bones=sorted(held_arm_bones(world, who)),
+        speed_scale=p.speed_scale,
     )
     world.move(who, to, facing)
     tracks.extend(keys)

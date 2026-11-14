@@ -18,8 +18,9 @@ from screenplay.verbs_vehicles import HANDLERS, WHEEL_RADIUS_FRACTION
 # ------------------------------------------------------------------ fixtures
 
 
-def person(pid: str, build: str = "average") -> schemas.Person:
-    return schemas.Person(id=pid, family_id="f", name=pid.title(), character={"color": "#123456", "build": build})
+def person(pid: str, build: str = "average", notes: str | None = None) -> schemas.Person:
+    return schemas.Person(id=pid, family_id="f", name=pid.title(),
+                          character={"color": "#123456", "build": build, "notes": notes})
 
 
 CAR = schemas.Prop(
@@ -63,8 +64,11 @@ class RecordingTracks(TrackSet):
         self.raw.append((target, channel, t, value))
 
 
-def make_world(start: dict | None = None, prop_start: dict | None = None) -> World:
-    world = World(PEOPLE, PROPS)
+def make_world(start: dict | None = None, prop_start: dict | None = None,
+               notes: dict[str, str | None] | None = None) -> World:
+    """`notes` gives CharacterSheet.notes by person id (default: nobody has any)."""
+    people = [person(p.id, p.character.build, (notes or {}).get(p.id)) for p in PEOPLE] if notes else PEOPLE
+    world = World(people, PROPS)
     shot = Shot.model_validate({
         "id": "s1", "set": "street",
         "start": start if start is not None else {"dad": {"at": "door_d"}, "mom": {"at": "door_p"}, "kid": {"at": "porch"}},
@@ -520,3 +524,41 @@ def test_get_in_drive_get_out_round_trip():
     assert tracks.value_at("puppet:mom", "root.position", end) == pytest.approx([seat_x, 0.0, 0.5])
     assert world.people["mom"].pos == pytest.approx((seat_x, 0.0, 0.5))
     assert not math.isnan(tracks.value_at("prop:car", "part.wheel_front.rot", end))
+
+
+# ------------------------------------------------------------- speed from the sheet's notes
+# get_in's walk to the door goes at World.people[who].speed_scale times the walk speed; the
+# sit onto the seat, get_out and the drive itself do not depend on the riders' notes.
+
+CANE, QUICK = "walks with a cane", "quickly"
+
+
+@pytest.mark.parametrize("notes,factor", [(CANE, 0.6), (QUICK, 1.25)])
+def test_get_in_walks_to_the_door_at_the_notes_speed(notes, factor):
+    tracks = RecordingTracks()
+    world = make_world(notes={"kid": notes})
+    assert world.people["kid"].speed_scale == factor
+    end = run(world, tracks, 0.0, do="get_in", who="kid", what="car", socket="passenger")
+    seat = world.socket_world("car", "passenger")
+    walk = (0.8 - seat[0]) / motion.SPEEDS["walk"] / factor
+    assert end == pytest.approx(walk + 0.4)  # the sit onto the seat is still 0.4
+    at_door = motion.position_at(motion.path_from_keys(tracks.raw, "puppet:kid", "root.position"), walk)
+    assert at_door == pytest.approx((seat[0], 0.0, 0.5))
+    root = tracks.value_at("puppet:kid", "root.position", end)
+    assert [root[0], root[1] + HIP["kid"], root[2]] == pytest.approx(list(seat), abs=1e-6)
+    assert world.people["kid"].seat == ("car", "passenger")
+
+
+def test_get_in_at_the_door_get_out_and_drive_do_not_depend_on_notes():
+    results = []
+    for notes in (None, CANE, QUICK):
+        tracks = TrackSet()
+        world = make_world(notes={"dad": notes, "mom": notes})
+        ends = [run(world, tracks, 0.0, do="get_in", who="dad", what="car"),
+                run(world, tracks, 0.5, do="get_in", who="mom", what="car")]
+        ends.append(run(world, tracks, 1.0, do="drive_to", who="dad", what="car", to="church"))
+        ends.append(run(world, tracks, ends[-1], do="get_out", who="mom", what="car"))
+        results.append((ends, [tr.model_dump() for tr in tracks.tracks()]))
+    assert results[0][0][:2] == [pytest.approx(0.4), pytest.approx(0.9)]  # no walk: already at the doors
+    assert results[1] == results[0]
+    assert results[2] == results[0]

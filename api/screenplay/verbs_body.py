@@ -156,6 +156,7 @@ def _walk(world: World, who: str, t: float, start: Vec3, end: Vec3, facing: int)
     return motion.locomotion_keys(
         who, world.people[who].build, t, start, end, facing, "walk",
         skip_bones=sorted(_held_arm_bones(world, who)),
+        speed_scale=world.people[who].speed_scale,
     )
 
 

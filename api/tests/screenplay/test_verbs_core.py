@@ -22,8 +22,10 @@ from screenplay.verbs_core import HANDLERS
 ACTION_START = 1.2
 
 
-def person(pid, build="average"):
-    return schemas.Person(id=pid, family_id="f", name=pid, character={"color": "#123456", "build": build})
+def person(pid, build="average", notes=None):
+    return schemas.Person(
+        id=pid, family_id="f", name=pid, character={"color": "#123456", "build": build, "notes": notes}
+    )
 
 
 def prop(pid, size="hand", sockets=None):
@@ -39,9 +41,12 @@ MARKS = resolve_marks(
 )
 
 
-def scene(start=None, prop_start=None):
+def scene(start=None, prop_start=None, notes=None):
+    """`notes` maps a person id to their CharacterSheet.notes (everyone else has none)."""
+    notes = notes or {}
     world = World(
-        [person("dad", "tall"), person("mom"), person("kid", "small")],
+        [person("dad", "tall", notes.get("dad")), person("mom", notes=notes.get("mom")),
+         person("kid", "small", notes.get("kid"))],
         [prop("books"), prop("cup"), prop("hat"), prop("chair", "furniture", {"seat": [0.5, 0.5]})],
     )
     shot = Shot.model_validate({
@@ -283,8 +288,9 @@ def test_pose_errors():
 
 # -------------------------------------------------------------------------- pick_up
 
-def books_on_ground(at):
-    world, tracks = scene({"dad": {"at": at, "facing": "right"}, "mom": {"at": "steps_top", "facing": "left"}})
+def books_on_ground(at, notes=None):
+    world, tracks = scene({"dad": {"at": at, "facing": "right"}, "mom": {"at": "steps_top", "facing": "left"}},
+                          notes=notes)
     world.props["books"].parent = "ground"
     world._to_ground("books", (0.12, 0.3, 0.5))
     return world, tracks
@@ -571,3 +577,99 @@ def test_out_of_reach_after_auto_walk_is_atomic():
         run(world, tracks, 0, who="dad", do="pick_up", what="books")
     assert frozen(world, tracks) == before
     assert not math.isnan(world.people["dad"].pos[0])
+
+
+# ------------------------------------------------------------- speed from the sheet's notes
+# World.people[who].speed_scale comes from CharacterSheet.notes (screenplay.character):
+# a cane makes every walk and run take 1/0.6 as long, "quickly" 1/1.25. Poses, the stand-up
+# before a walk and the reach of a pick-up keep their own timings.
+
+CANE, QUICK = "walks with a cane", "quickly"
+SCALED = [(CANE, 0.6), (QUICK, 1.25)]
+
+
+def _end(notes, start, **action):
+    world, tracks = scene(start, notes={"dad": notes})
+    return run(world, tracks, 0, who="dad", **action), world, tracks
+
+
+@pytest.mark.parametrize("notes,factor", SCALED)
+@pytest.mark.parametrize("verb,to", [("walk_to", "steps_foot"), ("run_to", "curb")])
+def test_walk_and_run_take_longer_with_a_cane_and_less_quickly(notes, factor, verb, to):
+    start = {"dad": {"at": "steps_left", "facing": "right"}}
+    plain, _, _ = _end(None, start, do=verb, to=to)
+    slow, world, tracks = _end(notes, start, do=verb, to=to)
+    assert world.people["dad"].speed_scale == factor
+    assert slow - ACTION_START == pytest.approx((plain - ACTION_START) / factor, abs=1e-3)
+    assert keys(tracks, "puppet:dad", "root.position")[-1] == (round(slow, 3), [MARKS[to][0], 0.0, 0.5])
+    assert world.people["dad"].pos == pytest.approx(MARKS[to])
+
+
+@pytest.mark.parametrize("notes,factor", SCALED)
+def test_enter_takes_longer_with_a_cane_and_less_quickly(notes, factor):
+    start = {"dad": {"at": "offstage_left", "facing": "right"}}
+    action = {"do": "enter", "from": "offstage_left", "to": "steps_left"}
+    plain, _, _ = _end(None, start, **action)
+    slow, _, tracks = _end(notes, start, **action)
+    assert plain == pytest.approx(1.2 + 0.7 / 0.35)
+    assert slow - ACTION_START == pytest.approx(0.7 / 0.35 / factor, abs=1e-3)
+    assert keys(tracks, "puppet:dad", "root.position") == [(1.2, [-1.3, 0.0, 0.5]), (round(slow, 3), [-0.6, 0.0, 0.5])]
+
+
+def test_the_walk_cycle_spreads_over_the_slower_walk():
+    """Same stride count, so the cane walk has the same number of cycle keys, stretched in time."""
+    start = {"dad": {"at": "steps_left", "facing": "right"}}
+    _, _, plain = _end(None, start, do="walk_to", to="steps_foot")
+    _, _, slow = _end(CANE, start, do="walk_to", to="steps_foot")
+    p, s = keys(plain, "puppet:dad", "leg_l.upper.rot"), keys(slow, "puppet:dad", "leg_l.upper.rot")
+    assert len(p) == len(s) > 2
+    for (tp, vp), (ts, vs) in zip(p, s):
+        assert vs == vp
+        assert ts - ACTION_START == pytest.approx((tp - ACTION_START) / 0.6, abs=2e-3)
+
+
+@pytest.mark.parametrize("notes,factor", SCALED)
+def test_pick_up_auto_walk_is_scaled_and_the_reach_is_not(notes, factor):
+    reach = ik.arm_reach("tall")
+    stop = 0.12 - 0.6 * reach
+    plain_walk = (stop + 0.6) / 0.35
+    world, tracks = books_on_ground("steps_left", notes={"dad": notes})
+    end = run(world, tracks, 0, who="dad", do="pick_up", what="books")
+    arrive = ACTION_START + plain_walk / factor
+    pos = keys(tracks, "puppet:dad", "root.position")
+    assert pos[-1][0] == pytest.approx(arrive, abs=1e-3)
+    assert pos[-1][1] == [round(stop, 3), 0.0, 0.5]
+    # the reach (0.4 out, 0.4 back) after the walk is the same as without notes
+    assert keys(tracks, "prop:books", "parent") == [(round(arrive + 0.4, 3), "puppet:dad.hand_r")]
+    assert end == pytest.approx(arrive + 0.8)
+
+
+def test_pick_up_in_reach_does_not_depend_on_notes():
+    ends = []
+    for notes in (None, CANE, QUICK):
+        world, tracks = books_on_ground("steps_foot", notes={"dad": notes})
+        ends.append(run(world, tracks, 5.5, who="dad", do="pick_up", what="books"))
+    assert ends == [pytest.approx(7.5)] * 3
+
+
+def test_walk_from_kneeling_scales_only_the_walk_not_the_stand_up():
+    world, tracks = scene({"dad": {"at": "steps_left", "facing": "right", "pose": "kneel"}}, notes={"dad": CANE})
+    tracks.add("puppet:dad", "root.position", 0.0, [-0.6, -0.24 * ik.scale("tall"), 0.5])
+    end = run(world, tracks, 0, who="dad", do="walk_to", to="steps_foot")
+    stood = ACTION_START + B.POSE_SECONDS  # standing up takes POSE_SECONDS with or without a cane
+    assert keys(tracks, "puppet:dad", "root.position")[-2][0] == pytest.approx(stood)
+    assert end == pytest.approx(stood + 0.6 / 0.35 / 0.6)
+
+
+@pytest.mark.parametrize("pose,dur", [("bow_head", None), ("bow_head", 2.0), ("kneel", None), ("sit", None),
+                                      ("stand", None)])
+def test_pose_durations_do_not_depend_on_notes(pose, dur):
+    ends, tracks_by_notes = [], []
+    for notes in (None, CANE, QUICK):
+        world, tracks = scene({"dad": {"at": "steps_foot", "facing": "right",
+                                       "pose": "kneel" if pose == "stand" else "stand"}}, notes={"dad": notes})
+        action = {"who": "dad", "do": "pose", "pose": pose, **({"dur": dur} if dur else {})}
+        ends.append(run(world, tracks, 0, **action))
+        tracks_by_notes.append([tr.model_dump() for tr in tracks.tracks()])
+    assert ends[1] == ends[2] == ends[0]
+    assert tracks_by_notes[1] == tracks_by_notes[2] == tracks_by_notes[0]

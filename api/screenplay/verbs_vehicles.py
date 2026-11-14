@@ -177,7 +177,9 @@ def apply_get_in(world: World, tracks: TrackSet, action: Action, t: float, actio
     t_sit, facing, ground = t, p.facing, root
     if abs(seat[0] - root[0]) > WALK_UP_THRESHOLD or abs(seat[2] - root[2]) > _EPS:
         door: Vec3 = (seat[0], anchor[1], seat[2])
-        walk, t_sit, facing = motion.locomotion_keys(who, p.build, t, root, door, p.facing)
+        walk, t_sit, facing = motion.locomotion_keys(
+            who, p.build, t, root, door, p.facing, speed_scale=p.speed_scale
+        )
         keys += walk
         if walk:
             ground = door
