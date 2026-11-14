@@ -499,6 +499,97 @@ test("people edits and member removal follow the server rules", async () => {
   assert.equal((await call(b, "GET", "/families/sample_family/tree")).status, 404);
 });
 
+test("PATCH members role: promote, demote, no-op, 403, 404, 409 and stepping down", async () => {
+  const b = makeBackend();
+  const F = "/families/sample_family";
+  const roles = (family) => Object.fromEntries(family.members.map((m) => [m.userId, m.role]));
+  const get = async () => (await call(b, "GET", F)).body;
+
+  // A member can't change roles, not even their own.
+  await login(b, "ana@example.com");
+  for (const [uid, role] of [["user_david", "member"], ["user_ana", "admin"]]) {
+    const r = await call(b, "PATCH", `${F}/members/${uid}`, { role });
+    assert.equal(r.status, 403, uid);
+    assert.equal(r.body.detail, "Only a family admin can do that.");
+  }
+
+  await login(b, "david@example.com");
+  const before = await get();
+  assert.deepEqual(roles(before), { user_david: "admin", user_ana: "member" });
+
+  // The only admin can't step down: 409, nothing changes.
+  const last = await call(b, "PATCH", `${F}/members/user_david`, { role: "member" });
+  assert.equal(last.status, 409);
+  assert.equal(last.body.detail, "A family needs at least one admin.");
+  assert.deepEqual(roles(await get()), { user_david: "admin", user_ana: "member" });
+
+  // Unknown member: 404. A bad or missing role: 422 on body.role.
+  const ghost = await call(b, "PATCH", `${F}/members/user_ghost`, { role: "admin" });
+  assert.equal(ghost.status, 404);
+  const bad = await call(b, "PATCH", `${F}/members/user_ana`, { role: "owner" });
+  assert.equal(bad.status, 422);
+  assert.deepEqual(bad.body.detail[0].loc, ["body", "role"]);
+  const missing = await call(b, "PATCH", `${F}/members/user_ana`, {});
+  assert.equal(missing.status, 422);
+  assert.deepEqual(missing.body.detail[0].loc, ["body", "role"]);
+
+  // Same role: a no-op that still answers with the family, as GET does.
+  const same = await call(b, "PATCH", `${F}/members/user_ana`, { role: "member" });
+  assert.equal(same.status, 200);
+  assert.deepEqual(same.body, before);
+
+  // Promote: the response is the admin's view of the family.
+  const promoted = await call(b, "PATCH", `${F}/members/user_ana`, { role: "admin" });
+  assert.equal(promoted.status, 200);
+  assert.deepEqual(roles(promoted.body), { user_david: "admin", user_ana: "admin" });
+  assert.deepEqual(promoted.body.invites.map((i) => i.code), ["riveras-demo"]);
+  assert.deepEqual(promoted.body, await get());
+
+  // Demote another admin.
+  const demoted = await call(b, "PATCH", `${F}/members/user_ana`, { role: "member" });
+  assert.equal(demoted.status, 200);
+  assert.deepEqual(roles(demoted.body), { user_david: "admin", user_ana: "member" });
+  assert.deepEqual(demoted.body, await get());
+
+  // Step down while another admin remains: the member's view, with no invites.
+  assert.equal((await call(b, "PATCH", `${F}/members/user_ana`, { role: "admin" })).status, 200);
+  const stepped = await call(b, "PATCH", `${F}/members/user_david`, { role: "member" });
+  assert.equal(stepped.status, 200);
+  assert.deepEqual(roles(stepped.body), { user_david: "member", user_ana: "admin" });
+  assert.deepEqual(stepped.body.invites, []);
+  assert.deepEqual(stepped.body, await get());
+
+  // The session and the admin checks follow: David is a member now.
+  const me = await call(b, "GET", "/me");
+  assert.equal(me.body.families.find((f) => f.id === "sample_family").role, "member");
+  assert.equal((await call(b, "PATCH", `${F}/members/user_ana`, { role: "member" })).status, 403);
+  assert.equal((await call(b, "POST", `${F}/invites`)).status, 403);
+
+  // Ana, now the only admin, can't step down either.
+  await login(b, "ana@example.com");
+  assert.equal((await call(b, "PATCH", `${F}/members/user_ana`, { role: "member" })).status, 409);
+});
+
+test("the API client's setMemberRole works against the mock", async () => {
+  const b = makeBackend();
+  const client = createApiClient({ baseUrl: BASE, fetch: b.fetch, mediaUrl: b.mediaUrl });
+  await client.login({ email: "david@example.com", password: "stitch-demo" });
+
+  const family = await client.setMemberRole("sample_family", "user_ana", { role: "admin" });
+  assert.equal(family.members.find((m) => m.userId === "user_ana").role, "admin");
+  assert.deepEqual(await client.getFamily("sample_family"), family);
+
+  await client.setMemberRole("sample_family", "user_ana", { role: "member" });
+  try {
+    await client.setMemberRole("sample_family", "user_david", { role: "member" });
+    assert.fail("expected a 409");
+  } catch (e) {
+    assert.ok(isApiError(e));
+    assert.equal(e.status, 409);
+    assert.equal(e.detail, "A family needs at least one admin.");
+  }
+});
+
 test("unknown route 404 and wrong method 405", async () => {
   const b = makeBackend();
   assert.equal((await call(b, "GET", "/nope")).status, 404);

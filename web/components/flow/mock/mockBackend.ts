@@ -216,6 +216,9 @@ function noContent(): Response {
 const NOT_SIGNED_IN = "Please log in to continue.";
 const NO_FAMILY = "We couldn't find that family.";
 const ADMIN_ONLY = "Only a family admin can do that.";
+const NOT_A_MEMBER = "That person isn't a member of this family.";
+/** 409 for removing or demoting a family's only admin (the API's LAST_ADMIN). */
+const LAST_ADMIN = "A family needs at least one admin.";
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -1301,6 +1304,16 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     }
   }
 
+  /** A family as GET /families/{fid} shows it to a viewer with `role`: invites for admins only. */
+  function familyView(family: MockFamily, role: Role): Family {
+    return {
+      id: family.id,
+      name: family.name,
+      members: family.members.map((m) => ({ userId: m.userId, role: m.role, joinedAt: m.joinedAt ?? null })),
+      invites: role === "admin" ? family.invites.map((i) => ({ revoked: false, ...i })) : [],
+    };
+  }
+
   // ----- route handlers
 
   type Handler = (s: MockState, req: MockRequest, params: string[]) => Promise<Response> | Response;
@@ -1394,13 +1407,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
   // `Family` is already a contract type. Invites are shown to admins only.
   route("GET", "/families/{fid}", (s, _req, [fid]) => {
     const { family, role } = requireMember(s, fid);
-    const out: Family = {
-      id: family.id,
-      name: family.name,
-      members: family.members.map((m) => ({ userId: m.userId, role: m.role, joinedAt: m.joinedAt ?? null })),
-      invites: role === "admin" ? family.invites.map((i) => ({ revoked: false, ...i })) : [],
-    };
-    return json(200, out);
+    return json(200, familyView(family, role));
   });
 
   route("POST", "/families/{fid}/invites", (s, _req, [fid]) => {
@@ -1523,14 +1530,41 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
   route("DELETE", "/families/{fid}/members/{userId}", (s, _req, [fid, userId]) => {
     const { family } = requireAdmin(s, fid);
     const member = family.members.find((m) => m.userId === userId);
-    if (!member) fail(404, "That person isn't a member of this family.");
+    if (!member) fail(404, NOT_A_MEMBER);
     if (member.role === "admin" && family.members.filter((m) => m.role === "admin").length <= 1) {
-      fail(409, "A family needs at least one admin.");
+      fail(409, LAST_ADMIN);
     }
     family.members = family.members.filter((m) => m.userId !== userId);
     for (const p of familyPeople(s, fid)) if (p.userId === userId) p.userId = null;
     save();
     return noContent();
+  });
+
+  // Admin: make a member an admin or a member (api/routes/families.py
+  // set_member_role). The same role is a no-op; the last admin can't be
+  // demoted; an admin who steps down gets the member's view back.
+  route("PATCH", "/families/{fid}/members/{userId}", (s, req, [fid, userId]) => {
+    const { user, family } = requireAdmin(s, fid);
+    const body = jsonBody(req.body);
+    const role = body.role;
+    if (role !== "admin" && role !== "member") {
+      failFields([
+        role === undefined
+          ? { loc: ["body", "role"], msg: "Field required", type: "missing" }
+          : { loc: ["body", "role"], msg: "Input should be 'admin' or 'member'", type: "literal_error" },
+      ]);
+    }
+    const member = family.members.find((m) => m.userId === userId);
+    if (!member) fail(404, NOT_A_MEMBER);
+    if (member.role !== role) {
+      if (role === "member" && !family.members.some((m) => m.role === "admin" && m.userId !== userId)) {
+        fail(409, LAST_ADMIN);
+      }
+      member.role = role;
+      save();
+    }
+    const viewer = family.members.find((m) => m.userId === user.id);
+    return json(200, familyView(family, viewer?.role ?? "member"));
   });
 
   // Family content
