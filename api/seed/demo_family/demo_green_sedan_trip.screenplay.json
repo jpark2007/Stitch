@@ -66,7 +66,7 @@
     {
       "id": "s2",
       "set": "coast_road_1972",
-      "marks": {"beside_crate": [0.77, 0.0]},
+      "marks": {"beside_crate": [0.84, 0.0]},
       "start": {
         "grandpa_joseph": {"at": "road_in", "in": "green_sedan.driver"},
         "grandma_rosa": {"at": "road_in", "in": "green_sedan.passenger"},

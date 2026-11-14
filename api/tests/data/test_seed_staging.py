@@ -14,12 +14,16 @@ state, and a prop's position steps at every parent change), and checked for:
     with its wearer), and every prop on the ground resting on the floor or on a mark's
     surface, never floating;
 (d) the giver and taker facing each other during a hand_to, and anyone hugging, waving,
-    pointing or leaning at a person facing that person;
+    pointing or leaning at a person facing that person; and anyone striking a pose that
+    stretches the arms forward (reach, point, hug) with no target facing the nearest person
+    or prop on stage;
 (e) no long stretch of a shot where nothing on stage changes at all;
 (f) nobody popping from one place to another on stage instead of walking there, within a
     shot or between two shots on the same set (where no fold hides the change);
 (g) no prop standing on stage in a shot that never names it (a prop placed for a later
-    shot, waiting in plain view).
+    shot, waiting in plain view);
+(h) no two props on the ground at the same depth drawn into each other (a car parked
+    over the crate someone sits on).
 
 A failure names the moment, the shot, the timeline time and the people involved.
 """
@@ -33,10 +37,10 @@ from dataclasses import dataclass
 
 import pytest
 
-from schemas import SetDef
+from schemas import Prop, SetDef
 from screenplay.body import PASS_SECONDS, POSE_SECONDS, RETURN_SECONDS
 from screenplay.narration import default_author, retime_actions
-from screenplay.schema import Screenplay, Timeline, Track
+from screenplay.schema import VOCABULARY, Screenplay, Timeline, Track
 from screenplay.verbs_body import HUG_SECONDS
 from seed import demo
 
@@ -72,7 +76,13 @@ FACING_SETTLE = 0.05
 # Too close in x to say which way someone should face.
 FACING_DX = 0.02
 
+# Two ground props whose drawn widths (sizes[size] x aspect, CONTRACTS.md "Props") overlap by more
+# than this read as one standing inside the other; a hair of contact where they touch is fine.
+PROP_OVERLAP = 0.02
+
 STILL_GESTURES = ("wave", "point_at", "lean_toward")
+# Untargeted poses (shared/rig/poses.json) that stretch the arms forward: they reach toward something.
+FORWARD_POSES = ("reach", "point", "hug")
 
 
 # -------------------------------------------------------------------------- samples
@@ -206,6 +216,7 @@ class Act:
     who: str | None
     other: str | None
     dur: float | None
+    pose: str | None = None
 
 
 def _acts(scene: Scene, shot: Shot) -> list[Act]:
@@ -214,7 +225,7 @@ def _acts(scene: Scene, shot: Shot) -> list[Act]:
     out = []
     for action, t in zip(sp_shot.actions, retimed, strict=True):
         other = action.to if action.do == "hand_to" else action.target
-        out.append(Act(shot.action_start + t, action.do, action.who, other, action.dur))
+        out.append(Act(shot.action_start + t, action.do, action.who, other, action.dur, action.pose))
     return out
 
 
@@ -238,6 +249,11 @@ def _data() -> demo.DemoData:
 @functools.cache
 def _sets() -> dict[str, SetDef]:
     return {s.id: s for s in _data().sets}
+
+
+@functools.cache
+def _props() -> dict[str, Prop]:
+    return {p.id: p for p in _data().props}
 
 
 @pytest.fixture(params=MEMORY_IDS)
@@ -381,10 +397,20 @@ def _settling(scene: Scene, prop: str, t: float) -> bool:
 
 def test_d_people_face_whoever_they_hand_to_or_gesture_at(scene: Scene):
     """(d) A hand_to's giver and taker face each other while the hands meet; a hugger and the
-    person hugged face each other; a wave, point or lean at a person faces that person."""
+    person hugged face each other; a wave, point or lean at a person faces that person; an
+    untargeted forward pose (FORWARD_POSES) faces the nearest person or prop on stage.
+
+    The compiler itself turns the giver, the taker, the hugger and a gesturer toward their
+    target (screenplay/body.py), so for the targeted verbs no screenplay data can break this
+    rule: those checks guard against compiler regressions. A bare ``pose`` names no target
+    and keeps whatever facing the puppet had, so that check is the one a screenplay can fail
+    (Dad reaching away from the bike he is meant to be steadying)."""
     problems: list[tuple[str, str]] = []
     for shot in _shots(scene):
         for act in _acts(scene, shot):
+            if act.do == "pose" and act.pose in FORWARD_POSES and act.who is not None:
+                problems += _forward_pose_facing(scene, shot, act)
+                continue
             if act.who is None or act.other not in scene.cast:
                 continue
             if act.do == "hand_to":
@@ -410,6 +436,37 @@ def test_d_people_face_whoever_they_hand_to_or_gesture_at(scene: Scene):
                     message = f"{shot.where(t)}: during {act.who}'s {act.do} with {act.other}, {a} faces away from {b}"
                     problems.append((message, message))
     _report(problems)
+
+
+def _forward_pose_facing(scene: Scene, shot: Shot, act: Act) -> list[tuple[str, str]]:
+    """The poser faces the nearest other person on stage or prop not in their own hands, once
+    the pose has blended in."""
+    assert act.who is not None
+    t = act.t + POSE_SECONDS
+    me = scene.root(act.who, t)
+    if me is None:
+        return []
+    things: list[tuple[str, float]] = []
+    for other in scene.cast:
+        r = scene.root(other, t)
+        if other != act.who and r is not None and scene.on_stage(other, t):
+            things.append((other, r[0]))
+    for prop in scene.props:
+        if scene.prop_parent(prop, t) != "ground":
+            continue  # held props go with a hand; worn or carried ones are not what you reach for
+        x = scene.prop_position(prop, t)[0]
+        if abs(x) <= STAGE_EDGE:
+            things.append((prop, x))
+    if not things:
+        return []
+    name, x = min(things, key=lambda thing: abs(thing[1] - me[0]))
+    if abs(x - me[0]) < FACING_DX:
+        return []
+    want = 1 if x > me[0] else -1
+    if scene.facing(act.who, t) == want:
+        return []
+    message = f"{shot.where(t)}: {act.who} strikes a {act.pose} pose facing away from {name}, the nearest thing on stage"
+    return [(message, message)]
 
 
 def _stage_tracks(scene: Scene) -> list[list[tuple[float, object]]]:
@@ -511,4 +568,41 @@ def test_g_props_show_only_in_shots_that_use_them(scene: Scene):
                     message = f"{shot.where(t)}: {prop} stands on stage at x={x:+.2f}, but shot {shot.id} never uses it"
                     problems.append((message, message))
                     break
+    _report(problems)
+
+
+def _extent(prop: Prop, x: float) -> tuple[float, float]:
+    """Left and right stage x of a ground prop's drawing: sizes[size] tall, aspect wide, placed by
+    its anchor (CONTRACTS.md "Props")."""
+    width = float(VOCABULARY["sizes"][prop.size]) * prop.aspect
+    left = x - prop.anchor[0] * width
+    return left, left + width
+
+
+def test_h_ground_props_do_not_stand_inside_each_other(scene: Scene):
+    """(h) Two props standing on the ground at the same depth, both on stage, overlap by at most
+    PROP_OVERLAP. A prop resting on another prop's socket is not on the ground and is skipped."""
+    problems: list[tuple[str, str]] = []
+    for shot in _shots(scene):
+        for t in shot.times():
+            ground = []
+            for prop in scene.props:
+                if scene.prop_parent(prop, t) != "ground":
+                    continue
+                x, _y, z = scene.prop_position(prop, t)
+                if abs(x) <= STAGE_EDGE:
+                    ground.append((prop, x, z))
+            for i, (a, xa, za) in enumerate(ground):
+                for b, xb, zb in ground[i + 1:]:
+                    if abs(za - zb) > SAME_DEPTH:
+                        continue
+                    la, ra = _extent(_props()[a], xa)
+                    lb, rb = _extent(_props()[b], xb)
+                    overlap = min(ra, rb) - max(la, lb)
+                    if overlap > PROP_OVERLAP:
+                        message = (
+                            f"{shot.where(t)}: {a} (x {la:+.2f}..{ra:+.2f}) and {b} (x {lb:+.2f}..{rb:+.2f}) "
+                            f"overlap by {overlap:.2f}"
+                        )
+                        problems.append((f"{shot.id} {sorted((a, b))}", message))
     _report(problems)
