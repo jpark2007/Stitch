@@ -199,6 +199,147 @@ describe("transport", () => {
   });
 });
 
+describe("voices while the music sleeps", () => {
+  type In = Parameters<Fades["wantsSound"]>[0];
+  const on: In = { muted: false, active: true, sounding: true };
+
+  it("builds a voice only for music about to be heard", () => {
+    assert.equal(f.buildsVoice(on, "1960s", "1970s"), true);
+    assert.equal(f.buildsVoice(on, "1960s", "1960s"), false);
+    assert.equal(f.buildsVoice({ ...on, muted: true }, "1960s", "1970s"), false);
+    assert.equal(f.buildsVoice({ ...on, active: false }, "1960s", "1970s"), false);
+  });
+
+  it("frees a sleeping engine's voices only when they hold another era", () => {
+    assert.equal(f.dropsVoices({ kind: "asleep" }, "1960s", "1970s"), true);
+    assert.equal(f.dropsVoices({ kind: "asleep" }, "1960s", null), true);
+    // The same era is kept, so an unmute resumes it where it was.
+    assert.equal(f.dropsVoices({ kind: "asleep" }, "1960s", "1960s"), false);
+    // Still fading out: the level is not 0 yet.
+    assert.equal(f.dropsVoices({ kind: "stopping", until: 9 }, "1960s", "1970s"), false);
+    assert.equal(f.dropsVoices({ kind: "playing" }, "1960s", "1970s"), false);
+  });
+
+  /**
+   * engine.ts's pass in miniature, with voices as a count: each build adds
+   * one (a crossfade keeps at most two sounding; ended ones are freed when
+   * they ring out), a sleeping engine's drop frees them all.
+   */
+  function engine() {
+    let phase: Parameters<Fades["stepTransport"]>[0] = { kind: "asleep" };
+    let held: string | null = null;
+    let era: string | null = null;
+    let muted = false;
+    let active = true;
+    let voices = 0;
+    let built = 0;
+    let now = 0;
+    const input = () => ({ muted, active, sounding: era !== null || held !== null });
+    const pass = (why?: "mute" | "active" | "era") => {
+      if (why) {
+        if (f.buildsVoice(input(), held, era)) {
+          if (era) {
+            voices = Math.min(voices, 1) + 1;
+            built++;
+          }
+          held = era;
+        }
+        phase = f.stepTransport(phase, input(), now, why).phase;
+      }
+      if (phase.kind !== "asleep") phase = f.tickTransport(phase, now).phase;
+      if (f.dropsVoices(phase, held, era)) {
+        held = null;
+        voices = 0;
+      }
+    };
+    return {
+      setEra(e: string | null) {
+        era = e;
+        pass("era");
+      },
+      mute(m: boolean) {
+        muted = m;
+        pass("mute");
+      },
+      active(a: boolean) {
+        active = a;
+        pass("active");
+      },
+      wait(s: number) {
+        now += s;
+        pass();
+      },
+      get voices() {
+        return voices;
+      },
+      get built() {
+        return built;
+      },
+      get phase() {
+        return phase.kind;
+      },
+    };
+  }
+
+  it("turning spreads in a muted book builds nothing; the unmute builds one", () => {
+    const m = engine();
+    m.setEra("1960s");
+    m.wait(3);
+    assert.equal(m.built, 1);
+    m.mute(true);
+    m.wait(1);
+    assert.equal(m.phase, "asleep");
+    for (let i = 0; i < 40; i++) {
+      m.setEra(i % 2 ? "1960s" : "1970s");
+      assert.ok(m.voices <= 1, `voices ${m.voices} after ${i + 1} changes`);
+    }
+    assert.equal(m.built, 1);
+    m.mute(false);
+    assert.equal(m.phase, "playing");
+    assert.equal(m.voices, 1);
+    // The held 1960s voice went at the first change; the unmute builds one.
+    assert.equal(m.built, 2);
+  });
+
+  it("an unmute with the era unchanged resumes the held voice", () => {
+    const m = engine();
+    m.setEra("1960s");
+    m.mute(true);
+    m.wait(1);
+    m.setEra("1960s");
+    m.mute(false);
+    assert.equal(m.voices, 1);
+    assert.equal(m.built, 1);
+  });
+
+  it("an era changed while muted is built once, at the unmute", () => {
+    const m = engine();
+    m.setEra("1960s");
+    m.mute(true);
+    m.wait(1);
+    m.setEra("1970s");
+    assert.equal(m.voices, 0);
+    m.mute(false);
+    assert.equal(m.voices, 1);
+    assert.equal(m.built, 2);
+  });
+
+  it("the book closed: nothing built while it ebbs or sleeps", () => {
+    const m = engine();
+    m.setEra("1980s");
+    m.active(false);
+    for (const e of ["1990s", "2000s", "2010s"]) m.setEra(e);
+    assert.equal(m.phase, "stopping");
+    assert.equal(m.built, 1);
+    m.wait(2);
+    assert.equal(m.phase, "asleep");
+    assert.equal(m.voices, 0);
+    m.active(true);
+    assert.equal(m.built, 2);
+    assert.equal(m.voices, 1);
+  });
+});
+
 describe("voice fade stages", () => {
   type Ramp = Parameters<Fades["rampValue"]>[0];
   /** A voice's stages as data, driven like voice.ts drives them. */

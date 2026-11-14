@@ -137,6 +137,16 @@ export class MusicCore {
     }
   }
 
+  /**
+   * Free every voice at once and forget the era. Only while the transport
+   * level is 0 (the engine asleep), so cutting cannot click.
+   */
+  clear(now: number) {
+    this.era = null;
+    for (const v of this.voices) v.dispose(now);
+    this.voices = [];
+  }
+
   /** The era's score and string list, made once per core. */
   private prep(id: EraId): EraPrep {
     let p = this.preps.get(id);

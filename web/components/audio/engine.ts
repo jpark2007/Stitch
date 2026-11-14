@@ -16,7 +16,10 @@
  *
  * It obeys the book's mute (sound.ts): muting fades the music out in 0.3 s
  * and suspends the context; unmuting resumes it and fades back in. One
- * button silences music, narration and paper sounds together.
+ * button silences music, narration and paper sounds together. While muted
+ * or closed an era change only records the era: no voice is built for music
+ * nobody hears, and the one left from another era is freed (fades.ts
+ * buildsVoice / dropsVoices); the wake builds the era asked for.
  *
  * Every call is cheap and returns at once: the work (building a voice,
  * scheduling notes, prefetching) happens on the engine's lookahead timer
@@ -28,7 +31,15 @@
 import { isMuted, subscribeMuted } from "@/components/book/sound";
 import { MusicCore, type MeterReading } from "./core";
 import type { EraId } from "./eras";
-import { stepTransport, tickTransport, wantsSound, type Phase, type TransportAction } from "./fades";
+import {
+  buildsVoice,
+  dropsVoices,
+  stepTransport,
+  tickTransport,
+  wantsSound,
+  type Phase,
+  type TransportAction,
+} from "./fades";
 import { attachMusic, sleepMusic, wakeMusic } from "./hub";
 
 /** Scheduler period. The lookahead (core.ts) covers four of these. */
@@ -111,7 +122,8 @@ export function createEraMusic(opts: EraMusicOptions = {}): EraMusic {
     const t0 = performance.now();
     const now = ctx.currentTime;
     if (why) {
-      core.setEra(era, now);
+      // Only for music about to be heard: muted or closed, the era waits.
+      if (buildsVoice(input(), core.currentEra, era)) core.setEra(era, now);
       core.setDucked(ducked, now);
       const r = stepTransport(phase, input(), now, why);
       phase = r.phase;
@@ -132,6 +144,8 @@ export function createEraMusic(opts: EraMusicOptions = {}): EraMusic {
       phase = r.phase;
       run(r.actions, now);
     }
+    // Asleep holding an era no longer asked for: let it go now, not at the wake.
+    if (dropsVoices(phase, core.currentEra, era)) core.clear(now);
     // Prefetching: one era's score per pass, its strings in small slices.
     const next = prefetches.shift();
     if (next) core.prefetch(next);

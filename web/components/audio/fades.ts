@@ -181,6 +181,26 @@ export function stepTransport(
   return { phase: { kind: "stopping", until: now + dur }, actions: [{ kind: "level", to: 0, dur }] };
 }
 
+/**
+ * Whether a pass builds a voice for the asked-for era: only when it is about
+ * to be heard. While muted or closed (asleep, or fading there) the era is
+ * only remembered, so turning spreads in a muted book builds nothing and
+ * costs nothing; the voice is made when the music next wakes.
+ */
+export function buildsVoice(input: TransportInput, current: string | null, next: string | null) {
+  return wantsSound(input) && current !== next;
+}
+
+/**
+ * Whether a sleeping engine frees its voices: they hold an era that is no
+ * longer the one asked for. The level is already 0, so cutting them cannot
+ * click. A voice still holding the asked-for era is kept, so an unmute
+ * resumes it where it was.
+ */
+export function dropsVoices(phase: Phase, current: string | null, next: string | null) {
+  return phase.kind === "asleep" && current !== next;
+}
+
 /** Advance time: a finished fade-out suspends the context. */
 export function tickTransport(phase: Phase, now: number): { phase: Phase; actions: TransportAction[] } {
   if (phase.kind === "stopping" && now >= phase.until) return { phase: { kind: "asleep" }, actions: [{ kind: "suspend" }] };
