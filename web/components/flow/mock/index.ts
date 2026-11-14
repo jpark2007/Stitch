@@ -7,9 +7,9 @@
 import type { MemoryResponse } from "@/lib/types";
 import { buildDemoSeed } from "./demoSeed";
 import { createMockBackend } from "./mockBackend";
-import type { MockBackend } from "./mockBackend";
+import type { MockBackend, MockFault } from "./mockBackend";
 
-export type { MockBackend, MockBackendOptions } from "./mockBackend";
+export type { MockBackend, MockBackendOptions, MockFault } from "./mockBackend";
 export type { MockSeed } from "./demoSeed";
 export { DEMO_INVITE_CODE, DEMO_PASSWORD } from "./demoSeed";
 
@@ -33,10 +33,26 @@ function browserStorage(): Storage | null {
   }
 }
 
+/**
+ * For browser sweeps: the backend is `window.__stitchMock` (call
+ * `inject({...})` on it to fail or slow a route), and faults listed in
+ * `window.__stitchMockFaults` before the page loads (Playwright's
+ * add_init_script) are armed as soon as it is created.
+ */
+interface SweepWindow {
+  __stitchMock?: MockBackend;
+  __stitchMockFaults?: MockFault[];
+}
+
 /** The shared mock backend for this page load. */
 export function getMockBackend(): MockBackend {
   if (!backend) {
     backend = createMockBackend({ seed: loadSeed, storage: browserStorage() });
+    if (typeof window !== "undefined") {
+      const w = window as unknown as SweepWindow;
+      w.__stitchMock = backend;
+      for (const fault of Array.isArray(w.__stitchMockFaults) ? w.__stitchMockFaults : []) backend.inject(fault);
+    }
   }
   return backend;
 }

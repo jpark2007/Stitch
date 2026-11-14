@@ -1502,3 +1502,41 @@ test("parity: memory submit checks the author after the fields", async () => {
   assert.equal(noPerson.body.detail, "Add or claim your person in this family first");
   assert.deepEqual((await call(b, "GET", "/families/sample_family/questions")).body.questions, []);
 });
+
+// ---------------------------------------------------------------------------
+// Injected faults (for sweeps of error and loading states in mock mode)
+
+test("inject: a status, a network failure, a delay, times and removal", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const F = "/families/sample_family";
+
+  const off = b.inject({ method: "POST", path: "/families/{fid}/invites", status: 403, detail: "Admins only", times: 1 });
+  const denied = await call(b, "POST", `${F}/invites`);
+  assert.equal(denied.status, 403);
+  assert.equal(denied.body.detail, "Admins only");
+  assert.equal((await call(b, "POST", `${F}/invites`)).status, 201, "times: 1 is used up");
+  off();
+
+  // A 5xx with no detail is FastAPI's plain-text 500, which the client reads as its own message.
+  b.inject({ path: `${F}/members/user_ana`, method: "DELETE", status: 500 });
+  const client = createApiClient({ baseUrl: BASE, fetch: b.fetch, mediaUrl: b.mediaUrl });
+  await assert.rejects(client.removeMember("sample_family", "user_ana"), (e) => isApiError(e) && e.status === 500);
+  assert.equal((await call(b, "GET", F)).body.members.length, 2, "nothing changed");
+  b.clearFaults();
+
+  b.inject({ path: /\/tree$/, network: true });
+  await assert.rejects(b.fetch(`${BASE}${F}/tree`), TypeError);
+  await assert.rejects(client.getTree("sample_family"), (e) => isApiError(e) && e.status === 0);
+  b.clearFaults();
+
+  const slow = createMockBackend({ seed: () => buildDemoSeed(SAMPLE, NOW), stepDelayMs: 0, now: () => NOW });
+  slow.inject({ method: "GET", path: "/me", delayMs: 30 });
+  const t0 = Date.now();
+  assert.equal((await slow.fetch(`${BASE}/me`)).status, 401, "a delay alone goes through");
+  assert.ok(Date.now() - t0 >= 25);
+
+  // Methods and paths that don't match go through untouched.
+  b.inject({ method: "DELETE", path: F, status: 500 });
+  assert.equal((await call(b, "GET", F)).status, 200);
+});

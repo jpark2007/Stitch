@@ -50,6 +50,32 @@ export interface MockBackend {
   fetch: typeof fetch;
   mediaUrl(fid: string, mediaId: string): string;
   reset(): void;
+  /**
+   * Make matching requests fail or wait, for browser sweeps and tests of
+   * error and loading states (mock mode never touches the network, so
+   * Playwright's page.route can't reach it). Returns a function that removes
+   * the fault.
+   */
+  inject(fault: MockFault): () => void;
+  /** Remove every injected fault. */
+  clearFaults(): void;
+}
+
+/**
+ * One injected fault. `path` matches the request path (a string matches
+ * exactly or as a "{param}" pattern; a RegExp is tested). With `status` the
+ * request answers `{detail}` with that status; with `network` it rejects
+ * like a failed fetch; with only `delayMs` it waits, then goes through.
+ * `times` limits how many requests it hits (default: all of them).
+ */
+export interface MockFault {
+  method?: string;
+  path: string | RegExp;
+  status?: number;
+  detail?: string;
+  network?: boolean;
+  delayMs?: number;
+  times?: number;
 }
 
 export interface MockBackendOptions {
@@ -2241,9 +2267,51 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
 
   // ----- fetch
 
+  // ----- injected faults
+
+  interface ActiveFault {
+    fault: MockFault;
+    matches: (path: string) => boolean;
+    left: number;
+  }
+  const faults: ActiveFault[] = [];
+
+  function faultMatcher(path: string | RegExp): (p: string) => boolean {
+    if (path instanceof RegExp) return (p) => path.test(p);
+    const source = path
+      .replace(/\/+$/, "")
+      .split(/(\{[a-zA-Z]+\})/)
+      .map((part) => (/^\{[a-zA-Z]+\}$/.test(part) ? "[^/]+" : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+      .join("");
+    const re = new RegExp(`^${source}$`);
+    return (p) => re.test(p);
+  }
+
+  /** The first live fault for this request, used up by one. */
+  function takeFault(method: string, path: string): MockFault | null {
+    const hit = faults.find(
+      (f) => f.left > 0 && (!f.fault.method || f.fault.method.toUpperCase() === method) && f.matches(path),
+    );
+    if (!hit) return null;
+    hit.left -= 1;
+    if (hit.left <= 0) faults.splice(faults.indexOf(hit), 1);
+    return hit.fault;
+  }
+
   async function handle(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const req = await readRequest(input, init);
     if (req.signal?.aborted) throw abortError(req.signal);
+    const fault = takeFault(req.method, req.path);
+    if (fault) {
+      if (fault.delayMs) await sleep(fault.delayMs);
+      if (req.signal?.aborted) throw abortError(req.signal);
+      if (fault.network) throw new TypeError("Failed to fetch");
+      if (fault.status) {
+        return fault.status >= 500 && fault.detail === undefined
+          ? new Response("Internal Server Error", { status: fault.status, headers: { "Content-Type": "text/plain" } })
+          : json(fault.status, { detail: fault.detail ?? "Injected failure" });
+      }
+    }
     let s: MockState;
     try {
       s = await ensureState();
@@ -2273,6 +2341,23 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
 
   return {
     fetch: (input: RequestInfo | URL, init?: RequestInit) => handle(input, init),
+
+    inject(fault: MockFault): () => void {
+      const active: ActiveFault = {
+        fault,
+        matches: faultMatcher(fault.path),
+        left: fault.times && fault.times > 0 ? fault.times : Infinity,
+      };
+      faults.push(active);
+      return () => {
+        const at = faults.indexOf(active);
+        if (at !== -1) faults.splice(at, 1);
+      };
+    },
+
+    clearFaults(): void {
+      faults.length = 0;
+    },
 
     mediaUrl(fid: string, raw: string): string {
       const mediaId = bareId(raw);
