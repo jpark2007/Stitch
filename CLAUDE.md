@@ -8,16 +8,16 @@ Read `README.md` for the product and the relevant section of `ARCHITECTURE.md` b
 
 ## Ownership
 
-`web/` is frontend + stage, `api/` is backend + agent + compiler. One owner per area by default. Stay inside your area; for anything else, post a `REQUEST` on Issue #1.
+For now all work is split between two owners, roughly half each. Ethan has everything you look at; Jonah has everything behind it plus the form-and-flow pages that talk to the API. Stay inside your half; for anything else, post a `REQUEST` on Issue #1.
 
-| Owner | GitHub | Area | Paths |
+| Owner | GitHub | Takes | Paths |
 |---|---|---|---|
-| Jonah | `jpark2007` | Agent + compiler | `api/agent/`, `api/screenplay/`, `api/tests/` |
-| Ethan | `ethanm9720` | Stage | `web/components/stage/`, `web/components/book/`, `web/components/paper/`, `web/app/render/` |
-| Nate | `natek1228` | Pages | `web/app/` (except `render/`), `web/components/tree/`, `web/components/agent/`, `web/lib/api.ts` |
-| Carsten | `CarstenMacosko` | Data | `api/db/`, `api/routes/`, `api/auth.py`, `api/main.py`, `api/seed/` |
+| Jonah | `jpark2007` | Agent + compiler, Data, and the flow pages (sign-up, login, start a family, join, add-a-memory, agent feed) | all of `api/`, `web/app/(auth)/`, `web/app/families/`, `web/app/join/`, `web/app/add/`, `web/components/agent/`, `web/lib/api.ts` |
+| Ethan | `ethanm9720` | Stage and book, tree home, person and moment pages, threads screen, global look | `web/components/stage/`, `web/components/book/`, `web/components/paper/`, `web/components/tree/`, `web/components/threads/`, `web/app/page.tsx`, `web/app/people/`, `web/app/memories/`, `web/app/render/`, `web/app/threads/`, `web/app/layout.tsx`, `web/app/globals.css`, `web/public/textures/`, web config (`web/package.json`, `next.config.ts`, etc.) |
 
-This split is the default proposed on Issue #1. To swap areas, agree on the issue and update this table in the same PR.
+- Nate (`natek1228`) and Carsten (`CarstenMacosko`) have no fixed area yet. When either picks up work, agree on Issue #1 which paths move to them and update this table in the same PR.
+- `ARCHITECTURE.md` and `DESIGN.md` describe four areas (Stage, Pages, Agent + compiler, Data). Map them with this table: Stage → Ethan; Agent + compiler and Data → Jonah; Pages is divided as listed above.
+- To change the split, agree on the issue and update this table in the same PR.
 
 ## Contracts
 
