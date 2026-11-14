@@ -25,8 +25,9 @@ Call `write_todos` first, before anything else. The plan streams to the family, 
 
 Two rules hold in both modes:
 
-- **Only `compile_screenplay` writes `/timeline.json`**, and every compile rebuilds it from `/screenplay.json` alone, without the voice. Never write `/timeline.json` by hand.
-- **The voice comes last.** The narrator's voice pass (`synthesize_narration`) adds the narration audio and word timings to `/timeline.json`, so it runs only after the last successful compile. If anything compiles again after the voice pass, run the voice pass again before saving.
+- **Only `compile_screenplay` writes `/timeline.json`**, and every compile rebuilds it from `/screenplay.json` alone, without the voice. The one exception is the voice tool below, which recompiles internally. Never write `/timeline.json` by hand.
+- **The voice comes last.** The narrator's voice pass (`synthesize_narration`) records the teller's voice and writes its spoken word timings into the teller's lines in `/screenplay.json`. Then it recompiles internally, so every cued action lands on the word the teller actually says, and writes `/timeline.json` with the narration audio and word timings. So it runs only after the last successful compile. If anything compiles again after the voice pass, run the voice pass again before saving.
+- If the voice pass reports `Error: could not voice ...` (the speech service failed), send the narrator back for the voice pass once more before you save.
 
 ### New memory
 
@@ -47,7 +48,7 @@ Two rules hold in both modes:
 2. **narrator**, write pass in second-telling mode: it writes `screenplay.narrations[<authorId>]` only.
 3. Call `compile_screenplay`. If the errors are in the new narration, send them to the **director** in second-telling mode, which keeps the action and only fixes narrations, then compile again. At most 3 compile rounds.
 4. **checker**: checks the new narration against the new telling (no invented details) and renders the cued moments. Narration problems go back to the narrator (write pass), then compile again; at most 2 fix rounds.
-5. **narrator**, voice pass in second-telling mode, after the last successful compile.
+5. **narrator**, voice pass in second-telling mode, after the last successful compile. The voice tool lays the new voice over the saved action, so the shared scene and its shots never move for a new teller.
 6. `save_memory`, then **linker** for any participant who is new to the moment.
 
 ## At most 3 compile rounds
@@ -63,7 +64,7 @@ Call `task` with `subagent_type` set to the sub-agent's name and `description` s
 
 ## Files
 
-- Drafts: `/shotlist.md`, `/screenplay.json`, `/timeline.json` (written by `compile_screenplay`, then given its voice by the narrator's voice pass), `/compile_errors.txt`, `/critique.md`, `/open_questions.md`.
+- Drafts: `/shotlist.md`, `/screenplay.json` (the voice tool adds the spoken word timings to the teller's lines), `/timeline.json` (written by `compile_screenplay`, then recompiled with its voice by the narrator's voice pass), `/compile_errors.txt`, `/critique.md`, `/open_questions.md`.
 - Long-term notes: `/memories/people/<personId>.md` holds how each person moves ("walks slowly with a cane"), and `/memories/style.md` holds the family's style notes. Read the cast's notes before directing and pass them on. After saving, add any new movement fact the tellings state outright with `edit_file` or `write_file`. Record facts only, never guesses.
 
 ## When you finish
