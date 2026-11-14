@@ -28,8 +28,11 @@ Three lists still read the older way because tests outside the compiler-error ta
 ``poses are a, b`` (unknown_pose) and ``known sets: a, b`` / ``known people: a, b`` /
 ``known props: a, b``. They move to ``the poses are a, b`` (and so on) together with
 verbs_core's and compiler.py's unknown_pose wording, in one change.
-Here the name the screenplay wrote that is wrong is quoted (``"the_moon" is not a mark``);
-offending numbers are shown as written (``:g``), not rounded.
+Here the name the screenplay wrote that is wrong is quoted (``"the_moon" is not a mark``); a
+name of the wrong kind says what it is instead (``"to" must be a mark, and "mom" is a person``,
+then the list to pick from); offending numbers are shown as written (``:g``), not rounded. A
+written t that is not finite stays in the message head (``t=inf``) but not in CompileError.t
+(errors.error_t), so the errors are JSON-safe.
 
 When a shot's set is unknown its marks are unknown too, so mark checks for that shot are
 skipped (one unknown_set error instead of a cascade of unknown_mark errors).
@@ -44,7 +47,7 @@ from dataclasses import dataclass
 
 import schemas
 from screenplay import narration
-from screenplay.errors import error_message, from_narration_error
+from screenplay.errors import error_message, error_t, from_narration_error
 from screenplay.narration import NarrationError
 from screenplay.schema import (
     SHARED_DIR,
@@ -103,6 +106,11 @@ def _finite(x: float) -> bool:
     return isinstance(x, (int, float)) and math.isfinite(x)
 
 
+def _numbers(values: Iterable[float]) -> str:
+    """A list of numbers as written: ``[0.5, nan]``."""
+    return "[" + ", ".join(f"{v:g}" for v in values) + "]"
+
+
 @dataclass(frozen=True)
 class _Site:
     """Where an error is reported: the CompileError location fields. The message head follows
@@ -120,7 +128,7 @@ class _Site:
             code=code,
             message=error_message(self.shot, self.t, self.who, self.do, self.what, reason),
             shot=self.shot,
-            t=self.t,
+            t=error_t(self.t),  # None when not finite: JSON-safe (the message still says t=inf)
             who=self.who,
             do=self.do,
         )
@@ -203,6 +211,16 @@ class _Validator:
             if p not in allowed:
                 self.add(site, "unexpected_param", f'{_takes(name, spec)}; "{p}" is not one of them')
         return {p for p in given if p in allowed}
+
+    def kind_of(self, name: str, marks: Mapping[str, object] | None) -> str | None:
+        """``a person``, ``a prop`` or ``a mark`` when ``name`` is one in this screenplay and shot."""
+        if name in self.cast_set:
+            return "a person"
+        if name in self.sp_props_set:
+            return "a prop"
+        if marks is not None and name in marks:
+            return "a mark"
+        return None
 
     def check_mark(self, site: _Site, marks: Mapping[str, object] | None, name: str, lead: str = "") -> None:
         """unknown_mark unless `name` is a mark of the shot (skipped when the marks are unknown).
@@ -352,6 +370,11 @@ class _Validator:
                 )
             else:
                 shot = self.sp.shots[self.shot_ids.index(it.shot)]
+        if len(it.at) != 2 or not all(_finite(v) for v in it.at):
+            self.add(
+                site, "invalid_value",
+                f"{label} is at {_numbers(it.at)}, but at is [u, v]: two finite fractions of the page",
+            )
         d = it.drives
         if d.type == "scrub":
             for name, value in (("from", d.from_), ("to", d.to)):
@@ -382,6 +405,11 @@ class _Validator:
                         f"{self.states_list(pd)}",
                     )
         elif d.type == "prop_part":
+            if d.range is not None and (len(d.range) != 2 or not all(_finite(v) for v in d.range)):
+                self.add(
+                    site, "invalid_value",
+                    f"{label} gives range {_numbers(d.range)}, but a range is [min, max]: two finite numbers",
+                )
             if d.part is None:
                 reason = f'{label} drives prop_part, which requires prop, part; "part" is missing'
                 self.add(site, "missing_param", reason)
@@ -409,8 +437,9 @@ class _Validator:
                 )
             return
         set_id, dot, layer = ident.rpartition(".")
-        if sep and kind == "set" and dot and set_id and layer.startswith("layer") and layer[5:].isdigit():
-            n = int(layer[5:])
+        n_text = layer[5:]
+        if sep and kind == "set" and dot and set_id and layer.startswith("layer") and n_text.isascii() and n_text.isdigit():
+            n = int(n_text)
             allowed = [shot.set] if shot is not None else list(dict.fromkeys(s.set for s in self.sp.shots))
             if set_id not in allowed:
                 where = f"shot {shot.id}'s set is {shot.set}" if shot is not None else f"the sets are {_names(allowed)}"
@@ -534,7 +563,7 @@ class _Validator:
         if "from" in ok:
             self.check_offstage(site, "from", a.from_)  # type: ignore[arg-type]
         if "what" in ok:
-            self.action_what(site, a)
+            self.action_what(site, a, marks)
         if "target" in ok:
             self.action_target(site, a, marks)
         on_def: schemas.Prop | None = None
@@ -559,15 +588,23 @@ class _Validator:
         to = a.to
         assert to is not None
         if a.do in MARK_TO_VERBS:
-            self.check_mark(site, marks, to)
+            kind = self.kind_of(to, marks)
+            if marks is not None and to not in marks and kind is not None:
+                self.add(site, "unknown_mark", f'"to" must be a mark, and "{to}" is {kind}; {self.marks_list(marks)}')
+            else:
+                self.check_mark(site, marks, to)
         elif a.do == "exit":
             self.check_offstage(site, "to", to)
         elif a.do == "hand_to" and self.check_person(site, "to", to, marks) and to == a.who:
             self.add(site, "self_target", self_target_reason("to", to))
 
-    def action_what(self, site: _Site, a: Action) -> None:
+    def action_what(self, site: _Site, a: Action, marks: Mapping[str, object] | None) -> None:
         what = a.what
         assert what is not None
+        kind = self.kind_of(what, marks)
+        if what not in self.sp_props_set and kind is not None:
+            self.add(site, "unknown_prop", f'"what" must be a prop, and "{what}" is {kind}; {self.props_list()}')
+            return
         if not self.check_prop_listed(site, what):
             return
         d = self.props.get(what)
@@ -608,6 +645,13 @@ class _Validator:
             return None, False
         if on in marks:
             return None, True
+        if on in self.cast_set:
+            self.add(
+                site,
+                "unknown_mark",
+                f'"on" must be a prop or a mark, and "{on}" is a person; {self.props_list()}; {self.marks_list(marks)}',
+            )
+            return None, False
         self.add(
             site,
             "unknown_mark",

@@ -1,7 +1,8 @@
 """Story scenarios: realistic multi-shot family screenplays compile cleanly and sanely.
 
 Each story in story_scenes.STORIES is what a director agent would write for a whole memory
-(wedding, first car, birthday, graduation, kitchen, church, moving house, rainy walk, Christmas).
+(wedding, first car, birthday, graduation, kitchen, church, moving house, rainy walk, Christmas,
+and two that leave props behind on one set and move on to another: moving day, rainy Sunday).
 Every one must compile with zero errors, pass timeline_sanity.sanity_problems, compile to
 byte-identical JSON twice, and round-trip through Timeline.model_validate. Together they use
 every action verb, effect and camera move in shared/vocabulary.json.
@@ -193,6 +194,53 @@ def test_birthday_candles_stay_lit_into_the_backyard():
     assert keys(tl, "prop:cake", "parent")[-1][1] == "prop:picnic_table.top"
 
 
+def _ground_x(tl: Timeline, prop: str, t: float) -> float | None:
+    """The prop's x at ``t`` when it is on the ground, else None."""
+    if value_at(keys(tl, f"prop:{prop}", "parent"), t) != "ground":
+        return None
+    return value_at(keys(tl, f"prop:{prop}", "position"), t)[0]
+
+
+def _mid(tl: Timeline, shot_id: str) -> float:
+    shot = next(s for s in tl.shots if s.id == shot_id)
+    return (shot.start + shot.end) / 2
+
+
+def test_moving_day_leaves_the_boxes_in_the_old_house():
+    """box_b and the armchair stay in the old living room: offstage on the new porch, and when the
+    living room comes back only its own propStart (the armchair) is on stage again."""
+    tl = compiled("moving_day").timeline
+    assert tl is not None
+    assert [s.set for s in tl.shots] == ["living_room", "new_house_porch", "living_room"]
+    hall, armchair_spot = 2 * 0.92 - 1, 2 * 0.5 - 1
+    assert _ground_x(tl, "box_b", _mid(tl, "old_living_room")) == pytest.approx(hall)
+    for prop in ("box_b", "armchair"):
+        assert _ground_x(tl, prop, _mid(tl, "new_porch")) <= -1.0, prop
+    assert _ground_x(tl, "box_b", _mid(tl, "one_last_look")) <= -1.0
+    assert _ground_x(tl, "armchair", _mid(tl, "one_last_look")) == pytest.approx(armchair_spot)
+    # box_a went along in Dad's hands and was stacked on box_c, which only the porch has; both
+    # stay on the porch when the film cuts back to the old house.
+    porch_end = next(s for s in tl.shots if s.id == "new_porch").end - 0.01
+    assert value_at(keys(tl, "prop:box_a", "parent"), porch_end) == "prop:box_c.top"
+    assert _ground_x(tl, "box_a", _mid(tl, "one_last_look")) <= -1.0
+    assert _ground_x(tl, "box_c", _mid(tl, "old_living_room")) <= -1.0
+    assert _ground_x(tl, "box_c", _mid(tl, "one_last_look")) <= -1.0
+
+
+def test_rainy_sunday_leaves_the_box_at_home_and_the_umbrella_on_the_steps():
+    tl = compiled("rainy_sunday").timeline
+    assert tl is not None
+    assert [s.set for s in tl.shots] == ["new_house_porch", "church_steps", "chapel"]
+    assert _ground_x(tl, "box_c", _mid(tl, "the_porch")) == pytest.approx(2 * 0.9 - 1)
+    for shot in ("the_steps", "the_pew_inside"):
+        assert _ground_x(tl, "box_c", _mid(tl, shot)) <= -1.0, shot
+    # The umbrella is dropped on the church steps and stays there, so the chapel has none.
+    steps_x = _ground_x(tl, "umbrella", next(s for s in tl.shots if s.id == "the_steps").end - 0.01)
+    assert steps_x is not None and abs(steps_x) <= 1.0
+    assert _ground_x(tl, "umbrella", _mid(tl, "the_pew_inside")) <= -1.0
+    assert value_at(keys(tl, "prop:hymn_books", "parent"), _mid(tl, "the_pew_inside")).startswith("puppet:grandpa.")
+
+
 def test_wedding_has_both_tellings():
     tl = compiled("wedding").timeline
     assert tl.default_narrator == "dad"
@@ -232,7 +280,9 @@ def test_a_clean_hand_built_timeline_has_no_problems():
          "keys": [[0, [0.3, 0.0, 0.5]], [2, [0, 0, 0]], [4, [0.1, 0.0, 0.5]]]},
     ])
     assert sanity_problems(tl) == []
-    assert len(CHECKS) == 5
+    assert [c.__name__ for c in CHECKS] == [
+        "check_hands", "check_parent_position", "check_times", "check_seated", "check_finite", "check_props_on_set",
+    ]
 
 
 # (a) no prop in two hands
@@ -405,7 +455,10 @@ def test_the_same_floor_gift_can_be_picked_up_standing():
     'open/close do not bend or kneel to a prop on the floor (pick_up and place_on do): '
     '"shot s1, t=0.5: kid cannot open "gift"; kid\'s arm_r cannot reach: target is 0.17 from the shoulder, '
     'reach is 0.14" for a gift 0.08 in front of the kid\'s feet, which pick_up reaches. A director writes '
-    '"drop the gift, then open it" (the christmas story kneels first instead).'
+    '"drop the gift, then open it" (the christmas story kneels first instead). The fix is parked on '
+    'origin/jonah/compiler-open-close-floor-reach pending the agent stream\'s test and doc changes '
+    '(api/tests/agent/test_agent_skills.py::test_open_does_not_reach_a_carried_prop_on_the_floor_or_a_table '
+    'pins the current behaviour).'
 ))
 def test_open_a_gift_on_the_floor_standing():
     result = compile_story(_one_shot(["kid"], ["gift"], "living_room", {
@@ -420,7 +473,10 @@ def test_open_a_gift_on_the_floor_standing():
     'open does not turn the opener toward the prop (pick_up and hand_to do): kneeling mom facing left, with '
     'a box on the floor 0.1 to her right, gets "shot s1, t=2: mom cannot open "box_c"; mom\'s arm_r cannot '
     'reach: target is 0.22 from the shoulder, reach is 0.17"; facing right, the same open compiles '
-    '(the moving_house story starts her facing the box instead).'
+    '(the moving_house story starts her facing the box instead). The fix is parked on '
+    'origin/jonah/compiler-open-close-floor-reach pending the agent stream\'s test and doc changes '
+    '(api/tests/agent/test_agent_skills.py::test_open_does_not_reach_a_carried_prop_on_the_floor_or_a_table '
+    'pins the current behaviour).'
 ))
 def test_open_a_box_on_the_floor_behind_you():
     result = compile_story(_one_shot(["mom"], ["box_c"], "new_house_porch", {
@@ -439,3 +495,65 @@ def test_the_box_behind_mom_opens_when_she_faces_it():
         "actions": [{"t": 0.2, "do": "kneel", "who": "mom"}, {"t": 2, "do": "open", "who": "mom", "what": "box_c"}],
     }))
     assert result.ok, messages(result)
+
+
+# ------------------------------------------------------------- props across sets (wave 3)
+
+def _wave_shot(sid: str, set_id: str, start: dict, prop_start: dict) -> dict:
+    who = next(iter(start))
+    return {"id": sid, "set": set_id, "start": start, "propStart": prop_start, "camera": [], "narration": [],
+            "actions": [{"t": 0.5, "do": "wave", "who": who}]}
+
+
+def test_a_prop_put_back_at_another_x_on_a_new_set_is_keyed_there():
+    """Control for the xfail below: back_door is x = -0.84 in the kitchen, rug x = -0.4 in the
+    living room, so the cup steps there at the cut."""
+    result = compile_story({"memoryId": "repro", "cast": ["kid"], "props": ["cup"], "shots": [
+        _wave_shot("s1", "kitchen", {"kid": {"at": "by_table"}}, {"cup": {"at": "back_door"}}),
+        _wave_shot("s2", "living_room", {"kid": {"at": "front_door"}}, {"cup": {"at": "rug"}}),
+    ]})
+    assert result.ok, messages(result)
+    assert sanity_problems(result.timeline) == []
+    assert keys(result.timeline, "prop:cup", "position")[-1] == (4.0, [-0.4, 0.0, 0.5])
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "compiler.py _start_keys (the propStart loop, via _hold_then, which skips an unchanged value): a "
+    "propStart on a new set that puts a prop at the same place it stood on the old set writes no key, so "
+    "the timeline cannot tell it from a prop left over from the old set: the kitchen's back_door and the "
+    "living room's front_door are both x = -0.84, and sanity_problems gives 'props_on_set: shot s2 "
+    "(living_room) at t=4: prop:cup is on the ground at x=-0.84 but has no parent or position key in this "
+    "shot, nor in an earlier shot of this set'. It renders correctly; on a set change _start_keys should "
+    "key every propStart prop (a parent and a position key at the shot's start) even when unchanged. "
+    "test_compile_fuzz's StoryGen steers around it (StoryGen.begin, was_at)."
+))
+def test_a_prop_put_back_at_the_same_x_on_a_new_set_is_keyed_there():
+    result = compile_story({"memoryId": "repro", "cast": ["kid"], "props": ["cup"], "shots": [
+        _wave_shot("s1", "kitchen", {"kid": {"at": "by_table"}}, {"cup": {"at": "back_door"}}),
+        _wave_shot("s2", "living_room", {"kid": {"at": "rug"}}, {"cup": {"at": "front_door"}}),
+    ]})
+    assert result.ok, messages(result)
+    assert sanity_problems(result.timeline) == []
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "compiler.py _start_keys (the start `holding` keys, which are appended as they are instead of going "
+    "through _hold_then): a prop left on the kitchen floor is parked offstage at the cut to the living "
+    "room (position [-1.3, 0, 0.5] at t=4), then held from the start of the backyard shot (position "
+    "[0, 0, 0] at t=7.9) with no hold key before it, so through the whole living-room shot it glides along "
+    "the ground from offstage to centre stage (x = -0.65 halfway). With a shot between the two that has no "
+    "key for it, sanity_problems flags it too ('props_on_set: ... prop:cup is on the ground at x=...'), "
+    "which the fuzz finds outside the default corpus (story seeds 559 and 672 of a 1000-story sweep). "
+    "The start holding keys should hold the old value up to the shot's start and step there."
+))
+def test_a_prop_held_in_a_later_shot_does_not_glide_in_from_offstage():
+    result = compile_story({"memoryId": "repro", "cast": ["kid"], "props": ["cup"], "shots": [
+        _wave_shot("s1", "kitchen", {"kid": {"at": "by_table"}}, {"cup": {"at": "window"}}),
+        _wave_shot("s2", "living_room", {"kid": {"at": "rug"}}, {}),
+        _wave_shot("s3", "backyard", {"kid": {"at": "lawn_left", "holding": "cup"}}, {}),
+    ]})
+    assert result.ok, messages(result)
+    tl = result.timeline
+    s2 = tl.shots[1]
+    for t in (s2.start + 0.1, (s2.start + s2.end) / 2, s2.end - 0.1):
+        assert value_at(keys(tl, "prop:cup", "position"), t)[0] <= -1.0, t  # offstage through s2

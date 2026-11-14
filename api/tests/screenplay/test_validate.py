@@ -561,7 +561,11 @@ def test_listed_prop_missing_from_the_scene_is_reported_once():
 
 @pytest.mark.parametrize(("verb", "params", "reason"), [
     ("walk_to", {"to": "nowhere"}, f'"nowhere" is not a mark in this shot; {MARKS_LIST}'),
-    ("run_to", {"to": "mom"}, f'"mom" is not a mark in this shot; {MARKS_LIST}'),
+    ("run_to", {"to": "mom"}, f'"to" must be a mark, and "mom" is a person; {MARKS_LIST}'),
+    ("walk_to", {"to": "hat"}, f'"to" must be a mark, and "hat" is a prop; {MARKS_LIST}'),
+    ("enter", {"to": "kid"}, f'"to" must be a mark, and "kid" is a person; {MARKS_LIST}'),
+    ("place_on", {"what": "hymn_books", "on": "mom"},
+     f'"on" must be a prop or a mark, and "mom" is a person; {PROPS_LIST}; {MARKS_LIST}'),
     ("enter", {"to": "nowhere"}, f'"nowhere" is not a mark in this shot; {MARKS_LIST}'),
     ("enter", {"to": "curb", "from": "curb"}, '"from" must be offstage_left or offstage_right, not "curb"'),
     ("exit", {"to": "curb"}, '"to" must be offstage_left or offstage_right, not "curb"'),
@@ -709,7 +713,8 @@ def test_bad_time():
     assert [e.code for e in errors] == ["bad_time"] * 4
     assert [(e.shot, e.who, e.do) for e in errors] == [("s1", "dad", "wave"), ("s1", "mom", "kneel"),
                                                        ("s1", "kid", "kneel"), ("s1", "kid", "kneel")]
-    assert errors[0].t == -0.5 and errors[1].t == 2.0 and math.isnan(errors[2].t)
+    # A t that is not finite is left out of CompileError.t (JSON has no nan); the message keeps it.
+    assert errors[0].t == -0.5 and errors[1].t == 2.0 and errors[2].t is None and errors[3].t is None
 
 
 @pytest.mark.parametrize("verb", ["pick_up", "hold", "drop", "hand_to", "put_on"])
@@ -1133,3 +1138,225 @@ def test_validate_builds_its_messages_with_errors_error_message():
     assert V._Site(shot="s1", t=4.7449, do="pan_to", what="mom").error("c", "r").message == (
         'shot s1, t=4.74: cannot pan_to "mom"; r'
     )
+
+
+# ------------------------------------------------------------------- bug hunt (wave 3)
+#
+# validate() on its own, over the compile fuzz's random corpus and hand-built shapes: every
+# input gives a finite list of CompileErrors whose codes are in errors.ERROR_CODES, whose hints
+# format, and whose shot / t / who / do agree with the message head
+# (test_compile_fuzz.error_site_problems), and which round-trip through JSON unchanged.
+
+def _hunt_problems(sp: Screenplay, errors: list[CompileError]) -> list[str]:
+    from screenplay.errors import ERROR_CODES, hint_for
+    from screenplay.schema import CompileResult
+    from test_compile_fuzz import error_problems, error_site_problems
+
+    out: list[str] = []
+    for e in errors:
+        if e.code not in ERROR_CODES:
+            out.append(f"code {e.code!r} is not in ERROR_CODES: {e.message}")
+        hint_for(e)  # never raises
+    if errors:
+        result = CompileResult(ok=False, errors=errors)
+        out += error_problems(result) + error_site_problems(sp, result)
+        dumped = result.model_dump_json()
+        if CompileResult.model_validate_json(dumped).model_dump_json() != dumped:
+            out.append("the errors do not round-trip through JSON")
+    return out
+
+
+def test_validate_alone_keeps_its_invariants_on_the_random_fuzz_corpus():
+    from test_compile_fuzz import generate, scene_for
+
+    scene = scene_for("random")
+    seen: set[str] = set()
+    for i in range(3000):
+        sample = generate("random", i)
+        if sample.screenplay is None:
+            continue
+        errors = validate(sample.screenplay, scene.sets, scene.props, scene.people)
+        seen.update(e.code for e in errors)
+        assert _hunt_problems(sample.screenplay, errors) == [], i
+    assert len(seen) >= 25
+
+
+WRONG_KINDS = ["mom", "dad", "hat", "chair", "sedan", "lamp", "curb", "steps_top", "offstage_left", "zzz", "",
+               "wave", "open", "seat", "hand_r", "dusk", "table.top", "prop:hat", "puppet:mom", "été", " curb"]
+VALID = {"who": "dad", "to": "curb", "from": "offstage_left", "what": "hat", "target": "mom", "on": "table",
+         "socket": "top", "pose": "wave", "state": "lit", "at": "curb", "value": "dusk", "dur": 2.0}
+
+
+@pytest.mark.parametrize("verb", sorted(VERBS))
+def test_every_parameter_of_every_verb_given_the_wrong_kind_of_value(verb):
+    spec = VERBS[verb]
+    params = [*spec["required"], *spec["optional"]]
+    for p in [*params, "who", "what", "to", "on", "target", "at", "socket"]:
+        values: list[object] = [0.0, -1.0, 1e9, math.nan, math.inf] if p == "dur" else [*WRONG_KINDS, None]
+        for value in values:
+            a = act(verb, **{q: VALID[q] for q in params})
+            if value is None:
+                a.pop(p, None)
+            else:
+                a[p] = value
+            sp = screenplay(shot(start={"dad": {"at": "steps_left"}}, prop_start={"table": {"at": "curb"}},
+                                 actions=[a]))
+            assert _hunt_problems(sp, check(sp)) == [], (p, value)
+
+
+def test_what_must_be_a_prop_not_a_person_or_a_mark():
+    a = act("pick_up", who="dad", what="mom")
+    b = act("drop", t=2, who="dad", what="curb")
+    assert_errors(
+        check_actions(a, b),
+        E("unknown_prop", message_for("pick_up", a, f'"what" must be a prop, and "mom" is a person; {PROPS_LIST}'),
+          t=1.0, who="dad", do="pick_up"),
+        E("unknown_prop",
+          'shot s1, t=2: dad cannot drop "curb"; "what" must be a prop, and "curb" is a mark; ' + PROPS_LIST,
+          t=2.0, who="dad", do="drop"),
+    )
+
+
+def test_a_name_of_two_kinds_is_reported_once_as_ambiguous():
+    """A mark named like a person, used as a mark, and a prop named like a mark, used as a prop:
+    ambiguous_name says so; the action is not also told the name is of the wrong kind."""
+    sp = screenplay(shot(marks={"mom": [0.5, 0.0], "hat": [0.1, 0.0]},
+                         actions=[act("walk_to", who="dad", to="mom"), act("pick_up", t=2, who="dad", what="hat")]))
+    assert [e.code for e in check(sp)] == ["ambiguous_name", "ambiguous_name"]
+
+
+def test_a_mark_parameter_in_a_shot_on_an_unknown_set_says_nothing_more():
+    """The set is unknown, so its marks are too: no cascade, and no crash naming a person."""
+    sp = screenplay(shot(set="moon", actions=[act("walk_to", who="dad", to="mom"),
+                                              act("place_on", t=2, who="dad", what="hat", on="kid")]))
+    assert [e.code for e in check(sp)] == ["unknown_set"]
+
+
+def test_duplicate_shot_ids_are_reported_once_and_keep_consistent_sites():
+    sp = screenplay(
+        shot(actions=[act("wave", who="dad", id="w")]),
+        shot(actions=[act("kneel", t=2, who="dad")]),
+        narrations={"mom": {"s1": [line(0, "We waved.", cue="w")]}},
+    )
+    errors = check(sp)
+    assert [(e.code, e.shot) for e in errors] == [("duplicate_shot", "s1"), ("cue_unknown_action", "s1")]
+    assert errors[0].message == 'shot s1: another shot already has id "s1"; shot ids must be unique'
+    assert _hunt_problems(sp, errors) == []
+
+
+def test_unicode_ids_are_quoted_as_written():
+    sp = screenplay(shot(id="ショット1", marks={"été": [0.3, 0.0]}, start={"dad": {"at": "été"}},
+                         actions=[act("walk_to", who="dad", to="nöwhere"), act("wave", t=2, who="dâd")]))
+    errors = check(sp)
+    assert [e.message for e in errors] == [
+        f'shot ショット1, t=1: dad cannot walk_to; "nöwhere" is not a mark in this shot; {MARKS_LIST}, été',
+        f'shot ショット1, t=2: dâd cannot wave; "dâd" is not in the cast; {CAST_LIST}',
+    ]
+    assert _hunt_problems(sp, errors) == []
+
+
+def test_a_layer_number_must_be_ascii_digits():
+    """'²' passes str.isdigit but not int(): validate raised ValueError on it."""
+    lead = 'screenplay: interaction "tab" scrubs'
+    shape = 'a scrub target is "puppet:<personId>", "prop:<propId>", "set:<setId>.layer<n>" or "camera"'
+    sp = screenplay(interactions=[tab({"type": "scrub", "from": 0, "to": 1,
+                                       "targets": ["set:church.layer²", "set:church.layer١", "set:church.layer1"]})])
+    assert_errors(
+        check(sp),
+        E("interaction_bad_target", f'{lead} "set:church.layer²"; {shape}', shot=None),
+        E("interaction_bad_target", f'{lead} "set:church.layer١"; {shape}', shot=None),
+    )
+
+
+def test_an_interaction_is_at_two_finite_fractions():
+    sp = screenplay(interactions=[{**tab({"type": "scrub", "from": 0, "to": 1}), "at": at}
+                                  for at in ([5], [0.5, math.nan], [0.1, 0.2, 0.3], [0.5, 0.5])])
+    assert [e.message for e in check(sp)] == [
+        'screenplay: interaction "tab" is at [5], but at is [u, v]: two finite fractions of the page',
+        'screenplay: interaction "tab" is at [0.5, nan], but at is [u, v]: two finite fractions of the page',
+        'screenplay: interaction "tab" is at [0.1, 0.2, 0.3], but at is [u, v]: two finite fractions of the page',
+    ]
+    assert {e.code for e in check(sp)} == {"invalid_value"}
+
+
+def test_a_prop_part_range_is_two_finite_numbers():
+    """A nan range used to compile into the timeline, where JSON turns it into null."""
+    ranges = ([math.nan], [0, math.inf], [0, 1, 2], [0, 6.28], [1, 0])
+    sp = screenplay(interactions=[
+        tab({"type": "prop_part", "prop": "clock", "part": "hand", "channel": "rot", "range": r}, iid=f"r{i}")
+        for i, r in enumerate(ranges)
+    ])
+    assert_errors(
+        check(sp),
+        E("invalid_value", 'screenplay: interaction "r0" gives range [nan], but a range is [min, max]: two finite numbers',
+          shot=None),
+        E("invalid_value", 'screenplay: interaction "r1" gives range [0, inf], but a range is [min, max]: two finite '
+          "numbers", shot=None),
+        E("invalid_value", 'screenplay: interaction "r2" gives range [0, 1, 2], but a range is [min, max]: two finite '
+          "numbers", shot=None),
+    )
+
+
+def test_an_empty_cast_with_effects():
+    """Effects need nobody; one aimed at a person names the empty cast. With nobody to tell it,
+    compile() then stops at no_narrator (narration.default_author) even without narration lines."""
+    from screenplay.compiler import compile as compile_screenplay
+
+    rain = shot(actions=[act("rain", t=0), act("smoke", t=1, at="curb"), act("time_of_day", t=1, value="dusk")])
+    assert check(screenplay(rain, cast=[])) == []
+    confetti = screenplay(shot(actions=[act("confetti", at="dad")]), cast=[])
+    assert_errors(check(confetti), E("unknown_person", 'shot s1, t=1: cannot confetti; "dad" is not in the cast; '
+                                     "the cast is empty", t=1.0, do="confetti"))
+    result = compile_screenplay(screenplay(rain, cast=[]), sets=SETS, props=PROPS, people=PEOPLE)
+    assert [(e.code, e.message) for e in result.errors] == [(
+        "no_narrator",
+        "screenplay: nobody narrates: no narration source names a teller and the cast is empty; add someone to the cast",
+    )]
+
+
+def _cued_wave(scrub_to: float) -> Screenplay:
+    """A wave cued to the last word of its line, with a scrub tab written from 0.5 to ``scrub_to``."""
+    return screenplay(
+        shot(start={"dad": {"at": "steps_left"}}, actions=[act("wave", t=1, who="dad", id="w")],
+             narration=[line(0, "One, two, three, and then he waved.", cue="w", cueWord="waved")]),
+        interactions=[tab({"type": "scrub", "from": 0.5, "to": scrub_to})],
+    )
+
+
+def test_a_scrub_inside_a_cued_shot_follows_its_actions():
+    """An interaction range across narration: the cue moves the wave onto its word, and the
+    scrub written over it moves with it, inside the shot."""
+    from screenplay.compiler import compile as compile_screenplay
+
+    sp = _cued_wave(2)
+    assert check(sp) == []
+    result = compile_screenplay(sp, sets=SETS, props=PROPS, people=PEOPLE)
+    assert result.ok, [e.message for e in result.errors]
+    tl = result.timeline
+    drives = tl.interactions[0].drives
+    shot0 = tl.shots[0]
+    assert shot0.action_start < drives.from_ < drives.to <= shot0.end
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "narration.py retime_interactions: a scrub's `to` past its shot's end goes into the timeline as it "
+    "is, though its docstring says a tab only ever scrubs its own shot. Written past the end (to=500: "
+    "shot s1 ends at t=3.9, the tab scrubs to t=501.2, past the whole timeline), or pushed past it by "
+    "narration retiming (to=3 over a wave cued to the last word of its line: the shot ends at t=4.4, "
+    "the tab scrubs to t=4.7, into the fold). validate cannot know a shot's length; the compiler "
+    "should clamp `to` to the shot's end or raise interaction_bad_range."
+))
+@pytest.mark.parametrize("sp", [
+    pytest.param(screenplay(shot(start={"dad": {"at": "steps_left"}}, actions=[act("wave", t=1, who="dad")]),
+                            interactions=[tab({"type": "scrub", "from": 0, "to": 500})]), id="written_past_the_end"),
+    pytest.param(_cued_wave(3), id="pushed_past_the_end_by_a_cue"),
+])
+def test_a_scrub_never_runs_past_its_shot(sp):
+    from screenplay.compiler import compile as compile_screenplay
+
+    assert check(sp) == []
+    result = compile_screenplay(sp, sets=SETS, props=PROPS, people=PEOPLE)
+    if result.ok:
+        assert result.timeline.interactions[0].drives.to <= result.timeline.shots[0].end + 1e-6
+    else:
+        assert [e.code for e in result.errors] == ["interaction_bad_range"]

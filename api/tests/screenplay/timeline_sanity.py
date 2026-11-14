@@ -9,11 +9,10 @@ stage plays. Interpolation follows shared/CONTRACTS.md: hold the first value bef
 first key and the last after its last; numbers and lists are linear between keys; strings step.
 Two keys at the same time are a step: the later one wins from that time on.
 
-``sanity_problems(timeline)`` runs every function in ``CHECKS``, then ``LATER_CHECKS``, and
-returns all their problems, each a string that starts with the check's name. A later wave adds
-checks by writing another ``check_<name>(timeline) -> list[str]`` and appending it to
-``LATER_CHECKS`` (``CHECKS`` is pinned at five entries by test_story_scenarios); keep each one
-small and timeline-only.
+``sanity_problems(timeline)`` runs every function in ``CHECKS`` and returns all their problems,
+each a string that starts with the check's name. A later wave adds a check by writing another
+``check_<name>(timeline) -> list[str]`` and appending it to ``CHECKS`` (test_story_scenarios
+pins the list by name, so update it there too); keep each one small and timeline-only.
 
 Checks:
 
@@ -32,10 +31,13 @@ Checks:
   ``(dx, dz)`` over the same interval, within 1e-3.
 - ``finite``: no NaN or inf anywhere, ``root.facing`` is always 1 or -1, and every
   ``root.position`` and prop ``position`` value is three numbers.
-- ``props_on_set`` (in LATER_CHECKS): at each shot's start, a prop on the ground on stage
-  (``|x| <= 1``; no parent track is the ground, no position track is [0, 0, 0]) has a parent or
-  position key in that shot (a key at a shot's end belongs to the next shot), or was placed in an earlier shot of the same run of shots on that
-  set. Otherwise it shows coordinates from another set, or a first key that comes later.
+- ``props_on_set``: at each shot's start, a prop on the ground on stage (``|x| <= 1``; no
+  parent track is the ground, no position track is [0, 0, 0]) has a parent or position key in
+  that shot (a key at a shot's end belongs to the next shot), or was placed in an earlier shot
+  of the same run of shots on that set. Otherwise it shows coordinates from another set, or a
+  first key that comes later. Timeline-only, it cannot tell a prop left over from one a new
+  set's propStart put back at the very same place without a key (compiler._hold_then skips an
+  unchanged value); test_story_scenarios has that as a strict xfail.
 """
 
 from __future__ import annotations
@@ -52,7 +54,7 @@ from typing import Any
 from screenplay.schema import Timeline
 
 __all__ = [
-    "CHECKS", "LATER_CHECKS", "SEAT_TOL", "STAGE_EDGE", "check_finite", "check_hands", "check_parent_position",
+    "CHECKS", "SEAT_TOL", "STAGE_EDGE", "check_finite", "check_hands", "check_parent_position",
     "check_props_on_set", "check_seated", "check_times", "sanity_problems", "value_at",
 ]
 
@@ -333,13 +335,11 @@ def check_props_on_set(tl: Timeline) -> list[str]:
     return out
 
 
-CHECKS: list[Check] = [check_hands, check_parent_position, check_times, check_seated, check_finite]
-# Checks added after CHECKS was pinned at five entries (test_story_scenarios asserts
-# len(CHECKS) == 5, in a file another task owns). sanity_problems runs them after CHECKS; move
-# each into CHECKS once that assertion is updated.
-LATER_CHECKS: list[Check] = [check_props_on_set]
+CHECKS: list[Check] = [
+    check_hands, check_parent_position, check_times, check_seated, check_finite, check_props_on_set,
+]
 
 
 def sanity_problems(timeline: Timeline) -> list[str]:
-    """Every problem every check in CHECKS and LATER_CHECKS finds; empty when the timeline is sane."""
-    return [p for check in (*CHECKS, *LATER_CHECKS) for p in check(timeline)]
+    """Every problem every check in CHECKS finds, in CHECKS order; empty when the timeline is sane."""
+    return [p for check in CHECKS for p in check(timeline)]
