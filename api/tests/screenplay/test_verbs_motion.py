@@ -13,7 +13,7 @@ from screenplay.ik import Body
 from screenplay.schema import Action, Shot
 from screenplay.state import BUILTIN_MARKS, OFFSTAGE_LEFT, OFFSTAGE_RIGHT, StateError, World
 from screenplay.tracks import TrackSet
-from screenplay.verbs_motion import HANDLERS, apply_exit, apply_follow, apply_turn_to
+from screenplay.verbs_motion import HANDLERS, apply_exit, apply_follow, apply_turn_to, stand_up_first
 
 ACTION_START = 1.2
 WALK = motion.SPEEDS["walk"]
@@ -382,6 +382,68 @@ def test_follow_holding_a_prop_keeps_the_arm(world, tracks):
     assert "root.position" in mom and "leg_l.upper.rot" in mom and "arm_r.upper.rot" not in mom
     assert world.people["mom"].pos[0] == pytest.approx(-1.1)
     assert world.people["mom"].pos[1] == pytest.approx(0.0)
+
+
+# ------------------------------------------------------------ stand_up_first
+
+def test_stand_up_first_signature():
+    assert list(inspect.signature(stand_up_first).parameters) == ["world", "tracks", "who", "t", "skip_bones"]
+
+
+def test_stand_up_first_standing_puppet_gets_no_keys_and_keeps_t(world, tracks):
+    before_world = world.copy()
+    keys, t_up, root = stand_up_first(world, tracks, "dad", 2.0, ())
+    assert keys == [] and t_up == 2.0
+    assert root == pytest.approx(MARKS["steps_left"])
+    assert world == before_world and list(tracks.tracks()) == []
+
+
+def test_stand_up_first_uses_the_tracked_root_when_standing(world, tracks):
+    keys, _, _ = motion.locomotion_keys("dad", "tall", 1.2, MARKS["steps_left"], MARKS["curb"], 1)
+    tracks.extend(keys)
+    world.move("dad", MARKS["curb"])
+    mid = tracks.value_at("puppet:dad", "root.position", 1.5)
+    out, t_up, root = stand_up_first(world, tracks, "dad", 1.5, ())
+    assert out == [] and t_up == 1.5 and root == pytest.approx(tuple(mid))
+
+
+def test_stand_up_first_seated_on_a_prop_gets_no_keys(world, tracks):
+    world.sit_on("mom", "chair")
+    keys, t_up, _ = stand_up_first(world, tracks, "mom", 2.0, ())
+    assert keys == [] and t_up == 2.0
+
+
+def test_stand_up_first_kneeling_puppet_takes_pose_seconds(world, tracks):
+    tracks.extend(kneel_keys(Body(id="dad", ground=(-0.6, 0.0), facing=1, build="tall"), 1.2, {}))
+    world.kneel("dad")
+    before_world = world.copy()
+    before_tracks = [tr.model_dump() for tr in tracks.tracks()]
+    low = tracks.value_at("puppet:dad", "root.position", 2.0)
+    keys, t_up, root = stand_up_first(world, tracks, "dad", 2.0, ())
+    assert t_up == pytest.approx(2.0 + POSE_SECONDS)
+    assert root == pytest.approx((-0.6, 0.0, 0.5))
+    assert keys and all(k[0] == "puppet:dad" for k in keys)
+    assert min(k[2] for k in keys) == pytest.approx(2.0)
+    assert max(k[2] for k in keys) == pytest.approx(2.0 + POSE_SECONDS)
+    # Reads only: the world and tracks are unchanged until the caller applies the keys.
+    assert world == before_world
+    assert [tr.model_dump() for tr in tracks.tracks()] == before_tracks
+    tracks.extend(keys)
+    assert tracks.value_at("puppet:dad", "root.position", 2.0) == pytest.approx(low)
+    assert tracks.value_at("puppet:dad", "root.position", t_up) == pytest.approx([-0.6, 0.0, 0.5])
+    assert tracks.value_at("puppet:dad", "leg_l.upper.rot", t_up) == pytest.approx(0.0)
+
+
+def test_stand_up_first_skips_the_bones_it_is_told_to(world, tracks):
+    tracks.extend(kneel_keys(Body(id="dad", ground=(-0.6, 0.0), facing=1, build="tall"), 1.2, {}))
+    world.kneel("dad")
+    skip = ("arm_r.upper", "arm_r.lower")
+    unskipped = {k[1] for k in stand_up_first(world, tracks, "dad", 2.0, ())[0]}
+    assert {"arm_r.upper.rot", "arm_r.lower.rot"} <= unskipped
+    keys, _, _ = stand_up_first(world, tracks, "dad", 2.0, skip)
+    channels = {k[1] for k in keys}
+    assert "leg_l.upper.rot" in channels
+    assert not channels & {f"{b}.rot" for b in skip}
 
 
 # ---------------------------------------------------------------- atomicity
