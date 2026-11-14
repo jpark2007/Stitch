@@ -108,7 +108,7 @@ export function DemoDiorama({ effect }: { effect?: EffectKind | null }) {
       confetti: { emitter: fixed(door, [-0.02, 0.4, -0.25]), spread: [0.55, 0.4], count: 90, start: CONFETTI_AT },
       steam: { emitter: chimney, scale: 0.8, wind: -0.1 },
       rain: { emitter: fixed(sky, [0.1, 0, -0.1]), spread: [0.9, 1.2] },
-      smoke: { emitter: chimney, scale: 0.62, wind: -0.32 },
+      smoke: { emitter: chimney, scale: 0.62, wind: -0.55 },
     };
   }, [chimney, door, sky]);
 

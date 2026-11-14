@@ -229,14 +229,11 @@ export const cottage: CutoutSpec = {
     k.shape(poly([[0.03, 0.47], [0.43, 0.86], [0.83, 0.47], [0.83, 0.45], [0.03, 0.45]]), PALETTE.cottageRoof);
     // Round attic window and a lit cross-paned window.
     k.layer(circle(0.43, 0.62, 0.045), PALETTE.lit, 0.6);
-    const win = rect(0.47, 0.17, 0.66, 0.36);
-    k.layer(win, PALETTE.lit, 0.7);
-    const bars = new Path2D();
-    bars.moveTo(0.565, 0.17);
-    bars.lineTo(0.565, 0.36);
-    bars.moveTo(0.47, 0.265);
-    bars.lineTo(0.66, 0.265);
-    k.line(bars, PALETTE.cottageRoof, 0.012);
+    // A framed window of four lit panes.
+    k.layer(rect(0.465, 0.165, 0.665, 0.365), PALETTE.cottageShade, 0.6);
+    for (const [x0, y0] of [[0.477, 0.177], [0.57, 0.177], [0.477, 0.27], [0.57, 0.27]]) {
+      k.layer(rect(x0, y0, x0 + 0.083, y0 + 0.083), PALETTE.lit, 0.25);
+    }
     // Door with a step.
     k.layer(arch(0.27, 0.0, 0.12, 0.27), PALETTE.teal, 0.8);
     k.layer(rect(0.19, 0.0, 0.35, 0.02), PALETTE.stone, 0.5);
