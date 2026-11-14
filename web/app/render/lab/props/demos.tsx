@@ -348,7 +348,7 @@ const HEAD_R = 0.05;
 /** The bust's head socket: the top of its head (CONTRACTS.md, "head"). */
 const HEAD = new Vector3(0, 0.43 + HEAD_R, 0.5);
 /** Where the hand rests, holding the cap low beside the bust. */
-const HAND_REST = new Vector3(0.2, 0.2, 0.53);
+const HAND_REST = new Vector3(0.16, 0.2, 0.53);
 /** Where the hand reaches: body.py grip_from_anchor(cap, head), so that at
  *  the parent key the cap is exactly where the hand held it. */
 const HAND_REACH = (() => {
@@ -414,16 +414,19 @@ function Bust() {
   const coat = usePaperMaterial({ color: "#6f7f8c", grain: 0.5 });
   const skin = usePaperMaterial({ color: "#d9bc9c", grain: 0.4 });
   const shoulders = useMemo(() => {
-    const w = 0.21;
+    // A coat cut from one sheet: narrow at the hem, out to the shoulders,
+    // rounded over them to the collar.
+    const hem = 0.075;
+    const sh = 0.105;
     const h = 0.36;
-    const r = 0.08;
     const shape = new Shape();
-    shape.moveTo(-w / 2, 0);
-    shape.lineTo(w / 2, 0);
-    shape.lineTo(w / 2, h - r);
-    shape.quadraticCurveTo(w / 2, h, w / 2 - r, h);
-    shape.lineTo(-w / 2 + r, h);
-    shape.quadraticCurveTo(-w / 2, h, -w / 2, h - r);
+    shape.moveTo(-hem, 0);
+    shape.lineTo(hem, 0);
+    shape.bezierCurveTo(hem + 0.01, 0.12, sh, 0.2, sh, 0.27);
+    shape.bezierCurveTo(sh, 0.33, sh - 0.03, h, sh - 0.07, h);
+    shape.lineTo(-sh + 0.07, h);
+    shape.bezierCurveTo(-sh + 0.03, h, -sh, 0.33, -sh, 0.27);
+    shape.bezierCurveTo(-sh, 0.2, -hem - 0.01, 0.12, -hem, 0);
     shape.closePath();
     return new ShapeGeometry(shape, 12);
   }, []);
