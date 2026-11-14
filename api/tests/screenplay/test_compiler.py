@@ -664,15 +664,62 @@ def test_schedule_runs_a_follow_chain_leader_first():
     )]
     cast = {"dad": None, "mom": None, "kid": None}
     retimed = [a.t for a in actions]
-    assert C._schedule(actions, retimed, cast) == ([4, 3, 1, 2, 0, 5], None)
-    # a three-way cycle: the earliest blocked follow is the one reported; the rest run in time order
+    assert C._schedule(actions, retimed, cast) == ([4, 3, 1, 2, 0, 5], [])
+    # a three-way cycle: its earliest follow is reported, naming every link; the rest run in time order
     loop = [Action.model_validate(a) for a in (
         {"t": 2, "who": "kid", "do": "follow", "target": "dad"},
         {"t": 1, "who": "dad", "do": "follow", "target": "mom"},
         {"t": 3, "who": "mom", "do": "follow", "target": "kid"},
         {"t": 0, "who": "mom", "do": "wave"},
     )]
-    assert C._schedule(loop, [a.t for a in loop], cast) == ([3, 0, 2], 1)
+    assert C._schedule(loop, [a.t for a in loop], cast) == (
+        [3, 0, 2], [(1, "dad follows mom, mom follows kid and kid follows dad; only one can lead")],
+    )
+
+
+def test_schedule_reports_only_the_follows_on_a_cycle():
+    from screenplay.schema import Action
+
+    cast = {"dad": None, "mom": None, "kid": None, "gran": None, "uncle": None}
+    # kid follows dad, who is on the dad <-> mom cycle: kid waits on the cycle but is not on it
+    on_a_cycle = [Action.model_validate(a) for a in (
+        {"t": 0.5, "who": "kid", "do": "follow", "target": "dad"},
+        {"t": 1, "who": "dad", "do": "follow", "target": "mom"},
+        {"t": 2, "who": "mom", "do": "follow", "target": "dad"},
+    )]
+    assert C._schedule(on_a_cycle, [a.t for a in on_a_cycle], cast) == (
+        [0, 2], [(1, "dad and mom follow each other; only one can lead")],
+    )
+    # two separate cycles are each reported once, on their earliest follow, in time order
+    two = [Action.model_validate(a) for a in (
+        {"t": 4, "who": "uncle", "do": "follow", "target": "gran"},
+        {"t": 3, "who": "gran", "do": "follow", "target": "uncle"},
+        {"t": 2, "who": "mom", "do": "follow", "target": "dad"},
+        {"t": 1, "who": "kid", "do": "follow", "target": "gran"},  # waits on the second cycle only
+        {"t": 5, "who": "dad", "do": "follow", "target": "mom"},
+    )]
+    assert C._schedule(two, [a.t for a in two], cast) == (
+        [3, 0, 4],
+        [(2, "mom and dad follow each other; only one can lead"),
+         (1, "gran and uncle follow each other; only one can lead")],
+    )
+    # retimed t, not the written t, picks the earliest follow of a cycle
+    assert C._schedule(on_a_cycle, [0.5, 3.0, 2.0], cast) == (
+        [0, 1], [(2, "mom and dad follow each other; only one can lead")],
+    )
+
+
+def test_a_follower_waiting_on_a_cycle_is_not_reported_and_still_follows(fake_follow, ran):
+    res = run(follow_shot([
+        {"t": 0.5, "who": "kid", "do": "follow", "target": "dad"},
+        {"t": 1, "who": "dad", "do": "follow", "target": "mom"},
+        {"t": 2, "who": "mom", "do": "follow", "target": "dad"},
+    ]))
+    assert [(e.code, e.message, e.t, e.who, e.do) for e in res.errors] == [(
+        "follow_cycle", "shot s1, t=1: dad cannot follow; dad and mom follow each other; only one can lead",
+        1.0, "dad", "follow",
+    )]
+    assert [(c["who"], c["now"]) for c in fake_follow["calls"]] == [("kid", 0.5), ("mom", 2.0)]
 
 
 def test_the_followers_own_action_inside_the_follow_is_busy(fake_follow):
