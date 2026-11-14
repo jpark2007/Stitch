@@ -377,6 +377,18 @@ class AskResponse(Model):
     quotes: list[AskQuote]
 
 
+class MediaUploadResponse(Model):
+    """POST /families/{fid}/media (multipart field `file`)."""
+
+    id: str = Field(description="Bare media id; reference it as 'media/<id>' or pass it as a photo id")
+
+
+class MemberRolePatch(Model):
+    """PATCH /families/{fid}/members/{userId}. Admin only; the last admin cannot be demoted."""
+
+    role: Role
+
+
 class ErrorResponse(Model):
     detail: str
 

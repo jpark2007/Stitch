@@ -243,10 +243,21 @@ export interface MeResponse {
   families: FamilySummary[];
 }
 
+/** POST /families/{fid}/media (multipart field `file`). */
+export interface MediaUploadResponse {
+  /** Bare media id; reference it as 'media/<id>' or pass it as a photo id */
+  id: string;
+}
+
 export interface Member {
   userId: string;
   role: "admin" | "member";
   joinedAt?: string | null;
+}
+
+/** PATCH /families/{fid}/members/{userId}. Admin only; the last admin cannot be demoted. */
+export interface MemberRolePatch {
+  role: "admin" | "member";
 }
 
 /** A moment: one real-world event, shared across the books of everyone in it. */
