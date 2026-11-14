@@ -1,6 +1,6 @@
 ---
 name: directing
-description: Write the screenplay (/screenplay.json) that the compiler turns into the pop-up scene. Read before writing or fixing a screenplay, narration lines, pageText, pull tabs, explanations or a second telling's narration. Holds the exact action vocabulary (every verb and its parameters, camera moves, effects, poses), marks and timing conventions, cue/cueWord rules, the compile_screenplay fix loop (3 rounds max) and a worked example, hymn_books.screenplay.json in this folder.
+description: Write the screenplay (/screenplay.json) that the compiler turns into the pop-up scene. Read before writing or fixing a screenplay, narration lines, pageText, pull tabs, explanations or a second telling's narration. Holds the exact action vocabulary (every verb and its parameters, camera moves, effects, poses), marks and timing conventions, reach and vehicle rules, cue/cueWord rules, every compile error code with its fix, the compile_screenplay fix loop (3 rounds max) and a worked example, hymn_books.screenplay.json in this folder.
 ---
 
 # Directing
@@ -69,13 +69,17 @@ NarrationLine { t, text, source, cue?, cueWord? }      never write `words`; TTS 
   member's or a prop's id (`ambiguous_name`). A mark is two or three numbers, nothing else.
 - On-stage marks keep u between 0.05 and 0.95. A puppet of build `average` is 0.5 tall; its
   arm reaches about 0.17 stage units from the shoulder, which is about 0.38 above its feet
-  (`tall` 0.19 and 0.42, `small` 0.14 and 0.30).
-- **Times are seconds from the shot's start.** A shot's t = 0 happens **1.2 s after its set
-  starts rising**, so the set is up before anything moves. Every shot restarts at t = 0. Every
-  `t` is 0 or more; every `dur` is more than 0.
-- Walk speed is 0.35 stage units/s, run 0.8, drive 0.9. Arrival time = t + |Δx| / speed, with
-  Δx = 2 × Δu. Example: `offstage_left` (x = −1.3) to u = 0.2 (x = −0.6) walking: 0.7 / 0.35 =
-  2.0 s.
+  (`tall` 0.19 and 0.42, `short` 0.15 and 0.34, `small` 0.14 and 0.30).
+- **Times are seconds from the shot's start.** A shot's t = 0 happens **1.2 s after the shot
+  starts** (its set rises in that time), so the set is up before anything moves. Every shot
+  restarts at t = 0. Every `t` is 0 or more; every `dur` is more than 0 (`bad_time`).
+- Walk speed is 0.35 stage units/s, run 0.8, drive 0.9. Arrival time = t + distance / speed,
+  where distance is the ground distance |Δx| = 2 × |Δu| (a step up or down adds no time).
+  Example: `offstage_left` (x = −1.3) to u = 0.2 (x = −0.6) walking: 0.7 / 0.35 = 2.0 s.
+- **Movement notes change walking and running speed** (from `get_person`): a cane, walker,
+  limp or shuffle walks at × 0.6 (0.7 / (0.35 × 0.6) = 3.33 s for the example above); slowly,
+  slow, frail, elderly, stiff or carefully at × 0.75; quickly, brisk, hurries, spry or energetic
+  at × 1.25. Respect them: someone with a cane never `run_to`s.
 - **One action at a time per person.** An action may start only when the same person's
   previous one has ended; otherwise the compiler reports `busy`
   (`shot s1, t=4: dad cannot pick_up "hymn_books"; dad is still walking until t=5.31`).
@@ -97,31 +101,31 @@ error** (for example `dur` on `walk_to`, or `who` on `rain`).
 | `enter` | movement | `who`, `to` | `from` | from = offstage_left or offstage_right (default: nearest side); to = mark |
 | `exit` | movement | `who` | `to` | to = offstage_left or offstage_right (default: nearest side) |
 | `turn_to` | movement | `who`, `target` | - | target = person, prop or mark |
-| `follow` | movement | `who`, `target` | `dur` | target = person |
+| `follow` | movement | `who`, `target` | `dur` | target = person who moves after t |
 | `pose` | body | `who`, `pose` | `dur` | pose = any name in shared/rig/poses.json |
 | `wave` | body | `who` | `target`, `dur` | |
 | `point_at` | body | `who`, `target` | `dur` | |
-| `sit_on` | body | `who`, `what` | `socket` | what = prop with a seat socket |
-| `stand_up` | body | `who` | - | |
+| `sit_on` | body | `who`, `what` | `socket` | what = prop with a seat socket (not a vehicle) |
+| `stand_up` | body | `who` | - | from a seat, kneeling or sitting on the floor |
 | `kneel` | body | `who` | `dur` | |
 | `hug` | body | `who`, `target` | `dur` | target = person; both puppets hug |
 | `lean_toward` | body | `who`, `target` | `dur` | |
-| `pick_up` | prop | `who`, `what` | - | prop must not be held by anyone; who must be within reach or walks to it first |
+| `pick_up` | prop | `who`, `what` | - | prop must not be held by anyone; walks up and bends down to it by itself |
 | `hold` | prop | `who`, `what` | - | who must already be holding it; raises it into the hold pose |
 | `drop` | prop | `who`, `what` | - | who must be holding it |
-| `hand_to` | prop | `who`, `what`, `to` | - | to = person; who must be holding it |
-| `put_on` | prop | `who`, `what` | `target` | wear a prop (head socket); target = person, default self |
-| `place_on` | prop | `who`, `what`, `on` | `socket` | on = prop with a surface socket, or a mark |
-| `open` | prop | `who`, `what` | - | sets prop state to open |
-| `close` | prop | `who`, `what` | - | sets prop state to closed |
+| `hand_to` | prop | `who`, `what`, `to` | - | to = person; who must be holding it; no walk |
+| `put_on` | prop | `who`, `what` | `target` | wear a prop who holds (head socket); target = person, default self |
+| `place_on` | prop | `who`, `what`, `on` | `socket` | on = prop with a surface socket, or a mark; no walk, bends to a low spot |
+| `open` | prop | `who`, `what` | - | sets prop state to open; no walk, no bend |
+| `close` | prop | `who`, `what` | - | sets prop state to closed; no walk, no bend |
 | `set_state` | prop | `what`, `state` | `who` | |
 | `get_in` | vehicle | `who`, `what` | `socket` | socket default: driver if free, else next free seat |
 | `get_out` | vehicle | `who`, `what` | - | |
 | `drive_to` | vehicle | `who`, `what`, `to` | - | who must be in the driver socket; to = mark |
 | `ride_to` | vehicle | `who`, `what`, `to` | - | who must be in any socket and someone in driver; to = mark |
-| `confetti` | effect | - | `at`, `dur` | at = mark, person or prop |
+| `confetti` | effect | - | `at`, `dur` | at = mark, person or prop (default centre stage) |
 | `steam` | effect | - | `at`, `dur` | |
-| `rain` | effect | - | `dur` | |
+| `rain` | effect | - | `dur` | fills the whole stage |
 | `smoke` | effect | - | `at`, `dur` | |
 | `time_of_day` | effect | `value` | `dur` | value = dawn, day, dusk or night |
 
@@ -131,9 +135,13 @@ mark; `socket` socket name on a prop; `pose` pose name; `state` state name; `at`
 or prop (effects); `value` time of day; `dur` seconds.
 
 **Effects** (actions with no `who`): `confetti`, `steam`, `rain`, `smoke`, `time_of_day`.
-The compiler does not run effects yet: each one fails with `unsupported_verb`. Leave them out
-and show the moment with people and props. Every other verb in the table compiles.
+Every verb in the table compiles, effects included. An effect occupies nobody, so it may run
+while its `at` person is busy; a prop named in `at` must be on stage then (`not_on_stage`).
+With no `dur`, `confetti` lasts 2 s, `steam` and `smoke` 3 s and `time_of_day` 1 s; `rain`
+lasts until the shot ends, so give it a `dur` if it should stop sooner. Use an effect for a
+real moment the tellings name (confetti at a wedding, steam off a pot, rain on a car trip).
 **Times of day** (`time_of_day` `value`): `dawn`, `day`, `dusk`, `night`.
+For example `{ "t": 8.5, "do": "confetti", "at": "steps_top", "dur": 2 }`.
 
 ### Poses (`pose` verb and `StartState.pose`)
 
@@ -163,9 +171,16 @@ From `shared/rig/poses.json`. No other names exist.
 | `close_up` | `target` | `dur` | tight on a target |
 | `pull_back` | - | `dur` | back out to wide |
 
-A `CameraCue` is `{ "t", "move", "target"?, "dur"? }`, nothing else. Start every shot with
-`{ "t": 0, "move": "wide" }`. Move in on the emotional beat; end the last shot with a
-`pull_back` before the page turns. Keep moves at least 1.5 s apart.
+A `CameraCue` is `{ "t", "move", "target"?, "dur"? }`, nothing else. What the compiler
+checks: `t` is 0 or more and `dur` more than 0 (`bad_time`); `dolly_to`, `pan_to` and
+`close_up` need a `target` (`missing_param`) that is a cast member, a listed prop or a mark
+(`unknown_target`); `wide` and `pull_back` take no `target` (`unexpected_param`); a prop
+target must be on stage when the move ends, at `t` + `dur` (`bad_camera`). A move lasts `dur`,
+default 1.5 s; a cue that starts while the last move is still running cuts it short. A shot
+with no cue at t = 0 opens on `wide`. Style (not checked): start every shot with
+`{ "t": 0, "move": "wide" }`, move in on the emotional beat, end the last shot with a
+`pull_back` before the page turns, and keep moves at least 1.5 s apart. A person who is
+offstage is not an error, but the camera then looks at the wings: target people on stage.
 
 ### Transitions
 
@@ -177,63 +192,101 @@ The person (and, where noted, the other person) is busy from `t` until `t` + thi
 
 | Verbs | Busy for |
 |---|---|
-| `enter`, `walk_to`, `run_to`, `exit` | distance / 0.35 (running: / 0.8); 0.4 more first if sitting or kneeling on the floor |
+| `enter`, `walk_to`, `run_to`, `exit` | distance / 0.35 (running: / 0.8), × the movement-note speed; 0.4 more first if sitting or kneeling on the floor |
 | `pose` | 0.4 (with `dur`: `dur` + 0.4, then back to the previous pose) |
 | `wave`, `point_at`, `lean_toward` | `dur`, default 1.2 for `wave` and 1.0 for the others |
-| `hug` | walks up first if more than 0.2 apart, then `dur` (default 1.5); **the other person too** |
+| `hug` | walks up first if more than 0.2 apart in x (0.1 in u), then `dur` (default 1.5); **the other person too** |
 | `kneel` | 0.4 (with `dur`: `dur` + 0.4, then stands) |
 | `sit_on`, `get_in` | walks to the seat first, then 0.4 |
 | `stand_up`, `get_out`, `hold` | 0.4 |
 | `pick_up` | walks up first if out of reach, then 0.8 (1.2 bending down to the floor) |
 | `drop` | 0.3 (the fall) |
 | `hand_to` | 0.9 (hands meet at +0.5); **the receiver too** |
-| `put_on`, `place_on`, `open`, `close` | 0.8 |
-| `drive_to`, `ride_to` | distance / 0.9; **everyone in the vehicle** |
+| `put_on` | 0.8 from a hand (1.2 off the ground); **the wearer too** when it is someone else |
+| `place_on` | 0.8 (1.2 bending down to a low spot) |
+| `open`, `close` | 0.8 |
+| `drive_to` | distance / 0.9 for the driver; the others riding along stay free (to `wave`, say) |
+| `ride_to` | distance / 0.9; **everyone in the vehicle** |
 | `turn_to`, `set_state`, `follow` | no time / no time / until it stops behind the person it follows |
+| effects | nobody |
 
 ## Rules the compiler enforces
 
 - **Movement**: `Action.to` is a **mark** for `walk_to`, `run_to`, `enter`, `drive_to`,
   `ride_to`; for `exit` it is `offstage_left` or `offstage_right`; `enter`'s `from` is one of
-  those too. For `hand_to` it is a **person**.
+  those too (anything else is `unknown_mark`). For `hand_to` it is a **person**.
 - **On and off stage**: anyone at `offstage_left`/`offstage_right`, and anyone left out of a
   shot's `start` when the set changes, is offstage. Offstage, a person can only `enter`; any
-  other action is `offstage` ("use enter first"). `enter` only works from offstage
-  (`already_on_stage`: use `walk_to`), and `exit` only from on stage.
+  other action, or being handed or hugged, is `offstage` ("use enter first"): so `enter`
+  before any `walk_to`. `enter` only works from offstage (`already_on_stage`: use `walk_to`),
+  and `exit` only from on stage. Someone who `exit`s can `enter` again later in the shot, from
+  either side: the puppet jumps to the `from` side at the `enter`'s `t` (no glide across the
+  stage) and walks on from there.
 - **Holding**: a held prop sits on the holder's **`hand_r`** by default; a person has two
   hands (`hand_r` first, then `hand_l`) and a third prop is `hands_full`. You cannot `drop`,
-  `hand_to` or `hold` a prop the person is not holding (`not_holding`), and you cannot
-  `pick_up` a prop someone holds (`already_held`). `furniture`, `vehicle` and `building` props
-  are too big to carry. A prop is either in a `start.holding` or in `propStart`, never both, and
-  only one person starts holding it.
+  `hand_to`, `hold` or `place_on` a prop the person is not holding (`not_holding`),
+  and you cannot `pick_up` a prop someone holds or wears (`already_held`). `furniture`,
+  `vehicle` and `building` props are too big to carry (`too_big`). A prop is either in a
+  `start.holding` or in `propStart`, never both (`prop_conflict`), and only one person starts
+  holding it (`double_hold`).
+- **Signature items**: a person whose record names a signature item prop (listed in `props`)
+  starts the memory wearing it on the head. A second thing on that head is `head_full`, and
+  nobody can `pick_up` it while it is worn (`already_held`); a later shot's `start.holding`
+  can put it in a hand.
 - **Dropping**: a dropped prop **lands beside the dropper's feet**, 0.08 units in the
-  direction they face, on the surface they stand on. Plan the `pick_up` from there. To put
-  something down on the floor, `drop` it: `place_on` cannot reach down to the floor.
-- **Reach**: `pick_up`, `hug` and `sit_on` walk up to the prop or person by themselves.
-  `hand_to` does not: the two hands must meet. On the same surface keep giver and receiver at
-  most **0.3 stage units apart (0.15 in u)**. Across a step (0.3 up) it often fails, so walk
-  them onto the same surface first (the worked example's tall Dad only just reaches Mom on the
-  step from 0.2 away; two average puppets need to be within 0.15). `open`, `close` and
-  `place_on` do not bend or walk either: the handle (or the spot) must be within the arm's
-  0.17, so open a prop standing at hand height (on a step or a table, placed there by
-  `propStart` or `place_on`), and set things on a surface, not the floor. **Never `open` or
-  `close` a prop someone is holding**, not even the holder: the free hand reaches for the
-  holding hand and comes up short (0.22 against 0.17). To open something a person carries,
-  `place_on` it at hand height first (a mark on a step), then `open` it. Too far is
-  `out_of_reach` (`dad's arm_r cannot reach: target is 0.61 from the shoulder, reach is 0.19`).
-- **Seats**: a seated person must `stand_up` (or `get_out` of a vehicle) before walking; a
-  person kneeling or sitting on the floor stands up by themselves before walking (0.4 s), but
-  must `stand_up` before `kneel` or `sit_on`. `drive_to` needs the person in the `driver`
-  socket (`get_in` first).
-- **follow** needs the other person to be moving at that moment: give it the same `t` as their
-  walk and list it after the walk.
+  direction they face, on the surface they stand on. Plan the `pick_up` from there.
+- **Reach**: `pick_up`, `hug` and `sit_on` walk up to the prop or person by themselves, and
+  `pick_up` bends (kneeling if it must) to reach a prop on the floor, then comes back up. The
+  rest do not walk; a target too far is `out_of_reach`
+  (`dad's arm_r cannot reach: target is 0.61 from the shoulder, reach is 0.19`). How close to
+  stand, for `average` puppets (`small` ones reach less, `tall` ones a little more):
+
+  | Verb | Stand within (in u) |
+  |---|---|
+  | `hand_to` | **0.15 in u** on the same surface (two `average` puppets reach to 0.2). Across a step 0.3 up it often fails (two `average` puppets only within 0.08, some pairs never): walk them onto the same surface first |
+  | `place_on` | 0.15 of a mark on the floor (it bends down), 0.1 of a mark on a step 0.3 up, about 0.09 of a 0.4-tall table to set something on its socket |
+  | `put_on` | 0.12 of the person who wears it |
+  | `open`, `close` | 0.08 of a `carried` prop standing on a step 0.15 to 0.3 up |
+
+  `put_on` takes the prop from the person's hand: `pick_up` it first (`put_on` cannot bend to
+  the floor, and a prop resting on another prop is `not_holding`). `open` and `close`
+  neither walk nor bend: the handle (the prop's grip, else its middle) must be within the
+  arm's 0.17 of the shoulder, so a prop on the floor is too low and a `carried` one on a table
+  too high for an `average` puppet; set it on a step (`propStart` or `place_on`). **Never
+  `open` or `close` a prop someone is holding**, not even the holder: the free hand reaches
+  for the holding hand and comes up short (0.22 against 0.17). To open something a person
+  carries, `place_on` it at hand height first (a mark on a step), then `open` it. Opening a
+  prop already open is `already_open` (closing a closed one `already_closed`).
+- **Seats**: `sit_on` needs a prop with sockets that is not a vehicle (`no_seat`,
+  `vehicle_seat`: use `get_in`); a taken socket is `socket_taken`. A seated person must
+  `stand_up` (or `get_out` of a vehicle) before walking (`seated`); nobody can hug a seated
+  person. A person kneeling or sitting on the floor stands up by themselves before walking
+  (0.4 s), but must `stand_up` before `kneel` or `sit_on` (`not_standing`); `stand_up` of
+  someone standing is `not_sitting`, and kneeling twice is `already_kneeling`. A seated person
+  reaches from the seat and never walks for a `pick_up`.
+- **Vehicles**: only `vehicle` props take `get_in`, `get_out`, `drive_to` and `ride_to`
+  (`not_a_vehicle`). `get_in` walks to the door and sits in `socket`, default `driver` if free
+  (`no_free_seat` when all are taken). `drive_to` needs the person in the `driver` socket
+  (`not_driver`); `ride_to` needs the person in the vehicle and someone in `driver`
+  (`no_driver`); `get_out` needs the person in it (`not_in_vehicle`). Everyone in the vehicle
+  rides along, and so does anyone sitting on a prop resting on it (a chair on a pickup's bed).
+  A `ride_to` keeps all of them busy until it arrives; a `drive_to` keeps only the driver busy.
+  Nobody gets in or out while it moves (`vehicle_moving`), and it does
+  not leave while someone is still settling into a seat (`busy`): start the drive after every
+  `get_in` has ended. Inside, use `get_out`, never `stand_up` (`seated_vehicle`).
+- **follow** walks behind a person along their path. The leader must move at some point after
+  the follow's `t` (`nothing_to_follow`); the order in the list does not matter. A `follow`
+  without `dur` waits for every move of its leader in the shot, so the leader cannot later do
+  something that needs the follower (`hug` them, take a `hand_to` from them): that is
+  `follow_order`. Give the follow a `dur` that covers only the walk it follows, and the
+  leader's later actions are free. Two people cannot follow each other (`follow_cycle`).
 - **State carries between shots** (who holds what, prop states), but each shot's `start`
   places people again. Make `holding` agree with what happened in the previous shot. On a new
-  set, a prop nobody carries in and not placed by `propStart` is not on stage.
+  set, a prop nobody carries in and not placed by `propStart` is not on stage
+  (`not_on_stage`).
 - Every person in `start`, `who`, `to` (hand_to) and `target` must be in `cast`; every prop
   in `holding`, `what` and `propStart` must be in `props`; every mark must exist in the set,
   in `Shot.marks`, or be built in. Action `id`s are unique within a shot.
-- **Camera** targets (`dolly_to`, `pan_to`, `close_up`) must be on stage when the move happens.
 
 ## Narration, cue and cueWord
 
@@ -297,7 +350,8 @@ Interaction { id, kind: "pull_tab"|"slider", label, shot?, page?: "stage"|"story
     Dragging plays shot time `from`..`to` for those targets only (shot time; default targets:
     all). Choose a range that covers one action, e.g. a drop and its 0.3 s fall. `from` is
     before `to`, both 0 or more. A target is `puppet:<personId>` (in `cast`), `prop:<propId>`
-    (in `props`), `set:<the shot's setId>.layer<n>` or `camera`.
+    (in `props`), `set:<the shot's setId>.layer<n>` or `camera`. The range moves with the
+    actions a cue moves.
   - `prop_state`: `{ "type": "prop_state", "prop": "suitcase", "states": ["closed", "open"] }`.
     Steps the prop through states it has (a suitcase with `closed` and `open` states).
   - `prop_part`: `{ "type": "prop_part", "prop": "green_sedan_1985", "part": "wheel_front", "channel": "rot", "range": [0, 6.28] }`.
@@ -322,21 +376,45 @@ story, from the tellings and person records only. No invented ages, names or fac
    `message`, and where known `shot`, `t`, `who`, `do`. Example:
    `shot s1, t=5: dad cannot hand_to "hymn_books"; mom is holding it`.
 3. **Fix exactly what each error names**, at that shot and time. Do not rewrite the scene,
-   rename ids or change things that compiled. Typical fixes, by `code`:
-   - `unknown_mark`, `unknown_prop`, `unknown_person`, `unknown_target`: use a name from the
-     list the message gives (or add the mark to `Shot.marks`).
-   - `missing_param`, `unexpected_param`: give the verb exactly its row's parameters.
-   - `busy`: move `t` to the "until" time the message names, or later.
-   - `not_holding`, `already_held`, `hands_full`: add the `pick_up` or fix `start.holding`.
-   - `out_of_reach`: put the two marks closer (same surface, at most 0.15 apart in u). For
-     `open`/`close` of a held prop, `place_on` it at hand height first and open it there.
-   - `offstage`: add an `enter` first; `already_on_stage`: use `walk_to` instead of `enter`.
-   - `lines_overlap`, `cue_before_start`, `cue_conflict`: move the line's `t`, not the action.
-   - `unsupported_verb`: the compiler cannot do that verb yet. Only effects report it today:
-     delete the effect and keep everything else.
-   - an unknown field (`invalid_screenplay`): delete it.
+   rename ids or change things that compiled. The fix for every code is in "Error codes"
+   below.
 4. Compile again. **At most 3 rounds** (3 calls to `compile_screenplay`). If the third still
    fails, stop and report the remaining errors exactly as returned. Never loop further.
+
+### Error codes
+
+Every code the compiler reports, and its typical fix. The message names the reason and, where
+it helps, the names you may use instead.
+
+| Codes | Typical fix |
+|---|---|
+| `invalid_json`, `invalid_screenplay`, `missing_file` | The file is not valid JSON, has an unknown field or a wrong value type (delete the field, use a listed verb or move), or is missing: rewrite `/screenplay.json` |
+| `unknown_mark`, `unknown_prop`, `unknown_person`, `unknown_target`, `unknown_set`, `unknown_pose` | Use a name from the list the message gives (or add the mark to `Shot.marks`; a person to `cast`, a prop to `props`) |
+| `missing_param`, `unexpected_param` | Give the verb or camera move exactly its row's parameters |
+| `invalid_value` | A value the prop or field does not have (a state, a socket, a mark shape, a time of day): use one the message lists |
+| `bad_time` | Make every `t` 0 or more and every `dur` more than 0; a scrub's `from` before its `to` |
+| `ambiguous_name`, `duplicate_shot`, `duplicate_action_id`, `self_target` | Rename the mark or id, or point the action at someone else |
+| `too_big` | Furniture, vehicles and buildings are never held: leave them out of `holding` and `pick_up` |
+| `no_shots` | Give the screenplay at least one shot |
+| `busy` | Move `t` to the "until" time the message names, or later |
+| `not_holding`, `already_held`, `hands_full`, `head_full`, `double_hold`, `prop_conflict` | Add the `pick_up` (or `drop`), or fix `start.holding` and `propStart` |
+| `out_of_reach` | Put the marks closer (see "Reach"). For `open`/`close` of a held prop, `place_on` it at hand height first and open it there |
+| `offstage` | Add an `enter` first |
+| `already_on_stage` | Use `walk_to` instead of `enter` |
+| `not_on_stage` | Place the prop with `propStart` in this shot (or have someone carry it in) |
+| `held`, `occupied` | Someone holds the prop, or sits on it: `drop` or `place_on` it, or `stand_up` first |
+| `seated`, `not_standing`, `not_sitting`, `already_kneeling`, `already_seated` | Add the `stand_up` (or `get_out`) before, or delete the extra one |
+| `no_seat`, `socket_taken`, `vehicle_seat`, `seated_vehicle` | Use a prop with a free socket; `get_in`/`get_out` for a vehicle |
+| `not_a_vehicle`, `no_free_seat`, `not_driver`, `no_driver`, `not_in_vehicle`, `vehicle_moving`, `not_on_ground` | Fix the vehicle steps: `get_in` (driver first), wait for the drive to end, keep the vehicle on the ground |
+| `already_open`, `already_closed` | Delete the second `open` or `close`, or set the state with `propStart` |
+| `cycle` | A prop cannot rest on itself or on something resting on it: place them the other way round |
+| `bad_start` | A person starts in a seat of a prop that is not on stage, or rides a prop someone holds: fix `start` and `propStart` |
+| `nothing_to_follow`, `follow_order`, `follow_cycle` | See **follow**: give the follow a `dur`, move it to the leader's walk, or drop it |
+| `bad_camera` | Move the camera cue to a time when its target prop is on stage, or target a person or mark |
+| `lines_overlap`, `cue_before_start`, `cue_conflict`, `cue_word_missing`, `cue_unknown_action` | Move the line's `t`, fix its `cue` or `cueWord`; not the action |
+| `duplicate_telling`, `telling_unknown_shot` | One telling per teller; only the shot ids the screenplay has |
+| `explanation_unknown_target`, `explanation_bad_target` | Target `puppet:<personId>` in `cast` or `prop:<propId>` in `props` |
+| `interaction_unknown_shot`, `interaction_unknown_prop`, `interaction_unknown_part`, `interaction_bad_target`, `interaction_bad_range`, `interaction_missing_to` | Point the interaction at a real shot, prop, part or target, and keep its scrub range forward and inside the shot |
 
 ## Worked example: hymn_books.screenplay.json
 
@@ -379,8 +457,9 @@ up. (s4)"
    books lie 0.12 to his right and 0.3 up, inside his reach. In hand at 5.9, raised by 6.3.
 5. `{ "t": 6.6, "who": "dad", "do": "hand_to", "what": "hymn_books", "to": "mom", "id": "hand_back" }`:
    `to` is a person here. Dad is holding the books (busy picking up until 6.3), Mom's hand is
-   free and in reach; hands meet at 7.1, the books move to Mom's `hand_r`, and both are busy
-   until 7.5.
+   free and in reach: tall Dad on the ground is 0.1 in u from Mom on the step, inside the 0.14
+   he reaches up a step (two `average` puppets would need to be within 0.08).
+   Hands meet at 7.1, the books move to Mom's `hand_r`, and both are busy until 7.5.
 6. `{ "t": 7.7, "who": "mom", "do": "pose", "pose": "bow_head" }`: after she has taken the
    books. She can't look at him. No face needed; the head bow says it.
 

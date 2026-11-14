@@ -2,10 +2,9 @@
 
 The real compiler (`screenplay.compiler.compile`) lands one PR at a time. Every test that needs
 it takes the `real` fixture, which skips while `agent.tools.compile.load_compiler()` returns
-FakeCompiler, so these switch on by themselves as the compiler lands. Every verb but the effects
-has a real handler on main; a case or example the real compiler rejects only because it does not
-dispatch an effect verb yet (`unsupported_verb` / `not_an_effect` on confetti, steam, rain, smoke
-or time_of_day) skips, naming that gap, and turns into a parity check by itself once it does.
+FakeCompiler, so these switch on by themselves as the compiler lands. On main every verb in
+shared/vocabulary.json compiles, the effects (confetti, steam, rain, smoke, time_of_day) included,
+so nothing here skips for a missing verb: every effect case is a plain parity check.
 The corpus and the doc snippets are stored here; the fake-only checks at the bottom always run.
 
 Scene inputs are built the way production builds them: the sample family seeded into an
@@ -329,6 +328,16 @@ def _with_confetti(data: dict) -> None:
     _actions(data).append({"t": 8.5, "do": "confetti", "at": "steps_top", "dur": 2})
 
 
+EFFECT_VERBS = frozenset(json.loads((REPO / "shared" / "vocabulary.json").read_text())["effects"])
+EFFECT_SAMPLES: dict[str, dict] = {
+    "confetti": {"do": "confetti", "at": "steps_top", "dur": 2},
+    "steam": {"do": "steam", "at": "steps_top", "dur": 2},
+    "rain": {"do": "rain", "dur": 2},
+    "smoke": {"do": "smoke", "at": "steps_top", "dur": 2},
+    "time_of_day": {"do": "time_of_day", "value": "dusk", "dur": 2},
+}
+
+
 @dataclass(frozen=True)
 class Case:
     screenplay: dict
@@ -459,9 +468,13 @@ def _corpus() -> dict[str, Case]:
             [{"t": 0, "who": "mom", "do": "open", "what": "suitcase"}],
             start={"mom": {"at": "steps_left", "facing": "right"}}), False, ("out_of_reach",)),
         # ---------------------------------------------------------- effects
-        # shared/CONTRACTS.md and the vocabulary allow effects, so the fake accepts them; the real
-        # compiler skips this case (EFFECTS_GAP) until compile() dispatches effect verbs.
+        # every effect verb compiles on both compilers (screenplay/effects.py, wired in #125)
         "effect_confetti": Case(_sample(_with_confetti), True),
+        **{f"effect_{verb}": Case(_sample(lambda d, a=action: _actions(d).append({"t": 8.5, **a})), True)
+           for verb, action in EFFECT_SAMPLES.items() if verb != "confetti"},
+        # an effect occupies nobody: Mom bows her head while the confetti falls on her
+        "effect_at_a_busy_person": Case(_sample(lambda d: _actions(d).append(
+            {"t": 7.7, "do": "confetti", "at": "mom"})), True),
     }
     return c
 
@@ -527,6 +540,8 @@ def screenplay_for_snippet(obj: dict) -> dict:
     if "do" in obj or "move" in obj:  # an action or camera cue from the worked example
         data = _sample()
         key = "actions" if "do" in obj else "camera"
+        if key == "actions" and obj not in _actions(data):  # an extra action: added to the worked example
+            _actions(data).append(obj)
         assert obj in _shot(data)[key], f"{obj} is not in the worked example"
         return data
     raise AssertionError(f"no rule to compile doc snippet {obj}")
@@ -572,72 +587,20 @@ def test_skill_sample_compiles_cleanly_and_its_timeline_validates(real, lookup):
 @pytest.mark.parametrize("where, snippet", doc_snippets(), ids=[w for w, _ in doc_snippets()])
 def test_doc_snippets_compile_cleanly(real, lookup, where, snippet):
     res = compile_text(json.dumps(screenplay_for_snippet(snippet)), real, lookup)
-    _skip_effects_gap(res)
     assert res.ok and res.errors == [], (where, [e.message for e in res.errors])
 
 
-EFFECT_VERBS = frozenset(json.loads((REPO / "shared" / "vocabulary.json").read_text())["effects"])
-EFFECTS_GAP = "screenplay.compiler.compile does not dispatch effect verbs yet"
-EFFECTS_GAP_CODES = {"unsupported_verb", "not_an_effect"}
-
-
-def _skip_effects_gap(res: CompileResult) -> None:
-    """The one known compiler-side gap: screenplay/effects.py exists, but compile() emits
-    `effects=[]` and has no handler for an effect verb. Skip, naming the gap, only while the real
-    compiler says so for an effect verb; any other unsupported_verb is a real failure."""
-    hits = sorted({f"{e.do}: {e.code}" for e in res.errors if e.code in EFFECTS_GAP_CODES and e.do in EFFECT_VERBS})
-    if hits:
-        pytest.skip(f"{EFFECTS_GAP} ({', '.join(hits)})")
-
-
-def test_effects_gap_skip_is_narrow():
-    """The dynamic skip fires on an effect verb only, never on a verb the compiler should run."""
-    from screenplay.schema import CompileError
-
-    gap = CompileResult(ok=False, errors=[CompileError(code="unsupported_verb", message="m", do="confetti")])
-    with pytest.raises(pytest.skip.Exception, match=re.escape(EFFECTS_GAP)):
-        _skip_effects_gap(gap)
-    for code, do in (("unsupported_verb", "follow"), ("busy", "confetti"), ("unsupported_verb", None)):
-        _skip_effects_gap(CompileResult(ok=False, errors=[CompileError(code=code, message="m", do=do)]))
-
-
-EFFECT_SAMPLES: dict[str, dict] = {
-    "confetti": {"do": "confetti", "at": "steps_top", "dur": 2},
-    "steam": {"do": "steam", "at": "steps_top", "dur": 2},
-    "rain": {"do": "rain", "dur": 2},
-    "smoke": {"do": "smoke", "at": "steps_top", "dur": 2},
-    "time_of_day": {"do": "time_of_day", "value": "dusk", "dur": 2},
-}
-
-
-def test_directing_skill_effects_claim_matches_the_compiler(real, lookup):
-    """The directing skill tells the director that effects fail with `unsupported_verb` and to
-    leave them out. That is true only while compile() does not dispatch effect verbs. Compile
-    each effect on the sample and check the skill's claim against what the real compiler says, so
-    the text is flagged as stale the day the compiler wires effects in (and the other way round)."""
+def test_every_effect_compiles_on_the_real_compiler(real, lookup):
+    """Effects are wired into compile() on main: each one compiles on the worked example with no
+    error and lands in Timeline.effects, so the directing skill teaches them as working verbs
+    (test_agent_skills.py pins that text)."""
     assert set(EFFECT_SAMPLES) == EFFECT_VERBS
-    rejected = set()
     for verb, action in EFFECT_SAMPLES.items():
         data = _sample()
         _actions(data).append({"t": 8.5, **action})
         res = compile_text(json.dumps(data), real, lookup)
-        if any(e.code in EFFECTS_GAP_CODES and e.do == verb for e in res.errors):
-            rejected.add(verb)
-    text = " ".join(SKILL.read_text().split())
-    claims_unsupported = "The compiler does not run effects yet" in text and "Only effects report it today" in text
-    if rejected == EFFECT_VERBS:
-        assert claims_unsupported, "the compiler rejects every effect; the directing skill must say so"
-    elif not rejected:
-        assert not claims_unsupported, (
-            "the real compiler now compiles every effect verb: update agent/skills/directing/SKILL.md "
-            "(effects line and the `unsupported_verb` fix) and test_agent_skills.py, which still say "
-            "effects fail with unsupported_verb"
-        )
-    else:
-        pytest.fail(
-            f"the real compiler rejects some effects ({sorted(rejected)}) and compiles others "
-            f"({sorted(EFFECT_VERBS - rejected)}): the directing skill must name exactly the rejected ones"
-        )
+        assert res.ok and res.errors == [], (verb, [f"{e.code}: {e.message}" for e in res.errors])
+        assert [e.kind for e in res.timeline.effects] == [verb]
 
 
 @pytest.mark.parametrize("name", list(CORPUS))
@@ -648,7 +611,6 @@ def test_fake_and_real_agree_on_ok_versus_not_ok(real, lookup, name):
     got_fake = compile_text(text, FakeCompiler(), lookup)
     real_msgs = [f"{e.code}: {e.message}" for e in got_real.errors]
     fake_msgs = [f"{e.code}: {e.message}" for e in got_fake.errors]
-    _skip_effects_gap(got_real)
     assert got_real.ok == case.ok, (name, real_msgs)
     assert got_fake.ok == got_real.ok, (name, {"real": real_msgs, "fake": fake_msgs})
     if not got_real.ok:
