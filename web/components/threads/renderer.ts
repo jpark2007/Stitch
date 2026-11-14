@@ -401,7 +401,10 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
   ctx.lineDashOffset = 0;
 
   // Stitches at the marked years: an X at decades, an upright elsewhere.
-  // Year stitches fade in as there is room for them.
+  // Year stitches fade in as there is room for them. Once each year has its
+  // own label, centred in the year, uprights mark the year boundaries and
+  // a decade's X moves to sit over its numeral.
+  const mid = major === 1 && s > 70 ? 0.5 : 0;
   const yearInk = Math.min(1, Math.max(0, (minor * s - 18) / 12));
   const cross = new Path2D();
   const upright = new Path2D();
@@ -410,10 +413,15 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
   for (let t = lo; t <= hi; t += minor) {
     const x = toX(t, cam, W);
     if (t % 10 === 0) {
-      cross.moveTo(x - xa, y - xa);
-      cross.lineTo(x + xa, y + xa);
-      cross.moveTo(x - xa, y + xa);
-      cross.lineTo(x + xa, y - xa);
+      const cx = mid ? toX(t + mid, cam, W) : x;
+      cross.moveTo(cx - xa, y - xa);
+      cross.lineTo(cx + xa, y + xa);
+      cross.moveTo(cx - xa, y + xa);
+      cross.lineTo(cx + xa, y - xa);
+      if (mid) {
+        upright.moveTo(x, y - 4.5);
+        upright.lineTo(x, y + 4.5);
+      }
     } else {
       const path = t % major === 0 || t % 5 === 0 ? upright : faint;
       const h = t % 5 === 0 ? 4.5 : 3;
@@ -447,7 +455,6 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
   const compact = W < 640;
   const decadeFont = `400 ${compact ? 13.5 : 14.5}px ${st.fonts.serif}`;
   const yearFont = `600 ${compact ? 11 : 11.5}px ${st.fonts.sans}`;
-  const mid = major === 1 && s > 70 ? 0.5 : 0;
   for (let t = Math.ceil(lo / major) * major - (mid ? 1 : 0); t <= hi; t += major) {
     if (t < model.tMin) continue;
     const x = toX(t + mid, cam, W);
