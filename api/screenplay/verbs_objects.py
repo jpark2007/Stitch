@@ -53,6 +53,7 @@ from screenplay.verb_helpers import (
     bone_after,
     crouch_reach_keys,
     crouch_solution,
+    fmt_x,
     note_seat_when_out_of_reach,
     require_param,
 )
@@ -179,6 +180,12 @@ def _surface_off_ground(world: World, on: str) -> StateError:
     return StateError("not_on_stage", f"{on} is not on stage")
 
 
+def _offstage_mark_reason(mark: str, x: float) -> str:
+    """place_on's bad_target reason for a mark past the stage edge:
+    ``offstage_right is offstage at x=1.3; place_on needs a mark on stage (|x| <= 1)``."""
+    return f"{mark} is offstage at x={fmt_x(x)}; place_on needs a mark on stage (|x| <= {fmt_x(STAGE_EDGE)})"
+
+
 @note_seat_when_out_of_reach
 def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Set a held prop down on a prop's socket (``on`` = prop id) or on a mark (``on`` = mark).
@@ -199,7 +206,10 @@ def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, act
        kneeling never steps and never folds past CROUCH_MAX_BEND.
 
     No auto-walk toward the grip: OutOfReach (the miss of the plain crouch where it stands)
-    when nothing reaches. Atomic: nothing is emitted and the world is untouched on failure.
+    when nothing reaches. A mark past the stage edge (|x| > STAGE_EDGE: the builtin
+    offstage_left / offstage_right, or a set mark beyond the edge) is refused with
+    ``bad_target`` (``_offstage_mark_reason``): a prop set down there would leave the stage with
+    no verb to fetch it. Atomic: nothing is emitted and the world is untouched on failure.
     """
     who, what, on = action.who, action.what, action.on
     hand = world.hold(who, what)  # in who's hand, who on stage
@@ -219,6 +229,8 @@ def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, act
         dest = tuple(float(c) for c in locate(on, t))  # type: ignore[assignment]
         if action.socket is not None:
             raise StateError("unknown_socket", f"{on} is a mark and has no socket {action.socket}")
+        if abs(dest[0]) > STAGE_EDGE:
+            raise StateError("bad_target", _offstage_mark_reason(on, dest[0]))
         parent = GROUND
         world.copy().place_on(who, what, parent, dest)
         pos = dest
