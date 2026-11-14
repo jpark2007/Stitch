@@ -4,7 +4,8 @@
 // The family-tree home replaces this page.
 
 import { Canvas, useThree } from "@react-three/fiber";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { preloadPaperTextures, type DeckledMaskOptions } from "@/components/paper/materials";
 import { Photo, Snapshot } from "@/components/paper/Photo";
 import { Tape } from "@/components/paper/Tape";
 import {
@@ -14,6 +15,13 @@ import {
   useWoodMaterial,
 } from "@/components/paper/usePaper";
 import { demoPeople } from "@/components/tree/demoFamily";
+
+// The cutout masks the swatch scene uses, so they can be built ahead of time.
+const MASKS = {
+  sage: { style: "torn", aspect: 1.5, seed: 3 },
+  mustard: { style: "deckled", aspect: 1, seed: 5 },
+  sky: { style: "torn", aspect: 1.2, seed: 8 },
+} satisfies Record<string, DeckledMaskOptions>;
 
 const PAPER_TOKENS = [
   ["paper", "#f5eee1"],
@@ -120,15 +128,7 @@ export default function StyleGuidePage() {
 
       <Section kicker="04" title="Paper in 3D">
         <div className="relative aspect-[4/5] overflow-hidden rounded-[var(--radius-card)] bg-wood-dark shadow-float sm:aspect-[16/9]">
-          <Canvas
-            shadows="percentage"
-            dpr={[1, 2]}
-            frameloop="demand"
-            camera={{ position: [0, 5.2, 5.4], fov: 30, near: 0.1, far: 60 }}
-            gl={{ antialias: true }}
-          >
-            <SwatchScene />
-          </Canvas>
+          <SwatchCanvas />
           <div
             aria-hidden
             className="pointer-events-none absolute inset-0"
@@ -174,6 +174,30 @@ function Swatches({ tokens }: { tokens: readonly (readonly [string, string])[] }
 /* 3D swatches                                                               */
 /* ------------------------------------------------------------------------ */
 
+/** Builds the textures in idle tasks first, then mounts the Canvas. */
+function SwatchCanvas() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let live = true;
+    preloadPaperTextures({ masks: Object.values(MASKS) }).then(() => live && setReady(true));
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (!ready) return null;
+  return (
+    <Canvas
+      shadows="percentage"
+      dpr={[1, 2]}
+      frameloop="demand"
+      camera={{ position: [0, 5.2, 5.4], fov: 30, near: 0.1, far: 60 }}
+      gl={{ antialias: true }}
+    >
+      <SwatchScene />
+    </Canvas>
+  );
+}
+
 function Framing() {
   // Read the camera through get() inside the effect: r3f state is mutable
   // three.js objects, not React values.
@@ -196,9 +220,9 @@ function SwatchScene() {
   const sheet = usePaperMaterial({ color: "#f3ead8", repeat: [3, 3.6] });
   const terracotta = useCardBoxMaterials({ color: "#c46a49", repeat: [2, 1.4] });
   const kraft = useCardBoxMaterials({ color: "#cdae84", repeat: [1.8, 1.3] });
-  const sage = useCutoutMaterial({ color: "#9db58a", grain: 0.6, repeat: 2, mask: { style: "torn", aspect: 1.5, seed: 3 } });
-  const mustard = useCutoutMaterial({ color: "#e2b04c", grain: 0.6, repeat: 1, mask: { style: "deckled", aspect: 1, seed: 5 } });
-  const sky = useCutoutMaterial({ color: "#8fb0cc", grain: 0.6, repeat: 1.2, mask: { style: "torn", aspect: 1.2, seed: 8 } });
+  const sage = useCutoutMaterial({ color: "#9db58a", grain: 0.6, repeat: 2, mask: MASKS.sage });
+  const mustard = useCutoutMaterial({ color: "#e2b04c", grain: 0.6, repeat: 1, mask: MASKS.mustard });
+  const sky = useCutoutMaterial({ color: "#8fb0cc", grain: 0.6, repeat: 1.2, mask: MASKS.sky });
 
   return (
     <>
