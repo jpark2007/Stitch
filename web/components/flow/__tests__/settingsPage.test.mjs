@@ -5,6 +5,7 @@
 // made from .ts files to the .ts file next to them, then loads it dynamically.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { registerHooks } from "node:module";
 
 registerHooks({
@@ -217,5 +218,48 @@ describe("resyncAfter", () => {
   test("NO_LONGER_ADMIN is one plain sentence", () => {
     assert.match(NO_LONGER_ADMIN, /^You’re not an admin of this family any more/);
     assert.ok(NO_LONGER_ADMIN.endsWith("."));
+  });
+});
+
+// Source rules: every view of settings and add-a-relative (loading, not
+// found, the page itself) sits in the flow kit's frame, under the "Stitch"
+// mark, rather than a frame of its own.
+describe("the family pages use the shared flow frame", () => {
+  const app = new URL("../../../app/families/[familyId]/", import.meta.url);
+  const read = (path) => fs.readFileSync(new URL(path, app), "utf8");
+  const files = {
+    screen: read("settings/SettingsScreen.tsx"),
+    sheets: read("settings/SettingsPlaceholder.tsx"),
+    settingsRoute: read("settings/page.tsx"),
+    relative: read("people/new/AddRelativeScreen.tsx"),
+    relativeRoute: read("people/new/page.tsx"),
+  };
+
+  test("no file draws its own <main> or centring frame", () => {
+    for (const [name, src] of Object.entries(files)) {
+      assert.doesNotMatch(src, /<main\b/, `${name} has its own <main>`);
+      assert.doesNotMatch(src, /min-h-\[70dvh\]/, `${name} has its own centring frame`);
+    }
+  });
+
+  test("the placeholder and the not-found card are wrapped in FlowFrame", () => {
+    assert.match(files.sheets, /import \{ FlowFrame \} from "@\/components\/flow\/FlowPage"/);
+    assert.match(files.sheets, /return <FlowFrame>\{sheet\}<\/FlowFrame>;/);
+    assert.match(files.sheets, /export function FamilyNotFound\(\) \{\s*return \(\s*<FlowFrame>/);
+  });
+
+  test("both pages show the same not-found card and placeholder", () => {
+    for (const src of [files.screen, files.relative]) {
+      assert.match(src, /import \{ FamilyNotFound, SettingsPlaceholder( as \w+)? \} from "(\.\/|\.\.\/\.\.\/settings\/)SettingsPlaceholder"/);
+      assert.doesNotMatch(src, /function FamilyNotFound\(/);
+    }
+    for (const src of [files.settingsRoute, files.relativeRoute]) {
+      assert.match(src, /<Suspense fallback=\{<SettingsPlaceholder /);
+    }
+  });
+
+  test("the pages themselves are FlowPages", () => {
+    assert.match(files.screen, /<FlowPage title=\{name\}/);
+    assert.match(files.relative, /<FlowPage title="Add a relative"/);
   });
 });

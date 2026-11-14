@@ -59,6 +59,25 @@ export interface MockBackend {
   inject(fault: MockFault): () => void;
   /** Remove every injected fault. */
   clearFaults(): void;
+  /**
+   * Catch up with what another tab wrote to storage (its state and its
+   * runs): runs this page load follows but no longer drives get the new
+   * events. index.ts calls it on the browser's `storage` event.
+   */
+  sync(): void;
+  /**
+   * Take over the runs this page load follows (a stream is open on them)
+   * whose driver went away: its page let go of them (release) or it has
+   * written nothing for a while although the run is not paused. index.ts
+   * calls it every few seconds; sync() does it too.
+   */
+  checkRuns(): void;
+  /**
+   * Let go of the runs this page load drives, so a tab still following them
+   * takes them over. index.ts calls it on `pagehide` (a closed tab, a reload,
+   * a page put in the back-forward cache).
+   */
+  release(): void;
 }
 
 /**
@@ -89,6 +108,24 @@ export interface MockBackendOptions {
 
 /** localStorage key for the persisted mock state. */
 export const MOCK_STORAGE_KEY = "stitch.mock.v1";
+/**
+ * localStorage key for the mock's runs: each run's event log, how far its
+ * script got and the pause it is in, so a reload or a second tab can follow,
+ * resume and answer it (the real API keeps runs on the server).
+ */
+export const MOCK_RUNS_KEY = "stitch.mock.runs.v1";
+/** Runs kept in storage: the newest this many, plus any older one that is not over yet. */
+export const KEPT_RUNS = 20;
+/** At most this many stored runs at all (least recently active go first), so storage stays bounded. */
+export const MAX_STORED_RUNS = 40;
+/**
+ * A run that is not paused and whose driver has written nothing for this
+ * long (or for five steps, if longer) counts as abandoned, and a page load
+ * following it takes it over. A live driver writes at every step.
+ */
+export const STALE_RUN_MS = 5000;
+/** A stored run's owner once its page load let go of it (release). */
+const RELEASED = "";
 
 const INVITE_DAYS = 14;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -179,7 +216,8 @@ interface MediaEntry {
 
 type RunEventName = keyof RunEvents;
 
-interface MockRun {
+/** The part of a run that survives a reload: everything but its live hooks. */
+interface RunRecord {
   id: string;
   familyId: string;
   userId: string;
@@ -192,14 +230,35 @@ interface MockRun {
   participantIds: string[];
   photoIds: string[];
   events: Array<{ event: RunEventName; data: unknown }>;
-  listeners: Set<() => void>;
+  /** The pause the run is in, already announced by its event; null when not paused. */
   waiting: PauseKind | null;
-  resume: (() => void) | null;
   finished: boolean;
   chips: PropChip[];
   chipPhotos: Record<string, string>;
   mergePersonId: string | null;
   mergeApproved: boolean;
+  /** How many steps of the run's script are done (see runScript). */
+  cursor: number;
+  /** The moment the run wrote at scene_ready, for the steps after it. */
+  sceneMemoryId: string | null;
+}
+
+interface MockRun extends RunRecord {
+  listeners: Set<() => void>;
+  /** Wakes the script up from its pause; null when nothing in this page load waits. */
+  resume: (() => void) | null;
+  /** The script driving the run from this page load, or null if none does. */
+  driver: number | null;
+}
+
+/**
+ * A run as stored, with the page load (backend) that drives it (RELEASED
+ * once that page load let go of it) and when it last wrote the run (epoch ms;
+ * missing in runs stored before it was added).
+ */
+interface StoredRun extends RunRecord {
+  owner: string;
+  touched?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -742,10 +801,80 @@ function castMap(cast: string[], participants: string[]): Record<string, string>
 }
 
 // ---------------------------------------------------------------------------
+// Stored runs
+
+const PAUSE_KINDS: readonly unknown[] = ["answer", "props", "merge"];
+
+/** A run's stored fields, copied (the live hooks stay behind). */
+function recordOf(run: RunRecord): RunRecord {
+  return {
+    id: run.id,
+    familyId: run.familyId,
+    userId: run.userId,
+    authorId: run.authorId,
+    text: run.text,
+    year: run.year,
+    question: run.question,
+    title: run.title,
+    memoryId: run.memoryId,
+    participantIds: [...run.participantIds],
+    photoIds: [...run.photoIds],
+    events: [...run.events],
+    waiting: run.waiting,
+    finished: run.finished,
+    chips: [...run.chips],
+    chipPhotos: { ...run.chipPhotos },
+    mergePersonId: run.mergePersonId,
+    mergeApproved: run.mergeApproved,
+    cursor: run.cursor,
+    sceneMemoryId: run.sceneMemoryId,
+  };
+}
+
+function isStringOrNull(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+
+/** A stored run with every field the right shape; anything else is ignored. */
+function isStoredRun(value: unknown): value is StoredRun {
+  if (!isRecord(value)) return false;
+  const strings = ["id", "familyId", "userId", "authorId", "text", "owner"];
+  const maybe = ["question", "title", "memoryId", "mergePersonId", "sceneMemoryId"];
+  const lists = ["participantIds", "photoIds", "chips"];
+  return (
+    strings.every((k) => typeof value[k] === "string") &&
+    maybe.every((k) => isStringOrNull(value[k])) &&
+    lists.every((k) => Array.isArray(value[k])) &&
+    typeof value.year === "number" &&
+    typeof value.finished === "boolean" &&
+    typeof value.mergeApproved === "boolean" &&
+    Number.isInteger(value.cursor) &&
+    (value.cursor as number) >= 0 &&
+    (value.touched === undefined || typeof value.touched === "number") &&
+    (value.waiting === null || PAUSE_KINDS.includes(value.waiting)) &&
+    isRecord(value.chipPhotos) &&
+    Array.isArray(value.events) &&
+    (value.events as unknown[]).every((e) => isRecord(e) && typeof e.event === "string")
+  );
+}
+
+/**
+ * Keep the store bounded: the KEPT_RUNS most recently active runs stay, an
+ * older one only while it is not over, and never more than MAX_STORED_RUNS
+ * (least recently active first). `list` is oldest first.
+ */
+export function pruneRuns<T extends { finished: boolean }>(list: T[]): T[] {
+  const newest = new Set(list.slice(-KEPT_RUNS));
+  const kept = list.filter((r) => !r.finished || newest.has(r));
+  return kept.slice(Math.max(0, kept.length - MAX_STORED_RUNS));
+}
+
+// ---------------------------------------------------------------------------
 // The backend
 
 export function createMockBackend(opts: MockBackendOptions): MockBackend {
   const stepDelayMs = opts.stepDelayMs ?? 600;
+  const staleRunMs = Math.max(STALE_RUN_MS, stepDelayMs * 5);
   const storage = opts.storage ?? null;
   const now = opts.now ?? (() => new Date());
 
@@ -756,6 +885,10 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
   let generation = 0;
   const runs = new Map<string, MockRun>();
   const media = new Map<string, MediaEntry>();
+  /** This page load, as a stored run's owner. */
+  const self = `backend_${randomToken(12)}`;
+  /** Numbers each runScript call, so a script that was replaced can tell. */
+  let drives = 0;
 
   // ----- persistence
 
@@ -789,6 +922,106 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     } catch {
       return null;
     }
+  }
+
+  // Runs live in their own key, written run by run (read, change one, write),
+  // so two tabs each writing their own runs don't drop each other's.
+
+  /** Every stored run, least recently active first. Unreadable entries are skipped. */
+  function storedRuns(): StoredRun[] {
+    if (!storage) return [];
+    let raw: string | null = null;
+    try {
+      raw = storage.getItem(MOCK_RUNS_KEY);
+    } catch {
+      return [];
+    }
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!isRecord(parsed) || parsed.v !== 1 || !Array.isArray(parsed.runs)) return [];
+      return (parsed.runs as unknown[]).filter(isStoredRun);
+    } catch {
+      return [];
+    }
+  }
+
+  function storedRun(id: string): StoredRun | null {
+    return storedRuns().find((r) => r.id === id) ?? null;
+  }
+
+  function writeRuns(list: StoredRun[]): void {
+    if (!storage) return;
+    try {
+      storage.setItem(MOCK_RUNS_KEY, JSON.stringify({ v: 1, runs: pruneRuns(list) }));
+    } catch {
+      // Storage full or blocked: the run goes on in this page load.
+    }
+  }
+
+  /** Store `run` as driven from this page load, as the most recently active. */
+  function storeRun(run: MockRun): void {
+    if (!storage) return;
+    const list = storedRuns().filter((r) => r.id !== run.id);
+    list.push({ ...recordOf(run), owner: self, touched: now().getTime() });
+    writeRuns(list);
+  }
+
+  /**
+   * Nobody drives this stored run any more: its page load let go of it, or
+   * it is not paused and has not been written for a while (that page load
+   * was closed without letting go, or its timers are frozen).
+   */
+  function orphaned(stored: StoredRun): boolean {
+    if (stored.finished) return false;
+    if (stored.owner === RELEASED) return true;
+    return stored.waiting === null && now().getTime() - (stored.touched ?? 0) > staleRunMs;
+  }
+
+  /** See MockBackend.checkRuns. Cheap when this page load follows nothing it doesn't drive. */
+  function checkRuns(): void {
+    const followed = Array.from(runs.values()).filter((r) => !r.finished && r.listeners.size > 0 && !driving(r));
+    if (!followed.length) return;
+    const stored = new Map(storedRuns().map((r) => [r.id, r]));
+    for (const run of followed) {
+      const latest = stored.get(run.id);
+      if (!latest || latest.owner === self) continue;
+      refreshRun(run, latest);
+      if (!run.finished && orphaned(latest)) takeOver(run);
+    }
+  }
+
+  /** Another page load has taken this run over since this one stored it. */
+  function lost(run: MockRun): boolean {
+    if (!storage) return false;
+    const owner = storedRun(run.id)?.owner;
+    return owner !== undefined && owner !== self;
+  }
+
+  function driving(run: MockRun): boolean {
+    return run.driver !== null && !lost(run);
+  }
+
+  function notify(run: MockRun): void {
+    for (const listener of Array.from(run.listeners)) listener();
+  }
+
+  /**
+   * Bring a run this page load follows up to date with its stored copy:
+   * streams already open get the new events. Its script here, if any, stops
+   * at its next step (it is no longer the driver).
+   */
+  function refreshRun(run: MockRun, stored: StoredRun): void {
+    Object.assign(run, recordOf(stored));
+    run.driver = null;
+    run.resume = null;
+    notify(run);
+  }
+
+  /** Drive a run that isn't over from this page load, from where its script stopped. */
+  function takeOver(run: MockRun): void {
+    storeRun(run);
+    void runScript(run, generation);
   }
 
   function stateFromSeed(seed: MockSeed): MockState {
@@ -1203,7 +1436,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
   function emit<K extends RunEventName>(run: MockRun, event: K, data: RunEvents[K]): void {
     run.events.push({ event, data: clone(data) });
     if (event === "done" || event === "error") run.finished = true;
-    for (const listener of Array.from(run.listeners)) listener();
+    notify(run);
   }
 
   function formatEvent(index: number, e: { event: string; data: unknown }): string {
@@ -1445,38 +1678,99 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     return added;
   }
 
+  /**
+   * The scripted studio (api/seed/fake_runs.py), driven from this page load.
+   *
+   * The script is a fixed list of steps, numbered as they come, and
+   * run.cursor counts the ones done. Each step waits stepDelayMs, then does
+   * its work, emits its event and stores the run, all at once. A page load
+   * that drives the run again (after a reload, or a second tab) skips the
+   * steps already done and goes on from the first one left, so every event
+   * and every write happens once. A step that may not happen (the follow-up,
+   * the merge) still takes its number; whether it happens is decided only
+   * when it is reached, from what the run held then.
+   *
+   * The script stops, without an event, once reset() ran, another page load
+   * took the run over or this one let go of it (release). A page load that
+   * only follows the run takes it over when its driver lets go or goes quiet
+   * (checkRuns), so a closed tab never strands a run another tab shows.
+   */
   async function runScript(run: MockRun, gen: number): Promise<void> {
-    const alive = () => gen === generation && runs.get(run.id) === run;
+    const token = ++drives;
+    run.driver = token;
+    const alive = () => gen === generation && runs.get(run.id) === run && run.driver === token && !lost(run);
     const live = (): MockState => {
       if (!alive() || !state) throw new RunStopped();
       return state;
     };
-    const step = async <K extends RunEventName>(event: K, data: RunEvents[K]) => {
+
+    let index = 0;
+    /** One step: after the pause between events, `act` runs and the run is stored. */
+    const action = async (act: (s: MockState) => void): Promise<void> => {
+      const at = index++;
+      if (at < run.cursor) return;
       await sleep(stepDelayMs);
-      live();
-      emit(run, event, data);
+      const s = live();
+      act(s);
+      run.cursor = at + 1;
+      storeRun(run);
     };
-    /** Emit an event that needs the teller, already waiting when a client sees it. */
-    const pauseOn = async <K extends RunEventName>(kind: PauseKind, event: K, data: RunEvents[K]) => {
-      await sleep(stepDelayMs);
+    /** A step that emits one event; `data` may be a function, read when the step runs. */
+    const step = <K extends RunEventName>(event: K, data: RunEvents[K] | ((s: MockState) => RunEvents[K])) =>
+      action((s) => emit(run, event, typeof data === "function" ? (data as (s: MockState) => RunEvents[K])(s) : data));
+    /**
+     * A step that needs the teller: emit `event` (from `prepare`, or skip the
+     * step when it gives null) and wait. The answer route applies the answer
+     * and counts the step done. Driven again while paused, the event is
+     * already out (run.waiting says so), so it only waits again.
+     */
+    const pauseOn = async <K extends RunEventName>(
+      kind: PauseKind,
+      event: K,
+      prepare: (s: MockState) => RunEvents[K] | null,
+    ): Promise<void> => {
+      const at = index++;
+      if (at < run.cursor) return;
+      if (run.waiting !== kind) {
+        const data = prepare(live());
+        if (data === null) {
+          run.cursor = at + 1;
+          storeRun(run);
+          return;
+        }
+        await sleep(stepDelayMs);
+        live();
+        run.waiting = kind;
+        emit(run, event, data);
+        storeRun(run);
+      }
+      if (run.cursor <= at) {
+        await new Promise<void>((resolve) => {
+          run.resume = resolve;
+        });
+      }
       live();
-      const answered = new Promise<void>((resolve) => {
-        run.resume = resolve;
+    };
+
+    const authorName = (s: MockState) => findPerson(s, run.familyId, run.authorId)?.name ?? "Someone";
+    /** The moment this run wrote at scene_ready. */
+    const written = (s: MockState): Memory => {
+      const memory = s.memories.find((m) => m.familyId === run.familyId && m.id === run.sceneMemoryId);
+      if (!memory) throw new Error("That moment is no longer in the family.");
+      return memory;
+    };
+    /** Write the moment (or the new telling) into the family, then say the scene is ready. */
+    const sceneReady = () =>
+      action((s) => {
+        const memory = commitRun(s, run);
+        save();
+        run.sceneMemoryId = memory.id;
+        emit(run, "scene_ready", { memoryId: memory.id, version: memory.version ?? 1 });
       });
-      run.waiting = kind;
-      emit(run, event, data);
-      await answered;
-      run.waiting = null;
-      run.resume = null;
-      live();
-    };
+    const done = () => step("done", (s) => ({ memoryId: written(s).id }));
 
     try {
-      const author = findPerson(live(), run.familyId, run.authorId);
-      const authorName = author?.name ?? "Someone";
-      const second = Boolean(run.memoryId);
-
-      if (second) {
+      if (run.memoryId) {
         // As the scripted studio's second telling (api/seed/fake_runs.py): no
         // follow-up and no prop review; the narrator writes this teller's lines
         // over the moment's scene, then the telling is added.
@@ -1492,59 +1786,54 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
         await step("subagent_end", { name: "interviewer", summary: "The telling is ready to narrate." });
         await step("plan", plan(1));
         await step("subagent_start", { name: "narrator", task: "Write the new teller's narration over the scene" });
-        const lines = splitSentences(run.text).length;
-        await step("subagent_end", {
-          name: "narrator",
-          summary: `${lines} line${lines === 1 ? "" : "s"}, compiled without errors.`,
+        await step("subagent_end", () => {
+          const lines = splitSentences(run.text).length;
+          return { name: "narrator", summary: `${lines} line${lines === 1 ? "" : "s"}, compiled without errors.` };
         });
         await step("plan", plan(2));
-        await sleep(stepDelayMs);
-        const memory = commitRun(live(), run);
-        save();
-        emit(run, "scene_ready", { memoryId: memory.id, version: memory.version ?? 1 });
+        await sceneReady();
         await step("plan", plan(todos.length));
-        await step("done", { memoryId: memory.id });
+        await done();
         return;
       }
 
+      const short = () => wordCount(run.text) < SHORT_TELLING_WORDS;
       await step("plan", planAt(0));
       await step("subagent_start", { name: "interviewer", task: "Read the telling and look for what's missing" });
-      const short = wordCount(run.text) < SHORT_TELLING_WORDS;
-      await step("subagent_end", {
+      await step("subagent_end", () => ({
         name: "interviewer",
-        summary: short ? "The story is short, so one question for you." : "The story has what the scene needs.",
+        summary: short() ? "The story is short, so one question for you." : "The story has what the scene needs.",
+      }));
+      // Decided from the telling as it stands here: the answer, once given,
+      // is part of run.text, but by then this step is done.
+      await pauseOn("answer", "question", () => (short() ? { text: FOLLOW_UP_QUESTION } : null));
+      await pauseOn("merge", "merge", (s) => {
+        if (!/\buncle\b/i.test(run.text)) return null;
+        const candidate = mergeCandidate(s, run);
+        if (!candidate) return null;
+        run.mergePersonId = candidate.id;
+        const born = candidate.born ? `, born ${candidate.born}` : "";
+        return {
+          text: `Your story mentions an uncle. ${candidate.name}${born}, is already in the family tree.`,
+          personId: candidate.id,
+          candidateName: `Uncle ${candidate.name}`,
+        };
       });
-      if (short) {
-        await pauseOn("answer", "question", { text: FOLLOW_UP_QUESTION });
-      }
-      if (/\buncle\b/i.test(run.text)) {
-        const candidate = mergeCandidate(live(), run);
-        if (candidate) {
-          run.mergePersonId = candidate.id;
-          const born = candidate.born ? `, born ${candidate.born}` : "";
-          await pauseOn("merge", "merge", {
-            text: `Your story mentions an uncle. ${candidate.name}${born}, is already in the family tree.`,
-            personId: candidate.id,
-            candidateName: `Uncle ${candidate.name}`,
-          });
-        }
-      }
 
       await step("plan", planAt(1));
       await step("subagent_start", { name: "storyboarder", task: "Break the story into shots" });
-      await step("subagent_end", {
-        name: "storyboarder",
-        summary: second ? "Lined your telling up with the scene that's already there." : "Three shots: arriving, the moment, and after.",
-      });
+      await step("subagent_end", { name: "storyboarder", summary: "Three shots: arriving, the moment, and after." });
 
       await step("plan", planAt(2));
       await step("subagent_start", { name: "prop_master", task: "Find the things in the story" });
-      run.chips = buildChips(live(), run, authorName);
-      await pauseOn("props", "props_found", { props: run.chips });
-      await step("subagent_end", {
+      await pauseOn("props", "props_found", (s) => {
+        run.chips = buildChips(s, run, authorName(s));
+        return { props: run.chips };
+      });
+      await step("subagent_end", () => ({
         name: "prop_master",
         summary: `Kept ${run.chips.length} ${run.chips.length === 1 ? "prop" : "props"}.`,
-      });
+      }));
 
       await step("plan", planAt(3));
       await step("subagent_start", { name: "set_designer", task: "Find or build the place" });
@@ -1557,21 +1846,23 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       await step("plan", planAt(4));
       await step("subagent_start", { name: "director", task: "Block the scene" });
       await step("subagent_end", { name: "director", summary: "First pass at the blocking." });
-      const propId = run.chips[0]?.id ?? template?.propIds[0] ?? "keepsake";
-      const error: CompileError = {
-        code: "not_holding",
-        message: `shot s2, t=4.5: ${run.authorId} cannot hand_to "${propId}"; they are not holding it`,
-        shot: "s2",
-        t: 4.5,
-        who: run.authorId,
-        do: "hand_to",
-      };
-      await step("compile_error", { errors: [error], round: 1 });
+      await step("compile_error", () => {
+        const propId = run.chips[0]?.id ?? template?.propIds[0] ?? "keepsake";
+        const error: CompileError = {
+          code: "not_holding",
+          message: `shot s2, t=4.5: ${run.authorId} cannot hand_to "${propId}"; they are not holding it`,
+          shot: "s2",
+          t: 4.5,
+          who: run.authorId,
+          do: "hand_to",
+        };
+        return { errors: [error], round: 1 };
+      });
       await step("subagent_start", { name: "director", task: "Fix the hand-off" });
       await step("subagent_end", { name: "director", summary: "Picked it up first, then handed it over. It compiles." });
 
       await step("plan", planAt(5));
-      await step("subagent_start", { name: "narrator", task: `Time ${authorName}'s words to the action` });
+      await step("subagent_start", (s) => ({ name: "narrator", task: `Time ${authorName(s)}'s words to the action` }));
       await step("subagent_end", { name: "narrator", summary: "Narration recorded and cued." });
 
       await step("plan", planAt(6));
@@ -1584,29 +1875,30 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       await step("frames", { frames, critique: "Everyone is on their marks and the hand-off reads clearly." });
       await step("subagent_end", { name: "checker", summary: "The pages look right." });
 
-      await sleep(stepDelayMs);
-      const s = live();
-      const memory = commitRun(s, run);
-      save();
-      emit(run, "scene_ready", { memoryId: memory.id, version: memory.version ?? 1 });
+      await sceneReady();
 
       await step("plan", planAt(7));
       await step("subagent_start", { name: "linker", task: "Put it in everyone's books" });
-      const asked = linkQuestions(live(), run, memory, authorName);
-      save();
-      await step("subagent_end", {
-        name: "linker",
-        summary: asked
-          ? `Added it to ${memory.participantIds?.length ?? 1} books and asked ${asked} ${asked === 1 ? "person" : "people"} for their side.`
-          : `Added it to ${memory.participantIds?.length ?? 1} ${(memory.participantIds?.length ?? 1) === 1 ? "book" : "books"}.`,
+      await action((s) => {
+        const memory = written(s);
+        const asked = linkQuestions(s, run, memory, authorName(s));
+        save();
+        const books = memory.participantIds?.length ?? 1;
+        emit(run, "subagent_end", {
+          name: "linker",
+          summary: asked
+            ? `Added it to ${books} books and asked ${asked} ${asked === 1 ? "person" : "people"} for their side.`
+            : `Added it to ${books} ${books === 1 ? "book" : "books"}.`,
+        });
       });
       await step("plan", planAt(PLAN_STEPS.length));
-      await step("done", { memoryId: memory.id });
+      await done();
     } catch (err) {
       if (err instanceof RunStopped || !alive()) return;
       emit(run, "error", {
         message: err instanceof Error && err.message ? err.message : "The studio stopped unexpectedly.",
       });
+      storeRun(run);
     }
   }
 
@@ -2117,16 +2409,36 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       chipPhotos: {},
       mergePersonId: null,
       mergeApproved: false,
+      cursor: 0,
+      sceneMemoryId: null,
+      driver: null,
     };
     runs.set(run.id, run);
-    void runScript(run, generation);
+    takeOver(run);
     const out: SubmitMemoryResponse = { runId: run.id, memoryId };
     return json(202, out);
   });
 
-  /** A run of this family (api/routes/memories.py: any member may follow it; 404 otherwise). */
+  /**
+   * A run of this family (api/routes/memories.py: any member may follow it;
+   * 404 otherwise). A run this page load doesn't drive (it was started before
+   * a reload, or another tab took it over) is read from storage, and if it
+   * isn't over, this page load drives it from where it stopped.
+   */
   function familyRun(fid: string, runId: string): MockRun {
-    const run = runs.get(runId);
+    let run = runs.get(runId);
+    if (!run || (!run.finished && !driving(run))) {
+      const stored = storedRun(runId);
+      if (stored && stored.familyId === fid) {
+        if (run) {
+          refreshRun(run, stored);
+        } else {
+          run = { ...recordOf(stored), listeners: new Set(), resume: null, driver: null };
+          runs.set(runId, run);
+        }
+        if (!run.finished) takeOver(run);
+      }
+    }
     if (!run || run.familyId !== fid) fail(404, RUN_NOT_FOUND);
     return run;
   }
@@ -2195,7 +2507,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
 
     const run = familyRun(fid, id);
     if (run.userId !== user.id) fail(403, NOT_RUN_OWNER);
-    if (run.finished || !run.waiting || !run.resume) fail(409, NOT_WAITING);
+    if (run.finished || !run.waiting) fail(409, NOT_WAITING);
     if (run.waiting !== kind) fail(409, ANSWER_WRONG_KIND);
 
     if (kind === "answer") {
@@ -2223,10 +2535,16 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       run.mergeApproved = body.approve === true;
     }
 
+    // The pause is the script's next step: count it done and store the run
+    // before waking the script, so a reload from here on goes on after it.
+    // (A script that was just driven again may not have reached its pause
+    // yet; it skips the step when it gets there.)
+    run.waiting = null;
+    run.cursor += 1;
+    storeRun(run);
     const resume = run.resume;
     run.resume = null;
-    run.waiting = null;
-    resume();
+    resume?.();
     return noContent();
   });
 
@@ -2399,6 +2717,38 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       faults.length = 0;
     },
 
+    sync(): void {
+      if (state) state = restore() ?? state;
+      const stored = new Map(storedRuns().map((r) => [r.id, r]));
+      for (const run of runs.values()) {
+        const latest = stored.get(run.id);
+        // Runs this page load drives are already up to date; a finished run never changes.
+        if (!latest || latest.owner === self || run.finished) continue;
+        refreshRun(run, latest);
+      }
+      // A run another tab took over and has now let go of (that tab closed)
+      // goes on from here, if this page load still follows it.
+      checkRuns();
+    },
+
+    checkRuns,
+
+    release(): void {
+      if (!storage) return;
+      const mine = new Set(
+        Array.from(runs.values())
+          .filter((r) => !r.finished && r.driver !== null)
+          .map((r) => r.id),
+      );
+      if (!mine.size) return;
+      // In place, so the runs keep their order (how recently each was active).
+      const list = storedRuns();
+      if (!list.some((r) => mine.has(r.id) && r.owner === self)) return;
+      writeRuns(list.map((r) => (mine.has(r.id) && r.owner === self ? { ...r, owner: RELEASED } : r)));
+      // This page load's scripts stop at their next step (lost), and if it
+      // comes back (the back-forward cache), checkRuns takes them up again.
+    },
+
     mediaUrl(fid: string, raw: string): string {
       const mediaId = bareId(raw);
       const entry = media.get(mediaId);
@@ -2411,7 +2761,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       for (const run of runs.values()) {
         run.finished = true;
         run.resume = null;
-        for (const listener of Array.from(run.listeners)) listener();
+        notify(run);
       }
       runs.clear();
       for (const entry of media.values()) {
@@ -2430,6 +2780,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       if (storage) {
         try {
           storage.removeItem(MOCK_STORAGE_KEY);
+          storage.removeItem(MOCK_RUNS_KEY);
         } catch {
           // Blocked storage: nothing to clear.
         }

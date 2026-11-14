@@ -6,10 +6,15 @@ import { buildDemoSeed } from "../mock/demoSeed.ts";
 import {
   createMockBackend,
   FOLLOW_UP_QUESTION,
+  KEPT_RUNS,
   MAX_MEDIA_BYTES,
+  MAX_STORED_RUNS,
+  MOCK_RUNS_KEY,
   MOCK_STORAGE_KEY,
   NOT_WAITING,
+  STALE_RUN_MS,
   addNarration,
+  pruneRuns,
   splitSentences,
 } from "../mock/mockBackend.ts";
 import { createApiClient, isApiError } from "../../../lib/api.ts";
@@ -988,6 +993,309 @@ test("reconnecting replays the whole log; aborting closes the stream cleanly", a
     all.map((e) => Number(e.id)),
     all.map((_, i) => i + 1),
   );
+});
+
+test("a second telling never pauses, even when it is short and names an uncle", async () => {
+  const b = makeBackend();
+  await login(b, "ana@example.com");
+  // Under SHORT_TELLING_WORDS and naming an uncle: a new memory would ask and offer a merge.
+  const text = "My uncle sang loudest. The books flew everywhere!";
+  const sub = await submit(b, "sample_family", { text, year: 1988, memoryId: "sample_hymn_books" });
+  assert.equal(sub.status, 202);
+  const { events } = await openStream(b, "sample_family", sub.body.runId);
+  const all = [];
+  for await (const msg of events) all.push(msg);
+  const names = all.map((e) => e.event);
+  for (const pause of ["question", "props_found", "merge"]) assert.ok(!names.includes(pause), `no ${pause}`);
+  assert.deepEqual(names.filter((n) => n === "scene_ready" || n === "done"), ["scene_ready", "done"]);
+  assert.equal(all.at(-1).data.memoryId, "sample_hymn_books");
+  // Nothing is waiting: an answer is refused with the API's sentence.
+  const late = await answer(b, "sample_family", sub.body.runId, { kind: "answer", text: "hi" });
+  assert.equal(late.status, 409);
+  assert.equal(late.body.detail, NOT_WAITING);
+  const hymn = (await call(b, "GET", "/families/sample_family/memories/sample_hymn_books")).body.memory;
+  assert.equal(hymn.tellings.find((t) => t.authorId === "mom").text, text);
+  assert.deepEqual(
+    hymn.timeline.narrations.mom.lines.map((l) => l.text),
+    ["My uncle sang loudest.", "The books flew everywhere!"],
+  );
+  assert.ok(!hymn.participantIds.includes("luis"), "no merge was offered, so nobody was added");
+});
+
+// ---------------------------------------------------------------------------
+// Runs survive a reload (stored next to the state, like the API keeps them)
+
+function storedRunList(storage) {
+  const raw = storage.getItem(MOCK_RUNS_KEY);
+  return raw ? JSON.parse(raw).runs : [];
+}
+
+/** Every event the stream sends until it closes. */
+async function drain(events) {
+  const out = [];
+  for await (const msg of events) out.push(msg);
+  return out;
+}
+
+function assertOneLog(all) {
+  assert.deepEqual(
+    all.map((e) => Number(e.id)),
+    all.map((_, i) => i + 1),
+    "one log, numbered from 1 with nothing twice",
+  );
+}
+
+test("a reload reattaches a paused run: it replays, the pause is still pending, and answering goes on to done", async () => {
+  const storage = fakeStorage();
+  const a = makeBackend({ storage });
+  await login(a, "david@example.com");
+  const sub = await submit(a, "sample_family", { text: "Sam learned to swim at the lake.", year: 2001, title: "Swimming" });
+  const runId = sub.body.runId;
+  const one = await openStream(a, "sample_family", runId);
+  const asked = await readUntil(one.events, "question");
+  await one.events.return();
+  const saved = storedRunList(storage).find((r) => r.id === runId);
+  assert.equal(saved.waiting, "answer");
+  assert.equal(saved.events.length, asked.length);
+  assert.equal(saved.finished, false);
+
+  // The page reloads: a new backend over the same storage.
+  const b = makeBackend({ storage });
+  const two = await openStream(b, "sample_family", runId);
+  assert.deepEqual(await readUntil(two.events, "question"), asked, "the feed replays");
+  // Still paused on the follow-up: the API's statuses and sentences hold.
+  const wrong = await answer(b, "sample_family", runId, { kind: "props", props: [] });
+  assert.equal(wrong.status, 409);
+  assert.equal(wrong.body.detail, "That answer does not match what this run is waiting for");
+  assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "Maya held my hand." })).status, 204);
+  const reviewing = await readUntil(two.events, "props_found");
+  assert.ok(!reviewing.some((e) => e.event === "question"), "the question is not asked again");
+
+  // Reloaded again while the props are up; this time the answer comes first,
+  // before any stream (the page posts what the teller chose).
+  const c = makeBackend({ storage });
+  await login(c, "ana@example.com");
+  const notOwner = await answer(c, "sample_family", runId, { kind: "props", props: [] });
+  assert.equal(notOwner.status, 403);
+  assert.equal(notOwner.body.detail, "Only the person who started this run can answer");
+  await login(c, "david@example.com");
+  assert.equal((await answer(c, "sample_family", runId, { kind: "props", props: [] })).status, 204);
+  const twice = await answer(c, "sample_family", runId, { kind: "props", props: [] });
+  assert.equal(twice.status, 409);
+  assert.equal(twice.body.detail, NOT_WAITING);
+  const all = await drain((await openStream(c, "sample_family", runId)).events);
+  assertOneLog(all);
+  const names = all.map((e) => e.event);
+  for (const once of ["question", "props_found", "scene_ready", "done"]) {
+    assert.equal(names.filter((n) => n === once).length, 1, `one ${once}`);
+  }
+  assert.equal(names.at(-1), "done");
+
+  // The backend that lost the run catches up from storage and closes its stream.
+  b.sync();
+  const tail = await drain(two.events);
+  assert.equal(tail.at(-1).event, "done");
+  assert.equal(reviewing.length + asked.length + tail.length, all.length);
+
+  // The moment was written once, with the follow-up answer in the telling.
+  const moments = (await call(c, "GET", "/families/sample_family/threads")).body.moments.filter((m) => m.title === "Swimming");
+  assert.equal(moments.length, 1);
+  const memory = (await call(c, "GET", `/families/sample_family/memories/${moments[0].id}`)).body.memory;
+  assert.ok(memory.tellings[0].text.includes("Maya held my hand."));
+  assert.equal(all.at(-1).data.memoryId, memory.id);
+});
+
+test("a run cut off between steps resumes from where it stopped, and the old page load stops", async () => {
+  const storage = fakeStorage();
+  const a = makeBackend({ storage, stepDelayMs: 15 });
+  await login(a, "david@example.com");
+  const sub = await submit(a, "sample_family", { text: LONG_TEXT, year: 2003, title: "The lake" });
+  const runId = sub.body.runId;
+  const one = await openStream(a, "sample_family", runId);
+  const early = await readUntil(one.events, "subagent_end");
+  await one.events.return();
+
+  // A second page load takes the run over; the first is still "open" and
+  // notices at its next step that it no longer drives the run.
+  const b = makeBackend({ storage });
+  const all = await runToEnd(b, "sample_family", runId);
+  assert.deepEqual(all.slice(0, early.length), early, "the steps already done replay as they were");
+  assertOneLog(all);
+  const names = all.map((e) => e.event);
+  assert.ok(!names.includes("question"), "a long telling has no follow-up");
+  assert.equal(names.filter((n) => n === "props_found").length, 1);
+  assert.equal(names.filter((n) => n === "scene_ready").length, 1);
+  assert.equal(names.at(-1), "done");
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const saved = storedRunList(storage).find((r) => r.id === runId);
+  assert.equal(saved.finished, true);
+  assert.equal(saved.events.length, all.length, "the old page load added nothing after it lost the run");
+  const moments = (await call(b, "GET", "/families/sample_family/threads")).body.moments.filter((m) => m.title === "The lake");
+  assert.equal(moments.length, 1);
+});
+
+test("a tab that took a run over and then closed hands it back to the tab still following it", async () => {
+  const storage = fakeStorage();
+  const a = makeBackend({ storage, stepDelayMs: 15 });
+  await login(a, "david@example.com");
+  const sub = await submit(a, "sample_family", { text: LONG_TEXT, year: 2003, title: "Two tabs" });
+  const runId = sub.body.runId;
+  const first = await openStream(a, "sample_family", runId);
+  const seen = await readUntil(first.events, "subagent_start");
+
+  // A second tab opens the same run and drives it for a few steps.
+  const b = makeBackend({ storage, stepDelayMs: 15 });
+  const abort = new AbortController();
+  const second = await openStream(b, "sample_family", runId, abort.signal);
+  await readUntil(second.events, "subagent_end");
+  await readUntil(second.events, "plan");
+
+  // Then it closes: pagehide lets go of the run, and the closed tab's
+  // script stops. The first tab hears the write (the storage event).
+  b.release();
+  abort.abort();
+  assert.equal(storedRunList(storage).find((r) => r.id === runId).owner, "", "let go of");
+  b.release(); // Nothing left to let go of: a no-op.
+  a.sync();
+  assert.notEqual(storedRunList(storage).find((r) => r.id === runId).owner, "", "the first tab drives it again");
+
+  // The first tab's feed carries on to the props review and to done.
+  seen.push(...(await readUntil(first.events, "props_found")));
+  assert.equal((await answer(a, "sample_family", runId, { kind: "props", props: [] })).status, 204);
+  const all = [...seen, ...(await drain(first.events))];
+  assertOneLog(all);
+  const names = all.map((e) => e.event);
+  for (const once of ["props_found", "scene_ready", "done"]) {
+    assert.equal(names.filter((n) => n === once).length, 1, `one ${once}`);
+  }
+  assert.equal(names.at(-1), "done");
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(storedRunList(storage).find((r) => r.id === runId).events.length, all.length);
+});
+
+test("a follower takes over a driver that went quiet without letting go, but not a live one", async () => {
+  const storage = fakeStorage();
+  let clock = NOW.getTime();
+  const now = () => new Date(clock);
+  const a = makeBackend({ storage, stepDelayMs: 15, now });
+  await login(a, "david@example.com");
+  const sub = await submit(a, "sample_family", { text: LONG_TEXT, year: 2003, title: "Quiet" });
+  const runId = sub.body.runId;
+  const first = await openStream(a, "sample_family", runId);
+  const seen = await readUntil(first.events, "subagent_start");
+
+  // A second tab takes the run over, then its timers stall (a frozen or
+  // crashed tab): its next step is far off, and it never lets go.
+  const b = makeBackend({ storage, stepDelayMs: 400, now });
+  await openStream(b, "sample_family", runId);
+  const owner = storedRunList(storage).find((r) => r.id === runId).owner;
+
+  a.checkRuns();
+  assert.equal(storedRunList(storage).find((r) => r.id === runId).owner, owner, "a driver that just wrote is left alone");
+  clock += STALE_RUN_MS + 1;
+  a.checkRuns();
+  assert.notEqual(storedRunList(storage).find((r) => r.id === runId).owner, owner, "a quiet driver is taken over");
+
+  seen.push(...(await readUntil(first.events, "props_found")));
+  assert.equal((await answer(a, "sample_family", runId, { kind: "props", props: [] })).status, 204);
+  const all = [...seen, ...(await drain(first.events))];
+  assertOneLog(all);
+  assert.equal(all.at(-1).event, "done");
+  // The stalled tab wakes up, sees it lost the run and adds nothing.
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.equal(storedRunList(storage).find((r) => r.id === runId).events.length, all.length);
+});
+
+test("a finished run reloads to its whole log; other families and reset still hide it", async () => {
+  const storage = fakeStorage();
+  const a = makeBackend({ storage });
+  await login(a, "ana@example.com");
+  const sub = await submit(a, "sample_family", { text: LONG_TEXT, year: 1988, memoryId: "sample_hymn_books" });
+  const first = await runToEnd(a, "sample_family", sub.body.runId);
+
+  const b = makeBackend({ storage });
+  const again = await drain((await openStream(b, "sample_family", sub.body.runId)).events);
+  assert.deepEqual(again, first, "the same log, then the stream closes");
+  const late = await answer(b, "sample_family", sub.body.runId, { kind: "answer", text: "hi" });
+  assert.equal(late.status, 409);
+  assert.equal(late.body.detail, NOT_WAITING);
+
+  // Another family's member gets the API's 404 for it.
+  await signup(b, "Mei", "mei@example.com");
+  const fam = await createFamily(b, "The Maos", { name: "Mei" });
+  const other = await call(b, "GET", `/families/${fam.family.id}/runs/${sub.body.runId}/stream`);
+  assert.equal(other.status, 404);
+  assert.equal(other.body.detail, "Run not found");
+
+  b.reset();
+  assert.equal(storage.getItem(MOCK_RUNS_KEY), null, "reset clears the runs too");
+  const c = makeBackend({ storage });
+  await login(c, "ana@example.com");
+  assert.equal((await call(c, "GET", `/families/sample_family/runs/${sub.body.runId}/stream`)).status, 404);
+});
+
+test("stored runs stay bounded: old finished runs go, a paused one stays", async () => {
+  const storage = fakeStorage();
+  const a = makeBackend({ storage });
+  await login(a, "ana@example.com");
+  const paused = (await submit(a, "sample_family", { text: "A short one.", year: 1990 })).body.runId;
+  const pausedStream = await openStream(a, "sample_family", paused);
+  await readUntil(pausedStream.events, "question");
+  await pausedStream.events.return();
+  const done = [];
+  for (let i = 0; i < KEPT_RUNS + 2; i++) {
+    const sub = await submit(a, "sample_family", { text: `${LONG_TEXT} Take ${i}.`, year: 1988, memoryId: "sample_hymn_books" });
+    await runToEnd(a, "sample_family", sub.body.runId);
+    done.push(sub.body.runId);
+  }
+  const ids = storedRunList(storage).map((r) => r.id);
+  assert.deepEqual(ids, [paused, ...done.slice(2)], "the two oldest finished runs are gone; the paused one stays");
+
+  const b = makeBackend({ storage });
+  await login(b, "ana@example.com");
+  assert.equal((await call(b, "GET", `/families/sample_family/runs/${done[0]}/stream`)).status, 404);
+  assert.equal(
+    (await drain((await openStream(b, "sample_family", done.at(-1))).events)).at(-1).event,
+    "done",
+  );
+  const replay = await readUntil((await openStream(b, "sample_family", paused)).events, "question");
+  assert.equal(replay.at(-1).data.text, FOLLOW_UP_QUESTION);
+  assert.equal((await answer(b, "sample_family", paused, { kind: "answer", text: "At home." })).status, 204);
+
+  // pruneRuns on its own: never more than MAX_STORED_RUNS, oldest first out.
+  const open = Array.from({ length: MAX_STORED_RUNS + 5 }, (_, i) => ({ id: i, finished: false }));
+  assert.deepEqual(pruneRuns(open).map((r) => r.id), open.slice(5).map((r) => r.id));
+  const mixed = Array.from({ length: KEPT_RUNS + 3 }, (_, i) => ({ id: i, finished: i !== 1 }));
+  assert.deepEqual(
+    pruneRuns(mixed).map((r) => r.id),
+    [1, ...mixed.slice(3).map((r) => r.id)],
+  );
+});
+
+test("unreadable stored runs are ignored", async () => {
+  const storage = fakeStorage({ [MOCK_RUNS_KEY]: "{nope" });
+  const a = makeBackend({ storage });
+  await login(a, "david@example.com");
+  assert.equal((await call(a, "GET", "/families/sample_family/runs/run_x/stream")).status, 404);
+  const sub = await submit(a, "sample_family", { text: LONG_TEXT, year: 2003 });
+  assert.equal(sub.status, 202);
+  const first = await runToEnd(a, "sample_family", sub.body.runId);
+  assert.deepEqual(storedRunList(storage).map((r) => r.id), [sub.body.runId], "rewritten as a valid list");
+
+  // A stored run of the wrong shape is skipped; the good one still loads.
+  const good = storedRunList(storage)[0];
+  storage.setItem(
+    MOCK_RUNS_KEY,
+    JSON.stringify({ v: 1, runs: [{ ...good, id: "run_bad", cursor: "three" }, { id: "run_worse" }, good] }),
+  );
+  const b = makeBackend({ storage });
+  assert.equal((await call(b, "GET", "/families/sample_family/runs/run_bad/stream")).status, 404);
+  assert.equal((await call(b, "GET", "/families/sample_family/runs/run_worse/stream")).status, 404);
+  assert.deepEqual(await drain((await openStream(b, "sample_family", sub.body.runId)).events), first);
+  // A run of the wrong version is ignored.
+  const v2 = fakeStorage({ [MOCK_STORAGE_KEY]: storage.getItem(MOCK_STORAGE_KEY), [MOCK_RUNS_KEY]: JSON.stringify({ v: 2, runs: [good] }) });
+  assert.equal((await call(makeBackend({ storage: v2 }), "GET", `/families/sample_family/runs/${sub.body.runId}/stream`)).status, 404);
 });
 
 test("a new family's first moment gets its own scene, props and set", async () => {

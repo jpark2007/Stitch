@@ -35,7 +35,7 @@ import {
 import { isApiError } from "@/lib/api";
 import type { Family, FamilySummary, Member, TreeResponse } from "@/lib/types";
 
-import { SettingsPlaceholder } from "./SettingsPlaceholder";
+import { FamilyNotFound, SettingsPlaceholder } from "./SettingsPlaceholder";
 
 // Named like the add page's way back, so both lead to the same place in the same words.
 const BACK = { href: hrefs.home(), label: "Family tree" };
@@ -72,30 +72,6 @@ function FamilySettingsGate(props: { fid: string; welcome: boolean }) {
   if (!summary) return <FamilyNotFound />;
   // Keyed, so switching families starts each one from a clean load.
   return <FamilySettings key={summary.id} summary={summary} welcome={props.welcome} />;
-}
-
-/** A centred sheet, like the join page's dead-end states, with one way out. */
-function FamilyNotFound() {
-  return (
-    <main className="w-full min-w-0 overflow-x-clip px-4 pt-10 pb-20 font-sans text-ink sm:px-6 sm:pt-16">
-      <div className="mx-auto w-full min-w-0 max-w-[30rem]">
-        <PaperCard className="flex flex-col items-center gap-4 text-center">
-          <h1 className="text-[1.875rem] text-balance break-words text-ink sm:text-[2.25rem]">
-            We couldn’t find that family
-          </h1>
-          <p className="max-w-[24rem] text-[1.0625rem] leading-relaxed text-pretty text-ink-soft">
-            It may have been removed, or this link is for a family you haven’t joined.
-          </p>
-          <hr aria-hidden="true" className="stitch-rule mt-3 w-24" />
-          <div className="mt-3">
-            <ButtonLink href={hrefs.home()} variant="secondary">
-              Go home
-            </ButtonLink>
-          </div>
-        </PaperCard>
-      </div>
-    </main>
-  );
 }
 
 type Load =

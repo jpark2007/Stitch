@@ -6,6 +6,7 @@
 // them, then loads the module dynamically.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { registerHooks } from "node:module";
 
 registerHooks({
@@ -450,5 +451,22 @@ describe("relativeServerError: the API's year rules", () => {
       field: "born",
       message: "They can’t be born after their child Great Grandma Inés (born 1910).",
     });
+  });
+});
+
+// Source rule: the form's "(optional)" marks are the kit's OptionalMark, which
+// leads with a real space, so a label reads "Their years (optional)" to a
+// screen reader rather than "Their years(optional)".
+describe("AddRelativeForm's optional marks", () => {
+  const src = fs.readFileSync(new URL("../AddRelativeForm.tsx", import.meta.url), "utf8");
+
+  test("every optional label uses OptionalMark from Field", () => {
+    assert.match(src, /import \{[^}]*\bOptionalMark\b[^}]*\} from "\.\/Field"/);
+    assert.equal((src.match(/<OptionalMark \/>/g) ?? []).length, 3, "years, and both ways of showing children");
+  });
+
+  test("no hand-made (optional) text is left", () => {
+    assert.doesNotMatch(src, /\(optional\)/);
+    assert.doesNotMatch(src, /FIELD_OPTIONAL_CLASS/);
   });
 });
