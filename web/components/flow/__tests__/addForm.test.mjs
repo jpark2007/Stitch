@@ -132,6 +132,25 @@ describe("picking a moment's question (a second telling)", () => {
     assert.equal(sentDraftFromSubmit(fields, 0).memoryId, "demo_sam_wedding_2019");
   });
 
+  test("a long moment question and an old moment year never block a second telling", () => {
+    // The form validates a second telling with both fields read-only.
+    const question = { text: `${"Why did everyone leave the old house? ".repeat(9)}`.slice(0, 321), memoryId: "m_old" };
+    assert.equal(Array.from(question.text).length, 321);
+    const d = emptyDraft(SELF, {
+      ...draftFromQuestion(question, { year: 1820, participantIds: ["gran"] }),
+      text: "We left at dawn with the clock wrapped in a quilt.",
+    });
+    assert.equal(d.year, "1820");
+    assert.deepEqual(validateDraft(d, SELF, { questionEditable: false, yearEditable: false }), {});
+    // With the defaults the same draft would have been stuck on a hidden field.
+    assert.ok(validateDraft(d, SELF).question);
+    const fields = toSubmitFields(d);
+    assert.equal(fields.memoryId, "m_old");
+    assert.equal(fields.year, 1820);
+    assert.equal(fields.question, question.text.trim());
+    assert.equal("participantIds" in fields, false);
+  });
+
   test("a first telling of it is not a retelling; a teller who told it before is", () => {
     const moments = momentsFromThreads(threads);
     assert.equal(hasTold(moments.get("demo_sam_wedding_2019"), SELF), false);

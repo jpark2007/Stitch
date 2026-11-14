@@ -56,7 +56,7 @@ export function TellingNote(props: {
           {secondTellingOf ? "Your version of" : "Your telling"}
           {secondTellingOf ? <span className="sr-only"> {secondTellingOf}</span> : null}
         </h2>
-        <p className="text-sm text-ink-faint tabular-nums">{meta}</p>
+        <p className="text-sm text-ink-soft tabular-nums">{meta}</p>
       </div>
 
       {/* The moment's title on its own line in the storybook face, so a long

@@ -58,8 +58,16 @@ export const SUGGESTED_QUESTIONS: readonly string[] = [
 
 /** Longest story, in characters (code points). */
 export const TEXT_MAX = 10000;
-/** Longest question, in characters (code points). */
+/** Longest question a person can type, in characters (code points). */
 export const QUESTION_MAX = 300;
+/**
+ * Longest question the API takes, in characters (code points). Mirrors
+ * api/routes/memories.py MAX_QUESTION_CHARS. A question the person cannot edit
+ * (a family member's, or a moment's) is clamped to this before sending.
+ */
+export const SERVER_QUESTION_MAX = 1000;
+/** Earliest year a memory can have. Mirrors api/routes/memories.py MIN_YEAR. */
+export const MEMORY_YEAR_MIN = 1800;
 
 /** What the form edits. `year` stays a string until it is sent. */
 export interface MemoryDraft {
@@ -125,15 +133,33 @@ export function draftFromQuestion(
   return out;
 }
 
+/** Which draft fields the person can change on screen. Both default to true. */
+export interface DraftEditable {
+  /** False when the question is someone else's (a picked note, a moment's): it is not capped here. */
+  questionEditable?: boolean;
+  /** False for a second telling: the year is the moment's, shown read-only. */
+  yearEditable?: boolean;
+}
+
 /**
  * Friendly messages for what is wrong before sending. Participants are only
  * checked for a new moment: a second telling (memoryId set) keeps the moment's.
+ * A field the person cannot edit never blocks sending with a message they
+ * could not act on: an uneditable question is not capped (toSubmitFields
+ * clamps it to what the API takes), and an uneditable year is only checked
+ * for being a whole number, not range-checked.
  */
-export function validateDraft(d: MemoryDraft, selfPersonId: string): FieldErrors<MemoryField> {
+export function validateDraft(
+  d: MemoryDraft,
+  selfPersonId: string,
+  opts: DraftEditable = {},
+): FieldErrors<MemoryField> {
+  const questionEditable = opts.questionEditable ?? true;
+  const yearEditable = opts.yearEditable ?? true;
   const errors: FieldErrors<MemoryField> = {};
 
   const question = d.question.trim();
-  if (charCount(question) > QUESTION_MAX) {
+  if (questionEditable && charCount(question) > QUESTION_MAX) {
     errors.question = `Keep the question to ${QUESTION_MAX} characters or fewer.`;
   }
 
@@ -143,7 +169,9 @@ export function validateDraft(d: MemoryDraft, selfPersonId: string): FieldErrors
     errors.text = `Keep your story to ${countFormat.format(TEXT_MAX)} characters or fewer.`;
   }
 
-  const year = validateYear(d.year, { required: true });
+  const year = yearEditable
+    ? validateYear(d.year, { required: true, min: MEMORY_YEAR_MIN })
+    : validateYear(d.year, { required: true, min: -Infinity, max: Infinity });
   if (year) errors.year = year;
 
   if (!d.memoryId && !d.participantIds.includes(selfPersonId)) {
@@ -153,11 +181,18 @@ export function validateDraft(d: MemoryDraft, selfPersonId: string): FieldErrors
   return errors;
 }
 
+/** At most SERVER_QUESTION_MAX code points: a longer question keeps its start and ends in "…". */
+function clampQuestion(q: string): string {
+  const chars = Array.from(q);
+  if (chars.length <= SERVER_QUESTION_MAX) return q;
+  return `${chars.slice(0, SERVER_QUESTION_MAX - 1).join("")}…`;
+}
+
 /** The multipart fields for api.submitMemory. Photos travel separately. */
 export function toSubmitFields(d: MemoryDraft): SubmitMemoryFields {
   const fields: SubmitMemoryFields = { text: d.text.trim(), year: Number(d.year.trim()) };
   const question = d.question.trim();
-  if (question) fields.question = question;
+  if (question) fields.question = clampQuestion(question);
   const memoryId = d.memoryId?.trim();
   // A second telling joins a moment that already has its people.
   if (memoryId) fields.memoryId = memoryId;

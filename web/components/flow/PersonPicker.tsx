@@ -153,10 +153,10 @@ export function PersonPicker(props: {
                   <span>
                     {person.name}
                     {showYear ? (
-                      <span className="text-ink-faint"> ({person.born})</span>
+                      <span className="text-ink-soft"> ({person.born})</span>
                     ) : null}
                     {locked ? (
-                      <span className="text-ink-faint"> (you)</span>
+                      <span className="text-ink-soft"> (you)</span>
                     ) : null}
                   </span>
                   <CheckMark checked={checked} />
