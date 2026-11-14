@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { CSSProperties } from "react";
+import { frameWidths, type FrameLimits } from "./frameSize";
 import { DEFAULT_LAYOUT, layoutFamily, type TreeLayout } from "./layout";
 import { NAME_MIN, NAME_SIZE, nameExtra, nameFit } from "./nameFit";
 import { Puppet, PuppetDefs } from "./Puppet";
@@ -17,21 +18,9 @@ export type { TreePerson } from "./treeData";
  * Server-safe, no client JS of its own: hover and the draw-in are CSS only.
  */
 
-export interface FamilyTreeProps {
+/** Size limits (maxHeight, minScale, maxScale) are documented on FrameLimits. */
+export interface FamilyTreeProps extends FrameLimits {
   people: readonly TreePerson[];
-  /** Cap the tree's height (any CSS length); it then narrows to keep its shape. */
-  maxHeight?: string;
-  /**
-   * The smallest scale, in px per layout unit. A tree too wide to fit at
-   * this scale scrolls sideways inside its frame instead of shrinking until
-   * names are unreadable.
-   */
-  minScale?: number;
-  /**
-   * The largest scale, in px per layout unit. A small family (one person, a
-   * couple) stands at a natural size on a big page instead of filling it.
-   */
-  maxScale?: number;
   /** Where a person's node links to (their book). */
   hrefFor?: (personId: string) => string;
   /** A paper placeholder of the tree while the real one loads: no names, no links. */
@@ -180,15 +169,9 @@ export function FamilyTree({ people, maxHeight, minScale, maxScale, hrefFor = de
   // Mask ids must be unique on the page and valid inside url(#...).
   const maskId = (key: string, i: number) => `tree-draw-${i}-${SAFE_ID.test(key) ? key : hashSeed(key)}`;
 
-  // Width limits: the height cap (kept in shape) and the largest scale.
-  const widthCaps = [
-    ...(maxHeight ? [`calc(${maxHeight} * ${(W / H).toFixed(4)})`] : []),
-    ...(maxScale ? [`${(W * maxScale).toFixed(1)}px`] : []),
-  ];
   const frameStyle = {
     "--u": `calc(100cqw / ${W.toFixed(3)})`,
-    ...(widthCaps.length ? { maxWidth: widthCaps.length > 1 ? `min(${widthCaps.join(", ")})` : widthCaps[0] } : {}),
-    ...(minScale ? { minWidth: `${(W * minScale).toFixed(1)}px` } : {}),
+    ...frameWidths(W, H, { maxHeight, minScale, maxScale }),
   } as CSSProperties;
 
   return (
