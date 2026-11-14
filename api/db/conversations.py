@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from pymongo.errors import DuplicateKeyError
 from pymongo import ReturnDocument
+from . import contacts, media
 
 
 def ensure_message_indexes(db) -> None:
@@ -108,3 +109,86 @@ def take_conversation_model_call(db, family_id: str, contact_id: str, limit: int
          "modelCalls": {"$lt": limit}}, {"$inc": {"modelCalls": 1}})
     if row is None:
         raise RuntimeError("Conversation model-call limit reached")
+
+
+class PhotoConflict(ValueError):
+    pass
+
+
+class PhotoPending(RuntimeError):
+    pass
+
+
+def _photo_contact(db, original: dict, message: dict) -> None:
+    current = contacts.resolve_contact(db, message["provider"], message["senderId"])
+    if any(current.get(k) != original.get(k) for k in ("_id", "familyId", "personId", "userId")):
+        raise PermissionError("Contact identity changed")
+
+
+def save_photo_inbound(db, contact: dict, message: dict, data: bytes) -> bool:
+    """Reserve one writer; retry can recover a completed identical media write.
+
+    An uploading reservation without a readable file is deliberately not stolen:
+    GridFS may contain incomplete chunks or an in-flight writer. Reconcile that
+    state explicitly instead of racing another upload under the same ObjectId.
+    """
+    family = contact["familyId"]
+    _photo_contact(db, contact, message)
+    identity = json.dumps([family, message["provider"], message["messageId"]], separators=(",", ":"))
+    key = "inbound:" + hashlib.sha256(identity.encode()).hexdigest()
+    content_sha = hashlib.sha256(data).hexdigest()
+    digest = hashlib.sha256(json.dumps({**message, "photoSha256": content_sha}, sort_keys=True,
+                                       separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    media_id = hashlib.sha256((identity + "\n" + message["attachmentId"]).encode()).hexdigest()[:24]
+    record = {"_id": key, "kind": "inbound", "receiptType": "photo", "familyId": family,
+              "contactId": str(contact["_id"]), "personId": contact["personId"],
+              "provider": message["provider"], "messageId": message["messageId"],
+              "spaceId": message["spaceId"], "attachmentId": message["attachmentId"],
+              "text": message["caption"], "contentHash": digest, "photoSha256": content_sha,
+              "reservedMediaId": media_id, "status": "photo_pending", "uploadState": "reserved",
+              "createdAt": datetime.now(timezone.utc)}
+    duplicate = False
+    try:
+        db.channelMessages.insert_one(record)
+    except DuplicateKeyError:
+        duplicate = True
+        previous = db.channelMessages.find_one({"_id": key, "familyId": family})
+        if (not previous or previous.get("contentHash") != digest
+                or previous.get("receiptType") != "photo" or previous.get("contactId") != str(contact["_id"])):
+            raise PhotoConflict("Message content changed") from None
+
+    def complete_file():
+        found = media.get_media(db, family, media_id)
+        if found is not None and (found.kind != "photo" or found.content_type != message["mimeType"]
+                                  or hashlib.sha256(found.data).hexdigest() != content_sha):
+            raise PhotoConflict("Stored photo does not match its reservation")
+        return found
+
+    if complete_file() is None:
+        claimed = db.channelMessages.find_one_and_update(
+            {"_id": key, "familyId": family, "contentHash": digest, "uploadState": "reserved"},
+            {"$set": {"uploadState": "uploading"}})
+        if claimed is None:
+            raise PhotoPending("Photo upload is incomplete or in progress")
+        _photo_contact(db, contact, message)
+        try:
+            media.put_media(db, family, data, content_type=message["mimeType"], kind="photo", media_id=media_id)
+        except Exception:
+            raise PhotoPending("Photo upload outcome is uncertain") from None
+        if complete_file() is None:
+            raise PhotoPending("Photo upload is incomplete")
+    _photo_contact(db, contact, message)
+    try:
+        result = db.channelMessages.update_one(
+            {"_id": key, "familyId": family, "contentHash": digest, "status": "photo_pending"},
+            {"$set": {"status": "received", "uploadState": "complete", "photoIds": [media_id]}})
+        if result.matched_count != 1:
+            # A duplicate must not reset a receipt already consumed by a worker.
+            completed = db.channelMessages.find_one({
+                "_id": key, "familyId": family, "contentHash": digest,
+                "uploadState": "complete", "photoIds": [media_id]})
+            if completed is None:
+                raise PhotoPending("Photo receipt disappeared")
+    except Exception:
+        raise PhotoPending("Photo receipt outcome is uncertain") from None
+    return duplicate

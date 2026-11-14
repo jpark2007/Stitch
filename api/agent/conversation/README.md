@@ -20,6 +20,10 @@ or `contact:<contactId>`. It rechecks mapping and consent for every action.
 - `save_story_draft(text="", year=None, title=None)` appends **new** words and
   updates the year/title. Text is capped at 20,000 characters, title at 200, and
   year at 1800 through next year, matching the current memory route.
+- `attach_photos(photo_ids)` is trusted-worker-only, never a model tool. It validates
+  family and photo kind through public media APIs, deduplicates IDs, and stores up
+  to ten photos in the current draft. Submission revalidates those photos before
+  passing them to the existing studio; no caller-controlled family is accepted.
 - `submit_story()` reserves the draft durably before `start_run`. It returns
   `{runId, duplicate}`; a repeated successful submission returns the same run.
 - `await relay_run_events(timeout=1.0, max_events=50)` reads only the bound run,
@@ -65,7 +69,7 @@ created. A failed answer similarly records an uncertain `sending` state with no
 pending answer, preventing blind repeat side effects. This favors avoiding
 duplicate stories over claiming exactly-once recovery across independent systems.
 
-No audio/channel schema fields, photos, question-bank selection, settings UI,
+No audio/channel schema fields, question-bank selection, settings UI,
 scheduling, or cloud delivery are added by this slice. Jonah's hooks and auth
 review remain separate prerequisites for mounting Channels in the main app.
 
