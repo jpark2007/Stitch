@@ -19,7 +19,8 @@ Each handler follows the compiler's shared handler contract::
 A puppet kneeling or sitting on the floor (pose ``kneel`` / ``sit`` with no seat) gets up
 before it walks: ``body.stand_keys`` over ``body.POSE_SECONDS``, bringing the root from the
 lowered (rootOffset) position back to its standing spot, then the walk starts. Arms holding
-props keep their pose throughout (the same ``skip_bones`` as a walk).
+props keep their pose throughout (the same ``skip_bones`` as a walk). ``stand_up_first`` is
+public so other verb modules can get a puppet up the same way.
 
 ``follow`` reads the leader's path from the ``puppet:<target>`` ``root.position`` keys already
 in ``tracks``. **The compiler must therefore run every ``follow`` after the shot's other
@@ -36,7 +37,7 @@ from screenplay.body import POSE_SECONDS, last_values, stand_keys
 from screenplay.ik import RIG, Body, arm_bones
 from screenplay.schema import Action
 from screenplay.state import HANDS, SEATED_POSES, StateError, World, fmt_t
-from screenplay.tracks import TrackSet
+from screenplay.tracks import Key, TrackSet
 
 Vec3 = tuple[float, float, float]
 Locate = Callable[[str, float], Vec3]
@@ -82,22 +83,29 @@ def _skip_bones(world: World, who: str) -> tuple[str, ...]:
     return tuple(b for hand, bones in _HAND_BONES.items() if hand in holding for b in bones)
 
 
-def _stand_first(
-    world: World, tracks: TrackSet, who: str, t: float, skip: tuple[str, ...]
-) -> tuple[list[motion.Key], float, Vec3]:
-    """Keys that get a kneeling / floor-sitting puppet up before it walks.
+def stand_up_first(
+    world: World, tracks: TrackSet, who: str, t: float, skip_bones: tuple[str, ...]
+) -> tuple[list[Key], float, Vec3]:
+    """Keys that get a kneeling / floor-sitting puppet onto its feet before it moves.
 
-    Returns (keys, time it can set off, standing root). A puppet already standing (or seated
-    on a prop, which the world refuses to move) gets no keys and sets off at t from its root.
+    Returns ``(keys, time standing completes, standing root)``. A puppet kneeling or sitting
+    on the floor (pose ``kneel`` / ``sit`` with no seat) gets ``body.stand_keys`` over
+    ``body.POSE_SECONDS`` from timeline ``t``, bringing its root from the lowered position
+    (its ``root.position`` track at ``t``) back up to its standing spot
+    (``world.people[who].pos``); bones in ``skip_bones`` (arms holding props) keep their pose.
+    A puppet already standing, or seated on a prop (the world refuses to move it), gets no keys,
+    ``t`` unchanged and its current root.
+
+    Pure with respect to its inputs: it reads ``world`` and ``tracks`` and changes neither.
     """
     p = world.people[who]
     root = _root(world, tracks, who, t)
     if p.pose not in SEATED_POSES or p.seat is not None:
         return [], t, root
-    current = {b: _bone(tracks, who, b, t) for b in _BONES if b not in skip}
+    current = {b: _bone(tracks, who, b, t) for b in _BONES if b not in skip_bones}
     body = Body(id=who, ground=(root[0], root[1]), facing=p.facing, build=p.build)
     stand_at = (p.pos[0], p.pos[1])
-    keys = stand_keys(body, t, current, stand_at, z=root[2])
+    keys: list[Key] = list(stand_keys(body, t, current, stand_at, z=root[2]))
     return keys, t + POSE_SECONDS, (stand_at[0], stand_at[1], root[2])
 
 
@@ -136,7 +144,7 @@ def apply_exit(world: World, tracks: TrackSet, action: Action, t: float, action_
 
     p = world.people[who]
     skip = _skip_bones(world, who)
-    keys, t_go, start = _stand_first(world, tracks, who, t, skip)
+    keys, t_go, start = stand_up_first(world, tracks, who, t, skip)
     walk, arrive, facing = motion.exit_keys(who, p.build, t_go, start, dest, p.facing, skip_bones=skip)
     keys += walk
 
@@ -193,7 +201,7 @@ def apply_follow(world: World, tracks: TrackSet, action: Action, t: float, actio
         raise StateError("nothing_to_follow", f"{target} does not move after t={fmt_t(world.now)}")
 
     skip = _skip_bones(world, who)
-    keys, t_go, start = _stand_first(world, tracks, who, t, skip)
+    keys, t_go, start = stand_up_first(world, tracks, who, t, skip)
     if action.dur is not None and t_go - t > action.dur + _EPS:
         # Standing up cannot be clipped, so a shorter dur would keep the puppet busy past it.
         raise StateError(
