@@ -4,13 +4,20 @@
 the family id first, and a lookup in another family returns None or an empty list:
 it never raises with, or returns, another family's data.
 
-`InMemoryRepo` is the deterministic fake used in tests and offline runs. A MongoDB
-adapter over api/db/ implements the same Protocol once that layer lands.
+`find_props` / `find_sets` match a free-text description ("the old trumpet case") to
+the family's saved props and sets, best first, for the prop and set finders.
+
+`InMemoryRepo` is the deterministic fake used in tests and offline runs; its finders are
+a plain keyword match. `agent.mongo_repo.MongoRepo` is the production adapter over
+api/db/ (which also searches the built-in prop library and, when an embedder is set,
+Atlas Vector Search). Both pass the same conformance suite
+(tests/agent/test_agent_mongo_repo.py).
 """
 
 from __future__ import annotations
 
 import itertools
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +30,7 @@ from schemas import Memory, MemoryResponse, Person, Prop, Question, SetDef
 SAMPLE_MEMORY_PATH = Path(__file__).resolve().parents[2] / "web" / "public" / "samples" / "hymn_books.memory.json"
 
 M = TypeVar("M", bound=BaseModel)
+PS = TypeVar("PS", Prop, SetDef)
 
 
 @runtime_checkable
@@ -64,9 +72,24 @@ class AgentRepo(Protocol):
 
     def save_set(self, family_id: str, set_def: SetDef) -> SetDef: ...
 
+    def find_props(self, family_id: str, text: str, *, limit: int = 5) -> list[Prop]:
+        """Props whose name or description matches `text`, best match first, at most `limit`."""
+        ...
+
+    def find_sets(self, family_id: str, text: str, *, limit: int = 5) -> list[SetDef]:
+        """Sets whose name or description matches `text`, best match first, at most `limit`."""
+        ...
+
     def put_media(self, family_id: str, data: bytes, content_type: str, *, kind: str) -> str: ...
 
     def get_media(self, family_id: str, media_id: str) -> tuple[bytes, str] | None: ...
+
+
+@runtime_checkable
+class SeedableRepo(AgentRepo, Protocol):
+    """An AgentRepo that can also be seeded with people (tests, demo runs)."""
+
+    def add_person(self, family_id: str, person: Person) -> Person: ...
 
 
 # ------------------------------------------------------------------------- fake
@@ -74,6 +97,59 @@ class AgentRepo(Protocol):
 
 def _copy(model: M) -> M:
     return model.model_copy(deep=True)
+
+
+# Words that carry no meaning for matching a prop or set ("the old trumpet case").
+_STOPWORDS = frozenset(
+    "a an the of and or to in on at for with from by my our your his her their its this that "
+    "these those some".split()
+)
+_WORD = re.compile(r"[^\W_]+")
+
+
+def _stem(token: str) -> str:
+    """Light plural stem: books -> book, boxes -> box, glasses -> glass, shoes -> shoe.
+
+    Trailing 'es' goes after s, x, z, ch and sh; otherwise a trailing 's' goes, except in
+    -ss, -us and -is words and words of three letters or fewer (bus, gas).
+    """
+    if len(token) <= 3:
+        return token
+    if token.endswith(("sses", "xes", "zes", "ches", "shes")):
+        return token[:-2]
+    if token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        return token[:-1]
+    return token
+
+
+def _tokens(text: str | None) -> set[str]:
+    """Case-insensitive, stemmed word tokens with stopwords dropped."""
+    if not text:
+        return set()
+    words = _WORD.findall(text.casefold().replace("'", "").replace("\u2019", ""))
+    return {_stem(w) for w in words if w not in _STOPWORDS}
+
+
+def _keyword_find(items: list[PS], text: str, limit: int) -> list[PS]:
+    """Keyword match of `text` against each item's name + description.
+
+    Score = shared tokens. An exact name match (same token set as the query) ranks first,
+    then score descending, then name. Only score > 0 is returned.
+    """
+    if limit <= 0:
+        return []
+    query = _tokens(text)
+    if not query:
+        return []
+    ranked: list[tuple[bool, int, str, str, PS]] = []
+    for item in items:
+        name = _tokens(item.name)
+        shared = len(query & (name | _tokens(item.description)))
+        if shared > 0:
+            exact = name == query
+            ranked.append((not exact, -shared, item.name.casefold(), item.id, item))
+    ranked.sort(key=lambda r: r[:4])
+    return [_copy(r[4]) for r in ranked[:limit]]
 
 
 @dataclass
@@ -224,6 +300,16 @@ class InMemoryRepo:
         self._families[family_id].sets[set_def.id] = _copy(set_def)
         return _copy(set_def)
 
+    # ------------------------------------------------------------------ search
+
+    def find_props(self, family_id: str, text: str, *, limit: int = 5) -> list[Prop]:
+        fam = self._fam(family_id)
+        return _keyword_find(list(fam.props.values()), text, limit) if fam else []
+
+    def find_sets(self, family_id: str, text: str, *, limit: int = 5) -> list[SetDef]:
+        fam = self._fam(family_id)
+        return _keyword_find(list(fam.sets.values()), text, limit) if fam else []
+
     # ------------------------------------------------------------------- media
 
     def put_media(self, family_id: str, data: bytes, content_type: str, *, kind: str) -> str:
@@ -232,12 +318,16 @@ class InMemoryRepo:
         return media_id
 
     def get_media(self, family_id: str, media_id: str) -> tuple[bytes, str] | None:
+        """Accepts 'media/<id>' or the bare '<id>', like the MongoDB adapter."""
         fam = self._fam(family_id)
-        media = fam.media.get(media_id) if fam else None
+        if fam is None or not isinstance(media_id, str):
+            return None
+        key = media_id if media_id.startswith("media/") else f"media/{media_id}"
+        media = fam.media.get(key)
         return (media.data, media.content_type) if media else None
 
 
-def load_sample_family(repo: InMemoryRepo, family_id: str, path: Path = SAMPLE_MEMORY_PATH) -> None:
+def load_sample_family(repo: SeedableRepo, family_id: str, path: Path = SAMPLE_MEMORY_PATH) -> None:
     """Seed people, props and sets from the hymn_books sample into `family_id`.
 
     Family ids are rewritten to `family_id`; library props and sets (family_id None)

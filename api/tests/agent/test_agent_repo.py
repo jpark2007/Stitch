@@ -196,3 +196,101 @@ def test_load_sample_family_keeps_library_props_family_less(tmp_path) -> None:
     assert books is not None and books.family_id is None
     assert [p.id for p in r.list_props("fam_lib")] == ["hymn_books"]
     assert r.get_prop("fam_other", "hymn_books") is None
+
+
+# ------------------------------------------------------------------ find_props / find_sets
+
+
+def described_prop(pid: str, name: str, description: str | None = None, family_id: str | None = FAM_A) -> Prop:
+    return prop(pid, family_id).model_copy(update={"name": name, "description": description})
+
+
+def described_set(sid: str, name: str, description: str | None = None, family_id: str | None = FAM_A) -> SetDef:
+    return set_def(sid, family_id).model_copy(update={"name": name, "description": description})
+
+
+@pytest.fixture
+def finder() -> InMemoryRepo:
+    r = InMemoryRepo()
+    r.save_prop(FAM_A, described_prop("books", "hymn books", "a stack of worn blue hymn books"))
+    r.save_prop(FAM_A, described_prop("trumpet", "trumpet", "an old brass trumpet in its case"))
+    r.save_prop(FAM_A, described_prop("case", "trumpet case", "a battered black case"))
+    r.save_prop(FAM_A, described_prop("box", "Shoe box", "cardboard box of glasses"))
+    r.save_prop(FAM_A, described_prop("bus", "bus"))
+    r.save_set(FAM_A, described_set("church", "church steps", "brick church front with wide stone steps"))
+    r.save_set(FAM_A, described_set("kitchen", "Kitchen", "a yellow kitchen with a church calendar"))
+    r.save_prop(FAM_B, described_prop("b_trumpet", "trumpet", "family B's trumpet", FAM_B))
+    r.save_set(FAM_B, described_set("b_church", "church steps", None, FAM_B))
+    return r
+
+
+def test_find_props_stems_plurals_any_case(finder: InMemoryRepo) -> None:
+    assert [p.id for p in finder.find_props(FAM_A, "Hymn Book")] == ["books"]
+    assert [p.id for p in finder.find_props(FAM_A, "HYMN-BOOKS")] == ["books"]
+    assert [p.id for p in finder.find_props(FAM_A, "boxes")] == ["box"]  # -es after x
+    assert [p.id for p in finder.find_props(FAM_A, "shoes")] == ["box"]  # plain -s
+    assert [p.id for p in finder.find_props(FAM_A, "glass")] == ["box"]  # glasses -> glass
+    assert [p.id for p in finder.find_props(FAM_A, "bus")] == ["bus"]  # short words keep their s
+    assert finder.find_props(FAM_A, "the of a") == []  # stopwords alone match nothing
+    assert finder.find_props(FAM_A, "") == []
+    assert finder.find_props(FAM_A, "spaceship") == []
+
+
+def test_find_props_ranks_exact_name_then_shared_tokens_then_name(finder: InMemoryRepo) -> None:
+    # 'trumpet case' and 'trumpet' (description has 'case') both share two tokens;
+    # the exact name match wins.
+    assert [p.id for p in finder.find_props(FAM_A, "the trumpet case")] == ["case", "trumpet"]
+    # An exact name match beats a higher token overlap elsewhere.
+    assert [p.id for p in finder.find_props(FAM_A, "trumpet")] == ["trumpet", "case"]
+    # More shared tokens rank higher.
+    finder.save_prop(FAM_A, described_prop("a_case", "a case", "brown"))
+    assert [p.id for p in finder.find_props(FAM_A, "case brown")][:1] == ["a_case"]
+    # Equal scores fall back to name order (case-insensitive).
+    finder.save_prop(FAM_A, described_prop("z1", "Zither", "family music"))
+    finder.save_prop(FAM_A, described_prop("a1", "accordion", "music"))
+    assert [p.id for p in finder.find_props(FAM_A, "music")] == ["a1", "z1"]
+
+
+def test_find_props_limit(finder: InMemoryRepo) -> None:
+    assert [p.id for p in finder.find_props(FAM_A, "trumpet case", limit=1)] == ["case"]
+    assert finder.find_props(FAM_A, "trumpet", limit=0) == []
+    assert finder.find_props(FAM_A, "trumpet", limit=-3) == []
+    assert len(finder.find_props(FAM_A, "trumpet case box bus books")) == 5  # default limit 5
+    assert len(finder.find_props(FAM_A, "trumpet case box bus books", limit=50)) == 5
+
+
+def test_find_sets(finder: InMemoryRepo) -> None:
+    assert [s.id for s in finder.find_sets(FAM_A, "Church step")] == ["church", "kitchen"]
+    assert [s.id for s in finder.find_sets(FAM_A, "kitchens")] == ["kitchen"]
+    assert [s.id for s in finder.find_sets(FAM_A, "church", limit=1)] == ["church"]
+    assert finder.find_sets(FAM_A, "church", limit=0) == []
+    assert finder.find_sets(FAM_A, "spaceship") == []
+
+
+def test_finders_never_cross_families(finder: InMemoryRepo) -> None:
+    assert [p.id for p in finder.find_props(FAM_A, "trumpet")] == ["trumpet", "case"]
+    assert [p.id for p in finder.find_props(FAM_B, "trumpet")] == ["b_trumpet"]
+    assert finder.find_props(FAM_B, "hymn books") == []
+    assert [s.id for s in finder.find_sets(FAM_B, "church")] == ["b_church"]
+    assert finder.find_sets(FAM_B, "kitchen") == []
+    assert finder.find_props("fam_nobody", "trumpet") == []
+    assert finder.find_sets("fam_nobody", "church") == []
+
+
+def test_finders_return_copies(finder: InMemoryRepo) -> None:
+    found = finder.find_props(FAM_A, "hymn books")[0]
+    found.name = "changed"
+    found.art["body"] = "media/evil"
+    again = finder.get_prop(FAM_A, "books")
+    assert again is not None and again.name == "hymn books" and again.art["body"] is None
+    s = finder.find_sets(FAM_A, "church")[0]
+    s.marks["left"][0] = 0.9
+    assert finder.get_set(FAM_A, "church").marks["left"] == [0.2, 0.0]  # type: ignore[union-attr]
+
+
+def test_get_media_accepts_a_bare_id() -> None:
+    r = InMemoryRepo()
+    ref = r.put_media(FAM_A, b"x", "image/png", kind="photo")
+    assert r.get_media(FAM_A, ref.removeprefix("media/")) == (b"x", "image/png")
+    assert r.get_media(FAM_B, ref.removeprefix("media/")) is None
+    assert r.get_media(FAM_A, "media/999") is None
