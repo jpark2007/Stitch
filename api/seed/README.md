@@ -481,7 +481,16 @@ year and attach photos, and submit. The live feed then shows, one step every
    family). The sample's narration is replaced by the teller's own words: one line per
    sentence of the telling as saved (with the follow-up answer), over the same action. The
    teller is the default narrator and the only narration track; whoever plays David is in
-   the scene and the memory's participants but narrates nothing until they tell it too;
+   the scene and the memory's participants but narrates nothing until they tell it too.
+   The sample's page text and explanations ("One Sunday in 1988...", "Dad was 26...") are
+   rewritten for this telling: each shot's storybook text is the first sentence of its part
+   of the telling (at most 16 words, then "..."; the title when a shot has no sentence), and
+   there is one explanation per person and prop in the scene. For the curl run below:
+   "Sam is telling this story, from 1998.", "Lily was there with Sam." (a spouse,
+   parent or child in the tree is named as one instead: "Ana's spouse David was
+   there.") and "The hymn books from Sam's story.", with the prop's name after any rename
+   in the review. Pull tabs keep scrubbing the same action when the teller's narration
+   pins it;
 5. `scene_ready`, then `done` with the new memory's id.
 
 The memory, with its photos, the answer and the scene, then opens in the **teller's book
@@ -490,7 +499,16 @@ is always the hymn-book one, whatever the telling says: it shows the flow, not t
 Adding to an existing memory (`memoryId` in the form) only adds a second telling and links
 the people to it: no question, no prop review, no new scene. The new teller's words become
 their own narration track over the same action (the first teller stays the default
-narrator); a retelling by the default narrator replaces the default narration.
+narrator); a retelling by the default narrator replaces the default narration, with the
+action and its pull-tab windows where they were.
+
+Two tellings of the same moment at once (two people answering together, or one person
+sending twice) are safe: each run re-reads the moment under a per-moment lock just before
+it narrates and saves, so the later one builds on the earlier one's saved scene. Every
+teller keeps their narration track, the version goes up once per telling, and a person's
+stored telling always matches their track. The scene is saved only if nobody else saved it
+since that read (`save_scene(expected_version=...)`); otherwise the run re-reads and tries
+again, up to three times, then ends with an error and leaves the moment as it was.
 
 The same flow with curl (the server above on port 8000; `steps.png` is any PNG, JPEG,
 WebP, GIF or HEIC file):
@@ -533,7 +551,11 @@ soon as it is answered.
 ### What does not work in this mode
 
 - The scene of a new memory is always the hand-written hymn-book scene (see above); no
-  props, sets or art are generated.
+  props, sets or art are generated. Only its words are this telling's: the narration, the
+  page text and the explanations; the action, the set, the prop and the pull tab's label
+  ("Pull to drop the books") stay the sample's.
+- The per-moment lock lives in one API process. Scripted runs never span processes, and a
+  write from anywhere else is caught by the version check instead.
 - Vector search is unavailable, so "ask the family" and prop matching use their keyword
   fallbacks.
 - Media is kept in an in-memory store instead of GridFS.
