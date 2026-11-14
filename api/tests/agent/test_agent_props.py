@@ -553,6 +553,22 @@ def test_replace_photo_without_a_remover_uses_the_photo_itself() -> None:
     assert prop.size == "carried" and prop.grip == [0.5, 0.0]
 
 
+def test_replace_photo_with_a_bare_id_stores_a_media_ref() -> None:
+    """The web sends the bare id POST /families/{fid}/media returned; art keeps 'media/<id>'."""
+    repo = seeded_repo()
+    data = png((120, 60, 20), size=(300, 200), shape=False)
+    ref = repo.put_media(FAM, data, "image/jpeg", kind="photo")
+    bare = ref.removeprefix("media/")
+    assert bare != ref
+    confirm = tools_for(repo, ArtService(FakeImageModel(), None))["confirm_props"]
+    out = confirm.invoke({"props": [{"id": "trumpet_case", "name": "trumpet case", "size": "carried"}],
+                          "edits": [{"id": "trumpet_case", "action": "replace_photo", "photoId": bare}]})
+    assert out.splitlines()[0] == "trumpet_case | trumpet case | size=carried | photo"
+    body = repo.get_prop(FAM, "trumpet_case").art["body"]
+    assert body == ref and body.startswith("media/")
+    assert repo.get_media(FAM, body) == (data, "image/jpeg")
+
+
 # ------------------------------------------------- end to end through the HITL middleware
 
 
