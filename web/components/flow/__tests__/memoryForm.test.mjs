@@ -19,7 +19,9 @@ registerHooks({
 
 const {
   MEMORY_FIELDS,
+  MEMORY_YEAR_MIN,
   QUESTION_MAX,
+  SERVER_QUESTION_MAX,
   SUBMIT_ERRORS,
   SUGGESTED_QUESTIONS,
   TEXT_MAX,
@@ -138,9 +140,54 @@ test("validateDraft: year is required and must be sensible", () => {
   assert.equal(validateDraft(draft({ year: "" }), SELF).year, "Enter a year.");
   assert.equal(validateDraft(draft({ year: "   " }), SELF).year, "Enter a year.");
   assert.equal(validateDraft(draft({ year: "nineteen" }), SELF).year, "Enter the year as a number, like 1987.");
-  assert.equal(validateDraft(draft({ year: "1700" }), SELF).year, "Pick a year from 1850 on.");
+  assert.equal(validateDraft(draft({ year: "1700" }), SELF).year, "Pick a year from 1800 on.");
   assert.equal(validateDraft(draft({ year: String(thisYear + 1) }), SELF).year, "That year hasn't happened yet.");
   assert.equal(validateDraft(draft({ year: String(thisYear) }), SELF).year, undefined);
+});
+
+test("the year floor and the server question cap mirror api/routes/memories.py", () => {
+  assert.equal(MEMORY_YEAR_MIN, 1800);
+  assert.equal(SERVER_QUESTION_MAX, 1000);
+});
+
+test("validateDraft: the year floor is the API's 1800, the ceiling this year", () => {
+  assert.equal(validateDraft(draft({ year: "1820" }), SELF).year, undefined);
+  assert.equal(validateDraft(draft({ year: "1800" }), SELF).year, undefined);
+  assert.equal(validateDraft(draft({ year: "1799" }), SELF).year, "Pick a year from 1800 on.");
+  assert.equal(validateDraft(draft({ year: String(thisYear + 1) }), SELF).year, "That year hasn't happened yet.");
+});
+
+test("validateDraft: a year the person cannot edit is only checked for being a whole number", () => {
+  const ro = { yearEditable: false };
+  for (const year of ["1820", "1750", String(thisYear + 1), " 2019 "]) {
+    assert.equal(validateDraft(draft({ year }), SELF, ro).year, undefined, year);
+  }
+  assert.equal(validateDraft(draft({ year: "abc" }), SELF, ro).year, "Enter the year as a number, like 1987.");
+  assert.equal(validateDraft(draft({ year: "" }), SELF, ro).year, "Enter a year.");
+  assert.equal(validateDraft(draft({ year: "1987.5" }), SELF, ro).year, "Use a whole year, like 1987.");
+  // Explicit true behaves like the default.
+  assert.equal(
+    validateDraft(draft({ year: "1799" }), SELF, { yearEditable: true }).year,
+    "Pick a year from 1800 on.",
+  );
+});
+
+test("validateDraft: a question the person cannot edit is not capped", () => {
+  const long = "q".repeat(QUESTION_MAX + 21);
+  assert.equal(validateDraft(draft({ question: long }), SELF, { questionEditable: false }).question, undefined);
+  assert.equal(
+    validateDraft(draft({ question: long }), SELF).question,
+    "Keep the question to 300 characters or fewer.",
+  );
+  assert.equal(
+    validateDraft(draft({ question: long }), SELF, { questionEditable: true }).question,
+    "Keep the question to 300 characters or fewer.",
+  );
+  // The other checks still run.
+  assert.equal(
+    validateDraft(draft({ question: long, text: "" }), SELF, { questionEditable: false }).text,
+    "Tell the story in your own words.",
+  );
 });
 
 test("validateDraft: participants must include self for a new moment", () => {
@@ -182,6 +229,26 @@ test("toSubmitFields: a blank question is omitted", () => {
     const fields = toSubmitFields(draft({ question }));
     assert.equal("question" in fields, false, JSON.stringify(question));
   }
+});
+
+test("toSubmitFields: a question over the API's cap is clamped to it, ending in an ellipsis", () => {
+  const fields = toSubmitFields(draft({ question: "🧵".repeat(1500) }));
+  const chars = Array.from(fields.question);
+  assert.equal(chars.length, SERVER_QUESTION_MAX);
+  assert.equal(chars.at(-1), "…");
+  assert.equal(chars.slice(0, -1).join(""), "🧵".repeat(SERVER_QUESTION_MAX - 1));
+
+  const plain = toSubmitFields(draft({ question: "q".repeat(1500) }));
+  assert.equal(plain.question, `${"q".repeat(999)}…`);
+});
+
+test("toSubmitFields: a question at or under the API's cap is sent unchanged", () => {
+  for (const n of [999, SERVER_QUESTION_MAX]) {
+    const question = "q".repeat(n);
+    assert.equal(toSubmitFields(draft({ question })).question, question, String(n));
+  }
+  const astral = "🧵".repeat(SERVER_QUESTION_MAX);
+  assert.equal(toSubmitFields(draft({ question: astral })).question, astral);
 });
 
 test("toSubmitFields: memoryId set means a second telling, so participantIds are omitted", () => {
