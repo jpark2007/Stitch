@@ -54,13 +54,21 @@ export function PlaybackLab() {
   const freezeAt = parseTime(params.get("t"));
   const narrator = params.get("narrator");
   const { controller, status } = useTimelinePlayer(TIMELINE, { narrator, freezeAt });
-  const frame = usePlayerFrame(controller);
   useKeyboard(controller);
 
+  // Scene time as a DOM attribute for headless checks, written per frame without re-rendering.
+  const main = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const write = (f: PlaybackFrame) => main.current?.setAttribute("data-player-time", fmt(f.t, 3));
+    write(controller.frame);
+    return controller.onFrame(write);
+  }, [controller]);
+
+  const shot = controller.compiled.shots[status.shotIndex];
   return (
     <main
+      ref={main}
       className="mx-auto flex min-h-dvh max-w-[1440px] flex-col gap-5 px-[var(--gutter)] py-7"
-      data-player-time={fmt(frame.t, 3)}
       data-frozen={freezeAt !== null ? "" : undefined}
     >
       <header className="flex items-end justify-between gap-8">
@@ -68,29 +76,31 @@ export function PlaybackLab() {
           <p className="kicker">Lab · timeline player</p>
           <h1 className="mt-2 text-[2.1rem]">{SAMPLE.memory.title}</h1>
           <p className="mt-1 text-sm text-ink-faint">
-            {SAMPLE.memory.year} · {DEFS.sets.get(frame.shot?.set ?? "")?.name ?? "no shot"} · {fmt(TIMELINE.duration)} s
+            {SAMPLE.memory.year} · {DEFS.sets.get(shot?.set ?? "")?.name ?? "before the first shot"} ·{" "}
+            {fmt(TIMELINE.duration)} s
           </p>
         </div>
         <TellerTabs controller={controller} status={status} />
       </header>
 
+      {/* Only the <Live> parts re-render per frame; the rest follows `status`. */}
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_330px] gap-5">
         <div className="flex min-w-0 flex-col gap-5">
           <Card title="Front" note="x across · y up">
             <div className="aspect-[3/1.28] w-full">
-              <FrontView frame={frame} defs={DEFS} />
+              <Live controller={controller}>{(f) => <FrontView frame={f} defs={DEFS} />}</Live>
             </div>
           </Card>
           <div className="grid grid-cols-3 gap-5">
-            <LayersPanel frame={frame} />
-            <PropsPanel frame={frame} />
-            <CameraPanel frame={frame} />
+            <Live controller={controller}>{(f) => <LayersPanel frame={f} />}</Live>
+            <Live controller={controller}>{(f) => <PropsPanel frame={f} />}</Live>
+            <Live controller={controller}>{(f) => <CameraPanel frame={f} />}</Live>
           </div>
         </div>
         <div className="flex min-w-0 flex-col gap-5">
           <Card title="From above" note="x across · z toward you">
             <div className="aspect-[3/3.8] w-full">
-              <TopView frame={frame} defs={DEFS} />
+              <Live controller={controller}>{(f) => <TopView frame={f} defs={DEFS} />}</Live>
             </div>
           </Card>
           {(TIMELINE.interactions ?? []).map((it) => (
@@ -99,10 +109,15 @@ export function PlaybackLab() {
         </div>
       </div>
 
-      <CaptionLine frame={frame} />
-      <Transport controller={controller} status={status} frame={frame} />
+      <CaptionLine controller={controller} status={status} />
+      <Live controller={controller}>{(f) => <Transport controller={controller} status={status} frame={f} />}</Live>
     </main>
   );
+}
+
+/** Re-renders its children on every sampled frame. */
+function Live({ controller, children }: { controller: PlaybackController; children: (f: PlaybackFrame) => ReactNode }) {
+  return children(usePlayerFrame(controller));
 }
 
 // ---------------------------------------------------------------- pieces
@@ -158,8 +173,16 @@ function TellerTabs({ controller, status }: { controller: PlaybackController; st
   );
 }
 
-function CaptionLine({ frame }: { frame: PlaybackFrame }) {
-  const { caption, line, wordIndex, narrator } = frame.narration;
+/**
+ * Captions re-render only when status says the caption or spoken word changed
+ * (a few times a second), not every frame: the pattern the stage should use.
+ */
+function CaptionLine({ controller, status }: { controller: PlaybackController; status: PlayerStatus }) {
+  const track = controller.narrator;
+  const caption = track?.captions[status.captionIndex] ?? null;
+  const line = track?.captionLines[status.captionIndex] ?? null;
+  const wordIndex = status.wordIndex;
+  const narrator = status.narrator;
   const words = line?.words;
   return (
     <div className="flex min-h-[3.2rem] items-center justify-center px-8 text-center" aria-live="polite">

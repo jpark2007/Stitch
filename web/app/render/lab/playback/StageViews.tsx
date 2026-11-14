@@ -81,6 +81,7 @@ export function FrontView({ frame, defs }: { frame: PlaybackFrame; defs: SceneDe
 
   // Everything that stands at a depth, drawn back to front.
   const items: { z: number; node: ReactNode }[] = [];
+  const names: ReactNode[] = [];
 
   for (const layer of frame.layers) {
     const def = defs.sets.get(layer.setId)?.layers[layer.layer];
@@ -138,12 +139,15 @@ export function FrontView({ frame, defs }: { frame: PlaybackFrame; defs: SceneDe
           />
           {/* root: the point on the ground under the hips */}
           <circle cx={p.position[0]} cy={-p.position[1]} r={0.014} fill="var(--paper-light)" stroke={INK} strokeWidth={0.005} />
-          <Label x={hx} y={-(hy + headR) - 0.032} size={FRONT_LABEL} anchor="middle">
-            {person?.name ?? p.id}
-          </Label>
         </g>
       ),
     });
+    // Names go on top of everything, so a held prop never hides them.
+    names.push(
+      <Label key={p.target} x={hx} y={-(hy + headR) - 0.032} size={FRONT_LABEL} anchor="middle">
+        {person?.name ?? p.id}
+      </Label>,
+    );
   }
 
   for (const prop of frame.props) {
@@ -178,10 +182,12 @@ export function FrontView({ frame, defs }: { frame: PlaybackFrame; defs: SceneDe
               strokeWidth={0.005}
             />
           </g>
-          {/* parent, under the card and away from the arm that holds it */}
-          <Label x={cx} y={-card.y + 0.04} size={0.026} anchor="middle" tone="faint" mono>
-            {held ? prop.parent.raw.replace(/^puppet:/, "") : "ground"}
-          </Label>
+          {/* Held props are labelled by their parent line alone (the Props panel names the socket). */}
+          {held ? null : (
+            <Label x={cx} y={-card.y + 0.04} size={0.026} anchor="middle" tone="faint" mono>
+              ground
+            </Label>
+          )}
         </g>
       ),
     });
@@ -220,6 +226,7 @@ export function FrontView({ frame, defs }: { frame: PlaybackFrame; defs: SceneDe
       <rect x={FX0} y={-FY1} width={-1 - FX0} height={FY1 - FY0} fill="url(#lab-offstage)" />
       <rect x={1} y={-FY1} width={FX1 - 1} height={FY1 - FY0} fill="url(#lab-offstage)" />
       {items.map((i) => i.node)}
+      {names}
       <line x1={FX0} x2={FX1} y1={0} y2={0} stroke={INK_SOFT} strokeWidth={0.005} />
       {marks.map(([name, m]) => {
         const x = 2 * m[0] - 1;
