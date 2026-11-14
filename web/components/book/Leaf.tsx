@@ -131,7 +131,8 @@ export class LeafBody {
   private settled = false;
   /** Skipped while hidden, so its pose may be stale. */
   private hidden = false;
-  private key = "";
+  /** The command the pose was last computed for. */
+  private readonly last = { p: NaN, mode: "", dir: 0, rest: -1, twist: NaN };
   private front = false;
 
   constructor(
@@ -193,9 +194,21 @@ export class LeafBody {
     const twist = turnTwist(leaf);
     twistTargets(twist, twTarget);
 
-    const key = `${leaf.p.toFixed(5)}|${leaf.mode}|${leaf.dir}|${rt.restVersion}|${twist.toFixed(5)}`;
-    if (this.settled && key === this.key) return false;
-    this.key = key;
+    // Settled leaves skip all work until their command changes (compared
+    // field by field: a string key allocated every frame for every leaf).
+    const same =
+      leaf.p === this.last.p &&
+      leaf.mode === this.last.mode &&
+      leaf.dir === this.last.dir &&
+      rt.restVersion === this.last.rest &&
+      twist === this.last.twist;
+    if (this.settled && same) return false;
+    const last = this.last;
+    last.p = leaf.p;
+    last.mode = leaf.mode;
+    last.dir = leaf.dir;
+    last.rest = rt.restVersion;
+    last.twist = twist;
 
     if (leaf.mode === "frozen" || !this.started || reshown) {
       springs.snap(target, twTarget);
@@ -204,7 +217,6 @@ export class LeafBody {
       springs.step(target, twTarget, leaf.stiff, delta, rt.restR, rt.restL);
     }
 
-    // Settled leaves skip all work until their command (the key) changes.
     this.settled = springs.error(target, twTarget) < 2e-4;
     if (this.settled) springs.snap(target, twTarget);
 
