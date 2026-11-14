@@ -311,10 +311,12 @@ function renderView(view: JoinView, p: ViewProps): ReactNode {
               waiting for you.
             </p>
             <hr aria-hidden="true" className="stitch-rule mx-auto mt-7 w-24" />
-            <div className="mt-7 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
-              <ButtonLink href={hrefs.home()}>Open the family tree</ButtonLink>
+            <div className="mt-7 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+              <ButtonLink href={hrefs.home()} className="whitespace-nowrap">
+                Open the family tree
+              </ButtonLink>
               {fid ? (
-                <ButtonLink href={hrefs.settings(fid)} variant="secondary">
+                <ButtonLink href={hrefs.settings(fid)} variant="secondary" className="whitespace-nowrap">
                   Family settings
                 </ButtonLink>
               ) : null}
@@ -401,9 +403,13 @@ function renderView(view: JoinView, p: ViewProps): ReactNode {
               start with any story, big or small
             </p>
             <hr aria-hidden="true" className="stitch-rule mx-auto mt-5 w-24" />
-            <div className="mt-7 flex flex-col items-stretch justify-center gap-2 sm:flex-row sm:items-center sm:gap-4">
-              <ButtonLink href={hrefs.add({ familyId: fid })}>Add your first memory</ButtonLink>
-              <ButtonLink href={hrefs.home()} variant="quiet">
+            {/* Each label stays on one line; when both don't fit side by side in the
+                narrow card, the quiet link wraps under the main one, still centred. */}
+            <div className="mt-7 flex flex-col items-stretch justify-center gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4">
+              <ButtonLink href={hrefs.add({ familyId: fid })} className="whitespace-nowrap">
+                Add your first memory
+              </ButtonLink>
+              <ButtonLink href={hrefs.home()} variant="quiet" className="whitespace-nowrap">
                 Open the family tree
               </ButtonLink>
             </div>
