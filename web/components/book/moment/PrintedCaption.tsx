@@ -176,10 +176,13 @@ export function PrintedCaption({ controller, tellers, fonts, width, x, z, reveal
     printer.print(w, fonts);
   };
 
-  useFrame((frame, delta) => {
+  useFrame((frame) => {
     const s = state.current;
     const w = want.current;
-    const dt = Math.min(delta, 0.1);
+    // Wall time, so a slow frame never stretches the fade.
+    const now = performance.now() / 1000;
+    const dt = s.t > 0 ? Math.min(now - s.t, 0.5) : 0;
+    s.t = now;
     if (w.key !== s.shown.key) {
       // A new line: fade the old one out first (nothing shown: print at once).
       if (s.fade <= 0.001 || !s.shown.key) {
