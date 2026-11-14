@@ -206,7 +206,8 @@ function ReadyFilm(props: { film: Film; fid: string; api: StitchApi; back: { hre
         </p>
       }
     >
-      <div className="pt-2">
+      {/* As wide as the column, but never so tall that the controls fall below a laptop's fold. */}
+      <div className="mx-auto w-full max-w-[max(20rem,min(100%,calc((100dvh_-_22rem)*1.5)))] pt-2">
         <FilmPlayer film={film} mediaUrl={(mediaId) => api.mediaUrl(fid, mediaId)} />
       </div>
       <p className="mt-6 hidden text-center text-sm text-ink-soft sm:block">

@@ -259,7 +259,8 @@ test("formatTime and spokenLength", () => {
   assert.equal(formatTime(720), "12:00");
   assert.equal(formatTime(-4), "0:00");
   assert.equal(spokenLength(45.2), "45 sec");
-  assert.equal(spokenLength(60.8), "1 min 1 sec");
+  assert.equal(spokenLength(60.8), "1 min", "whole seconds, as the player's clock shows them");
+  assert.equal(spokenLength(65.2), "1 min 5 sec");
   assert.equal(spokenLength(120), "2 min");
 });
 

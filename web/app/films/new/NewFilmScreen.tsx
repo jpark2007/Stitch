@@ -338,8 +338,11 @@ function FilmForm(props: { api: StitchApi; fid: string }) {
           />
           <div className={FIELD_ROW_CLASS}>
             <label htmlFor={titleId} className={FIELD_ROW_LABEL_CLASS}>
-              Title
-              <OptionalMark />
+              {/* One inline run: the label is a flex row from sm up, which would drop the space. */}
+              <span>
+                Title
+                <OptionalMark />
+              </span>
             </label>
             <div className="min-w-0">
               <input

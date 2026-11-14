@@ -302,9 +302,9 @@ export function formatTime(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** "1 min 5 sec", "45 sec": a film's length for people, rounded to the second. */
+/** "1 min 5 sec", "45 sec": a film's length for people, in whole seconds (as formatTime counts them). */
 export function spokenLength(seconds: number): string {
-  const s = Math.max(0, Math.round(finite(seconds)));
+  const s = Math.max(0, Math.floor(finite(seconds)));
   const m = Math.floor(s / 60);
   const r = s % 60;
   if (m === 0) return `${r} sec`;

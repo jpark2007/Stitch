@@ -40,7 +40,6 @@ import {
   phrases,
   seekBy,
   shotIndexAt,
-  spokenLength,
   subtitleAt,
   titleCardAt,
   transformCss,
@@ -344,6 +343,7 @@ export function FilmPlayer(props: {
     <section
       aria-label={`${film.title}, a film`}
       onPointerMove={wake}
+      onPointerDown={wake}
       className={`relative mx-auto w-full ${className ?? ""}`}
     >
       <style href="stitch-film-player" precedence="default">
@@ -457,7 +457,7 @@ export function FilmPlayer(props: {
           ) : null}
 
           {atStart ? (
-            <Poster film={film} length={length} onPlay={play} />
+            <Poster film={film} onPlay={play} />
           ) : ended ? (
             <EndSheet film={film} onReplay={play} />
           ) : !playing ? (
@@ -607,19 +607,15 @@ function BigButton(props: { label: string; onClick: () => void; className?: stri
   );
 }
 
-/** Before the first play: the film's title over its first photo, and the big play button. */
-function Poster(props: { film: Film; length: number; onPlay: () => void }) {
-  const { film, length, onPlay } = props;
+/**
+ * Before the first play: the first photo, softly shaded, and the big play
+ * button. The title, year and length are the page's own heading just above,
+ * so they are not said twice.
+ */
+function Poster(props: { film: Film; onPlay: () => void }) {
+  const { film, onPlay } = props;
   return (
-    <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-[rgb(30_20_12/0.42)] px-6 text-center sm:gap-5">
-      <div>
-        <p className="text-[0.6875rem] font-bold tracking-[0.18em] text-paper-light/85 uppercase sm:text-xs">
-          {film.year} &middot; {spokenLength(length)}
-        </p>
-        <p className="mt-1 font-display text-[1.5rem] leading-[1.1] text-balance text-paper-light [text-shadow:0_2px_10px_rgb(20_12_6/0.5)] sm:mt-2 sm:text-[2.6rem]">
-          {film.title}
-        </p>
-      </div>
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-[rgb(30_20_12/0.22)]">
       <BigButton label={`Play ${film.title}`} onClick={onPlay} />
     </div>
   );
