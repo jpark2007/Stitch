@@ -95,6 +95,15 @@ def puppet_scale(build: str) -> float:
 
 # ---------------------------------------------------------------------- locomotion
 
+def travel_distance(start: Vec3, end: Vec3) -> float:
+    """The distance a walk or run is timed by: max(ground distance (x and z), |dy|).
+
+    The larger of the two, not their hypot, so a walk whose ground distance dominates keeps
+    exactly the time hypot(dx, dz) gives it, while a walk that climbs (a step onto a raised
+    mark with little ground to cover) takes at least as long as the same climb straight up."""
+    return max(math.hypot(end[0] - start[0], end[2] - start[2]), abs(end[1] - start[1]))
+
+
 def locomotion_keys(
     who: str,
     build: str,
@@ -123,13 +132,15 @@ def locomotion_keys(
             return [], t0, facing_now
         # Straight up or down onto a mark (a step, a riser): no ground distance, so no
         # walk cycle, but the root still has to reach the new height. Climb at gait speed.
-        t1 = t0 + abs(dy) / (SPEEDS[gait] * speed_scale)
+        t1 = t0 + travel_distance(start, end) / (SPEEDS[gait] * speed_scale)
         return [
             (target, "root.position", t0, [start[0], start[1], start[2]]),
             (target, "root.position", t1, [end[0], end[1], end[2]]),
         ], t1, facing_now
 
-    dur = dist / (SPEEDS[gait] * speed_scale)
+    # A walk that climbs takes at least the climb's time (travel_distance); the cycle keys
+    # still follow the ground distance, so a steep climb takes few, slow strides.
+    dur = travel_distance(start, end) / (SPEEDS[gait] * speed_scale)
     t1 = t0 + dur
     keys: list[Key] = []
 
@@ -253,7 +264,9 @@ def follow_keys(
       where it is when the leader sets off the other way.
     So while the follower moves, the leader is always level with or ahead of it in the
     direction it walks. A leader that never moves after t0 is walked up to, from t0.
-    With `dur`, motion is clipped at t0 + dur.
+    With `dur`, motion is clipped at t0 + dur. Every walk is timed by travel_distance (a climb
+    takes at least the climb's time), so a leader that steps straight up a riser is followed
+    up it, and a clipped climb stops where it is at t0 + dur.
 
     `speed_scale` (the follower's character factor, ``PuppetState.speed_scale``) scales its
     natural gait speed: a slow walker takes ``1 / speed_scale`` as long to cover the same
@@ -295,7 +308,7 @@ def follow_keys(
         if _sign(goal[0] - start[0]) == -d:
             return [], t0, facing_now  # already within spacing: do not back away
         if end_t is not None:
-            natural = math.hypot(goal[0] - start[0], goal[2] - start[2]) / speed
+            natural = travel_distance(start, goal) / speed
             if natural > _EPS and t0 + natural > end_t + _EPS:
                 goal = _lerp3(start, goal, (end_t - t0) / natural)
         seg_keys, t_arr, facing = locomotion_keys(who, build, t0, start, goal, facing, gait, skip, speed_scale)
@@ -328,7 +341,7 @@ def follow_keys(
             if end_t is not None and seg_start >= end_t - _EPS:
                 break
             continue
-        dist = math.hypot(goal[0] - cur_p[0], goal[2] - cur_p[2])
+        dist = travel_distance(cur_p, goal)
         if dist <= _EPS:
             continue
         natural = dist / speed

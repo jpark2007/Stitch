@@ -170,13 +170,13 @@ def test_speed_scale_reaches_the_walk():
     assert slow == pytest.approx(plain / 0.6)
 
 
-# ------------------------------------------------- out of scope (motion.py), for wave 2
+# ------------------------------------------------------------- a walk that climbs
 
-@pytest.mark.xfail(strict=True, reason=(
-    "motion.locomotion_keys times a walk by its ground distance alone (hypot(dx, dz)), so a walk with "
-    "a small sideways step and a large climb (a hug that walks dad 0.02 across and 0.3 up the church "
-    "steps) takes 0.057 s, while the same climb straight up takes 0.86 s (wave 2: motion.py)"))
 def test_a_walk_that_climbs_takes_at_least_as_long_as_the_climb():
+    """Bug: motion.locomotion_keys timed a walk by its ground distance alone (hypot(dx, dz)), so a
+    walk with a small sideways step and a large climb (a hug that walks dad 0.02 across and 0.3 up
+    the church steps) took 0.057 s, while the same climb straight up took 0.86 s. A walk is now
+    timed by max(ground distance, |dy|)."""
     from screenplay.motion import SPEEDS, locomotion_keys
 
     _, straight_up, _ = locomotion_keys("dad", "average", 0.0, (0.0, 0.0, 0.5), (0.0, 0.3, 0.5), 1)
