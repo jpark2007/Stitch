@@ -1,4 +1,4 @@
-"""PATCH person: a build or worn-item change that would break a saved scene is a 409.
+"""PATCH person: a build, worn-item or walking-speed (notes) change that would break a saved scene is a 409.
 
 Driven through `main.create_app()` with STITCH_FAKE_DB=1 (the seeded in-memory demo family),
 STITCH_AGENT=fake and STITCH_FAKE_RUN_STEP=0, logged in as a demo member. No MongoDB, no
@@ -26,6 +26,7 @@ import routes.memories
 import schemas
 from db import client as db_client
 from screenplay import compiler as screenplay_compiler
+from screenplay.character import speed_scale
 from screenplay.schema import Screenplay
 from seed import demo
 from seed.fake_runs import ScriptedRunManager, compile_scene
@@ -316,6 +317,160 @@ def test_unknown_person_is_still_a_404(api: TestClient):
     assert res.status_code == 404, res.text
 
 
+# ------------------------------------------------------------------------------ notes that change walking speed
+#
+# The compiler reads character.notes through screenplay.character.speed_scale: "walks slowly
+# with a cane" makes a puppet walk at 0.6x, so a walk that fit its slot no longer does and the
+# next action finds the person still walking. Dad (no notes, 1.0x) with a cane breaks the green
+# sedan road trip in the real compiler.
+
+GREEN_SEDAN = "demo_green_sedan_trip"
+CANE = "walks slowly with a cane"
+
+
+def _scenes_with(person_id: str) -> list[str]:
+    return [
+        d["_id"]
+        for d in db_client.get_db()["memories"].find({"familyId": FID, "screenplay.cast": person_id}, {"_id": 1})
+    ]
+
+
+def test_dad_cannot_take_a_cane_in_a_scene_he_has_to_walk_through(api: TestClient):
+    """Regression: a notes-only edit to a slower walk used to skip the guard entirely."""
+    before = _person(api, "dad")
+    assert speed_scale(before["character"].get("notes")) == 1.0
+    assert speed_scale(CANE) < 1.0
+    sedan_before = _stored_memory(GREEN_SEDAN)
+
+    res = _patch_sheet(api, "dad", notes=CANE)
+    assert res.status_code == 409, res.text
+    body = res.json()
+    assert set(body) == {"detail"}
+    detail = body["detail"]
+    titles = {_title(m) for m in _scenes_with("dad")}
+    named = [t for t in titles if f'"{t}"' in detail]
+    assert named == [_title(GREEN_SEDAN)], detail
+    assert detail == routes.families.NOTES_BREAKS_SCENE.format(name=before["name"], title=named[0])
+    assert "build" not in detail and "worn item" not in detail
+    for leak in ("busy", "still walking", "speed", "0.6", "shot s"):
+        assert leak not in detail
+    assert _person(api, "dad") == before
+    assert _person(api, "dad")["character"].get("notes") == before["character"].get("notes")
+    after = _stored_memory(GREEN_SEDAN)
+    assert after["version"] == sedan_before["version"]
+    assert after["screenplay"] == sedan_before["screenplay"]
+
+
+def test_after_a_rejected_cane_every_scene_with_dad_still_compiles_and_retells(api: TestClient):
+    """The original failure: every later telling of the broken moment failed with
+    'This telling could not be added to the scene'. After the 409 nothing changed, so the
+    saved scenes still compile with the stored people and a second telling goes through."""
+    assert _patch_sheet(api, "dad", notes=CANE).status_code == 409
+    db = db_client.get_db()
+    for memory_id in _scenes_with("dad"):
+        result = compile_scene(db, FID, Screenplay.model_validate(_stored_memory(memory_id)["screenplay"]))
+        assert result.ok, (memory_id, [e.code for e in result.errors])
+
+    events = _retell(api, HYMN_BOOKS, "Dad told it slower, like he always does. He never dropped a single book.")
+    names = [name for name, _ in events]
+    assert names[-1] == "done", events[-3:]
+    assert "compile_error" not in names
+    for name, data in events:
+        if name == "error":
+            raise AssertionError(data)
+        assert "could not be added" not in str(data)
+
+
+@pytest.mark.parametrize(
+    ("person_id", "notes"),
+    [
+        ("dad", "loves gardening"),  # None -> no speed words, still 1.0x
+        ("lily", "always a step ahead, quick to laugh"),  # brisk -> quick, still 1.25x
+        ("grandpa_joseph", "never without his cane at the market"),  # slowly + cane -> cane, still 0.6x
+        ("sam", None),  # bounces on his toes -> cleared, still 1.0x
+    ],
+)
+def test_notes_that_keep_the_walking_speed_compile_nothing(
+    api: TestClient, compile_calls: list[str], person_id: str, notes: str | None
+):
+    before = _person(api, person_id)
+    assert speed_scale(notes) == speed_scale(before["character"].get("notes"))
+    res = _patch_sheet(api, person_id, notes=notes)
+    assert res.status_code == 200, res.text
+    assert res.json()["character"].get("notes") == notes
+    assert _person(api, person_id)["character"].get("notes") == notes
+    assert compile_calls == []
+
+
+def test_a_faster_walk_runs_the_guard_on_every_scene_of_that_person(api: TestClient, compile_calls: list[str]):
+    """Faster is a speed change too: the guard compiles each scene with dad twice (today, then
+    with the new sheet) and lets the compiler decide. It accepts this one."""
+    assert speed_scale("walks briskly") > 1.0
+    with_dad = _scenes_with("dad")
+    assert len(with_dad) >= 2
+    res = _patch_sheet(api, "dad", notes="walks briskly")
+    assert res.status_code == 200, res.text
+    assert res.json()["character"]["notes"] == "walks briskly"
+    assert sorted(compile_calls) == sorted(with_dad * 2)
+    assert TAMALES not in compile_calls  # a scene without dad is never compiled
+
+
+def test_a_faster_walk_that_breaks_a_scene_is_refused_by_the_guard(api: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """The guard, not a speed rule, decides: when the compiler rejects the faster dad, so does the patch."""
+    real = screenplay_compiler.compile
+
+    def speed_sensitive(screenplay: Screenplay, *, people: dict, **kwargs: Any):
+        result = real(screenplay, people=people, **kwargs)
+        dad = people.get("dad")
+        if screenplay.memory_id == HYMN_BOOKS and dad is not None and speed_scale(dad.character.notes) > 1.0:
+            return result.model_copy(update={"ok": False, "timeline": None})
+        return result
+
+    monkeypatch.setattr(screenplay_compiler, "compile", speed_sensitive)
+    before = _person(api, "dad")
+    res = _patch_sheet(api, "dad", notes="walks briskly")
+    assert res.status_code == 409, res.text
+    assert res.json()["detail"] == routes.families.NOTES_BREAKS_SCENE.format(
+        name=before["name"], title=_title(HYMN_BOOKS)
+    )
+    assert _person(api, "dad") == before
+
+
+def test_a_build_change_wins_the_message_over_a_notes_change(api: TestClient):
+    """Both changed and the scene breaks: the sentence names the build, the first cause."""
+    before = _person(api, "dad")
+    res = _patch_sheet(api, "dad", build="small", notes=CANE)
+    assert res.status_code == 409, res.text
+    detail = res.json()["detail"]
+    assert detail.startswith(routes.families.BUILD_BREAKS_SCENE.split("{")[0]), detail
+    assert _person(api, "dad") == before
+
+
+def test_an_item_change_wins_the_message_over_a_notes_change(api: TestClient, monkeypatch: pytest.MonkeyPatch):
+    real = screenplay_compiler.compile
+
+    def item_sensitive(screenplay: Screenplay, *, people: dict, **kwargs: Any):
+        result = real(screenplay, people=people, **kwargs)
+        sam = people.get("sam")
+        if sam is not None and sam.character.item_prop_id == "luis_straw_hat":
+            return result.model_copy(update={"ok": False, "timeline": None})
+        return result
+
+    monkeypatch.setattr(screenplay_compiler, "compile", item_sensitive)
+    res = _patch_sheet(api, "sam", itemPropId="luis_straw_hat", notes="walks slowly")
+    assert res.status_code == 409, res.text
+    assert res.json()["detail"].startswith(routes.families.ITEM_BREAKS_SCENE.split("{")[0])
+    assert _person(api, "sam")["character"]["itemPropId"] == "sam_cap"
+
+
+def test_the_notes_message_is_plain_language():
+    msg = routes.families.NOTES_BREAKS_SCENE
+    assert "{title}" in msg and "{name}" in msg
+    text = msg.format(name="Dave", title="The road trip in the green sedan")
+    assert text.endswith("Keep the current notes.")
+    assert '"The road trip in the green sedan"' in text and "Dave" in text
+
+
 # ------------------------------------------------------------------------------ docs
 
 
@@ -325,3 +480,4 @@ def test_409_is_documented_with_error_response(api: TestClient):
         "$ref": "#/components/schemas/ErrorResponse"
     }
     assert op["responses"]["200"]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/Person"}
+    assert "notes" in op["responses"]["409"]["description"]
