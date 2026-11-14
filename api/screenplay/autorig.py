@@ -15,6 +15,7 @@ Pure and deterministic: no I/O except reading the vocabulary once.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -135,7 +136,7 @@ def _validate_hint(hint: Any) -> tuple[float, float]:
         hx, hy = float(hx), float(hy)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"grip hint must be a pair of fractions, got {hint!r}") from exc
-    if hx != hx or hy != hy:  # NaN
+    if not (math.isfinite(hx) and math.isfinite(hy)):  # NaN or +-inf: no nearest edge to snap to
         raise ValueError(f"grip hint must be a pair of fractions, got {hint!r}")
     return hx, hy
 
