@@ -4,10 +4,11 @@ import { useFrame } from "@react-three/fiber";
 import { motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { preloadPaperTextures } from "@/components/paper/materials";
-import { stagePoses } from "@/components/stage/CameraRig";
+import { blendPose, stagePoses, type CameraPose } from "@/components/stage/CameraRig";
 import { preloadCutouts } from "@/components/stage/cutout";
 import { EFFECT_KINDS, type EffectKind } from "@/components/stage/Effects";
-import { Stage } from "@/components/stage/Stage";
+import { COVER_SPAN, Stage } from "@/components/stage/Stage";
+import { smootherstep } from "@/components/stage/timeline";
 import { DEMO_CUTOUTS } from "@/components/stage/art";
 import { DemoDiorama, demoCamera, DEMO_OPEN_AT } from "./demo";
 
@@ -24,6 +25,9 @@ export interface RenderViewProps {
   /** Depth of field on. */
   dof?: boolean;
 }
+
+/** The closed book, centred: the intro state a scrubbed ?open=0 starts from. */
+const CLOSED_POSE: CameraPose = { position: [1.45, 4.6, 5.1], target: [0.0, 0.0, 0.2], fov: 30 };
 
 /** Marks the document once a few frames have actually been drawn. */
 function ReadyProbe() {
@@ -71,7 +75,13 @@ export function RenderView({ memoryId, time, open, effect, closeAt, dof = false 
         openAt={DEMO_OPEN_AT}
         closeAt={closeAt}
         dof={dof}
-        camera={demo ? demoCamera : stagePoses().wide}
+        camera={
+          open !== null
+            ? blendPose(CLOSED_POSE, stagePoses().wide, smootherstep(open / COVER_SPAN))
+            : demo
+              ? demoCamera
+              : stagePoses().wide
+        }
         overlay={<ReadyProbe />}
       >
         {demo && <DemoDiorama effect={effectKind} />}

@@ -17,15 +17,28 @@
  */
 
 import { PerformanceMonitor } from "@react-three/drei";
-import { Canvas } from "@react-three/fiber";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { CanvasTexture, Float32BufferAttribute, Object3D, PlaneGeometry, SRGBColorSpace } from "three";
+import { Canvas, useFrame } from "@react-three/fiber";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  BufferAttribute,
+  BufferGeometry,
+  CanvasTexture,
+  Float32BufferAttribute,
+  MeshStandardMaterial,
+  Object3D,
+  PlaneGeometry,
+  SRGBColorSpace,
+  Vector2,
+  type Group,
+  type Mesh,
+} from "three";
 import { useCardBoxMaterials, usePaperMaterial, useWoodMaterial } from "@/components/paper/usePaper";
-import { createCardEdgeMaterial, createPaperMaterial } from "@/components/paper/materials";
-import { StageClock, StaticShadows } from "./clock";
+import { createCardEdgeMaterial, createPaperMaterial, getPaperTextures } from "@/components/paper/materials";
+import { markShadowsDirty, StageClock, StaticShadows, useStageTime } from "./clock";
 import { CameraRig, DEFAULT_STAGE_SIZE, stagePoses, type CameraPath, type CameraPose, type StageSize } from "./CameraRig";
 import { DepthOfField } from "./DepthOfField";
-import { PopUp, type OpenSource, type PopUpTiming } from "./SetPiece";
+import { PopUp, readOpen, type OpenSource, type PopUpTiming } from "./SetPiece";
+import { rng, smootherstep } from "./timeline";
 
 export const STAGE_COLORS = {
   page: "#f4ecdd",
@@ -142,11 +155,94 @@ function usePageGeometry(size: StageSize, spine: -1 | 1) {
   return geo;
 }
 
-/** The open book under the stage: two pages, page blocks and the cover board.
- *  The right page is the stage page (centred on the origin). */
-export function OpenBook({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize }) {
+/** Page block thickness, cover board thickness, and how far the boards overhang. */
+const BLOCK = 0.07;
+const BOARD = 0.03;
+const OVERHANG = 0.08;
+/**
+ * Height of the book's hinge above the page. Closed, the left page lies
+ * 2 x HINGE_Y above the right one, leaving room for the folded-flat set.
+ */
+const HINGE_Y = 0.036;
+const SPINE_SEGMENTS = 16;
+
+/** Book leather with a stitched border and a blind-tooled panel: the outside
+ *  of the cover boards, seen when the book is closed. Built once. */
+let leatherTexture: CanvasTexture | null = null;
+function getLeatherTexture(aspect: number) {
+  if (leatherTexture) return leatherTexture;
+  const W = 512;
+  const H = Math.round(W * aspect);
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const g = c.getContext("2d");
+  if (g) {
+    g.fillStyle = STAGE_COLORS.cover;
+    g.fillRect(0, 0, W, H);
+    // Mottled grain: soft blotches, then fine pores.
+    const rand = rng(7);
+    g.filter = "blur(10px)";
+    for (let i = 0; i < 140; i++) {
+      const r = 10 + rand() * 30;
+      g.fillStyle = rand() < 0.5 ? `rgba(40, 16, 8, ${0.04 + rand() * 0.04})` : `rgba(255, 200, 160, ${0.02 + rand() * 0.03})`;
+      g.beginPath();
+      g.arc(rand() * W, rand() * H, r, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.filter = "none";
+    for (let i = 0; i < 5000; i++) {
+      g.fillStyle = `rgba(30, 10, 4, ${0.08 + rand() * 0.12})`;
+      g.fillRect(rand() * W, rand() * H, 1, 1);
+    }
+    // Rubbed, lighter edges.
+    const edge = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.72);
+    edge.addColorStop(0, "rgba(255, 210, 170, 0)");
+    edge.addColorStop(1, "rgba(255, 210, 170, 0.14)");
+    g.fillStyle = edge;
+    g.fillRect(0, 0, W, H);
+    // Blind-tooled panel: a pressed line with a highlight under it.
+    const panel = (inset: number, dark: string, light: string) => {
+      g.lineWidth = 2;
+      g.strokeStyle = light;
+      g.strokeRect(inset + 1, inset + 1, W - 2 * inset, H - 2 * inset);
+      g.strokeStyle = dark;
+      g.strokeRect(inset, inset, W - 2 * inset, H - 2 * inset);
+    };
+    panel(58, "rgba(30, 10, 4, 0.4)", "rgba(255, 210, 170, 0.16)");
+    // Stitched border: thread dashes with a shadow under each.
+    const inset = 26;
+    g.setLineDash([11, 8]);
+    g.lineCap = "round";
+    g.lineWidth = 3;
+    g.strokeStyle = "rgba(25, 8, 2, 0.45)";
+    g.strokeRect(inset + 1, inset + 2, W - 2 * inset, H - 2 * inset);
+    g.strokeStyle = "#e9d2ad";
+    g.strokeRect(inset, inset, W - 2 * inset, H - 2 * inset);
+    g.setLineDash([]);
+  }
+  leatherTexture = new CanvasTexture(c);
+  leatherTexture.colorSpace = SRGBColorSpace;
+  leatherTexture.anisotropy = 8;
+  return leatherTexture;
+}
+
+export interface OpenBookProps {
+  size?: StageSize;
+  /**
+   * How closed the book is: 0 lies open, 1 is closed on the table (the intro
+   * state), in between the left half swings over on the spine. A number, a
+   * function of stage time or a ref. The book owner can drop this; it is
+   * what lets the standalone stage show a closed book at ?open=0.
+   */
+  closed?: OpenSource;
+}
+
+/** The open book under the stage: two pages, page blocks, cover boards and a
+ *  spine. The right page is the stage page (centred on the origin); the left
+ *  half can swing shut over it (`closed`). */
+export function OpenBook({ size = DEFAULT_STAGE_SIZE, closed = 0 }: OpenBookProps) {
   const [w, d] = size;
-  const block = 0.07;
   const rightGeo = usePageGeometry(size, -1);
   const leftGeo = usePageGeometry(size, 1);
   const page = useMemo(() => {
@@ -155,34 +251,105 @@ export function OpenBook({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize }) {
     return m;
   }, [w, d]);
   useEffect(() => () => page.dispose(), [page]);
-  const cover = useCardBoxMaterials({ color: STAGE_COLORS.cover, repeat: [2, 1.4], edgeColor: "#4f281c" });
+  const box = useCardBoxMaterials({ color: STAGE_COLORS.cover, repeat: [2, 1.4], edgeColor: "#4f281c" });
+  const leather = useMemo(() => {
+    const grain = getPaperTextures("card", [2, 2.6]);
+    return new MeshStandardMaterial({
+      map: getLeatherTexture((d + 2 * OVERHANG) / (w + OVERHANG)),
+      normalMap: grain.normalMap,
+      normalScale: new Vector2(0.55, 0.55),
+      roughness: 0.72,
+      metalness: 0,
+    });
+  }, [w, d]);
+  useEffect(() => () => leather.dispose(), [leather]);
+  // Box faces: [+x, -x, +y, -y, +z, -z]; the outside (-y) is leather.
+  const coverMats = useMemo(() => [box[0], box[1], box[2], leather, box[4], box[5]], [box, leather]);
   const edge = useMemo(() => createCardEdgeMaterial({ color: STAGE_COLORS.pageEdge, darken: 0.04 }), []);
   useEffect(() => () => edge.dispose(), [edge]);
-  const leftX = -w;
+
+  // The spine: a band of cover leather around the hinge, from the right
+  // board's inner edge to the left board's, rebuilt only while it swings.
+  const spineGeo = useMemo(() => {
+    const g = new BufferGeometry();
+    g.setAttribute("position", new BufferAttribute(new Float32Array((SPINE_SEGMENTS + 1) * 4 * 3), 3));
+    const idx: number[] = [];
+    for (let i = 0; i < SPINE_SEGMENTS; i++) {
+      const a = i * 4;
+      const b = (i + 1) * 4;
+      idx.push(a, b, a + 1, b, b + 1, a + 1); // outside
+      idx.push(a + 2, a + 3, b + 2, b + 2, a + 3, b + 3); // inside
+    }
+    g.setIndex(idx);
+    return g;
+  }, []);
+  useEffect(() => () => spineGeo.dispose(), [spineGeo]);
+
+  const now = useStageTime();
+  const left = useRef<Group>(null);
+  const spine = useRef<Mesh>(null);
+  const last = useRef(NaN);
+  useFrame((state) => {
+    const k = readOpen(closed, now(state));
+    if (k === last.current) return;
+    last.current = k;
+    markShadowsDirty(state);
+    // Ease the swing so it lifts gently and lands softly.
+    const phi = Math.PI * smootherstep(k);
+    if (left.current) left.current.rotation.z = -phi;
+    const sp = spine.current;
+    if (!sp) return;
+    sp.visible = phi > 0.01;
+    if (!sp.visible) return;
+    const pos = sp.geometry.getAttribute("position") as BufferAttribute;
+    const ro = HINGE_Y + BLOCK + BOARD + 0.001;
+    const ri = HINGE_Y + BLOCK + 0.001;
+    const z0 = -d / 2 - OVERHANG;
+    const z1 = d / 2 + OVERHANG;
+    for (let i = 0; i <= SPINE_SEGMENTS; i++) {
+      const b = -Math.PI / 2 - (phi * i) / SPINE_SEGMENTS;
+      const cx = Math.cos(b);
+      const cy = Math.sin(b);
+      pos.setXYZ(i * 4, cx * ro, cy * ro, z0);
+      pos.setXYZ(i * 4 + 1, cx * ro, cy * ro, z1);
+      pos.setXYZ(i * 4 + 2, cx * ri, cy * ri, z0);
+      pos.setXYZ(i * 4 + 3, cx * ri, cy * ri, z1);
+    }
+    pos.needsUpdate = true;
+    sp.geometry.computeVertexNormals();
+    sp.geometry.computeBoundingSphere();
+  });
+
+  // One half of the book, drawn for the right page (side 1) or the left (-1),
+  // in coordinates centred on that page.
+  const half = (side: 1 | -1, geo: BufferGeometry) => (
+    <>
+      <mesh geometry={geo} material={page} receiveShadow />
+      {/* Page block: the stacked page edges under the sheet, lower under
+          the gutter, where the pages dip into the spine. */}
+      <mesh position={[side * (GUTTER / 2), -BLOCK / 2 - 0.001, 0]} material={edge} castShadow receiveShadow>
+        <boxGeometry args={[w - GUTTER - 0.004, BLOCK, d - 0.01]} />
+      </mesh>
+      <mesh position={[-side * (w / 2 - GUTTER / 2), -BLOCK / 2 - DIP / 2 - 0.002, 0]} material={edge} receiveShadow>
+        <boxGeometry args={[GUTTER, BLOCK - DIP, d - 0.01]} />
+      </mesh>
+      {/* Cover board, overhanging the pages on the three open sides. */}
+      <mesh position={[side * (OVERHANG / 2), -BLOCK - BOARD / 2 - 0.001, 0]} material={coverMats} castShadow receiveShadow>
+        <boxGeometry args={[w + OVERHANG, BOARD, d + 2 * OVERHANG]} />
+      </mesh>
+    </>
+  );
+
   return (
     <group>
-      <mesh geometry={rightGeo} material={page} receiveShadow />
-      <mesh geometry={leftGeo} material={page} position-x={leftX} receiveShadow />
-      {/* Page blocks: the stacked page edges under each sheet. Lower under
-          the gutter, where the pages dip into the spine. */}
-      {[0, leftX].map((cx, i) => {
-        const outer = i === 0 ? 1 : -1;
-        const gx = cx - outer * (w / 2 - GUTTER / 2);
-        return (
-          <group key={cx}>
-            <mesh position={[cx + outer * (GUTTER / 2), -block / 2 - 0.001, 0]} material={edge} castShadow receiveShadow>
-              <boxGeometry args={[w - GUTTER - 0.004, block, d - 0.01]} />
-            </mesh>
-            <mesh position={[gx, -block / 2 - DIP / 2 - 0.002, 0]} material={edge} receiveShadow>
-              <boxGeometry args={[GUTTER, block - DIP, d - 0.01]} />
-            </mesh>
-          </group>
-        );
-      })}
-      {/* Cover board, a touch larger than the pages. */}
-      <mesh position={[-w / 2, -block - 0.016, 0]} material={cover} castShadow receiveShadow>
-        <boxGeometry args={[w * 2 + 0.16, 0.03, d + 0.14]} />
-      </mesh>
+      {half(1, rightGeo)}
+      {/* The left half hangs off the hinge, so it can swing shut. */}
+      <group position={[-w / 2, HINGE_Y, 0]}>
+        <group ref={left}>
+          <group position={[-w / 2, -HINGE_Y, 0]}>{half(-1, leftGeo)}</group>
+        </group>
+        <mesh ref={spine} geometry={spineGeo} material={box[0]} castShadow receiveShadow frustumCulled={false} visible={false} />
+      </group>
     </group>
   );
 }
@@ -280,7 +447,17 @@ export interface StageProps extends Omit<StageSceneProps, "surface"> {
   staticShadows?: boolean;
   /** Soft depth of field focused on the camera target. Default false. */
   dof?: boolean;
+  /**
+   * When `open` is scrubbed, start from the closed book: the first part of
+   * the range swings the cover open, the rest raises the set. Default true.
+   */
+  cover?: boolean;
 }
+
+/** Share of a scrubbed `open` (0..1) the cover takes to swing open; the set
+ *  starts rising a little before the cover lands. */
+export const COVER_SPAN = 0.3;
+const SET_FROM = COVER_SPAN * 0.75;
 
 export function Stage({
   time,
@@ -290,9 +467,18 @@ export function Stage({
   overlay,
   staticShadows = true,
   dof = false,
+  cover = true,
+  open = true,
   size = DEFAULT_STAGE_SIZE,
   ...scene
 }: StageProps) {
+  // Scrubbed: split the range between the cover and the set.
+  const scrub = typeof open !== "boolean" && cover;
+  const setOpen = useMemo<OpenSource | boolean>(
+    () => (scrub ? (t: number) => (readOpen(open, t) - SET_FROM) / (1 - SET_FROM) : open),
+    [scrub, open],
+  );
+  const closed = useMemo<OpenSource>(() => (scrub ? (t: number) => 1 - readOpen(open, t) / COVER_SPAN : 0), [scrub, open]);
   const pose = camera ?? stagePoses(size).reading;
   const initial = typeof pose === "function" ? pose(time ?? 0) : pose;
   // Render at up to 1.5x on retina screens and step down if frames run long:
@@ -316,8 +502,8 @@ export function Stage({
       {staticShadows && <StaticShadows />}
       <StageClock time={time}>
         <Table />
-        <OpenBook size={size} />
-        <StageScene {...scene} size={size} surface={false} />
+        <OpenBook size={size} closed={closed} />
+        <StageScene {...scene} open={setOpen} size={size} surface={false} />
         <CameraRig pose={pose} orbit={orbit} />
         {dof && <DepthOfField />}
         {overlay}
