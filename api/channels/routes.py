@@ -8,7 +8,8 @@ from starlette.concurrency import run_in_threadpool
 
 from db import client, contacts, conversations
 from .auth import authenticated_body
-from .models import AuthorizeContact, InboundMessage, InboundPhoto, InboundVoice, Tick, WHITESPACE
+from .consent import receive_stop
+from .models import AuthorizeContact, InboundMessage, InboundPhoto, InboundVoice, Tick
 
 router = APIRouter(prefix="/internal/channels", tags=["channels"])
 
@@ -17,20 +18,9 @@ def _receive(message: InboundMessage) -> dict:
     db = client.get_db()
     data = message.model_dump()
     try:
-        if message.text.strip(WHITESPACE).upper() in {"STOP", "UNSUBSCRIBE"}:
-            rows = contacts.matching_contacts(db, message.provider, message.senderId)
-            if not rows:
-                raise LookupError("Unknown contact")
-            contacts.stop_contacts(db, message.provider, message.senderId, rows)
-            duplicates = []
-            for row in rows:
-                try:
-                    duplicates.append(conversations.save_inbound(db, row, data, stopped=True))
-                except Exception:
-                    # Consent revocation must not depend on receipt identity or
-                    # availability after the contact update has succeeded.
-                    duplicates.append(False)
-            return {"accepted": True, "duplicate": all(duplicates), "stopped": True}
+        stopped = receive_stop(db, data, message.text)
+        if stopped is not None:
+            return stopped
         contact = contacts.resolve_contact(db, message.provider, message.senderId)
         return {"accepted": True, "duplicate": conversations.save_inbound(db, contact, data)}
     except LookupError:
