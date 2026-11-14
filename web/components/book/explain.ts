@@ -11,7 +11,7 @@
  *   placeNote(input, out)                     where the note stands: on screen, clear of the words
  *   explainStep(open, event)                  which note is open after a click, key or turn
  *   resumesAfter(reason)                      whether closing hands the scene back to play
- *   mayExplain(gate) / turnedAway(gate)       when cutouts may be clicked, and when a turning page shuts the note
+ *   mayExplain(gate) / turnedAway(gate, peak) when cutouts may be clicked, and when a turning page shuts the note
  *   standsUp(angle)                           a cutout risen enough with its layer to be clicked
  *   noteRise(ms) / noteFold(ms) / sewAt(...)  the pop-up's motion over time
  *
@@ -690,14 +690,20 @@ export function standsUp(angle: number): boolean {
   return Number.isFinite(angle) && Math.abs(angle) <= STAND_ANGLE + 1e-9;
 }
 
+/** How far the reveal may fall from its height while a note is open before the page counts as turning away. */
+export const TURN_DROP = 0.08;
+
 /**
- * Whether an open note shuts because the page is turning away: once the
- * reveal falls halfway from where clicks open to where the gate re-arms, so
- * a note opened as the page still settles in is not shut at once, and the
- * note has folded before the set does.
+ * Whether an open note shuts because the page is turning away. `peak` is
+ * the highest the reveal has been since the note opened: the note goes as
+ * soon as the reveal falls a little from it (the set starts to fold with
+ * the page, and the note folds with it), however open the page was. A note
+ * opened as the page still settles in (the reveal rising) is never shut by
+ * that. And always once the reveal is halfway down from where clicks open
+ * to where the gate re-arms.
  */
-export function turnedAway(g: Pick<ExplainGate, "reveal" | "openAt" | "rearmAt">): boolean {
-  return g.reveal < (g.openAt + g.rearmAt) / 2;
+export function turnedAway(g: Pick<ExplainGate, "reveal" | "openAt" | "rearmAt">, peak: number = g.reveal): boolean {
+  return g.reveal < peak - TURN_DROP || g.reveal < (g.openAt + g.rearmAt) / 2;
 }
 
 /* ------------------------------------------------------------------------ */

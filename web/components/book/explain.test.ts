@@ -511,6 +511,20 @@ describe("when cutouts may be clicked", () => {
     // Opening and shutting never overlap: an open note can always be shut by turning.
     for (let r = 0; r <= 1; r += 0.01) assert.ok(!(x.mayExplain(g({ reveal: r })) && x.turnedAway(g({ reveal: r }))), String(r));
   });
+
+  it("shuts a note as soon as the page starts to turn, but not as the page still settles in", () => {
+    // Opened at the gate, the reveal rising to 1: never shut on the way.
+    let peak = gate.OPEN_TO_PLAY;
+    for (let r = gate.OPEN_TO_PLAY; r <= 1; r += 0.01) {
+      peak = Math.max(peak, r);
+      assert.equal(x.turnedAway(g({ reveal: r }), peak), false, String(r));
+    }
+    // Then the page turns: shut within the first little fall, long before halfway.
+    assert.equal(x.turnedAway(g({ reveal: 0.95 }), 1), false);
+    assert.equal(x.turnedAway(g({ reveal: 1 - x.TURN_DROP - 0.01 }), 1), true);
+    // Opened at the gate and turned straight back: shut once it falls as far.
+    assert.equal(x.turnedAway(g({ reveal: gate.OPEN_TO_PLAY - x.TURN_DROP - 0.01 }), gate.OPEN_TO_PLAY), true);
+  });
 });
 
 describe("motion", () => {

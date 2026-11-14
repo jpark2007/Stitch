@@ -24,12 +24,16 @@
  *   - one invisible pointer target per explainable cutout, hit-tested on
  *     the cutout's paper (stage/play/pick), forgiving by a few px (more for
  *     a finger); marked as a book control so the book leaves those presses
- *     alone (no page turn, focus change or corner peel). Cast who are
- *     offstage right now are not targets;
+ *     alone (no page turn, focus change or corner peel). Clickable exactly
+ *     while the play gate lets the telling play (../explain.ts mayExplain):
+ *     from its first frame, mid-telling, in the end hold and at a ?t= frame.
+ *     Cast who are offstage right now, or still lying on the page as their
+ *     layer folds up (standsUp), are not targets;
  *   - while a note is open, the rest of the stage takes the press that
  *     closes it (so it does not also step the camera out of its shot); a
  *     press anywhere else on the book closes it too, and the book carries
- *     on with it as usual; so do Escape, a page turn and a telling;
+ *     on with it as usual; so do Escape, a page turn (once the page has
+ *     turned well away: turnedAway) and a telling;
  *   - the note (NoteRig): placed in screen space so it stays wholly on
  *     screen beside its target and clear of the printed words (../explain.ts
  *     placeNote; on a phone it stands up over the set on a paper post), and
@@ -904,6 +908,8 @@ class ExplainStage {
   /** prefers-reduced-motion: notes open settled, and lifts are instant. */
   private reduced: MediaQueryList | null = null;
   private lastT = 0;
+  /** The highest the reveal has been since the open note opened (../explain.ts turnedAway). */
+  private peak = 0;
   /** The probe holds rising notes at this many ms into their rise (null: they run). */
   private held: number | null = null;
   private readonly camKey = new Float64Array(34);
@@ -1456,6 +1462,7 @@ class ExplainStage {
   private onSession(open: string | null, prev: string | null) {
     if (prev) for (const r of this.rigs) if (r.item.target === prev) r.fold();
     const region = this.liveRegion;
+    if (open && !prev) this.peak = this.inputs?.reveal.current ?? 0;
     if (open) {
       const item = this.items.find((i) => i.target === open);
       const obj = this.objectOf(open);
@@ -1704,7 +1711,10 @@ class ExplainStage {
     this.lastT = now;
     if (this.session.open !== null) {
       const g = this.gateState();
-      if (g && turnedAway(g)) this.session.dispatch({ type: "turn" });
+      if (g) {
+        if (g.reveal > this.peak) this.peak = g.reveal;
+        if (turnedAway(g, this.peak)) this.session.dispatch({ type: "turn" });
+      }
     }
     let moving = false;
     // Only the words writing themselves in: a redraw, but the shadows stay as they are.
