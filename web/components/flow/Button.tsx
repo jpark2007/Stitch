@@ -5,6 +5,8 @@
 import Link from "next/link";
 import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
 
+import { busyLayers } from "./buttonLayers";
+
 type Variant = "primary" | "secondary" | "quiet" | "danger";
 
 /**
@@ -74,6 +76,11 @@ function StitchSpinner() {
  * both labels sit in the same grid cell and the button sizes to the wider.
  * The hidden layer is visibility:hidden, so it is not read or focusable; keep
  * children to text and icons (no ids), since they render in both layers.
+ *
+ * Only a button that can be busy pays for that room: pass `busy` (even
+ * `busy={false}`) or a `busyLabel`. Without either, the children render alone,
+ * so the label sits centred and a quiet button pulled flush with -ml-3 lines
+ * its text up with the fields (see buttonLayers.ts).
  */
 export function Button(
   props: {
@@ -85,7 +92,7 @@ export function Button(
 ) {
   const {
     variant = "primary",
-    busy = false,
+    busy,
     busyLabel,
     type = "button",
     disabled,
@@ -94,27 +101,37 @@ export function Button(
     ...rest
   } = props;
 
+  const isBusy = busy === true;
+  const reserve = busyLayers({ busy, busyLabel }) === "reserve";
+  // Without the layers the children sit in the button's own flex row: gap-2 is
+  // the layers' gap, so an icon beside the label keeps its space.
+  const extra = reserve ? className : ["gap-2", className].filter(Boolean).join(" ");
+
   return (
     <button
       {...rest}
       type={type}
-      disabled={disabled || busy}
-      aria-busy={busy || undefined}
-      className={classes(variant, busy ? BUSY : DISABLED, className)}
+      disabled={disabled || isBusy}
+      aria-busy={isBusy || undefined}
+      className={classes(variant, isBusy ? BUSY : DISABLED, extra)}
     >
-      <span className="grid items-center justify-items-center">
-        <span
-          className={`col-start-1 row-start-1 inline-flex items-center gap-2 ${busy ? "invisible" : ""}`}
-        >
-          {children}
+      {reserve ? (
+        <span className="grid items-center justify-items-center">
+          <span
+            className={`col-start-1 row-start-1 inline-flex items-center gap-2 ${isBusy ? "invisible" : ""}`}
+          >
+            {children}
+          </span>
+          <span
+            className={`col-start-1 row-start-1 inline-flex items-center gap-2 ${isBusy ? "" : "invisible"}`}
+          >
+            <StitchSpinner />
+            {busyLabel ?? children}
+          </span>
         </span>
-        <span
-          className={`col-start-1 row-start-1 inline-flex items-center gap-2 ${busy ? "" : "invisible"}`}
-        >
-          <StitchSpinner />
-          {busyLabel ?? children}
-        </span>
-      </span>
+      ) : (
+        children
+      )}
     </button>
   );
 }
