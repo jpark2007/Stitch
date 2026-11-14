@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from deepagents.backends.utils import create_file_data, file_data_to_string
-from deepagents.middleware.filesystem import FilesystemState
+from deepagents.middleware.filesystem import FilesystemState, _file_data_reducer
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -399,7 +399,7 @@ def test_tool_bad_draft_writes_errors_and_emits_event_then_stops_at_round_three(
     assert f"round 1 of {MAX_COMPILE_ROUNDS}" in msg.content
     assert "STOP" not in msg.content
     assert _text(state, "/compile_errors.txt") == BAD_MESSAGE + "\n"
-    assert "/timeline.json" not in state["files"]
+    assert _text(state, "/timeline.json") == ""  # blanked: no timeline to voice, render or save
     assert json.loads(_text(state, "/compile_log.json")) == {"rounds": 1}
     (event,) = events
     assert event["event"] == "compile_error"
@@ -444,3 +444,141 @@ def test_tool_reports_a_compiler_crash_as_an_error():
 
 def test_emit_is_a_silent_no_op_outside_a_graph():
     compile_mod._emit("compile_error", schemas.CompileErrorEvent(errors=[], round=1))
+
+
+# ----------------------------------------------------------------- hard caps (findings 12, 4)
+
+
+class SpyCompiler:
+    """Counts calls and delegates to the fake compiler."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, screenplay, scene):
+        self.calls += 1
+        return FakeCompiler()(screenplay, scene)
+
+
+STOP_LINE = (
+    "STOP: 3 compile rounds have failed. Do not edit or recompile again; report these errors as your final answer."
+)
+
+
+def test_tool_refuses_a_fourth_round_without_compiling_or_emitting():
+    """Finding 12: the 3-round cap is enforced by the tool, not only by the prompts."""
+    spy = SpyCompiler()
+    graph = _graph(spy)
+    all_events = []
+    state, events = _call(graph, "cap", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
+    all_events += events
+    for n in (2, 3):
+        state, events = _call(graph, "cap", n)
+        all_events += events
+    assert spy.calls == 3
+    assert [e["event"] for e in all_events] == ["compile_error"] * 3
+    assert [e["data"]["round"] for e in all_events] == [1, 2, 3]
+    files_before = dict(state["files"])
+
+    state, events = _call(graph, "cap", 4)
+    assert spy.calls == 3  # the draft was not compiled again
+    assert events == []  # and no compile_error with round 4
+    content = _last_tool_message(state).content
+    assert "STOP" in content
+    assert content.splitlines() == [STOP_LINE, BAD_MESSAGE]
+    assert state["files"] == files_before  # no file changed
+    assert json.loads(_text(state, "/compile_log.json")) == {"rounds": MAX_COMPILE_ROUNDS}
+
+
+def test_tool_past_the_cap_does_not_read_a_new_draft():
+    """Even a fixed draft is not compiled once the cap is spent: the run must report."""
+    spy = SpyCompiler()
+    graph = _graph(spy)
+    _call(graph, "cap2", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
+    _call(graph, "cap2", 2)
+    _call(graph, "cap2", 3)
+    state, events = _call(graph, "cap2", 4, files={"/screenplay.json": create_file_data(SAMPLE_TEXT)})
+    assert spy.calls == 3 and events == []
+    assert _last_tool_message(state).content.startswith("STOP: 3 compile rounds have failed.")
+    assert _text(state, "/timeline.json") == ""
+
+
+def test_tool_past_the_cap_without_saved_errors_still_stops():
+    graph = _graph()
+    files = {
+        "/screenplay.json": create_file_data(SAMPLE_TEXT),
+        "/compile_log.json": create_file_data(json.dumps({"rounds": 3})),
+    }
+    state, events = _call(graph, "cap3", 1, files=files)
+    assert events == []
+    assert _last_tool_message(state).content.splitlines() == [STOP_LINE, "compile failed with no error detail"]
+    assert "/timeline.json" not in state["files"]
+
+
+def _invoke(tool, files: dict, n: int):
+    """Call the tool directly (no graph) and return its Command."""
+    return tool.invoke(
+        {
+            "type": "tool_call",
+            "name": "compile_screenplay",
+            "id": f"direct_{n}",
+            "args": {"state": {"files": files, "messages": []}},
+        }
+    )
+
+
+def _timeline_survives(files: dict) -> bool:
+    if "/timeline.json" not in files:
+        return False
+    try:
+        Timeline.model_validate_json(file_data_to_string(files["/timeline.json"]))
+    except (ValidationError, ValueError):
+        return False
+    return True
+
+
+@pytest.mark.parametrize(
+    ("label", "compiler", "draft"),
+    [
+        ("bad draft", FakeCompiler(), BAD_TEXT),
+        ("missing file", FakeCompiler(), None),
+        ("compiler crash", lambda sp, sc: (_ for _ in ()).throw(RuntimeError("kaboom")), SAMPLE_TEXT),
+        ("no timeline", lambda sp, sc: CompileResult(ok=True, timeline=None), SAMPLE_TEXT),
+    ],
+)
+def test_failed_compile_leaves_no_stale_timeline(label, compiler, draft):
+    """Finding 4: a success then a failure leaves no valid /timeline.json in the merged state."""
+    good = _invoke(make_compile_tool(FakeCompiler(), scene_for), {"/screenplay.json": create_file_data(SAMPLE_TEXT)}, 1)
+    files = _file_data_reducer({"/screenplay.json": create_file_data(SAMPLE_TEXT)}, good.update["files"])
+    assert _timeline_survives(files)
+
+    if draft is None:
+        files = _file_data_reducer(files, {"/screenplay.json": None})
+    else:
+        files = _file_data_reducer(files, {"/screenplay.json": create_file_data(draft)})
+    bad = _invoke(make_compile_tool(compiler, scene_for), files, 2)
+    assert "round 1 of 3" in bad.update["messages"][0].content, label
+    merged = _file_data_reducer(files, bad.update["files"])
+    assert not _timeline_survives(merged), label
+
+
+def test_blanked_timeline_reaches_the_studio_through_a_sub_agent():
+    """The director compiles inside a sub-agent, which hands back its whole merged files dict.
+
+    A None deletion would leave the key out of that dict, and the studio's reducer keeps keys
+    that are absent, so the stale timeline would survive. The empty file replaces it.
+    """
+    good = _invoke(make_compile_tool(FakeCompiler(), scene_for), {"/screenplay.json": create_file_data(SAMPLE_TEXT)}, 1)
+    studio = _file_data_reducer({"/screenplay.json": create_file_data(SAMPLE_TEXT)}, good.update["files"])
+    assert _timeline_survives(studio)
+
+    # Inside the director: a new failing draft, then compile_screenplay.
+    director = _file_data_reducer(dict(studio), {"/screenplay.json": create_file_data(BAD_TEXT)})
+    bad = _invoke(make_compile_tool(FakeCompiler(), scene_for), director, 2)
+    director = _file_data_reducer(director, bad.update["files"])
+
+    # What a None deletion would have done: absent from the handed-back dict, so the studio keeps it.
+    deleted = {k: v for k, v in director.items() if k != "/timeline.json"}
+    assert _timeline_survives(_file_data_reducer(studio, deleted))
+    # What the tool does: the blank travels back and replaces the studio's timeline.
+    assert not _timeline_survives(_file_data_reducer(studio, director))

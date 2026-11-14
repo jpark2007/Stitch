@@ -4,7 +4,14 @@ The director writes a draft screenplay to `/screenplay.json` in its scratch file
 `compile_screenplay`. On success the tool writes `/timeline.json`; on failure it writes
 `/compile_errors.txt` (one exact `CompileError.message` per line), emits a `compile_error` run
 event, and returns the same lines so the director can fix the draft and try again. After
-`MAX_COMPILE_ROUNDS` consecutive failures the tool tells the director to stop and report.
+`MAX_COMPILE_ROUNDS` consecutive failures the tool tells the director to stop and report, and
+the cap is enforced here, not only in the prompts: once the count has reached
+`MAX_COMPILE_ROUNDS`, a further call neither reads nor compiles the draft, emits no event and
+changes no file; it repeats the STOP text and the last errors. So an emitted `compile_error`
+never has a round above `MAX_COMPILE_ROUNDS`. A successful compile resets the count.
+
+Every failed compile also blanks `/timeline.json`, so a timeline from an earlier successful
+compile can never be voiced, rendered or saved after the draft stopped compiling.
 
 After a successful compile the tool also runs `scene_review.review_scene` (pageText,
 explanations, pull tabs, narration sources) and `scene_review.review_timeline` (scrub ranges,
@@ -299,17 +306,26 @@ def _success_text(result: CompileResult, warnings: list[str]) -> str:
     return text
 
 
+STOP_TEXT = (
+    f"STOP: {MAX_COMPILE_ROUNDS} compile rounds have failed. Do not edit or recompile again; "
+    "report these errors as your final answer."
+)
+
+
 def _failure_text(errors: list[CompileError], rounds: int) -> str:
     lines = [e.message for e in errors] or ["compile failed with no error detail"]
     text = "\n".join(lines) + f"\nround {rounds} of {MAX_COMPILE_ROUNDS}"
     if rounds >= MAX_COMPILE_ROUNDS:
-        text += (
-            f"\nSTOP: {MAX_COMPILE_ROUNDS} compile rounds have failed. Do not edit or recompile again; "
-            "report these errors as your final answer."
-        )
+        text += "\n" + STOP_TEXT
     else:
         text += f"\nFix {SCREENPLAY_PATH} and call compile_screenplay again."
     return text
+
+
+def _capped_text(files: dict[str, Any]) -> str:
+    """What a call past the cap returns: the STOP text again, then the last saved errors."""
+    last = (_read_file(files, ERRORS_PATH) or "").strip()
+    return STOP_TEXT + "\n" + (last or "compile failed with no error detail")
 
 
 def make_compile_tool(
@@ -336,6 +352,16 @@ def make_compile_tool(
         """
         files: dict[str, Any] = state.get("files") or {}
         rounds = _rounds(files)
+        if rounds >= MAX_COMPILE_ROUNDS:
+            # The cap is spent: no read, no compile, no event, no file change. Only a successful
+            # compile resets the count, and none can happen from here, so the run must report.
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(content=_capped_text(files), tool_call_id=tool_call_id, name="compile_screenplay")
+                    ]
+                }
+            )
         text = _read_file(files, path)
         compiled: _Compiled | None = None
         if text is None:
@@ -373,6 +399,16 @@ def make_compile_tool(
             updates = {
                 ERRORS_PATH: create_file_data("\n".join(e.message for e in errors) + "\n"),
                 LOG_PATH: create_file_data(json.dumps({"rounds": rounds})),
+                # Blank the timeline so one from an earlier successful compile cannot be voiced,
+                # rendered or saved. An empty file, not a None deletion: the director compiles
+                # inside a sub-agent, and deepagents hands a sub-agent's result back to the
+                # studio as its whole merged `files` dict (subagents.py,
+                # _return_command_with_state_update). A key the sub-agent deleted is simply
+                # absent from that dict, and the studio's _file_data_reducer keeps absent keys,
+                # so the studio would still hold the old timeline. An empty file is a value, so
+                # it travels back; synthesize_narration, render_frames and save_memory all
+                # reject it as invalid JSON / not a valid timeline.
+                TIMELINE_PATH: create_file_data(""),
             }
             _emit("compile_error", schemas.CompileErrorEvent(errors=errors, round=rounds))
             content = _failure_text(errors, rounds)
