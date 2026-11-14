@@ -206,12 +206,13 @@ export default function ThreadsView(props: ThreadsViewProps) {
       e.bounds = { tMin: model.tMin, tMax: model.tMax, width: W };
       if (!e.ready) {
         const focus = props.focus ? Number(props.focus) : NaN;
-        const busiest = [...model.knots].sort((a, b) => b.people.length - a.people.length)[0];
+        // Open on the followed person's life, or on the whole family's.
+        const mine = model.knots.filter((k) => initialHighlight < 0 || k.people.some((p) => p.id === props.highlight));
         e.cam = initialCamera(
           parseZoom(props.zoom),
           Number.isFinite(focus) ? focus + 0.5 : null,
           e.bounds,
-          busiest ? busiest.t : (model.tMin + model.tMax) / 2,
+          mine.map((k) => k.t),
         );
         e.ready = true;
       } else {

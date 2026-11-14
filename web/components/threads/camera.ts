@@ -74,13 +74,40 @@ export function parseZoom(v: string | undefined): ZoomParam {
 }
 
 /**
+ * The centre of the busiest stretch of `span` years: the window holding the
+ * most of `years`, centred on the first and last moment inside it.
+ */
+export function densestCentre(years: number[], span: number, fallback: number): number {
+  if (years.length === 0) return fallback;
+  const ys = [...years].sort((a, b) => a - b);
+  let best = 0;
+  let centre = fallback;
+  for (let i = 0, j = 0; i < ys.length; i++) {
+    while (j < ys.length && ys[j] <= ys[i] + span) j++;
+    if (j - i > best) {
+      best = j - i;
+      centre = (ys[i] + ys[j - 1]) / 2;
+    }
+  }
+  return centre;
+}
+
+/** Zoom a phone opens at without ?zoom: the whole century is too tight to read. */
+const PHONE_OPEN = 2.2;
+
+/**
  * Starting camera from the URL. A numeric zoom is a multiple of the
  * fully-zoomed-out scale (1 = whole family, ~8 = single years on a laptop).
+ * Without a focus year, a zoomed-in view opens on the busiest stretch of
+ * `moments` (pass only the followed person's to open on their life).
  */
-export function initialCamera(zoom: ZoomParam, focus: number | null, b: Bounds, fallbackFocus: number): Camera {
+export function initialCamera(zoom: ZoomParam, focus: number | null, b: Bounds, moments: number[]): Camera {
   let s = minScale(b);
   if (zoom === "year") s = yearScale(b);
   else if (typeof zoom === "number") s = clampScale(minScale(b) * zoom, b);
-  const cx = focus ?? (zoom && zoom !== "decade" ? fallbackFocus : (b.tMin + b.tMax) / 2);
+  else if (zoom === null && b.width < 640) s = clampScale(minScale(b) * PHONE_OPEN, b);
+  const mid = (b.tMin + b.tMax) / 2;
+  const span = (b.width - EDGE * 2) / s;
+  const cx = focus ?? (s <= minScale(b) * 1.01 ? mid : densestCentre(moments, span, mid));
   return clampCam({ cx, s }, b);
 }
