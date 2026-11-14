@@ -14,6 +14,7 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
 import schemas
+from db.families import stop_user_contacts
 
 COLLECTION = "users"
 
@@ -133,6 +134,12 @@ def get_users(db: Database, user_ids: list[str]) -> list[schemas.User]:
 def delete_users(db: Database, *, emails: list[str], user_ids: list[str]) -> int:
     """Delete the accounts whose email (normalized as stored) or id is listed. Returns the count.
 
+    Every Stitch Channels contact linked to a deleted account or a listed id (contacts.userId)
+    is stopped, in every family, so texts from that phone are no longer accepted (see
+    families.stop_user_contacts). A contact created for a person that was not linked to the
+    account (no userId on the contact) is unaffected: it belongs to that person in that
+    family, not to the account.
+
     Malformed emails and blank ids are ignored. With nothing left to match, nothing is
     deleted and 0 is returned, so an empty filter can never wipe the collection.
     """
@@ -150,4 +157,8 @@ def delete_users(db: Database, *, emails: list[str], user_ids: list[str]) -> int
         clauses.append({"_id": {"$in": list(dict.fromkeys(ids))}})
     if not clauses:
         return 0
-    return db[COLLECTION].delete_many({"$or": clauses}).deleted_count
+    found = [doc["_id"] for doc in db[COLLECTION].find({"$or": clauses}, {"_id": 1})]
+    deleted = db[COLLECTION].delete_many({"$or": clauses}).deleted_count
+    # Texts from a deleted account's phone must stop reaching any family.
+    stop_user_contacts(db, list(dict.fromkeys([*found, *ids])))
+    return deleted

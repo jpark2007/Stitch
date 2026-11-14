@@ -281,7 +281,10 @@ def set_member_role(db: Database, family_id: str, user_id: str, role: schemas.Ro
 def remove_member(db: Database, family_id: str, user_id: str) -> bool:
     """Remove the user and unclaim their person in this family only.
 
-    False if the user is not a member. LastAdmin when removing the only admin.
+    Their Stitch Channels contacts in this family (linked to their account, or created for
+    their person) are stopped too; contacts in their other families are untouched.
+    False if the user is not a member. LastAdmin when removing the only admin. In both
+    cases nothing is written, contacts included.
     """
     result = db.families.update_one(
         {
@@ -298,8 +301,92 @@ def remove_member(db: Database, family_id: str, user_id: str) -> bool:
         if db.families.count_documents({"_id": family_id, "members.userId": user_id}, limit=1):
             raise LastAdmin(f"{user_id} is the only admin of {family_id}")
         return False
+    person_ids = [
+        p["_id"] for p in db.people.find({"familyId": family_id, "userId": user_id}, {"_id": 1})
+    ]
     db.people.update_many({"familyId": family_id, "userId": user_id}, {"$set": {"userId": None}})
+    # Texts from their phone must stop reaching this family the moment they leave it.
+    stop_member_contacts(db, family_id, user_id, person_ids)
     return True
+
+
+# ------------------------------------------------------------------- channels contacts
+#
+# A `contacts` document (db/contacts.py, Stitch Channels) maps a phone or handle to a person
+# in one family. When a member is removed or an account is deleted, texts from that phone must
+# stop being accepted. These are plain updates on `contacts`, so they work whether or not the
+# Channels package is mounted or importable: nothing from `channels` or `db.contacts` is
+# imported here.
+#
+# The stopped shape starts from `db.contacts.stop_contacts` / `stop_settings_contact` (the
+# source of truth): status "stopped", stoppedAt now, and the pending-enrollment proof
+# (enrollmentHash, enrollmentExpiresAt) removed, so a LINK code issued before the removal can
+# never activate the contact. It goes further, as the Channels owner asked: the consent proof
+# (verifiedAt, optInAt) is cleared to None, the shape a fresh pending enrollment writes, and
+# the rest of the enrollment bookkeeping is removed, so a member who is removed and later
+# rejoins cannot revive the old contact without a fresh LINK enrollment.
+# tests/data/test_families_member_contacts.py fails if this stops being a superset of theirs.
+# Already-stopped contacts get the same clearing but keep their original stoppedAt.
+
+CONTACT_STOPPED = "stopped"
+CONTACT_CONSENT_FIELDS = ("verifiedAt", "optInAt")
+CONTACT_CLEARED_ON_STOP = (
+    "enrollmentHash", "enrollmentExpiresAt", "enrollmentAttempts",
+    "enrollmentInitiator", "enrollmentPersonUserId",
+)
+
+
+def _contact_stop(db: Database, owner: dict[str, Any], now: datetime | None) -> int:
+    """Stop and strip consent from every contact matching `owner`. Returns how many were
+    newly stopped (already-stopped ones are still stripped, but keep their stoppedAt)."""
+    strip = {
+        "$set": {"status": CONTACT_STOPPED, **{field: None for field in CONTACT_CONSENT_FIELDS}},
+        "$unset": {field: "" for field in CONTACT_CLEARED_ON_STOP},
+    }
+    newly = db.contacts.update_many(
+        {**owner, "status": {"$ne": CONTACT_STOPPED}},
+        {**strip, "$set": {**strip["$set"], "stoppedAt": _now(now)}},
+    ).modified_count
+    db.contacts.update_many({**owner, "status": CONTACT_STOPPED}, strip)
+    return newly
+
+
+def stop_member_contacts(
+    db: Database,
+    family_id: str,
+    user_id: str,
+    person_ids: Sequence[str] = (),
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Stop every contact in this family that belongs to the user: linked to their account
+    (userId) or created for their person (personId in person_ids, e.g. by an admin).
+    Contacts in other families are untouched. Returns the number stopped.
+    """
+    if not isinstance(family_id, str) or not family_id.strip():
+        raise ValueError("family_id is required")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise ValueError("user_id is required")
+    owners: list[dict[str, Any]] = [{"userId": user_id}]
+    pids = [p for p in dict.fromkeys(person_ids) if isinstance(p, str) and p]
+    if pids:
+        owners.append({"personId": {"$in": pids}})
+    return _contact_stop(db, {"familyId": family_id, "$or": owners}, now)
+
+
+def stop_user_contacts(
+    db: Database, user_ids: Sequence[str], *, now: datetime | None = None
+) -> int:
+    """Stop every contact linked to these accounts (userId), in every family.
+
+    Accounts are not family data, so this is keyed by account id only (used when an account
+    is deleted). Blank ids are ignored, so an empty list never widens the filter. Returns
+    the number stopped.
+    """
+    ids = [u for u in dict.fromkeys(user_ids) if isinstance(u, str) and u.strip()]
+    if not ids:
+        return 0
+    return _contact_stop(db, {"userId": {"$in": ids}}, now)
 
 
 # ------------------------------------------------------------------------------ invites
