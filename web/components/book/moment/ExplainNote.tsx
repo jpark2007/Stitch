@@ -227,6 +227,8 @@ const MAX_LEAN = 0.38;
 /** Pointer slack round a cutout's edge, px: a mouse, and a finger. */
 const SLACK_FINE = 5;
 const SLACK_TOUCH = 14;
+/** How far behind (world units) a hit within the slack sorts, after every hit right on a cutout. */
+const SLACK_BEHIND = 1;
 
 const UP = new Vector3(0, 1, 0);
 
@@ -799,10 +801,18 @@ class ExplainStage {
     if (!this.clickable) return;
     const obj = this.objectOf(t.item.target);
     if (!obj || !this.standsOnSet(obj)) return;
-    const st = this.get();
-    const slack = this.coarse ? SLACK_TOUCH : SLACK_FINE;
-    const hit = pickNear(obj, this.s.ray, raycaster.camera, st.pointer.x, st.pointer.y, st.size, slack, this.runtime.wings, this.s.hits);
-    if (hit) intersects.push({ distance: hit.distance, point: t.hit.copy(hit.point), object: t.proxy } as Intersection);
+    // Right on the paper: as near as it is. Only within the slack round its
+    // edge: behind every cutout the pointer is right on, so a held prop wins
+    // over the hand round it.
+    let hit = pickCutout(obj, raycaster, this.runtime.wings, this.s.hits);
+    let distance = hit?.distance ?? 0;
+    if (!hit) {
+      const st = this.get();
+      const slack = this.coarse ? SLACK_TOUCH : SLACK_FINE;
+      hit = pickNear(obj, this.s.ray, raycaster.camera, st.pointer.x, st.pointer.y, st.size, slack, this.runtime.wings, this.s.hits);
+      distance = (hit?.distance ?? 0) + SLACK_BEHIND;
+    }
+    if (hit) intersects.push({ distance, point: t.hit.copy(hit.point), object: t.proxy } as Intersection);
   }
 
   /* ---------- pointer handlers (from the JSX) ---------- */
@@ -1140,7 +1150,9 @@ class ExplainStage {
     const r = st.gl.domElement.getBoundingClientRect();
     cutoutBox(obj, s.box);
     const t = projectBox(s.box, cam, st.size.width, st.size.height, s.v, s.target);
-    // The box's middle if the paper is there, else the nearest point that is.
+    // The box's middle if the paper is there (and nothing explainable is in
+    // front of it), else the nearest point that is.
+    let fallback: ExplainPoint | null = null;
     for (let ring = 0; ring < 6; ring++) {
       const n = ring === 0 ? 1 : ring * 8;
       for (let i = 0; i < n; i++) {
@@ -1149,10 +1161,25 @@ class ExplainStage {
         const sy = t.y0 + (t.y1 - t.y0) * (0.45 + (ring / 6) * 0.45 * Math.sin(a));
         const ndcX = (sx / st.size.width) * 2 - 1;
         const ndcY = 1 - (sy / st.size.height) * 2;
-        if (pickNear(obj, s.ray, cam, ndcX, ndcY, st.size, 0, this.runtime.wings, s.hits)) return { target, x: r.left + sx, y: r.top + sy };
+        const hit = pickNear(obj, s.ray, cam, ndcX, ndcY, st.size, 0, this.runtime.wings, s.hits);
+        if (!hit) continue;
+        const d = hit.distance;
+        const p = { target, x: r.left + sx, y: r.top + sy };
+        fallback ??= p;
+        let front = true;
+        for (const other of this.items) {
+          if (other.target === target) continue;
+          const o = this.objectOf(other.target);
+          const oh = o && this.standsOnSet(o) ? pickNear(o, s.ray, cam, ndcX, ndcY, st.size, 0, this.runtime.wings, s.hits) : null;
+          if (oh && oh.distance < d) {
+            front = false;
+            break;
+          }
+        }
+        if (front) return p;
       }
     }
-    return null;
+    return fallback;
   }
 
   private noteBoxes(): ExplainNoteBox[] {
