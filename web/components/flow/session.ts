@@ -32,9 +32,16 @@ export const hrefs = {
     if (o?.memoryId) params.push(`memoryId=${enc(o.memoryId)}`);
     return params.length ? `/add?${params.join("&")}` : "/add";
   },
-  memory: (id: string): string => `/memories/${enc(id)}`,
-  person: (id: string): string => `/people/${enc(id)}`,
+  /** A moment's book page; with a family id, `?family=` tells it which family to load. */
+  memory: (id: string, familyId?: string | null): string => `/memories/${enc(id)}${familyQuery(familyId)}`,
+  /** A person's book; with a family id, `?family=` tells it which family to load. */
+  person: (id: string, familyId?: string | null): string => `/people/${enc(id)}${familyQuery(familyId)}`,
 };
+
+/** A `?family=` suffix for a non-empty family id, or nothing. */
+function familyQuery(familyId: string | null | undefined): string {
+  return typeof familyId === "string" && familyId !== "" ? `?family=${enc(familyId)}` : "";
+}
 
 // Pages a `next` must never point back to: it would loop through sign-in.
 const AUTH_PATHS = ["/login", "/signup"];
@@ -128,6 +135,44 @@ export function recallFamily(storage?: Storage | null): string | null {
 export function forgetFamily(storage?: Storage | null): void {
   try {
     resolveStorage(storage)?.removeItem(FAMILY_KEY);
+  } catch {
+    // Nothing to forget, or storage is unavailable.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// "Probably signed in". The session cookie is httpOnly, so the page cannot see
+// it. This hint is set whenever the server confirms a session (log in, sign
+// up, a SessionGate's /me) and cleared on sign-out or a 401. The log in and
+// sign up pages ask /me on arrival only when it is set: a signed-in visitor is
+// sent on, and a signed-out one makes no request at all. It is only a hint;
+// the server's answer always decides.
+
+/** localStorage key for the signed-in hint. */
+export const SIGNED_IN_KEY = "stitch.signedIn";
+
+/** Note that the server just confirmed a session. */
+export function rememberSignedIn(storage?: Storage | null): void {
+  try {
+    resolveStorage(storage)?.setItem(SIGNED_IN_KEY, "1");
+  } catch {
+    // Not noted: the log in page simply shows its form.
+  }
+}
+
+/** True when a session was confirmed in this browser and not since ended. */
+export function recallSignedIn(storage?: Storage | null): boolean {
+  try {
+    return resolveStorage(storage)?.getItem(SIGNED_IN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Drop the signed-in hint (on sign-out, or when the server says 401). */
+export function forgetSignedIn(storage?: Storage | null): void {
+  try {
+    resolveStorage(storage)?.removeItem(SIGNED_IN_KEY);
   } catch {
     // Nothing to forget, or storage is unavailable.
   }

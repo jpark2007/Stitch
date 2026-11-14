@@ -8,9 +8,13 @@ import { register } from "node:module";
 
 import {
   FAMILY_KEY,
+  SIGNED_IN_KEY,
   destinationAfterAuth,
   forgetFamily,
+  forgetSignedIn,
   hrefs,
+  recallSignedIn,
+  rememberSignedIn,
   pickFamily,
   recallFamily,
   rememberFamily,
@@ -140,8 +144,30 @@ describe("hrefs", () => {
     assert.equal(hrefs.add({ familyId: "f 1", memoryId: "m&1" }), "/add?family=f%201&memoryId=m%261");
   });
 
+  test("memory and person take an optional family as ?family=", () => {
+    assert.equal(hrefs.memory("m1"), "/memories/m1");
+    assert.equal(hrefs.memory("m1", "f 1"), "/memories/m1?family=f%201");
+    assert.equal(hrefs.memory("m1", null), "/memories/m1");
+    assert.equal(hrefs.memory("m1", undefined), "/memories/m1");
+    assert.equal(hrefs.memory("m1", ""), "/memories/m1");
+    assert.equal(hrefs.memory("m/1", "a&b=c"), "/memories/m%2F1?family=a%26b%3Dc");
+    assert.equal(hrefs.person("p1"), "/people/p1");
+    assert.equal(hrefs.person("p1", "f 1"), "/people/p1?family=f%201");
+    assert.equal(hrefs.person("p1", null), "/people/p1");
+    assert.equal(hrefs.person("p1", ""), "/people/p1");
+    assert.equal(hrefs.person("p&q é", "fam#1"), "/people/p%26q%20%C3%A9?family=fam%231");
+    // Still usable as a one-argument callback.
+    assert.deepEqual(["a", "b"].map((id) => hrefs.memory(id)), ["/memories/a", "/memories/b"]);
+  });
+
   test("the hrefs it builds pass safeNext", () => {
-    for (const h of [hrefs.add({ familyId: "f", memoryId: "m" }), hrefs.settings("a/b"), hrefs.join("c")]) {
+    for (const h of [
+      hrefs.add({ familyId: "f", memoryId: "m" }),
+      hrefs.settings("a/b"),
+      hrefs.join("c"),
+      hrefs.memory("m", "f 1"),
+      hrefs.person("p", "f"),
+    ]) {
       assert.equal(safeNext(h), h);
     }
   });
@@ -272,6 +298,58 @@ describe("family storage", () => {
       Object.defineProperty(globalThis, "localStorage", { value: undefined, configurable: true, writable: true });
       assert.doesNotThrow(() => rememberFamily("f1"));
       assert.equal(recallFamily(), null);
+    } finally {
+      if (original) Object.defineProperty(globalThis, "localStorage", original);
+      else delete globalThis.localStorage;
+    }
+  });
+});
+
+describe("signed-in hint", () => {
+  test("remember, recall and forget round-trip under SIGNED_IN_KEY", () => {
+    assert.equal(SIGNED_IN_KEY, "stitch.signedIn");
+    const s = fakeStorage();
+    assert.equal(recallSignedIn(s), false);
+    rememberSignedIn(s);
+    assert.equal(s.data.get(SIGNED_IN_KEY), "1");
+    assert.equal(recallSignedIn(s), true);
+    forgetSignedIn(s);
+    assert.equal(s.data.has(SIGNED_IN_KEY), false);
+    assert.equal(recallSignedIn(s), false);
+  });
+
+  test("only the exact value counts", () => {
+    for (const v of ["", "0", "true", "yes"]) assert.equal(recallSignedIn(fakeStorage({ [SIGNED_IN_KEY]: v })), false, v);
+  });
+
+  test("it is separate from the remembered family", () => {
+    const s = fakeStorage();
+    rememberFamily("f1", s);
+    rememberSignedIn(s);
+    forgetSignedIn(s);
+    assert.equal(recallFamily(s), "f1");
+    rememberSignedIn(s);
+    forgetFamily(s);
+    assert.equal(recallSignedIn(s), true);
+  });
+
+  test("throwing, null and missing storage never throw and read as signed out", () => {
+    for (const s of [throwingStorage(), null]) {
+      assert.doesNotThrow(() => rememberSignedIn(s));
+      assert.equal(recallSignedIn(s), false);
+      assert.doesNotThrow(() => forgetSignedIn(s));
+    }
+    const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    try {
+      const s = fakeStorage();
+      Object.defineProperty(globalThis, "localStorage", { value: s, configurable: true, writable: true });
+      rememberSignedIn();
+      assert.equal(recallSignedIn(), true);
+      forgetSignedIn();
+      assert.equal(recallSignedIn(), false);
+      Object.defineProperty(globalThis, "localStorage", { value: undefined, configurable: true, writable: true });
+      assert.doesNotThrow(() => rememberSignedIn());
+      assert.equal(recallSignedIn(), false);
     } finally {
       if (original) Object.defineProperty(globalThis, "localStorage", original);
       else delete globalThis.localStorage;
