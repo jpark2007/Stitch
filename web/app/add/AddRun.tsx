@@ -3,7 +3,7 @@
 // A run under way on /add: the slip of what was sent, then the live agent
 // feed with its pause cards (follow-up, props, merge). Reached right after
 // sending the form, or straight from a `?run=` URL after a reload.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { ButtonLink } from "@/components/flow/Button";
 import { makeRunSource, RUN_OPTIONS } from "@/components/flow/client";
@@ -22,8 +22,10 @@ export function AddRun(props: {
   api: StitchApi;
   fid: string;
   run: { runId: string; telling: MemoryRunTelling | null; fresh: boolean };
+  /** One quiet line naming the family, for someone in more than one. */
+  lede?: ReactNode;
 }) {
-  const { api, fid, run } = props;
+  const { api, fid, run, lede } = props;
   const { runId, telling, fresh } = run;
 
   // A run the server no longer knows (a stale ?run= link) gets its own way
@@ -58,6 +60,7 @@ export function AddRun(props: {
     <div ref={rootRef} className="contents">
       <FlowPage
         title={second ? "Your telling" : "Your memory"}
+        lede={lede}
         back={{ href: hrefs.home(), label: "Family tree" }}
         width="wide"
       >
