@@ -46,6 +46,7 @@ import {
 } from "react";
 import type { BookControls, BookInitial, BookView } from "@/components/book/Book3D";
 import { ContentsCard, ContentsTab } from "@/components/book/Contents";
+import { openAtMemory } from "@/components/book/memoryParam";
 import { pickTeller } from "@/components/book/moment";
 import { isMuted, subscribeMuted } from "@/components/book/sound";
 import type { StageSlotArgs } from "@/components/book/StoryPage";
@@ -333,9 +334,10 @@ export function MomentBook({
   const onTelling = useCallback(
     (spreadId: string, tellerId: string) => {
       players.tell(spreadId, tellerId);
-      // A shared link hears the same telling; in a book of several moments, on the same spread.
+      // A shared link hears the same telling; in a book of several moments,
+      // on the same spread (a ?memory it was opened with would win over it).
       const i = spreads.findIndex((s) => s.id === spreadId);
-      setQuery({ narrator: tellerId, ...(momentCount > 1 && i >= 0 ? { spread: String(i + 1) } : {}) });
+      setQuery({ narrator: tellerId, ...(momentCount > 1 && i >= 0 ? { spread: String(i + 1), memory: null } : {}) });
     },
     [players, spreads, momentCount],
   );
@@ -569,6 +571,12 @@ function readTime(v: string | undefined): number | null {
 export interface BookQuery {
   /** ?state=closed|open, ?spread=<n>, ?turn=<0..1>, ?focus=left|right. */
   initial: BookInitial;
+  /**
+   * ?memory=<memory id>: open at that memory's spread, as ?spread=<n>&state=open
+   * would, over any ?spread; a memory not in the book is passed by
+   * (memoryParam.ts). BookScreen applies it once the spreads are known.
+   */
+  memory?: string | null;
   /** ?narrator=<person id or name>: the opening spread starts with that telling. */
   narrator: string | null;
   /** ?t=<seconds>: hold each scene there once it opens, instead of playing. */
@@ -585,7 +593,8 @@ export interface BookQuery {
 
 /**
  * The query both book routes take, for deterministic views and tests:
- * ?state, ?spread, ?turn, ?focus, ?still, ?debug, ?narrator, ?t, and the
+ * ?state, ?spread, ?turn, ?focus, ?still, ?debug, ?narrator, ?t, ?memory
+ * (open at that memory's spread; the /add flow links back with it), and the
  * family scope (?family, ?demo).
  */
 export function readBookQuery(q: Search): BookQuery {
@@ -600,6 +609,7 @@ export function readBookQuery(q: Search): BookQuery {
       turn: one(q.turn) != null && Number.isFinite(turn) ? turn : null,
       focus: readFocus(one(q.focus)),
     },
+    memory: one(q.memory)?.trim() || null,
     narrator: one(q.narrator)?.trim() || null,
     freezeAt: readTime(one(q.t)),
     still: one(q.still) === "1",
@@ -702,7 +712,8 @@ export function BookScreen({
           spreads={shown.spreads}
           cover={shown.cover}
           scenes={shown.scenes}
-          initial={query.initial}
+          // Read once, as the book mounts (a new key remounts it).
+          initial={openAtMemory(query.initial, shown.spreads, query.memory)}
           narrator={query.narrator}
           freezeAt={query.freezeAt}
           still={query.still}
