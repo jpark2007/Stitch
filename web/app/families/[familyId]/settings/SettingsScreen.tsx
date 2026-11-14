@@ -40,6 +40,15 @@ import { FamilyNotFound, SettingsPlaceholder } from "./SettingsPlaceholder";
 // Named like the add page's way back, so both lead to the same place in the same words.
 const BACK = { href: hrefs.home(), label: "Family tree" };
 
+// Stitch Channels (texts and voice notes) is off unless this build was made with
+// NEXT_PUBLIC_STITCH_CHANNELS=1 exactly, matching the API's STITCH_CHANNELS=1.
+const CHANNELS_ON = process.env.NEXT_PUBLIC_STITCH_CHANNELS === "1";
+
+/** The Channels contact settings for this family (the page reads `?family=`). */
+function textsAndCallsHref(fid: string): string {
+  return `/settings/notifications?family=${encodeURIComponent(fid)}`;
+}
+
 /**
  * The kit's quiet button look for "Sign out", sized to its text. Button
  * reserves room for its busy spinner even when idle, which would push this one
@@ -350,6 +359,11 @@ function SettingsFooter(props: { fid: string; role: FamilySummary["role"] }) {
           <ButtonLink variant="quiet" href={hrefs.newFamily()}>
             Start another family
           </ButtonLink>
+          {CHANNELS_ON ? (
+            <ButtonLink variant="quiet" href={textsAndCallsHref(fid)}>
+              Texts and calls
+            </ButtonLink>
+          ) : null}
         </nav>
 
         <div className="flex flex-col gap-3">

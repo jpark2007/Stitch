@@ -154,7 +154,8 @@ def _keyword_find(items: list[PS], text: str, limit: int) -> list[PS]:
 
 def _telling_key(telling: Telling) -> tuple[object, ...]:
     """What makes two tellings the same, ignoring created_at (as in MongoRepo)."""
-    return (telling.author_id, telling.question, telling.text, tuple(telling.photo_ids))
+    return (telling.author_id, telling.question, telling.text, tuple(telling.photo_ids),
+            telling.audio_id, telling.channel)
 
 
 def _answers(question: Question, memory_id: str, telling: Telling) -> bool:

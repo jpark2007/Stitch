@@ -460,7 +460,8 @@ def test_real_db_invite_flow(real_db):
 SAMPLE = schemas.MemoryResponse.model_validate_json(
     (Path(__file__).resolve().parents[3] / "web/public/samples/hymn_books.memory.json").read_text()
 )
-PURGED = ("people", "memories", "questions", "props", "sets", "traditions")
+PURGED = ("people", "memories", "questions", "props", "sets", "traditions",
+          "contacts", "channelMessages", "conversations", "notifications")
 
 
 def _fill_family(db, fid: str, admin: str) -> list[str]:
@@ -477,6 +478,13 @@ def _fill_family(db, fid: str, admin: str) -> list[str]:
                                        when=schemas.TraditionWhen(kind="weekly"), participant_ids=[person.id]),
         created_by=admin,
     )
+    # Stitch Channels rows: a contact, an inbound message, a conversation and a notification.
+    contact = f"{fid}_contact"
+    db.contacts.insert_one({"_id": contact, "familyId": fid, "personId": person.id, "channel": "terminal",
+                            "handle": f"{fid}_handle", "status": "active"})
+    db.channelMessages.insert_one({"_id": f"{fid}_msg", "familyId": fid, "contactId": contact, "kind": "inbound"})
+    db.conversations.insert_one({"_id": f"{fid}_conv", "familyId": fid, "contactId": contact, "status": "draft"})
+    db.notifications.insert_one({"_id": f"{fid}_note", "familyId": fid, "contactId": contact, "questionKey": "q1"})
     return [
         media_db.put_media(db, fid, b"photo " + fid.encode(), content_type="image/png"),
         media_db.put_media(db, fid, b"audio " + fid.encode(), content_type="audio/mpeg", kind="audio"),

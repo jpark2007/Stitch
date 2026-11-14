@@ -39,6 +39,12 @@ Environment:
   Unset, empty or unknown (unknown logs a warning): fake when STITCH_FAKE_DB is on or
   ANTHROPIC_API_KEY is unset or blank, otherwise real.
 - STITCH_FAKE_RUN_STEP: seconds between the steps of a scripted run (float >= 0, default 0.6).
+- STITCH_CHANNELS: exactly "1" turns Stitch Channels on (api/channels/README.md, "Integration
+  hooks"); any other value, "true" and " 1" included, leaves it off. Read when create_app()
+  runs. Off: the channels package is never imported and its paths are unknown 404s. On: the
+  signed /internal/channels/* routes (kept out of the OpenAPI schema) and the cookie
+  /families/{fid}/channels settings routes are mounted, startup creates the channel indexes
+  (a failure there stops startup), and the two media intake paths get a larger body cap.
 
 No agent step can make startup fail: on any error it logs, and the run routes answer 503.
 Validation errors (422) never echo the request input back, so a rejected signup or login
@@ -152,6 +158,11 @@ MAX_JSON_BODY_BYTES = 1_000_000
 MAX_MULTIPART_BODY_BYTES = MAX_PHOTOS * MAX_BYTES + 1_000_000
 BODY_TOO_LARGE = "That request is too large"
 BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+# Channels media intake (api/channels/README.md): two attachments of up to 20 MiB, base64 in a
+# signed JSON body. Only these exact paths, and only when Channels is mounted.
+MAX_CHANNELS_MEDIA_BODY_BYTES = 27_978_412
+CHANNELS_MEDIA_PATHS = frozenset({"/internal/channels/inbound-photo", "/internal/channels/inbound-voice"})
+CHANNELS_STATE = "channels_enabled"
 
 
 def cors_origins() -> list[str]:
@@ -178,6 +189,15 @@ def cors_origins() -> list[str]:
 def fake_db_enabled() -> bool:
     """True when STITCH_FAKE_DB is 1, true or yes (any case)."""
     return (os.environ.get("STITCH_FAKE_DB") or "").strip().lower() in _TRUTHY
+
+
+def channels_enabled() -> bool:
+    """True only when STITCH_CHANNELS is exactly "1".
+
+    Deliberately stricter than the truthy flags above: the channels routers themselves accept
+    only that exact string, so "true", "yes" or " 1" must not mount routes that then refuse.
+    """
+    return os.environ.get("STITCH_CHANNELS") == "1"
 
 
 def agent_mode() -> str:
@@ -245,6 +265,19 @@ def _ensure_indexes() -> None:
         client.ensure_search_indexes(db)
     except Exception as exc:  # noqa: BLE001 - vector indexes are Atlas-only and optional
         log.warning("Vector search indexes not created: %r", exc)
+
+
+def _ensure_channel_indexes() -> None:
+    """The Channels indexes on the installed database. Raises: unlike _ensure_indexes, startup
+    must stop rather than serve Channels without the unique indexes that replay protection
+    and message idempotency rely on."""
+    channels = importlib.import_module("channels")
+    try:
+        channels.ensure_channel_indexes(client.get_db())
+    except Exception as exc:
+        log.error("STITCH_CHANNELS=1: channel indexes not created; refusing to start: %r", exc)
+        raise
+    log.info("STITCH_CHANNELS=1: Channels routes mounted and channel indexes ensured")
 
 
 def _log_env_files() -> None:
@@ -383,6 +416,13 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     else:
         await run_in_threadpool(_ensure_indexes)
         _configure_embeddings()
+    if getattr(application.state, CHANNELS_STATE, False):
+        try:
+            await run_in_threadpool(_ensure_channel_indexes)
+        except BaseException:
+            if installed_fake:
+                client.set_db(None)
+            raise
     # The dummy login hash now, so the first login with an unknown email is not the one
     # request that pays for computing it (a timing tell that the account does not exist).
     try:
@@ -441,12 +481,25 @@ class BodySizeLimitMiddleware:
     streams never go through a wrapper.
     """
 
-    def __init__(self, app: ASGIApp, *, json_limit: int, multipart_limit: int) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        json_limit: int,
+        multipart_limit: int,
+        path_limits: dict[str, int] | None = None,
+    ) -> None:
         self.app = app
         self.json_limit = json_limit
         self.multipart_limit = multipart_limit
+        # Exact scope["path"] matches (no prefix, case or trailing-slash variants; the query
+        # string is not part of the path). Whatever the content type, these win.
+        self.path_limits = dict(path_limits or {})
 
-    def limit_for(self, headers: Headers) -> int:
+    def limit_for(self, headers: Headers, path: str = "") -> int:
+        exact = self.path_limits.get(path)
+        if exact is not None:
+            return exact
         content_type = (headers.get("content-type") or "").strip().lower()
         return self.multipart_limit if content_type.startswith("multipart/form-data") else self.json_limit
 
@@ -455,7 +508,7 @@ class BodySizeLimitMiddleware:
             await self.app(scope, receive, send)
             return
         headers = Headers(scope=scope)
-        limit = self.limit_for(headers)
+        limit = self.limit_for(headers, scope.get("path") or "")
         declared = (headers.get("content-length") or "").strip()
         # A malformed Content-Length is left to the server; the streamed count still applies.
         if declared.isdigit() and int(declared) > limit:
@@ -498,18 +551,36 @@ class BodySizeLimitMiddleware:
 # ----------------------------------------------------------------------------- app
 
 
+def _include_channels(app: FastAPI) -> None:
+    """Mount the three Channels routers (only called with STITCH_CHANNELS exactly "1").
+
+    Imported here, so with Channels off the package is never loaded. The signed bridge routes
+    stay out of /openapi.json; the cookie settings routes are an ordinary part of the API.
+    """
+    channel_routes = importlib.import_module("channels.routes")
+    enrollment = importlib.import_module("channels.enrollment")
+    settings = importlib.import_module("channels.settings")
+    app.include_router(channel_routes.router, include_in_schema=False)
+    app.include_router(enrollment.router, include_in_schema=False)
+    app.include_router(settings.router)
+
+
 def create_app() -> FastAPI:
-    """Build the app. Reads STITCH_CORS_ORIGINS now; STITCH_FAKE_DB and STITCH_AGENT when it starts.
+    """Build the app. Reads STITCH_CORS_ORIGINS and STITCH_CHANNELS now; STITCH_FAKE_DB and
+    STITCH_AGENT when it starts.
 
     Middleware runs outermost first: CORSMiddleware, then BodySizeLimitMiddleware, so a
     413 for an oversized body still carries the CORS headers. (Starlette's add_middleware
     puts each new middleware outside the ones added before it.)
     """
     app = FastAPI(title="Stitch API", lifespan=lifespan)
+    with_channels = channels_enabled()
+    setattr(app.state, CHANNELS_STATE, with_channels)
     app.add_middleware(
         BodySizeLimitMiddleware,
         json_limit=MAX_JSON_BODY_BYTES,
         multipart_limit=MAX_MULTIPART_BODY_BYTES,
+        path_limits=dict.fromkeys(CHANNELS_MEDIA_PATHS, MAX_CHANNELS_MEDIA_BODY_BYTES) if with_channels else None,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -521,6 +592,8 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     for router in ROUTERS:
         app.include_router(router)
+    if with_channels:
+        _include_channels(app)
 
     @app.get("/health")
     def health() -> dict[str, str]:

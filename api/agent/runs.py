@@ -847,13 +847,20 @@ class RunManager:
         """The studio's first input for a run: the run context message, plus the memory's
         screenplay and timeline as draft files for a second telling.
 
-        Raises ValueError if the teller is not a person in the family, and MemoryNotFound
+        Raises ValueError if the teller is not a person in the family or `fields.audio_id`
+        is not an audio file of this family, and MemoryNotFound
         if `fields.memory_id` is not a memory of this family with a compiled scene.
         """
         family_id, fields = info.family_id, info.fields
         person = self._repo.get_person(family_id, info.author_id)
         if person is None:
             raise ValueError(f"person {info.author_id!r} is not in this family")
+        if fields.audio_id is not None:
+            # Saved on the telling, so it must be this family's own recording (as a photo
+            # must be: agent/conversation/service.py _validate_photos), never another family's.
+            found = self._repo.get_media(family_id, fields.audio_id)
+            if found is None or not str(found[1]).lower().startswith("audio/"):
+                raise ValueError("Audio is not available in this family")
 
         files: dict[str, Any] = {}
         if fields.memory_id is not None:

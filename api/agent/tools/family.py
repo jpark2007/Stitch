@@ -220,6 +220,10 @@ def _save_scene(
         text=fields.text,
         photo_ids=list(run.photo_ids),
         created_at=datetime.now(UTC),
+        # Channels: the teller's recording and how the telling arrived. None for the web form,
+        # and the db layer drops None, so a web telling's document is unchanged.
+        audio_id=fields.audio_id,
+        channel=fields.channel,
     )
 
     ignored: list[str] = []
