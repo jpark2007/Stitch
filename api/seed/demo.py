@@ -26,13 +26,16 @@ Effects (confetti, steam, rain, smoke, time_of_day) are authored in the screenpl
 compiled like every other action, so they land in each stored Timeline.effects. Nothing
 authored is ever left out: what is in the file is what is compiled and stored.
 
-Run it against MONGODB_URI / MONGODB_DB from api/:
+Run it against MONGODB_URI / MONGODB_DB from api/ (it reads api/.env and ../.env itself,
+like the API; variables already set win):
 
     uv run python -m seed.demo            # seed once; a no-op when the family exists
     uv run python -m seed.demo --reset    # delete the demo data and rebuild it
 
-Exit codes: 0 done, 1 bad demo data (nothing written), 2 bad arguments, 3 MongoDB
-unreachable or failing; errors are one message on stderr, never a traceback. Every run writes the same ids
+It prints only the redacted target (scheme and hosts) and the database name, creates the
+indexes and, best effort, the Atlas Vector Search indexes, then seeds. Exit codes: 0 done,
+1 bad demo data (nothing written), 2 bad arguments, 3 MongoDB unreachable or failing;
+errors are one scrubbed message on stderr, never a traceback. Every run writes the same ids
 (people, memories, props, sets, photos, questions), so two seeded databases match.
 
 Every read and write, including the reset, goes through the db/ functions; the reset is
@@ -679,44 +682,117 @@ EXIT_NO_DATABASE = 3  # MongoDB is unreachable or refused the writes
 # argparse exits with 2 on a bad command line.
 
 
-def main(argv: list[str] | None = None) -> int:
+_DB_HINT = (
+    "Check MONGODB_URI and MONGODB_DB (or run `uv run python -m seed.preflight` for a full check), "
+    "or run the API with STITCH_FAKE_DB=1 to use the in-memory demo database instead."
+)
+
+
+def _vector_index_line(outcomes: list) -> str:
+    """One line for ensure_search_indexes_report's outcomes (best effort; never fails the seed)."""
+    by_action: dict[str, list[str]] = {}
+    for outcome in outcomes:
+        by_action.setdefault(outcome.action, []).append(outcome.name)
+    if set(by_action) <= {"not_created"}:
+        return ("Vector search indexes: not supported on this server (not Atlas); "
+                "ask and prop matching use keyword search.")
+    words = {"created": "created", "existed": "already present", "updated": "updated (stale definition)",
+             "wrong_type": "blocked by a search index of another type", "not_created": "not created"}
+    parts = [f"{words[action]} {', '.join(names)}" for action, names in by_action.items()]
+    return "Vector search indexes: " + "; ".join(parts) + " (python -m seed.preflight shows their status)."
+
+
+def main(argv: list[str] | None = None, *, connect=None) -> int:
     """`python -m seed.demo [--reset]`. Exit codes: 0 seeded or already present, 1 bad demo
     data (nothing was written), 2 bad arguments, 3 MongoDB unreachable or failing. Errors go
-    to stderr as one readable message, never a traceback."""
+    to stderr as one readable message, never a traceback, and never hold the URI's
+    credentials or query string.
+
+    It loads api/.env and ../.env itself (seed.realdb.load_env: variables already set win;
+    not under pytest or with STITCH_NO_DOTENV=1), connects with a short timeout
+    (seed.realdb.connect, or `connect` with the same signature), creates the indexes and,
+    best effort, the Atlas Vector Search indexes, then seeds. A database installed with
+    db.client.set_db (tests) is used as it is, without connecting.
+    """
+    import contextlib
+    import logging
+    import os
     import sys
 
     from pymongo.errors import PyMongoError
 
+    from agent.preflight import scrub, scrubbed_logs, secret_values
     from db import client
+    from seed import realdb
 
     parser = argparse.ArgumentParser(prog="python -m seed.demo", description=__doc__.splitlines()[0])
     parser.add_argument("--reset", action="store_true", help="delete the demo data and rebuild it")
     args = parser.parse_args(argv)
 
-    db = client.get_db()
+    mongo_client = None
+    target: str | None = None  # the URI connected to (None: a database installed with set_db)
+    installed = getattr(client, "_db_override", None)
+    if installed is not None:
+        db = installed
+        secrets: list[str] = secret_values(os.environ)
+    else:
+        realdb.load_env()
+        uri = realdb.uri_from_env()
+        db_name = realdb.db_name_from_env()
+        target = uri or realdb.DEFAULT_MONGODB_URI
+        secrets = secret_values({**os.environ, "MONGODB_URI": target})
+        if uri is None:
+            print(
+                "MONGODB_URI is not set (looked in the environment, api/.env, ../.env): seeding "
+                f"db.client's default, {realdb.DEFAULT_MONGODB_URI}."
+            )
+        # Flushed, so it is on screen before a slow connect (or above its error on stderr).
+        print(f"Seeding {realdb.redacted(target)}, database {db_name!r} ...", flush=True)
+        try:
+            mongo_client, db = (connect or realdb.connect)(
+                target, db_name, timeout_ms=realdb.DEFAULT_TIMEOUT_MS, appname="stitch-seed"
+            )
+        except Exception as exc:  # noqa: BLE001 - one readable sentence, never a traceback
+            print(f"Demo seed failed: {realdb.describe_failure(exc, secrets, uri=target)} {_DB_HINT}",
+                  file=sys.stderr)
+            return EXIT_NO_DATABASE
+
+    db_log = logging.getLogger("db.client")
+    level = db_log.level
     try:
-        client.ensure_indexes(db)
-        result = seed_demo(db, reset=args.reset)
+        with scrubbed_logs(secrets):
+            # The vector index line below says what the per-index warnings would.
+            db_log.setLevel(logging.ERROR)
+            try:
+                client.ensure_indexes(db)
+                index_line = _vector_index_line(client.ensure_search_indexes_report(db))
+                result = seed_demo(db, reset=args.reset)
+            finally:
+                db_log.setLevel(level)
     except (DemoDataError, DemoCompileError) as exc:
         print(f"Demo seed stopped before writing anything: {exc}", file=sys.stderr)
         return EXIT_BAD_DATA
     except PyMongoError as exc:
         print(
-            f"Demo seed failed: MongoDB error on database {db.name!r} ({type(exc).__name__}: {exc}). "
-            "Check MONGODB_URI and MONGODB_DB, or run the API with STITCH_FAKE_DB=1 to use the "
-            "in-memory demo database instead.",
+            f"Demo seed failed on database {db.name!r}: "
+            f"{realdb.describe_failure(exc, secrets, uri=target)} {_DB_HINT}",
             file=sys.stderr,
         )
         return EXIT_NO_DATABASE
+    finally:
+        if mongo_client is not None:
+            with contextlib.suppress(Exception):
+                mongo_client.close()
 
     status = "seeded" if result.created else "already present (use --reset to rebuild)"
+    print(scrub(index_line, secrets))
     print(f"Demo family {result.family_id!r} ({DEMO_FAMILY_NAME}) {status} in database {db.name!r}.")
     print(f"People: {', '.join(result.person_ids)}")
     print(f"Memories: {len(result.memory_ids)}")
     print(f"Accounts (password {DEMO_PASSWORD!r}):")
     for email, _password, person_id in result.accounts:
         print(f"  {email:<20} person {person_id}")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":
