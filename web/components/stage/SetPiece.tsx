@@ -73,24 +73,34 @@ export interface PopUpProps {
   open?: number | boolean;
   /** When `open` starts true: stage time at which the set begins to rise. */
   openAt?: number;
+  /** Optional scheduled fold-down, in stage time (e.g. before a page turn). */
+  closeAt?: number | null;
   timing?: Partial<PopUpTiming>;
   children?: ReactNode;
 }
 
-export function PopUp({ open = true, openAt = 0.4, timing, children }: PopUpProps) {
+export function PopUp({ open = true, openAt = 0.4, closeAt = null, timing, children }: PopUpProps) {
   const t = { ...DEFAULT_TIMING, ...timing };
   const { openStagger, closeStagger, scrubStagger } = t;
   const now = useStageTime();
   const get = useThree((s) => s.get);
-  // Boolean mode: the history of flips, in stage time. Starts with the
-  // initial state; later flips are appended when `open` changes.
-  const [initial] = useState<Flip[]>(() => (open === true ? [{ at: openAt, open: true }] : []));
-  const flips = useRef<Flip[]>(initial);
+
+  // Boolean mode: flips in stage time. The scheduled ones come from props;
+  // live ones are appended when `open` changes after mount.
+  const [startsOpen] = useState(open === true);
+  const scheduled = useMemo<Flip[]>(() => {
+    const list: Flip[] = startsOpen ? [{ at: openAt, open: true }] : [];
+    if (closeAt !== null) list.push({ at: closeAt, open: false });
+    return list;
+  }, [startsOpen, openAt, closeAt]);
+  const live = useRef<Flip[]>([]);
+  const version = useRef(0);
   const last = useRef(open);
   useEffect(() => {
     if (typeof open !== "boolean" || open === last.current) return;
     last.current = open;
-    flips.current = [...flips.current, { at: now(get()), open }];
+    live.current = [...live.current, { at: now(get()), open }];
+    version.current += 1;
   }, [open, now, get]);
 
   const value = useMemo<PopUpValue>(() => {
@@ -103,19 +113,27 @@ export function PopUp({ open = true, openAt = 0.4, timing, children }: PopUpProp
         },
       };
     }
+    // Each piece's spring events, rebuilt only when the flips change.
+    const cache = new Map<string, { v: number; evs: SpringEvent[] }>();
     return {
       rise(order, count, time, omega) {
-        const evs: SpringEvent[] = flips.current.map((f) => ({
-          at: f.at + (f.open ? order * openStagger : (count - 1 - order) * closeStagger),
-          target: f.open ? 1 : 0,
-          kick: f.open ? 1.75 * omega : 0,
-        }));
-        // Close-stagger can reorder events; keep them in time order.
-        evs.sort((a, b) => a.at - b.at);
-        return Math.max(0, springAt(evs, time, omega, 0));
+        const key = `${order}|${count}|${omega}`;
+        let hit = cache.get(key);
+        if (!hit || hit.v !== version.current) {
+          const evs: SpringEvent[] = [...scheduled, ...live.current].map((f) => ({
+            at: f.at + (f.open ? order * openStagger : (count - 1 - order) * closeStagger),
+            target: f.open ? 1 : 0,
+            kick: f.open ? 1.75 * omega : 0,
+          }));
+          // Staggers can reorder events; keep them in time order.
+          evs.sort((a, b) => a.at - b.at);
+          hit = { v: version.current, evs };
+          cache.set(key, hit);
+        }
+        return Math.max(0, springAt(hit.evs, time, omega, 0));
       },
     };
-  }, [open, openStagger, closeStagger, scrubStagger]);
+  }, [open, scheduled, openStagger, closeStagger, scrubStagger]);
 
   return <PopUpContext.Provider value={value}>{children}</PopUpContext.Provider>;
 }

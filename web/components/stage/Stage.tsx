@@ -169,6 +169,8 @@ export interface StageSceneProps {
   open?: number | boolean;
   /** When `open` starts true: stage time the set begins to rise. */
   openAt?: number;
+  /** Optional scheduled fold-down, in stage time. */
+  closeAt?: number | null;
   timing?: Partial<PopUpTiming>;
   size?: StageSize;
   /** Draw a plain page under the set. Default true. */
@@ -181,6 +183,7 @@ export interface StageSceneProps {
 export function StageScene({
   open = true,
   openAt,
+  closeAt,
   timing,
   size = DEFAULT_STAGE_SIZE,
   surface = true,
@@ -188,7 +191,7 @@ export function StageScene({
   children,
 }: StageSceneProps) {
   return (
-    <PopUp open={open} openAt={openAt} timing={timing}>
+    <PopUp open={open} openAt={openAt} closeAt={closeAt} timing={timing}>
       {lights && <StageLights size={size} />}
       {surface && <PageSurface size={size} />}
       {children}
