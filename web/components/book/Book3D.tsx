@@ -446,21 +446,23 @@ function SceneViewToggle({ view }: { view: SceneView }) {
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -4 }}
           transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-          className={`pointer-events-auto grid size-11 cursor-pointer place-items-center rounded-full font-display text-[0.95rem] text-[#5c4e43] outline-offset-2 outline-[#f3e6cf] transition-[background-color,box-shadow,scale] duration-200 hover:scale-105 focus-visible:outline-2 active:scale-95 xl:flex xl:w-auto xl:gap-2 xl:px-4 ${
+          className={`pointer-events-auto grid size-11 cursor-pointer place-items-center rounded-full font-display text-[0.95rem] text-[#5c4e43] outline-offset-2 outline-[#f3e6cf] transition-[background-color,box-shadow,scale] duration-200 hover:scale-105 focus-visible:outline-2 active:scale-95 lg:flex lg:w-auto lg:gap-2 lg:px-4 ${
             book
-              ? "bg-[#e6d4b4] shadow-[inset_0_1px_3px_rgb(0_0_0/0.35),0_1px_1px_rgb(0_0_0/0.2)]"
+              ? "bg-[#e3cfab] text-[#4a3c31] shadow-[inset_0_1px_3px_rgb(0_0_0/0.4),0_1px_0_rgb(255_255_255/0.12)]"
               : "bg-[#f5eee1]/95 shadow-[0_2px_3px_rgb(0_0_0/0.25),0_8px_20px_-6px_rgb(0_0_0/0.5)]"
           }`}
         >
+          {/* An open book: outlined to ask for the whole book, inked in while it shows. */}
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden>
             <path
               d="M12 7c-1.9-1.3-4.6-1.8-8.5-1.6v12.4c3.9-.2 6.6.3 8.5 1.6 1.9-1.3 4.6-1.8 8.5-1.6V5.4C16.6 5.2 13.9 5.7 12 7z"
               fill="currentColor"
-              fillOpacity={book ? 0.32 : 0.08}
+              fillOpacity={book ? 0.85 : 0.08}
             />
-            <path d="M12 7v12.4" />
+            <path d="M12 7v12.4" stroke={book ? "#e3cfab" : "currentColor"} strokeWidth={book ? 1.3 : 1.7} />
           </svg>
-          <span className="sr-only xl:not-sr-only">Whole book</span>
+          {/* One name in every state (aria-pressed says which); shown beside the icon where there is room. */}
+          <span className="sr-only lg:not-sr-only">Whole book</span>
         </motion.button>
       ) : null}
     </AnimatePresence>
