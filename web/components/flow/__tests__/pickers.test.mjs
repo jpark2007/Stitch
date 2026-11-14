@@ -8,7 +8,14 @@ import {
   toggleRelation,
   validateRelationships,
 } from "../relationships.ts";
-import { MAX_PHOTOS, MAX_PHOTO_BYTES, PHOTO_TYPES, acceptPhotos, photoTypeFor } from "../photos.ts";
+import {
+  MAX_PHOTOS,
+  MAX_PHOTO_BYTES,
+  PHOTO_TYPES,
+  acceptPhotos,
+  overCapMessage,
+  photoTypeFor,
+} from "../photos.ts";
 
 const empty = () => ({ parentIds: [], spouseIds: [] });
 const names = { rosa: "Rosa", luis: "Luis", ana: "Ana", bea: "Bea", tom: "Tom" };
@@ -272,10 +279,48 @@ test("acceptPhotos stops at the cap of 6, counting what is already there", () =>
   const current = [jpg("a"), jpg("b"), jpg("c"), jpg("d")];
   const { accepted, errors } = acceptPhotos(current, [jpg("e"), jpg("f"), jpg("g"), jpg("h")]);
   assert.deepEqual(accepted, [0, 1]);
+  assert.deepEqual(errors, ["“g” and “h” weren't added: a memory can hold up to 6 photos."]);
+});
+
+test("files over the cap share one line, after the per-file problems", () => {
+  const current = ["a", "b", "c", "d", "e"].map((n) => jpg(n));
+  const { accepted, errors } = acceptPhotos(current, [
+    jpg("f"),
+    jpg("g"),
+    { name: "notes.pdf", size: 10, type: "application/pdf" },
+    jpg("h"),
+  ]);
+  assert.deepEqual(accepted, [0]);
   assert.equal(errors.length, 2);
-  assert.match(errors[0], /“g”/);
-  assert.match(errors[0], /up to 6 photos/);
-  assert.match(errors[1], /“h”/);
+  assert.match(errors[0], /notes\.pdf/);
+  assert.equal(errors[1], "“g” and “h” weren't added: a memory can hold up to 6 photos.");
+});
+
+test("overCapMessage names one, two, three, then counts the rest", () => {
+  assert.equal(overCapMessage([]), "");
+  assert.equal(overCapMessage(["g.png"]), "“g.png” wasn't added: a memory can hold up to 6 photos.");
+  assert.equal(
+    overCapMessage(["photo-5.png", "photo-6.png"]),
+    "“photo-5.png” and “photo-6.png” weren't added: a memory can hold up to 6 photos.",
+  );
+  assert.equal(
+    overCapMessage(["a", "b", "c"]),
+    "“a”, “b” and “c” weren't added: a memory can hold up to 6 photos.",
+  );
+  assert.equal(
+    overCapMessage(["a", "b", "c", "d", "e"]),
+    "“a”, “b”, “c” and 2 more weren't added: a memory can hold up to 6 photos.",
+  );
+  assert.equal(overCapMessage([""]), "“That file” wasn't added: a memory can hold up to 6 photos.");
+});
+
+test("a pick of twelve onto an empty form keeps six and says one line about the rest", () => {
+  const incoming = Array.from({ length: 12 }, (_, i) => jpg(`p${i + 1}.jpg`));
+  const { accepted, errors } = acceptPhotos([], incoming);
+  assert.deepEqual(accepted, [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(errors, [
+    "“p7.jpg”, “p8.jpg”, “p9.jpg” and 3 more weren't added: a memory can hold up to 6 photos.",
+  ]);
 });
 
 test("acceptPhotos with a full set rejects everything", () => {

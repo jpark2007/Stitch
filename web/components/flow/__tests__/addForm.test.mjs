@@ -23,15 +23,23 @@ const { draftFromQuestion, emptyDraft, questionAreaFor, toSubmitFields, validate
   "../memoryForm.ts"
 );
 const {
+  addRelativeHref,
+  addedFromQuery,
+  carriedPhotosNote,
   carryInto,
   hasTold,
   momentsFromThreads,
+  preselectAdded,
   questionForMemory,
+  readAddQuery,
   readCarry,
   saveCarry,
   sentDraftFromSubmit,
   tellingFromSubmit,
+  withoutAdded,
 } = await import("../addPage.ts");
+const { withAddedParam } = await import("../relativeForm.ts");
+const { safeNext } = await import("../session.ts");
 
 // The seed's shape: Ana (mom) has a general prompt and a question about Sam's wedding.
 const SELF = "mom";
@@ -171,5 +179,73 @@ describe("switching family keeps the story", () => {
     assert.equal(draft.text, typed.text);
     assert.equal(draft.year, "2018");
     assert.deepEqual(draft.participantIds, ["sam_in_okafors"]);
+  });
+});
+
+describe("adding a relative from /add and coming back", () => {
+  function storage() {
+    const map = new Map();
+    return {
+      map,
+      getItem: (k) => (map.has(k) ? map.get(k) : null),
+      setItem: (k, v) => void map.set(k, String(v)),
+      removeItem: (k) => void map.delete(k),
+    };
+  }
+
+  /** What the add-relative page does with its `next` once the person is saved. */
+  function addRelative(href, personId) {
+    const next = safeNext(new URL(href, "http://stitch.invalid").searchParams.get("next"));
+    assert.ok(next, "the add-relative page keeps the next it was given");
+    return withAddedParam(next, personId);
+  }
+
+  test("the draft and the picked general question come back, with the new person ticked", () => {
+    const st = storage();
+    const people = ["mom", "dad", "lily"];
+    // Ana types, picks the general prompt, ticks Lily, attaches two photos, then follows the link.
+    const before = emptyDraft(SELF, carryInto(draftFromQuestion(questions[0], null), typed, false));
+    saveCarry(st, {
+      familyId: "demo_family",
+      text: before.text,
+      year: before.year,
+      participantIds: before.participantIds.filter((id) => id !== SELF),
+      questionId: questions[0].id,
+      question: null,
+      photoCount: 2,
+    });
+    const href = addRelativeHref("demo_family");
+    assert.equal(href, "/families/demo_family/people/new?next=%2Fadd%3Ffamily%3Ddemo_family");
+
+    // Aunt Rosa is saved; the add-relative page goes back with ?added=.
+    const back = addRelative(href, "aunt_rosa");
+    assert.equal(back, "/add?family=demo_family&added=aunt_rosa");
+    const search = back.slice(back.indexOf("?"));
+    assert.equal(readAddQuery(search).familyId, "demo_family");
+
+    // /add reads the carry, re-picks the question, ticks Aunt Rosa.
+    const c = readCarry(st, "demo_family");
+    const ids = preselectAdded(c.participantIds, addedFromQuery(search), [...people, "aunt_rosa"]);
+    const q = questions.find((x) => x.id === c.questionId);
+    const after = emptyDraft(
+      SELF,
+      carryInto(draftFromQuestion(q, null), { text: c.text, year: c.year, participantIds: ids, question: c.question }, false),
+    );
+    assert.equal(after.text, typed.text);
+    assert.equal(after.year, "2018");
+    assert.equal(after.question, questions[0].text);
+    assert.deepEqual(after.participantIds, ["mom", "lily", "aunt_rosa"]);
+    assert.match(carriedPhotosNote(c.photoCount), /photos didn’t come along/);
+    // Then ?added= leaves the URL, the family stays.
+    assert.equal(withoutAdded(search), "/add?family=demo_family");
+    assert.deepEqual(toSubmitFields(after).participantIds, ["mom", "lily", "aunt_rosa"]);
+  });
+
+  test("an id that is not in the family is ignored; nothing carried gives just the story", () => {
+    const back = addRelative(addRelativeHref("demo_family"), "nobody_here");
+    const ids = preselectAdded(null, addedFromQuery(back.slice(back.indexOf("?"))), ["mom", "dad"]);
+    assert.equal(ids, null);
+    const draft = emptyDraft(SELF, carryInto(undefined, { text: "", year: "", participantIds: ids }, false));
+    assert.deepEqual(draft.participantIds, [SELF]);
   });
 });

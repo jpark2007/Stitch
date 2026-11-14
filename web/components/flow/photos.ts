@@ -62,11 +62,33 @@ function quoted(name: string): string {
   return `“${name || "That file"}”`;
 }
 
+/** How many names the over-the-cap line spells out before "and N more". */
+const OVER_CAP_NAMED = 3;
+
+/**
+ * The one line for every photo left out by the MAX_PHOTOS cap in a pick:
+ * “e.png” and “f.png” weren't added: a memory can hold up to 6 photos.
+ * At most three are named; the rest are counted ("and 2 more"). Empty for
+ * no names.
+ */
+export function overCapMessage(names: readonly string[]): string {
+  if (names.length === 0) return "";
+  const shown = names.slice(0, OVER_CAP_NAMED).map(quoted);
+  const rest = names.length - shown.length;
+  let list: string;
+  if (rest > 0) list = `${shown.join(", ")} and ${rest} more`;
+  else if (shown.length === 1) list = shown[0];
+  else list = `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+  const verb = names.length === 1 ? "wasn't" : "weren't";
+  return `${list} ${verb} added: a memory can hold up to ${MAX_PHOTOS} photos.`;
+}
+
 /**
  * Decides which newly picked files to keep, given the photos already chosen.
- * Returns the indices of `incoming` to accept, in order, plus one friendly
- * message per file left out (wrong type, too big, empty, already added, or
- * over the MAX_PHOTOS cap).
+ * Returns the indices of `incoming` to accept, in order, plus friendly
+ * messages for the files left out: one per file that is the wrong type, too
+ * big, empty or already added, then one line (overCapMessage) for all the
+ * files over the MAX_PHOTOS cap together.
  */
 export function acceptPhotos(
   current: PhotoLike[],
@@ -76,6 +98,7 @@ export function acceptPhotos(
   const errors: string[] = [];
   const seen = new Set(current.map((f) => `${f.name}\u0000${f.size}`));
   let room = Math.max(0, MAX_PHOTOS - current.length);
+  const overCap: string[] = [];
 
   incoming.forEach((file, i) => {
     const key = `${file.name}\u0000${file.size}`;
@@ -98,7 +121,7 @@ export function acceptPhotos(
       return;
     }
     if (room <= 0) {
-      errors.push(`${quoted(file.name)} wasn't added: a memory can hold up to ${MAX_PHOTOS} photos.`);
+      overCap.push(file.name);
       return;
     }
     seen.add(key);
@@ -106,5 +129,6 @@ export function acceptPhotos(
     accepted.push(i);
   });
 
+  if (overCap.length > 0) errors.push(overCapMessage(overCap));
   return { accepted, errors };
 }

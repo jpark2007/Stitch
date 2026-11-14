@@ -5,7 +5,8 @@
 // run under way (AddRun). Sending the form swaps it for the run at once and
 // puts the run in the URL, so a reload comes back to the same run. A run that
 // fails with its own error offers "Tell it again": ?retry=<run> brings the
-// form back filled in with what that run was sent.
+// form back filled in with what that run was sent. ?added=<person> comes back
+// from the add-relative page: the form ticks that person, then drops it.
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -14,6 +15,7 @@ import { FlowPage } from "@/components/flow/FlowPage";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { SessionGate, type SessionValue } from "@/components/flow/SessionGate";
 import {
+  addedFromQuery,
   familyChoice,
   loadSentDraft,
   loadTelling,
@@ -42,6 +44,7 @@ export function AddLoading() {
 export function AddScreen() {
   const params = useSearchParams();
   const { familyId, memoryId, runId, retryOf } = readAddQuery(params);
+  const added = addedFromQuery(params);
   return (
     <SessionGate requireFamily loading={<AddLoading />}>
       {(session) => (
@@ -51,6 +54,7 @@ export function AddScreen() {
           memoryId={memoryId}
           runId={runId}
           retryOf={retryOf}
+          added={added}
         />
       )}
     </SessionGate>
@@ -75,8 +79,10 @@ function AddFlow(props: {
   memoryId: string | null;
   runId: string | null;
   retryOf: string | null;
+  /** `?added=`: someone just added on the add-relative page (AddForm ticks them). */
+  added: string | null;
 }) {
-  const { session, familyId, memoryId, runId, retryOf } = props;
+  const { session, familyId, memoryId, runId, retryOf, added } = props;
   const { me, api } = session;
   const router = useRouter();
 
@@ -208,6 +214,7 @@ function AddFlow(props: {
         choice={choice}
         onStarted={onStarted}
         restore={{ runId: retryId, draft, photos: backPhotos?.runId === retryId ? backPhotos.photos : null }}
+        added={added}
       />
     );
   }
@@ -221,6 +228,7 @@ function AddFlow(props: {
       memoryId={memoryId}
       choice={choice}
       onStarted={onStarted}
+      added={added}
     />
   );
 }

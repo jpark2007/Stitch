@@ -8,7 +8,9 @@
 // question, so nothing on the page can switch the moment it joins. Sending
 // starts a run and hands it up. Whatever was typed (and the photos) carries
 // into the form a pick remounts, and the story and year carry into another
-// family's form when the person switches family.
+// family's form when the person switches family. "Someone missing?" under
+// the people goes to the add-relative page with the whole draft kept (but the
+// photo files); coming back with ?added= ticks the new person.
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -20,12 +22,15 @@ import { FormError } from "@/components/flow/FormError";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { QuestionPrompts } from "@/components/flow/QuestionPrompts";
 import {
+  addRelativeHref,
+  carriedPhotosNote,
   carryInto,
   clearCarry,
   draftFromSent,
   hasTold,
   momentFromMemory,
   momentsFromThreads,
+  preselectAdded,
   questionForMemory,
   readCarry,
   restoreNotice,
@@ -34,6 +39,7 @@ import {
   saveTelling,
   sentDraftFromSubmit,
   tellingFromSubmit,
+  withoutAdded,
   type FamilyChoice,
   type MomentInfo,
   type SentDraft,
@@ -61,6 +67,12 @@ interface Loaded {
   base: Base;
   /** Every moment of the family by id; null when GET /threads failed. */
   moments: Map<string, Moment> | null;
+  /**
+   * The `?added=` person this load started after (null for none): once it
+   * matches the URL's, `people` is fresh enough to have them, if they are
+   * in this family at all.
+   */
+  addedFor: string | null;
 }
 
 type Status = { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready"; data: Loaded };
@@ -82,9 +94,21 @@ interface Carried {
   year: string;
   participantIds: string[] | null;
   photos: File[];
+  /** A typed question (no pick), back from the add-relative page; "" for none. */
+  question: string;
 }
 
-const NOTHING_CARRIED: Carried = { text: "", year: "", participantIds: null, photos: [] };
+const NOTHING_CARRIED: Carried = { text: "", year: "", participantIds: null, photos: [], question: "" };
+
+/** Where a new memory's form starts when the page opens: what came back to it. */
+interface Start {
+  carried: Carried;
+  picked: Picked | null;
+  /** Photos that were attached when the draft left (they cannot come back). */
+  photosLeft: number;
+}
+
+const BLANK_START: Start = { carried: NOTHING_CARRIED, picked: null, photosLeft: 0 };
 
 /** The latest draft in the form, and whether it was a second telling. */
 interface Latest {
@@ -102,6 +126,25 @@ const MISSING_QUESTION_MOMENT =
 
 function messageOf(e: unknown, fallback: string): string {
   return isApiError(e) && e.status !== 0 && e.detail ? e.detail : fallback;
+}
+
+/**
+ * The family question a carried draft had picked, picked again. A question
+ * that is no longer open is dropped. One about a moment is only re-picked
+ * when the family's moments are known (else the form starts without it).
+ */
+function repick(
+  questionId: string | null,
+  questions: readonly Question[],
+  moments: Map<string, Moment> | null,
+): Picked | null {
+  const question = questionId ? questions.find((q) => q.id === questionId) : undefined;
+  if (!question) return null;
+  const mid = question.memoryId ?? null;
+  if (!mid) return { question, moment: null, note: null };
+  if (!moments) return null;
+  const moment = moments.get(mid) ?? null;
+  return { question, moment, note: moment ? null : MISSING_QUESTION_MOMENT };
 }
 
 /** A run that started: its id, the slip of what was sent and the photo files that went with it. */
@@ -128,6 +171,8 @@ export function AddForm(props: {
   onStarted: (run: StartedRun) => void;
   /** Fill the form in with what a failed run was sent. */
   restore?: Restore;
+  /** `?added=`: someone just added on the add-relative page, to tick under "Who was there?". */
+  added?: string | null;
 }) {
   const [attempt, setAttempt] = useState(0);
   return <AddFormLoader key={attempt} {...props} onRetry={() => setAttempt((n) => n + 1)} />;
@@ -141,14 +186,22 @@ function AddFormLoader(props: {
   choice: FamilyChoice;
   onStarted: (run: StartedRun) => void;
   restore?: Restore;
+  added?: string | null;
   onRetry: () => void;
 }) {
-  const { api, fid, selfPersonId, memoryId, choice, onStarted, restore, onRetry } = props;
+  const { api, fid, selfPersonId, memoryId, choice, onStarted, restore, added = null, onRetry } = props;
   const router = useRouter();
   const [status, setStatus] = useState<Status>({ kind: "loading" });
+  // The last `?added=` person seen. A new one loads the family again: this
+  // page can be kept alive (hidden) while the person is added elsewhere, so
+  // the people it has may not include them yet. Going back to null (once the
+  // form has ticked them and the URL drops it) loads nothing.
+  const [loadFor, setLoadFor] = useState<string | null>(added);
+  if (added && added !== loadFor) setLoadFor(added);
 
   useEffect(() => {
     let live = true;
+    const addedFor = loadFor;
     // The family's moments, from the threads: a moment that is not there is
     // simply missing (no 404 to log). Without them, ask for the one moment.
     const known = api.getThreads(fid).then(momentsFromThreads, () => null);
@@ -176,7 +229,7 @@ function AddFormLoader(props: {
           memoryId && m
             ? { kind: "second", memoryId, moment: m, question: questionForMemory(questions, memoryId) }
             : { kind: "new", note: memoryId ? MISSING_MOMENT : null };
-        setStatus({ kind: "ready", data: { people, questions, base, moments: all } });
+        setStatus({ kind: "ready", data: { people, questions, base, moments: all, addedFor } });
       },
       (e: unknown) => {
         if (!live) return;
@@ -184,13 +237,20 @@ function AddFormLoader(props: {
           router.replace(hrefs.login(currentPath()));
           return;
         }
-        setStatus({ kind: "error", message: messageOf(e, LOAD_ERROR) });
+        // Loading again under a form already on screen (the page shown
+        // again, or someone just added): keep the form and what is typed in
+        // it, with the people it had. Only a first load shows the error.
+        setStatus((s) =>
+          s.kind === "ready"
+            ? { kind: "ready", data: { ...s.data, addedFor } }
+            : { kind: "error", message: messageOf(e, LOAD_ERROR) },
+        );
       },
     );
     return () => {
       live = false;
     };
-  }, [api, fid, memoryId, router]);
+  }, [api, fid, memoryId, router, loadFor]);
 
   if (status.kind === "loading") {
     return (
@@ -227,6 +287,7 @@ function AddFormLoader(props: {
       choice={choice}
       onStarted={onStarted}
       restore={restore}
+      added={added}
     />
   );
 }
@@ -241,22 +302,61 @@ function AddFormReady(props: {
   choice: FamilyChoice;
   onStarted: (run: StartedRun) => void;
   restore?: Restore;
+  added: string | null;
 }) {
-  const { api, fid, selfPersonId, data, choice, onStarted, restore } = props;
+  const { api, fid, selfPersonId, data, choice, onStarted, restore, added } = props;
   const { people, questions, base } = data;
+  const router = useRouter();
+
+  // A new memory starts from what came back to this page: the draft carried
+  // from another family's form, or from this one before a trip to the
+  // add-relative page (its story, year, people and picked question), with
+  // whoever was just added there (?added=) ticked. Read once, on mount.
+  const [start] = useState<Start>(() => {
+    if (base.kind !== "new" || restore) return BLANK_START;
+    const c = readCarry(sessionStore(), fid);
+    const participantIds = preselectAdded(
+      c?.participantIds ?? null,
+      added,
+      people.map((p) => p.id),
+    );
+    if (!c && !participantIds) return BLANK_START;
+    return {
+      carried: {
+        ...NOTHING_CARRIED,
+        text: c?.text ?? "",
+        year: c?.year ?? "",
+        participantIds,
+        question: c?.question ?? "",
+      },
+      picked: repick(c?.questionId ?? null, questions, data.moments),
+      photosLeft: c?.photoCount ?? 0,
+    };
+  });
 
   // Only a new memory picks questions: a second telling shows none to pick.
-  const [picked, setPicked] = useState<Picked | null>(null);
+  const [picked, setPicked] = useState<Picked | null>(start.picked);
   const [pickingId, setPickingId] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
-  // What was typed so far, handed to the form a pick remounts. A new memory
-  // also starts with the story carried from another family's form.
-  const [carried, setCarried] = useState<Carried>(() => {
-    if (base.kind !== "new" || restore) return NOTHING_CARRIED;
-    const c = readCarry(sessionStore(), fid);
-    return c ? { ...NOTHING_CARRIED, text: c.text, year: c.year } : NOTHING_CARRIED;
-  });
+  // What was typed so far, handed to the form a pick remounts.
+  const [carried, setCarried] = useState<Carried>(start.carried);
+  // Photos left behind on the way to the add-relative page: said once, until
+  // a photo is added again.
+  const [photosLeft, setPhotosLeft] = useState(start.photosLeft);
   useEffect(() => clearCarry(sessionStore()), []);
+
+  // ?added= on a form that was already here (the page kept alive while the
+  // person was added): once the people are loaded fresh for them, the form
+  // ticks them in place, keeping everything else, photos included. Someone
+  // not in this family is ignored.
+  const freshAdded = added && data.addedFor === added ? added : null;
+  const tickPersonId =
+    freshAdded && base.kind === "new" && people.some((p) => p.id === freshAdded) ? freshAdded : null;
+  // Then ?added= leaves the URL (the rest stays), so a reload does not tick
+  // that person again after they were unticked.
+  useEffect(() => {
+    if (freshAdded) router.replace(withoutAdded(window.location.search), { scroll: false });
+  }, [freshAdded, router]);
   // The form's latest draft and photos (told by onDraftChange).
   const latest = useRef<Latest>({ draft: null, photos: [], second: false });
   // Moments by id: the family's from the threads, plus any fetched for a
@@ -282,12 +382,32 @@ function AddFormReady(props: {
       year: own?.year ?? "",
       participantIds: own ? [...own.participantIds] : null,
       photos: [...photos],
+      question: "",
     });
   }, []);
 
   const onDraftChange = useCallback((draft: MemoryDraft, photos: File[]) => {
     latest.current = { draft, photos, second: Boolean(draft.memoryId) };
+    if (photos.length > 0) setPhotosLeft(0);
   }, []);
+
+  // Off to the add-relative page: keep the whole draft (all but the photo
+  // files) for the form that comes back with the new person ticked.
+  const pickedId = picked?.question.id ?? null;
+  const onAddPerson = useCallback(() => {
+    const { draft, photos, second } = latest.current;
+    if (!draft || second) return;
+    saveCarry(sessionStore(), {
+      familyId: fid,
+      text: draft.text,
+      year: draft.year,
+      participantIds: draft.participantIds.filter((id) => id !== selfPersonId),
+      questionId: pickedId,
+      // A picked question comes back by id; only a typed one travels as text.
+      question: pickedId ? null : draft.question,
+      photoCount: photos.length,
+    });
+  }, [fid, selfPersonId, pickedId]);
 
   // Switching family: the story and year go along to that family's form.
   const onSwitch = useCallback((familyId: string) => {
@@ -392,6 +512,9 @@ function AddFormReady(props: {
       initial = { ...draftFromSent(restore.draft), memoryId: null };
       formKey += `:r:${restore.runId}`;
       typedQuestion = true;
+    } else if (carried.question.trim()) {
+      // A question typed before the add-relative trip comes back typed.
+      typedQuestion = true;
     }
   }
   // Whatever was typed before the pick goes on into the new form. A second
@@ -401,6 +524,7 @@ function AddFormReady(props: {
 
   const second = secondTellingOf !== null;
   const secondTitle = secondTellingOf?.title ?? null;
+  const photosNote = second ? null : carriedPhotosNote(photosLeft);
   // One question area: the family's notes for a new memory, nothing to pick
   // for a second telling (its own question rides along read-only).
   const area = questionAreaFor({
@@ -475,6 +599,7 @@ function AddFormReady(props: {
             <Notice>{restoreNotice(restore.draft.photoCount, restore.photos?.length ?? null)}</Notice>
           ) : null}
           {note ? <Notice>{note}</Notice> : null}
+          {photosNote ? <Notice>{photosNote}</Notice> : null}
           <AddMemoryForm
             key={formKey}
             people={people}
@@ -489,6 +614,9 @@ function AddFormReady(props: {
             disabled={pickingId !== null}
             submitLabel={second ? "Save my telling" : "Save this memory"}
             onSubmit={onSubmit}
+            addPersonHref={second ? null : addRelativeHref(fid)}
+            onAddPerson={onAddPerson}
+            tickPersonId={second ? null : tickPersonId}
           />
         </div>
       </div>
