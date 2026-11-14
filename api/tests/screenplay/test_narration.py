@@ -576,6 +576,30 @@ def test_ripple_pushing_an_uncued_action_before_the_shot_is_an_error():
     assert retime_actions(shot, 0.0) == [0.25, 0.0, 0.5]
 
 
+def test_authored_negative_t_passes_through_retiming():
+    # No contract forbids a negative Action.t here (validation owns that rule), so an uncued
+    # action written before t=0 and never rippled is returned as written: no KeyError and no
+    # retiming error (the ripple check names a line, and no line moved this action).
+    shot = Shot(id="s1", set="x", actions=[Action(t=-0.5, do="wave", who="a")], narration=[])
+    assert retime_actions(shot, 1.2) == [-0.5]
+    # Earlier than the cued action, so the ripple skips it and it keeps its written t.
+    shot = Shot(
+        id="s1",
+        set="x",
+        actions=[Action(t=0.5, do="pose", who="a", pose="x", id="p"), Action(t=-0.5, do="wave", who="b")],
+        narration=[line(0.0, "Now", cue="p")],
+    )
+    assert retime_actions(shot, 0.0) == [0.0, -0.5]
+    # A ripple that moves a negative-t action later is applied as usual.
+    shot = Shot(
+        id="s1",
+        set="x",
+        actions=[Action(t=-2.0, do="pose", who="a", pose="x", id="p"), Action(t=-0.5, do="wave", who="b")],
+        narration=[line(0.0, "Now", cue="p")],
+    )
+    assert retime_actions(shot, 0.0) == [0.0, 1.5]
+
+
 # ------------------------------------------------ bug 2: overlapping lines in one telling
 
 def test_default_telling_lines_overlap():
