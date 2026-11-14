@@ -1,0 +1,565 @@
+"""Smoke-test "add a memory" end to end over HTTP, against a running API.
+
+This is the manual check before the stage demo, and the way to smoke-test the real model
+studio with real keys. It talks to the API exactly like the web app does (cookie session,
+multipart submit, the run's Server-Sent Events, answers), so it needs a server running.
+
+Start the API first, in one terminal (from api/):
+
+    # Offline: in-memory database with the demo family, scripted runs (no keys, no MongoDB).
+    STITCH_FAKE_DB=1 uv run uvicorn main:app --port 8000
+
+    # Real model studio: MongoDB and ANTHROPIC_API_KEY (and the other model keys) in the
+    # repo-root .env. Seed the demo family once, then start the server with that file.
+    uv run --env-file ../.env python -m seed.demo
+    uv run uvicorn main:app --env-file ../.env --port 8000
+
+Then, in a second terminal (from api/):
+
+    uv run python -m seed.smoke --base-url http://localhost:8000
+
+Options (all optional):
+
+    --base-url URL      the API (default http://localhost:8000)
+    --email E           the account to sign in as (default david@demo.stitch)
+    --password P        its password (default: the demo password, seed.demo.DEMO_PASSWORD)
+    --family FID        the family to add the memory to (default demo_family)
+    --text T            the telling (default: a short road-trip memory)
+    --year N            the year of the moment (default 1991)
+    --question Q        the question the telling answers (default none)
+    --photo PATH ...    photos to attach (default: one small generated PNG)
+    --answer TEXT       the reply to the studio's follow-up question
+    --timeout SECONDS   give up after this long (default 900; a real run takes minutes)
+    --quiet             print only the final summary line
+
+The exit code is 0 when every check passed, 1 when one failed (the summary line names it),
+and 2 when the API cannot be reached at all.
+
+What each check means, in order (the first one that fails is the summary's message):
+
+1. login        POST /auth/login with the email and password answers 200.
+2. membership   GET /me lists the family, so the account belongs to it.
+3. teller       the account has a person in that family; it tells the memory.
+4. submit       POST /families/{fid}/memories (multipart: text, year, question, photos)
+                answers 202 with a run id: the studio accepted the run.
+5. stream       GET /families/{fid}/runs/{runId}/stream sends events named as in
+                schemas.RUN_EVENTS whose data validates against those models, until
+                `done` or `error`. Each event is logged as it arrives.
+                - `question`: answered with {"kind": "answer", "text": --answer}.
+                - `props_found`: answered with every prop kept ({"kind": "props",
+                  "props": [{"id": ..., "action": "keep"}, ...]}).
+                - `merge`: answered with {"kind": "merge", "approve": false}, so a smoke
+                  run never merges two people.
+                Every answer must get 204. An `error` event, or no `done` before --timeout,
+                fails the smoke. If the connection drops, the stream is reopened (it
+                replays the run from its first event) and the events already seen are
+                skipped.
+6. memory       GET /families/{fid}/memories/{memoryId} has a screenplay and a timeline:
+                the scene was staged and saved.
+7. book         GET /families/{fid}/people/{tellerId}/book lists the new memory: it opens
+                in the teller's book.
+
+Each run adds one memory to the family. On a real MongoDB, `uv run --env-file ../.env
+python -m seed.demo --reset` rebuilds the demo family without them.
+
+Passwords and session cookies are never printed or logged. See also seed/README.md.
+
+From code: `run_smoke(client, SmokeOptions(...)) -> SmokeResult`, with an httpx.Client
+(or FastAPI's TestClient) whose base_url is the API.
+"""
+
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import mimetypes
+import pathlib
+import sys
+import time
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
+from pydantic import BaseModel, ValidationError
+
+import schemas
+from seed import demo
+
+DEFAULT_BASE_URL = "http://localhost:8000"
+DEFAULT_EMAIL = "david@demo.stitch"
+DEFAULT_TEXT = (
+    "Every summer we drove to the lake with the windows down. "
+    "Dad sang along to the radio the whole way and we all joined in on the chorus."
+)
+DEFAULT_YEAR = 1991
+DEFAULT_ANSWER = "It was a warm evening and everyone was singing."
+DEFAULT_TIMEOUT = 900.0
+
+MAX_RECONNECTS = 3
+"""How many times a dropped stream is reopened before the smoke gives up."""
+READ_TIMEOUT_CAP = 60.0
+"""Longest wait for any byte on a request. The stream sends a heartbeat every 15 seconds."""
+CONNECT_TIMEOUT_CAP = 10.0
+DETAIL_LIMIT = 200
+
+REACH_MESSAGE = "Cannot reach {url}: is the API running? (see seed/README.md)"
+
+
+@dataclass
+class SmokeOptions:
+    base_url: str
+    email: str
+    password: str
+    family_id: str
+    text: str
+    year: int
+    question: str | None
+    photos: list[pathlib.Path]
+    answer: str
+    timeout: float
+
+
+@dataclass
+class SmokeResult:
+    ok: bool
+    run_id: str | None
+    memory_id: str | None
+    events: list[str]
+    message: str
+
+
+# ------------------------------------------------------------------------------ SSE
+
+
+def _frame(name: str | None, data: list[str]) -> tuple[str, dict] | None:
+    if not data:
+        return None
+    text = "\n".join(data)
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"event {name or 'message'!r} has data that is not JSON: {text[:DETAIL_LIMIT]!r}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"event {name or 'message'!r} has data that is not a JSON object")  # noqa: TRY004
+    return name or "message", value
+
+
+def parse_sse(lines: Iterable[str]) -> Iterator[tuple[str, dict]]:
+    """(event name, JSON data) for each Server-Sent Events frame in `lines`.
+
+    `lines` are text lines without their line endings (httpx's `iter_lines()`). A blank
+    line ends a frame. Comment lines (starting with ':', like the server's `: ping`) and
+    the `id` and `retry` fields are ignored; several `data:` lines are joined with
+    newlines; a frame with no data is skipped; a last frame with no blank line after it is
+    still yielded. A frame with no `event:` line is named "message", as in the SSE spec.
+    Raises ValueError when a frame's data is not a JSON object.
+    """
+    name: str | None = None
+    data: list[str] = []
+    for raw in lines:
+        line = raw.rstrip("\r\n")
+        if line == "":
+            frame = _frame(name, data)
+            if frame is not None:
+                yield frame
+            name, data = None, []
+            continue
+        if line.startswith(":"):
+            continue
+        key, colon, value = line.partition(":")
+        if colon and value.startswith(" "):
+            value = value[1:]
+        if key == "event":
+            name = value
+        elif key == "data":
+            data.append(value)
+    frame = _frame(name, data)
+    if frame is not None:
+        yield frame
+
+
+# ------------------------------------------------------------------------------ helpers
+
+
+class _Fail(Exception):
+    """A failed check: its message is the smoke's message."""
+
+
+class _Timeout(Exception):
+    """--timeout passed while the stream was open."""
+
+
+class _Dropped(Exception):
+    """The stream ended or broke before `done` or `error`."""
+
+
+def _redactor(secret: str) -> Callable[[str], str]:
+    def redact(text: str) -> str:
+        return text.replace(secret, "***") if secret else text
+
+    return redact
+
+
+def _detail(res: httpx.Response) -> str:
+    """The error detail of a response, short: FastAPI's `detail`, else the body."""
+    try:
+        res.read()
+        body = res.json()
+    except Exception:  # noqa: BLE001 - not JSON, or not readable
+        body = None
+    if isinstance(body, dict) and "detail" in body:
+        detail = body["detail"]
+        if isinstance(detail, list):
+            parts = []
+            for item in detail:
+                if isinstance(item, dict):
+                    loc = ".".join(str(p) for p in item.get("loc", []))
+                    parts.append(f"{loc}: {item.get('msg', '')}".strip(": "))
+                else:
+                    parts.append(str(item))
+            text = "; ".join(parts)
+        else:
+            text = str(detail)
+    else:
+        try:
+            text = res.text
+        except Exception:  # noqa: BLE001
+            text = ""
+    text = " ".join(text.split())
+    if len(text) > DETAIL_LIMIT:
+        text = text[: DETAIL_LIMIT - 1] + "…"
+    return f"HTTP {res.status_code}" + (f" {text}" if text else "")
+
+
+def _parse(model: type[BaseModel], res: httpx.Response, what: str) -> Any:
+    try:
+        return model.model_validate(res.json())
+    except (ValueError, ValidationError) as exc:
+        first = exc.errors()[0] if isinstance(exc, ValidationError) and exc.errors() else None
+        where = f" ({'.'.join(str(p) for p in first['loc'])}: {first['msg']})" if first else ""
+        raise _Fail(f"{what}: the response does not match schemas.{model.__name__}{where}") from None
+
+
+def _png() -> bytes:
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (64, 48), (214, 170, 92)).save(out, format="PNG")
+    return out.getvalue()
+
+
+def _photo_files(paths: list[pathlib.Path]) -> list[tuple[str, tuple[str, bytes, str]]]:
+    if not paths:
+        return [("photos", ("smoke.png", _png(), "image/png"))]
+    files = []
+    for path in paths:
+        try:
+            data = pathlib.Path(path).read_bytes()
+        except OSError as exc:
+            raise _Fail(f"photo: cannot read {path} ({exc.strerror or exc})") from None
+        ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        if ctype == "image/jpg":
+            ctype = "image/jpeg"
+        files.append(("photos", (pathlib.Path(path).name, data, ctype)))
+    return files
+
+
+def _describe(name: str, model: BaseModel) -> str:
+    """A short detail for the log line of one event."""
+    if isinstance(model, schemas.QuestionEvent):
+        return f": {model.text}"
+    if isinstance(model, schemas.ErrorEvent):
+        return f": {model.message}"
+    if isinstance(model, schemas.PropsFoundEvent):
+        return ": " + (", ".join(p.name for p in model.props) or "no props")
+    if isinstance(model, schemas.MergeEvent):
+        return f": {model.text}"
+    if isinstance(model, schemas.SubagentStartEvent | schemas.SubagentEndEvent):
+        return f" ({model.name})"
+    if isinstance(model, schemas.CompileErrorEvent):
+        return f" (round {model.round}, {len(model.errors)} errors)"
+    if isinstance(model, schemas.DoneEvent | schemas.SceneReadyEvent):
+        return f" ({model.memory_id})"
+    return ""
+
+
+def _answer_for(name: str, model: BaseModel, opts: SmokeOptions) -> schemas.AnswerRequest | None:
+    """The answer a needs-input event gets, or None for every other event."""
+    if name == "question":
+        return schemas.AnswerRequest(kind="answer", text=opts.answer)
+    if name == "props_found":
+        assert isinstance(model, schemas.PropsFoundEvent)
+        return schemas.AnswerRequest(
+            kind="props", props=[schemas.PropEdit(id=p.id, action="keep") for p in model.props]
+        )
+    if name == "merge":
+        return schemas.AnswerRequest(kind="merge", approve=False)
+    return None
+
+
+@dataclass
+class _Run:
+    """What the stream has shown so far."""
+
+    events: list[str] = field(default_factory=list)
+    memory_id: str | None = None
+    error: str | None = None
+
+
+def _deadline_lines(lines: Iterable[str], deadline: float) -> Iterator[str]:
+    for line in lines:
+        if time.monotonic() > deadline:
+            raise _Timeout
+        yield line
+
+
+def _follow(
+    client: httpx.Client,
+    opts: SmokeOptions,
+    run_id: str,
+    run: _Run,
+    deadline: float,
+    log: Callable[[str], None],
+) -> None:
+    """Read the run's stream once, from its first event; skip the events already seen.
+
+    Returns after `done` or `error`. Raises _Dropped when the stream ends or breaks first,
+    _Timeout when the deadline passes, _Fail on anything else that fails the smoke.
+    """
+    fid = opts.family_id
+    seen = len(run.events)
+    index = 0
+    try:
+        with client.stream("GET", f"/families/{fid}/runs/{run_id}/stream") as res:
+            if res.status_code != 200:
+                raise _Fail(f"stream: {_detail(res)}")
+            ctype = res.headers.get("content-type", "")
+            if not ctype.startswith("text/event-stream"):
+                raise _Fail(f"stream: expected text/event-stream, got {ctype or 'no content type'}")
+            for name, data in parse_sse(_deadline_lines(res.iter_lines(), deadline)):
+                index += 1
+                if index <= seen:
+                    continue  # replayed after a reconnect
+                expected = schemas.RUN_EVENTS.get(name)
+                if expected is None:
+                    raise _Fail(f"stream: unknown event {name!r} (not in schemas.RUN_EVENTS)")
+                try:
+                    model = expected.model_validate(data)
+                except ValidationError as exc:
+                    first = exc.errors()[0]
+                    loc = ".".join(str(p) for p in first["loc"])
+                    raise _Fail(f"stream: {name} event does not match schemas ({loc}: {first['msg']})") from None
+                run.events.append(name)
+                log(f"  event {name}{_describe(name, model)}")
+
+                if isinstance(model, schemas.ErrorEvent):
+                    run.error = model.message
+                    return
+                if isinstance(model, schemas.DoneEvent):
+                    run.memory_id = model.memory_id
+                    return
+                answer = _answer_for(name, model, opts)
+                if answer is not None:
+                    reply = client.post(
+                        f"/families/{fid}/runs/{run_id}/answer",
+                        json=answer.model_dump(mode="json", by_alias=True, exclude_none=True),
+                    )
+                    if reply.status_code != 204:
+                        raise _Fail(f"answer to {name}: {_detail(reply)}")
+                    log(f"  answered {name} ({answer.kind})")
+    except ValueError as exc:  # parse_sse: data that is not a JSON object
+        raise _Fail(f"stream: {exc}") from None
+    except (httpx.RemoteProtocolError, httpx.ReadError) as exc:
+        raise _Dropped(f"the stream broke ({type(exc).__name__})") from None
+    raise _Dropped("the stream ended before done or error")
+
+
+# ------------------------------------------------------------------------------ the smoke
+
+
+def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], None] = print) -> SmokeResult:
+    """Drive add-a-memory end to end through `client` (base_url set; paths are relative).
+
+    ok is True only when every check in the module docstring passed; otherwise `message`
+    names the first one that failed. httpx.ConnectError (the API is not running) is not
+    caught: `main` turns it into exit code 2. The password never appears in `message` or
+    in anything passed to `log`.
+    """
+    redact = _redactor(opts.password)
+
+    def say(text: str) -> None:
+        log(redact(text))
+
+    run = _Run()
+    run_id: str | None = None
+    started = time.monotonic()
+    deadline = started + opts.timeout
+    fid = opts.family_id
+
+    def result(ok: bool, message: str) -> SmokeResult:
+        return SmokeResult(ok=ok, run_id=run_id, memory_id=run.memory_id, events=list(run.events),
+                           message=redact(message))
+
+    try:
+        # 1. Sign in.
+        res = client.post("/auth/login", json={"email": opts.email, "password": opts.password})
+        if res.status_code != 200:
+            raise _Fail(f"login: could not sign in as {opts.email}: {_detail(res)}")
+        say(f"signed in as {opts.email}")
+
+        # 2. Membership, and 3. the teller.
+        res = client.get("/me")
+        if res.status_code != 200:
+            raise _Fail(f"me: {_detail(res)}")
+        me: schemas.MeResponse = _parse(schemas.MeResponse, res, "me")
+        family = next((f for f in me.families if f.id == fid), None)
+        if family is None:
+            raise _Fail(f"membership: {opts.email} is not a member of family {fid!r}")
+        if not family.person_id:
+            raise _Fail(f"teller: {opts.email} has no person in family {fid!r}")
+        teller = family.person_id
+        say(f"family {family.name} ({fid}), teller {teller}")
+
+        # 4. Submit.
+        files = _photo_files(opts.photos)
+        form = {"text": opts.text, "year": str(opts.year)}
+        if opts.question:
+            form["question"] = opts.question
+        res = client.post(f"/families/{fid}/memories", data=form, files=files)
+        if res.status_code != 202:
+            raise _Fail(f"submit: {_detail(res)}")
+        submitted: schemas.SubmitMemoryResponse = _parse(schemas.SubmitMemoryResponse, res, "submit")
+        run_id = submitted.run_id
+        say(f"run {run_id} started with {len(files)} photo(s)")
+
+        # 5. Stream, answering what the run asks.
+        drops = 0
+        while True:
+            try:
+                _follow(client, opts, run_id, run, deadline, say)
+                break
+            except _Dropped as exc:
+                drops += 1
+                if drops > MAX_RECONNECTS or time.monotonic() > deadline:
+                    raise _Fail(f"stream: {exc}; gave up after {drops - 1} reconnects") from None
+                say(f"  {exc}; reopening the stream")
+        if run.error is not None:
+            raise _Fail(f"run: error event: {run.error}")
+        memory_id = run.memory_id
+        assert memory_id is not None
+        say(f"done in {time.monotonic() - started:.1f}s: memory {memory_id}")
+
+        # 6. The memory has its scene.
+        res = client.get(f"/families/{fid}/memories/{memory_id}")
+        if res.status_code != 200:
+            raise _Fail(f"memory: GET memory {memory_id}: {_detail(res)}")
+        found: schemas.MemoryResponse = _parse(schemas.MemoryResponse, res, "memory")
+        if found.memory.screenplay is None:
+            raise _Fail(f"memory: {memory_id} has no screenplay")
+        if found.memory.timeline is None:
+            raise _Fail(f"memory: {memory_id} has no timeline")
+        say(f"memory {found.memory.title!r} ({found.memory.year}) has its screenplay and timeline")
+
+        # 7. It opens in the teller's book.
+        res = client.get(f"/families/{fid}/people/{teller}/book")
+        if res.status_code != 200:
+            raise _Fail(f"book: GET {teller}'s book: {_detail(res)}")
+        book: schemas.BookResponse = _parse(schemas.BookResponse, res, "book")
+        if not any(m.id == memory_id for m in book.memories):
+            raise _Fail(f"book: {teller}'s book does not list memory {memory_id}")
+        say(f"{teller}'s book lists it ({len(book.memories)} memories)")
+    except _Fail as exc:
+        return result(False, str(exc))
+    except _Timeout:
+        return result(False, f"timeout: no done event within {opts.timeout:g}s")
+    except httpx.ConnectError:
+        raise
+    except httpx.TimeoutException as exc:
+        return result(False, f"timeout: the API did not answer in time ({type(exc).__name__})")
+    except httpx.HTTPError as exc:
+        return result(False, f"http: {type(exc).__name__}: {exc}")
+
+    return result(True, f"memory {run.memory_id} is staged and in {teller}'s book")
+
+
+# ------------------------------------------------------------------------------ CLI
+
+
+def _positive(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number of seconds") from None
+    if not seconds > 0:
+        raise argparse.ArgumentTypeError("the timeout must be more than 0 seconds")
+    return seconds
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m seed.smoke",
+        description="Smoke-test add-a-memory end to end over HTTP against a running API "
+        "(start it first; see seed/smoke.py and seed/README.md).",
+    )
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="the API (default %(default)s)")
+    parser.add_argument("--email", default=DEFAULT_EMAIL, help="account to sign in as (default %(default)s)")
+    parser.add_argument("--password", default=None, help="its password (default: the demo password)")
+    parser.add_argument("--family", default=demo.DEMO_FAMILY_ID, help="family id (default %(default)s)")
+    parser.add_argument("--text", default=DEFAULT_TEXT, help="the telling (default: a short road-trip memory)")
+    parser.add_argument("--year", type=int, default=DEFAULT_YEAR, help="year of the moment (default %(default)s)")
+    parser.add_argument("--question", default=None, help="the question the telling answers (default none)")
+    parser.add_argument(
+        "--photo", dest="photos", nargs="+", action="extend", type=pathlib.Path, default=[], metavar="PATH",
+        help="photos to attach (default: one small generated PNG)",
+    )
+    parser.add_argument("--answer", default=DEFAULT_ANSWER, help="reply to the follow-up question")
+    parser.add_argument(
+        "--timeout", type=_positive, default=DEFAULT_TIMEOUT, help="seconds before giving up (default %(default)g)"
+    )
+    parser.add_argument("--quiet", action="store_true", help="print only the summary line")
+    return parser
+
+
+def _options(args: argparse.Namespace) -> SmokeOptions:
+    return SmokeOptions(
+        base_url=args.base_url.rstrip("/"),
+        email=args.email,
+        password=args.password if args.password is not None else demo.DEMO_PASSWORD,
+        family_id=args.family,
+        text=args.text,
+        year=args.year,
+        question=args.question,
+        photos=list(args.photos),
+        answer=args.answer,
+        timeout=args.timeout,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the smoke from the command line. 0 when ok, 1 when a check failed, 2 when unreachable."""
+    args = _parser().parse_args(argv)
+    opts = _options(args)
+    log: Callable[[str], None] = (lambda _text: None) if args.quiet else print
+    timeout = httpx.Timeout(
+        min(opts.timeout, READ_TIMEOUT_CAP), connect=min(opts.timeout, CONNECT_TIMEOUT_CAP)
+    )
+    log(f"smoke: {opts.base_url}, family {opts.family_id}, as {opts.email}")
+    try:
+        with httpx.Client(base_url=opts.base_url, timeout=timeout) as client:
+            result = run_smoke(client, opts, log=log)
+    except httpx.ConnectError:
+        print(REACH_MESSAGE.format(url=opts.base_url), file=sys.stderr)
+        return 2
+
+    names = ", ".join(result.events) or "no events"
+    if result.ok:
+        print(f"smoke OK: run {result.run_id}, memory {result.memory_id}, {len(result.events)} events ({names})")
+        return 0
+    print(f"smoke FAILED: {result.message} (run {result.run_id or '-'}, events: {names})")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
