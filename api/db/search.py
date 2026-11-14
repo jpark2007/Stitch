@@ -1080,3 +1080,73 @@ def compose_answer(
         when = f" ({quote.year})" if quote.year is not None else ""
         lines.append(f"{who} remembers{when}: '{quote.text.strip()}'")
     return "\n".join(lines)
+
+
+# The /ask answer about the best match aims to stay under this many characters.
+BEST_ANSWER_CHARS = 300
+BEST_ANSWER_QUOTES = 2
+
+
+def _clip_text(text: str, limit: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: max(limit - 1, 0)].rstrip() + "…"
+
+
+def _join_names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def best_answer(
+    query: str,
+    candidate: Candidate | None,
+    confident: bool,
+    names: dict[str, str] | None = None,
+) -> str:
+    """The /ask answer in search mode: one short paragraph about the best memory only.
+
+    Its title and year, who tells it, and its one or two quote sentences most relevant to
+    the query (quotes from other memories are never used). Not confident, it is phrased as
+    the closest page in the book rather than the answer. Aims at BEST_ANSWER_CHARS.
+    NO_STORY when there is no candidate. Deterministic, no model.
+    """
+    if candidate is None:
+        return NO_STORY
+    names = names or {}
+
+    def who(person_id: str | None) -> str:
+        return names.get(person_id or "") or "Someone in the family"
+
+    title = _clip_text(candidate.title, 80)
+    when = f" ({candidate.year})" if candidate.year is not None else ""
+    if title:
+        head = f'The {"page" if confident else "closest page"} is "{title}"{when}.'
+    else:
+        head = f"The {'page' if confident else 'closest page'} has no title yet{when}."
+
+    wanted = set(_tokens(query))
+    quotes = [q for q in candidate.quotes if q.text and q.text.strip()]
+    # Most relevant first (shared words with the query), telling order on ties.
+    ranked = sorted(enumerate(quotes), key=lambda iq: (-len(wanted & set(_tokens(iq[1].text))), iq[0]))
+    chosen = [q for _, q in ranked[:BEST_ANSWER_QUOTES]]
+
+    tellers = [who(t) for t in dict.fromkeys(candidate.teller_ids or [q.author_id for q in quotes])]
+    quoted = {who(q.author_id) for q in chosen}
+    if not chosen:
+        if tellers:
+            return f"{head[:-1]}, told by {_join_names(tellers)}, but no one has said more about it yet."
+        return f"{head} No one has told it in words yet."
+    if set(tellers) - quoted:
+        head = f"{head[:-1]}, told by {_join_names(tellers)}."
+
+    parts = [head]
+    first_speaker = who(chosen[0].author_id)
+    for index, quote in enumerate(chosen):
+        speaker = who(quote.author_id)
+        verb = "adds" if index and speaker == first_speaker else "remembers"
+        prefix = f" {speaker} {verb}: '"
+        room = BEST_ANSWER_CHARS - len("".join(parts)) - len(prefix) - 1
+        text = " ".join(quote.text.split())
+        if index and len(text) > room:
+            break  # a second quote only when it fits whole
+        parts.append(f"{prefix}{_clip_text(text, max(room, 60))}'")
+    return "".join(parts)

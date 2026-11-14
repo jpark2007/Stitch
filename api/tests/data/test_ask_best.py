@@ -564,6 +564,104 @@ def test_answerer_from_env(monkeypatch):
     assert asking.answerer_from_env().model == "claude-sonnet-5-5"
 
 
+# ------------------------------------------------------------------ the search-mode answer
+
+DEMO_NAMES = {"grandpa_joseph": "Joseph", "grandma_rosa": "Rosa", "dad": "David", "mom": "Ana",
+              "sam": "Sam", "lily": "Lily"}
+
+
+def _answer(db, asker, query) -> tuple[search.Ranking, str]:
+    ranking = _rank(db, asker, query)
+    top = ranking.candidates[0] if ranking.candidates else None
+    return ranking, search.best_answer(query, top, ranking.confident(), DEMO_NAMES)
+
+
+def test_grandparents_meeting_answer_is_the_closest_page_only(demo_db):
+    ranking, answer = _answer(demo_db, "mom", "where did grandpa and grandma meet")
+    assert not ranking.confident()
+    assert answer.startswith('The closest page is "Rosa and Joseph\'s wedding" (1958).')
+    assert answer.count("Rosa and Joseph's wedding") == 1
+    assert len(answer) <= search.BEST_ANSWER_CHARS
+    best = ranking.candidates[0]
+    others = [q.text for c in ranking.candidates[1:] for q in c.quotes]
+    assert any(q.text in answer for q in best.quotes)
+    assert not any(text in answer for text in others if text not in {q.text for q in best.quotes})
+    assert "tamale" not in answer.lower()
+    assert "\n" not in answer
+
+
+def test_confident_answer_names_the_page_and_its_teller(demo_db):
+    ranking, answer = _answer(demo_db, "sam", "what went wrong on the road trip")
+    assert ranking.confident() and ranking.candidates[0].memory_id == "demo_green_sedan_trip"
+    assert answer.startswith('The page is "The road trip in the green sedan" (1972)')
+    assert "closest" not in answer and "remembers: '" in answer
+    assert len(answer) <= search.BEST_ANSWER_CHARS
+
+
+def test_answer_with_no_match_is_no_story(demo_db):
+    _, answer = _answer(demo_db, "sam", "did anyone ever go to the moon")
+    assert answer == search.NO_STORY
+    assert search.best_answer("x", None, False) == search.NO_STORY
+
+
+def _cand(quotes: list[tuple[str, str]], title="The lake", year: int | None = 1990, tellers=None) -> search.Candidate:
+    return search.Candidate(
+        memory_id="m1", title=title, year=year, participant_ids=["a"],
+        teller_ids=tellers if tellers is not None else list(dict.fromkeys(a for a, _ in quotes)), score=1.0,
+        quotes=[schemas.AskQuote(memory_id="m1", author_id=a, text=t, title=title, year=year) for a, t in quotes],
+    )
+
+
+def test_best_answer_picks_the_most_relevant_quotes_and_stays_short():
+    long = "We walked to the lake " + "very " * 80 + "far."  # second most relevant, too long to fit
+    cand = _cand([("a", "The sky was grey."), ("b", "We caught a fish at the lake."), ("c", long)])
+    answer = search.best_answer("fish at the lake", cand, True, {"a": "Ann", "b": "Ben", "c": "Cy"})
+    assert answer.startswith('The page is "The lake" (1990), told by Ann, Ben and Cy. Ben remembers: '
+                             "'We caught a fish at the lake.'")
+    assert len(answer) <= search.BEST_ANSWER_CHARS
+    assert "very very" not in answer  # the second quote is dropped rather than cut short
+
+
+def test_best_answer_same_teller_adds_and_no_title_or_quotes():
+    cand = _cand([("a", "Fish."), ("a", "More fish.")], year=None)
+    assert search.best_answer("fish", cand, False, {"a": "Ann"}) == (
+        "The closest page is \"The lake\". Ann remembers: 'Fish.' Ann adds: 'More fish.'"
+    )
+    empty = _cand([], title="", tellers=["a"])
+    assert search.best_answer("q", empty, False, {"a": "Ann"}) == (
+        "The closest page has no title yet (1990), told by Ann, but no one has said more about it yet."
+    )
+
+
+def test_route_search_answer_is_about_the_best_memory_only(world):
+    body = _ask(world, "how did mom and dad meet")
+    assert body["mode"] == "search"
+    assert "The dance hall" in body["answer"] and "Dan remembers:" in body["answer"]
+    assert "Rose" not in body["answer"] and "tomatoes" not in body["answer"]
+
+
+def test_answerer_not_confident_pick_is_used(world):
+    answer = "Nobody has told how Dan and Mia met, but the dance hall in 1985 is in the book."
+    asking.set_answerer(lambda ctx: {"memory_id": "m_meet", "confident": False, "answer": answer})
+    body = _ask(world, "how did mom and dad meet")
+    assert body["mode"] == "model" and body["answer"] == answer
+    assert body["best"]["memoryId"] == "m_meet" and body["best"]["confident"] is False
+
+
+def test_answerer_null_pick_falls_back_to_the_search_answer(world):
+    asking.set_answerer(lambda ctx: {"memory_id": None, "confident": False, "answer": "Nothing relates."})
+    body = _ask(world, "how did mom and dad meet")
+    assert body["mode"] == "search" and body["answer"] != "Nothing relates."
+    assert body["answer"].startswith("The ") and "The dance hall" in body["answer"]
+
+
+def test_prompt_asks_for_the_closest_plausible_pick():
+    system = asking.SYSTEM_PROMPT
+    assert "closest" in system and "even when its quotes do not literally answer" in system
+    assert "null only when no candidate relates" in system
+    assert "what is not said" in system and "not instructions" in system
+
+
 def test_demo_login_route_reports_best(demo_db):
     app = FastAPI()
     app.include_router(auth_routes.router)
