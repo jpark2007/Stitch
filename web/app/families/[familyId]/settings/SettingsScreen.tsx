@@ -6,7 +6,7 @@
 // routes GET /families/{fid}, GET /families/{fid}/tree, POST and DELETE
 // /families/{fid}/invites and DELETE /families/{fid}/members/{userId}.
 import { useParams, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { roleLabel } from "@/components/flow/accountForms";
 import { Button, ButtonLink, FOCUS_RING } from "@/components/flow/Button";
@@ -21,7 +21,9 @@ import { PaperCard } from "@/components/flow/PaperCard";
 import { SessionGate, useSession } from "@/components/flow/SessionGate";
 import { hrefs, rememberFamily } from "@/components/flow/session";
 import {
+  addRelativeHref,
   findFamily,
+  inviteAskLine,
   isWelcome,
   settingsLoadError,
   type SettingsLoad,
@@ -97,6 +99,20 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [retrying, setRetrying] = useState(false);
+  // After "Try again": back on the button if it failed again, else on the
+  // page's content, so keyboard and screen reader users aren't dropped at the top.
+  const retryRef = useRef<HTMLButtonElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const focusAfterRetry = useRef(false);
+
+  useEffect(() => {
+    if (!focusAfterRetry.current || retrying) return;
+    const el = load.kind === "ready" ? contentRef.current : load.kind === "error" ? retryRef.current : null;
+    if (el) {
+      el.focus();
+      focusAfterRetry.current = false;
+    }
+  }, [load, retrying]);
 
   useEffect(() => {
     let live = true;
@@ -124,6 +140,7 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
   }, [api, fid, refresh, attempt]);
 
   const retry = useCallback(() => {
+    focusAfterRetry.current = true;
     setRetrying(true);
     setAttempt((n) => n + 1);
   }, []);
@@ -161,7 +178,7 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
   const name = load.kind === "ready" ? load.family.name || summary.name : summary.name;
   const lede = welcome
     ? isAdmin
-      ? "Your family is started. Send the link below to everyone you want in it."
+      ? "Your family is started. Make an invite link to bring everyone else in."
       : "You’re in. Here’s who else is here."
     : "Who’s in the family, and how to bring everyone else in.";
 
@@ -171,7 +188,7 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
       <PaperCard className="flex flex-col gap-5">
         <FormError title="We couldn’t open this family’s settings" message={load.message} />
         <div>
-          <Button onClick={retry} busy={retrying} busyLabel="Trying again…">
+          <Button ref={retryRef} onClick={retry} busy={retrying} busyLabel="Trying again…">
             Try again
           </Button>
         </div>
@@ -182,7 +199,7 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
   } else {
     const rows = memberRows(load.family.members ?? [], load.tree.people, me.user.id, isAdmin);
     body = (
-      <div className="flex flex-col gap-8">
+      <div ref={contentRef} tabIndex={-1} className="flex flex-col gap-8 focus:outline-none">
         {isAdmin ? (
           <InviteLinkCard
             invite={pickActiveInvite(load.family.invites, load.now)}
@@ -208,29 +225,22 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
 
 /** For members: the invite link is an admin's to share; name who to ask. */
 function InviteNote(props: { rows: MemberRow[] }) {
-  const admins = props.rows
-    .filter((r) => r.role === "admin" && !r.isYou && r.personId)
-    .map((r) => r.name);
-  const ask = admins.length ? `Ask ${listOf(admins)} to share it with them.` : "Ask an admin to share it with them.";
   return (
     <section aria-labelledby="invite-note-heading">
       <h2 id="invite-note-heading" className="font-display text-[1.25rem] leading-tight text-ink">
-        Invite link
+        Invite your family
       </h2>
-      <p className="mt-2 text-[0.9375rem] leading-relaxed text-pretty text-ink-soft">
-        Want someone else in the family? An admin can send them the invite link. {ask}
+      <p className="mt-2 text-[0.9375rem] leading-relaxed text-pretty break-words text-ink-soft">
+        Want someone else in the family? {inviteAskLine(props.rows)}
       </p>
     </section>
   );
 }
 
-/** "David", "David and Rosa", "David, Rosa and Luis". */
-function listOf(names: string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-}
-
-/** The quiet bottom of the page: switch family, add a memory, start another, sign out. */
+/**
+ * The quiet bottom of the page: switch family; add a memory, a relative or
+ * another family; then who is signed in, with Sign out beside it.
+ */
 function SettingsFooter(props: { fid: string; role: FamilySummary["role"] }) {
   const { fid, role } = props;
   const { me, signOut } = useSession();
@@ -252,30 +262,39 @@ function SettingsFooter(props: { fid: string; role: FamilySummary["role"] }) {
     <div className="mt-10 flex flex-col gap-8 border-t border-dashed border-rule pt-8">
       <FamilySwitcher families={me.families} currentId={fid} hrefFor={hrefs.settings} />
 
-      <div className="flex flex-col gap-3">
-        <p className="text-[0.9375rem] leading-relaxed text-ink-soft">
-          Signed in as <span className="font-medium text-ink">{me.user.name || me.user.email}</span>
-          {me.user.name ? <span className="break-all"> ({me.user.email})</span> : null}, {roleLabel(role).toLowerCase()} of
-          this family.
-        </p>
+      <div className="flex flex-col gap-4">
         <nav aria-label="More" className="-ml-3 flex flex-wrap items-center gap-x-1 gap-y-1">
           <ButtonLink variant="quiet" href={hrefs.add({ familyId: fid })}>
             Add a memory
           </ButtonLink>
+          <ButtonLink variant="quiet" href={addRelativeHref(fid)}>
+            Add a relative
+          </ButtonLink>
           <ButtonLink variant="quiet" href={hrefs.newFamily()}>
             Start another family
           </ButtonLink>
-          <button
-            type="button"
-            disabled={signingOut}
-            aria-busy={signingOut || undefined}
-            onClick={onSignOut}
-            className={QUIET_ACTION}
-          >
-            Sign out
-          </button>
         </nav>
-        {error ? <FormError message={error} /> : null}
+
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+            <p className="min-w-0 text-[0.9375rem] leading-relaxed text-ink-soft">
+              Signed in as <span className="font-medium text-ink">{me.user.name || me.user.email}</span>
+              {/* overflow-wrap:anywhere breaks a long email only when it can't fit, never mid-word by default. */}
+              {me.user.name ? <span className="[overflow-wrap:anywhere]"> ({me.user.email})</span> : null},{" "}
+              {roleLabel(role).toLowerCase()} of this family.
+            </p>
+            <button
+              type="button"
+              disabled={signingOut}
+              aria-busy={signingOut || undefined}
+              onClick={onSignOut}
+              className={`-ml-3 shrink-0 self-start sm:-mr-3 sm:ml-0 sm:self-auto ${QUIET_ACTION}`}
+            >
+              {signingOut ? "Signing out…" : "Sign out"}
+            </button>
+          </div>
+          {error ? <FormError message={error} /> : null}
+        </div>
       </div>
     </div>
   );
