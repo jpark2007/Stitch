@@ -15,6 +15,10 @@ What it gives a sweep or demo script:
 - shot(): numbered full-page screenshots under <out_dir>/shots/.
 - SeamLog: one line per step (ok or not, who owns the fix), written to seams.json and
   printed as an aligned table.
+- For sweep scripts: VIEWPORTS, sweep_args() (the shared CLI), sweep_out_dir(),
+  sweep_modes(), wait_port_free(), expected_noise() and app_problems() (browser problems
+  that are the app's, not Chromium's), mock_faults_script() (arm the mock backend's
+  injected faults before a page loads) and finish() (write seams.json, pick the exit code).
 
 Nothing here touches the network beyond localhost, and nothing reads API keys: the API
 gets an allowlisted environment plus api_env(), which never forwards credentials.
@@ -23,6 +27,7 @@ See README.md next to this file.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -575,3 +580,149 @@ class SeamLog:
         path.write_text(json.dumps(self.to_json(), indent=2) + "\n")
         print(self.table(), flush=True)
         return path
+
+
+# --------------------------------------------------------------------------- sweeps
+
+VIEWPORTS: dict[str, tuple[int, int]] = {"desktop": (1280, 900), "phone": (390, 844)}
+"""The two window sizes every sweep walks, as (width, height) in CSS pixels."""
+
+SWEEP_MODES: tuple[str, ...] = ("mock", "real", "both")
+
+
+def sweep_args(description: str, argv: list[str] | None = None) -> argparse.Namespace:
+    """The CLI every sweep script shares. `argv` defaults to sys.argv[1:].
+
+    --mode mock|real|both (default both), --headed, --out DIR, --api-port N, --web-port N.
+    `out` is a Path or None (see sweep_out_dir); the ports are ints or None (free ones).
+    """
+    parser = argparse.ArgumentParser(prog=Path(sys.argv[0]).name or None, description=description)
+    parser.add_argument(
+        "--mode",
+        choices=SWEEP_MODES,
+        default="both",
+        help="mock: the in-browser mock backend (NEXT_PUBLIC_API_MOCK=1); real: the offline API "
+        "(seed.serve); both: mock, then real (default %(default)s)",
+    )
+    parser.add_argument("--headed", action="store_true", help="show the browser window")
+    parser.add_argument(
+        "--out", type=Path, default=None, help="where seams.json, shots/ and the logs go (default: a new temp dir)"
+    )
+    parser.add_argument("--api-port", type=int, default=None, help="API port (default: a free one)")
+    parser.add_argument("--web-port", type=int, default=None, help="web port (default: a free one)")
+    return parser.parse_args(argv)
+
+
+def sweep_modes(mode: str) -> list[bool]:
+    """--mode as the `mock` flags for run_stack, in run order: both is mock, then real."""
+    if mode not in SWEEP_MODES:
+        raise ValueError(f"mode must be one of {', '.join(SWEEP_MODES)}, not {mode!r}")
+    return {"mock": [True], "real": [False], "both": [True, False]}[mode]
+
+
+def sweep_out_dir(out: Path | None, prefix: str = "stitch-sweep-") -> Path:
+    """`out` (made if missing), or a new temp dir: a sweep never writes inside the repo by default."""
+    path = Path(out).resolve() if out is not None else Path(tempfile.mkdtemp(prefix=prefix))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def wait_port_free(port: int | None, timeout: float = 30.0) -> bool:
+    """Wait until nothing listens on localhost:port (a stack that just stopped). True when free."""
+    if port is None:
+        return True
+    end = time.monotonic() + timeout
+    while port_in_use(port):
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.25)
+    return True
+
+
+# Chromium logs every 4xx answer to a fetch as "Failed to load resource: the server
+# responded with a status of 4xx (...)". The page handles those (a 401 on a wrong
+# password, a 409 on a taken email); they are not app errors.
+_NOISE_4XX = re.compile(
+    r"\bconsole\.error at \S+: Failed to load resource: the server responded with a status of 4\d\d\b"
+)
+# next/link prefetches a route's RSC payload (?_rsc=...) and cancels it when the page
+# moves on or the link leaves the screen.
+_NOISE_RSC = re.compile(r"\brequestfailed at \S+: GET \S*[?&]_rsc=\S* net::ERR_ABORTED\b")
+
+
+def expected_noise(problem: str) -> bool:
+    """True for a PageWatch problem line that is Chromium's noise, not the app's error.
+
+    That is a "Failed to load resource ... status of 4xx" console line, or a
+    requestfailed line for an aborted RSC prefetch (GET ...?_rsc=... net::ERR_ABORTED).
+    """
+    return bool(_NOISE_4XX.search(problem) or _NOISE_RSC.search(problem))
+
+
+def app_problems(watch: PageWatch, mark: int = 0) -> list[str]:
+    """The problems `watch` collected since `mark`, minus expected_noise()."""
+    return [p for p in watch.since(mark) if not expected_noise(p)]
+
+
+def finish(seams: SeamLog, out_dir: Path) -> int:
+    """Write seams.json (and print the table); 1 when a 'pages' or 'api' seam failed, else 0.
+
+    Ethan's seams are reported, never failed.
+    """
+    seams.write(out_dir)
+    return 1 if seams.failed("pages") or seams.failed("api") else 0
+
+
+_FAULT_KEYS: frozenset[str] = frozenset({"method", "path", "status", "detail", "network", "delayMs", "times"})
+
+
+def _check_fault(fault: Any) -> dict[str, Any]:
+    if not isinstance(fault, dict):
+        raise ValueError(f"a fault is a dict, not {type(fault).__name__}")
+    unknown = sorted(set(fault) - _FAULT_KEYS)
+    if unknown:
+        raise ValueError(f"unknown fault key(s) {', '.join(unknown)}; allowed: {', '.join(sorted(_FAULT_KEYS))}")
+    path = fault.get("path")
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise ValueError(f"a fault needs a 'path' that starts with '/', not {path!r}")
+    if "method" in fault and (not isinstance(fault["method"], str) or not fault["method"]):
+        raise ValueError("a fault's 'method' is a non-empty string")
+    status = fault.get("status")
+    if status is not None and (isinstance(status, bool) or not isinstance(status, int) or not 100 <= status <= 599):
+        raise ValueError(f"a fault's 'status' is an HTTP status, not {status!r}")
+    if "detail" in fault and not isinstance(fault["detail"], str):
+        raise ValueError("a fault's 'detail' is a string")
+    if "network" in fault and not isinstance(fault["network"], bool):
+        raise ValueError("a fault's 'network' is true or false")
+    delay = fault.get("delayMs")
+    if delay is not None and (isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay < 0):
+        raise ValueError(f"a fault's 'delayMs' is a number of milliseconds >= 0, not {delay!r}")
+    times = fault.get("times")
+    if times is not None and (isinstance(times, bool) or not isinstance(times, int) or times < 1):
+        raise ValueError(f"a fault's 'times' is a whole number >= 1, not {times!r}")
+    if status is None and not fault.get("network") and not delay:
+        raise ValueError("a fault does something: give it a 'status', 'network': True or a 'delayMs'")
+    return dict(fault)
+
+
+def mock_faults_script(faults: list[dict[str, Any]]) -> str:
+    """A page init script (page.add_init_script) that arms the mock backend's faults.
+
+    It appends `faults` to window.__stitchMockFaults, which the mock backend (mock mode,
+    components/flow/mock/index.ts) injects as soon as it is created. Each fault is
+    {method?, path, status?, detail?, network?, delayMs?, times?}: `path` is the API path
+    ("/auth/login", "/families/{fid}/invites"), `status` answers with that status (a 5xx
+    with no `detail` comes back as plain text), `network` fails like a dropped connection,
+    `delayMs` waits first, and `times` is how many requests it hits (default all). In
+    `next dev` strict mode runs effects twice, so a fault on a request made while the page
+    loads needs times >= 2. Raises ValueError for a malformed fault.
+    """
+    checked = [_check_fault(f) for f in faults]
+    payload = json.dumps(checked)  # ensure_ascii: no raw U+2028/9 to break the script
+    return (
+        "(() => {\n"
+        "  const w = window;\n"
+        "  const armed = Array.isArray(w.__stitchMockFaults) ? w.__stitchMockFaults : [];\n"
+        f"  w.__stitchMockFaults = armed.concat({payload});\n"
+        "})();\n"
+    )

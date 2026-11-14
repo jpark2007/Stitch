@@ -22,6 +22,7 @@ const {
   LOGIN_FIELDS,
   PASSWORD_HINT,
   SIGNUP_FIELDS,
+  adoptTypedValues,
   familyServerErrors,
   loginDraftAfterSuccess,
   roleLabel,
@@ -320,4 +321,49 @@ test("signupDraftAfterSuccess: a fresh object each time", () => {
   const a = signupDraftAfterSuccess();
   a.password = "leaked";
   assert.equal(signupDraftAfterSuccess().password, "");
+});
+
+// The browser sweep's case: /login is server-rendered in next dev, and an
+// email and password typed before hydration were in the DOM but not in state.
+test("adoptTypedValues: takes what was typed before hydration", () => {
+  const draft = { email: "", password: "" };
+  const next = adoptTypedValues(draft, { email: "ana@demo.stitch", password: "stitch-demo" });
+  assert.deepEqual(next, { email: "ana@demo.stitch", password: "stitch-demo" });
+  assert.deepEqual(draft, { email: "", password: "" }, "the draft is not mutated");
+});
+
+test("adoptTypedValues: nothing typed returns the same draft (no re-render)", () => {
+  const draft = { name: "Ana", email: "", password: "" };
+  assert.equal(adoptTypedValues(draft, { name: "Ana", email: "", password: "" }), draft);
+  assert.equal(adoptTypedValues(draft, {}), draft);
+});
+
+test("adoptTypedValues: only the fields that differ change", () => {
+  const draft = { familyName: "", yourName: "Ana Mao", born: "" };
+  const next = adoptTypedValues(draft, { familyName: "The Maos", yourName: "Ana Mao", born: "" });
+  assert.deepEqual(next, { familyName: "The Maos", yourName: "Ana Mao", born: "" });
+});
+
+test("adoptTypedValues: a cleared field is adopted as cleared", () => {
+  // The server rendered your name; you deleted it before the page woke up.
+  const next = adoptTypedValues({ familyName: "", yourName: "Ana Mao", born: "" }, { yourName: "" });
+  assert.equal(next.yourName, "");
+});
+
+test("adoptTypedValues: unknown keys, non-strings and inherited names are ignored", () => {
+  const draft = { email: "", password: "" };
+  const next = adoptTypedValues(draft, {
+    remember: "on",
+    email: 42,
+    password: null,
+    toString: "x",
+    __proto__: "y",
+  });
+  assert.equal(next, draft);
+  assert.equal(Object.getPrototypeOf(next), Object.prototype);
+});
+
+test("adoptTypedValues: spaces in a password are kept exactly", () => {
+  const next = adoptTypedValues({ email: "", password: "" }, { password: "  pass phrase  " });
+  assert.equal(next.password, "  pass phrase  ");
 });

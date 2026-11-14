@@ -1,6 +1,6 @@
 # Flow pages in a real browser
 
-Two things live here:
+What lives here:
 
 - `harness.py`: a small Python harness for driving the flow pages in headless Chromium. It
   starts the offline API and `next dev`, watches each page for console errors, failed
@@ -8,6 +8,8 @@ Two things live here:
   worked, what broke, and whose fix it is). Sweep scripts build on it.
 - `demo_path.py`: the weekend demo path, end to end, against the real API in offline mode,
   with two people in two separate browser contexts.
+- `sweep_accounts.py`, `sweep_join.py`: sweeps of one area each, every state at two window
+  sizes, in mock mode and against the offline API (see [Sweeps](#sweeps)).
 
 ## Prerequisites
 
@@ -102,6 +104,88 @@ These are not problems:
 Every other abort is reported, for example an event stream that the page cuts off while it
 stays on the same URL.
 
+## Sweeps
+
+A sweep walks one area of the flow pages through every state (empty, loading, validation
+errors, server errors, success) at two window sizes, in mock mode and against the offline
+API, and checks the form kit on the way. Each check is one seam with a screenshot.
+
+| Script | Pages | What it checks |
+|---|---|---|
+| `sweep_accounts.py` | `/login`, `/signup`, `/families/new` | See below. |
+| `sweep_join.py` | `/join/<code>` | The join page: the invite, claiming a person or adding yourself, relationships, and its errors. Its docstring lists every check. |
+
+```sh
+cd api && uv run python ../web/components/flow/e2e/sweep_accounts.py
+cd api && uv run python ../web/components/flow/e2e/sweep_join.py
+```
+
+Both take the same flags (`harness.sweep_args`):
+
+| Flag | What it does |
+|---|---|
+| `--mode mock\|real\|both` | `mock`: only `next dev` with `NEXT_PUBLIC_API_MOCK=1` (the in-browser mock backend). `real`: `seed.serve` (in-memory database, demo family) and `next dev`. `both` (default): mock, then real, one after the other on the same ports. |
+| `--headed` | Show the browser window. |
+| `--out DIR` | Write the results to `DIR` (default: a new `stitch-sweep-*` folder in the system temp dir, never inside the repo). |
+| `--api-port N`, `--web-port N` | Fixed ports (default: free ones). |
+
+Every page is walked at both `harness.VIEWPORTS`: `desktop` (1280 x 900) and `phone`
+(390 x 844), each person in a fresh browser context. A sweep leaves `seams.json` in the out
+dir (all modes together), and `<mode>/shots/NN-<mode>-<viewport>-<check>.png`,
+`<mode>/web.log` and `real/api.log`. The exit code is 1 when a `pages` or `api` seam
+failed, else 0. Without Chromium it prints the SKIP line and exits 0.
+
+Browser problems seen during a check (console errors, uncaught errors, failed requests,
+5xx answers) are their own seam, minus `harness.expected_noise()`: Chromium's
+"Failed to load resource ... status of 4xx" lines (a 401 on a wrong password, a 409 on a
+taken email are how the pages work) and aborted RSC prefetches (`GET ...?_rsc=...
+net::ERR_ABORTED`). The failures a check injects on purpose are not problems either.
+
+Server errors and slow answers are injected per request. Against the real API that is
+Playwright's `page.route` on the API URL. The mock backend never touches the network, so in
+mock mode they go through its fault injection (`window.__stitchMock.inject`, or
+`harness.mock_faults_script()` before the backend exists; added by PR #194). On a branch
+whose mock backend has no fault injection, those checks are recorded as `SKIPPED` (ok) and
+real mode covers them.
+
+### sweep_accounts.py
+
+On each page, in each mode and viewport:
+
+- **Renders**: the heading, every input found by its label (`get_by_label`), no unlabelled
+  input, the submit button enabled once the page is interactive.
+- **Tab order**: Tab from the top; the stops inside `<main>` run top to bottom (left to
+  right on one row), and the fields come in form order.
+- **Empty submit**: every required field gets `aria-invalid="true"` and an
+  `aria-describedby` that includes its message; focus moves to the first invalid field.
+- **Validation errors**: log in: a bad email. Sign up: a blank name, a bad email, a password
+  under `PASSWORD_MIN`. Start a family: an empty family name, an empty name, a year in the
+  future and before 1850. There is no confirm-password field, so nothing can mismatch.
+- **Enter submits**: the 401, the 409 and the bad year are sent by pressing Enter.
+- **Wrong password (401)** and **a taken email (409)**: a form-level message (not a generic
+  one), focus on it, the email kept.
+- **Server errors**: 500, 502, 503 and a dropped connection on `POST /auth/login`,
+  `/auth/signup` and `/families`: the message from `lib/api.ts`, focus on it, the button
+  enabled again, what was typed kept, still on the page.
+- **Pending**: the request is held (real) or delayed (mock) and the button double-clicked:
+  the button reads its busy label, is disabled with `aria-busy="true"`, the fields are
+  disabled, and exactly one request goes out (real: counted on the network; mock: a second
+  "sentinel" fault that a second request would use up).
+- **Success**: sign up goes to `/families/new` with your name filled in; starting a family
+  goes to its settings with `?welcome=1` (the invite step); log in as a seeded user goes home
+  (`/`). Seeded users: `david@demo.stitch` / `stitch-demo` (real), `david@example.com` /
+  `DEMO_PASSWORD` (mock).
+- **`?next=`**: a signed-out `/families/new` goes to `/login?next=%2Ffamilies%2Fnew` and back
+  after logging in; `/signup?next=/threads` lands on `/threads`; `//evil.example/x` and
+  `https://evil.example/` are ignored.
+- **Optional mark**: "The year you were born (optional)" is the field's accessible name, with
+  the space.
+- **Typed before hydration**: `next dev` renders `/login` and `/signup` on the server. The
+  sweep fills the fields the moment the document arrives, before React hydrates, and checks
+  the text is still there afterwards and the form sends it. Also with a stale signed-in hint
+  in `localStorage` (the page hides the form while it asks `/me`), and with Enter pressed at
+  once (the password must never end up in the URL through the browser's own GET submit).
+
 ## The harness's tests
 
 Offline, with no browser and no servers:
@@ -116,21 +200,34 @@ cd api && uv run pytest ../web/components/flow/e2e/test_harness.py -q
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import PageWatch, SeamLog, require_chromium, run_stack, shot
+from harness import (VIEWPORTS, PageWatch, SeamLog, app_problems, finish, require_chromium,
+                     run_stack, shot, sweep_args, sweep_modes, sweep_out_dir)
 
+args = sweep_args("Sweep the log in page.")
 require_chromium()
 from playwright.sync_api import sync_playwright
 
+out = sweep_out_dir(args.out)
 seams = SeamLog()
-with run_stack(mock=True) as stack, sync_playwright() as pw:   # mock=False for the real API
-    page = pw.chromium.launch().new_page()
-    watch = PageWatch()
-    watch.attach(page, "A")
-    page.goto(f"{stack.web_url}/login")
-    shot(page, stack, "login")
-    seams.record("login renders", not watch.problems, "\n".join(watch.problems))
-seams.write(stack.out_dir)
+for mock in sweep_modes(args.mode):
+    mode = "mock" if mock else "real"
+    with run_stack(mock=mock, web_port=args.web_port, api_port=args.api_port,
+                   out_dir=out / mode) as stack, sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=not args.headed)
+        for view, (width, height) in VIEWPORTS.items():
+            page = browser.new_context(viewport={"width": width, "height": height}).new_page()
+            watch = PageWatch()
+            watch.attach(page, f"{mode}/{view}")
+            page.goto(f"{stack.web_url}/login")
+            shot(page, stack, f"{mode}-{view}-login")
+            problems = app_problems(watch)
+            seams.record(f"[{mode}/{view}] login renders", not problems, "\n".join(problems))
+        browser.close()
+raise SystemExit(finish(seams, out))
 ```
+
+With `--mode both` the second stack reuses the first one's ports: wait for them with
+`wait_port_free()` first (`sweep_accounts.py` does).
 
 Drive pages through roles, labels and text only (`get_by_role`, `get_by_label`,
 `get_by_text`); never add test ids. With `cacheComponents` on, a page you navigated away from

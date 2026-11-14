@@ -13,13 +13,19 @@
 // form is swapped for signupDraftAfterSuccess, which empties name and email
 // too. A half-typed name and email survive a detour to /login and back; a
 // password never does, and nothing survives a successful sign up.
+//
+// next dev renders this form on the server. What is typed before React takes
+// it over is kept (useTypedBeforeHydration), and Create account stays disabled
+// until then, so an early press never becomes the browser's own GET submit
+// with the password in the URL.
 import Link from "next/link";
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import type { SignupRequest } from "@/lib/types";
 import { isApiError } from "@/lib/api";
 import {
   PASSWORD_HINT,
   SIGNUP_FIELDS,
+  adoptTypedValues,
   serverErrorState,
   signupDraftAfterSuccess,
   toSignupRequest,
@@ -30,7 +36,7 @@ import {
 } from "./accountForms";
 import { Button, FOCUS_RING } from "./Button";
 import { TextField } from "./Field";
-import { FormError, focusFirstError } from "./FormError";
+import { FormError, focusFirstError, useHydrated, useTypedBeforeHydration } from "./FormError";
 import { PaperCard } from "./PaperCard";
 import type { FieldErrors } from "./validation";
 
@@ -58,6 +64,13 @@ export function SignupForm(props: {
   // Set before the call so a navigation that hides this form first still
   // finds it set.
   const sentRef = useRef(false);
+  const hydrated = useHydrated();
+
+  useTypedBeforeHydration(
+    formRef,
+    SIGNUP_FIELDS,
+    useCallback((typed: Partial<SignupDraft>) => setDraft((d) => adoptTypedValues(d, typed)), []),
+  );
 
   useEffect(() => {
     if (focusTick > 0) focusFirstError(formRef.current);
@@ -89,8 +102,9 @@ export function SignupForm(props: {
       return;
     }
 
-    setErrors({});
-    setFormError(null);
+    // The last try's messages stay (dimmed while busy) until this one answers.
+    // Removing them now would move the button up from under the pointer, and
+    // the second click of a double click would land on the link below it.
     setPending(true);
     sentRef.current = true;
     try {
@@ -160,7 +174,13 @@ export function SignupForm(props: {
 
         <div className="space-y-4">
           <FormError message={formError} />
-          <Button type="submit" busy={pending} busyLabel="Creating your account…" className="w-full">
+          <Button
+            type="submit"
+            disabled={!hydrated}
+            busy={pending}
+            busyLabel="Creating your account…"
+            className="w-full"
+          >
             Create account
           </Button>
         </div>

@@ -137,26 +137,42 @@ export function AuthScreen(props: { kind: AuthKind }) {
     [router, next],
   );
 
-  if (checking) return <AuthScreenFallback kind={kind} next={next} />;
-
+  // While checking, the form stays mounted but hidden behind the blank sheet:
+  // in next dev the server renders the form, and what someone typed into it
+  // before the check began (the forms adopt it on mount) must still be there
+  // when the server says "not signed in" and the form comes back.
   return (
     <FlowPage title={AUTH_TITLES[kind]} lede={authLede(kind, next)}>
-      {kind === "login" ? (
-        <>
-          {handoff ? <ReadyNotice /> : null}
-          {/* Keyed on the handoff so a /login already mounted (hidden) takes the email up. */}
-          <LoginForm
-            key={handoff ?? ""}
-            onSubmit={login}
-            signupHref={hrefs.signup(next)}
-            demo={demoCredentials()}
-            initialEmail={handoff ?? ""}
-          />
-        </>
-      ) : (
-        <SignupForm onSubmit={signup} loginHref={hrefs.login(next)} />
-      )}
+      {checking ? <BlankSheet kind={kind} /> : null}
+      <div hidden={checking}>
+        {kind === "login" ? (
+          <>
+            {handoff ? <ReadyNotice /> : null}
+            {/* Keyed on the handoff so a /login already mounted (hidden) takes the email up. */}
+            <LoginForm
+              key={handoff ?? ""}
+              onSubmit={login}
+              signupHref={hrefs.signup(next)}
+              demo={demoCredentials()}
+              initialEmail={handoff ?? ""}
+            />
+          </>
+        ) : (
+          <SignupForm onSubmit={signup} loginHref={hrefs.login(next)} />
+        )}
+      </div>
     </FlowPage>
+  );
+}
+
+/** A blank sheet roughly the form's height, while the form is not ready to show. */
+function BlankSheet(props: { kind: AuthKind }) {
+  return (
+    <div role="status" aria-busy="true">
+      <PaperCard className={props.kind === "login" ? "min-h-[17rem]" : "min-h-[24rem]"}>
+        <span className="sr-only">Loading the form…</span>
+      </PaperCard>
+    </div>
   );
 }
 
@@ -181,11 +197,7 @@ export function AuthScreenFallback(props: { kind: AuthKind; next?: string | null
   const { kind, next = null } = props;
   return (
     <FlowPage title={AUTH_TITLES[kind]} lede={authLede(kind, next)}>
-      <div role="status" aria-busy="true">
-        <PaperCard className={kind === "login" ? "min-h-[17rem]" : "min-h-[24rem]"}>
-          <span className="sr-only">Loading the form…</span>
-        </PaperCard>
-      </div>
+      <BlankSheet kind={kind} />
     </FlowPage>
   );
 }

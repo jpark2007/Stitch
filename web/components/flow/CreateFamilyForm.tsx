@@ -11,11 +11,12 @@
 // the page it navigated from stays mounted (hidden) with this form's state,
 // so the page clears it: NewFamilyScreen remounts this form with a new `key`
 // when it is shown again after a family was made (see freshForm.ts).
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { CreateFamilyRequest } from "@/lib/types";
 import { isApiError } from "@/lib/api";
 import {
   FAMILY_FIELDS,
+  adoptTypedValues,
   familyServerErrors,
   serverErrorState,
   toCreateFamilyRequest,
@@ -26,7 +27,7 @@ import {
 } from "./accountForms";
 import { Button } from "./Button";
 import { OptionalMark, TextField } from "./Field";
-import { FormError, focusFirstError } from "./FormError";
+import { FormError, focusFirstError, useTypedBeforeHydration } from "./FormError";
 import { PaperCard } from "./PaperCard";
 import type { FieldErrors } from "./validation";
 import { YearInput } from "./YearInput";
@@ -60,6 +61,15 @@ export function CreateFamilyForm(props: {
     if (draft.yourName === seenDefault) setDraft((d) => ({ ...d, yourName: defaultYourName }));
   }
 
+  // The page shows this form only once /me answers (SessionGate), so it is
+  // never in the server's HTML today; kept like the other account forms in
+  // case that changes.
+  useTypedBeforeHydration(
+    formRef,
+    FAMILY_FIELDS,
+    useCallback((typed: Partial<FamilyDraft>) => setDraft((d) => adoptTypedValues(d, typed)), []),
+  );
+
   useEffect(() => {
     if (focusTick > 0) focusFirstError(formRef.current);
   }, [focusTick]);
@@ -81,8 +91,8 @@ export function CreateFamilyForm(props: {
       return;
     }
 
-    setErrors({});
-    setFormError(null);
+    // The last try's messages stay (dimmed while busy) until this one answers,
+    // so the button does not move out from under the pointer mid double click.
     setPending(true);
     try {
       await onSubmit(toCreateFamilyRequest(draft));
