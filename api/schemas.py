@@ -30,6 +30,7 @@ PropSize = Literal[tuple(VOCABULARY["sizes"])]  # type: ignore[valid-type]
 PropSource = Literal["library", "generated", "photo"]
 QuestionStatus = Literal["open", "answered", "dismissed"]
 RunStatus = Literal["running", "waiting", "done", "error"]
+TellingChannel = Literal["web", "text", "voice"]
 
 
 # ---------------------------------------------------------------- users and families
@@ -175,6 +176,8 @@ class Telling(Model):
     text: str
     photo_ids: list[str] = Field(default_factory=list)
     created_at: datetime | None = None
+    audio_id: str | None = Field(default=None, description="Media id of the teller's own recording")
+    channel: TellingChannel | None = Field(default=None, description="How the telling arrived")
 
 
 class Memory(Model):
@@ -333,6 +336,10 @@ class SubmitMemoryFields(Model):
     title: str | None = None
     memory_id: str | None = Field(default=None, description="Set to add a second telling to an existing moment")
     participant_ids: list[str] = Field(default_factory=list)
+    audio_id: str | None = Field(
+        default=None, description="Media id of the teller's own recording (same family), saved on the telling"
+    )
+    channel: TellingChannel | None = Field(default=None, description="How the telling arrived, saved on the telling")
 
 
 class SubmitMemoryResponse(Model):
