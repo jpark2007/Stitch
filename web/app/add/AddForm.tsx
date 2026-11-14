@@ -75,9 +75,7 @@ import {
   FamilyLede,
   ledeWithFamily,
   LoadingSheet,
-  NEW_MEMORY_LEDE,
   Notice,
-  SECOND_TELLING_LEDE,
   sessionStore,
   type AskingFamily,
   type MomentHome,
@@ -353,7 +351,7 @@ function AddFormLoader(props: {
     return (
       <FlowPage
         title={memoryId ? "Add your telling" : "Add a memory"}
-        lede={ledeWithFamily(choice, memoryId ? SECOND_TELLING_LEDE : NEW_MEMORY_LEDE, true, momentHome)}
+        lede={ledeWithFamily(choice, undefined, true, momentHome)}
         width="wide"
         back={BACK}
       >
@@ -724,9 +722,12 @@ function AddFormReady(props: {
   });
   // The question a second telling from ?memoryId= answers, or the family
   // question picked for a new memory (shown as what is being answered).
+  // A picked note already shows itself pressed ("Answering this") in the
+  // list above the story, so the form repeats it only when that list is not
+  // on the page.
   let askedQuestion: string | null = null;
   if (base.kind === "second" && !picked) askedQuestion = base.question?.text ?? null;
-  else if (picked && !picked.moment) askedQuestion = picked.question.text;
+  else if (picked && !picked.moment && !area.showFamilyQuestions) askedQuestion = picked.question.text;
 
   const onSubmit = useCallback(
     async (fields: SubmitMemoryFields, photos: File[]) => {
@@ -749,33 +750,26 @@ function AddFormReady(props: {
     <FlowPage
       title={second ? "Add your telling" : "Add a memory"}
       lede={
+        // No lede: the story's placeholder carries the invitation. Only the
+        // family line (two or more families) and, for a second telling from a
+        // link, the way out to a new memory.
         <FamilyLede choice={choice} onSwitch={onSwitch} moment={momentHome} asking={askOthers ? asking : null}>
-          {second ? (
-            <>
-              {SECOND_TELLING_LEDE}
-              {base.kind === "second" && !picked ? (
-                <>
-                  {" "}
-                  <Link
-                    href={hrefs.add({ familyId: fid })}
-                    // The story typed so far goes along to the new memory.
-                    onClick={() => onSwitch(fid)}
-                    className={`rounded-paper font-semibold text-accent-deep underline decoration-1 underline-offset-[0.2em] hover:decoration-2 ${FOCUS_RING}`}
-                  >
-                    Tell a different story instead
-                  </Link>
-                </>
-              ) : null}
-            </>
-          ) : (
-            NEW_MEMORY_LEDE
-          )}
+          {second && base.kind === "second" && !picked ? (
+            <Link
+              href={hrefs.add({ familyId: fid })}
+              // The story typed so far goes along to the new memory.
+              onClick={() => onSwitch(fid)}
+              className={`rounded-paper text-[0.9375rem] font-medium text-accent-deep underline decoration-1 underline-offset-[0.2em] hover:decoration-2 ${FOCUS_RING}`}
+            >
+              Tell a different story instead
+            </Link>
+          ) : null}
         </FamilyLede>
       }
       back={BACK}
       width="wide"
     >
-      <div className="flex flex-col gap-7">
+      <div className="flex flex-col gap-9">
         {openRun ? (
           <Notice>
             {openRun.notice}{" "}

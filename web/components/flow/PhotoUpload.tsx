@@ -1,7 +1,8 @@
 "use client";
 
-// Add up to six photos to a memory: a paper drop area over a real (visually
-// hidden, still focusable) file input, with taped-photo thumbnails. Each
+// Add up to six photos to a memory: a quiet "Add photos" action over a real
+// (visually hidden, still focusable) file input, the whole field taking
+// dropped files, with plain square thumbnails. Each
 // thumbnail owns its object URL and revokes it when it unmounts, so removing
 // a photo or leaving the page never leaks, including under StrictMode. A
 // photo the browser cannot draw (HEIC outside Safari) shows a paper tile with
@@ -16,11 +17,8 @@ import {
   type ReactNode,
 } from "react";
 import { FOCUS_RING_WITHIN } from "./Button";
-import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS } from "./Field";
+import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS, FIELD_ROW_CLASS, FIELD_ROW_LABEL_CLASS } from "./Field";
 import { MAX_PHOTOS, acceptPhotos } from "./photos";
-
-// A gentle, fixed tilt per slot so the row looks hand-placed but stays tidy.
-const TILTS = [-2.5, 1.5, -1, 2.5, -1.5, 1];
 
 function dragHasFiles(e: DragEvent): boolean {
   return Array.from(e.dataTransfer?.types ?? []).includes("Files");
@@ -49,8 +47,13 @@ export function PhotoUpload(props: {
    * last pick ("already added", "too big") are about that pick, so they go.
    */
   attempt?: number;
+  /**
+   * "row": the label in a left column beside the action (the add-a-memory
+   * details), rather than above it. Default "stacked".
+   */
+  layout?: "stacked" | "row";
 }) {
-  const { label, files, onChange, hint, error, disabled, attempt = 0 } = props;
+  const { label, files, onChange, hint, error, disabled, attempt = 0, layout = "stacked" } = props;
   const uid = useId();
   const inputId = `${uid}-input`;
   const labelId = `${uid}-label`;
@@ -101,20 +104,20 @@ export function PhotoUpload(props: {
     onChange(next);
   }
 
-  function onDragOver(e: DragEvent<HTMLLabelElement>) {
+  function onDragOver(e: DragEvent<HTMLElement>) {
     if (disabled || !dragHasFiles(e)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
     if (!dragging) setDragging(true);
   }
 
-  function onDragLeave(e: DragEvent<HTMLLabelElement>) {
+  function onDragLeave(e: DragEvent<HTMLElement>) {
     const to = e.relatedTarget;
     if (to instanceof Node && e.currentTarget.contains(to)) return;
     setDragging(false);
   }
 
-  function onDrop(e: DragEvent<HTMLLabelElement>) {
+  function onDrop(e: DragEvent<HTMLElement>) {
     if (disabled || !dragHasFiles(e)) return;
     e.preventDefault();
     setDragging(false);
@@ -133,42 +136,45 @@ export function PhotoUpload(props: {
   const keys = fileKeys(files);
   const invalid = !!error || problems.length > 0;
 
-  return (
-    <div>
-      <div className="flex items-baseline justify-between gap-3">
-        <span id={labelId} className={FIELD_LABEL_CLASS}>
-          {label}
-        </span>
-        <span
-          id={countId}
-          aria-live="polite"
-          className="shrink-0 text-xs text-ink-soft tabular-nums"
-        >
-          {files.length} of {MAX_PHOTOS}
-          <span className="sr-only"> photos added</span>
-        </span>
-      </div>
+  const row = layout === "row";
+  // "2 of 6" once there are photos; before that only assistive tech hears it
+  // (the action says "up to 6").
+  const count = (
+    <span
+      id={countId}
+      aria-live="polite"
+      className={files.length > 0 ? "shrink-0 text-sm text-ink-soft tabular-nums" : "sr-only"}
+    >
+      {files.length} of {MAX_PHOTOS}
+      <span className="sr-only"> photos added</span>
+    </span>
+  );
+  const labelEl = (
+    <span id={labelId} className={row ? FIELD_ROW_LABEL_CLASS : FIELD_LABEL_CLASS}>
+      {label}
+    </span>
+  );
+
+  const body = (
+    <>
       {hint ? (
-        <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
+        <p id={hintId} className={`${row ? "" : "mt-0.5 "}${FIELD_HINT_CLASS}`}>
           {hint}
         </p>
       ) : null}
 
+      <div className={`flex flex-wrap items-center gap-x-4 ${row || !hint ? "" : "mt-1"}`}>
+      {/* The action is a quiet line of text over the real (visually hidden,
+          still focusable) file input. Photos can be dropped anywhere on the
+          whole field (see the wrapper). */}
       <label
         htmlFor={inputId}
-        onDragOver={onDragOver}
-        onDragEnter={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
         className={[
-          "relative mt-2 flex min-h-28 flex-col items-center justify-center gap-1 rounded-card border-2 border-dashed px-4 py-5 text-center shadow-paper transition-colors duration-150 ease-paper motion-reduce:transition-none",
+          "relative -ml-1 inline-flex min-h-11 items-center gap-2 rounded-paper px-1 text-[0.9375rem] font-semibold transition-colors duration-150 ease-paper motion-reduce:transition-none",
           FOCUS_RING_WITHIN,
-          disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
-          dragging
-            ? "border-accent bg-paper-deep"
-            : invalid
-              ? "border-[#9c3b2a] bg-paper-light"
-              : "border-rule bg-paper-light hover:border-accent",
+          disabled || full ? "cursor-not-allowed" : "cursor-pointer",
+          disabled ? "opacity-60" : "",
+          invalid ? "text-[#9c3b2a]" : full ? "text-ink-soft" : "text-accent-deep hover:underline hover:decoration-1 hover:underline-offset-[0.2em]",
         ].join(" ")}
       >
         <input
@@ -184,25 +190,23 @@ export function PhotoUpload(props: {
           aria-invalid={invalid ? true : undefined}
           className="sr-only"
         />
-        <PhotoIcon />
-        <span aria-hidden="true" className="text-sm text-ink-soft">
-          {dragging ? (
-            "Let go to add them"
-          ) : full ? (
-            "That’s six. Remove one to add another."
-          ) : (
-            <>
-              Drop photos here, or{" "}
-              <span className="font-medium text-accent-deep underline decoration-dotted underline-offset-4">
-                choose from your device
-              </span>
-            </>
-          )}
-        </span>
-        <span aria-hidden="true" className="text-xs text-ink-soft">
-          Up to {MAX_PHOTOS}, 10 MB each
+        <span aria-hidden="true">
+          {dragging
+            ? "Let go to add them"
+            : full
+              ? "That’s six. Remove one to add another."
+              : files.length > 0
+                ? "Add more"
+                : "Add photos"}
         </span>
       </label>
+      {count}
+      {files.length > 0 ? null : (
+        <span aria-hidden="true" className="text-sm text-ink-soft">
+          Up to {MAX_PHOTOS}, 10 MB each
+        </span>
+      )}
+      </div>
 
       {problems.length > 0 ? (
         <div id={problemsId} role="alert" className="mt-1.5 space-y-1">
@@ -222,13 +226,12 @@ export function PhotoUpload(props: {
       {files.length > 0 ? (
         <ul
           aria-label="Photos added"
-          className="mt-4 flex list-none flex-wrap gap-x-4 gap-y-6 p-0 pt-2 sm:gap-x-5"
+          className="mt-3 flex list-none flex-wrap gap-x-4 gap-y-4 p-0 pt-2"
         >
           {files.map((file, i) => (
             <li key={keys[i]}>
               <Thumb
                 file={file}
-                tilt={TILTS[i % TILTS.length]}
                 disabled={disabled}
                 onRemove={() => remove(i)}
                 registerButton={(el) => {
@@ -239,19 +242,41 @@ export function PhotoUpload(props: {
           ))}
         </ul>
       ) : null}
+    </>
+  );
+
+  // Photos can be dropped anywhere on the field, not only on the action.
+  const dropProps = {
+    onDragOver,
+    onDragEnter: onDragOver,
+    onDragLeave,
+    onDrop,
+  };
+  const dropRing = dragging ? "rounded-card outline-2 outline-offset-4 outline-dashed outline-accent" : "";
+
+  if (row) {
+    return (
+      <div {...dropProps} className={`${FIELD_ROW_CLASS} ${dropRing}`}>
+        {labelEl}
+        <div className="min-w-0">{body}</div>
+      </div>
+    );
+  }
+  return (
+    <div {...dropProps} className={dropRing || undefined}>
+      {labelEl}
+      {body}
     </div>
   );
 }
 
 function Thumb({
   file,
-  tilt,
   disabled,
   onRemove,
   registerButton,
 }: {
   file: File;
-  tilt: number;
   disabled?: boolean;
   onRemove(): void;
   registerButton(el: HTMLButtonElement | null): void;
@@ -273,16 +298,7 @@ function Thumb({
   }, [file]);
 
   return (
-    <figure
-      className="relative m-0 w-20 bg-paper-light p-1.5 pb-5 shadow-paper sm:w-24"
-      style={{ transform: `rotate(${tilt}deg)` }}
-    >
-      {/* Masking tape holding the photo down. */}
-      <span
-        aria-hidden="true"
-        className="absolute -top-2.5 left-1/2 h-4 w-12 bg-[#e9dcbd]/80 mix-blend-multiply"
-        style={{ transform: `translateX(-50%) rotate(${-tilt * 1.6}deg)` }}
-      />
+    <figure className="relative m-0 w-20 sm:w-24">
       {/* Local blob preview; next/image can't optimise object URLs. The
           caption below names the photo, so the image itself is decorative. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -290,18 +306,18 @@ function Thumb({
         ref={imgRef}
         alt=""
         onError={() => setUnreadable(true)}
-        className={`aspect-square w-full bg-paper-deep object-cover text-[0px] ${unreadable ? "hidden" : "block"}`}
+        className={`aspect-square w-full rounded-paper bg-paper-deep object-cover text-[0px] ${unreadable ? "hidden" : "block"}`}
       />
       {unreadable ? (
         <span
           aria-hidden="true"
-          className="flex aspect-square w-full flex-col items-center justify-center gap-0.5 bg-paper-deep text-center"
+          className="flex aspect-square w-full flex-col items-center justify-center gap-0.5 rounded-paper bg-paper-deep text-center"
         >
           <span className="font-display text-sm tracking-wide text-ink-soft">{photoKind(file)}</span>
           <span className="text-[10px] leading-tight text-ink-soft">no preview</span>
         </span>
       ) : null}
-      <figcaption className="mt-1 truncate text-center text-[11px] leading-tight text-ink-soft">
+      <figcaption className="mt-1.5 truncate text-xs leading-tight text-ink-soft">
         {file.name}
       </figcaption>
       <button
@@ -315,7 +331,7 @@ function Thumb({
         <span
           aria-hidden="true"
           // The kit focus ring, drawn on the visible 24px circle.
-          className="flex h-6 w-6 items-center justify-center rounded-full border border-rule bg-paper-light text-ink-soft shadow-[0_1px_2px_rgb(74_47_29/0.2)] transition-colors duration-150 ease-paper group-hover:border-accent group-hover:text-accent-deep group-focus-visible:outline-2 group-focus-visible:outline-offset-3 group-focus-visible:outline-dashed group-focus-visible:outline-accent group-disabled:opacity-60 motion-reduce:transition-none"
+          className="flex h-6 w-6 items-center justify-center rounded-full border border-rule bg-paper-light text-ink-soft transition-colors duration-150 ease-paper group-hover:border-accent group-hover:text-accent-deep group-focus-visible:outline-2 group-focus-visible:outline-offset-3 group-focus-visible:outline-dashed group-focus-visible:outline-accent group-disabled:opacity-60 motion-reduce:transition-none"
         >
           <svg viewBox="0 0 12 12" className="h-2.5 w-2.5">
             <path
@@ -338,22 +354,4 @@ function photoKind(file: File): string {
   if (ext && ext.length <= 5) return ext.toUpperCase();
   const sub = file.type.split("/")[1] ?? "";
   return sub ? sub.toUpperCase() : "Photo";
-}
-
-function PhotoIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 32 32"
-      className="mb-1 h-7 w-7 text-ink-faint"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinejoin="round"
-    >
-      <rect x="5" y="7" width="22" height="18" rx="1.5" transform="rotate(-4 16 16)" />
-      <path d="m8 22 6-6 4 4 3-3 4 4" strokeLinecap="round" transform="rotate(-4 16 16)" />
-      <circle cx="20.5" cy="12.5" r="1.8" transform="rotate(-4 16 16)" />
-    </svg>
-  );
 }

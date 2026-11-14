@@ -96,7 +96,7 @@ export function RelationshipPicker(props: {
           later.
         </p>
       ) : (
-        <div className="mt-2 grid gap-4 rounded-card border border-rule bg-paper-light p-4 shadow-paper">
+        <div className="mt-3 grid gap-5">
           <Group
             uid={`${uid}-parent`}
             title={`Parents (up to ${MAX_PARENTS})`}
@@ -116,7 +116,6 @@ export function RelationshipPicker(props: {
               {note}
             </p>
           ) : null}
-          <div aria-hidden="true" className="border-t border-dashed border-rule" />
           <Group
             uid={`${uid}-spouse`}
             title="Married to"
@@ -176,8 +175,8 @@ function Group(p: {
                   FOCUS_RING_WITHIN,
                   "has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60",
                   checked
-                    ? "border-ink-soft bg-paper-deep text-ink shadow-inset"
-                    : "border-rule bg-paper text-ink-soft hover:border-accent",
+                    ? "border-ink-soft/40 bg-paper-deep text-ink"
+                    : "border-rule bg-transparent text-ink-soft hover:border-ink-faint hover:text-ink",
                 ].join(" ")}
               >
                 <input

@@ -35,23 +35,23 @@ export function currentPath(): string {
 export function LoadingSheet(props: { label: string }) {
   return (
     <div role="status" aria-busy="true" aria-live="polite">
-      <PaperCard className="flex flex-col items-center gap-4 py-10 text-center sm:py-12">
+      <PaperCard className="flex flex-col items-start gap-3">
         <span
           aria-hidden="true"
-          className="block h-0 w-24 border-t-[1.5px] border-dashed border-rule motion-safe:animate-pulse"
+          className="block h-0 w-24 border-t-[1.5px] border-dashed border-ink-faint motion-safe:animate-pulse"
         />
-        <p className="font-display text-lg text-ink-soft">{props.label}</p>
+        <p className="text-base text-ink-soft">{props.label}</p>
       </PaperCard>
     </div>
   );
 }
 
-/** A gentle, non-alarming note: a slip with an accent edge. */
+/** A gentle, non-alarming note: quiet text with a thin accent edge. */
 export function Notice(props: { children: ReactNode }) {
   return (
     <p
       role="status"
-      className="min-w-0 rounded-paper border border-rule border-l-[3px] border-l-accent bg-paper-light px-4 py-3 text-[0.9375rem] leading-snug text-pretty break-words text-ink-soft"
+      className="min-w-0 border-l-2 border-accent py-0.5 pl-4 text-[0.9375rem] leading-snug text-pretty break-words text-ink-soft"
     >
       {props.children}
     </p>

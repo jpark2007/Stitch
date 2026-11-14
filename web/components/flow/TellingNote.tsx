@@ -46,7 +46,9 @@ export function TellingNote(props: {
   return (
     <section
       aria-labelledby={headingId}
-      className="relative min-w-0 rounded-paper border border-rule bg-paper-light px-5 pt-4 pb-4 text-ink shadow-paper sm:px-6"
+      // Quiet: what was sent sits on the page behind a thin accent edge, not
+      // on a sheet of its own, so the studio's sheet below is the one card.
+      className="relative min-w-0 border-l-2 border-accent py-0.5 pl-4 text-ink"
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h2
