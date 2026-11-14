@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { ApiClient, type Receipt } from "../src/bridge.ts";
 import { Authenticator, MAX_VOICE_BYTES, MAX_VOICE_BODY_BYTES, VOICE_TYPES, parseVoice } from "../src/protocol.ts";
@@ -91,6 +92,30 @@ test("fragmented streams retain exact bytes even when SDK reuses its buffer", as
     },
   }, { highWaterMark: 0 }) });
   assert.deepEqual(bytes, expected);
+});
+
+test("many tiny and empty chunks do not retain a deadline reaction per read", () => {
+  const moduleUrl = new URL("../src/voice.ts", import.meta.url).href;
+  // Measure live retention before download completion in a separate GC-enabled
+  // process. The old per-read Promise.race retained >20 MiB for these 100k reads.
+  const script = `
+    import { downloadVoice } from ${JSON.stringify(moduleUrl)};
+    global.gc();
+    const before = process.memoryUsage().heapUsed;
+    let n = 0, retained = 0;
+    const bytes = await downloadVoice({ mimeType: "audio/wav", stream: async () => new ReadableStream({
+      pull(c) {
+        if (n === 100000) { global.gc(); retained = process.memoryUsage().heapUsed - before; c.close(); return; }
+        c.enqueue(n++ % 2 ? Uint8Array.of(7) : new Uint8Array());
+      }
+    }, { highWaterMark: 0 }) });
+    process.stdout.write(JSON.stringify({ retained, length: bytes.length }));
+  `;
+  const result = spawnSync(process.execPath, ["--expose-gc", "--input-type=module", "-e", script], { encoding: "utf8", timeout: 10_000 });
+  assert.equal(result.status, 0, result.stderr);
+  const measured = JSON.parse(result.stdout);
+  assert.equal(measured.length, 50_000);
+  assert(measured.retained < 8 * 1024 * 1024, `Retained ${measured.retained} bytes for 100k fragmented reads`);
 });
 
 test("empty, invalid, unsupported and failed streams reject without provider details", async () => {
