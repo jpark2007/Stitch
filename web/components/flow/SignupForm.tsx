@@ -27,7 +27,7 @@ import {
   SIGNUP_FIELDS,
   adoptTypedValues,
   serverErrorState,
-  signupDraftAfterSuccess,
+  signupDraftOnHide,
   toSignupRequest,
   validateSignup,
   withoutError,
@@ -77,11 +77,14 @@ export function SignupForm(props: {
   }, [focusTick]);
 
   // Runs when Activity hides this form (and on unmount, where it is a no-op).
+  // Declared after useTypedBeforeHydration: in strict mode's simulated unmount
+  // this clear runs first and the re-run adoption then takes a password typed
+  // before hydration back from the DOM (see signupDraftOnHide).
   useLayoutEffect(() => {
     return () => {
       const sent = sentRef.current;
       sentRef.current = false;
-      setDraft((d) => (sent ? signupDraftAfterSuccess() : { ...d, password: "" }));
+      setDraft((d) => signupDraftOnHide(d, sent));
     };
   }, []);
 

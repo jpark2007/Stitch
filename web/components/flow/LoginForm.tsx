@@ -27,7 +27,7 @@ import { isApiError } from "@/lib/api";
 import {
   LOGIN_FIELDS,
   adoptTypedValues,
-  loginDraftAfterSuccess,
+  loginDraftOnHide,
   serverErrorState,
   toLoginRequest,
   validateLogin,
@@ -81,11 +81,14 @@ export function LoginForm(props: {
   }, [focusTick]);
 
   // Runs when Activity hides this form (and on unmount, where it is a no-op).
+  // Declared after useTypedBeforeHydration: in strict mode's simulated unmount
+  // this clear runs first and the re-run adoption then takes a password typed
+  // before hydration back from the DOM (see loginDraftOnHide).
   useLayoutEffect(() => {
     return () => {
       const sent = sentRef.current;
       sentRef.current = false;
-      setDraft((d) => (sent ? loginDraftAfterSuccess(d) : { ...d, password: "" }));
+      setDraft((d) => loginDraftOnHide(d, sent));
     };
   }, []);
 

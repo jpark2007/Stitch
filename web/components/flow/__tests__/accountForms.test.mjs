@@ -25,10 +25,12 @@ const {
   adoptTypedValues,
   familyServerErrors,
   loginDraftAfterSuccess,
+  loginDraftOnHide,
   roleLabel,
   serverErrorState,
   shouldShowSwitcher,
   signupDraftAfterSuccess,
+  signupDraftOnHide,
   toCreateFamilyRequest,
   toLoginRequest,
   toSignupRequest,
@@ -366,4 +368,77 @@ test("adoptTypedValues: unknown keys, non-strings and inherited names are ignore
 test("adoptTypedValues: spaces in a password are kept exactly", () => {
   const next = adoptTypedValues({ email: "", password: "" }, { password: "  pass phrase  " });
   assert.equal(next.password, "  pass phrase  ");
+});
+
+// ---- loginDraftOnHide / signupDraftOnHide -----------------------------------
+//
+// The forms run these from a layout effect cleanup: when Activity hides the
+// page, on unmount, and in strict mode's simulated unmount just after the first
+// mount, which React follows at once (same commit, DOM untouched) with
+// useTypedBeforeHydration adopting the controls' values again.
+
+test("loginDraftOnHide: a password typed before hydration is kept (strict mode's clear, then adoption)", () => {
+  const dom = { email: "ana@demo.stitch", password: "stitch-demo" };
+  const mounted = adoptTypedValues({ email: "", password: "" }, dom);
+  const simulatedUnmount = loginDraftOnHide(mounted, false);
+  assert.equal(simulatedUnmount.password, "");
+  // The re-run adoption reads the same, not yet re-rendered DOM.
+  assert.deepEqual(adoptTypedValues(simulatedUnmount, dom), dom);
+});
+
+test("loginDraftOnHide: hidden after use without sending, the password is cleared and stays cleared", () => {
+  const typed = { email: "ana@demo.stitch", password: "stitch-demo" };
+  const hidden = loginDraftOnHide(typed, false);
+  assert.deepEqual(hidden, { email: "ana@demo.stitch", password: "" });
+  assert.equal(typed.password, "stitch-demo", "the draft it was given is not changed");
+  // Shown again: the hidden form re-rendered from that state, so the DOM holds no password.
+  const dom = { email: hidden.email, password: hidden.password };
+  assert.equal(adoptTypedValues(hidden, dom), hidden);
+  assert.equal(adoptTypedValues(hidden, dom).password, "");
+});
+
+test("loginDraftOnHide: hidden after a successful send is loginDraftAfterSuccess", () => {
+  const draft = { email: "ana@demo.stitch", password: "stitch-demo" };
+  assert.deepEqual(loginDraftOnHide(draft, true), loginDraftAfterSuccess(draft));
+  assert.deepEqual(loginDraftOnHide(draft, true), { email: "ana@demo.stitch", password: "" });
+});
+
+test("loginDraftOnHide: an untouched or passwordless form is returned as is (no re-render)", () => {
+  const empty = { email: "", password: "" };
+  assert.equal(loginDraftOnHide(empty, false), empty);
+  const emailOnly = { email: "ana@demo.stitch", password: "" };
+  assert.equal(loginDraftOnHide(emailOnly, false), emailOnly);
+});
+
+test("loginDraftOnHide: no password survives a hide, whatever was typed or sent", () => {
+  for (const password of ["x", " ", "  pass phrase  ", "pässwörd"]) {
+    for (const sent of [false, true]) {
+      assert.equal(loginDraftOnHide({ email: "a@b.co", password }, sent).password, "");
+    }
+  }
+});
+
+test("signupDraftOnHide: a password typed before hydration is kept (strict mode's clear, then adoption)", () => {
+  const dom = { name: "Ana Mao", email: "ana@demo.stitch", password: "stitch-demo" };
+  const mounted = adoptTypedValues({ name: "", email: "", password: "" }, dom);
+  const simulatedUnmount = signupDraftOnHide(mounted, false);
+  assert.equal(simulatedUnmount.password, "");
+  assert.deepEqual(adoptTypedValues(simulatedUnmount, dom), dom);
+});
+
+test("signupDraftOnHide: hidden after use without sending keeps name and email, clears the password", () => {
+  const typed = { name: "Ana Mao", email: "ana@demo.stitch", password: "stitch-demo" };
+  const hidden = signupDraftOnHide(typed, false);
+  assert.deepEqual(hidden, { name: "Ana Mao", email: "ana@demo.stitch", password: "" });
+  assert.equal(adoptTypedValues(hidden, { ...hidden }).password, "");
+});
+
+test("signupDraftOnHide: hidden after a successful send is empty", () => {
+  const typed = { name: "Ana Mao", email: "ana@demo.stitch", password: "stitch-demo" };
+  assert.deepEqual(signupDraftOnHide(typed, true), signupDraftAfterSuccess());
+});
+
+test("signupDraftOnHide: nothing to clear returns the same draft", () => {
+  const draft = { name: "Ana", email: "", password: "" };
+  assert.equal(signupDraftOnHide(draft, false), draft);
 });
