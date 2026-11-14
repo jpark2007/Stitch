@@ -70,8 +70,13 @@ def _summary(db: Database, family: schemas.Family, user_id: str, person_id: str)
 
 
 def _undo_join(db: Database, family_id: str, user_id: str, was_member: bool) -> None:
-    """Take back a membership this request added, so a failed join leaves nothing behind."""
-    if was_member:
+    """Take back a membership this request added, so a failed join leaves nothing behind.
+
+    Not when the user is linked to a person here by now: a concurrent join by the same
+    user won (often the very reason this one failed with AlreadyClaimed), and removing
+    the membership would lock them out and unclaim the winner's person.
+    """
+    if was_member or people_db.get_person_for_user(db, family_id, user_id) is not None:
         return
     try:
         families_db.remove_member(db, family_id, user_id)

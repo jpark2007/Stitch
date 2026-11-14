@@ -151,6 +151,13 @@ def _create_index(
     would wrongly fail people_userId_familyId_unique. Only on mongomock, and only when
     the documents the filter selects really are unique, is the index registered anyway;
     mongomock does apply the filter on every later write. Real servers are untouched.
+
+    Registering it goes through mongomock's internal store (tested against mongomock
+    4.3). If a mongomock upgrade removes or changes that hook, the index is skipped with
+    a warning instead of crashing startup: db/people.py's post-insert check still keeps
+    one person per user per family, and tests/data/test_client.py fails loudly on the
+    missing index. This path only runs on mongomock with data already present; fake-DB
+    mode creates its indexes on an empty database and never reaches it.
     """
     try:
         coll.create_index(keys, name=name, **options)
@@ -160,8 +167,22 @@ def _create_index(
             raise
         if _has_duplicates(coll, keys, partial):
             raise
-        index: dict[str, Any] = {"key": list(keys), "unique": True, "partialFilterExpression": partial}
-        coll._store.create_index(name, index)  # type: ignore[attr-defined]  # mongomock only
+        _register_mongomock_index(coll, name, keys, partial)
+
+
+def _register_mongomock_index(
+    coll: Collection, name: str, keys: list[tuple[str, int]], partial: dict[str, Any]
+) -> None:
+    """Add a partial unique index to mongomock's index store without its creation check."""
+    index: dict[str, Any] = {"key": list(keys), "unique": True, "partialFilterExpression": partial}
+    register = getattr(getattr(coll, "_store", None), "create_index", None)
+    if not callable(register):
+        log.warning("mongomock has no index-store hook; index %s skipped", name)
+        return
+    try:
+        register(name, index)
+    except Exception:  # noqa: BLE001  # an internal API changed shape: degrade, never crash
+        log.warning("mongomock index-store hook failed; index %s skipped", name, exc_info=True)
 
 
 def _is_mongomock(coll: Collection) -> bool:

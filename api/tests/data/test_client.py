@@ -149,6 +149,23 @@ def test_people_unique_index_added_beside_the_old_non_unique_one(mdb):
     _assert_all_indexes(mdb)
 
 
+@pytest.mark.parametrize("hook", ["missing", "broken"])
+def test_mongomock_index_hook_change_degrades_with_a_warning(caplog, hook):
+    """If a mongomock upgrade drops or changes its internal index store, startup survives."""
+    from types import SimpleNamespace
+
+    def broken(*_a, **_kw):
+        raise TypeError("changed signature")
+
+    store = None if hook == "missing" else SimpleNamespace(create_index=broken)
+    name, keys, options = next(s for s in client.INDEXES["people"] if s[0] == "people_userId_familyId_unique")
+    with caplog.at_level("WARNING", logger="db.client"):
+        client._register_mongomock_index(
+            SimpleNamespace(_store=store), name, keys, options["partialFilterExpression"]
+        )
+    assert f"index {name} skipped" in caplog.text
+
+
 def test_people_unique_index_refuses_real_duplicates(mdb):
     """The mongomock creation workaround never hides a user already linked twice."""
     mdb.people.insert_many([
