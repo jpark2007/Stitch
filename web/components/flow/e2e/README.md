@@ -8,8 +8,12 @@ What lives here:
   worked, what broke, and whose fix it is). Sweep scripts build on it.
 - `demo_path.py`: the weekend demo path, end to end, against the real API in offline mode,
   with two people in two separate browser contexts.
-- `sweep_accounts.py`, `sweep_join.py`: sweeps of one area each, every state at two window
-  sizes, in mock mode and against the offline API (see [Sweeps](#sweeps)).
+- `sweep_accounts.py`, `sweep_join.py`, `sweep_add.py`, `sweep_run.py`, `sweep_settings.py`:
+  sweeps of one area each, every state at two window sizes, in mock mode and against the
+  offline API (see [Sweeps](#sweeps)). A sweep that is not on your branch yet is skipped by
+  `run_all.py`.
+- `run_all.py`: runs the demo path and every sweep one after another, then prints one
+  summary (see [Run everything](#run-everything)).
 
 ## Prerequisites
 
@@ -26,6 +30,41 @@ Without Chromium the scripts print
 `SKIP: Playwright Chromium is not installed (cd api && uv run playwright install chromium)`
 and exit 0.
 
+## Run everything
+
+The one command to run before a demo or a merge:
+
+```sh
+cd api && uv run python ../web/components/flow/e2e/run_all.py
+```
+
+| Flag | What it does |
+|---|---|
+| `--only demo,accounts,join,add,run,settings` | Run only these areas (default: every script found). |
+| `--mode mock\|real\|both` | Passed to the sweeps (default `both`). The demo path always runs against the offline API. |
+| `--out DIR` | Results root (default: a new `stitch-run-all-*` folder in the system temp dir). |
+| `--headed` | Show the browser windows. |
+| `--unit` | First run the web unit tests: `node --test "components/flow/__tests__/*.test.mjs" "components/agent/__tests__/*.test.mjs"` in `web/`. |
+
+It finds the scripts by file name next to it: `demo_path.py` is the area `demo`, and each
+`sweep_<area>.py` is the area `<area>`. An area named in `--only` with no script on your
+branch is skipped with a note. Each script runs in its own process on a fresh pair of free
+ports, writing into `<out>/<area>/` (its own `seams.json`, `shots/` and logs); the next one
+starts once those ports are free again. The demo path gets `--keep-going`, so its report
+covers every step.
+
+At the end it writes `<out>/summary.json`:
+
+```json
+{"runs": [{"area": "demo", "exit": 0, "seconds": 96.4,
+           "seams": {"total": 21, "ok": 19, "failed": 2, "failedByOwner": {"pages": 0, "ethan": 2, "api": 0}}}],
+ "failedByOwner": {"pages": 0, "ethan": 2, "api": 0}}
+```
+
+`seams` is that run's `seams.json` counts, or `null` (the unit tests, or a script that
+wrote none). It prints the same as a table. The exit code is 1 when any run exited
+non-zero, else 0; without Chromium it prints the SKIP line and exits 0.
+
 ## Run the demo path
 
 ```sh
@@ -41,17 +80,23 @@ It takes about a minute, most of it `next dev` compiling pages the first time.
 | `--join claim` | (default) A adds B as a relative first; B claims that person from the invite. |
 | `--join add-self` | B joins as someone new and says they are married to A. |
 | `--keep-going` | Run every step even after a flow-page failure (by default it stops at the first one). |
+| `--strict-ethan` | Also exit 1 when one of Ethan's pages has a seam (by default those are reported only). |
 | `--api-port N`, `--web-port N` | Fixed ports (default: free ones). The script fails with a clear message if one is busy. |
 
-The steps: A signs up and starts a family, makes an invite link (and, with `claim`, adds B
-as a relative). B opens the invite, creates an account, joins, and follows "See the family
-tree" home. A adds a story with a year, B as a participant and a photo, answers the
-follow-up question ("Who else was there that day?"), keeps the hymn books in the prop review
-and waits for the finished scene. The script checks over the API that the memory is in both
-books, opens `/add?memoryId=` as B (second telling by moment), then answers B's open question
-from `/add` (second telling by question), and checks B's telling and narration track on the
-memory. Last, it looks at where the finished flow leads: the scene link, the home page and
-B's book page.
+The steps:
+
+| Step | What it checks |
+|---|---|
+| 1-3 | A signs up, starts a family, makes an invite link. |
+| 4 | (`claim` only) A adds B as a relative, married to A. |
+| 5 | B opens the invite, creates an account, joins (claims B, or adds themselves married to A), and follows "Open the family tree" home. |
+| 6 | A adds a story with a year, B as a participant and a photo, answers the follow-up ("Who else was there that day?"), keeps the hymn books in the prop review and waits for the finished scene. "Open your page" must be `/memories/<id>?family=<fid>` with the family A just made: a missing or different `family` is a `pages` seam naming the exact href. |
+| 6b | A watches the scene: "Watch the scene" on the finished run must be `/render/<id>?family=<fid>` (else `pages`). The script follows it and waits up to 60 s for `<html data-stage-ready="1">` (or `window.__STITCH_READY__`). A stage that never gets ready is an `ethan` seam with a `REQUEST`, a screenshot and the page's browser problems (`harness.app_problems`). |
+| 7 | Over the API: the memory is in A's and B's books. |
+| 8a | B opens `/add?memoryId=`: second-telling mode with the moment's title and B's question, nothing sent. |
+| 8 | B picks the question on `/add` ("Someone asked you"). The moment's title must show on the note or in the second-telling header. B sends a telling; the finished run must link into the moment (`/memories/<id>?family=<fid>`) and home (`/`). |
+| 9 | Over the API: B's telling and narration track are on the memory. |
+| 10 | Where the finished flow leads: the scene link, the home page (the signed-in family, links into the flow) and B's book page are Ethan's; family settings and `/add` must each have a visible link to `/` (`pages`). |
 
 ## What it leaves behind
 
@@ -80,7 +125,7 @@ The same table is printed at the end, followed by every `REQUEST` for Ethan.
 |---|---|---|
 | `pages` | The flow pages (`app/(auth)`, `app/families`, `app/join`, `app/add`, `components/flow`, `components/agent`, `lib/api.ts`). | Yes (exit 1) |
 | `api` | The API returned the wrong data (a memory missing from a book, no narration track). | Yes (exit 1) |
-| `ethan` | Ethan's pages (`/`, `/people/[id]`, `/memories/[id]`). The detail starts with the exact `REQUEST` text to post. | No: reported only |
+| `ethan` | Ethan's pages (`/`, `/threads`, `/people/[id]`, `/memories/[id]`, `/render/[id]`). The detail starts with the exact `REQUEST` text to post. | No: reported only, unless `--strict-ethan` |
 
 A step that could not run because an earlier one failed is recorded as `not run: needs step(s) ...`.
 If the stack cannot start, or anything else goes wrong outside a step (a busy port, `npx`
@@ -114,13 +159,26 @@ API, and checks the form kit on the way. Each check is one seam with a screensho
 |---|---|---|
 | `sweep_accounts.py` | `/login`, `/signup`, `/families/new` | See below. |
 | `sweep_join.py` | `/join/<code>` | The join page: the invite, claiming a person or adding yourself, relationships, and its errors. Its docstring lists every check. |
+| `sweep_add.py` | `/add` | The add-a-memory page. Its docstring lists every check. |
+| `sweep_run.py` | `/add?run=` | A run under way and finished. Its docstring lists every check. |
+| `sweep_settings.py` | `/families/<fid>/settings` | Family settings. Its docstring lists every check. |
 
 ```sh
 cd api && uv run python ../web/components/flow/e2e/sweep_accounts.py
 cd api && uv run python ../web/components/flow/e2e/sweep_join.py
 ```
 
-Both take the same flags (`harness.sweep_args`):
+### The sweep CLI contract
+
+Every `sweep_*.py` keeps this contract, which `run_all.py` relies on:
+
+- it accepts `--mode mock|real|both`, `--headed`, `--out DIR`, `--api-port N` and
+  `--web-port N` (`harness.sweep_args`), and no required argument;
+- it writes `seams.json` (`harness.SeamLog`) into the `--out` dir;
+- it ends through `harness.finish`: exit 1 when a `pages` or `api` seam failed, else 0;
+- without Chromium it prints the SKIP line and exits 0 (`harness.require_chromium`).
+
+The flags (`harness.sweep_args`):
 
 | Flag | What it does |
 |---|---|
