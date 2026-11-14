@@ -32,6 +32,14 @@ export const hrefs = {
     if (o?.memoryId) params.push(`memoryId=${enc(o.memoryId)}`);
     return params.length ? `/add?${params.join("&")}` : "/add";
   },
+  /** Ask the family a question; `q` (trimmed) is the question, so a result can be shared and reloaded. */
+  ask: (o?: { familyId?: string | null; q?: string | null }): string => {
+    const params: string[] = [];
+    if (o?.familyId) params.push(`family=${enc(o.familyId)}`);
+    const q = typeof o?.q === "string" ? o.q.trim() : "";
+    if (q) params.push(`q=${enc(q)}`);
+    return params.length ? `/ask?${params.join("&")}` : "/ask";
+  },
   /** A moment's book page; with a family id, `?family=` tells it which family to load. */
   memory: (id: string, familyId?: string | null): string => `/memories/${enc(id)}${familyQuery(familyId)}`,
   /** A person's book; with a family id, `?family=` tells it which family to load. */

@@ -120,6 +120,7 @@ describe("hrefs", () => {
     for (const [name, fn] of Object.entries(hrefs)) assert.equal(typeof fn, "function", name);
     assert.deepEqual(Object.keys(hrefs).sort(), [
       "add",
+      "ask",
       "home",
       "join",
       "login",
