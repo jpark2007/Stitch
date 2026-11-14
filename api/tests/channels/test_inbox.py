@@ -254,11 +254,11 @@ def test_other_family_same_message_id_stays_separate(stack):
     assert set(db.channelMessages.distinct("familyId", {"kind": "inbound"})) == {"family-a", "family-b"}
 
 
-def test_colliding_stop_does_not_change_consent(stack):
+def test_colliding_stop_still_revokes_consent(stack):
     client, db = stack
     assert send(client).status_code == 202
-    assert send(client, envelope(text="STOP")).status_code == 409
-    assert db.contacts.find_one({"handle": "alice"})["status"] == "active"
+    assert send(client, envelope(text="STOP")).status_code == 202
+    assert db.contacts.find_one({"handle": "alice"})["status"] == "stopped"
 
 
 def test_stop_does_not_silently_truncate_multiple_families(stack):
