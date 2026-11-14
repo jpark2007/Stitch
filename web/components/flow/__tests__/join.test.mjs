@@ -24,6 +24,8 @@ const {
   needsRelationships,
   toJoinRequest,
   validateJoinChoice,
+  waitingPeople,
+  WAITING_SHOWN,
 } = await import("../join.ts");
 
 const UNCLAIMED = [
@@ -163,4 +165,29 @@ test("inviteHeading: a name that already reads as a family is kept", () => {
 
 test("inviteHeading: a blank name still reads well", () => {
   assert.equal(inviteHeading("  "), "You’re invited to a family’s book");
+});
+
+test("waitingPeople: oldest first, blank names dropped, input left alone", () => {
+  const input = [
+    { id: "sam", name: "Sam", born: 1994 },
+    { id: "blank", name: "  ", born: 1900 },
+    { id: "rosa", name: "Rosa", born: 1938 },
+    { id: "kid", name: "Kid" },
+  ];
+  const before = JSON.stringify(input);
+  const out = waitingPeople(input);
+  assert.deepEqual(out.people.map((p) => p.id), ["rosa", "sam", "kid"]);
+  assert.equal(out.more, 0);
+  assert.equal(JSON.stringify(input), before);
+});
+
+test("waitingPeople: caps the list with a count, but never hides just one", () => {
+  const many = Array.from({ length: WAITING_SHOWN + 3 }, (_, i) => ({ id: `p${i}`, name: `P${i}`, born: 1900 + i }));
+  const capped = waitingPeople(many);
+  assert.equal(capped.people.length, WAITING_SHOWN);
+  assert.equal(capped.more, 3);
+  const oneOver = many.slice(0, WAITING_SHOWN + 1);
+  assert.deepEqual(waitingPeople(oneOver), { people: oneOver, more: 0 });
+  assert.deepEqual(waitingPeople([]), { people: [], more: 0 });
+  assert.equal(waitingPeople(many, 2).people.length, 2);
 });

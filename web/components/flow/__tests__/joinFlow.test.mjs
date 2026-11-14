@@ -20,8 +20,23 @@ registerHooks({
 });
 
 const { ApiError } = await import("@/lib/api");
-const { addedSelf, familyPhrase, isGoneError, joinView, relationshipPeople, stepAfterJoin } =
-  await import("../joinFlow.ts");
+const {
+  addedSelf,
+  afterRecheck,
+  classifyJoinFailure,
+  familyPhrase,
+  firstName,
+  friendlyError,
+  goneCopy,
+  goneReason,
+  goneWayOut,
+  isGoneError,
+  joinView,
+  relationshipPeople,
+  SERVER_TROUBLE,
+  stepAfterJoin,
+  takenMessage,
+} = await import("../joinFlow.ts");
 
 const FID = "fam_riveras";
 const PREVIEW = {
@@ -259,5 +274,135 @@ describe("familyPhrase", () => {
     assert.equal(familyPhrase(""), "the family");
     assert.equal(familyPhrase("   "), "the family");
     assert.equal(familyPhrase("The"), "the family");
+  });
+});
+
+// ---- dead links ---------------------------------------------------------------
+
+describe("goneReason and goneCopy", () => {
+  test("a 404 is unknown: the API answers it for mistyped, revoked and expired codes alike", () => {
+    assert.equal(goneReason(new ApiError(404, "Invite not found or expired")), "unknown");
+    assert.equal(goneReason(new Error("boom")), "unknown");
+    assert.equal(goneReason(null), "unknown");
+  });
+
+  test("a 410 is expired, or revoked when it says the link was turned off", () => {
+    assert.equal(goneReason(new ApiError(410, "This invite has expired")), "expired");
+    assert.equal(goneReason(new ApiError(410)), "expired");
+    assert.equal(goneReason(new ApiError(410, "This invite was revoked")), "revoked");
+    assert.equal(goneReason(new ApiError(410, "An admin turned off this link")), "revoked");
+  });
+
+  test("each reason has its own title, and the unknown one names every cause", () => {
+    const titles = new Set(["unknown", "expired", "revoked"].map((r) => goneCopy(r).title));
+    assert.equal(titles.size, 3);
+    const unknown = goneCopy("unknown").body;
+    assert.match(unknown, /admin/);
+    assert.match(unknown, /two weeks/);
+    assert.match(goneCopy("expired").body, /two weeks/);
+    assert.match(goneCopy("revoked").title, /turned off/);
+  });
+});
+
+describe("goneWayOut", () => {
+  test("signed out: log in", () => {
+    assert.deepEqual(goneWayOut(null, "signed-out"), { label: "Log in", href: "/login" });
+  });
+
+  test("signed in with a family: home; with none: start one", () => {
+    assert.equal(goneWayOut(ME_OUTSIDER, "signed-in").href, "/");
+    assert.match(goneWayOut(ME_OUTSIDER, "signed-in").label, /family tree/);
+    assert.deepEqual(goneWayOut({ families: [] }, "signed-in"), {
+      label: "Start your own family",
+      href: "/families/new",
+    });
+  });
+
+  test("still loading or failed: plain home", () => {
+    assert.deepEqual(goneWayOut(null, "loading"), { label: "Go to Stitch", href: "/" });
+    assert.deepEqual(goneWayOut(null, "error"), { label: "Go to Stitch", href: "/" });
+  });
+});
+
+// ---- failures -----------------------------------------------------------------
+
+describe("friendlyError", () => {
+  test("4xx and lost connections keep the API's own sentence", () => {
+    assert.equal(friendlyError(new ApiError(400, "Pick up to 2 parents"), "fallback"), "Pick up to 2 parents");
+    const offline = new ApiError(0);
+    assert.equal(friendlyError(offline, "fallback"), offline.detail);
+    assert.notEqual(offline.detail, "fallback");
+  });
+
+  test("a 5xx never shows its bare 'Internal Server Error'", () => {
+    assert.equal(friendlyError(new ApiError(500, "Internal Server Error"), "fallback"), SERVER_TROUBLE);
+    assert.equal(friendlyError(new ApiError(503), "fallback"), SERVER_TROUBLE);
+  });
+
+  test("anything else is the fallback", () => {
+    assert.equal(friendlyError(new TypeError("Failed to fetch"), "fallback"), "fallback");
+    assert.equal(friendlyError(undefined, "fallback"), "fallback");
+  });
+});
+
+describe("classifyJoinFailure", () => {
+  const claim = { personId: "rosa" };
+  const add = { person: { name: "Nina", born: null } };
+
+  test("a 409 on a claim means someone claimed that person first", () => {
+    assert.equal(classifyJoinFailure(new ApiError(409, "Someone has already claimed this person"), claim), "taken");
+  });
+
+  test("a 409 when adding yourself is shown as it is", () => {
+    assert.equal(classifyJoinFailure(new ApiError(409, "You already have a person in this family"), add), "show");
+  });
+
+  test("404 and 410 look again: the link or the person may be gone", () => {
+    assert.equal(classifyJoinFailure(new ApiError(404, "Invite not found or expired"), claim), "recheck");
+    assert.equal(classifyJoinFailure(new ApiError(410), add), "recheck");
+  });
+
+  test("validation, server and network failures go to the form", () => {
+    assert.equal(classifyJoinFailure(new ApiError(422, "bad"), add), "show");
+    assert.equal(classifyJoinFailure(new ApiError(500), claim), "show");
+    assert.equal(classifyJoinFailure(new ApiError(0), claim), "show");
+    assert.equal(classifyJoinFailure(new Error("x"), claim), "show");
+  });
+});
+
+describe("takenMessage and firstName", () => {
+  test("names the person when known", () => {
+    assert.equal(
+      takenMessage("Rosa"),
+      "Rosa was just claimed by someone else. Pick another name, or add yourself.",
+    );
+    assert.equal(takenMessage("Rosa", true), "Rosa is no longer on the tree. Pick another name, or add yourself.");
+    assert.match(takenMessage(null), /^That person was just claimed/);
+    assert.match(takenMessage("  "), /^That person/);
+  });
+
+  test("firstName greets by the first word", () => {
+    assert.equal(firstName("Theo Rivera"), "Theo");
+    assert.equal(firstName("  Ana  "), "Ana");
+    assert.equal(firstName(""), "");
+    assert.equal(firstName(null), "");
+  });
+});
+
+describe("afterRecheck", () => {
+  const fresh = { unclaimedPeople: [{ id: "lily", name: "Lily", born: 1993 }] };
+
+  test("the picked person left the list: taken on a 409, removed on a 404", () => {
+    assert.equal(afterRecheck({ personId: "rosa" }, fresh, "taken"), "taken");
+    assert.equal(afterRecheck({ personId: "rosa" }, fresh, "recheck"), "removed");
+  });
+
+  test("still free: the server's own message (say, this account already has a person here)", () => {
+    assert.equal(afterRecheck({ personId: "lily" }, fresh, "taken"), "as-is");
+    assert.equal(afterRecheck({ personId: "lily" }, fresh, "recheck"), "as-is");
+  });
+
+  test("adding yourself never blames a pick", () => {
+    assert.equal(afterRecheck({ person: { name: "Nina", born: null } }, fresh, "recheck"), "as-is");
   });
 });
