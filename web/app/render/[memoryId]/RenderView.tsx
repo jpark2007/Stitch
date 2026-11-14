@@ -9,7 +9,9 @@ import { preloadCutouts } from "@/components/stage/cutout";
 import { EFFECT_KINDS, type EffectKind } from "@/components/stage/Effects";
 import { COVER_SPAN, Stage } from "@/components/stage/Stage";
 import { smootherstep } from "@/components/stage/timeline";
+import { SAMPLE_SCENES } from "@/components/stage/play/scene";
 import { DEMO_CUTOUTS, DemoDiorama, demoCamera, DEMO_OPEN_AT } from "./demo";
+import { TimelineView } from "./TimelineView";
 
 export interface RenderViewProps {
   memoryId: string;
@@ -23,6 +25,12 @@ export interface RenderViewProps {
   closeAt: number | null;
   /** Depth of field on. */
   dof?: boolean;
+  /** Timeline scenes: starting teller (?narrator). */
+  narrator?: string | null;
+  /** Timeline scenes: play on load (?autoplay, default true). */
+  autoplay?: boolean;
+  /** Timeline scenes: show the tabs and transport (?ui, default true). */
+  ui?: boolean;
 }
 
 /** The closed book, centred: the intro state a scrubbed ?open=0 starts from. */
@@ -38,7 +46,22 @@ function ReadyProbe() {
   return null;
 }
 
-export function RenderView({ memoryId, time, open, effect, closeAt, dof = false }: RenderViewProps) {
+export function RenderView(props: RenderViewProps) {
+  if (Object.hasOwn(SAMPLE_SCENES, props.memoryId)) {
+    return (
+      <TimelineView
+        sample={props.memoryId}
+        time={props.time}
+        narrator={props.narrator ?? null}
+        autoplay={props.autoplay ?? true}
+        ui={props.ui ?? true}
+      />
+    );
+  }
+  return <DioramaView {...props} />;
+}
+
+function DioramaView({ memoryId, time, open, effect, closeAt, dof = false }: RenderViewProps) {
   const demo = memoryId === "demo";
   const [ready, setReady] = useState(false);
 

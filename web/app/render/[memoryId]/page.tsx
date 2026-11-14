@@ -7,6 +7,12 @@
 //   /render/demo?effect=rain     swap the effect: confetti | steam | rain | smoke | none
 //   /render/demo?close=10        fold the set back down at 10 s (front pieces first)
 //   /render/demo?dof             soft depth of field focused on the camera target
+//   /render/hymn_books           the reference sample's compiled timeline, played end to
+//                                end: sets rising, puppets, props, camera, captions
+//   /render/hymn_books?t=6       freeze scene time at 6 s
+//   /render/hymn_books?narrator=mom   start with Mom's telling (a tab per teller switches)
+//   /render/hymn_books?autoplay=0     wait for play (default 1)
+//   /render/hymn_books?ui=0      hide the tabs and transport (captions stay)
 //   /render/<anything else>      an empty stage
 //
 // Once the first frames have rendered, <html data-stage-ready="1"> is set so a
@@ -37,6 +43,9 @@ async function RenderParams({ params, searchParams }: { params: Promise<{ memory
       effect={one(q.effect) ?? null}
       closeAt={num(q.close)}
       dof={q.dof !== undefined && one(q.dof) !== "0"}
+      narrator={one(q.narrator) ?? null}
+      autoplay={one(q.autoplay) !== "0"}
+      ui={one(q.ui) !== "0"}
     />
   );
 }
