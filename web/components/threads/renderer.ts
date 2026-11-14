@@ -415,30 +415,51 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
     // thread, clear of knots.
     const w = ctx.measureText(strand.person.name).width;
     const startX = pts[0];
-    let k = 0;
-    for (; k < n; k++) {
-      const x = pts[k * 2];
-      if (x < margin) continue;
-      if (x + w > layout.width - margin) {
-        k = n;
-        break;
-      }
-      if (Math.abs(pts[k * 2 + 1] - lanePx) > 2) continue;
-      // Level for the label's width?
-      let level = true;
+    const right = layout.width - margin;
+    // Does a label starting at x sit over level thread, clear of knots?
+    const fits = (k: number, x: number) => {
+      if (x < margin || x + w > right) return false;
+      if (Math.abs(pts[k * 2 + 1] - lanePx) > 2) return false;
       for (let j = k; j < n && pts[j * 2] < x + w; j += 4) {
-        if (Math.abs(pts[j * 2 + 1] - lanePx) > 6) {
-          level = false;
-          break;
-        }
+        if (Math.abs(pts[j * 2 + 1] - lanePx) > 6) return false;
       }
-      if (!level) continue;
-      if (geom.knots.some((h) => h && h.visible && h.x + h.r + 8 > x && h.x - h.r - 8 < x + w + 6 && Math.abs(h.y - lanePx) < h.r + 22)) continue;
-      break;
+      return !geom.knots.some(
+        (h) => h && h.visible && h.x + h.r + 8 > x && h.x - h.r - 8 < x + w + 6 && Math.abs(h.y - lanePx) < h.r + 22,
+      );
+    };
+    const lead = startX >= margin ? 6 : 0;
+    let x = -1;
+    let at = -1;
+    for (let k = 0; k < n && x < 0; k++) {
+      const px = Math.max(margin, pts[k * 2] + lead);
+      if (pts[k * 2] + w > right) break;
+      if (fits(k, px)) {
+        x = px;
+        at = k;
+      }
     }
-    if (k >= n) continue;
-    const x = Math.max(margin, pts[k * 2] + (startX >= margin ? 6 : 0));
-    const y = pts[k * 2 + 1] - w0 - 8;
+    // Nowhere after the start (a late thread near the right edge): sign the
+    // last level stretch instead, right-aligned.
+    for (let k = n - 1; k >= 0 && x < 0; k -= 2) {
+      const px = Math.min(pts[k * 2], right) - w;
+      let k0 = k;
+      while (k0 > 0 && pts[k0 * 2] > px) k0--;
+      if (pts[k0 * 2] < startX) break;
+      if (fits(k0, px)) {
+        x = px;
+        at = k0;
+      }
+    }
+    // Still nowhere (a thread still swinging as it ends): sign its end.
+    if (x < 0) {
+      const ex = pts[(n - 1) * 2];
+      if (ex < right - 4 && ex - w > margin) {
+        x = ex - w;
+        at = n - 1;
+      }
+    }
+    if (x < 0) continue;
+    const y = pts[at * 2 + 1] - w0 - 8;
     const riding = startX < margin;
     geom.names.push({ x0: x, y0: y - size, x1: x + w, y1: y + 4 });
     ctx.globalAlpha = riding ? 0.85 : 1;
