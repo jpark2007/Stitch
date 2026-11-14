@@ -13,6 +13,7 @@ export type Provider = "terminal" | "imessage";
 export type Outbound = { messageId: string; provider: Provider; spaceId: string; text: string };
 export type Inbound = Outbound & { senderId: string };
 export type Authorization = { provider: Provider; senderId: string };
+export type Enrollment = { messageId: string; provider: "imessage"; senderId: string; spaceId: string; spaceKind: "direct"; code: string };
 export type InboundPhoto = Omit<Inbound, "text"> & { attachmentId: string; mimeType: string; dataBase64: string; caption?: string };
 export type InboundVoice = Omit<Inbound, "text"> & { attachmentId: string; mimeType: string; dataBase64: string };
 
@@ -49,6 +50,25 @@ export function parseAuthorization(value: unknown): Authorization {
   const record = recordWithKeys(value, ["provider", "senderId"]);
   if (!bounded(record.senderId, 256) || (record.provider !== "terminal" && record.provider !== "imessage")) throw new ProtocolError(422, "Invalid authorization request");
   return record as Authorization;
+}
+
+/** Reserve every LINK-prefixed command, including malformed ones, from story intake. */
+export function linkCode(text: string): string | null {
+  const command = text.replace(/^[\s\u0085\u001c-\u001f]+|[\s\u0085\u001c-\u001f]+$/gu, "");
+  if (!/^LINK/i.test(command)) return null;
+  const match = /^LINK ([A-Za-z0-9_-]{43})$/i.exec(command);
+  if (!match) throw new ProtocolError(422, "Invalid LINK command; no story was recorded");
+  return match[1];
+}
+
+export function parseEnrollment(value: unknown): Enrollment {
+  const record = recordWithKeys(value, ["messageId", "provider", "senderId", "spaceId", "spaceKind", "code"]);
+  if (record.provider !== "imessage" || record.spaceKind !== "direct" ||
+      ![record.messageId, record.senderId, record.spaceId].every((id) => bounded(id, 256)) ||
+      typeof record.code !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(record.code)) {
+    throw new ProtocolError(422, "Invalid enrollment proof");
+  }
+  return record as Enrollment;
 }
 
 export function parsePhoto(value: unknown): InboundPhoto {

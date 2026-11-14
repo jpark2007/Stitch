@@ -2,9 +2,37 @@ import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { Authenticator, MAX_BODY_BYTES, MAX_PHOTO_BODY_BYTES, ProtocolError, parseAuthorization, parseMessage, parsePhoto, signedHeaders, validateSecret, type Authorization, type Inbound, type InboundPhoto, type Outbound, type Provider } from "./protocol.ts";
 import { MAX_VOICE_BODY_BYTES, parseVoice, type InboundVoice } from "./protocol.ts";
+import { linkCode, parseEnrollment, type Enrollment } from "./protocol.ts";
+import { forwardProviderMessage, type ProviderMessage } from "./photos.ts";
+import type { Space, Message } from "spectrum-ts";
 
 export type Receipt = { status: number; body: unknown };
 type ClientOptions = { timeoutMs?: number; attempts?: number; fetch?: typeof fetch; delay?: (ms: number) => Promise<void> };
+
+type IncomingSpace = Pick<Space, "id" | "__platform"> & { type?: unknown };
+type SdkIncomingMessage = ProviderMessage & Pick<Message, "direction" | "space">;
+
+/** Only an actual inbound SDK space can attest DM metadata; never inspect ID syntax. */
+export async function forwardIncoming(client: Pick<ApiClient, "post">, space: IncomingSpace, message: SdkIncomingMessage): Promise<Receipt[]> {
+  if (message.content.type === "group") {
+    const receipts: Receipt[] = [];
+    for (const child of message.content.items) receipts.push(...await forwardIncoming(client, space, child));
+    return receipts;
+  }
+  if (message.content.type === "text") {
+    const code = linkCode(message.content.text);
+    if (code !== null) {
+      if (message.direction !== "inbound" || message.platform !== "imessage" || !message.sender ||
+          space.__platform !== "imessage" || space.type !== "dm" || message.space.id !== space.id ||
+          message.space.__platform !== "imessage") {
+        throw new ProtocolError(403, "LINK requires a verified direct iMessage conversation");
+      }
+      return [await client.post("/internal/channels/enroll", parseEnrollment({ messageId: message.id,
+        provider: "imessage", senderId: message.sender.id, spaceId: space.id, spaceKind: "direct", code }))];
+    }
+  }
+  return forwardProviderMessage(client, space.id, message);
+}
 
 /** Restrict this local foundation to loopback HTTP; never send the shared secret to redirects. */
 export function localApiUrl(value: string): URL {
@@ -21,16 +49,19 @@ export class ApiClient {
   constructor(origin: string, secret: string, options: ClientOptions = {}) {
     this.origin = localApiUrl(origin); this.secret = validateSecret(secret); this.options = options;
   }
-  async post(path: "/internal/channels/inbound" | "/internal/channels/tick" | "/internal/channels/authorize" | "/internal/channels/inbound-photo" | "/internal/channels/inbound-voice", value: Inbound | InboundPhoto | InboundVoice | Authorization | Record<string, never>): Promise<Receipt> {
+  async post(path: "/internal/channels/inbound" | "/internal/channels/tick" | "/internal/channels/authorize" | "/internal/channels/inbound-photo" | "/internal/channels/inbound-voice" | "/internal/channels/enroll", value: Inbound | InboundPhoto | InboundVoice | Authorization | Enrollment | Record<string, never>): Promise<Receipt> {
     if (path === "/internal/channels/inbound") parseMessage(value, true);
     else if (path === "/internal/channels/inbound-photo") parsePhoto(value);
     else if (path === "/internal/channels/inbound-voice") parseVoice(value);
     else if (path === "/internal/channels/authorize") parseAuthorization(value);
+    else if (path === "/internal/channels/enroll") parseEnrollment(value);
     else if (path !== "/internal/channels/tick" || !value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 0) throw new ProtocolError(422, "Invalid request");
     const body = Buffer.from(JSON.stringify(value));
     const bodyLimit = path === "/internal/channels/inbound-photo" ? MAX_PHOTO_BODY_BYTES : path === "/internal/channels/inbound-voice" ? MAX_VOICE_BODY_BYTES : MAX_BODY_BYTES;
     if (body.length > bodyLimit) throw new ProtocolError(413, "Request too large");
-    const attempts = this.options.attempts ?? 3;
+    // Proof consumption is one-use. A lost success must be checked via settings,
+    // not retried as another activation attempt.
+    const attempts = path === "/internal/channels/enroll" ? 1 : (this.options.attempts ?? 3);
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
         const response = await (this.options.fetch ?? fetch)(new URL(path, this.origin), {
