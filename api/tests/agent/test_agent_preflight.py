@@ -677,6 +677,106 @@ def test_limits_section_shows_each_variable_and_the_value_in_force(monkeypatch: 
     assert "900 s of running time per run" in limits["summary"]
 
 
+def test_limits_list_the_model_call_cap_with_the_other_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert preflight.LIMIT_ENVS[0] == (guards.ENV_MAX_MODEL_CALLS, "max_model_calls")
+    assert guards.ENV_MAX_MODEL_CALLS in preflight.ENV_NAMES
+    _, out = run(["--json"])
+    limits = by_service(out)["limits"]
+    assert var(limits, guards.ENV_MAX_MODEL_CALLS) == {
+        "name": guards.ENV_MAX_MODEL_CALLS,
+        "set": False,
+        "value": "unset (default: 600)",
+        "problem": None,
+        "severity": None,
+    }
+    assert limits["summary"].startswith("at most 600 model calls and 24 image(s) a run")
+    assert any("counts the studio's and every sub-agent's model calls together" in n for n in limits["notes"])
+    assert any("bounds steps per studio graph stream only" in n and "fresh step budget" in n
+               and "the per-run caps are STITCH_MAX_MODEL_CALLS and STITCH_RUN_TIMEOUT_S" in n
+               for n in limits["notes"])
+
+    monkeypatch.setenv(guards.ENV_MAX_MODEL_CALLS, "250")
+    _, out = run(["--json"])
+    limits = by_service(out)["limits"]
+    assert var(limits, guards.ENV_MAX_MODEL_CALLS)["value"] == "250"
+    assert limits["summary"].startswith("at most 250 model calls")
+    _, text = run([])
+    assert re.search(r"STITCH_MAX_MODEL_CALLS\s+250\n", text)
+
+
+@pytest.mark.parametrize(("raw", "default"), [("99", "600"), ("lots", "600"), ("", "600"), ("150.5", "600")])
+def test_an_invalid_model_call_cap_is_a_warning_and_the_default_stays(
+    monkeypatch: pytest.MonkeyPatch, raw: str, default: str
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv(guards.ENV_MAX_MODEL_CALLS, raw)
+    code, out = run(["--json"])
+    limit = var(by_service(out)["limits"], guards.ENV_MAX_MODEL_CALLS)
+    assert limit["set"] is True and limit["severity"] == "warning"
+    assert f"default {default}" in limit["problem"]
+    assert code == 0
+
+
+# ------------------------------------------------------------------ model ids: blank and padded
+
+
+@pytest.mark.parametrize("blank", ["", " ", "  \t "])
+def test_a_blank_studio_model_is_reported_as_the_default_production_uses(
+    monkeypatch: pytest.MonkeyPatch, blank: str
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_MODEL", blank)
+    monkeypatch.setenv("STITCH_VISION_MODEL", blank)
+    code, text = run([])
+    assert code == 0
+    assert f"studio model {studio.DEFAULT_MODEL};" in text
+    assert "studio model ;" not in text and "studio model  ;" not in text
+    assert f"Claude vision ({studio.DEFAULT_MODEL})" in text
+    # The report names exactly what production builds.
+    assert studio.make_model().model == studio.DEFAULT_MODEL
+    assert preflight._studio_model(os.environ) == studio.DEFAULT_MODEL
+    _, out = run(["--json"])
+    model_var = var(by_service(out)["model"], "STITCH_MODEL")
+    assert model_var["set"] is False and f"default: {studio.DEFAULT_MODEL}" in model_var["value"]
+
+
+def test_a_padded_model_id_is_reported_stripped_as_production_uses_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_MODEL", "  claude-haiku-5-5 ")
+    monkeypatch.setenv("STITCH_VISION_MODEL", " claude-sonnet-5-5")
+    monkeypatch.setenv(images_adapter.API_KEY_ENV, IMAGE)
+    monkeypatch.setenv(images_adapter.MODEL_ENV, " gpt-image-2 ")
+    monkeypatch.setenv(tts_adapter.MODEL_ENV, "eleven_turbo_v2 ")
+    code, out = run(["--json"])
+    report = by_service(out)
+    assert code == 0  # spaces around a model id are a warning: the studio strips them
+    assert report["model"]["summary"].startswith("studio model claude-haiku-5-5;")
+    assert var(report["model"], "STITCH_MODEL")["value"] == "claude-haiku-5-5"
+    assert var(report["model"], "STITCH_MODEL")["severity"] == "warning"
+    assert "Claude vision (claude-sonnet-5-5)" in report["vision"]["summary"]
+    assert "(gpt-image-2 at" in report["art"]["summary"]
+    assert var(report["tts"], tts_adapter.MODEL_ENV)["value"] == "eleven_turbo_v2"
+    # Production uses the same stripped ids.
+    assert studio.make_model().model == "claude-haiku-5-5"
+    assert images_adapter.OpenAIImageModel(api_key=IMAGE).model == "gpt-image-2"
+    assert tts_adapter.ElevenLabsTTS(api_key=ELEVEN).model == "eleven_turbo_v2"
+    from agent.adapters.vision import AnthropicVision
+
+    assert AnthropicVision(client=object()).model == "claude-sonnet-5-5"
+
+
+def test_a_model_id_with_inner_spaces_or_quotes_is_still_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_MODEL", '"claude-haiku-5-5"')
+    code, out = run(["--json"])
+    assert var(by_service(out)["model"], "STITCH_MODEL")["severity"] == "error"
+    assert code == 1
+
+
 def test_the_run_timeout_is_a_rule_not_a_caveat(monkeypatch: pytest.MonkeyPatch) -> None:
     """runs.py enforces STITCH_RUN_TIMEOUT_S: preflight states the rule and never warns it is unenforced."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)

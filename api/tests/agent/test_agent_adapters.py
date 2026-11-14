@@ -217,6 +217,54 @@ def test_vision_model_from_env_and_dict_response(clean_env: pytest.MonkeyPatch) 
     assert AnthropicVision(client=client, model="explicit").model == "explicit"
 
 
+@pytest.mark.parametrize(("raw", "expected"), [(" ", "claude-opus-5-5"), ("", "claude-opus-5-5"),
+                                               ("  claude-test-vision \n", "claude-test-vision")])
+def test_vision_model_blank_means_the_default_and_padded_is_stripped(
+    clean_env: pytest.MonkeyPatch, raw: str, expected: str
+) -> None:
+    from agent import studio
+
+    assert studio.DEFAULT_MODEL == "claude-opus-5-5"
+    clean_env.setenv("STITCH_VISION_MODEL", raw)
+    client = fake_client({"content": [{"type": "text", "text": "ok"}]})
+    vision = AnthropicVision(client=client)
+    assert vision.model == expected
+    vision.describe([make_image((10, 10))], "describe")
+    assert client.messages.calls[0]["model"] == expected
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(" ", "gpt-image-1"), ("", "gpt-image-1"),
+                                               ("\tsome-image-model  ", "some-image-model")])
+def test_image_model_blank_means_the_default_and_padded_is_stripped(
+    clean_env: pytest.MonkeyPatch, raw: str, expected: str
+) -> None:
+    assert images_mod.DEFAULT_MODEL == "gpt-image-1"
+    clean_env.setenv("IMAGE_MODEL", raw)
+    clean_env.setenv("IMAGE_API_URL", "  ")  # blank: the default URL too
+    api = ImageAPI(image_size=(1024, 1024))
+    model = image_model(api)
+    assert model.model == expected
+    assert model.base_url == "https://api.openai.com/v1"
+    model.generate("a red kettle", size=(1024, 1024))
+    (request,) = api.requests
+    assert json.loads(request.content)["model"] == expected
+    assert str(request.url) == "https://api.openai.com/v1/images/generations"
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(" ", "eleven_multilingual_v2"), ("", "eleven_multilingual_v2"),
+                                               (" eleven_test_model\n", "eleven_test_model")])
+def test_tts_model_blank_means_the_default_and_padded_is_stripped(
+    clean_env: pytest.MonkeyPatch, raw: str, expected: str
+) -> None:
+    assert tts_mod.DEFAULT_MODEL == "eleven_multilingual_v2"
+    clean_env.setenv("ELEVENLABS_MODEL", raw)
+    api = TTSAPI()
+    tts = ElevenLabsTTS(api_key=SECRET, transport=httpx.MockTransport(api))
+    assert tts.model == expected
+    tts.synthesize("Hi.", voice=None)
+    assert json.loads(api.requests[0].content)["model_id"] == expected
+
+
 def test_vision_applies_exif_orientation(clean_env: pytest.MonkeyPatch) -> None:
     im = Image.new("RGB", (40, 20), (0, 0, 255))
     exif = Image.Exif()
