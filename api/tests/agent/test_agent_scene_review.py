@@ -13,7 +13,7 @@ import pytest
 
 import schemas
 from agent.fake_compiler import FakeCompiler
-from agent.tools.compile import SceneInputs
+from agent.tools.compile import SceneInputs, load_compiler
 from agent.tools.scene_review import review_scene, review_timeline
 from screenplay.schema import Screenplay, Timeline
 
@@ -350,6 +350,19 @@ def test_fake_compiled_sample_has_no_timeline_warnings():
     screenplay = Screenplay.model_validate(_sample())
     result = FakeCompiler()(screenplay, scene)
     assert result.ok and result.timeline is not None
+    assert review_timeline(screenplay, result.timeline, props=scene.props) == []
+
+
+def test_compiled_sample_has_no_timeline_warnings_with_whichever_compiler_is_loaded():
+    """load_compiler() gives the real screenplay.compiler.compile once it exists, else the fake."""
+    scene = SceneInputs(
+        sets={s["id"]: schemas.SetDef.model_validate(s) for s in MEMORY["sets"]},
+        props=dict(SAMPLE_PROPS),
+        people={p["id"]: schemas.Person.model_validate(p) for p in MEMORY["people"]},
+    )
+    screenplay = Screenplay.model_validate(_sample())
+    result = load_compiler()(screenplay, scene)
+    assert result.ok, [e.message for e in result.errors]
     assert review_timeline(screenplay, result.timeline, props=scene.props) == []
 
 
