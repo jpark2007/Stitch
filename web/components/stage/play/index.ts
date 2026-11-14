@@ -45,7 +45,8 @@ export {
   type CastSet,
   type SceneCast,
 } from "./cast";
-export { PuppetActor, type PuppetActorProps } from "./PuppetActor";
+export { PuppetActor, LIFT_UP, type PuppetActorProps } from "./PuppetActor";
+export { cutoutBox, pickCutout, pickNear } from "./pick";
 export { PropBinding, type PropBindingProps } from "./PropBinding";
 export { LayerBinding, SetLayers, sceneCutoutSpecs, type LayerBindingProps } from "./LayerBinding";
 export { Standing, foldToRise, layerZ, risersFor, type Mount, type Riser } from "./standing";

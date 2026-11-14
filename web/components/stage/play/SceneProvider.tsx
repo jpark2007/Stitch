@@ -85,6 +85,14 @@ export class StageRuntime {
   readonly registry: PropRegistry;
   /** World-space clipping planes at the wings, kept current every frame. */
   readonly wings: readonly Plane[] = [new Plane(new Vector3(-1, 0, 0), WING_X), new Plane(new Vector3(1, 0, 0), WING_X)];
+  /**
+   * Opt-in lifts, by target ("puppet:<id>" / "prop:<id>"): how far (stage
+   * units) a cutout stands off its layer toward the viewer, for a host that
+   * picks one up (the book's click-to-explain). Empty by default, so a stage
+   * no one lifts plays exactly as authored. The host invalidates while it
+   * changes a lift.
+   */
+  readonly lifts = new Map<string, number>();
 
   private readonly localWings = this.wings.map((p) => p.clone());
   private readonly puppets = new Map<string, RefObject<PuppetHandle | null>>();

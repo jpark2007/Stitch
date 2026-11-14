@@ -36,6 +36,8 @@ import type { Mount } from "./standing";
  * the difference.
  */
 const DEPTH_STAGGER = 0.012;
+/** A lifted cutout (runtime.lifts) also rises this much per unit it comes forward. */
+export const LIFT_UP = 0.3;
 
 export interface PuppetActorProps {
   /** Person id: the actor plays target `puppet:<id>`. */
@@ -91,9 +93,11 @@ export function PuppetActor({ id, person: given, index = 0 }: PuppetActorProps) 
       rot[BONES[i]] = s >= 0 ? r[s] : 0;
     }
     const p = pf.position;
+    // Picked up off its layer by the host (runtime.lifts; none by default).
+    const lift = runtime.lifts.size > 0 ? (runtime.lifts.get(pf.target) ?? 0) : 0;
     d.position[0] = p[0];
-    d.position[1] = p[1];
-    d.position[2] = p[2] + dz;
+    d.position[1] = p[1] + lift * LIFT_UP;
+    d.position[2] = p[2] + dz + lift;
     d.facing = pf.facing;
     if (planter) d.position[1] -= planter.drop(frame.t, readRot, scale);
     // Hinge about the surface the timeline stands it on (not the planted hip).
