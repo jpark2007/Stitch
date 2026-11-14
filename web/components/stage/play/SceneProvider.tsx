@@ -48,6 +48,7 @@ import { Matrix4, Plane, Vector3, type Group, type Material, type Mesh, type Obj
 import { api, bareMediaId } from "@/lib/api";
 import type { Person } from "@/lib/types";
 import { markShadowsDirty, StageClock } from "../clock";
+import { readOpen, type OpenSource } from "../SetPiece";
 import type { PlaybackController, PlaybackFrame } from "../playback";
 import type { PuppetHandle, SocketName } from "../Puppet";
 import { PropRegistry, type SocketResolver } from "../props/sockets";
@@ -179,12 +180,32 @@ export interface SceneProviderProps {
    * useTimelinePlayer's own loop: a second tick in the same frame is a no-op.
    */
   tick?: boolean;
+  /**
+   * An outer cap on every fold, 0..1: a number, a function of scene time, or
+   * a ref the host writes every frame (the book's `reveal`, so the scene folds
+   * flat as a leaf turns over it and rises again when it lies open).
+   */
+  reveal?: OpenSource;
   children?: ReactNode;
 }
 
 const ORIGIN = [0, 0, 0] as const;
 
-export function SceneProvider({ controller, scene, scale = 1, origin = ORIGIN, tick = true, children }: SceneProviderProps) {
+/** The reveal as a plain reader, or null when there is none. */
+function revealReader(reveal: OpenSource | undefined, controller: PlaybackController): (() => number) | null {
+  if (reveal === undefined) return null;
+  return () => readOpen(reveal, controller.time);
+}
+
+export function SceneProvider({
+  controller,
+  scene,
+  scale = 1,
+  origin = ORIGIN,
+  tick = true,
+  reveal,
+  children,
+}: SceneProviderProps) {
   const [runtime] = useState(() => new StageRuntime());
   const get = useThree((s) => s.get);
   const rootRef = useRef<Group>(null);
@@ -212,19 +233,22 @@ export function SceneProvider({ controller, scene, scale = 1, origin = ORIGIN, t
       scene,
       feetPlanted: scene.timeline.feetPlanted === true,
       runtime,
-      standing: new Standing(scene.sets, controller.frame),
+      standing: new Standing(scene.sets, controller.frame, revealReader(reveal, controller)),
       resolveMedia: (mediaId) => (familyId ? api.mediaUrl(familyId, bareMediaId(mediaId)) : null),
       person: personLookup(scene),
     };
-  }, [controller, scene, runtime]);
+  }, [controller, scene, runtime, reveal]);
 
   const time = useMemo(() => () => controller.time, [controller]);
   const lastVersion = useRef(-1);
+  const lastReveal = useRef(Number.NaN);
 
   useFrame((state) => {
     if (tick) controller.tick(performance.now());
-    if (controller.frameVersion !== lastVersion.current) {
+    const r = reveal === undefined ? 1 : readOpen(reveal, controller.time);
+    if (controller.frameVersion !== lastVersion.current || r !== lastReveal.current) {
       lastVersion.current = controller.frameVersion;
+      lastReveal.current = r;
       // Puppets, props and layers move with the frame: redraw shadow maps.
       markShadowsDirty(state);
     }

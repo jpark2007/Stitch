@@ -21,14 +21,28 @@
  *
  * Layout: the scene stands centred on a page `size` = [width, depth] world
  * units (x across, z towards the reader, y up off the paper), scaled so the
- * stage's two units of width fill most of the page. The book mounts it in
- * its right-page slot with the slot's width and depth.
+ * stage's two units of width fill most of the page. It adds no lights and no
+ * page: the host's light it (the standalone <Stage> or the book).
+ *
+ * In the book's right-page slot (Book3D renderStage):
+ *
+ *   renderStage={({ spread, reveal, width, depth }) => (
+ *     <SpreadStage scene={scenes[spread.id]} reveal={reveal} size={[width, depth]} />
+ *   )}
+ *   function SpreadStage({ scene, reveal, size }) {
+ *     const { controller } = useTimelinePlayer(scene.timeline, { autoplay: true });
+ *     return <TimelineScene controller={controller} scene={scene} size={size} reveal={reveal} />;
+ *   }
+ *
+ * The book keeps its own camera (leave `camera` off) and can show the words
+ * with <CaptionStrip controller> or print them from controller.getStatus().
  */
 
 import { useMemo, type ReactNode } from "react";
 import type { Prop } from "@/lib/types";
 import { DEFAULT_STAGE_SIZE, type StageSize } from "../CameraRig";
 import type { PlaybackController } from "../playback";
+import type { OpenSource } from "../SetPiece";
 import { CameraBinding } from "./CameraBinding";
 import { EffectBindings } from "./EffectBindings";
 import { SetLayers } from "./LayerBinding";
@@ -63,6 +77,11 @@ export interface TimelineSceneProps {
   lift?: number;
   /** Tick the controller from the render loop. Default true (see SceneProvider). */
   tick?: boolean;
+  /**
+   * Cap every fold at this (0..1; a number, a function of scene time, or a
+   * ref): pass the book's `reveal` so the scene folds with the page turn.
+   */
+  reveal?: OpenSource;
   /** Extra things in stage space (debug markers, probes). */
   children?: ReactNode;
 }
@@ -75,6 +94,7 @@ export function TimelineScene({
   orbit = true,
   lift = 0,
   tick = true,
+  reveal,
   children,
 }: TimelineSceneProps) {
   const { scale, origin } = useMemo(() => stageLayout(size), [size]);
@@ -84,7 +104,7 @@ export function TimelineScene({
     return frame.props.map((pf) => byId.get(pf.id)).filter((p): p is Prop => p !== undefined);
   }, [frame, scene.props]);
   return (
-    <SceneProvider controller={controller} scene={scene} scale={scale} origin={origin} tick={tick}>
+    <SceneProvider controller={controller} scene={scene} scale={scale} origin={origin} tick={tick} reveal={reveal}>
       <SetLayers />
       {frame.puppets.map((p, i) => (
         <PuppetActor key={p.id} id={p.id} index={i} />

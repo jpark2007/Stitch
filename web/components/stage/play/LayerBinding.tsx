@@ -33,9 +33,10 @@ import { imageLayerSpec, loadImage, placeholderLayerSpec, riserArt, tone } from 
 import { useScene } from "./SceneProvider";
 import { RISER_DEPTH, RISER_THICK, foldToRise, layerZ, type Riser } from "./standing";
 
-/** A RiseProvider value that plays one layer frame's fold. */
+/** A RiseProvider value that plays one layer frame's fold (capped by the reveal). */
 function useFoldRise(lf: SetLayerFrame | null): PopUpValue {
-  return useMemo<PopUpValue>(() => ({ rise: () => (lf ? foldToRise(lf.fold) : 1) }), [lf]);
+  const { standing } = useScene();
+  return useMemo<PopUpValue>(() => ({ rise: () => foldToRise(standing.fold(lf)) }), [lf, standing]);
 }
 
 /** Shows its children while a layer stands, or while its set is the current shot's. */

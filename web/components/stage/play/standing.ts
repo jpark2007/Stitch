@@ -109,9 +109,15 @@ export class Standing {
   private readonly sets: SetStanding[];
   private readonly byId = new Map<string, SetStanding>();
   private readonly frame: PlaybackFrame;
+  private readonly reveal: (() => number) | null;
 
-  constructor(sets: readonly SetDef[], frame: PlaybackFrame) {
+  /**
+   * @param reveal  an outer cap on every fold, 0..1 (the book's page turn:
+   *                the whole scene folds flat as a leaf comes over it).
+   */
+  constructor(sets: readonly SetDef[], frame: PlaybackFrame, reveal: (() => number) | null = null) {
     this.frame = frame;
+    this.reveal = reveal;
     this.sets = [];
     for (const set of sets) {
       const folds = set.layers.map((_, i) => frame.layersByTarget.get(`set:${set.id}.layer${i}`) ?? null);
@@ -120,6 +126,14 @@ export class Standing {
       this.sets.push(s);
       this.byId.set(set.id, s);
     }
+  }
+
+  /** A layer's fold now: its track, capped by the reveal (1 without a track). */
+  fold(lf: SetLayerFrame | null | undefined): number {
+    const f = lf ? lf.fold : 1;
+    if (!this.reveal) return f;
+    const r = this.reveal();
+    return r < f ? (r > 0 ? r : 0) : f;
   }
 
   /** The risers of a set (for drawing them). */
@@ -142,7 +156,7 @@ export class Standing {
     if (y > 0.02) {
       for (const r of s.risers) {
         if (Math.abs(r.h - y) > 0.04 || Math.abs(r.x - x) > r.halfWidth + 0.06) continue;
-        const rise = foldToRise(s.folds[r.layer]?.fold ?? 1);
+        const rise = foldToRise(this.fold(s.folds[r.layer]));
         const a = riseAngle(rise);
         const k = 1 - smooth(rise);
         // The riser's top rides its walls (FloatingLayer): height H·cos a
@@ -154,7 +168,7 @@ export class Standing {
         return out;
       }
     }
-    const rise = foldToRise(s.folds[layerBehind(s.set, z)]?.fold ?? 1);
+    const rise = foldToRise(this.fold(s.folds[layerBehind(s.set, z)]));
     out.angle = riseAngle(rise);
     out.dy = (1 - smooth(rise)) * FLAT_LIFT;
     return out;

@@ -62,6 +62,19 @@ test("risen: every mount is the identity (the timeline's positions as compiled)"
   }
 });
 
+test("the reveal caps every fold: a page turned over the risen scene lays it flat", () => {
+  let reveal = 0;
+  const s = new Standing(memory.sets!, frameAt(1), () => reveal);
+  const f = frameAt(1);
+  assert.equal(s.fold(f.layers[0]), 0);
+  assert.ok(Math.abs(s.mount(0, 0, 0.5, m()).angle - Math.PI / 2) < 1e-9);
+  reveal = 0.4;
+  assert.equal(s.fold(f.layers[0]), 0.4);
+  reveal = 1;
+  assert.equal(s.fold(f.layers[0]), 1);
+  assert.equal(s.mount(0, 0, 0.5, m()).angle, 0);
+});
+
 test("folded: figures lie flat towards the reader, and riders sink with their riser", () => {
   const s = new Standing(memory.sets!, frameAt(0));
   const ground = s.mount(0, 0, 0.5, m());
