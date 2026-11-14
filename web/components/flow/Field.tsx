@@ -137,24 +137,28 @@ export function Field(
 }
 
 /**
- * The focus mark of an underlined control: the underline turns accent and
- * doubles (an inset shadow, so nothing shifts). The kit's dashed ring would
- * draw a box round a control that has none. Forced-colours mode drops
- * shadows, so there it gets a real outline instead.
+ * The focus mark of an underlined control: the 1px resting line turns accent
+ * and triples to 3px (an inset shadow, so nothing shifts), so focus differs
+ * from rest in both hue and weight. The kit's dashed ring would draw a box
+ * round a control that has none. Forced-colours mode drops shadows, so there
+ * it gets a real outline instead.
  */
 export const CONTROL_FOCUS =
-  "focus:outline-none focus:border-accent-deep focus:shadow-[inset_0_-1px_0_var(--accent-deep)] " +
+  "focus:outline-none focus:border-accent-deep focus:shadow-[inset_0_-2px_0_var(--accent-deep)] " +
   "forced-colors:focus:outline-2 forced-colors:focus:outline-offset-2 forced-colors:focus:outline-solid";
 
 // A line to write on: no box and no fill, one hairline under the text. The
-// resting line is ink-faint rather than the faint rule, so the control keeps
-// 3:1 contrast against the paper (WCAG 1.4.11). Flush left (px-0), so what is
+// line is the control's only visible edge, so it is ink-soft (#5c4e43): about
+// 5.7:1 even on the darkest part of the textured page background, well above
+// the 3:1 WCAG 1.4.11 asks of an input boundary (ink-faint measured as low as
+// 2.3:1 on the texture). Placeholders are ink-soft at 90% (about 4.6:1 on the
+// darkest texture), lighter than typed ink. Flush left (px-0), so what is
 // typed lines up with the label above it.
 const CONTROL_BASE =
   "block min-w-0 min-h-11 rounded-none border-0 border-b bg-transparent px-0 py-2 " +
-  "font-sans text-base leading-normal text-ink placeholder:text-ink-faint " +
+  "font-sans text-base leading-normal text-ink placeholder:text-ink-soft/90 " +
   "transition-[border-color,box-shadow] duration-150 ease-paper motion-reduce:transition-none " +
-  "hover:border-ink-soft " +
+  "hover:border-ink " +
   CONTROL_FOCUS +
   " disabled:cursor-not-allowed disabled:opacity-60";
 
@@ -165,7 +169,7 @@ const CONTROL_BASE =
 export function fieldControlClass(invalid: boolean, extra?: string): string {
   const border = invalid
     ? "border-[#9c3b2a] hover:border-[#9c3b2a] shadow-[inset_0_-1px_0_#9c3b2a]"
-    : "border-ink-faint";
+    : "border-ink-soft";
   const width = extra && /(^|\s)w-/.test(extra) ? "" : " w-full";
   return `${CONTROL_BASE}${width} ${border}${extra ? ` ${extra}` : ""}`;
 }

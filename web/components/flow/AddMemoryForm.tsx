@@ -52,11 +52,10 @@ const STORY_PLACEHOLDER =
 const SECOND_TELLING_PLACEHOLDER = "Tell it as you remember it. It doesn’t have to match anyone else’s.";
 
 // Large, comfortable serif for writing in. `!`: these beat the kit control's
-// own sans text style whatever the CSS order. The placeholder is ink-soft
-// (above 4.5:1 on the paper), not the kit's fainter one: it carries the
-// invitation.
-const STORY_CLASS =
-  "font-serif! text-[1.1875rem]! leading-[1.65]! sm:text-[1.3125rem]! pb-3! placeholder:text-ink-soft!";
+// own sans text style whatever the CSS order. The placeholder is the kit's
+// (ink-soft at 90%, about 4.6:1 on the darkest paper texture), lighter than
+// the ink of typed text.
+const STORY_CLASS = "font-serif! text-[1.1875rem]! leading-[1.65]! sm:text-[1.3125rem]! pb-3!";
 
 export function AddMemoryForm(props: {
   people: Array<{ id: string; name: string; born?: number | null; color?: string | null }>;

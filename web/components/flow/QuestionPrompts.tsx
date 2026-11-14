@@ -71,7 +71,18 @@ export function QuestionPrompts(props: {
                 >
                   {picked ? <PickedMark /> : null}
                   {promptAction(Boolean(q.memoryId), picked)}
-                  {/* Heard, not seen: the note is a toggle. */}
+                  {/* Seen: a quiet way back ("· let it go"), hidden from
+                      assistive tech, which hears the fuller sentence instead,
+                      so the accessible name stays "…Answering this, press
+                      again to let it go". */}
+                  {picked ? (
+                    <span
+                      aria-hidden="true"
+                      className="font-medium text-ink-soft underline-offset-[0.2em] group-hover:text-accent-deep group-hover:underline"
+                    >
+                      &middot; let it go
+                    </span>
+                  ) : null}
                   {picked ? <span className="sr-only">, press again to let it go</span> : null}
                 </span>
               </button>
