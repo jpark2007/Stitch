@@ -21,6 +21,10 @@ export default function MergeCard(props: {
   const [decided, setDecided] = useState<Choice | null>(null);
   const [error, setError] = useState<string | null>(null);
   const locked = pending !== null || decided !== null;
+  const text = merge.text.trim();
+  // The agent words the pause as a question (MergeEvent.text); older runs
+  // sent a statement, which still gets the card's own question under it.
+  const asks = text.endsWith("?");
 
   async function decide(choice: Choice) {
     if (locked) return;
@@ -41,10 +45,24 @@ export default function MergeCard(props: {
       <h2 id={`${uid}-title`} className="font-display text-xl leading-snug sm:text-[1.375rem]">
         Is this someone we know?
       </h2>
-      <p className="mt-2 leading-relaxed text-ink-soft">{merge.text}</p>
-      <p className="mt-4 font-display text-lg leading-snug">
-        Is {merge.candidateName} the same person already in your tree?
-      </p>
+      {asks ? (
+        // The studio's own question ("Is Grandpa Joe the Joseph in your
+        // family tree?") is the one to answer; asking it again in other words
+        // would read as a second question.
+        <>
+          <p className="mt-3 font-display text-lg leading-snug text-pretty">{text}</p>
+          <p className="mt-1.5 text-[0.9375rem] leading-relaxed text-ink-soft">
+            {merge.candidateName} is already in your family tree.
+          </p>
+        </>
+      ) : (
+        <>
+          {text ? <p className="mt-2 leading-relaxed text-ink-soft">{text}</p> : null}
+          <p className="mt-4 font-display text-lg leading-snug">
+            Is {merge.candidateName} the same person already in your tree?
+          </p>
+        </>
+      )}
 
       {error ? (
         <p
