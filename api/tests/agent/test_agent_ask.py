@@ -366,3 +366,51 @@ def test_interrupt_on_decisions() -> None:
 def test_tool_bodies_are_neutral() -> None:
     assert ask_teller.invoke({"question": "Where?"}) == NO_ANSWER
     assert merge_people.invoke(MERGE_ARGS) == NO_ANSWER
+
+
+def test_a_good_question_beside_a_malformed_call_is_shown_and_the_other_is_deferred() -> None:
+    # One model turn gates a good question and a prop review the web could not show: the
+    # question is shown (only the first action is read), the answer reaches it, and the
+    # malformed call is refused with the ask-again note: its tool body never runs.
+    received_props.clear()
+    turn = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "ask_teller", "args": {"question": "Which church?"}, "id": "q", "type": "tool_call"},
+            {"name": "confirm_props", "args": {"props": [{"id": "x", "name": "x", "size": "huge"}]}, "id": "p",
+             "type": "tool_call"},
+        ],
+    )
+    graph, model, config = build([turn, DONE])
+    pending = start(graph, config)
+    assert interrupt_to_event(pending) == ("question", schemas.QuestionEvent(text="Which church?"))
+    resume = answer_to_resume(pending, schemas.AnswerRequest(kind="answer", text="St. Mark's"))
+    assert [d["type"] for d in resume["decisions"]] == ["respond", "reject"]
+    graph.invoke(Command(resume=resume), config)
+    by_id = {m.tool_call_id: m for m in tool_messages(model)}
+    assert by_id["q"].content == "St. Mark's"
+    assert "Ask this again" in by_id["p"].content
+    assert received_props == []
+    assert not graph.get_state(config).interrupts
+
+
+def test_a_pause_whose_whole_turn_is_rejected_round_trips_with_every_call_refused() -> None:
+    # The first action cannot be shown, so runs.py rejects the whole pause: every gated
+    # call of the turn gets the reason, and the model can ask again.
+    turn = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "ask_teller", "args": {"question": "   "}, "id": "a", "type": "tool_call"},
+            {"name": "ask_teller", "args": {"question": "Who?"}, "id": "b", "type": "tool_call"},
+        ],
+    )
+    graph, model, config = build([turn, call("ask_teller", {"question": "Where?"}, "c"), DONE])
+    pending = start(graph, config)
+    with pytest.raises(ValueError, match="non-empty string 'question'"):
+        interrupt_to_event(pending)
+    graph.invoke(Command(resume=reject_to_resume(pending, "not shown to the family: empty question")), config)
+    by_id = {m.tool_call_id: m for m in tool_messages(model)}
+    assert {k: "not shown to the family" in m.content for k, m in by_id.items()} == {"a": True, "b": True}
+    # The model asked again; that pause is a normal question.
+    (again,) = graph.get_state(config).interrupts
+    assert interrupt_to_event(again) == ("question", schemas.QuestionEvent(text="Where?"))

@@ -374,3 +374,49 @@ def test_another_family_can_use_the_same_prop_id_at_the_same_time() -> None:
     args = {"name": "trumpet case", "description": "a case", "size": "carried"}
     out_a, out_b = run_together(lambda: ra["generate_prop"].invoke(args), lambda: rb["generate_prop"].invoke(args))
     assert out_a["id"] == out_b["id"] == "trumpet_case"
+
+
+# ----------------------------------------------------------------- the claim, save, release cycle
+
+
+def test_many_runs_claiming_saving_and_releasing_at_once_never_share_an_id() -> None:
+    # The full cycle each tool runs (claim, a slow save, release) from many runs at once,
+    # each claiming several ids: no id is handed to two runs, and an id released after its
+    # save is never handed out again (the repo guards it from then on).
+    saved: dict[str, str] = {}  # id -> owner, the "repo"
+    saved_lock = threading.Lock()
+    runs_count, per_run = 12, 5
+    barrier = threading.Barrier(runs_count)
+
+    def exists(candidate: str) -> bool:
+        with saved_lock:
+            return candidate in saved
+
+    def run(owner: str) -> list[str]:
+        barrier.wait(timeout=WAIT)
+        mine: list[str] = []
+        for _ in range(per_run):
+            got = claim_id(FAM, "prop", owner, ("cup" if n == 1 else f"cup_{n}" for n in range(1, 1000)), exists)
+            time.sleep(0.001)  # the save takes a moment
+            with saved_lock:
+                assert got not in saved, f"{got} handed to {owner} after {saved[got]} saved it"
+                saved[got] = owner
+            release_claim(FAM, "prop", owner, got)
+            mine.append(got)
+        return mine
+
+    with ThreadPoolExecutor(max_workers=runs_count) as pool:
+        results = list(pool.map(run, [f"run_{i}" for i in range(runs_count)]))
+    every = [i for ids in results for i in ids]
+    assert len(every) == len(set(every)) == runs_count * per_run
+    assert all(owner_of(FAM, "prop", i) is None for i in every)  # every claim was released
+
+
+def test_a_claim_left_by_a_run_that_died_only_costs_a_suffix() -> None:
+    # A run that claimed an id and never saved (it timed out, or the save raised) keeps
+    # its claim; another run moves on to the next id, and the dead run's own retry gets
+    # its id back.
+    assert claim_id(FAM, "set", "dead_run", ["kitchen", "kitchen_2"], lambda _c: False) == "kitchen"
+    assert claim_id(FAM, "set", "live_run", ["kitchen", "kitchen_2"], lambda _c: False) == "kitchen_2"
+    assert claim_id(FAM, "set", "dead_run", ["kitchen", "kitchen_2"], lambda _c: False) == "kitchen"
+    assert claim_id(OTHER, "set", "live_run", ["kitchen"], lambda _c: False) == "kitchen"
