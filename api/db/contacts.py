@@ -43,3 +43,27 @@ def stop_contacts(db, provider: str, handle: str, rows: list[dict]) -> None:
             {"_id": row["_id"], "familyId": row["familyId"], "channel": provider, "handle": handle},
             {"$set": {"status": "stopped", "stoppedAt": datetime.now(timezone.utc)}},
         )
+
+
+def worker_contact(db, family_id: str, contact_id: str) -> dict:
+    """Check both the selected family and current handle ambiguity before sending."""
+    original = db.contacts.find_one({"familyId": family_id, "_id": contact_id})
+    if original is None:
+        raise LookupError("Unknown contact")
+    resolved = resolve_contact(db, original["channel"], original["handle"])
+    if resolved["familyId"] != family_id or str(resolved["_id"]) != contact_id:
+        raise PermissionError("Contact mapping changed")
+    return resolved
+
+
+def seed_terminal_contact(db, family_id: str) -> None:
+    """Disposable Channels demo fixture, called only with its isolated database."""
+    import schemas
+    from .people import create_person
+    now = datetime.now(timezone.utc)
+    db.families.insert_one({"_id": family_id, "name": "Terminal demo"})
+    create_person(db, family_id, schemas.NewPerson(name="Demo teller", born=1980),
+                  added_by=None, person_id="terminal-person")
+    db.contacts.insert_one({"_id": "terminal-contact", "familyId": family_id,
+        "personId": "terminal-person", "handle": "terminal-user", "channel": "terminal",
+        "status": "active", "verifiedAt": now, "optInAt": now})

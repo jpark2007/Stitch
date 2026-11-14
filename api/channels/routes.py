@@ -1,6 +1,8 @@
 """Opt-in internal transport router. Mounting is left to the API owner."""
 
-from fastapi import APIRouter, Depends, HTTPException
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
@@ -50,12 +52,23 @@ async def inbound(body: bytes = Depends(authenticated_body)) -> dict:
 
 
 @router.post("/tick")
-async def tick(body: bytes = Depends(authenticated_body)) -> dict:
+async def tick(request: Request, body: bytes = Depends(authenticated_body)) -> dict:
     try:
         Tick.model_validate_json(body)
     except ValidationError:
         raise HTTPException(422, "Invalid tick") from None
-    return {"processed": 0, "scheduler": "inactive"}
+    if os.getenv("STITCH_CHANNELS_WORKER") != "1":
+        return {"processed": 0, "scheduler": "inactive"}
+    def process():
+        from .worker import configured_worker
+        worker = getattr(request.app.state, "channels_worker", None)
+        if worker is None:
+            worker = configured_worker(client.get_db())
+        return worker.tick()
+    try:
+        return await run_in_threadpool(process)
+    except ValueError:
+        raise HTTPException(503, "Channels worker is not configured") from None
 
 
 def _authorize(message: AuthorizeContact) -> dict:
