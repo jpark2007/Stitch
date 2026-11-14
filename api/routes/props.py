@@ -64,6 +64,14 @@ def patch_prop(
     prop, an unknown id, or another family's prop. 400 "Unknown photo": photo_id is not one
     of this family's media ids; 400 NOT_A_PHOTO: it is, but not an image (narration audio).
     The stored art uses the 'media/<id>' form whichever form the client sent.
+
+    A photo replaces the art and keeps the rig (db.props.photo_rig), so every memory
+    already saved with the prop still recompiles, a second telling included: art becomes
+    {'body': photo} plus each part's old art entry (null, the placeholder card, when it had
+    none); parts are unchanged; every state name is kept, with its 'body' override dropped
+    and only part art keys left (a state that only changed the body becomes {}, no visual
+    change); source becomes 'photo'; aspect comes from the photo when it can be read; size,
+    anchor, grip, sockets, color and description are kept.
     """
     fid = access.family_id
     if patch.name is None and patch.photo_id is None:

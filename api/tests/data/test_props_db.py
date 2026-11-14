@@ -237,13 +237,15 @@ def test_update_prop_photo_replaces_art_and_keeps_rig(mdb):
                      sockets={"strap": [0.5, 0.1]},
                      art={"body": "media/a1", "bellows": "media/a2"},
                      parts={"bellows": schemas.PropPart(art="bellows", at=[0.5, 0.5])},
-                     states={"open": {"body": "media/a3"}})
+                     states={"open": {"body": "media/a3"}, "squeezed": {"body": "media/a4", "bellows": "media/a5"}})
     p = P.insert_prop(mdb, FAM_A, prop)
     out = P.update_prop(mdb, FAM_A, p.id, schemas.PropPatch(photo_id="media/photo9"))
-    assert out.art == {"body": "media/photo9"}
+    # The photo is the body; the part keeps its own art, so a pull tab on it still works.
+    assert out.art == {"body": "media/photo9", "bellows": "media/a2"}
     assert out.source == "photo"
-    assert out.states == {}
-    assert out.parts == {}
+    assert out.parts == {"bellows": schemas.PropPart(art="bellows", at=[0.5, 0.5])}
+    # Every state name is kept; the body override is gone, part overrides stay.
+    assert out.states == {"open": {}, "squeezed": {"bellows": "media/a5"}}
     assert (out.size, out.anchor, out.grip) == ("carried", [0.4, 0.9], [0.3, 0.2])
     assert out.sockets == {"strap": [0.5, 0.1]}
     assert out.name == "Accordion"
