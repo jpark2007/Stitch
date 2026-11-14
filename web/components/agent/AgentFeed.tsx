@@ -4,15 +4,28 @@
 // Renders a RunState built by runReducer; the page owns the stream and the
 // pending-input cards, which it passes in as children.
 import { useId, useState, type ReactNode } from "react";
-import Link from "next/link";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 
+import { Button, ButtonLink } from "@/components/flow/Button";
+import { Photo } from "@/components/paper/Photo";
 import type { PlanItem } from "@/lib/types";
 import type { FeedEntry, FeedStep, RunPhase, RunState } from "./runState";
 
-// Local palette: warm paper, brown ink, a rust thread and a sage check.
-// paper #fbf6ec, paper-deep #f3ead8, edge #e6d9c0, ink #3b2f27,
-// muted #7a6857, thread #b0533a, sage #5f7f52, tape #ecdcae, error #9c3b2a / #f7e4dc
+// The feed is one sheet of light paper (the flow kit's PaperCard look). Colours,
+// radii and shadows come from the global tokens in app/globals.css.
+
+/** The paper ease (--ease-paper) as framer-motion wants it. */
+const PAPER_EASE = [0.22, 0.8, 0.24, 1] as const;
+
+// Done marks are sage. Plain sage sits just under 3:1 on paper-light, so the
+// mark is sage stitched with a fifth of ink (about 4:1) to stay visible.
+const DONE_TEXT = "text-[color-mix(in_oklab,var(--sage)_80%,var(--ink))]";
+const DONE_FILL = "bg-[color-mix(in_oklab,var(--sage)_80%,var(--ink))]";
+
+// A stitched rule between parts of the sheet, like thread running through it.
+const STITCH_TOP = "border-t-[1.5px] border-dashed border-rule";
+
+const FOCUS_RING = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
 
 const STEP_NAMES: Record<string, string> = {
   interviewer: "Listening to your story",
@@ -86,13 +99,13 @@ export default function AgentFeed(props: {
     <MotionConfig reducedMotion="user">
       <section
         aria-labelledby={headingId}
-        className="relative w-full max-w-xl rounded-[18px] border border-[#e6d9c0] bg-[#fbf6ec] px-6 py-7 text-[#3b2f27] shadow-[0_1px_0_#fffdf8_inset,0_10px_28px_-14px_rgba(59,47,39,0.35)] sm:px-8"
+        className="relative w-full max-w-xl rounded-paper border border-rule bg-paper-light px-5 py-7 text-ink shadow-lift sm:px-8 sm:py-8"
       >
-        <header className="mb-6">
-          <h2 id={headingId} className="font-serif text-2xl leading-tight tracking-[-0.01em]">
+        <header>
+          <h2 id={headingId} className="font-display text-[1.625rem] leading-tight sm:text-[1.875rem]">
             {finished ? "Your moment is stitched in" : "Making your page"}
           </h2>
-          <p className="mt-1.5 flex items-center gap-2 text-sm text-[#7a6857]">
+          <p className="mt-2 flex items-center gap-2 text-sm text-ink-soft">
             <PhaseMark phase={state.phase} />
             <span>{PHASE_LINE[state.phase]}</span>
           </p>
@@ -108,10 +121,10 @@ export default function AgentFeed(props: {
           aria-live="polite"
           aria-relevant="additions text"
           aria-label="What the studio is doing"
-          className={state.todos.length > 0 ? "mt-5 border-t border-dashed border-[#e6d9c0] pt-5" : ""}
+          className={state.todos.length > 0 ? `mt-6 pt-5 ${STITCH_TOP}` : "mt-6"}
         >
           {state.phase === "connecting" && state.log.length === 0 && (
-            <p className="text-sm text-[#7a6857]">Threading the needle. This takes a moment.</p>
+            <p className="font-hand text-xl leading-snug text-ink-soft">Threading the needle. This takes a moment.</p>
           )}
 
           {hiddenCount > 0 && (
@@ -120,14 +133,14 @@ export default function AgentFeed(props: {
               aria-expanded={showAll}
               aria-controls={feedId}
               onClick={() => setShowAll((v) => !v)}
-              className="mb-3 ml-7 rounded-sm py-0.5 text-xs font-medium text-[#7a6857] underline decoration-[#e6d9c0] decoration-2 underline-offset-4 transition-colors hover:text-[#3b2f27] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#b0533a]"
+              className={`mb-1 ml-6 inline-flex min-h-11 items-center rounded-paper px-1 text-sm font-semibold text-accent-deep underline-offset-[0.2em] transition-colors duration-150 ease-paper hover:underline ${FOCUS_RING}`}
             >
               {showAll ? "Hide earlier steps" : `Show all steps (${hiddenCount} earlier)`}
             </button>
           )}
 
           {visibleLog.length > 0 && (
-            <ol className="space-y-3">
+            <ol className="space-y-3.5">
               <AnimatePresence initial={false}>
                 {visibleLog.map((entry) => (
                   <motion.li
@@ -136,7 +149,7 @@ export default function AgentFeed(props: {
                     initial={{ opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0 }}
-                    transition={{ duration: 0.28, ease: "easeOut" }}
+                    transition={{ duration: 0.32, ease: PAPER_EASE }}
                   >
                     <Entry
                       entry={entry}
@@ -151,42 +164,54 @@ export default function AgentFeed(props: {
           )}
         </div>
 
-        {children != null && children !== false && <div className="mt-6">{children}</div>}
+        {children != null && children !== false && (
+          <motion.div
+            className={`mt-7 pt-7 ${STITCH_TOP}`}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, ease: PAPER_EASE }}
+          >
+            {children}
+          </motion.div>
+        )}
 
         {sceneReady && (
-          <div className="mt-6 rounded-xl border border-dashed border-[#5f7f52]/50 bg-[#f3ead8] px-5 py-4">
-            <p className="font-serif text-lg">
-              {finished ? "Your page is ready, and it’s in everyone’s books." : "Your page is ready"}
+          <div className={`mt-7 pt-6 ${STITCH_TOP}`}>
+            <p className="flex items-start gap-2.5 font-display text-xl leading-snug">
+              <CheckIcon className={`mt-1.5 size-4 shrink-0 ${DONE_TEXT}`} />
+              <span>{finished ? "Your page is ready, and it’s in everyone’s books." : "Your page is ready"}</span>
             </p>
             {!finished && (
-              <p className="mt-0.5 text-sm text-[#7a6857]">You can open it now. The studio is finishing a few last touches.</p>
+              <p className="mt-1 pl-[1.625rem] text-sm text-ink-soft">
+                You can open it now. The studio is finishing a few last touches.
+              </p>
             )}
             {sceneHref && (
-              <Link
-                href={sceneHref}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-[#3b2f27] px-4 py-2 text-sm font-medium text-[#fbf6ec] transition-colors hover:bg-[#b0533a] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#b0533a]"
-              >
-                Open your page <span aria-hidden="true">&rarr;</span>
-              </Link>
+              <div className="mt-4 pl-[1.625rem]">
+                <ButtonLink href={sceneHref} className="gap-1.5">
+                  Open your page <span aria-hidden="true">&rarr;</span>
+                </ButtonLink>
+              </div>
             )}
           </div>
         )}
 
         {finished && !sceneReady && (
-          <p className="mt-6 font-serif text-lg">All done. Thank you for sharing this one.</p>
+          <p className={`mt-7 pt-6 font-display text-xl leading-snug ${STITCH_TOP}`}>
+            All done. Thank you for sharing this one.
+          </p>
         )}
 
         {state.phase === "error" && (
-          <div role="alert" className="mt-6 rounded-xl border border-[#9c3b2a]/25 bg-[#f7e4dc] px-5 py-4 text-[#6e2a1e]">
-            <p className="font-medium">{state.error ?? "The studio stopped unexpectedly."}</p>
+          <div
+            role="alert"
+            className="mt-7 rounded-card border border-accent/30 border-l-[3px] border-l-accent bg-accent/8 px-4 py-3.5 text-accent-deep"
+          >
+            <p className="font-semibold leading-snug">{state.error ?? "The studio stopped unexpectedly."}</p>
             {onRetry && (
-              <button
-                type="button"
-                onClick={onRetry}
-                className="mt-3 rounded-full border border-[#9c3b2a]/40 bg-[#fbf6ec] px-4 py-1.5 text-sm font-medium text-[#6e2a1e] transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#9c3b2a]"
-              >
+              <Button variant="secondary" onClick={onRetry} className="mt-3">
                 Retry
-              </button>
+              </Button>
             )}
           </div>
         )}
@@ -197,13 +222,10 @@ export default function AgentFeed(props: {
 
 function PhaseMark({ phase }: { phase: RunPhase }) {
   if (phase === "done" || phase === "scene_ready") {
-    return <CheckIcon className="h-3.5 w-3.5 text-[#5f7f52]" />;
+    return <CheckIcon className={`size-3.5 shrink-0 ${DONE_TEXT}`} />;
   }
-  if (phase === "error") {
-    return <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-[#9c3b2a]" />;
-  }
-  if (phase === "waiting") {
-    return <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-[#b0533a]" />;
+  if (phase === "error" || phase === "waiting") {
+    return <span aria-hidden="true" className="inline-block size-2 shrink-0 rounded-full bg-accent" />;
   }
   return <StitchSpinner />;
 }
@@ -213,7 +235,7 @@ function StitchSpinner({ still = false }: { still?: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className={`inline-block h-3.5 w-3.5 shrink-0 rounded-full border-[1.5px] border-dashed border-[#b0533a] ${still ? "" : "motion-safe:animate-[spin_3.5s_linear_infinite]"}`}
+      className={`inline-block size-3.5 shrink-0 rounded-full border-[1.5px] border-dashed border-accent bg-paper-light ${still ? "" : "motion-safe:animate-[spin_3.5s_linear_infinite]"}`}
     />
   );
 }
@@ -226,30 +248,34 @@ function CheckIcon({ className }: { className?: string }) {
   );
 }
 
+/** The plan as a short checklist, its boxes stitched together by a dashed thread. */
 function PlanList({ todos, done, still }: { todos: PlanItem[]; done: boolean; still: boolean }) {
   const headingId = useId();
   return (
-    <div>
-      <h3 id={headingId} className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-[#7a6857]">
+    <div className="mt-6">
+      <h3 id={headingId} className="font-sans text-xs font-bold tracking-[0.16em] text-ink-soft uppercase">
         The plan
       </h3>
-      <ul aria-labelledby={headingId} className="space-y-1.5">
+      <ul
+        aria-labelledby={headingId}
+        className="relative mt-3 space-y-2 before:absolute before:top-2.5 before:bottom-2.5 before:left-[7px] before:border-l-[1.5px] before:border-dashed before:border-rule before:content-['']"
+      >
         {todos.map((todo, i) => {
           const status = done ? "completed" : (todo.status ?? "pending");
           return (
-            <li key={`${i}-${todo.text}`} className="flex items-start gap-2.5 text-[15px] leading-snug">
-              <span className="mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center">
+            <li key={`${i}-${todo.text}`} className="relative flex items-start gap-3 text-[0.9375rem] leading-snug">
+              <span className="flex h-[1.3rem] w-4 shrink-0 items-center justify-center">
                 {status === "completed" ? (
-                  <span className="flex h-4 w-4 items-center justify-center rounded-[4px] bg-[#5f7f52] text-[#fbf6ec]">
-                    <CheckIcon className="h-3 w-3" />
+                  <span className={`flex size-4 items-center justify-center rounded-[3px] text-paper-light ${DONE_FILL}`}>
+                    <CheckIcon className="size-3" />
                   </span>
                 ) : status === "in_progress" ? (
                   <StitchSpinner still={still} />
                 ) : (
-                  <span aria-hidden="true" className="h-3.5 w-3.5 rounded-[4px] border-[1.5px] border-[#cbb99b]" />
+                  <span aria-hidden="true" className="size-3.5 rounded-[3px] border-[1.5px] border-ink-faint bg-paper-light" />
                 )}
               </span>
-              <span className={status === "completed" ? "text-[#7a6857]" : status === "in_progress" ? "font-medium" : "text-[#3b2f27]"}>
+              <span className={status === "completed" ? "text-ink-soft" : status === "in_progress" ? "font-semibold text-ink" : "text-ink"}>
                 {todo.text}
                 <span className="sr-only">
                   {status === "completed" ? " (done)" : status === "in_progress" ? " (in progress)" : " (to do)"}
@@ -283,21 +309,21 @@ function Entry({
       const detail = done ? (step.summary ?? step.task) : step.task;
       return (
         <div className="flex items-start gap-3">
-          <span className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center">
+          <span className="flex h-6 w-4 shrink-0 items-center justify-center">
             {done ? (
-              <CheckIcon className="h-3.5 w-3.5 text-[#5f7f52]" />
+              <CheckIcon className={`size-3.5 ${DONE_TEXT}`} />
             ) : moving ? (
               <StitchSpinner />
             ) : (
-              <span aria-hidden="true" className="h-3.5 w-3.5 rounded-full border-[1.5px] border-dashed border-[#cbb99b]" />
+              <span aria-hidden="true" className="size-3.5 rounded-full border-[1.5px] border-dashed border-ink-faint" />
             )}
           </span>
           <div className="min-w-0">
-            <p className={done ? "text-[#3b2f27]" : "font-medium"}>
+            <p className={done ? "text-ink" : "font-semibold text-ink"}>
               {stepLabel(step.name)}
               <span className="sr-only">{done ? " (done)" : moving ? " (working)" : " (paused)"}</span>
             </p>
-            {detail && <p className="mt-0.5 text-sm leading-snug text-[#7a6857]">{detail}</p>}
+            {detail && <p className="mt-0.5 text-sm leading-snug text-ink-soft">{detail}</p>}
           </div>
         </div>
       );
@@ -313,11 +339,20 @@ function Entry({
             {entry.event.round != null ? `, round ${entry.event.round}` : ""}.
           </p>
           {n > 0 && (
-            <details className="mt-1.5">
-              <summary className="cursor-pointer text-xs text-[#7a6857] underline decoration-[#e6d9c0] underline-offset-4 hover:text-[#3b2f27]">
+            <details className="group">
+              <summary
+                className={`-ml-1 inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-paper px-1 text-sm font-semibold text-accent-deep underline-offset-[0.2em] hover:underline ${FOCUS_RING}`}
+              >
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 16 16"
+                  className="size-3 shrink-0 transition-transform duration-200 ease-paper group-open:rotate-90"
+                >
+                  <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
                 What needs fixing
               </summary>
-              <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-relaxed text-[#7a6857]">
+              <ul className="mb-1 list-disc space-y-1 pl-5 text-sm leading-relaxed text-ink-soft marker:text-ink-faint">
                 {entry.event.errors.map((err, i) => (
                   <li key={`${i}-${err.code}`}>{err.message}</li>
                 ))}
@@ -330,31 +365,23 @@ function Entry({
 
     case "frames":
       return (
-        <figure className="pl-7">
-          <ul className="flex flex-wrap gap-3 pt-2 sm:gap-4" aria-label="Frames the checker looked at">
+        <figure className="m-0 pl-7">
+          <ul className="flex flex-wrap gap-3 pt-3 sm:gap-4" aria-label="Frames the checker looked at">
             {entry.event.frames.map((f, i) => (
-              <li key={`${i}-${f.mediaId}`} className={i % 2 === 0 ? "-rotate-[1.5deg]" : "rotate-[1.2deg]"}>
-                <span className="relative block bg-white p-1.5 pb-2 shadow-[0_3px_8px_-3px_rgba(59,47,39,0.35)]">
-                  <span
-                    aria-hidden="true"
-                    className="absolute -top-2 left-1/2 h-3.5 w-10 -translate-x-1/2 rotate-[-3deg] bg-[#ecdcae]/80"
-                  />
-                  {/* Media comes from the API with the session cookie; next/image would need remote config. */}
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={mediaUrl(f.mediaId)}
-                    alt={`Checker frame at ${formatSeconds(f.t)}s`}
-                    width={112}
-                    height={72}
-                    loading="lazy"
-                    className="block h-14 w-[88px] bg-[#f3ead8] object-cover sm:h-[72px] sm:w-28"
-                  />
-                </span>
+              <li key={`${i}-${f.mediaId}`}>
+                {/* Media comes from the API with the session cookie, so Photo uses a plain <img>. */}
+                <Photo
+                  src={mediaUrl(f.mediaId)}
+                  alt={`Checker frame at ${formatSeconds(f.t)}s`}
+                  width={88}
+                  aspect={14 / 9}
+                  rotate={i % 2 === 0 ? -1.5 : 1.2}
+                />
               </li>
             ))}
           </ul>
           {entry.event.critique && (
-            <figcaption className="mt-2 font-serif text-sm italic leading-snug text-[#7a6857]">
+            <figcaption className="mt-2.5 font-hand text-xl leading-snug text-ink-soft">
               {entry.event.critique}
             </figcaption>
           )}
@@ -364,15 +391,15 @@ function Entry({
     case "asked":
       return (
         <Note>
-          <span className="text-[#7a6857]">The studio asked: </span>
-          <span className="font-serif italic">“{entry.text}”</span>
+          <span className="text-ink-soft">The studio asked: </span>
+          <span className="font-hand text-xl leading-tight text-ink">“{entry.text}”</span>
         </Note>
       );
 
     case "answered":
       return (
         <Note>
-          <span className="text-[#7a6857]">You answered: </span>
+          <span className="text-ink-soft">You answered: </span>
           {entry.summary}
         </Note>
       );
@@ -399,14 +426,13 @@ function Entry({
 }
 
 function Note({ children, tone = "plain" }: { children: ReactNode; tone?: "plain" | "good" | "bad" }) {
-  const dot = tone === "good" ? "bg-[#5f7f52]" : tone === "bad" ? "bg-[#9c3b2a]" : "bg-[#cbb99b]";
+  const dot = tone === "good" ? DONE_FILL : tone === "bad" ? "bg-accent" : "bg-ink-faint";
   return (
-    <div className="flex items-start gap-3 text-sm leading-snug">
-      <span className="mt-[7px] flex w-4 shrink-0 justify-center">
-        <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+    <div className="flex items-start gap-3 text-[0.9375rem] leading-snug">
+      <span className="flex h-[1.3rem] w-4 shrink-0 items-center justify-center">
+        <span aria-hidden="true" className={`size-1.5 rounded-full ${dot}`} />
       </span>
-      <div className={`min-w-0 ${tone === "bad" ? "text-[#9c3b2a]" : ""}`}>{children}</div>
+      <div className={`min-w-0 ${tone === "bad" ? "font-medium text-accent-deep" : "text-ink"}`}>{children}</div>
     </div>
   );
 }
-

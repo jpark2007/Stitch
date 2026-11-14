@@ -1,7 +1,10 @@
 "use client";
 
 // Approve or reject merging two people (AnswerRequest kind="merge").
+// A calm two-choice prompt written straight onto the feed's sheet: no extra
+// box, one question, the flow kit's primary and secondary Buttons.
 import { useId, useState } from "react";
+import { Button } from "@/components/flow/Button";
 import type { MergeEvent } from "@/lib/types";
 
 const GENERIC_ERROR = "That didn't go through. Check your connection and try again.";
@@ -33,68 +36,48 @@ export default function MergeCard(props: {
     }
   }
 
-  const base =
-    "inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a8492f] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fffdf8] disabled:cursor-not-allowed disabled:opacity-60";
-
-  function label(choice: Choice, text: string) {
-    if (pending === choice) {
-      return (
-        <>
-          <span
-            aria-hidden="true"
-            className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current/30 border-t-current motion-reduce:animate-none"
-          />
-          Saving…
-        </>
-      );
-    }
-    return text;
-  }
-
   return (
-    <section
-      aria-labelledby={`${uid}-title`}
-      aria-busy={pending !== null}
-      className="rounded-[4px] border border-[#e4d8c4] bg-[#fffdf8] p-6 text-[#3a2e24] shadow-[0_1px_0_#efe6d6,0_10px_28px_-16px_rgba(58,46,36,0.35)] sm:p-7"
-    >
-      <h2 id={`${uid}-title`} className="font-serif text-lg tracking-tight">
+    <section aria-labelledby={`${uid}-title`} aria-busy={pending !== null} className="text-ink">
+      <h2 id={`${uid}-title`} className="font-display text-xl leading-snug sm:text-[1.375rem]">
         Is this someone we know?
       </h2>
-      <p className="mt-3 leading-relaxed text-[#5a4a3c]">{merge.text}</p>
-      <p className="mt-4 font-serif text-xl leading-snug italic">
+      <p className="mt-2 leading-relaxed text-ink-soft">{merge.text}</p>
+      <p className="mt-4 font-display text-lg leading-snug">
         Is {merge.candidateName} the same person already in your tree?
       </p>
 
       {error ? (
         <p
           role="alert"
-          className="mt-4 rounded-[3px] border border-[#e8c3b9] bg-[#fbecea] px-3 py-2 text-sm text-[#7d2c1f]"
+          className="mt-4 rounded-card border border-accent/30 border-l-[3px] border-l-accent bg-accent/8 px-3.5 py-2.5 text-sm leading-snug text-accent-deep"
         >
           {error}
         </p>
       ) : null}
 
       <div className="mt-5 flex flex-wrap gap-3">
-        <button
-          type="button"
+        <Button
+          variant="primary"
           disabled={locked}
+          busy={pending === "yes"}
+          busyLabel="Saving…"
           onClick={() => decide("yes")}
-          className={`${base} bg-[#a8492f] text-[#fffaf2] hover:bg-[#8f3c26]`}
         >
-          {label("yes", "Yes, same person")}
-        </button>
-        <button
-          type="button"
+          Yes, same person
+        </Button>
+        <Button
+          variant="secondary"
           disabled={locked}
+          busy={pending === "no"}
+          busyLabel="Saving…"
           onClick={() => decide("no")}
-          className={`${base} border border-[#cdbda5] bg-transparent text-[#3a2e24] hover:bg-[#f5ede0]`}
         >
-          {label("no", "No, someone else")}
-        </button>
+          No, someone else
+        </Button>
       </div>
 
       {decided ? (
-        <p role="status" className="mt-4 text-sm text-[#5f7a55]">
+        <p role="status" className="mt-4 text-sm leading-snug text-ink-soft">
           {decided === "yes"
             ? `Got it. We'll keep ${merge.candidateName} as one person.`
             : `Got it. We'll add them as someone new.`}
