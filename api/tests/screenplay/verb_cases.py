@@ -21,7 +21,8 @@ Sources of the dynamic reasons (read with ``git show``; only state.py, verbs_obj
 verbs_vehicles.py are on main as of this catalogue):
 
 - api/screenplay/state.py, verbs_objects.py, verbs_vehicles.py (main)
-- api/screenplay/verbs_body.py (origin/jonah/compiler-verbs-body)
+- api/screenplay/verbs_body.py (origin/jonah/compiler-verbs-body-land, which builds on main's
+  state.py)
 - api/screenplay/verbs_motion.py, effects.py (origin/jonah/compiler-verbs-motion-effects-narration)
 - api/screenplay/verbs_core.py, locate.py, errors.py, compiler.py (origin/jonah/compiler-compiler-core)
 
@@ -370,10 +371,9 @@ def _body() -> list[VerbCase]:
         _dynamic("sit_on", "vehicle",
                  _one(_a(1, "sit_on", who="dad", what="sedan"), start={"dad": _at("table_spot")},
                       prop_start=SEDAN_CURB),
-                 # verbs_body.py apply_sit_on raises code "vehicle" before state.py World.sit_on
-                 # can raise "vehicle_seat" with the same reason.
-                 "vehicle",
-                 # verbs_body.py apply_sit_on
+                 "vehicle_seat",
+                 # state.py World.sit_on (run on a copy by verbs_body.py apply_sit_on; the landing
+                 # verbs_body.py has no "vehicle" pre-check of its own)
                  'shot s1, t=1: dad cannot sit_on "sedan"; sedan is a vehicle; use get_in'),
         _dynamic("sit_on", "socket_taken",
                  _one(_a(1, "sit_on", who="dad", what="chair"),
