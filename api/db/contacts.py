@@ -67,3 +67,32 @@ def seed_terminal_contact(db, family_id: str) -> None:
     db.contacts.insert_one({"_id": "terminal-contact", "familyId": family_id,
         "personId": "terminal-person", "handle": "terminal-user", "channel": "terminal",
         "status": "active", "verifiedAt": now, "optInAt": now})
+
+
+def seed_book_demo_contact(db) -> None:
+    """Bind terminal-user to the existing demo teller, only in disposable mongomock.
+
+    This fixture is not enrollment: it refuses real databases, missing demo
+    membership and mismatched people, and never updates an existing contact.
+    """
+    import mongomock
+    from seed.demo import DEMO_ACCOUNTS, DEMO_FAMILY_ID
+    from .families import get_member_role
+    from .people import get_person
+    from .users import get_user
+
+    if not isinstance(db, mongomock.database.Database):
+        raise ValueError("Book demo contacts require a disposable database")
+    account = DEMO_ACCOUNTS[0]
+    person = get_person(db, DEMO_FAMILY_ID, account.person_id)
+    if (person is None or person.user_id != account.user_id
+            or get_member_role(db, DEMO_FAMILY_ID, account.user_id) is None
+            or get_user(db, account.user_id) is None):
+        raise ValueError("Seed the matching demo family and account first")
+    if matching_contacts(db, "terminal", "terminal-user"):
+        raise ValueError("Terminal demo contact already exists")
+    now = datetime.now(timezone.utc)
+    db.contacts.insert_one({"_id": "terminal-contact", "familyId": DEMO_FAMILY_ID,
+        "personId": account.person_id, "userId": account.user_id,
+        "handle": "terminal-user", "channel": "terminal", "status": "active",
+        "verifiedAt": now, "optInAt": now})

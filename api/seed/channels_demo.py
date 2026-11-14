@@ -32,11 +32,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 
 DEFAULT_PORT = 8011
+WEB_PORT = 8012
 HOST = "127.0.0.1"
 
 
@@ -48,7 +50,8 @@ def _secret() -> str:
     return value
 
 
-def create_app(*, worker: bool = False, sender=None) -> FastAPI:
+def create_app(*, worker: bool = False, sender=None, web: bool = False, preview_port: int = 3002,
+               bridge_port: int | None = None) -> FastAPI:
     """Construct a standalone app. Database and environment changes occur only in lifespan.
 
     Refuse to borrow an existing database override: this entrypoint is for its own
@@ -60,6 +63,10 @@ def create_app(*, worker: bool = False, sender=None) -> FastAPI:
     from db import client as db_client
     from db.contacts import seed_terminal_contact
 
+    if any(isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535
+           for port in (preview_port, bridge_port if bridge_port is not None else 3012)):
+        raise ValueError("Demo ports must be between 1 and 65535")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         import mongomock
@@ -69,47 +76,54 @@ def create_app(*, worker: bool = False, sender=None) -> FastAPI:
             raise RuntimeError("Run the Channels demo in its own process; another database override is active")
         mongo = mongomock.MongoClient(tz_aware=True)
         db = mongo["stitch_channels_terminal_demo"]
-        previous_flag = os.environ.get("STITCH_CHANNELS")
-        previous_worker = os.environ.get("STITCH_CHANNELS_WORKER")
+        owned_env = {"STITCH_CHANNELS": "1", "STITCH_CHANNELS_WORKER": "1" if worker else "0",
+                     "STITCH_CHANNELS_TRANSCRIPTION": "0"}
+        if web:
+            owned_env.update(JWT_SECRET=secrets.token_urlsafe(32), COOKIE_SECURE="0")
+        previous_env = {key: os.environ.get(key) for key in owned_env}
         manager = None
         try:
             ensure_channel_indexes(db)
-            seed_terminal_contact(db, "terminal-family")
+            if web:
+                from seed.demo import seed_demo
+                from db.contacts import seed_book_demo_contact
+                db_client.ensure_indexes(db)
+                seed_demo(db)
+                seed_book_demo_contact(db)
+            else:
+                seed_terminal_contact(db, "terminal-family")
             db_client.set_db(db)
-            os.environ["STITCH_CHANNELS"] = "1"
-            os.environ["STITCH_CHANNELS_WORKER"] = "1" if worker else "0"
+            os.environ.update(owned_env)
             if worker:
                 from channels.worker import ChannelWorker
                 from channels.outbound import BridgeSender
                 from agent.conversation.demo import ScriptedConversation
                 from seed.fake_runs import ScriptedRunManager
                 manager = ScriptedRunManager(db_getter=lambda: db, step_seconds=0)
-                app.state.channels_worker = ChannelWorker(db, sender=sender or BridgeSender(),
+                port = bridge_port if bridge_port is not None else (3012 if web else 3011)
+                app.state.channels_worker = ChannelWorker(db, sender=sender or BridgeSender(base_url=f"http://127.0.0.1:{port}"),
                     agent_factory=ScriptedConversation, runs=manager)
             app.state.demo_db = db
             yield
         finally:
             if manager is not None:
                 manager.shutdown()
-            if os.environ.get("STITCH_CHANNELS_WORKER") == ("1" if worker else "0"):
-                if previous_worker is None:
-                    os.environ.pop("STITCH_CHANNELS_WORKER", None)
-                else:
-                    os.environ["STITCH_CHANNELS_WORKER"] = previous_worker
+            for key, value in owned_env.items():
+                if os.environ.get(key) == value:
+                    previous = previous_env[key]
+                    if previous is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = previous
             # Never replace an override installed by someone else while running.
             if getattr(db_client, "_db_override", None) is db:
                 db_client.set_db(None)
-            if os.environ.get("STITCH_CHANNELS") == "1":
-                if previous_flag is None:
-                    os.environ.pop("STITCH_CHANNELS", None)
-                else:
-                    os.environ["STITCH_CHANNELS"] = previous_flag
             mongo.drop_database(db.name)
             mongo.close()
 
     async def terminal_body(request: Request) -> bytes:
         body = await authenticated_body(request)
-        if request.url.path.rsplit("/", 1)[-1] in {"inbound", "inbound-photo", "authorize"}:
+        if request.url.path.rsplit("/", 1)[-1] in {"inbound", "inbound-photo", "inbound-voice", "authorize"}:
             try:
                 value = json.loads(body)
             except (ValueError, UnicodeDecodeError):
@@ -121,16 +135,40 @@ def create_app(*, worker: bool = False, sender=None) -> FastAPI:
     app = FastAPI(title="Stitch terminal receipt demo", lifespan=lifespan)
     app.dependency_overrides[authenticated_body] = terminal_body
     app.include_router(router)
+    if web:
+        from fastapi.middleware.cors import CORSMiddleware
+        from fastapi.exceptions import RequestValidationError
+        from fastapi.responses import JSONResponse
+        from routes import auth, families, tree
+
+        app.add_middleware(CORSMiddleware,
+            allow_origins=[f"http://127.0.0.1:{preview_port}", f"http://localhost:{preview_port}"],
+            allow_credentials=True, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+        app.include_router(auth.router)
+        # Existing protected read routes, including book/memory/media bundles.
+        # Studio REST writes are deliberately absent; only the explicit worker runs.
+        for existing in (families.router, tree.router):
+            app.router.routes.extend(route for route in existing.routes if getattr(route, "methods", set()) == {"GET"})
+
+        @app.exception_handler(RequestValidationError)
+        async def validation_error(_request, exc):
+            return JSONResponse(status_code=422, content={"detail": [
+                {"type": e["type"], "loc": list(e["loc"]), "msg": e["msg"]}
+                for e in exc.errors()]})
     return app
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--web", action="store_true", help="Serve protected demo book reads from the same disposable database")
+    parser.add_argument("--preview-port", type=int, default=3002)
+    parser.add_argument("--bridge-port", type=int)
     parser.add_argument("--worker", action="store_true", help="Enable the explicit offline scripted story worker")
     args = parser.parse_args(argv)
-    if not 1 <= args.port <= 65535:
-        parser.error("--port must be between 1 and 65535")
+    args.port = args.port if args.port is not None else (WEB_PORT if args.web else DEFAULT_PORT)
+    if any(not 1 <= port <= 65535 for port in (args.port, args.preview_port, args.bridge_port or 3012)) or args.bridge_port == 0:
+        parser.error("Ports must be between 1 and 65535")
     try:
         _secret()
     except ValueError as exc:
@@ -143,7 +181,10 @@ def main(argv: list[str] | None = None) -> int:
         print("Scripted worker enabled: send story, YEAR 1998, SUBMIT; tick after each message.", flush=True)
     else:
         print("Disposable local data only. Receipts are not stories; no texts or calls are sent.", flush=True)
-    uvicorn.run(create_app(worker=args.worker), host=HOST, port=args.port, access_log=False)
+    if args.web:
+        print("Protected demo book API enabled; see channels/DEMO.md for separate preview instructions.", flush=True)
+    uvicorn.run(create_app(worker=args.worker, web=args.web, preview_port=args.preview_port,
+                          bridge_port=args.bridge_port), host=HOST, port=args.port, access_log=False)
     return 0
 
 

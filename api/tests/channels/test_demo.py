@@ -125,17 +125,27 @@ def test_cli_binds_only_loopback_and_never_logs_secret(isolated, monkeypatch, ca
     assert SECRET not in output
 
 
-def test_scripted_worker_uses_real_offline_studio_to_save_book(isolated):
+@pytest.mark.parametrize("web", [False, True])
+def test_scripted_worker_uses_real_offline_studio_to_save_book(isolated, web):
     from tests.channels.test_inbox import sign
     from tests.channels.test_worker import Sender
     sender = Sender()
-    app = channels_demo.create_app(worker=True, sender=sender)
+    app = channels_demo.create_app(worker=True, sender=sender, web=web)
     def tick(client):
         path = "/internal/channels/tick"
         response = client.post(path, content=b"{}", headers=sign(b"{}", path, secret=SECRET))
         assert response.status_code == 200
         assert response.json()["blocked"] == 0
     with TestClient(app) as client:
+        existing = [row["_id"] for row in app.state.demo_db.memories.find({}, {"_id": 1})]
+        family_id = "demo_family" if web else "terminal-family"
+        if web:
+            assert client.get("/families/demo_family/people/dad/book").status_code == 401
+            login = client.post("/auth/login", json={"email": "david@demo.stitch", "password": "stitch-demo"})
+            assert login.status_code == 200
+            assert login.json()["families"][0]["id"] == family_id
+            assert client.get(f"/families/{family_id}/tree").status_code == 200
+            assert client.get(f"/families/{family_id}").status_code == 200
         import base64
         import io
         from PIL import Image
@@ -161,10 +171,30 @@ def test_scripted_worker_uses_real_offline_studio_to_save_book(isolated):
                 break
             tick(client)
         assert any("/memories/" in m["text"] for m in sender.messages)
-        memory = app.state.demo_db.memories.find_one({"familyId": "terminal-family"})
+        memory = app.state.demo_db.memories.find_one({"familyId": family_id, "_id": {"$nin": existing}})
         assert memory is not None
         assert memory["tellings"][0]["photoIds"]
         assert all(m["provider"] == "terminal" and m["spaceId"] == "terminal" for m in sender.messages)
+        if web:
+            mid = memory["_id"]
+            memory_path = f"/families/{family_id}/memories/{mid}"
+            book_path = f"/families/{family_id}/people/dad/book"
+            media_id = memory["tellings"][0]["photoIds"][0]
+            media_path = f"/families/{family_id}/media/{media_id}"
+            response = client.get(memory_path)
+            assert response.status_code == 200
+            bundle = response.json()
+            assert bundle["memory"]["id"] == mid
+            assert bundle["memory"]["timeline"] and bundle["memory"]["screenplay"]
+            assert bundle["people"] and bundle["props"] and bundle["sets"]
+            assert mid in [m["id"] for m in client.get(book_path).json()["memories"]]
+            assert client.get(media_path).content == output.getvalue()
+            assert client.post("/auth/logout").status_code == 204
+            for path in (memory_path, book_path, media_path):
+                assert client.get(path).status_code == 401
+            assert client.post("/auth/signup", json={"email": "other@example.test", "password": "test-password", "name": "Other"}).status_code == 201
+            for path in (memory_path, book_path, media_path):
+                assert client.get(path).status_code == 404
 
 
 def test_demo_ignores_inherited_worker_mode(isolated, monkeypatch):
@@ -173,3 +203,56 @@ def test_demo_ignores_inherited_worker_mode(isolated, monkeypatch):
     with TestClient(channels_demo.create_app()):
         assert os.environ["STITCH_CHANNELS_WORKER"] == "0"
     assert os.environ["STITCH_CHANNELS_WORKER"] == "1"
+
+
+def test_web_mode_isolates_jwt_transcription_and_cors(isolated, monkeypatch):
+    import auth
+    monkeypatch.setenv("JWT_SECRET", "inherited-secret-not-for-demo-123456789")
+    monkeypatch.setenv("COOKIE_SECURE", "1")
+    monkeypatch.setenv("STITCH_CHANNELS_TRANSCRIPTION", "1")
+    old = auth.create_session_token("demo_user_david")
+    before = dict(os.environ)
+    app = channels_demo.create_app(web=True)
+    assert dict(os.environ) == before
+    with TestClient(app) as client:
+        assert os.environ["JWT_SECRET"] != before["JWT_SECRET"]
+        assert os.environ["STITCH_CHANNELS_TRANSCRIPTION"] == "0"
+        assert os.environ["COOKIE_SECURE"] == "0"
+        assert auth.decode_session_token(old) is None
+        allowed = client.get("/session", headers={"Origin": "http://127.0.0.1:3002"})
+        assert allowed.headers["access-control-allow-origin"] == "http://127.0.0.1:3002"
+        assert allowed.headers["access-control-allow-credentials"] == "true"
+        assert "access-control-allow-origin" not in client.get("/session", headers={"Origin": "http://localhost:3000"}).headers
+        assert client.post("/families/demo_family/memories", json={}).status_code in (404, 405)
+        malformed = client.post("/auth/login", json={"email": {}, "password": "never-echo-this"})
+        assert malformed.status_code == 422 and "never-echo-this" not in malformed.text
+    assert dict(os.environ) == before
+
+
+def test_web_cli_uses_separate_port_and_validates_port_options(isolated, monkeypatch):
+    import uvicorn
+    calls = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: calls.append(kwargs))
+    assert channels_demo.main(["--web", "--worker"]) == 0
+    assert calls[0]["port"] == 8012 and calls[0]["host"] == "127.0.0.1"
+    for args in (["--preview-port", "0"], ["--bridge-port", "0"], ["--bridge-port", "65536"]):
+        with pytest.raises(SystemExit):
+            channels_demo.main(args)
+
+
+def test_book_contact_fixture_refuses_unseeded_or_wrong_identity(isolated):
+    import mongomock
+    from db.contacts import seed_book_demo_contact
+    with pytest.raises(ValueError, match="disposable"):
+        seed_book_demo_contact(object())
+    with pytest.raises(ValueError, match="matching"):
+        seed_book_demo_contact(mongomock.MongoClient().demo)
+    with TestClient(channels_demo.create_app(web=True)) as client:
+        db = client.app.state.demo_db
+        contact = db.contacts.find_one({"_id": "terminal-contact"})
+        assert (contact["familyId"], contact["personId"], contact["userId"]) == ("demo_family", "dad", "demo_user_david")
+        with pytest.raises(ValueError, match="already exists"):
+            seed_book_demo_contact(db)
+        db.people.update_one({"_id": "dad"}, {"$set": {"userId": "other"}})
+        with pytest.raises(ValueError, match="matching"):
+            seed_book_demo_contact(db)
