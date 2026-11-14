@@ -26,6 +26,7 @@ from agent.repo import InMemoryRepo, load_sample_family
 from agent.run_info import RunInfo
 from agent.tools.compile import SceneInputs, SceneLookupError
 from agent.tools.frames import (
+    CHECK_LOG_PATH,
     FRAME_PROMPT,
     FRAMES_PATH,
     MAX_FRAMES,
@@ -276,6 +277,70 @@ def test_render_frames_unknown_scene_reference_is_an_error_string():
     msg, _, events = call(graph, "r9", 1, "render_frames", {"times": [1.0]}, files=sample_files())
     assert msg.content.startswith("could not render frames: unknown reference") and "hymn_books" in msg.content
     assert events == []
+
+
+# --------------------------------------------------------------------- the checker cap
+
+
+class SpyRenderer(FakeFrameRenderer):
+    """Counts render calls (FakeFrameRenderer.calls records each one)."""
+
+
+def distinct_timeline(n: int) -> str:
+    """The sample timeline with different page text, so its text (and its hash) differs."""
+    data = json.loads(TIMELINE_TEXT)
+    data["shots"][0]["pageText"] = f"version {n}"
+    text = json.dumps(data)
+    Timeline.model_validate_json(text)
+    return text
+
+
+def test_render_frames_caps_the_checker_at_two_fix_rounds():
+    spy = SpyRenderer()
+    graph, _, _ = build(renderer=spy)
+    thread = "cap"
+    for n in (1, 2, 3):  # the first check, then two fix rounds
+        files = {"/screenplay.json": create_file_data(SCREENPLAY_TEXT), "/timeline.json": create_file_data(distinct_timeline(n))}
+        msg, state, events = call(graph, thread, n, "render_frames", {"times": [1.0]}, files=files)
+        assert not msg.content.startswith("STOP")
+        assert [e["event"] for e in events] == ["frames"]
+    assert len(spy.calls) == 3
+
+    # Rendering the third timeline again (more moments of the same version) is allowed.
+    msg, state, events = call(graph, thread, 4, "render_frames", {"times": [2.0, 3.0]})
+    assert not msg.content.startswith("STOP") and len(spy.calls) == 4
+    assert len(json.loads(file_data_to_string(state["files"][CHECK_LOG_PATH]))["rendered"]) == 3
+
+    # A fourth distinct timeline is refused before the renderer is called.
+    before = frames_file(state)
+    files = {"/timeline.json": create_file_data(distinct_timeline(4))}
+    msg, state, events = call(graph, thread, 5, "render_frames", {"times": [1.0]}, files=files)
+    assert msg.content == "STOP: the checker has had its 2 fix rounds; pass the best version and list what is still imperfect."
+    assert len(spy.calls) == 4 and events == []
+    assert frames_file(state) == before
+
+
+def test_render_frames_counts_only_renders_that_happened():
+    graph, _, _ = build(renderer=FailingRenderer())
+    msg, state, _ = call(graph, "cap_fail", 1, "render_frames", {"times": [1.0]}, files=sample_files())
+    assert msg.content.startswith("could not render frames")
+    assert CHECK_LOG_PATH not in state["files"]
+
+
+def test_render_frames_ignores_a_garbled_check_log():
+    spy = SpyRenderer()
+    graph, _, _ = build(renderer=spy)
+    files = {**sample_files(), CHECK_LOG_PATH: create_file_data("not json")}
+    msg, state, _ = call(graph, "cap_garbled", 1, "render_frames", {"times": [1.0]}, files=files)
+    assert len(spy.calls) == 1
+    assert len(json.loads(file_data_to_string(state["files"][CHECK_LOG_PATH]))["rendered"]) == 1
+
+
+def test_no_prompt_names_the_check_log():
+    prompts = API / "agent" / "prompts"
+    for path in prompts.glob("*.md"):
+        assert CHECK_LOG_PATH not in path.read_text(), path.name
+    assert "STOP" in (prompts / "checker.md").read_text()
 
 
 # ---------------------------------------------------------------------- the fake renderer

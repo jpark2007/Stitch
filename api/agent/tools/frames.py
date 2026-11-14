@@ -13,6 +13,12 @@ Both external services sit behind interfaces with deterministic fakes, so tests 
 - `photos.VisionModel.describe(images, prompt) -> str`: `FakeFrameCritic` flags frames that
   are almost a single flat color.
 
+The checker's fix rounds are capped here, not only in its prompt: a check round is one render of
+a distinct compiled timeline, and `render_frames` keeps the sha256 of every `/timeline.json` text
+it has rendered in a draft file (`CHECK_LOG_PATH`). Rendering the same timeline again is always
+allowed; a timeline beyond the first check plus `MAX_CHECK_FIX_ROUNDS` fix rounds is refused
+without calling the renderer.
+
 Shared conventions (see compile.py): the model never passes a family id (the tools close over
 the run), draft files live in deepagents state (`state["files"]`), and events go through
 `langgraph.config.get_stream_writer()`.
@@ -23,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import bisect
 import concurrent.futures
+import hashlib
 import io
 import json
 import logging
@@ -50,6 +57,12 @@ from screenplay.schema import VOCABULARY, Screenplay, Timeline, TimelineShot, Tr
 log = logging.getLogger(__name__)
 
 FRAMES_PATH = "/frames.json"
+CHECK_LOG_PATH = "/check_log.json"
+MAX_CHECK_FIX_ROUNDS = 2
+CHECK_STOP_TEXT = (
+    f"STOP: the checker has had its {MAX_CHECK_FIX_ROUNDS} fix rounds; "
+    "pass the best version and list what is still imperfect."
+)
 MAX_FRAMES = 12
 MAX_CRITIQUE_CHARS = 2000
 MAX_FOCUS_CHARS = 500
@@ -465,6 +478,21 @@ def _load_frames(files: dict[str, Any]) -> list[schemas.FrameShot]:
         return []
 
 
+def _load_check_log(files: dict[str, Any]) -> list[str]:
+    """sha256 hex digests of the timelines rendered so far, oldest first."""
+    raw = _read(files, CHECK_LOG_PATH)
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return []
+    rendered = data.get("rendered") if isinstance(data, dict) else None
+    if not isinstance(rendered, list):
+        return []
+    return [h for h in rendered if isinstance(h, str)]
+
+
 def _frames_json(frames: Sequence[schemas.FrameShot]) -> str:
     return json.dumps([f.model_dump(mode="json", by_alias=True) for f in frames])
 
@@ -547,6 +575,12 @@ def make_frame_tools(
         except ValidationError:
             return f"{TIMELINE_PATH} is not a valid timeline; compile the screenplay again"
 
+        # One check round per distinct compiled timeline: the first check plus the fix rounds.
+        digest = hashlib.sha256(tl_text.encode("utf-8")).hexdigest()
+        rendered = _load_check_log(files)
+        if digest not in rendered and len(rendered) >= 1 + MAX_CHECK_FIX_ROUNDS:
+            return CHECK_STOP_TEXT
+
         clean = _clean_times(times or [], max(0.0, float(timeline.duration)))
         if not clean:
             return "give at least one time, in seconds on the compiled timeline"
@@ -573,9 +607,12 @@ def make_frame_tools(
         ]
         _emit("frames", schemas.FramesEvent(frames=shots, critique=None))
         text = _frames_json([*_load_frames(files), *shots])
+        updates = {FRAMES_PATH: create_file_data(text)}
+        if digest not in rendered:  # only a render that happened uses a round
+            updates[CHECK_LOG_PATH] = create_file_data(json.dumps({"rendered": [*rendered, digest]}))
         return Command(
             update={
-                "files": {FRAMES_PATH: create_file_data(text)},
+                "files": updates,
                 "messages": [ToolMessage(content=text, tool_call_id=tool_call_id, name="render_frames")],
             }
         )
@@ -642,8 +679,11 @@ def make_frame_tools(
 
 
 __all__ = [
+    "CHECK_LOG_PATH",
+    "CHECK_STOP_TEXT",
     "FRAMES_PATH",
     "FRAME_PROMPT",
+    "MAX_CHECK_FIX_ROUNDS",
     "MAX_FRAMES",
     "FakeFrameCritic",
     "FakeFrameRenderer",
