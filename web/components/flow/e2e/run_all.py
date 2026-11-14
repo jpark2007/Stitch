@@ -15,10 +15,12 @@ report covers every step). --unit first runs the web unit tests (node --test) in
 
 It writes <out>/summary.json:
 
-    {"runs": [{"area", "exit", "seconds", "seams": <that run's seams.json counts, or null>}],
+    {"runs": [{"area", "exit", "seconds", "seams": <that run's seams.json counts, or null>,
+               "firstFailure": <"[owner] step: first detail line" of its first failed seam, or null>}],
      "failedByOwner": {"pages": n, "ethan": n, "api": n}}
 
-and prints one table. Exit 1 when any run exited non-zero, else 0. Without Playwright's
+and prints one table, then each run's first failure (a stack that would not start names
+the cause there, e.g. another next dev already running). Exit 1 when any run exited non-zero, else 0. Without Playwright's
 Chromium it prints the SKIP line and exits 0.
 """
 
@@ -163,6 +165,35 @@ def read_counts(out_dir: Path) -> dict[str, Any] | None:
     return counts if isinstance(counts, dict) else None
 
 
+FAILING_OWNERS: tuple[str, ...] = ("pages", "api")
+"""The owners whose failed seams fail a run (Ethan's are reported only)."""
+
+
+def read_first_failure(out_dir: Path) -> str | None:
+    """'[owner] step: first detail line' of the first failed seam in <out_dir>/seams.json, or None.
+
+    A 'pages' or 'api' seam comes before an 'ethan' one. The first detail line is where a
+    seam puts its cause (a stack that would not start names why, e.g. another next dev), so
+    the summary keeps it.
+    """
+    try:
+        data = json.loads((Path(out_dir) / "seams.json").read_text())
+    except (OSError, ValueError):
+        return None
+    seams = data.get("seams") if isinstance(data, dict) else None
+    if not isinstance(seams, list):
+        return None
+    failed = [s for s in seams if isinstance(s, dict) and not s.get("ok", True)]
+    failed.sort(key=lambda s: 0 if s.get("owner") in FAILING_OWNERS else 1)  # stable: keeps step order
+    if not failed:
+        return None
+    seam = failed[0]
+    detail = str(seam.get("detail") or "")
+    first = next((line.strip() for line in detail.splitlines() if line.strip()), "")
+    head = f"[{seam.get('owner', '?')}] {seam.get('step', '?')}"
+    return f"{head}: {first}" if first else head
+
+
 def two_free_ports() -> tuple[int, int]:
     """Two distinct free ports: (api, web)."""
     api = free_port()
@@ -195,6 +226,7 @@ def table(runs: list[dict[str, Any]], notes: list[str]) -> str:
         lines.append("  ".join(row[i].ljust(widths[i]) for i in range(len(widths))) + "  " + row[-1])
         if row is rows[0]:
             lines.append("  ".join("-" * w for w in widths) + "  ---")
+    lines += [f"{r['area']} first failure: {r['firstFailure']}" for r in runs if r.get("firstFailure")]
     lines += [f"note: {n}" for n in notes]
     return "\n".join(line.rstrip() for line in lines)
 
@@ -257,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd = build_command(area, script, args.mode, out, api_port, web_port, args.headed)
         run = run_one(area, cmd, API_DIR, str(out / area))
         run["seams"] = read_counts(out / area)
+        run["firstFailure"] = read_first_failure(out / area)
         runs.append(run)
         for port in (api_port, web_port):
             if not wait_port_free(port):
@@ -264,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
 
     merged = merge_counts([r["seams"] for r in runs])
     summary = {
-        "runs": [{k: r[k] for k in ("area", "exit", "seconds", "seams")} for r in runs],
+        "runs": [{k: r.get(k) for k in ("area", "exit", "seconds", "seams", "firstFailure")} for r in runs],
         "failedByOwner": merged["failedByOwner"],
     }
     path = out / "summary.json"

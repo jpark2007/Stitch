@@ -57,12 +57,15 @@ At the end it writes `<out>/summary.json`:
 
 ```json
 {"runs": [{"area": "demo", "exit": 0, "seconds": 96.4,
-           "seams": {"total": 21, "ok": 19, "failed": 2, "failedByOwner": {"pages": 0, "ethan": 2, "api": 0}}}],
+           "seams": {"total": 21, "ok": 19, "failed": 2, "failedByOwner": {"pages": 0, "ethan": 2, "api": 0}},
+           "firstFailure": "[ethan] 6b A watches the scene: REQUEST for Ethan: ..."}],
  "failedByOwner": {"pages": 0, "ethan": 2, "api": 0}}
 ```
 
 `seams` is that run's `seams.json` counts, or `null` (the unit tests, or a script that
-wrote none). It prints the same as a table. The exit code is 1 when any run exited
+wrote none). `firstFailure` is `[owner] step: first detail line` of its first failed seam
+(a `pages` or `api` one before an `ethan` one), or `null`. It prints the same as a table,
+with each run's first failure under it. The exit code is 1 when any run exited
 non-zero, else 0; without Chromium it prints the SKIP line and exits 0.
 
 ## Run the demo path
@@ -118,6 +121,26 @@ telemetry flush that `next dev` spawns outside its group on the way out. No `uvi
 or `node` process outlives the run.
 
 The same table is printed at the end, followed by every `REQUEST` for Ethan.
+
+## If the stack won't start
+
+When `seed.serve` or `next dev` exits or never answers, the harness reads what that start
+wrote to `api.log` / `web.log` and puts the cause on the first line of the error
+(`harness.diagnose_start_failure`). That line is what the console shows next to `FAIL`, with
+up to three lines of context under it; the full log tail is in `seams.json`, and
+`run_all.py` repeats the line under its table as `<area> first failure: ...`.
+
+| The console says | What to do |
+|---|---|
+| `Another next dev is already running in web/ (pid N, ...): stop it with kill N, then run again.` | A `next dev` from this checkout (yours, or a run that did not stop) holds `web/`'s dev lock, whatever port it is on. Run the `kill` it names. |
+| `Port N is already in use ...` | Something else listens on the web port you passed with `--web-port`: stop it (`lsof -i :N`) or pick another port. |
+| `The API could not listen on port N ...` | Another `seed.serve` or `uvicorn` holds the API port: stop it or pass another `--api-port`. |
+| `The web app's dependencies are not installed ...: run npm ci in web/` | `web/node_modules` is missing or incomplete (`Cannot find module`, `next: command not found`). Run `npm ci` in `web/`. |
+| `The API's Python environment has no ...: run uv sync in api/` | Run `uv sync` in `api/` and start the script with `uv run` from `api/`. |
+
+Any other failure keeps the plain sentence (`... exited with code 1 before it was ready.` or
+`... was not ready after N s.`) followed by the log tail: read `web.log` or `api.log` in the
+out dir.
 
 ## Owners
 
