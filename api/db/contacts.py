@@ -19,13 +19,25 @@ def ensure_contact_indexes(db) -> None:
         partialFilterExpression={"enrollmentManaged": True}, name="channel_enrolled_person_unique")
 
 
+def _identity_handle(provider: str, handle: str) -> str:
+    """Match enrollment's ASCII email identity without altering transport data.
+
+    Managed iMessage emails are stored lowercase. Phone numbers and opaque
+    terminal IDs retain exact matching; this is not a legacy-data migration.
+    Input validation remains at the enrollment/transport boundary.
+    """
+    if provider == "imessage" and handle.isascii() and "@" in handle:
+        return handle.lower()
+    return handle
+
+
 def matching_contacts(db, provider: str, handle: str) -> list[dict]:
     """Identity discovery is deliberately cross-family; no family data is returned to callers.
 
     This is the one trusted-handle lookup needed before a family can be selected.
     It cannot authorize an action: resolve_contact also checks the person's family.
     """
-    return list(db.contacts.find({"channel": provider, "handle": handle}))
+    return list(db.contacts.find({"channel": provider, "handle": _identity_handle(provider, handle)}))
 
 
 def resolve_contact(db, provider: str, handle: str) -> dict:
@@ -47,6 +59,7 @@ def resolve_contact(db, provider: str, handle: str) -> dict:
 
 def stop_contacts(db, provider: str, handle: str, rows: list[dict]) -> None:
     """STOP applies to every mapped family; it never needs family disambiguation."""
+    handle = _identity_handle(provider, handle)
     for row in rows:
         db.contacts.update_one(
             {"_id": row["_id"], "familyId": row["familyId"], "channel": provider, "handle": handle},
@@ -158,6 +171,7 @@ def _enrollment_rate(db, actor_id: str, now: datetime) -> None:
 def create_pending_enrollment(db, family_id: str, person_id: str, actor_id: str,
                               provider: str, handle: str, preferences: dict,
                               *, now: datetime | None = None) -> tuple[dict, str]:
+    handle = _identity_handle(provider, handle)
     now = now or datetime.now(timezone.utc)
     person = settings_person(db, family_id, person_id, actor_id)
     _enrollment_rate(db, actor_id, now)
@@ -225,6 +239,7 @@ def stop_settings_contact(db, family_id: str, person_id: str, actor_id: str) -> 
 
 def redeem_enrollment(db, provider: str, handle: str, code: str, space_id: str,
                       *, space_kind: str, now: datetime | None = None) -> bool:
+    handle = _identity_handle(provider, handle)
     if space_kind != "direct":
         return False
     now = now or datetime.now(timezone.utc)
