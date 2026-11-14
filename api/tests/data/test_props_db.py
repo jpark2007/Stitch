@@ -552,13 +552,14 @@ def _png(width: int, height: int) -> bytes:
 def test_update_prop_photo_sets_aspect_from_the_image(mdb):
     p = P.insert_prop(mdb, FAM_A, make_prop("Accordion", aspect=1.0, size="carried",
                                             grip=[0.3, 0.2], color="#123456"))
-    wide = media.put_media(mdb, FAM_A, _png(800, 200), content_type="image/png")
+    # In range: a wider photo is clamped (tests/data/test_prop_photo_aspect_clamp.py).
+    wide = media.put_media(mdb, FAM_A, _png(480, 200), content_type="image/png")
     out = P.update_prop(mdb, FAM_A, p.id, schemas.PropPatch(photo_id=f"media/{wide}"))
-    assert out.aspect == 4.0
+    assert out.aspect == 2.4
     assert (out.size, out.grip, out.color) == ("carried", [0.3, 0.2], "#123456")
-    assert P.get_prop(mdb, FAM_A, p.id).aspect == 4.0
+    assert P.get_prop(mdb, FAM_A, p.id).aspect == 2.4
     # A rename alone leaves it.
-    assert P.update_prop(mdb, FAM_A, p.id, schemas.PropPatch(name="Squeezebox")).aspect == 4.0
+    assert P.update_prop(mdb, FAM_A, p.id, schemas.PropPatch(name="Squeezebox")).aspect == 2.4
 
 
 def test_update_prop_photo_that_cannot_be_read_keeps_the_aspect(mdb):
