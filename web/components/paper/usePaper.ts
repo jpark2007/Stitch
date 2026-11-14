@@ -18,6 +18,7 @@ import {
   createPaperMaterial,
   createWoodMaterial,
   type CutoutMaterialOptions,
+  type DeckledMaskOptions,
   type PaperMaterialOptions,
 } from "./materials";
 
@@ -33,33 +34,66 @@ function useDisposeOnChange<T extends Material | Material[]>(value: T): T {
   return value;
 }
 
-// Options are keyed by value (JSON) so inline option objects don't rebuild the
-// material on every render; the memo re-reads them from the key.
-const keyOf = (o: unknown) => JSON.stringify(o ?? {});
-const fromKey = <T,>(k: string) => JSON.parse(k) as T;
+/*
+ * Hook options are plain data only: a colour as a CSS string or hex number,
+ * and mask *options* (never a prebuilt DeckledMask or a THREE.Color). The memo
+ * key is built from explicit primitive fields, so inline option objects do not
+ * rebuild the material on every render, and nothing is ever serialised.
+ */
 
-export function usePaperMaterial(options?: PaperMaterialOptions) {
-  const k = keyOf(options);
-  return useDisposeOnChange(useMemo(() => createPaperMaterial(fromKey(k)), [k]));
+/** A colour as plain data: "#c46a49", "tomato", or 0xc46a49. */
+export type PaperColor = string | number;
+
+export type PaperHookOptions = Omit<PaperMaterialOptions, "color"> & { color?: PaperColor };
+export type CardHookOptions = Omit<PaperHookOptions, "kind">;
+export type CardBoxHookOptions = CardHookOptions & { edgeColor?: PaperColor };
+export type CutoutHookOptions = Omit<CutoutMaterialOptions, "color" | "mask"> & {
+  color?: PaperColor;
+  mask?: DeckledMaskOptions;
+};
+export type WoodHookOptions = { repeat?: number | [number, number]; color?: PaperColor };
+
+const part = (v: unknown) => (v === undefined ? "" : String(v));
+const repeatKey = (r: PaperMaterialOptions["repeat"]) => (Array.isArray(r) ? `${r[0]}x${r[1]}` : part(r));
+
+function paperKey(o: PaperHookOptions = {}) {
+  return [part(o.color), part(o.roughness), part(o.grain), part(o.kind), repeatKey(o.repeat), part(o.side)].join("|");
 }
 
-export function useCardMaterial(options?: Omit<PaperMaterialOptions, "kind">) {
-  const k = keyOf(options);
-  return useDisposeOnChange(useMemo(() => createCardMaterial(fromKey(k)), [k]));
+function maskKey(m?: DeckledMaskOptions) {
+  if (!m) return "";
+  return [part(m.aspect), part(m.style), part(m.amount), part(m.seed), part(m.resolution), part(m.cornerRadius)].join(",");
 }
 
-export function useCardBoxMaterials(options?: Parameters<typeof createCardBoxMaterials>[0]) {
-  const k = keyOf(options);
-  return useDisposeOnChange(useMemo(() => createCardBoxMaterials(fromKey(k)), [k]));
+/* The memo deps are primitive keys; the factories close over the latest
+   options, which by construction produce the same material for the same key. */
+
+export function usePaperMaterial(options?: PaperHookOptions) {
+  const k = paperKey(options);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useDisposeOnChange(useMemo(() => createPaperMaterial(options), [k]));
 }
 
-/** Pass mask *options* (not a prebuilt mask) so the key stays serialisable. */
-export function useCutoutMaterial(options?: CutoutMaterialOptions) {
-  const k = keyOf(options);
-  return useDisposeOnChange(useMemo(() => createCutoutMaterial(fromKey(k)), [k]));
+export function useCardMaterial(options?: CardHookOptions) {
+  const k = paperKey(options);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useDisposeOnChange(useMemo(() => createCardMaterial(options), [k]));
 }
 
-export function useWoodMaterial(options?: Parameters<typeof createWoodMaterial>[0]) {
-  const k = keyOf(options);
-  return useDisposeOnChange(useMemo(() => createWoodMaterial(fromKey(k)), [k]));
+export function useCardBoxMaterials(options?: CardBoxHookOptions) {
+  const k = `${paperKey(options)}|${part(options?.edgeColor)}`;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useDisposeOnChange(useMemo(() => createCardBoxMaterials(options), [k]));
+}
+
+export function useCutoutMaterial(options?: CutoutHookOptions) {
+  const k = `${paperKey(options)}|${part(options?.rim)}|${maskKey(options?.mask)}`;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useDisposeOnChange(useMemo(() => createCutoutMaterial(options), [k]));
+}
+
+export function useWoodMaterial(options?: WoodHookOptions) {
+  const k = `${part(options?.color)}|${repeatKey(options?.repeat)}`;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useDisposeOnChange(useMemo(() => createWoodMaterial(options), [k]));
 }
