@@ -36,6 +36,9 @@ export interface CaptionStripProps {
   className?: string;
 }
 
+/** Characters past which a caption is set a size smaller. */
+const LONG_CAPTION = 72;
+
 /** A deterministic torn-paper outline in a 1000 × 100 box (stretched to fit). */
 function tornPath(seed: number): string {
   let s = (seed * 2654435761) % 4294967296;
@@ -132,7 +135,12 @@ export function CaptionStrip({ controller, tellers = [], className = "" }: Capti
                 {teller.name}&rsquo;s telling
               </figcaption>
             )}
-            <blockquote className="relative text-balance text-center font-hand text-[clamp(1.3rem,1.95vw,1.8rem)] leading-[1.12] text-ink">
+            <blockquote
+              className={`relative text-balance text-center font-hand leading-[1.12] text-ink ${
+                // A long line steps down a size, so it still fits the band under the picture.
+                caption.text.length > LONG_CAPTION ? "text-[clamp(1.12rem,1.6vw,1.5rem)]" : "text-[clamp(1.3rem,1.95vw,1.8rem)]"
+              }`}
+            >
               {tokens.map((t, i) => (
                 <span
                   key={i}
