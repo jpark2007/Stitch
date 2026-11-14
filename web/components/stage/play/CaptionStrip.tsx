@@ -88,7 +88,7 @@ export function CaptionStrip({ controller, tellers = [], className = "" }: Capti
             className="relative mx-4 max-w-[min(760px,92vw)] px-10 pb-5 pt-4 sm:px-14"
             initial={{ opacity: 0, y: 10, rotate: -1.6 }}
             animate={{ opacity: 1, y: 0, rotate: index % 2 ? 0.5 : -0.7 }}
-            exit={{ opacity: 0, y: -6, rotate: index % 2 ? 1 : -1.2, transition: { duration: 0.28, ease: [0.4, 0, 1, 1] } }}
+            exit={{ opacity: 0, y: -6, rotate: index % 2 ? 1 : -1.2, transition: { duration: 0.2, ease: [0.4, 0, 1, 1] } }}
             transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
           >
             <svg

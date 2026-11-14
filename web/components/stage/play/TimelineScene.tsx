@@ -56,6 +56,10 @@ const PAGE_PER_STAGE = 2.4;
 /** Page depth the stage needs, in stage units (back fold to just past the front layer). */
 const STAGE_DEPTH = 1.6;
 
+function placeholderProp(id: string): Prop {
+  return { id, name: id, size: "hand", art: { body: null }, color: "#c4a37a", aspect: 1, anchor: [0.5, 1], grip: [0.5, 0.5] };
+}
+
 /** World units per stage unit, and where stage (0, 0, 0) sits, on a page of `size`. */
 export function stageLayout(size: StageSize = DEFAULT_STAGE_SIZE) {
   const scale = Math.min(size[0] / PAGE_PER_STAGE, size[1] / STAGE_DEPTH);
@@ -104,7 +108,9 @@ export function TimelineScene({
   const frame = controller.frame;
   const props = useMemo(() => {
     const byId = new Map<string, Prop>(scene.props.map((p) => [p.id, p]));
-    return frame.props.map((pf) => byId.get(pf.id)).filter((p): p is Prop => p !== undefined);
+    // A tracked prop the scene data does not describe still plays, as a
+    // hand-sized placeholder card.
+    return frame.props.map((pf) => byId.get(pf.id) ?? placeholderProp(pf.id));
   }, [frame, scene.props]);
   return (
     <SceneProvider controller={controller} scene={scene} scale={scale} origin={origin} tick={tick} reveal={reveal} onReady={onReady}>

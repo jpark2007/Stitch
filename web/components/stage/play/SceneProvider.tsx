@@ -212,7 +212,7 @@ export interface SceneProviderProps {
 }
 
 /** Frames to draw before calling a scene ready (shadow maps and first uploads settle). */
-const READY_FRAMES = 4;
+const READY_FRAMES = 3;
 /** Give up waiting for slow art after this long (ms) and call it ready anyway. */
 const READY_TIMEOUT = 10000;
 
@@ -243,14 +243,11 @@ export function SceneProvider({
     return () => runtime.setRoot(null);
   }, [runtime]);
 
-  // Local clipping is off by default in three; the wings need it.
+  // Local clipping is off by default in three; the wings need it. It is left
+  // on at unmount: it only affects materials that carry clipping planes, and
+  // another stage in the same Canvas (the book mid-turn) may still need it.
   useEffect(() => {
-    const gl = get().gl;
-    const was = gl.localClippingEnabled;
-    gl.localClippingEnabled = true;
-    return () => {
-      gl.localClippingEnabled = was;
-    };
+    get().gl.localClippingEnabled = true;
   }, [get]);
 
   const value = useMemo<SceneContextValue>(() => {
