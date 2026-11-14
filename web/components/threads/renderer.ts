@@ -84,10 +84,15 @@ function lodFor(s: number): number {
   return 0;
 }
 
-/** How open the running stitch is: 0 (laid yarn) far out, ~0.14 close in. */
-function stitchGap(s: number): number {
+/**
+ * The share of each stitch period left as bare paper. Round caps eat half
+ * the yarn width at each end, so the cut is widened by that much to leave a
+ * visible gap: a hairline far out, a proper running stitch close in.
+ */
+function stitchGap(s: number, periodPx: number, width: number): number {
   const u = Math.min(1, Math.max(0, (s - 20) / 50));
-  return u * u * (3 - 2 * u) * 0.14;
+  const visible = 2.2 + u * u * (3 - 2 * u) * (0.11 * periodPx - 2.2);
+  return Math.min(0.4, (visible + width * 0.95) / periodPx);
 }
 
 function rand(i: number, seed: number): number {
@@ -122,7 +127,6 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
   // Running stitch: the period in years is a power of two, so while zooming
   // stitches only ever split or merge in place, they never slide.
   const period = Math.pow(2, Math.ceil(Math.log2(26 / s)));
-  const gapFrac = stitchGap(s);
   const knotT = model.knots.map((k) => k.t);
   const knotClear = (knotRadius(s, 3) * 1.3) / s; // years either side of a knot left unbroken
 
@@ -161,43 +165,69 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
     geom.strands[i] = buf.subarray(0, nSamples * 2);
     geom.strandLens[i] = nSamples;
 
-    // Cut into stitches (each slightly irregular, as if sewn by hand).
+    // Cut into stitches (each slightly irregular, as if sewn by hand). Gaps
+    // can be narrower than the sample spacing, so every gap edge is found
+    // exactly by interpolating between samples.
     const runs: Polyline[] = [];
     const holes: number[] = [];
     let run: Polyline = [];
-    const holeOut = width * 0.75;
-    const pushHole = (k: number, dir: number) => {
-      // Just past the stitch end, into the gap: where the needle went in.
-      const ka = Math.max(0, Math.min(nSamples - 1, k - dir));
-      const dx = buf[k * 2] - buf[ka * 2];
-      const dy = buf[k * 2 + 1] - buf[ka * 2 + 1];
+    const holeOut = width * 0.7;
+    const gapFrac = stitchGap(s, period * s, width);
+    const gapOf = (cell: number) => gapFrac * (0.8 + rand(cell, seed) * 0.4);
+    const tAt = (k: number) => Math.min(t1, t0 + k * dt);
+    // A hole just past a stitch end, into the gap: where the needle went in.
+    const hole = (x: number, y: number, dx: number, dy: number) => {
       const len = Math.hypot(dx, dy) || 1;
-      holes.push(buf[k * 2] + (dx / len) * holeOut, buf[k * 2 + 1] + (dy / len) * holeOut);
+      holes.push(x + (dx / len) * holeOut, y + (dy / len) * holeOut);
     };
-    for (let k = 0; k < nSamples; k++) {
-      let inGap = false;
-      if (gapFrac > 0.004) {
-        const p = phase[k] / period;
-        const cell = Math.floor(p);
-        const g = gapFrac * (0.75 + rand(cell, seed) * 0.5);
-        inGap = p - cell > 1 - g && !nearAny(knotT, Math.min(t1, t0 + k * dt), knotClear);
-      }
-      if (inGap) {
-        if (run.length >= 4) {
-          runs.push(run);
-          pushHole(k - 1, 1);
+    let p0 = phase[0] / period;
+    let inGap = p0 - Math.floor(p0) > 1 - gapOf(Math.floor(p0)) && !nearAny(knotT, t0, knotClear);
+    if (!inGap) run.push(buf[0], buf[1]);
+    for (let k = 1; k < nSamples; k++) {
+      const p1 = phase[k] / period;
+      const xa = buf[k * 2 - 2];
+      const ya = buf[k * 2 - 1];
+      const xb = buf[k * 2];
+      const yb = buf[k * 2 + 1];
+      let pa = p0;
+      // Walk every gap edge between the two samples.
+      for (let guard = 0; guard < 64; guard++) {
+        const cell = Math.floor(pa);
+        const gapStart = cell + 1 - gapOf(cell);
+        const edge = pa < gapStart ? gapStart : cell + 1;
+        if (edge >= p1) break;
+        const f = (edge - p0) / (p1 - p0 || 1);
+        const x = xa + (xb - xa) * f;
+        const y = ya + (yb - ya) * f;
+        if (edge === gapStart) {
+          const t = tAt(k - 1) + dt * f;
+          if (!inGap && !nearAny(knotT, t, knotClear)) {
+            run.push(x, y);
+            if (run.length >= 4) runs.push(run);
+            hole(x, y, xb - xa, yb - ya);
+            run = [];
+            inGap = true;
+          }
+        } else if (inGap) {
+          hole(x, y, xa - xb, ya - yb);
+          run = [x, y];
+          inGap = false;
         }
-        run = [];
-      } else {
-        if (run.length === 0 && runs.length > 0) pushHole(k, -1);
-        run.push(buf[k * 2], buf[k * 2 + 1]);
+        pa = edge + 1e-9;
       }
+      if (!inGap) run.push(xb, yb);
+      p0 = p1;
     }
     if (run.length >= 4) runs.push(run);
 
-    if (holes.length) drawHoles(ctx, holes, Math.max(0.8, width * 0.3) * Math.min(1, gapFrac * 9), ink);
+    if (holes.length) drawHoles(ctx, holes, Math.max(0.75, width * 0.28), ink);
     // Where the thread comes up through the paper at its start.
     if (strand.start.t >= tLeft - 1 && strand.start.t <= st.reveal) drawHoles(ctx, [buf[0], buf[1]], Math.max(1.3, width * 0.45), ink);
+    // ...and where it goes back down, today.
+    if (t1 >= model.tNow - 1e-6) {
+      const e = (nSamples - 1) * 2;
+      drawHoles(ctx, [buf[e] + width * 0.6, buf[e + 1]], Math.max(1.3, width * 0.45), ink);
+    }
     drawYarn(ctx, runs, ink, width, lod);
     if (lod >= 2) drawFibres(ctx, runs, ink.body, width, seed);
   }
@@ -389,6 +419,10 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
     for (; k < n; k++) {
       const x = pts[k * 2];
       if (x < margin) continue;
+      if (x + w > layout.width - margin) {
+        k = n;
+        break;
+      }
       if (Math.abs(pts[k * 2 + 1] - lanePx) > 2) continue;
       // Level for the label's width?
       let level = true;
