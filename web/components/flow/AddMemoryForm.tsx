@@ -11,8 +11,9 @@
 // (the draft's memoryId): the year is the moment's and its people are already
 // set, so the year is shown as text and the participant picker is hidden.
 // `questionArea` (from questionAreaFor) says whether the typed question field
-// and the generic starters show; `askedQuestion` is a question shown read-only
-// in the second-telling banner. `onDraftChange` hears every edit, so the page
+// and the generic starters show; `askedQuestion` is a question shown read-only:
+// in the second-telling banner, or for a new memory (a family question picked
+// as a note on the page) in a quiet "You're answering" block at the top. `onDraftChange` hears every edit, so the page
 // can carry what was typed into a form it remounts (a picked question, another
 // family).
 import Link from "next/link";
@@ -24,6 +25,7 @@ import { FIELD_LABEL_CLASS, OptionalMark, TextAreaField, TextField } from "./Fie
 import { FormError, focusFirstError } from "./FormError";
 import {
   MEMORY_FIELDS,
+  MEMORY_YEAR_MIN,
   SUGGESTED_QUESTIONS,
   emptyDraft,
   questionAreaFor,
@@ -43,7 +45,6 @@ import { YearInput } from "./YearInput";
 const GENERIC_ERROR = "That didn't save. Your story is still here: try sending it again.";
 const PHOTOS_TOO_BIG = "Those photos are too big to send together. Try fewer or smaller ones.";
 const PHOTOS_WRONG_TYPE = "One of those photos isn't a kind we can use. Try a JPEG, PNG, WebP, HEIC or GIF.";
-const YEAR_MIN = 1850;
 
 /** A visible asterisk; the control's `required` tells assistive tech. */
 function RequiredMark() {
@@ -61,7 +62,10 @@ export function AddMemoryForm(props: {
   /** Photos the form starts with (a failed run's, brought back to tell it again). */
   initialPhotos?: File[];
   secondTellingOf?: { title: string; year: number } | null;
-  /** The question a second telling answers, shown read-only in its banner. */
+  /**
+   * The question being answered, shown read-only: in a second telling's
+   * banner, or (for a new memory) in a "You're answering" block at the top.
+   */
   askedQuestion?: string | null;
   /** This person has told the moment before: sending replaces their telling. */
   alreadyTold?: boolean;
@@ -209,7 +213,14 @@ export function AddMemoryForm(props: {
     const current: MemoryDraft = secondTellingOf
       ? { ...draft, year: String(secondTellingOf.year) }
       : draft;
-    const local = splitHidden(validateDraft(current, selfPersonId), null);
+    // A question or year the person can't edit must never block sending.
+    const local = splitHidden(
+      validateDraft(current, selfPersonId, {
+        questionEditable: showQuestionField,
+        yearEditable: !secondTellingOf,
+      }),
+      null,
+    );
     if (Object.keys(local.fields).length > 0 || local.rest) {
       setErrors(local.fields);
       setFormError(local.rest);
@@ -274,6 +285,16 @@ export function AddMemoryForm(props: {
               </span>
             </p>
           ) : null}
+        </div>
+      ) : askedQuestion ? (
+        <div className="border-l-[3px] border-accent bg-paper px-4 py-3">
+          <p className="text-sm leading-snug text-ink-soft">
+            <span className="block">You&rsquo;re answering</span>
+            <span className="mt-0.5 block font-hand text-[1.375rem] leading-[1.15] text-pretty break-words text-ink">
+              {askedQuestion}
+            </span>
+          </p>
+          <p className="mt-2 text-sm leading-snug text-ink-soft">Press the note again to let it go.</p>
         </div>
       ) : null}
 
@@ -377,7 +398,7 @@ export function AddMemoryForm(props: {
             name="year"
             // No max: reading the clock while rendering breaks prerendering.
             // validateYear checks "not in the future" on submit.
-            min={YEAR_MIN}
+            min={MEMORY_YEAR_MIN}
             value={draft.year}
             onChange={(v) => update("year", v)}
             error={errors.year}
