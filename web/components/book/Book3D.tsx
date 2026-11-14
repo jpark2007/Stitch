@@ -238,7 +238,7 @@ export function Book3D({ spreads, cover, initial, renderStage, still = false, de
         animate={{ opacity: art && !view.opened ? 1 : 0, y: art && !view.opened ? 0 : 8 }}
         transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
       >
-        tap the book to open it
+        <OpenHintText />
       </motion.p>
 
       {/* Once, after the reader opens the book themselves. */}
@@ -263,6 +263,11 @@ const subscribeCoarse = (cb: () => void) => {
   return () => m.removeEventListener("change", cb);
 };
 const isCoarse = () => window.matchMedia("(pointer: coarse)").matches;
+
+function OpenHintText() {
+  const coarse = useSyncExternalStore(subscribeCoarse, isCoarse, () => false);
+  return coarse ? "tap the book to open it" : "click the book to open it";
+}
 
 /** A brief line on how to turn, shown once the cover has opened, then never again. */
 function TurnHint({ view, enabled }: { view: BookView; enabled: boolean }) {

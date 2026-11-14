@@ -80,7 +80,12 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
   ctx.fillText(first, left - 2, y + lead);
   ctx.fillStyle = INK_SOFT;
   ctx.font = `400 31px ${fonts.display}`;
-  const body = wrap(ctx, text.slice(1), (i) => (i < 2 ? width - capW : width));
+  // No widows: narrow the measure a little until the last line has company.
+  let body = wrap(ctx, text.slice(1), (i) => (i < 2 ? width - capW : width));
+  for (let k = 1; k <= 10 && body.length > 2 && !body[body.length - 1].includes(" "); k++) {
+    const w = width - k * 14;
+    body = wrap(ctx, text.slice(1), (i) => (i < 2 ? w - capW : w));
+  }
   body.forEach((line, i) => {
     ctx.fillText(line, left + (i < 2 ? capW : 0), y);
     y += lead;
