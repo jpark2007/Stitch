@@ -27,6 +27,11 @@ export interface FamilyTreeProps {
    * names are unreadable.
    */
   minScale?: number;
+  /**
+   * The largest scale, in px per layout unit. A small family (one person, a
+   * couple) stands at a natural size on a big page instead of filling it.
+   */
+  maxScale?: number;
   /** Where a person's node links to (their book). */
   hrefFor?: (personId: string) => string;
   /** A paper placeholder of the tree while the real one loads: no names, no links. */
@@ -161,7 +166,7 @@ function highlightRules(ids: string[]): string {
 
 const defaultHref = (id: string) => `/people/${encodeURIComponent(id)}`;
 
-export function FamilyTree({ people, maxHeight, minScale, hrefFor = defaultHref, ghost = false, className }: FamilyTreeProps) {
+export function FamilyTree({ people, maxHeight, minScale, maxScale, hrefFor = defaultHref, ghost = false, className }: FamilyTreeProps) {
   const layout = layoutFamily(people, DEFAULT_LAYOUT);
   if (!layout.people.length) return null;
   const byId = new Map(people.map((p) => [p.id, p]));
@@ -175,9 +180,14 @@ export function FamilyTree({ people, maxHeight, minScale, hrefFor = defaultHref,
   // Mask ids must be unique on the page and valid inside url(#...).
   const maskId = (key: string, i: number) => `tree-draw-${i}-${SAFE_ID.test(key) ? key : hashSeed(key)}`;
 
+  // Width limits: the height cap (kept in shape) and the largest scale.
+  const widthCaps = [
+    ...(maxHeight ? [`calc(${maxHeight} * ${(W / H).toFixed(4)})`] : []),
+    ...(maxScale ? [`${(W * maxScale).toFixed(1)}px`] : []),
+  ];
   const frameStyle = {
     "--u": `calc(100cqw / ${W.toFixed(3)})`,
-    ...(maxHeight ? { maxWidth: `calc(${maxHeight} * ${(W / H).toFixed(4)})` } : {}),
+    ...(widthCaps.length ? { maxWidth: widthCaps.length > 1 ? `min(${widthCaps.join(", ")})` : widthCaps[0] } : {}),
     ...(minScale ? { minWidth: `${(W * minScale).toFixed(1)}px` } : {}),
   } as CSSProperties;
 

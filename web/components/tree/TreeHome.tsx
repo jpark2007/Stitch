@@ -23,6 +23,11 @@ import { toTreePeople } from "./treeData";
 const TREE_MAX_HEIGHT = "calc(100dvh - 17rem)";
 /** Below this scale (px per layout unit) names get too small; wide trees scroll instead. */
 const TREE_MIN_SCALE = 0.42;
+/**
+ * Above this scale a small family's puppets would fill the page (a new
+ * family starts with one person); it stays near the demo family's size.
+ */
+const TREE_MAX_SCALE = 1.05;
 
 // No ?next=: the sign-in pages already come home, or go on to start a family
 // for someone who has none yet (a next of "/" would skip that step).
@@ -153,7 +158,7 @@ function FamilyHome(props: {
     >
       {people.length ? (
         <div ref={treeRef} className={`ft-home-tree ${switching ? "is-switching" : ""}`} aria-busy={switching || undefined}>
-          <FamilyTree people={people} hrefFor={hrefFor} maxHeight={TREE_MAX_HEIGHT} minScale={TREE_MIN_SCALE} />
+          <FamilyTree people={people} hrefFor={hrefFor} maxHeight={TREE_MAX_HEIGHT} minScale={TREE_MIN_SCALE} maxScale={TREE_MAX_SCALE} />
         </div>
       ) : (
         <PromptCard title="No one is in this tree yet">
@@ -193,7 +198,7 @@ function DemoHome(props: { reason: "chosen" | "offline" | "mock"; onRetry?: () =
   }
   return (
     <HomeShell title={demoFamily.name} caption="pick anyone to open their book" threads={threadsHref(null)} note={note}>
-      <FamilyTree people={demoPeople} maxHeight={TREE_MAX_HEIGHT} minScale={TREE_MIN_SCALE} />
+      <FamilyTree people={demoPeople} maxHeight={TREE_MAX_HEIGHT} minScale={TREE_MIN_SCALE} maxScale={TREE_MAX_SCALE} />
     </HomeShell>
   );
 }
@@ -258,7 +263,7 @@ export function TreeHomeLoading() {
       caption={<span className="ft-bar ft-bar-caption" />}
       busy
     >
-      <FamilyTree people={demoPeople} maxHeight={TREE_MAX_HEIGHT} ghost />
+      <FamilyTree people={demoPeople} maxHeight={TREE_MAX_HEIGHT} maxScale={TREE_MAX_SCALE} ghost />
     </HomeShell>
   );
 }
