@@ -459,7 +459,8 @@ class World:
                 if s.holding in shot.prop_start:
                     raise StateError(
                         "prop_conflict",
-                        f"{who} starts holding {s.holding}, and propStart also places it; give one",
+                        f"{who} starts holding {s.holding}, and propStart also places it; "
+                        f"remove {s.holding} from propStart or from {who}'s holding",
                     )
             if s.in_ is not None:
                 prop, _, sock = s.in_.partition(".")

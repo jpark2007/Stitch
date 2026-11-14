@@ -100,6 +100,9 @@ class ErrorCode:
     ``until t=<x>`` time in a busy reason) and ``{param}`` (the missing parameter, quoted:
     ``"<p>" is missing``, ``needs <p>`` or ``no <p> given``). A field the error cannot fill
     reads as a generic phrase (``_Fields.FALLBACK``), so a hint is always a whole sentence.
+
+    Some codes cover situations with different fixes; HINT_VARIANTS refines ``hint`` for them
+    from the reason's wording (an effect aimed offstage, a prop someone else is holding).
     """
 
     summary: str
@@ -122,7 +125,7 @@ ERROR_CODES: dict[str, ErrorCode] = {
     "bad_mark": ErrorCode("a mark is not [u, h] or [u, h, d]", "write the mark as [u, h] or [u, h, d] (numbers)"),
     "bad_start": ErrorCode("a shot's start block cannot be applied", None),
     "prop_conflict": ErrorCode(
-        "a prop starts both in a hand and in propStart", "remove {subject} from propStart or from the start holding"
+        "a prop starts both in a hand and in propStart", "remove the prop from propStart or from the start holding"
     ),
     "double_hold": ErrorCode("two people start holding the same prop", "give the prop to only one of them"),
     # ---- names (validate.py, state.py, locate.py, verbs)
@@ -254,6 +257,40 @@ ERROR_CODES: dict[str, ErrorCode] = {
 }
 
 
+# An effect's reason (effects.py) starts ``<effect> at "<name>": ``; its fix is to re-aim it.
+_EFFECT_AT = r'^\w+ at "(?P<subject>[^"]*)": '
+
+# Per code, (pattern, hint) pairs tried in order on the error's reason before the code's own
+# hint. The first pattern that matches wins; its named groups become hint fields, and a None
+# hint means the situation has no obvious fix.
+HINT_VARIANTS: dict[str, tuple[tuple[re.Pattern[str], str | None], ...]] = {
+    "offstage": (
+        # a mark beyond the stage edge: no enter can bring it on
+        (re.compile(_EFFECT_AT + r"\S+ is a mark offstage"), "aim the {do} at a mark on stage"),
+        (re.compile(_EFFECT_AT), "aim the {do} at a mark on stage, or give it a t when {subject} is on stage"),
+    ),
+    "not_on_stage": (
+        (re.compile(_EFFECT_AT), "place {subject} with propStart in shot {shot}, or aim the {do} at a mark"),
+    ),
+    "unknown_target": (
+        (re.compile(_EFFECT_AT), "aim the {do} at a person, prop or mark the message lists"),
+    ),
+    "not_holding": (
+        # someone else has it: picking it up would only fail with already_held
+        (re.compile(r"^(?P<holder>\S+) is holding it$"), "have {holder} hand_to {what} to {who} before this {do}"),
+        # worn on a head: no verb takes a worn prop off
+        (re.compile(r"^\S+ is wearing it$"), None),
+        (re.compile(r"^it is not on stage$"), "place {what} with propStart in shot {shot}, then have {who} pick_up {what}"),
+    ),
+    "prop_conflict": (
+        (
+            re.compile(r"^(?P<holder>\S+) starts holding (?P<what>\S+),"),
+            "remove {what} from propStart or from {holder}'s start holding",
+        ),
+    ),
+}
+
+
 class _Fields(dict):
     """Hint fields; a field the error cannot fill reads as a generic phrase."""
 
@@ -266,6 +303,7 @@ class _Fields(dict):
         "t": "its t",
         "until": "a later time",
         "param": "the missing parameter",
+        "holder": "its holder",
     }
 
     def __missing__(self, key: str) -> str:
@@ -316,4 +354,11 @@ def hint_for(error: CompileError) -> str | None:
     m = _PARAM.search(reason)
     if m:
         fields["param"] = f'"{next(g for g in m.groups() if g)}"'
-    return entry.hint.format_map(fields)
+    hint: str | None = entry.hint
+    for pattern, variant in HINT_VARIANTS.get(error.code, ()):
+        m = pattern.search(reason)
+        if m:
+            fields.update({k: v for k, v in m.groupdict().items() if v})
+            hint = variant
+            break
+    return None if hint is None else hint.format_map(fields)

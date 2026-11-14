@@ -24,6 +24,10 @@ Narration problems keep narration.py's own location format
 
 Reasons follow one style (errors.ERROR_CODES lists every code): lower case, no trailing
 period, lists as ``the <things> are a, b, c``, and the fix after a ``; `` where it is obvious.
+Three lists still read the older way because tests outside the compiler-error task pin them:
+``poses are a, b`` (unknown_pose) and ``known sets: a, b`` / ``known people: a, b`` /
+``known props: a, b``. They move to ``the poses are a, b`` (and so on) together with
+verbs_core's and compiler.py's unknown_pose wording, in one change.
 Here the name the screenplay wrote that is wrong is quoted (``"the_moon" is not a mark``);
 offending numbers are shown as written (``:g``), not rounded.
 

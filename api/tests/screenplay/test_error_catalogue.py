@@ -165,6 +165,35 @@ def test_compiled_errors_are_registered_and_get_their_hints():
     assert hint_for(errors[0]) == "use a mark the message lists, or add it to shot s1's marks as [u, h]"
 
 
+def test_effect_errors_get_a_hint_that_reaims_the_effect():
+    def confetti_on_dad_entering(data):  # dad is still offstage at t=0.5
+        data["shots"][0]["actions"].insert(1, {"t": 0.5, "do": "confetti", "at": "dad"})
+
+    errors = _compile_sample(confetti_on_dad_entering)
+    assert [e.code for e in errors] == ["offstage"]
+    assert hint_for(errors[0]) == "aim the confetti at a mark on stage, or give it a t when dad is on stage"
+
+    def confetti_offstage(data):  # a mark beyond the edge: no enter can fix it
+        data["shots"][0]["actions"].append({"t": 7.8, "do": "confetti", "at": "offstage_left"})
+
+    errors = _compile_sample(confetti_offstage)
+    assert [e.code for e in errors] == ["offstage"]
+    assert hint_for(errors[0]) == "aim the confetti at a mark on stage"
+
+
+def test_not_holding_hint_when_someone_else_holds_the_prop():
+    def mom_keeps_the_books(data):  # mom poses instead of dropping: she still holds them at the hand_to
+        actions = data["shots"][0]["actions"]
+        actions[:] = [a for a in actions if a["do"] != "pick_up"]
+        actions[1] = {"t": 3.25, "who": "mom", "do": "pose", "pose": "hold", "id": "drop"}  # keeps the cue
+        data["interactions"] = []  # its scrub drives the drop
+
+    errors = _compile_sample(mom_keeps_the_books)
+    assert [e.code for e in errors] == ["not_holding"]
+    assert errors[0].message.endswith("dad cannot hand_to \"hymn_books\"; mom is holding it")
+    assert hint_for(errors[0]) == "have mom hand_to hymn_books to dad before this hand_to"
+
+
 def test_error_code_is_frozen():
     entry = ERROR_CODES["offstage"]
     with pytest.raises(AttributeError):

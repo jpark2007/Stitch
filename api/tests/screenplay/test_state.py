@@ -634,7 +634,9 @@ def test_begin_shot_errors_leave_world_unchanged(world: World):
            MARKS, False)
     raises("unknown_mark", "nowhere is not a mark in shot s2", world.begin_shot,
            shot(id="s2", start={"dad": {"at": "nowhere"}}), MARKS, False)
-    raises("prop_conflict", "dad starts holding hymn_books, and propStart also places it; give one", world.begin_shot,
+    raises("prop_conflict",
+           "dad starts holding hymn_books, and propStart also places it; "
+           "remove hymn_books from propStart or from dad's holding", world.begin_shot,
            shot(id="s2", start={"dad": {"at": "home", "holding": "hymn_books"}},
                 propStart={"hymn_books": {"at": "curb"}}), MARKS, True)
     raises("socket_taken", "dad and mom both start in sedan.driver; seat one elsewhere", world.begin_shot,
