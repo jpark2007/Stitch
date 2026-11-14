@@ -164,7 +164,9 @@ def test_seeding_again_keeps_every_id_and_every_session(seeded):
 
 def _use_the_demo(db) -> dict[str, Any]:
     """Everything a demo audience might do before someone resets the demo."""
-    now = datetime(2026, 11, 14, 12, 0)
+    # Must be later than the moment the demo was seeded (seed_demo stamps the real clock),
+    # so "real use" always comes after the seed no matter when the tests run.
+    now = datetime(2099, 1, 1, 12, 0)
     stranger = users_db.create_user(db, email="guest@example.com", password_hash="x", name="Guest")
     # David adds a memory and a person to the demo family and uploads a photo there.
     uncle = people_db.create_person(db, DEMO_FAMILY_ID, schemas.NewPerson(name="Uncle Ray"),
