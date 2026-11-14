@@ -163,7 +163,8 @@ class FakeMongo:
 class FakeRenderPage:
     """A Playwright page that behaves like one kind of render page.
 
-    contract: sets __STITCH_READY__; legacy: only data-stage-ready (main today);
+    contract: sets __STITCH_READY__ (web/app/render on main today); legacy: only data-stage-ready
+    (a web checkout from before the contract);
     down: navigation fails, its error echoing `echo`.
     """
 
@@ -618,6 +619,19 @@ def test_unknown_stitch_agent_is_an_error_and_real_without_key_falls_back(monkey
     assert agent["mode"] == "fake" and agent["fallback"]
 
 
+def test_real_tts_names_its_mid_run_silent_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """production: synthesize_narration retries a failed TTS call once, then narrates silently."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv(tts_adapter.API_KEY_ENV, ELEVEN)
+    code, out = run(["--json"])
+    tts = by_service(out)["tts"]
+    assert tts["mode"] == "real"
+    assert "silent narration" in tts["fallback"] and "one retry fails too" in tts["fallback"]
+    assert "the run goes on" in tts["fallback"]
+    assert code == 0
+
+
 def test_art_fallback_names_the_image_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
     monkeypatch.setenv("STITCH_FAKE_DB", "1")
@@ -661,7 +675,30 @@ def test_limits_section_shows_each_variable_and_the_value_in_force(monkeypatch: 
         == "images=6 steps=1000 model_timeout=120s model_retries=2"
     )
     assert "900 s per run" in limits["summary"]
+
+
+def test_the_run_timeout_is_flagged_while_the_run_manager_does_not_enforce_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.delattr(runs, "RUN_TIMEOUT_ERROR", raising=False)
+    code, out = run(["--json"])
+    limits = by_service(out)["limits"]
+    assert "(not enforced yet" in limits["summary"]
+    assert any(p["severity"] == "warning" and "not enforced in this checkout" in p["text"] for p in limits["problems"])
+    assert not any("never while it waits on the teller" in n for n in limits["notes"])
+    assert code == 0  # a warning, not a failure
+
+    monkeypatch.setattr(runs, "RUN_TIMEOUT_ERROR", "the studio took too long", raising=False)
+    _, out = run(["--json"])
+    limits = by_service(out)["limits"]
+    assert "not enforced" not in limits["summary"] and limits["problems"] == []
     assert any("never while it waits on the teller" in n for n in limits["notes"])
+
+
+def test_run_timeout_enforced_reads_the_run_manager_in_this_checkout() -> None:
+    assert preflight.run_timeout_enforced() is hasattr(runs, "RUN_TIMEOUT_ERROR")
 
 
 @pytest.mark.parametrize(
@@ -1091,6 +1128,38 @@ def test_a_crash_inside_preflight_prints_a_scrubbed_error(monkeypatch: pytest.Mo
     assert ANTHROPIC not in out
 
 
+@pytest.mark.parametrize("password", ["pässwört123", 'q"uote\\back12', "naïve/pass:wörd@99"])
+@pytest.mark.parametrize("argv", [["--live"], ["--live", "--json"]])
+def test_a_json_escaped_echo_of_a_password_is_scrubbed(
+    monkeypatch: pytest.MonkeyPatch, password: str, argv: list[str]
+) -> None:
+    """A JSON error body echoes non-ASCII as \\uXXXX, and '"' and '\\' escaped."""
+    monkeypatch.setenv("MONGODB_URI", f"mongodb://{MONGO_USER}:{quote_plus(password)}@db.example.com/stitch")
+    escaped = {json.dumps(password)[1:-1], json.dumps(password, ensure_ascii=False)[1:-1]}
+    assert escaped != {password}  # each case really is changed by JSON escaping
+    echo = " ".join(sorted(escaped | all_forms(password)))
+    mongo = FakeMongo(error=OperationFailure(f'{{"errmsg": "auth failed for {echo}"}}'))
+    code, out = run(argv, seams(mongo=mongo))
+    assert code == 1
+    for form in escaped | all_forms(password):
+        assert form not in out, form
+    if "--json" in argv:
+        assert "[redacted]" in by_service(out)["persistence"]["live"]["detail"]
+
+
+def test_a_value_that_cannot_be_utf8_encoded_does_not_crash_preflight() -> None:
+    """A bad byte in the environment arrives as a lone surrogate, which quote() cannot encode."""
+    key = "sk-ant-abc\udcffdefghijkl"
+    out = io.StringIO()
+    code = preflight.main(
+        ["--json"], environ={"ANTHROPIC_API_KEY": key, "STITCH_NO_DOTENV": "1"}, out=out, seams=seams()
+    )
+    assert code == 0, out.getvalue()
+    assert key not in out.getvalue() and "sk-ant-abc" not in out.getvalue()
+    assert by_service(out.getvalue())["model"]["mode"] == "real"
+    assert key in preflight.secret_values({"ANTHROPIC_API_KEY": key})
+
+
 def test_scrubbed_logs_rewrites_records_and_restores_handlers(caplog: pytest.LogCaptureFixture) -> None:
     log = logging.getLogger("agent.preflight.test")
     caplog.set_level(logging.INFO)
@@ -1122,7 +1191,10 @@ def test_readme_documents_every_var_the_limits_the_fallbacks_and_the_commands() 
         "studio services:",
         "Tell it again",
         "legacy",
+        "State today: `contract`",
         "__STITCH_READY__",
+        "STITCH_WEB_URL=http://localhost:3000",
+        "its one retry failing too",
         "never while it waits on the teller",
         "| Service |",  # the fallback table
     ):

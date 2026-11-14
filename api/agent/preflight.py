@@ -146,7 +146,10 @@ FALLBACKS: dict[str, str] = {
         "placeholder art: props and set layers are flat shapes in a placeholder color instead "
         "of painted art (cut-outs of uploaded photos still work)"
     ),
-    "tts": "silent narration: no voice plays, but the words still highlight on estimated timings (0.3 s a word)",
+    "tts": (
+        "silent narration: no voice plays, but the words still highlight on estimated timings "
+        "(0.3 s a word) and the run goes on"
+    ),
     "renderer": (
         "diagram frames: the checker critiques labelled diagrams of the stage, not screenshots, "
         "so it cannot see art or layout problems (the family sees no difference)"
@@ -265,7 +268,7 @@ def secret_values(env: Mapping[str, str]) -> list[str]:
 
     The values of SECRET_ENVS and of variables named like secrets, the credentials and query
     string of every URI in the environment, and of each: the stripped and unquoted value, its
-    URL-decoded and URL-encoded forms. Longest first.
+    URL-decoded, URL-encoded and JSON-escaped forms. Longest first. Never raises.
     """
     bases: list[str] = []
     for name, value in env.items():
@@ -278,9 +281,28 @@ def secret_values(env: Mapping[str, str]) -> list[str]:
     plain: set[str] = set()
     for base in bases:
         for variant in (base, base.strip(), base.strip().strip("".join(_QUOTES)).strip()):
-            plain.update((variant, unquote(variant), unquote_plus(variant)))
-    found = {form for s in plain for form in (s, quote(s), quote(s, safe=""), quote_plus(s))}
+            plain.update(_forms(variant, (lambda v: v, unquote, unquote_plus)))
+    encoders: tuple[Callable[[str], str], ...] = (
+        lambda v: v,
+        quote,
+        lambda v: quote(v, safe=""),
+        quote_plus,
+        # How a JSON error body echoes it: non-ASCII as \\uXXXX, or raw with '"' and '\\' escaped.
+        lambda v: json.dumps(v)[1:-1],
+        lambda v: json.dumps(v, ensure_ascii=False)[1:-1],
+    )
+    found = {form for s in plain for form in _forms(s, encoders)}
     return sorted((s for s in found if len(s) >= _MIN_SCRUB), key=len, reverse=True)
+
+
+def _forms(value: str, encoders: Iterable[Callable[[str], str]]) -> set[str]:
+    """Each encoding of `value` that succeeds (a lone surrogate from a bad byte in the
+    environment cannot be UTF-8 encoded: that one form is skipped, never a crash)."""
+    found: set[str] = set()
+    for encode in encoders:
+        with contextlib.suppress(ValueError):  # UnicodeError is a ValueError
+            found.add(encode(value))
+    return found
 
 
 def scrub(text: str, secrets: Iterable[str]) -> str:
@@ -829,11 +851,12 @@ def _tts_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceRep
     )
     if real:
         report.summary = "ElevenLabs narration with word timings"
+        report.fallback = (
+            f"{FALLBACKS['tts']}, for one teller's voice pass when an ElevenLabs call fails in the middle "
+            "of a run and its one retry fails too (synthesize_narration warns and carries on)"
+        )
         if "error" in (voices.severity, default_voice.severity):
             report.notes.append("ElevenLabsTTS() rejects these voices, so the studio cannot be built")
-        report.notes.append(
-            "an ElevenLabs failure in the middle of a run: see 'Silent narration' in api/agent/README.md"
-        )
     else:
         report.summary = "ELEVENLABS_API_KEY is unset: silent narration"
         report.fallback = FALLBACKS["tts"]
@@ -853,6 +876,10 @@ def _renderer_report(env: Mapping[str, str], labels: Mapping[str, str]) -> Servi
     else:
         report.summary = "STITCH_WEB_URL is unset: Pillow diagrams of the stage"
         report.fallback = FALLBACKS["renderer"]
+        report.notes.append(
+            "for screenshots, run the web app and set STITCH_WEB_URL to it (e.g. http://localhost:3000), "
+            "then check the render page with --live"
+        )
     return report
 
 
@@ -896,12 +923,35 @@ def _limits_report(env: Mapping[str, str], labels: Mapping[str, str]) -> Service
     report.summary = (
         f"at most {limits.max_images_per_run} image(s) and {limits.max_graph_steps} graph steps a run; "
         f"{limits.model_timeout_s:g} s per Claude request with {limits.model_max_retries} retries; "
-        f"{limits.run_timeout_s:g} s per run"
+        f"{limits.run_timeout_s:g} s per run" + ("" if run_timeout_enforced() else " (not enforced yet, see below)")
     )
-    report.notes.append(
-        f"{guards.ENV_RUN_TIMEOUT_S} counts only while a run is running, never while it waits on the teller"
-    )
+    if run_timeout_enforced():
+        report.notes.append(
+            f"{guards.ENV_RUN_TIMEOUT_S} counts only while a run is running, never while it waits on the teller"
+        )
+    else:
+        report.problems.append(
+            (
+                "warning",
+                f"{guards.ENV_RUN_TIMEOUT_S} is not enforced in this checkout: agent/runs.py does not read "
+                "RunLimits.run_timeout_s yet, so a run has no overall time limit (each Claude request "
+                f"is still bounded by {guards.ENV_MODEL_TIMEOUT_S})",
+            )
+        )
     return report
+
+
+def run_timeout_enforced() -> bool:
+    """Whether the run manager in this checkout ends a run that overruns STITCH_RUN_TIMEOUT_S.
+
+    The enforcement (agent.runs.RUN_TIMEOUT_ERROR and RunManager(run_timeout_s=...)) lands
+    separately from RunLimits, which only parses the value.
+    """
+    try:
+        from agent import runs
+    except Exception:  # noqa: BLE001 - a run manager that does not import enforces nothing
+        return False
+    return hasattr(runs, "RUN_TIMEOUT_ERROR")
 
 
 def build_report(
@@ -1237,6 +1287,7 @@ __all__ = [
     "redact_mongo_uri",
     "redact_url",
     "run_live",
+    "run_timeout_enforced",
     "scrub",
     "scrubbed_logs",
     "secret_values",

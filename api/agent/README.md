@@ -61,9 +61,9 @@ Surrounding quotes, whitespace or a newline in a value are errors. `ANTHROPIC_AP
 
 All commands run from `api/` unless they say otherwise.
 
-1. **Install.** `uv sync`, then `uv run playwright install chromium` (only needed if you will set `STITCH_WEB_URL`).
+1. **Install.** `uv sync`, then `uv run playwright install chromium` (the checker's screenshots need it once `STITCH_WEB_URL` is set).
 
-2. **Set the keys in `api/.env`.** Start from the repo's `.env.example` (`cp ../.env.example .env` if you have none). At least `ANTHROPIC_API_KEY`; for the full experience also `IMAGE_API_KEY`, `ELEVENLABS_API_KEY` and `MONGODB_URI`, plus `JWT_SECRET`. Leave `STITCH_WEB_URL` unset for now (see [The render page](#the-render-page-and-the-checker)). Consider `STITCH_MAX_IMAGES_PER_RUN=12` for the demo to cap image cost.
+2. **Set the keys in `api/.env`.** Start from the repo's `.env.example` (`cp ../.env.example .env` if you have none). At least `ANTHROPIC_API_KEY`; for the full experience also `IMAGE_API_KEY`, `ELEVENLABS_API_KEY` and `MONGODB_URI`, plus `JWT_SECRET`. Set `STITCH_WEB_URL=http://localhost:3000` so the checker sees screenshots of the real stage (the web app must be running, step 7; see [The render page](#the-render-page-and-the-checker)). Consider `STITCH_MAX_IMAGES_PER_RUN=12` for the demo to cap image cost.
 
 3. **Run preflight.**
 
@@ -124,7 +124,7 @@ All commands run from `api/` unless they say otherwise.
 studio services: model=real subagent_model=studio repo=mongo persistence=memory art=placeholder tts=fake vision=real critic=real renderer=diagram compiler=screenplay.compiler limits=images=24 steps=1000 model_timeout=120s model_retries=2
 ```
 
-With every key set and `MONGODB_URI` reachable you want `persistence=mongo art=real tts=real`, and `renderer=playwright` only once the render page meets the contract (below).
+With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `persistence=mongo art=real tts=real renderer=playwright`.
 
 | Label | Values |
 |---|---|
@@ -149,14 +149,14 @@ Every service except the model has a fallback, so a missing or failing key degra
 |---|---|---|
 | model, vision, critic | `ANTHROPIC_API_KEY` unset | **No fallback**: no studio. `STITCH_AGENT=real` falls back to scripted runs at startup; preflight exits 1. |
 | art | `IMAGE_API_KEY` unset; one generation failing (that prop or layer only); the run used its image budget (`STITCH_MAX_IMAGES_PER_RUN`, `0` means always) | **Placeholder art**: props and set layers are flat shapes in a placeholder color instead of painted cut-paper art. Cut-outs of uploaded photos still work. |
-| tts | `ELEVENLABS_API_KEY` unset | **Silent narration**: no voice plays, but the narration text still highlights word by word on estimated timings (0.3 s a word). |
+| tts | `ELEVENLABS_API_KEY` unset; or an ElevenLabs call failing in the middle of a run (a 401, a quota, a timeout) and its one retry failing too | **Silent narration**: no voice plays, but the narration text still highlights word by word on estimated timings (0.3 s a word). The run goes on; after a mid-run failure only that teller's voice pass is silent, and the narrator's tool result carries a `warning: the speech service failed` line. |
 | renderer | `STITCH_WEB_URL` unset; or, per render, the page unreachable, Playwright or Chromium missing, or the page lacking the render contract | **Diagram frames**: the family sees nothing different; the checker critiques labelled diagrams of the stage instead of screenshots, so it cannot catch art or layout problems (a puppet hidden behind scenery). |
 | persistence | `MONGODB_URI` unset, or `STITCH_FAKE_DB` on | **In memory**: a run in progress, and the studio's notes about each person, are lost if the API restarts. Saved memories are in the family database and survive, unless `STITCH_FAKE_DB` is on. |
 | persistence | `MONGODB_URI` set but unreachable when the API starts | Depends on your checkout. With the startup fallback (`agent/production.py` catching the failed Mongo connection) the studio runs in memory and logs `persistence=memory`. Without it, building the studio fails and `STITCH_AGENT=real` falls back to scripted runs. Either way `--live` shows the failed ping first: fix it, or unset `MONGODB_URI`, before going on stage. |
 | compiler | `screenplay.compiler` has no `compile()` | **FakeCompiler** timelines (preflight warns). |
 | agent | `STITCH_AGENT=fake`, or `real` that fell back | **Scripted runs**: the feed plays a canned run; the story the family typed is not staged. |
 
-**Silent narration in the middle of a run.** With `ELEVENLABS_API_KEY` set, a failure partway through (a 401, a quota, a timeout) falls back to silent narration only once the voice-pass change (PR #131) is in your checkout. Without it, `synthesize_narration` does not catch the TTS error and the run ends with an error event. Run `--live` before the demo: a voice check that passes makes this unlikely.
+**Silent narration in the middle of a run.** With `ELEVENLABS_API_KEY` set, `synthesize_narration` calls ElevenLabs once more when a call fails; if the retry fails too, it voices that teller with silent audio and estimated word timings, logs a warning (`TTS failed for <teller>; narrating silently`) and the run carries on. The memory still plays, just without a voice. Run `--live` before the demo: a voice check that passes makes this unlikely.
 
 ## Time and cost limits
 
@@ -168,7 +168,7 @@ Five environment variables bound one run (`agent.guards.RunLimits`). A blank, un
 | `STITCH_MAX_GRAPH_STEPS` | `1000` (at least `50`) | Graph steps in one run, so a director-checker loop cannot run forever. |
 | `STITCH_MODEL_TIMEOUT_S` | `120` | Seconds one Claude request may take. |
 | `STITCH_MODEL_MAX_RETRIES` | `2` | Retries of a failed Claude request. |
-| `STITCH_RUN_TIMEOUT_S` | `1200` | Seconds one run may take in all. The clock counts only while the run is running, never while it waits on the teller to answer a question, so a family that takes ten minutes to answer does not time out. Enforced by the run manager (`agent/runs.py`); if your checkout's run manager does not read `RunLimits.run_timeout_s` yet, the value is parsed and shown but has no effect. |
+| `STITCH_RUN_TIMEOUT_S` | `1200` | Seconds one run may take in all. The clock counts only while the run is running, never while it waits on the teller to answer a question, so a family that takes ten minutes to answer does not time out. Enforced by the run manager (`agent/runs.py`) once the run-timeout change is in your checkout. Until then the value is parsed and shown but has no effect, and preflight says so with a warning under `[limits]` (`not enforced in this checkout`); each Claude request is still bounded by `STITCH_MODEL_TIMEOUT_S`. |
 
 ## The render page and the checker
 
@@ -177,11 +177,11 @@ The checker's Playwright renderer opens `{STITCH_WEB_URL}/render/{memoryId}?t=<s
 | Probe answer | `live:` | Meaning |
 |---|---|---|
 | `contract` | `pass` | The page draws the injected scene: the checker sees screenshots of the real stage. |
-| `legacy` | `warn` | The page sets only `data-stage-ready` and lacks `window.__STITCH_RENDER__`/`__STITCH_READY__`: the checker will see diagrams. |
+| `legacy` | `warn` | The page sets only `data-stage-ready` and lacks `window.__STITCH_RENDER__`/`__STITCH_READY__` (a web checkout from before the contract): the checker will see diagrams. |
 | `unreachable` | `fail` | The page did not load or never became ready (is the web app running at `STITCH_WEB_URL`?). Renders fall back to diagrams. |
 | `no_playwright` | `warn` | Playwright or its Chromium is not installed (`uv run playwright install chromium`): diagrams. |
 
-**State today:** `web/app/render/[memoryId]` on main sets `data-stage-ready` and does not implement `__STITCH_READY__`, so the probe answers `legacy` and the checker sees diagrams whatever `STITCH_WEB_URL` says. Check with `grep -r __STITCH_READY__ web/app/render`. Setting `STITCH_WEB_URL` is harmless (each render falls back to diagrams and, after a `legacy` answer, stays on diagrams for ten minutes without opening a browser), but it buys nothing until the page meets the contract, so leave it unset for the demo.
+**State today: `contract`.** `web/app/render/[memoryId]` on main implements the contract (`TimelineView.tsx` reads the injected `window.__STITCH_RENDER__`, honours `?t=` and sets `window.__STITCH_READY__ = true`; it landed with "Render: honour the checker's render contract"). Probing a local `npm run dev` of main with headless Chromium answers `contract`. So set `STITCH_WEB_URL=http://localhost:3000` with the web app running, and run `preflight --live` after the web app has started: the first request compiles the route, so the probe allows 30 seconds. If it answers `legacy`, your web checkout is older than the contract (`grep -r __STITCH_READY__ web/app/render` finds nothing): update it. Either way a render never fails a run: without the contract each render falls back to diagrams and, after a `legacy` answer, stays on diagrams for ten minutes without opening a browser.
 
 ## Troubleshooting by symptom
 
