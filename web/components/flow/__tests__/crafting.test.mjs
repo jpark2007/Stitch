@@ -27,6 +27,7 @@ import {
   openingLines,
   pageTitle,
   pageYear,
+  personBookHref,
   planStage,
   plainSummary,
   propColor,
@@ -113,6 +114,18 @@ test("namesLine and bookOf", () => {
   assert.equal(namesLine(["Ana", "David", "Rosa", "Luis"]), "Ana, David and 2 others");
   assert.equal(bookOf("Ana Rivera"), "Ana’s book");
   assert.equal(bookOf(""), "Your book");
+});
+
+test("personBookHref: the plain book before the moment exists, opened at it after; every part encoded", () => {
+  assert.equal(personBookHref("dad", "demo_family"), "/people/dad?family=demo_family");
+  assert.equal(personBookHref("dad", "demo_family", null), "/people/dad?family=demo_family");
+  assert.equal(
+    personBookHref("dad", "demo_family", "demo_lily_graduation"),
+    "/people/dad?family=demo_family&memory=demo_lily_graduation",
+  );
+  assert.equal(personBookHref("a b/c", "f&g=1", "m?#1"), "/people/a%20b%2Fc?family=f%26g%3D1&memory=m%3F%231");
+  assert.equal(personBookHref("dad", null, "m1"), "/people/dad?memory=m1");
+  assert.equal(personBookHref("dad", null), "/people/dad");
 });
 
 test("shotCount: digits or words before 'shot(s)'", () => {

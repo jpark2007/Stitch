@@ -308,10 +308,7 @@ function AddFlow(props: {
   const wide = useWideDesk();
   const selfPersonId = family?.personId ?? null;
   const owner = useMemo(
-    () => ({
-      title: bookOf(me.user.name),
-      href: selfPersonId && fid ? hrefs.person(selfPersonId, fid) : hrefs.home(),
-    }),
+    () => ({ title: bookOf(me.user.name), personId: selfPersonId, familyId: fid }),
     [me.user.name, selfPersonId, fid],
   );
   const second = Boolean(run?.telling?.secondTellingOf);
