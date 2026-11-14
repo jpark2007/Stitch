@@ -150,9 +150,11 @@ export function PersonPicker(props: {
         <ul
           className={`${row && !hint && !searchable ? "" : "mt-2 "}${
             plain
-              ? // Names as a line of words, each flush with the column edge;
-                // on a phone an even three-across grid, never a ragged wrap.
-                "-mx-1 grid list-none grid-cols-3 gap-x-2 p-0 sm:flex sm:flex-wrap"
+              ? // Names flow like a line of text, evenly spaced, the first flush
+                // with the column edge; a line breaks only between whole names,
+                // and a name only at its spaces (a word too long for a whole
+                // line breaks as a last resort).
+                "-mx-1 flex list-none flex-wrap gap-x-1.5 p-0"
               : "flex list-none flex-wrap gap-2 p-0"
           }`}
         >
@@ -164,11 +166,11 @@ export function PersonPicker(props: {
               duplicates.has(person.name.trim().toLowerCase()) && Number.isFinite(person.born);
             if (plain) {
               return (
-                <li key={person.id} className="min-w-0">
+                <li key={person.id} className="max-w-full">
                   <label
                     htmlFor={inputId}
                     className={[
-                      "group relative inline-flex max-w-full min-h-11 select-none items-center gap-2.5 rounded-paper px-1 font-serif text-[0.9375rem] leading-snug transition-colors duration-150 ease-paper motion-reduce:transition-none",
+                      "group relative inline-flex max-w-full min-h-11 select-none items-center gap-2 rounded-paper px-1 font-serif text-[0.9375rem] leading-snug transition-colors duration-150 ease-paper motion-reduce:transition-none",
                       FOCUS_RING_WITHIN,
                       "has-[:disabled]:cursor-not-allowed",
                       checked ? "text-ink" : "text-ink-soft hover:text-ink",
@@ -183,22 +185,24 @@ export function PersonPicker(props: {
                       disabled={locked || disabled}
                       onChange={(e) => toggle(person.id, e.target.checked)}
                     />
+                    {/* Their thread colour: a filled dot when picked, a hollow
+                        ring when not (shape, not colour alone). */}
                     <span
                       aria-hidden="true"
-                      className={`h-2 w-2 shrink-0 rounded-full bg-ink-soft transition-opacity duration-150 ease-paper motion-reduce:transition-none ${checked ? "" : "opacity-45 group-hover:opacity-80"}`}
-                      style={person.color ? { backgroundColor: person.color } : undefined}
-                    />
-                    <span
-                      className={`min-w-0 break-words underline-offset-[0.32em] ${
-                        checked
-                          ? "underline decoration-accent-deep decoration-2"
-                          : "group-hover:underline group-hover:decoration-ink-soft/40 group-hover:decoration-1"
+                      className={`box-border h-2.5 w-2.5 shrink-0 rounded-full border-[1.5px] border-ink-soft transition-[background-color,opacity] duration-150 ease-paper motion-reduce:transition-none ${
+                        checked ? "bg-ink-soft" : "bg-transparent opacity-70 group-hover:opacity-100"
                       }`}
-                    >
+                      style={
+                        person.color
+                          ? { borderColor: person.color, backgroundColor: checked ? person.color : "transparent" }
+                          : undefined
+                      }
+                    />
+                    <ChosenText checked={checked}>
                       {person.name}
-                      {showYear ? <span className="text-ink-soft"> ({person.born})</span> : null}
-                      {locked ? <span className="text-ink-soft"> (you)</span> : null}
-                    </span>
+                      {showYear ? <span className="font-normal text-ink-soft"> ({person.born})</span> : null}
+                      {locked ? <span className="font-normal text-ink-soft"> (you)</span> : null}
+                    </ChosenText>
                   </label>
                 </li>
               );
@@ -297,6 +301,30 @@ export function PersonPicker(props: {
       <legend className={`p-0 ${FIELD_LABEL_CLASS}`}>{legend}</legend>
       {body}
     </fieldset>
+  );
+}
+
+/**
+ * A chosen word or name in the plain appearance: semibold, with a 2px accent
+ * underline; unchosen it is plain. A hidden semibold twin in the same grid
+ * cell reserves the wider width, so choosing never shifts the words beside
+ * it. It wraps only at spaces; a single word longer than a whole line breaks
+ * as a last resort. Hover belongs to the caller (it only darkens the ink).
+ */
+export function ChosenText({ checked, children }: { checked: boolean; children: ReactNode }) {
+  return (
+    <span className="inline-grid max-w-full [overflow-wrap:anywhere]">
+      <span
+        className={`col-start-1 row-start-1 underline-offset-[0.38em] ${
+          checked ? "font-semibold underline decoration-accent-deep decoration-2" : ""
+        }`}
+      >
+        {children}
+      </span>
+      <span aria-hidden="true" className="invisible col-start-1 row-start-1 font-semibold">
+        {children}
+      </span>
+    </span>
   );
 }
 

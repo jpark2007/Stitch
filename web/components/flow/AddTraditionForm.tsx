@@ -16,7 +16,7 @@ import { isApiError } from "@/lib/api";
 import { Button, FOCUS_RING_WITHIN } from "./Button";
 import { FIELD_ERROR_CLASS, Field, TextAreaField, fieldControlClass } from "./Field";
 import { FormError, focusFirstError } from "./FormError";
-import { PersonPicker } from "./PersonPicker";
+import { ChosenText, PersonPicker } from "./PersonPicker";
 import { PhotoUpload } from "./PhotoUpload";
 import {
   CATEGORY_OPTIONS,
@@ -50,8 +50,11 @@ const STORY_PLACEHOLDER =
 // whatever the CSS order. The name is the card's headline, on its own ruled
 // line; the story a large, comfortable serif area whose line is also the top
 // rule of the details below.
+// Its empty invitation is set like the other examples on the card: italic,
+// at regular weight, so it never reads as a typed name.
 const TITLE_CLASS =
-  "font-display! text-[1.625rem]! leading-[1.25]! font-[560]! tracking-[-0.01em] pb-2! sm:text-[1.875rem]!";
+  "font-display! text-[1.625rem]! leading-[1.25]! font-[560]! tracking-[-0.01em] pb-2! sm:text-[1.875rem]! " +
+  "placeholder:font-normal placeholder:italic";
 const STORY_CLASS = "font-serif! text-[1.1875rem]! leading-[1.65]! sm:text-[1.25rem]! pb-4!";
 
 // The details table. One grid for every row (from md up): a 6.5rem label
@@ -452,12 +455,12 @@ function Blank(props: {
 /**
  * One choice from a short list, set as words: a fieldset of real (visually
  * hidden) radio buttons, so arrow keys move between them and the kit's
- * dashed ring shows focus. The chosen word is in full ink with an accent
- * underline (shape, not colour alone); the rest are muted and darken on
- * hover. One line from sm up; on a phone three equal columns, the same
- * columns as the names under "Who" (PersonPicker's plain grid), so every
- * list on the card lines up and nothing wraps raggedly. Its legend is for
- * assistive tech (SpecRow draws the label).
+ * dashed ring shows focus. The chosen word is semibold, in full ink, with an
+ * accent underline (weight and shape, not colour alone); the rest are muted
+ * and only darken on hover. One line from sm up; on a phone the words flow
+ * like a line of text, evenly spaced and wrapping only between whole words,
+ * as the names under "Who" do. Its legend is for assistive tech (SpecRow
+ * draws the label).
  */
 function ChoiceLine<T extends string>(props: {
   legend: ReactNode;
@@ -481,7 +484,7 @@ function ChoiceLine<T extends string>(props: {
     >
       <legend className="sr-only">{legend}</legend>
       {/* -mx-1 pulls each word's padding out, so the words sit flush with the column. */}
-      <ul className="-mx-1 grid list-none grid-cols-3 gap-x-2 p-0 sm:flex sm:flex-nowrap">
+      <ul className="-mx-1 flex list-none flex-wrap gap-x-1.5 p-0 sm:flex-nowrap">
         {options.map((o, i) => {
           const checked = value === o.value;
           const inputId = `${uid}-${o.value}`;
@@ -490,8 +493,7 @@ function ChoiceLine<T extends string>(props: {
               <label
                 htmlFor={inputId}
                 className={[
-                  // A word may wrap inside its own column on the narrowest phones; never from sm up.
-                  `group relative inline-flex min-h-11 select-none items-center rounded-paper px-1 sm:whitespace-nowrap ${VALUE_TEXT}`,
+                  `group relative inline-flex min-h-11 select-none items-center rounded-paper px-1 whitespace-nowrap ${VALUE_TEXT}`,
                   "transition-colors duration-150 ease-paper motion-reduce:transition-none",
                   FOCUS_RING_WITHIN,
                   "has-[:disabled]:cursor-not-allowed",
@@ -512,15 +514,7 @@ function ChoiceLine<T extends string>(props: {
                   aria-invalid={error && i === 0 ? true : undefined}
                   onChange={() => onChange(o.value)}
                 />
-                <span
-                  className={`underline-offset-[0.38em] ${
-                    checked
-                      ? "underline decoration-accent-deep decoration-2"
-                      : "group-hover:underline group-hover:decoration-ink-soft/40 group-hover:decoration-1"
-                  }`}
-                >
-                  {o.label}
-                </span>
+                <ChosenText checked={checked}>{o.label}</ChosenText>
               </label>
             </li>
           );
