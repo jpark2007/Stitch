@@ -30,6 +30,7 @@ from screenplay.locate import (
     held_arm_bones,
     mark_of,
     puppet_root,
+    puppet_target,
 )
 from screenplay.schema import Action
 from screenplay.state import SEATED_POSES, StateError, World, fmt_t
@@ -146,9 +147,12 @@ def apply_enter(world: World, tracks: TrackSet, action: Action, t: float, action
     if world.on_stage(who):
         raise StateError("already_on_stage", f"{who} is already on stage; use walk_to")
     p = world.people[who]
+    # Where the root track has the puppet now (offstage_left, an exit point, the start block's
+    # parking spot): enter_keys holds it there up to t, so it steps to ``src`` instead of gliding.
+    prev = tracks.value_at(puppet_target(who), "root.position", t)
     keys, t1, facing = motion.enter_keys(
         who, p.build, t, src, to, p.facing, "walk", skip_bones=sorted(held_arm_bones(world, who)),
-        speed_scale=p.speed_scale,
+        speed_scale=p.speed_scale, prev_pos=None if prev is None else tuple(float(c) for c in prev),
     )
     world.move(who, to, facing)
     tracks.extend(keys)
