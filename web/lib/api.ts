@@ -1,6 +1,7 @@
 // Typed client for the FastAPI backend: every route in ARCHITECTURE.md
-// section 6, plus GET /families/{fid}/threads and the traditions routes
-// (/families/{fid}/traditions[/{id}]).
+// section 6, plus GET /families/{fid}/threads, the traditions routes
+// (/families/{fid}/traditions[/{id}]) and the photo film routes
+// (/families/{fid}/films[/{id}]; mock: withMockFilms below).
 //
 // Request and response types come from ./types (generated from
 // api/schemas.py). `api` here always talks to the real server. The mock is
@@ -20,9 +21,16 @@ import type {
   BookResponse,
   CreateFamilyRequest,
   CreateFamilyResponse,
+  CreateFilmRequest,
   CreateTraditionRequest,
   ErrorResponse,
   Family,
+  Film,
+  FilmBeat,
+  FilmShot,
+  FilmsResponse,
+  FilmSummary,
+  FilmWord,
   InvitePreview,
   InviteResponse,
   JoinRequest,
@@ -417,6 +425,18 @@ export interface StitchApi {
   /** PATCH: only the fields sent change. Resolves to the whole updated tradition. */
   updateTradition(fid: string, id: string, body: UpdateTraditionRequest): Promise<Tradition>;
   deleteTradition(fid: string, id: string): Promise<void>;
+
+  // Photo films. Upload each photo first with uploadMedia and pass the ids.
+  /**
+   * Starts building a film: resolves to the Film in status "processing" (202).
+   * Rejects 422 (fieldErrors by field name) when a bound in CreateFilmRequest
+   * is broken (8-40 photoIds, text 1-20,000 characters, year 1800..this year).
+   */
+  createFilm(fid: string, body: CreateFilmRequest): Promise<Film>;
+  /** Every film in the family, newest first. */
+  listFilms(fid: string): Promise<FilmsResponse>;
+  /** Poll while status is "processing". Rejects 404 for a film that is not this family's. */
+  getFilm(fid: string, id: string): Promise<Film>;
 }
 
 /**
@@ -682,7 +702,221 @@ export function createApiClient(opts?: {
       request<Tradition>("PATCH", path`/families/${fid}/traditions/${id}`, { json: body }),
     deleteTradition: async (fid, id) =>
       requestVoid("DELETE", path`/families/${fid}/traditions/${id}`),
+
+    createFilm: async (fid, body) =>
+      request<Film>("POST", path`/families/${fid}/films`, { json: body }),
+    listFilms: async (fid) => request<FilmsResponse>("GET", path`/families/${fid}/films`),
+    getFilm: async (fid, id) => request<Film>("GET", path`/families/${fid}/films/${id}`),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Mock film routes
+
+/** The sample ready film the mock serves (api/tests/film checks it against schemas.Film). */
+const SAMPLE_FILM_URL = "/samples/film.json";
+
+/** Mirrors api/schemas.py MIN_FILM_PHOTOS / MAX_FILM_PHOTOS. */
+export const MIN_FILM_PHOTOS = 8;
+export const MAX_FILM_PHOTOS = 40;
+
+const FILM_ROUTE = /^\/families\/([^/]+)\/films(?:\/([^/]+))?\/?$/;
+const MOCK_WORD_SECONDS = 0.38;
+const MOCK_BEAT_GAP = 1.5;
+const MOCK_MAX_SHOTS = 12;
+const MOCK_MAX_BEATS = 4;
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function filmSummary(f: Film): FilmSummary {
+  return {
+    id: f.id,
+    title: f.title,
+    year: f.year,
+    authorId: f.authorId,
+    status: f.status,
+    duration: f.duration,
+    coverPhotoId: f.shots[0]?.photoId ?? f.photoIds[0] ?? null,
+    createdAt: f.createdAt,
+  };
+}
+
+/** A FastAPI-style 422 body for the CreateFilmRequest bounds, or null when the body is fine. */
+function checkFilmRequest(body: unknown): unknown | null {
+  const b = isRecord(body) ? body : {};
+  const errors: Array<{ loc: string[]; msg: string; type: string }> = [];
+  const bad = (field: string, msg: string) => errors.push({ loc: ["body", field], msg, type: "value_error" });
+  const text = typeof b.text === "string" ? b.text.trim() : "";
+  if (!text) bad("text", "Write a few words about it");
+  const year = b.year;
+  const thisYear = new Date().getFullYear();
+  if (typeof year !== "number" || !Number.isInteger(year) || year < 1800 || year > thisYear) {
+    bad("year", "Value error, Year must be between 1800 and this year");
+  }
+  const ids = Array.isArray(b.photoIds) ? b.photoIds : [];
+  if (ids.length < MIN_FILM_PHOTOS || ids.length > MAX_FILM_PHOTOS || !ids.every((x) => typeof x === "string")) {
+    bad("photoIds", `Choose ${MIN_FILM_PHOTOS} to ${MAX_FILM_PHOTOS} photos`);
+  }
+  return errors.length ? { detail: errors } : null;
+}
+
+/**
+ * The mock's cut for a new film: the story's sentences spread over up to four
+ * beats with estimated word timings, and up to twelve of the photos spread
+ * evenly over the film in upload order. Silent (audio null).
+ */
+function mockCut(text: string, photoIds: string[]): Pick<Film, "shots" | "beats" | "words" | "duration"> {
+  const sentences = text.match(/[^.!?]+[.!?]*/g)?.map((s) => s.trim()).filter(Boolean) ?? [text];
+  const beatCount = Math.min(MOCK_MAX_BEATS, sentences.length);
+  const beats: FilmBeat[] = [];
+  const words: FilmWord[] = [];
+  let t = 1;
+  for (let i = 0; i < beatCount; i++) {
+    const from = Math.floor((i * sentences.length) / beatCount);
+    const to = Math.floor(((i + 1) * sentences.length) / beatCount);
+    const narration = sentences.slice(from, to).join(" ");
+    beats.push({ title: `Part ${i + 1}`, start: round2(t), narration });
+    for (const word of narration.split(/\s+/).filter(Boolean)) {
+      words.push({ t: round2(t), word });
+      t += MOCK_WORD_SECONDS;
+    }
+    t += MOCK_BEAT_GAP;
+  }
+  const duration = round2(t + 1);
+  const chosen = photoIds.slice(0, MOCK_MAX_SHOTS);
+  const step = duration / chosen.length;
+  const motions: FilmShot["motion"][] = ["in", "left", "out", "right"];
+  const shots: FilmShot[] = chosen.map((photoId, i) => ({
+    photoId,
+    start: round2(i * step),
+    duration: round2((i + 1) * step) - round2(i * step),
+    beat: Math.min(beatCount - 1, Math.floor((i * beatCount) / chosen.length)),
+    caption: null,
+    focus: [0.5, 0.45],
+    motion: motions[i % motions.length],
+  }));
+  return { shots, beats, words, duration };
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+async function loadSampleFilm(): Promise<Film> {
+  const res = await globalThis.fetch(SAMPLE_FILM_URL);
+  if (!res.ok) throw new Error(`Couldn't load ${SAMPLE_FILM_URL} (${res.status})`);
+  return (await res.json()) as Film;
+}
+
+/**
+ * Mock film routes (the mock backend has none): wraps the mock backend's
+ * fetch so POST/GET /families/{fid}/films[/{id}] are answered here and
+ * everything else passes through. Wire it as
+ *   createApiClient({ fetch: withMockFilms(backend.fetch), mediaUrl: backend.mediaUrl })
+ * Membership is checked by asking the wrapped backend for GET /families/{fid}
+ * (its error, such as 401 or 404, is returned as is). Every family sees the
+ * sample film (web/public/samples/film.json) as a ready film; a created film
+ * is "processing" for `readyAfterMs`, then ready with a silent cut of its own
+ * story and photos. Created films live for the page load.
+ */
+export function withMockFilms(
+  inner: typeof fetch,
+  opts?: { loadSample?: () => Promise<Film>; readyAfterMs?: number; now?: () => number },
+): typeof fetch {
+  const loadSample = opts?.loadSample ?? loadSampleFilm;
+  const readyAfterMs = opts?.readyAfterMs ?? 2500;
+  const now = opts?.now ?? (() => Date.now());
+  let sample: Promise<Film> | null = null;
+  const created: Array<{ film: Film; readyAt: number }> = [];
+  let counter = 0;
+
+  async function sampleFor(fid: string): Promise<Film> {
+    if (!sample) {
+      sample = loadSample();
+      sample.catch(() => {
+        sample = null;
+      });
+    }
+    return { ...(await sample), familyId: fid };
+  }
+
+  function current(entry: { film: Film; readyAt: number }): Film {
+    if (entry.film.status === "processing" && now() >= entry.readyAt) {
+      entry.film = { ...entry.film, ...mockCut(entry.film.text, entry.film.photoIds), status: "ready" };
+    }
+    return entry.film;
+  }
+
+  const wrapped = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://mock.invalid");
+    const match = FILM_ROUTE.exec(url.pathname);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (!match || (method !== "GET" && method !== "POST")) return inner(input, init);
+    const fid = decodeURIComponent(match[1]);
+    const id = match[2] === undefined ? null : decodeURIComponent(match[2]);
+
+    // Who is asking, and are they in this family (a family they are not in is a 404).
+    const meUrl = new URL("/me", url.href);
+    const href = typeof input === "string" && !/^https?:/i.test(input) ? "/me" : meUrl.href;
+    const meRes = await inner(href, { method: "GET", credentials: init?.credentials });
+    if (!meRes.ok) return meRes;
+    const me = (await meRes.json()) as MeResponse;
+    const family = me.families.find((f) => f.id === fid);
+    if (!family) return jsonResponse(404, { detail: "Family not found" });
+
+    const mine = created.filter((e) => e.film.familyId === fid);
+    if (method === "POST") {
+      if (id !== null) return jsonResponse(405, { detail: "Method Not Allowed" });
+      let body: unknown = null;
+      try {
+        body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      } catch {
+        body = null;
+      }
+      const invalid = checkFilmRequest(body);
+      if (invalid) return jsonResponse(422, invalid);
+      const req = body as CreateFilmRequest;
+      const text = req.text.trim();
+      counter += 1;
+      const film: Film = {
+        id: `mockfilm_${now().toString(36)}_${counter}`,
+        familyId: fid,
+        authorId: family.personId ?? me.user.id,
+        title: req.title?.trim() || text.split(/\s+/).slice(0, 5).join(" "),
+        year: req.year,
+        text,
+        participantIds: req.participantIds ?? [],
+        status: "processing",
+        error: null,
+        photoIds: [...req.photoIds],
+        shots: [],
+        beats: [],
+        words: [],
+        audio: null,
+        duration: 0,
+        createdAt: new Date(now()).toISOString(),
+      };
+      created.push({ film, readyAt: now() + readyAfterMs });
+      return jsonResponse(202, film);
+    }
+    if (id === null) {
+      const films = [...mine.map(current)].reverse();
+      films.push(await sampleFor(fid));
+      const out: FilmsResponse = { films: films.map(filmSummary) };
+      return jsonResponse(200, out);
+    }
+    const entry = mine.find((e) => e.film.id === id);
+    if (entry) return jsonResponse(200, current(entry));
+    const s = await sampleFor(fid);
+    if (s.id === id) return jsonResponse(200, s);
+    return jsonResponse(404, { detail: "Film not found" });
+  };
+  return wrapped as typeof fetch;
 }
 
 /** The client pages use. */

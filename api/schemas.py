@@ -22,6 +22,7 @@ from screenplay.schema import (
     Model,
     Screenplay,
     Timeline,
+    WordTiming,
 )
 
 Role = Literal["admin", "member"]
@@ -509,6 +510,120 @@ class UpdateTraditionRequest(Model):
     started_year: int | None = None
 
     _started_year = field_validator("started_year")(_check_started_year)
+
+
+# ------------------------------------------------------------------------ photo films
+# A photo film: many photos of one event plus the teller's story, cut into a short
+# narrated film that the browser plays live (a shot list and one narration audio file,
+# never a rendered video). Photos go up one at a time through POST /families/{fid}/media;
+# then the routes are:
+#   POST /families/{fid}/films            CreateFilmRequest -> 202 Film (status "processing")
+#   GET  /families/{fid}/films            -> FilmsResponse
+#   GET  /families/{fid}/films/{film_id}  -> Film (poll until "ready" or "failed")
+# Another family's film is a 404, like one that doesn't exist. Times are seconds from the
+# start of the film. Bounds live on the request model, as for traditions.
+
+FilmStatus = Literal["processing", "ready", "failed"]
+FilmMotion = Literal["in", "out", "left", "right"]
+
+MIN_FILM_PHOTOS = 8
+MAX_FILM_PHOTOS = 40
+MAX_FILM_TITLE_CHARS = 200  # as a memory's title (routes/memories.py MAX_TITLE_CHARS)
+MAX_FILM_TEXT_CHARS = 20_000  # as a memory's text (MAX_TEXT_CHARS)
+MAX_FILM_PEOPLE = 100  # as a memory's participants (MAX_PARTICIPANTS)
+MIN_FILM_YEAR = 1800  # as a memory's year (MIN_YEAR); the latest is this year
+
+Fraction = Annotated[float, Field(ge=0, le=1)]
+
+
+class FilmWord(WordTiming):
+    """One narrated word and when it is spoken (the Timeline's word timing, in film time)."""
+
+    t: float = Field(description="Seconds from the start of the film")
+
+
+class FilmShot(Model):
+    """One photo on screen: a slow pan/zoom toward `focus` for `duration` seconds."""
+
+    photo_id: str = Field(description="Bare media id (as returned by POST /families/{fid}/media)")
+    start: float = Field(ge=0, description="Seconds from the start of the film")
+    duration: float = Field(gt=0, description="Seconds on screen, crossfades included")
+    beat: int = Field(ge=0, description="Index into Film.beats")
+    caption: str | None = Field(default=None, description="Handwritten caption, if any")
+    focus: tuple[Fraction, Fraction] = Field(
+        default=(0.5, 0.5), description="[u, v]: fraction across and down the photo the motion moves toward"
+    )
+    motion: FilmMotion = Field(default="in", description="in/out = zoom, left/right = pan")
+
+
+class FilmBeat(Model):
+    """One beat of the story: a run of shots under one narration line."""
+
+    title: str
+    start: float = Field(ge=0, description="Seconds from the start of the film")
+    narration: str = Field(description="The line spoken over this beat, in the teller's words")
+
+
+class Film(Model):
+    """A photo film. Every field is always sent: shots, beats and words are empty and
+    duration is 0 until status is "ready"."""
+
+    id: str
+    family_id: str
+    author_id: str = Field(description="Person id of the teller")
+    title: str
+    year: int
+    text: str = Field(description="The teller's story, as written")
+    participant_ids: list[str] = Field(description="Person ids of the people in it")
+    status: FilmStatus
+    error: str | None = Field(description="A safe message for people when status is failed, else null")
+    photo_ids: list[str] = Field(description="Every photo uploaded for it (bare media ids), chosen or not")
+    shots: list[FilmShot] = Field(description="In play order")
+    beats: list[FilmBeat]
+    words: list[FilmWord] = Field(description="Narrated words with their times, for captions")
+    audio: str | None = Field(description="Narration 'media/<id>'; null = silent, play on a clock")
+    duration: float = Field(ge=0, description="Seconds; 0 until ready")
+    created_at: datetime
+
+
+class FilmSummary(Model):
+    """A film without its cut, for lists."""
+
+    id: str
+    title: str
+    year: int
+    author_id: str
+    status: FilmStatus
+    duration: float = Field(description="Seconds; 0 until ready")
+    cover_photo_id: str | None = Field(default=None, description="Bare media id of the first shot (or photo)")
+    created_at: datetime
+
+
+class FilmsResponse(Model):
+    """GET /families/{fid}/films: every film in the family, newest first."""
+
+    films: list[FilmSummary]
+
+
+def _check_film_year(year: int) -> int:
+    if not MIN_FILM_YEAR <= year <= datetime.now(UTC).year:
+        raise ValueError(f"Year must be between {MIN_FILM_YEAR} and this year")
+    return year
+
+
+class CreateFilmRequest(Model):
+    """POST /families/{fid}/films -> 202 Film. Bounds (422 when broken): title at most 200
+    characters after trimming (blank or omitted = the server picks one); text 1-20,000
+    after trimming; year from 1800 to this year; 8-40 photoIds (bare media ids already
+    uploaded to this family); at most 100 participantIds."""
+
+    title: Annotated[str, StringConstraints(strip_whitespace=True, max_length=MAX_FILM_TITLE_CHARS)] | None = None
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_FILM_TEXT_CHARS)]
+    year: int
+    photo_ids: list[str] = Field(min_length=MIN_FILM_PHOTOS, max_length=MAX_FILM_PHOTOS)
+    participant_ids: list[str] = Field(default_factory=list, max_length=MAX_FILM_PEOPLE)
+
+    _year = field_validator("year")(_check_film_year)
 
 
 # ------------------------------------------------------------------- run stream (SSE)

@@ -11,11 +11,13 @@
  * Closed, the book sits on the table; a click opens it. Turn a page by
  * clicking or dragging its outer edge or corner, with the arrow keys, or with
  * the dots. `initial` sets the starting view, or freezes a leaf mid-turn, for
- * deterministic screenshots.
+ * deterministic screenshots. While a moment plays, Escape or the paper
+ * "Whole book" toggle switches between its scene (the camera follows the
+ * timeline) and the whole open book, with the scene playing on.
  */
 
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
 import {
   useCallback,
@@ -58,6 +60,7 @@ import { PAGE_PX_H, PAGE_PX_W } from "./pageArt";
 import { isBookControl } from "./controls";
 import { BookRuntimeProvider } from "./pagePrint";
 import { isMuted, paperLift, setMuted, subscribeMuted, unlockAudio } from "./sound";
+import { SceneView, escapeAction, readSceneViewPref, writeSceneViewPref } from "./sceneView";
 import {
   STAGE_SLOT,
   SlotProbe,
@@ -200,6 +203,8 @@ export function Book3D({
     onViewRef.current?.(v);
   }, []);
   const muted = useSyncExternalStore(subscribeMuted, isMuted, () => false);
+  // Scene or whole-book view while a moment plays; the reader's last choice, kept per browser.
+  const [sceneView] = useState(() => new SceneView(readSceneViewPref(), writeSceneViewPref));
 
   // The art is drawn with the tellings of the moment it is built; later
   // changes reprint single pages (BookModel).
@@ -265,14 +270,18 @@ export function Book3D({
       if (!c) return;
       if (e.key === "ArrowRight" || e.key === "PageDown") c.step(1);
       else if (e.key === "ArrowLeft" || e.key === "PageUp") c.step(-1);
-      else if (e.key === "Escape") c.setFocus(0);
-      else if ((e.key === "Enter" || e.key === " ") && e.target === document.body) c.open();
+      else if (e.key === "Escape") {
+        // An open explain note or contents list takes Escape first (capture phase).
+        if (e.defaultPrevented) return;
+        if (escapeAction(sceneView.available) === "toggle") sceneView.toggle();
+        else c.setFocus(0);
+      } else if ((e.key === "Enter" || e.key === " ") && e.target === document.body) c.open();
       else return;
       e.preventDefault();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [sceneView]);
 
   return (
     <div
@@ -306,6 +315,7 @@ export function Book3D({
               onTelling={chooseTelling}
               still={still}
               debug={debug}
+              sceneView={sceneView}
             />
           </Canvas>
         </motion.div>
@@ -337,6 +347,7 @@ export function Book3D({
           )}
         </Link>
         <div className="flex items-center gap-3">
+          <SceneViewToggle view={sceneView} />
           {actions}
           <MuteButton muted={muted} />
         </div>
@@ -410,6 +421,51 @@ function TurnHint({ view, enabled }: { view: BookView; enabled: boolean }) {
     >
       {coarse ? "swipe, or tap the page edge, to turn" : "click or drag a page corner to turn"}
     </motion.p>
+  );
+}
+
+/**
+ * While a moment plays: a paper switch between its scene (the camera in the
+ * pop-up) and the whole open book (the scene plays on). Escape does the same.
+ * Renders nothing on a spread without a playing moment.
+ */
+function SceneViewToggle({ view }: { view: SceneView }) {
+  const { mode, available } = useSyncExternalStore(view.subscribe, view.get, view.get);
+  const book = mode === "book";
+  return (
+    <AnimatePresence initial={false}>
+      {available ? (
+        <motion.button
+          key="scene-view"
+          type="button"
+          onClick={() => view.toggle()}
+          aria-pressed={book}
+          aria-keyshortcuts="Escape"
+          title={book ? "Back to the scene (Esc)" : "See the whole book (Esc)"}
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+          className={`pointer-events-auto grid size-11 cursor-pointer place-items-center rounded-full font-display text-[0.95rem] text-[#5c4e43] outline-offset-2 outline-[#f3e6cf] transition-[background-color,box-shadow,scale] duration-200 hover:scale-105 focus-visible:outline-2 active:scale-95 lg:flex lg:w-auto lg:gap-2 lg:px-4 ${
+            book
+              ? "bg-[#e3cfab] text-[#4a3c31] shadow-[inset_0_1px_3px_rgb(0_0_0/0.4),0_1px_0_rgb(255_255_255/0.12)]"
+              : "bg-[#f5eee1]/95 shadow-[0_2px_3px_rgb(0_0_0/0.25),0_8px_20px_-6px_rgb(0_0_0/0.5)]"
+          }`}
+        >
+          {/* An open book: outlined to ask for the whole book, inked in while it shows. */}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden>
+            <path
+              d="M12 7c-1.9-1.3-4.6-1.8-8.5-1.6v12.4c3.9-.2 6.6.3 8.5 1.6 1.9-1.3 4.6-1.8 8.5-1.6V5.4C16.6 5.2 13.9 5.7 12 7z"
+              fill="currentColor"
+              fillOpacity={book ? 0.85 : 0.08}
+            />
+            <path d="M12 7v12.4" stroke={book ? "#e3cfab" : "currentColor"} strokeWidth={book ? 1.3 : 1.7} />
+          </svg>
+          {/* One name in every state (aria-pressed says which); shown beside the icon where there is room. */}
+          <span className="sr-only lg:not-sr-only">Whole book</span>
+        </motion.button>
+      ) : null}
+    </AnimatePresence>
   );
 }
 
@@ -522,6 +578,8 @@ interface SceneProps {
   onTelling: (spreadId: string, tellerId: string) => void;
   still: boolean;
   debug: boolean;
+  /** The reader's scene or whole-book view (one per book). */
+  sceneView: SceneView;
 }
 
 function BookScene(props: SceneProps) {
@@ -648,7 +706,7 @@ function useBookGeometry() {
   return geo;
 }
 
-function BookModel({ art, spreads, start, onControls, onView, renderStage, tellings, onTelling, still, debug }: SceneProps) {
+function BookModel({ art, spreads, start, onControls, onView, renderStage, tellings, onTelling, still, debug, sceneView }: SceneProps) {
   const camera = useThree((s) => s.camera) as PerspectiveCamera;
   const gl = useThree((s) => s.gl);
   const invalidate = useThree((s) => s.invalidate);
@@ -659,7 +717,9 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
   const [stages, setStages] = useState<number[]>(() =>
     start.opened && start.turn == null ? [start.spread - 1] : [],
   );
-  const [ctl] = useState(() => new BookController(spreads.length, start, invalidate, onView, setStages));
+  const [ctl] = useState(() => new BookController(spreads.length, start, invalidate, onView, setStages, sceneView));
+  // The reader switched views: draw, even on an idle canvas.
+  useEffect(() => sceneView.subscribe(invalidate), [sceneView, invalidate]);
 
   // The gutter edge of a page is a fold, not a deckle: shift each side's mask
   // so the gutter samples inside it (front: u = 0 at the gutter, back: u = 1).
@@ -742,6 +802,12 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
       focus: () => ctl.focus,
       /** How far the camera is into the playing stage's shot (0..1). */
       shot: () => ctl.shotWeight,
+      /** The reader's view while a moment plays: "scene" or "book" (the whole open spread). */
+      view: () => sceneView.mode,
+      /** A moment plays on the open spread, so the view can be switched. */
+      viewAvailable: () => sceneView.available,
+      /** Switch the view, as the toggle does (only while a moment plays); returns whether it changed. */
+      setView: (m: "scene" | "book") => sceneView.choose(m),
       leaves: () => ctl.rt.leaves.map((l) => `${l.mode}:${l.p.toFixed(3)}${l.visible ? "" : "(hidden)"}`),
       /** Screen points (CSS px) of the open spread's teller labels, by teller id. */
       labels: () => {
@@ -766,7 +832,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
       delete w.__stitchBook;
       delete w.__book;
     };
-  }, [ctl, camera, gl, art, onControls, invalidate, debug]);
+  }, [ctl, camera, gl, art, onControls, invalidate, debug, sceneView]);
 
   // Reduced motion and pointer parallax follow the reader's settings live.
   useEffect(() => {
@@ -874,7 +940,6 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
       if (ev.type !== "pointerup" || Math.hypot(ev.clientX - x0, ev.clientY - y0) > 10) return;
       paperLift();
       onTelling(spreads[label.spread].id, label.id);
-      ctl.resumeShot();
       // Show the stage the new telling plays on: a phone pans to it, a
       // close look at the story page steps back to the spread.
       if (ctl.focus === -1) ctl.setFocus(ctl.onePage ? 1 : 0);

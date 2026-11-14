@@ -22,8 +22,10 @@
  * (after the telling, the last shot's); otherwise it rests home in its slit,
  * its pencilled label still printed, and takes no press. It slides out, and
  * nudges, when its shot comes on. The scene is never seeked by a tab
- * (pullTabGate.ts). Only its grab area takes pointer events, and only while
- * it can be pulled, so a press it will not pull falls through to the book.
+ * (pullTabGate.ts). Its grab area takes pointer events only while it can be
+ * pulled (its margin a steady few screen px, at any camera distance). While
+ * it is home its printed slit and label eat a press under the plain cursor,
+ * so a click there does nothing; anywhere else a press falls to the book.
  *
  * The lever is marked as a book control (controls.ts), so the book leaves
  * pointer events over it alone. Everything is posed in useFrame from refs;
@@ -55,7 +57,7 @@ import { PAGE_H, PAGE_W } from "../leafShape";
 import { PAGE_PX_W } from "../pageArt";
 import { pageHeightAt, usePageSurface } from "../pagePrint";
 import { OPEN_TO_PLAY } from "../playGate";
-import { endNudge, stepTabAway, tabGate } from "../pullTabGate";
+import { endNudge, hitPad, printEats, printRects, stepTabAway, tabGate, worldPerPx } from "../pullTabGate";
 import { pageLand, paperLift } from "../sound";
 import { STAGE_SLOT } from "../StoryPage";
 import type { BookPullTab } from "../types";
@@ -71,12 +73,6 @@ const HOVER_OUT = 0.07;
 const FOLD = 0.03;
 /** How far down the card the cut page's lip shades it, world units. */
 const LIP = 0.016;
-/**
- * The grab area reaches this far past the card on every side, world units:
- * a press just past the grip, or on a card moving with the camera, grabs the
- * tab rather than peeling the page under it.
- */
-const HIT_PAD = 0.04;
 /** A drag across the tab (down or up the page) pulls this much as one along it. */
 const ACROSS = 0.7;
 /** Scene time (s) at which the tab nudges once, while the scene plays. */
@@ -133,6 +129,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
   const rt = usePageSurface();
   const camera = useThree((s) => s.camera);
   const gl = useThree((s) => s.gl);
+  const size = useThree((s) => s.size);
   const invalidate = useThree((s) => s.invalidate);
 
   const geo = useMemo(() => {
@@ -156,10 +153,17 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     const body = stripGeometry(total, geo.width, CARD_T, 0.008);
     const flap = stripGeometry(FOLD, geo.width * 0.98, CARD_T * 0.8, 0.008);
     const shadow = stripGeometry(total + 0.005, geo.width + 0.01, 0.0001, 0.012);
-    // The grab area, invisible: the card and a margin round it.
-    const hit = new PlaneGeometry(geo.length + 2 * HIT_PAD, geo.width + 2 * HIT_PAD);
+    // The grab area, invisible: a unit square, sized each frame to the card
+    // and a margin round it that holds steady on screen (pullTabGate.hitPad).
+    const hit = new PlaneGeometry(1, 1);
     hit.rotateX(-Math.PI / 2);
-    hit.translate(geo.length / 2, 0, 0);
+    // The printed slit and label, which eat a press while the tab is home.
+    const print = printRects(geo.length / PX, geo.width / PX, tab.label).map((r) => {
+      const p = new PlaneGeometry((r.x1 - r.x0) * PX, (r.y1 - r.y0) * PX);
+      p.rotateX(-Math.PI / 2);
+      p.translate(((r.x0 + r.x1) / 2) * PX, 0, ((r.y0 + r.y1) / 2) * PX);
+      return p;
+    });
     // The lip's shade, fixed at the slit.
     const lip = new PlaneGeometry(LIP, geo.width + 0.002);
     lip.rotateX(-Math.PI / 2);
@@ -182,12 +186,12 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     const shade = new MeshStandardMaterial({ color: "#2a170c", transparent: true, opacity: 0.24, depthWrite: false });
     const lipShade = new MeshBasicMaterial({ color: "#2a170c", alphaMap: lipMap, transparent: true, opacity: 0.5, depthWrite: false });
     const grab = new MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false });
-    return { body, flap, shadow, hit, lip, face, lipMap, card, edge, back, backEdge, shade, lipShade, grab };
-  }, [geo]);
+    return { body, flap, shadow, hit, print, lip, face, lipMap, card, edge, back, backEdge, shade, lipShade, grab };
+  }, [geo, tab.label]);
   useEffect(
     () => () => {
       const p = parts;
-      [p.body, p.flap, p.shadow, p.hit, p.lip, p.face, p.lipMap, p.card, p.edge, p.back, p.backEdge, p.shade, p.lipShade, p.grab].forEach(
+      [p.body, p.flap, p.shadow, p.hit, ...p.print, p.lip, p.face, p.lipMap, p.card, p.edge, p.back, p.backEdge, p.shade, p.lipShade, p.grab].forEach(
         (x) => x.dispose(),
       );
     },
@@ -210,6 +214,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
   const flapPivot = useRef<Group>(null);
   const lipMesh = useRef<Mesh>(null);
   const hitMesh = useRef<Mesh>(null);
+  const printArea = useRef<Group>(null);
 
   /** Lever state: how far out (0..1 of travel), held or springing back. */
   const st = useRef({
@@ -280,6 +285,17 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     const hit = hitMesh.current;
     const want = gt.grabbable ? Mesh.prototype.raycast : noRaycast;
     if (hit && hit.raycast !== want) hit.raycast = want;
+    // A home tab's printed slit and label eat a press, so it does nothing.
+    const eats = printEats({ grabbable: gt.grabbable, reveal: reveal.current, openAt: OPEN_TO_PLAY }) ? Mesh.prototype.raycast : noRaycast;
+    for (const m of printArea.current?.children ?? []) if (m.raycast !== eats) m.raycast = eats;
+    // The grab area's margin holds steady on screen as the camera moves.
+    if (hit) {
+      tmp.v.set(0, 0, 0).applyMatrix4(g.matrixWorld);
+      const fov = (camera as { fov?: number }).fov;
+      const pad = fov ? hitPad(worldPerPx(camera.position.distanceTo(tmp.v), fov, size.height)) : hitPad(0);
+      hit.scale.set(geo.length + 2 * pad, 1, geo.width + 2 * pad);
+      hit.position.x = geo.length / 2;
+    }
     if (!gt.grabbable && s.hover && !s.held) {
       s.hover = false;
       if (document.body.style.cursor === "grab") document.body.style.cursor = "";
@@ -379,8 +395,12 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
       e.stopPropagation();
       return;
     }
-    // A press it will not pull is never swallowed: the book has it.
-    if (!st.current.grabbable) return;
+    // A press it will not pull: on a home tab's printed slit or label it does
+    // nothing; anywhere else the book has it.
+    if (!st.current.grabbable) {
+      if (e.object.parent === printArea.current) e.stopPropagation();
+      return;
+    }
     e.stopPropagation();
     if (!pagePoint(e.clientX, e.clientY, drag.p0)) return;
     const s = st.current;
@@ -465,7 +485,14 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
       position={[geo.slitX, 0, geo.z]}
       onPointerDown={onDown}
       onPointerOver={(e) => {
-        if (!st.current.grabbable) return;
+        if (!st.current.grabbable) {
+          // The printed slit and label: the plain cursor, not the book's turn.
+          if (e.object.parent === printArea.current) {
+            e.stopPropagation();
+            if (!st.current.held) document.body.style.cursor = "";
+          }
+          return;
+        }
         e.stopPropagation();
         st.current.hover = e.pointerType === "mouse";
         invalidate();
@@ -482,6 +509,13 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
       {/* Only the grab area below takes the pointer: the card runs on under
           the page, where nothing is drawn, and r3f raycasts it anyway. */}
       <mesh ref={lipMesh} geometry={parts.lip} material={parts.lipShade} position-y={CARD_T + 0.0007} renderOrder={3} raycast={noRaycast} />
+      {/* The printed slit and label, while the tab is home: a press here does
+          nothing. Under any tab's grab area, so it never blocks a pull. */}
+      <group ref={printArea} position-y={0.0015}>
+        {parts.print.map((p, i) => (
+          <mesh key={i} geometry={p} material={parts.grab} raycast={noRaycast} />
+        ))}
+      </group>
       <group ref={slider}>
         {/* A soft shade under the card on the page. */}
         <mesh geometry={parts.shadow} material={parts.shade} position={[-geo.hidden + 0.002, 0.00005, 0.003]} renderOrder={2} raycast={noRaycast} />

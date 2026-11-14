@@ -18,6 +18,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { newFilmHref } from "@/components/film/filmLinks";
 import { AddMemoryForm } from "@/components/flow/AddMemoryForm";
 import { Button, FOCUS_RING } from "@/components/flow/Button";
 import { FlowPage } from "@/components/flow/FlowPage";
@@ -868,6 +869,19 @@ function AddFormReady(props: {
             tickPersonId={second ? null : tickPersonId}
           />
         </div>
+
+        {second ? null : (
+          <p className="text-sm leading-snug text-ink-soft">
+            Have lots of photos?{" "}
+            {/* Inline padding: a 44px tap target without breaking the line. */}
+            <Link
+              href={newFilmHref(fid)}
+              className={`rounded-paper py-3.5 font-medium text-accent-deep underline decoration-1 underline-offset-[0.2em] hover:decoration-2 ${FOCUS_RING}`}
+            >
+              Make a film instead
+            </Link>
+          </p>
+        )}
       </div>
     </FlowPage>
   );

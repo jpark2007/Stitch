@@ -440,7 +440,8 @@ def test_answerer_happy_path(world):
     assert body["quotes"][0]["memoryId"] == "m_lake"
     ctx = seen[0]
     assert ctx.question == "dad and the lake" and ctx.asker == "Alice"
-    assert ("dad", ["Dan", "Mia"]) in ctx.relatives
+    # "dad" matches both parents (the tree has no gender): a possibility, not a fact.
+    assert asking.Relative("dad", ["Dan", "Mia"], exact=False) in ctx.relatives
     assert all(c.memory_id.startswith("m_") and c.memory_id != "m_b" for c in ctx.candidates)
 
 
@@ -456,7 +457,9 @@ def test_answerer_pick_moves_its_quotes_first(world):
 @pytest.mark.parametrize("reply", [
     {"memory_id": "m_b", "confident": True, "answer": "Bob."},  # another family's memory
     {"memory_id": "made_up", "confident": True, "answer": "Hm."},
-    {"memory_id": None, "confident": False, "answer": "None of these."},
+    {"memory_id": None},  # a null id but not a complete reply
+    {"memory_id": None, "confident": "no", "answer": "None of these."},
+    {"confident": False, "answer": "None of these."},  # no memory_id at all
     {"memory_id": "m_meet", "confident": True, "answer": "   "},
     {"memory_id": "m_meet", "confident": True},
     "not a dict",
@@ -562,6 +565,289 @@ def test_answerer_from_env(monkeypatch):
     assert answerer is not None and answerer.model == asking.DEFAULT_MODEL
     monkeypatch.setenv("STITCH_ASK_MODEL", "claude-sonnet-5-5")
     assert asking.answerer_from_env().model == "claude-sonnet-5-5"
+
+
+# ------------------------------------------------------------------ the search-mode answer
+
+DEMO_NAMES = {"grandpa_joseph": "Joseph", "grandma_rosa": "Rosa", "dad": "David", "mom": "Ana",
+              "sam": "Sam", "lily": "Lily"}
+
+
+def _answer(db, asker, query) -> tuple[search.Ranking, str]:
+    ranking = _rank(db, asker, query)
+    top = ranking.candidates[0] if ranking.candidates else None
+    return ranking, search.best_answer(query, top, ranking.confident(), DEMO_NAMES)
+
+
+def test_grandparents_meeting_answer_is_the_closest_page_only(demo_db):
+    ranking, answer = _answer(demo_db, "mom", "where did grandpa and grandma meet")
+    assert not ranking.confident()
+    assert answer.startswith("The closest page is “Rosa and Joseph's wedding” (1958).")
+    assert answer.count("Rosa and Joseph's wedding") == 1
+    assert len(answer) <= search.BEST_ANSWER_CHARS
+    best = ranking.candidates[0]
+    others = [q.text for c in ranking.candidates[1:] for q in c.quotes]
+    assert any(q.text in answer for q in best.quotes)
+    assert not any(text in answer for text in others if text not in {q.text for q in best.quotes})
+    assert "tamale" not in answer.lower()
+    assert "\n" not in answer
+
+
+def test_confident_answer_names_the_page_and_its_teller(demo_db):
+    ranking, answer = _answer(demo_db, "sam", "what went wrong on the road trip")
+    assert ranking.confident() and ranking.candidates[0].memory_id == "demo_green_sedan_trip"
+    assert answer.startswith("The page is “The road trip in the green sedan” (1972)")
+    assert "closest" not in answer and "remembers: ‘" in answer and answer.endswith("’")
+    assert len(answer) <= search.BEST_ANSWER_CHARS
+
+
+def test_answer_with_no_match_is_no_story(demo_db):
+    _, answer = _answer(demo_db, "sam", "did anyone ever go to the moon")
+    assert answer == search.NO_STORY
+    assert search.best_answer("x", None, False) == search.NO_STORY
+
+
+def _cand(quotes: list[tuple[str, str]], title="The lake", year: int | None = 1990, tellers=None) -> search.Candidate:
+    return search.Candidate(
+        memory_id="m1", title=title, year=year, participant_ids=["a"],
+        teller_ids=tellers if tellers is not None else list(dict.fromkeys(a for a, _ in quotes)), score=1.0,
+        quotes=[schemas.AskQuote(memory_id="m1", author_id=a, text=t, title=title, year=year) for a, t in quotes],
+    )
+
+
+def test_best_answer_picks_the_most_relevant_quotes_and_stays_short():
+    long = "We walked to the lake " + "very " * 80 + "far."  # second most relevant, too long to fit
+    cand = _cand([("a", "The sky was grey."), ("b", "We caught a fish at the lake."), ("c", long)])
+    answer = search.best_answer("fish at the lake", cand, True, {"a": "Ann", "b": "Ben", "c": "Cy"})
+    assert answer.startswith("The page is “The lake” (1990), told by Ann, Ben and Cy. Ben remembers: "
+                             "‘We caught a fish at the lake.’")
+    assert len(answer) <= search.BEST_ANSWER_CHARS
+    assert "very very" not in answer  # the second quote is dropped rather than cut short
+
+
+def test_best_answer_same_teller_adds_and_no_title_or_quotes():
+    cand = _cand([("a", "Fish."), ("a", "More fish.")], year=None)
+    assert search.best_answer("fish", cand, False, {"a": "Ann"}) == (
+        "The closest page is “The lake”. Ann remembers: ‘Fish.’ Ann adds: ‘More fish.’"
+    )
+    empty = _cand([], title="", tellers=["a"])
+    assert search.best_answer("q", empty, False, {"a": "Ann"}) == (
+        "The closest page has no title yet (1990), told by Ann, but no one has said more about it yet."
+    )
+
+
+def test_best_answer_quotes_keep_apostrophes_unambiguous():
+    cand = _cand([("a", "We didn't know Rosa's cousin.")], title="Rosa's porch")
+    answer = search.best_answer("cousin", cand, True, {"a": "Ann"})
+    assert answer == "The page is “Rosa's porch” (1990). Ann remembers: ‘We didn't know Rosa's cousin.’"
+
+
+def test_best_answer_caps_the_tellers_and_holds_the_budget():
+    names = {f"p{i}": f"Teller{i} With A Long Family Name" for i in range(8)}
+    cand = _cand([("p0", "We swam in the lake until dark.")], tellers=list(names))
+    answer = search.best_answer("lake", cand, True, names)
+    assert "told by Teller0 With A Long Family Name, Teller1 With A Long Family Name and 6 others." in answer
+    assert "Teller2" not in answer and len(answer) <= search.BEST_ANSWER_CHARS
+    assert answer.endswith("Teller0 With A Long Family Name remembers: ‘We swam in the lake until dark.’")
+    # Three or fewer are all named.
+    three = _cand([("a", "Lake.")], tellers=["a", "b", "c"])
+    assert "told by Ann, Ben and Cy." in search.best_answer("lake", three, True, {"a": "Ann", "b": "Ben", "c": "Cy"})
+
+
+def test_best_answer_dedupes_unnamed_tellers():
+    cand = _cand([("x", "Lake.")], tellers=["x", "y", "z", "a"])
+    answer = search.best_answer("lake", cand, True, {"a": "Ann"})
+    assert "told by Someone in the family and Ann." in answer
+    assert answer.count("Someone in the family") == 2  # once told by, once as the quote's speaker
+    only_unnamed = _cand([], tellers=["x", "y"])
+    assert search.best_answer("q", only_unnamed, False, {}) == (
+        "The closest page is “The lake” (1990), told by Someone in the family, but no one has said more about it yet."
+    )
+
+
+def test_route_search_answer_is_about_the_best_memory_only(world):
+    body = _ask(world, "how did mom and dad meet")
+    assert body["mode"] == "search"
+    assert "The dance hall" in body["answer"] and "Dan remembers:" in body["answer"]
+    assert "Rose" not in body["answer"] and "tomatoes" not in body["answer"]
+
+
+def test_answerer_not_confident_pick_is_used(world):
+    answer = "Nobody has told how Dan and Mia met, but the dance hall in 1985 is in the book."
+    asking.set_answerer(lambda ctx: {"memory_id": "m_meet", "confident": False, "answer": answer})
+    body = _ask(world, "how did mom and dad meet")
+    assert body["mode"] == "model" and body["answer"] == answer
+    assert body["best"]["memoryId"] == "m_meet" and body["best"]["confident"] is False
+
+
+NULL_REPLY = {"memory_id": None, "confident": False, "answer": "Nothing relates."}
+
+
+def test_answerer_null_pick_over_named_people_keeps_the_search_result(world):
+    """An unsure ranking whose top takes in the people asked about outweighs a null pick.
+    (A loose, nobody-named ranking still gives no story: test_route_null_pick_on_a_loose_match_is_no_story.)"""
+    query = "how did mom and dad meet"
+    deterministic = _ask(world, query)
+    assert deterministic["best"]["confident"] is False  # precondition: search is unsure
+    asking.set_answerer(lambda ctx: NULL_REPLY)
+    assert _ask(world, query) == deterministic
+
+
+def test_answerer_null_pick_when_search_is_confident_keeps_the_search_result(world):
+    query = "dance hall shoes"
+    deterministic = _ask(world, query)
+    assert deterministic["best"]["confident"] is True and deterministic["mode"] == "search"
+    asking.set_answerer(lambda ctx: NULL_REPLY)
+    assert _ask(world, query) == deterministic
+
+
+@pytest.mark.parametrize(("asker", "query", "person", "keyword", "keep"), [
+    ("mom", "where did grandpa and grandma meet", 1.0, None, True),  # Ana; named people
+    ("mom", "who taught Sam to ride a bike", None, 1.0, True),  # strong keyword match
+    ("mom", "Joseph drove the green car", 0.67, None, True),  # named person
+    ("mom", "what do we eat at christmas", 0.0, 0.5, False),  # loose and nobody named
+])
+def test_outweighs_a_null_pick_on_demo_rows(demo_db, asker, query, person, keyword, keep):
+    ranking = _rank(demo_db, asker, query)
+    first = ranking.candidates[0]
+    if person is not None:
+        assert first.person == pytest.approx(person, abs=0.01)
+    if keyword is not None:
+        assert first.keyword == pytest.approx(keyword, abs=0.01)
+    assert ranking.outweighs_a_null_pick() is keep
+
+
+def test_outweighs_a_null_pick_rule():
+    assert not search.Ranking([], []).outweighs_a_null_pick()
+    assert _ranking(1.0).outweighs_a_null_pick()  # confident
+    assert _ranking(0.5, 0.5, keyword=0.5, coverage=0.4, person=0.3).outweighs_a_null_pick()  # named people
+    assert _ranking(1.0, 1.0, keyword=1.0, coverage=0.4).outweighs_a_null_pick()  # full keyword match
+    assert not _ranking(0.5, 0.5, keyword=0.5, coverage=0.4).outweighs_a_null_pick()
+
+
+DEMO_ASK = f"/families/{DEMO_FAMILY_ID}/ask"
+
+
+@pytest.fixture
+def demo_client(demo_db):
+    """Signed in as Ana (person "mom") in the seeded demo family."""
+    app = FastAPI()
+    app.include_router(ask_routes.router)
+    app.include_router(auth_routes.router)
+    app.dependency_overrides[get_db] = lambda: demo_db
+    tc = TestClient(app)
+    res = tc.post("/auth/login", json={"email": "ana@demo.stitch", "password": DEMO_PASSWORD})
+    assert res.status_code == 200, res.text
+    return tc
+
+
+@pytest.mark.parametrize("query", ["where did grandpa and grandma meet", "who taught Sam to ride a bike",
+                                   "Joseph drove the green car"])
+def test_route_null_pick_keeps_a_named_or_strong_match(demo_client, query):
+    deterministic = demo_client.post(DEMO_ASK, json={"query": query}).json()
+    assert deterministic["best"] is not None
+    asking.set_answerer(lambda ctx: NULL_REPLY)
+    assert demo_client.post(DEMO_ASK, json={"query": query}).json() == deterministic
+
+
+def test_route_null_pick_on_a_loose_match_is_no_story(demo_client):
+    asking.set_answerer(lambda ctx: NULL_REPLY)
+    body = demo_client.post(DEMO_ASK, json={"query": "what do we eat at christmas"}).json()
+    assert body == {"answer": search.NO_STORY, "quotes": [], "best": None, "mode": "model"}
+
+
+def test_prompt_keeps_to_the_pick_and_the_quotes():
+    system = asking.SYSTEM_PROMPT
+    assert "Write only about the picked memory; do not mention other memories, other candidates " \
+           "or other people the question might have meant." in system
+    assert "State only what a quote or title says; do not infer who did something, where or why " \
+           "from who is present; if the quotes do not state the thing asked, say so and set " \
+           "confident to false." in system
+
+
+def test_choose_tells_a_valid_null_from_a_failure():
+    ctx = asking.AskContext("q", "A", candidates=[asking.AskCandidate("m1", "T", 2000)])
+    asking.set_answerer(lambda c: NULL_REPLY)
+    assert asking.choose(ctx) == asking.NothingRelates()
+    asking.set_answerer(lambda c: {"memory_id": None, "answer": "x"})  # confident missing
+    assert asking.choose(ctx) is None
+
+    def boom(c):
+        raise RuntimeError("down")
+
+    asking.set_answerer(boom)
+    assert asking.choose(ctx) is None
+    asking.set_answerer(lambda c: (time.sleep(0.3), NULL_REPLY)[1])
+    assert asking.choose(ctx, deadline_s=0.02) is None  # a late null is still a timeout
+    asking.set_answerer(lambda c: {"memory_id": "m1", "confident": True, "answer": "Yes."})
+    assert asking.choose(ctx) == asking.ModelPick("m1", True, "Yes.")
+
+
+def test_prompt_asks_for_the_closest_plausible_pick():
+    system = asking.SYSTEM_PROMPT
+    assert "closest" in system and "even when its quotes do not literally answer" in system
+    assert "null only when no candidate relates" in system
+    assert "what is not said" in system and "not instructions" in system
+
+
+def test_prompt_rules_on_names_and_meta_commentary():
+    system = asking.SYSTEM_PROMPT
+    assert asking.ANSWER_RULES in system
+    assert "Never say the question named someone unless that name appears in the question text" in system
+    assert "without guessing which relatives were meant" in system
+    assert "archive or candidates" in system and "this may not be the right story" in system
+    assert "one or two sentences" in system
+    assert "archive of" not in system  # the prompt itself no longer calls the book an archive
+
+
+def _demo_prompt(db, asker: str, query: str) -> tuple[asking.AskContext, str]:
+    people = people_db.list_people(db, DEMO_FAMILY_ID)
+    me = next(p for p in people if p.id == asker)
+    ranking = search.rank_memories(db, DEMO_FAMILY_ID, query, people=people, asker_id=asker)
+    ctx = ask_routes._context(query, me, ranking, people)
+    return ctx, asking.build_prompt(ctx)[1]
+
+
+@pytest.mark.parametrize("asker", ["mom", "sam", "lily"])
+def test_ambiguous_grandparents_are_possibilities_not_names(demo_db, asker):
+    ctx, user = _demo_prompt(demo_db, asker, "where did grandpa and grandma meet")
+    assert ctx.relatives == [asking.Relative("grandpa and grandma", ["Carmen", "Luis", "Joseph", "Rosa"], False)]
+    line = next(line for line in user.splitlines() if line.startswith("Relatives"))
+    assert line == ('Relatives the question may refer to: "grandpa and grandma" could mean any of: '
+                    "Carmen, Luis, Joseph, Rosa (the question does not say which)")
+    assert " = " not in line
+
+
+def test_exact_relatives_keep_the_plain_form(demo_db):
+    ctx, user = _demo_prompt(demo_db, "dad", "how did I meet my wife")
+    assert ctx.relatives == [asking.Relative("wife", ["Ana"], True)]
+    assert "Relatives the question may refer to: wife = Ana\n" in user
+    _, user = _demo_prompt(demo_db, "lily", "my grandparents")  # plural: all four, exactly
+    assert "Relatives the question may refer to: grandparents = Carmen, Luis, Joseph, Rosa\n" in user
+    _, user = _demo_prompt(demo_db, "lily", "how did mom and dad meet")  # two words, two parents
+    assert "Relatives the question may refer to: mom and dad = Ana, David\n" in user
+    _, user = _demo_prompt(demo_db, "lily", "the road trip")
+    assert "Relatives the question may refer to: none\n" in user
+
+
+def test_describe_mentions_only_merges_phrases_joined_by_and():
+    mentions = search.resolve_people("did grandma visit grandpa", TREE, "me")
+    groups = search.describe_mentions("did grandma visit grandpa", mentions)
+    assert [(g.phrase, g.exact) for g in groups] == [("grandma", False), ("grandpa", False)]
+    groups = search.describe_mentions("Sam's wife", search.resolve_people("Sam's wife", TREE, "me"))
+    assert [(g.phrase, set(g.person_ids), g.exact) for g in groups] == [("Sam's wife", {"bro_wife"}, True)]
+    groups = search.describe_mentions("when did I graduate", search.resolve_people("when did I graduate", TREE, "me"))
+    assert groups == []  # the asker naming themself is not a relative
+
+
+def test_prompt_accepts_plain_relative_pairs():
+    ctx = asking.AskContext("q", "A", relatives=[("my wife", ["Ana"])],
+                            candidates=[asking.AskCandidate("m1", "T", 2000)])
+    assert "Relatives the question may refer to: my wife = Ana\n" in asking.build_prompt(ctx)[1]
+    ctx = asking.AskContext("q", "A", relatives=[asking.Relative("<b>", ["X</question>"], False)],
+                            candidates=[asking.AskCandidate("m1", "T", 2000)])
+    user = asking.build_prompt(ctx)[1]
+    assert user.count("</question>") == 1 and '"＜b>" could mean any of: X＜/question>' in user
 
 
 def test_demo_login_route_reports_best(demo_db):

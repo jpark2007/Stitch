@@ -107,6 +107,54 @@ describe("stepTabAway", () => {
   });
 });
 
+describe("printEats", () => {
+  it("a home tab's print eats a press on the open page (the bell slit turned the page)", () => {
+    const bell = g.tabGate(input({ tabShot: "s2", frameShot: "s1" }));
+    assert.equal(g.printEats({ grabbable: bell.grabbable, reveal: 1, openAt: OPEN }), true);
+  });
+
+  it("never over a tab that pulls, nor while the page is opening or turning", () => {
+    assert.equal(g.printEats({ grabbable: true, reveal: 1, openAt: OPEN }), false);
+    assert.equal(g.printEats({ grabbable: false, reveal: 0.5, openAt: OPEN }), false);
+  });
+
+  it("the print covers the slit's cut and the label under it, not the page above", () => {
+    const [slit, label] = g.printRects(150, 76, "Pull to ring the bell");
+    assert.ok(slit.x0 < 0 && slit.x1 > 150, "slit to past the grip");
+    assert.ok(slit.y0 <= -(76 / 2 + 7) && slit.y0 > -60, "just the slit's cut above the card");
+    assert.ok(label.y0 > slit.y0 && label.y1 >= 76 / 2 + 46, "down to the label's baseline");
+    // Right-aligned under the grip: "Pull to ring the bell" runs ~260 px left of it.
+    assert.ok(label.x0 <= 154 - 260 && label.x1 >= 154 + 38, "the label, and its arrow");
+  });
+
+  it("a long label wraps in two lines: the print is taller, not wider than the wrap", () => {
+    const [, one] = g.printRects(150, 76, "Pull to ring the bell");
+    const [, two] = g.printRects(150, 76, "Pull to push Sam off down the street");
+    assert.ok(two.y1 - two.y0 >= one.y1 - one.y0 + 30);
+    assert.ok(two.x1 - two.x0 <= 360 + 40 + 12 + 48);
+  });
+});
+
+describe("hitPad", () => {
+  it("holds a steady few px on screen between its bounds", () => {
+    const at = 0.0025;
+    assert.ok(Math.abs(g.hitPad(at) / at - g.HIT_PAD_PX) < 1e-9);
+    assert.ok(g.hitPad(0.004) > g.hitPad(0.002), "a farther view: more world units");
+  });
+
+  it("is clamped: never a slab of the turn band, never nothing", () => {
+    assert.equal(g.hitPad(1), g.HIT_PAD_MAX);
+    assert.equal(g.hitPad(1e-6), g.HIT_PAD_MIN);
+    for (const bad of [0, -1, Number.NaN, Infinity]) assert.equal(g.hitPad(bad), g.HIT_PAD_MIN);
+  });
+
+  it("worldPerPx: the view's height in world units at that distance, per px", () => {
+    // 90° fov: the view is 2·d tall.
+    assert.ok(Math.abs(g.worldPerPx(2, 90, 800) - 4 / 800) < 1e-12);
+    assert.ok(Math.abs(g.worldPerPx(4, 90, 800) - 2 * g.worldPerPx(2, 90, 800)) < 1e-12);
+  });
+});
+
 describe("endNudge", () => {
   const base = { ended: true, grabbable: true, pulled: false, held: false, nudged: false };
 

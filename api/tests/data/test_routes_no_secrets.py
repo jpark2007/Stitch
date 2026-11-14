@@ -40,6 +40,8 @@ import schemas
 from db import client as db_client
 from db import memories as memories_db
 from db import props as props_db
+from film.types import FilmCut, Services
+from routes import films as films_routes
 from routes import memories as memories_routes
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -147,6 +149,26 @@ class FakeRuns:
         return mod
 
 
+def _fake_film_pipeline() -> types.ModuleType:
+    """A stand-in for film.pipeline: a narrated cut with one shot per photo, no model."""
+
+    def make_film(photos, story, services) -> FilmCut:
+        return FilmCut(
+            title="The summer at the lake",
+            shots=[schemas.FilmShot(photo_id=ph.id, start=i * 4.0, duration=4.0, beat=0, caption=f"shot {i}")
+                   for i, ph in enumerate(photos)],
+            beats=[schemas.FilmBeat(title="The lake", start=0, narration=story.text)],
+            words=[schemas.FilmWord(t=0.0, word="We")],
+            audio=b"ID3 narration",
+            audio_content_type="audio/mpeg",
+            duration=4.0 * len(photos),
+        )
+
+    mod = types.ModuleType("film.pipeline")
+    mod.make_film = make_film
+    return mod
+
+
 # ------------------------------------------------------------------------------ fixtures
 
 
@@ -186,9 +208,12 @@ def env(mdb, monkeypatch):
     fake = FakeRuns()
     monkeypatch.setitem(sys.modules, "agent.runs", fake.module())
     monkeypatch.setattr(memories_routes, "HEARTBEAT_SECONDS", 5.0)
+    monkeypatch.setitem(sys.modules, "film.pipeline", _fake_film_pipeline())
     db_client.ensure_indexes(mdb)
     db_client.set_db(mdb)
     driver = Driver(_full_app())
+    setattr(driver.app.state, films_routes.SERVICES_STATE,
+            Services(describer=None, editor=None, narrator=None))  # the stub pipeline ignores them
     try:
         yield types.SimpleNamespace(db=mdb, fake=fake, driver=driver)
         for tc in driver.clients:
@@ -345,6 +370,27 @@ def test_every_route_on_its_happy_path_leaks_no_secret(env):
     d.call(alice, "GET", "/families/{fid}/traditions/{tradition_id}", 200, params=tp)
     d.call(alice, "PATCH", "/families/{fid}/traditions/{tradition_id}", 200, params=tp, json={"startedYear": None})
     d.call(alice, "DELETE", "/families/{fid}/traditions/{tradition_id}", 204, params=tp)
+
+    # A photo film: upload enough photos, ask for the film, list it, read it once it is made
+    # (the test client runs the background build before POST returns).
+    film_photos = [media_id] + [
+        d.call(alice, "POST", "/families/{fid}/media", 201, params=p,
+               files={"file": (f"lake-{i}.png", PNG + bytes([i]), "image/png")}).json()["id"]
+        for i in range(schemas.MIN_FILM_PHOTOS - 1)
+    ]
+    film_id = d.call(
+        alice,
+        "POST",
+        "/families/{fid}/films",
+        202,
+        params=p,
+        json={"title": "Lake Wren", "text": "We spent the summer at the lake.", "year": 1998,
+              "photoIds": film_photos, "participantIds": [grandma["id"]]},
+    ).json()["id"]
+    fp = {**p, "film_id": film_id}
+    assert [x["id"] for x in d.call(alice, "GET", "/families/{fid}/films", 200, params=p).json()["films"]] == [film_id]
+    film = d.call(alice, "GET", "/families/{fid}/films/{film_id}", 200, params=fp).json()
+    assert film["status"] == "ready" and film["audio"] and len(film["shots"]) == len(film_photos)
 
     # A memory run: submit with a photo, stream it, answer it.
     run_id = d.call(
