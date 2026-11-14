@@ -683,13 +683,14 @@ def test_answerer_not_confident_pick_is_used(world):
 NULL_REPLY = {"memory_id": None, "confident": False, "answer": "Nothing relates."}
 
 
-def test_answerer_null_pick_when_search_is_not_confident_is_no_story(world):
-    """A valid "nothing relates" over an unsure ranking: no story, no best, no quotes."""
+def test_answerer_null_pick_over_named_people_keeps_the_search_result(world):
+    """An unsure ranking whose top takes in the people asked about outweighs a null pick.
+    (A loose, nobody-named ranking still gives no story: test_route_null_pick_on_a_loose_match_is_no_story.)"""
     query = "how did mom and dad meet"
-    assert _ask(world, query)["best"]["confident"] is False  # precondition: search is unsure
+    deterministic = _ask(world, query)
+    assert deterministic["best"]["confident"] is False  # precondition: search is unsure
     asking.set_answerer(lambda ctx: NULL_REPLY)
-    body = _ask(world, query)
-    assert body == {"answer": search.NO_STORY, "quotes": [], "best": None, "mode": "model"}
+    assert _ask(world, query) == deterministic
 
 
 def test_answerer_null_pick_when_search_is_confident_keeps_the_search_result(world):
@@ -698,6 +699,70 @@ def test_answerer_null_pick_when_search_is_confident_keeps_the_search_result(wor
     assert deterministic["best"]["confident"] is True and deterministic["mode"] == "search"
     asking.set_answerer(lambda ctx: NULL_REPLY)
     assert _ask(world, query) == deterministic
+
+
+@pytest.mark.parametrize(("asker", "query", "person", "keyword", "keep"), [
+    ("mom", "where did grandpa and grandma meet", 1.0, None, True),  # Ana; named people
+    ("mom", "who taught Sam to ride a bike", None, 1.0, True),  # strong keyword match
+    ("mom", "Joseph drove the green car", 0.67, None, True),  # named person
+    ("mom", "what do we eat at christmas", 0.0, 0.5, False),  # loose and nobody named
+])
+def test_outweighs_a_null_pick_on_demo_rows(demo_db, asker, query, person, keyword, keep):
+    ranking = _rank(demo_db, asker, query)
+    first = ranking.candidates[0]
+    if person is not None:
+        assert first.person == pytest.approx(person, abs=0.01)
+    if keyword is not None:
+        assert first.keyword == pytest.approx(keyword, abs=0.01)
+    assert ranking.outweighs_a_null_pick() is keep
+
+
+def test_outweighs_a_null_pick_rule():
+    assert not search.Ranking([], []).outweighs_a_null_pick()
+    assert _ranking(1.0).outweighs_a_null_pick()  # confident
+    assert _ranking(0.5, 0.5, keyword=0.5, coverage=0.4, person=0.3).outweighs_a_null_pick()  # named people
+    assert _ranking(1.0, 1.0, keyword=1.0, coverage=0.4).outweighs_a_null_pick()  # full keyword match
+    assert not _ranking(0.5, 0.5, keyword=0.5, coverage=0.4).outweighs_a_null_pick()
+
+
+DEMO_ASK = f"/families/{DEMO_FAMILY_ID}/ask"
+
+
+@pytest.fixture
+def demo_client(demo_db):
+    """Signed in as Ana (person "mom") in the seeded demo family."""
+    app = FastAPI()
+    app.include_router(ask_routes.router)
+    app.include_router(auth_routes.router)
+    app.dependency_overrides[get_db] = lambda: demo_db
+    tc = TestClient(app)
+    res = tc.post("/auth/login", json={"email": "ana@demo.stitch", "password": DEMO_PASSWORD})
+    assert res.status_code == 200, res.text
+    return tc
+
+
+@pytest.mark.parametrize("query", ["where did grandpa and grandma meet", "who taught Sam to ride a bike",
+                                   "Joseph drove the green car"])
+def test_route_null_pick_keeps_a_named_or_strong_match(demo_client, query):
+    deterministic = demo_client.post(DEMO_ASK, json={"query": query}).json()
+    assert deterministic["best"] is not None
+    asking.set_answerer(lambda ctx: NULL_REPLY)
+    assert demo_client.post(DEMO_ASK, json={"query": query}).json() == deterministic
+
+
+def test_route_null_pick_on_a_loose_match_is_no_story(demo_client):
+    asking.set_answerer(lambda ctx: NULL_REPLY)
+    body = demo_client.post(DEMO_ASK, json={"query": "what do we eat at christmas"}).json()
+    assert body == {"answer": search.NO_STORY, "quotes": [], "best": None, "mode": "model"}
+
+
+def test_prompt_keeps_to_the_pick_and_the_quotes():
+    system = asking.SYSTEM_PROMPT
+    assert "Write only about the picked memory; do not mention other memories, other candidates " \
+           "or other people the question might have meant." in system
+    assert "State only what a quote or title says; do not infer who did something, where or why " \
+           "from who is present; if the quotes do not state the thing asked, say so and set " \
+           "confident to false." in system
 
 
 def test_choose_tells_a_valid_null_from_a_failure():

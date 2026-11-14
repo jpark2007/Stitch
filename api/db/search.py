@@ -982,6 +982,20 @@ class Ranking:
         runner_up = self.candidates[1].score if len(self.candidates) > 1 else 0.0
         return first.score >= CONFIDENT_MIN_SCORE and first.score >= CONFIDENT_RATIO * runner_up
 
+    def outweighs_a_null_pick(self) -> bool:
+        """Keep the search result even when the model says no candidate relates.
+
+        True when the ranking is confident, or the top candidate takes in people the
+        question named (person > 0), or it has a full keyword match (keyword >= 1.0).
+        The model can miss a page it was shown (it returned null for Rosa and Joseph's
+        wedding on "where did grandpa and grandma meet"); a match this concrete is better
+        than "no one has told that story".
+        """
+        if not self.candidates:
+            return False
+        first = self.candidates[0]
+        return self.confident() or first.person > 0 or first.keyword >= 1.0
+
     def best(self, memory_id: str | None = None, confident: bool | None = None) -> schemas.AskBest | None:
         """AskBest for memory_id (default: the top candidate), or None when there is none."""
         if not self.candidates:

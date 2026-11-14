@@ -80,8 +80,8 @@ def ask_family(
     if pick is None:
         return response
     if isinstance(pick, asking.NothingRelates):
-        if ranking.confident():
-            return response  # the ranking clearly leads; the model may be wrong
+        if ranking.outweighs_a_null_pick():
+            return response  # confident, or the top names the asked-about people or matches fully
         # The model read every candidate and found none about the question. Quotes go too:
         # they come only from those rejected candidates, and under "no one has told that
         # story" an "Also mentioned in" list would read as an answer.
