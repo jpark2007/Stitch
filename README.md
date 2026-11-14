@@ -22,6 +22,12 @@ Built at HackPrinceton Fall 2026.
    The facing page holds the tellings, the year, and the family's real photos, taped in like a scrapbook.
 4. **Shared memories.** A memory belongs to everyone who was in it. Dad's "how I met your mom" page also appears in Mom's book, and when Mom adds her version, both tellings sit on the same spread.
 
+5. **Hear the other version.** A moment is the event, and a telling is one person's answer about it. A spread has a tab for each teller ("Hear Mom's version"), and choosing one replays the same scene with that person's narration.
+6. **Threads (the family timeline).** A second screen shows the whole family as stitched threads along a timeline, one color per person. Shared moments are knots where threads cross. Zoom out for decades and in for single years. It is the same set of pages as the books, sorted by time instead of by person.
+7. **Play with the page.** Like a real pop-up book, spreads have pull tabs and sliders that move parts (drive the car, blow the train's steam). Click any character or object to see why it matters to the story. Orbit the camera a little around the open book, then snap back to reading.
+
+See [DESIGN.md](DESIGN.md) for the full look, feel and interaction spec, and the quality bar every screen is checked against.
+
 ### The look
 
 - **Papery and handmade.** The pages have paper grain, deckled edges, and soft drop shadows under every cutout. The palette is warm, and the headings use a storybook serif.
@@ -65,7 +71,7 @@ The agent remembers each person's look and manner, the family's props, and recur
 - **Audio:** text-to-speech with word timestamps
 - **Checking:** Playwright renders frames for the agent's vision checks
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how it is built and [DESIGN.md](DESIGN.md) for how it must look and behave.
 
 ## Running locally
 
@@ -85,6 +91,12 @@ cd web
 npm install
 npm run dev
 ```
+
+## Using the app
+
+Keep this list current as features land: how to open it and everything that can be clicked, dragged or pulled.
+
+- Nothing is interactive yet. The app is a scaffold.
 
 ## Scope for the weekend
 
