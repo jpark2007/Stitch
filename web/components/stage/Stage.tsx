@@ -16,8 +16,9 @@
  * origin, x to the right, z towards the reader. Set pieces stand on it.
  */
 
+import { PerformanceMonitor } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Object3D, PlaneGeometry } from "three";
 import { useCardBoxMaterials, usePaperMaterial, useWoodMaterial } from "@/components/paper/usePaper";
 import { createCardEdgeMaterial } from "@/components/paper/materials";
@@ -219,16 +220,25 @@ export interface StageProps extends Omit<StageSceneProps, "surface"> {
 export function Stage({ time, camera, orbit = true, className, overlay, size = DEFAULT_STAGE_SIZE, ...scene }: StageProps) {
   const pose = camera ?? stagePoses(size).reading;
   const initial = typeof pose === "function" ? pose(time ?? 0) : pose;
+  // Render at up to 1.5x on retina screens and step down if frames run long:
+  // paper reads fine at 1.25x, a dropped frame does not.
+  const [dpr, setDpr] = useState(1.5);
   return (
     <Canvas
       className={className}
       shadows="percentage"
-      dpr={[1, 2]}
+      dpr={[1, dpr]}
       camera={{ position: initial.position, fov: initial.fov ?? 30, near: 0.1, far: 40 }}
       gl={{ antialias: true }}
     >
       <color attach="background" args={[STAGE_COLORS.backdrop]} />
       <fog attach="fog" args={[STAGE_COLORS.backdrop, 9, 19]} />
+      <PerformanceMonitor
+        flipflops={3}
+        onDecline={() => setDpr((d) => Math.max(1, d - 0.25))}
+        onIncline={() => setDpr((d) => Math.min(1.5, d + 0.25))}
+        onFallback={() => setDpr(1)}
+      />
       <StageClock time={time}>
         <Table />
         <OpenBook size={size} />
