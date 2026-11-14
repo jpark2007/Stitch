@@ -43,6 +43,70 @@ export function readAddQuery(search: string | URLSearchParams | null): AddQuery 
   return { familyId: read("family"), memoryId: read("memoryId"), runId: read("run"), retryOf: read("retry") };
 }
 
+/**
+ * `?added=<personId>`: someone just added on the add-relative page, to tick
+ * under "Who was there?". Null when missing or empty.
+ */
+export function addedFromQuery(search: string | URLSearchParams | null): string | null {
+  if (search === null || search === undefined) return null;
+  const params = typeof search === "string" ? new URLSearchParams(search) : search;
+  const v = params.get("added");
+  return v ? v : null;
+}
+
+/**
+ * This /add URL without `?added=`, every other param kept as it was
+ * (family, memoryId, run, retry), so a reload after the person was ticked
+ * (and maybe unticked) does not tick them again.
+ */
+export function withoutAdded(search: string | URLSearchParams | null): string {
+  const params = new URLSearchParams(search === null || search === undefined ? "" : search);
+  params.delete("added");
+  const q = params.toString();
+  return q ? `/add?${q}` : "/add";
+}
+
+/**
+ * The add-relative page for family `familyId`, sent back to this family's
+ * /add when the person is saved (it appends `added=<personId>`). The family
+ * id is encoded inside `next` too, so an id with "&" or "#" survives the
+ * round trip; for ordinary ids that is exactly `/add?family=<id>`.
+ */
+export function addRelativeHref(familyId: string): string {
+  const back = `/add?family=${encodeURIComponent(familyId)}`;
+  return `/families/${encodeURIComponent(familyId)}/people/new?next=${encodeURIComponent(back)}`;
+}
+
+/**
+ * The people to tick on a form coming back from the add-relative page: the
+ * ones carried over (`carried`, null for none) that are still in the family,
+ * then `added` when it is someone in the family (`known` ids). An unknown or
+ * missing `added` is ignored. Null when there is nobody to tick, so a form
+ * with its own people keeps them (see carryInto).
+ */
+export function preselectAdded(
+  carried: readonly string[] | null,
+  added: string | null,
+  known: readonly string[],
+): string[] | null {
+  const ids = uniqueStrings((carried ?? []).filter((id) => known.includes(id)));
+  if (added && known.includes(added) && !ids.includes(added)) ids.push(added);
+  return ids.length ? ids : null;
+}
+
+/**
+ * The one line on a form whose draft came back from the add-relative page
+ * with photos left behind (files cannot be kept across pages). Null when no
+ * photos were attached.
+ */
+export function carriedPhotosNote(photoCount: number): string | null {
+  const n = Number.isFinite(photoCount) && photoCount > 0 ? Math.floor(photoCount) : 0;
+  if (n === 0) return null;
+  return n === 1
+    ? "Your story is just as you left it. Your photo didn’t come along, so add it again below."
+    : "Your story is just as you left it. Your photos didn’t come along, so add them again below.";
+}
+
 /** Where a run of family `familyId` lives: reloading it reattaches to the run. */
 export function runHref(q: { familyId: string; runId: string }): string {
   return `/add?family=${encodeURIComponent(q.familyId)}&run=${encodeURIComponent(q.runId)}`;
@@ -264,19 +328,48 @@ export function restoreNotice(photoCount: number, photosBack: number | null): st
 }
 
 // ---------------------------------------------------------------------------
-// The story typed so far, carried across a switch to another family. A switch
-// is a page change, so the form would start blank; this keeps the words and
-// the year (not the people: they belong to the family left behind). Kept in
+// The draft typed so far, carried across a page change: a switch to another
+// family (the words and the year; not the people, they belong to the family
+// left behind), or a trip to the add-relative page and back (everything but
+// the photo files, which cannot be stored: only how many there were). Kept in
 // sessionStorage for one read. These helpers never throw.
 
-/** sessionStorage key for the story carried into another family's form. */
+/** sessionStorage key for the draft carried into a family's form. */
 export const CARRY_KEY = "stitch.addCarry";
 
-/** What is carried: the story and year, for the form of family `familyId`. */
+/**
+ * What is carried, for the form of family `familyId`. Only the story and year
+ * go to another family; the rest is for coming back to the same one. Carries
+ * saved before the optional fields existed read as having none of them.
+ */
 export interface CarriedStory {
   familyId: string;
   text: string;
   year: string;
+  /** People ticked under "Who was there?" (the author may be among them). */
+  participantIds?: string[] | null;
+  /** The family question picked above the story, by id. */
+  questionId?: string | null;
+  /** A question typed into the question field (when none was picked). */
+  question?: string | null;
+  /** How many photos were attached (the files themselves do not come along). */
+  photoCount?: number | null;
+}
+
+/** A carry as read back: every field present. */
+export interface ReadCarry {
+  text: string;
+  year: string;
+  /** Null when no people were carried. */
+  participantIds: string[] | null;
+  questionId: string | null;
+  /** The typed question, "" for none. */
+  question: string;
+  photoCount: number;
+}
+
+function wholeCount(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
 }
 
 /**
@@ -288,24 +381,41 @@ export function saveCarry(
   c: CarriedStory,
 ): void {
   if (!storage) return;
+  const participantIds = uniqueStrings(c.participantIds ?? []);
+  const questionId = typeof c.questionId === "string" && c.questionId ? c.questionId : null;
+  const question = typeof c.question === "string" ? c.question : "";
+  const photoCount = wholeCount(c.photoCount);
+  const anything =
+    c.text.trim() !== "" ||
+    c.year.trim() !== "" ||
+    participantIds.length > 0 ||
+    questionId !== null ||
+    question.trim() !== "" ||
+    photoCount > 0;
   try {
-    if (!c.familyId || (!c.text.trim() && !c.year.trim())) storage.removeItem(CARRY_KEY);
-    else storage.setItem(CARRY_KEY, JSON.stringify({ familyId: c.familyId, text: c.text, year: c.year }));
+    if (!c.familyId || !anything) {
+      storage.removeItem(CARRY_KEY);
+      return;
+    }
+    const out: Record<string, unknown> = { familyId: c.familyId, text: c.text, year: c.year };
+    if (participantIds.length) out.participantIds = participantIds;
+    if (questionId) out.questionId = questionId;
+    if (question.trim()) out.question = question;
+    if (photoCount) out.photoCount = photoCount;
+    storage.setItem(CARRY_KEY, JSON.stringify(out));
   } catch {
-    // Not kept: the other family's form starts blank.
+    // Not kept: the form starts blank.
   }
 }
 
 /**
- * The story carried into family `familyId`'s form, or null when there is
+ * The draft carried into family `familyId`'s form, or null when there is
  * none, it was for another family, or it is unreadable. Reading leaves it in
  * place (React may run a state initializer twice); clearCarry drops it once
- * the form has it, so a reload or a later visit starts blank.
+ * the form has it, so a reload or a later visit starts blank. Optional fields
+ * that are missing (an older carry) or the wrong shape read as none.
  */
-export function readCarry(
-  storage: Pick<Storage, "getItem"> | null,
-  familyId: string,
-): { text: string; year: string } | null {
+export function readCarry(storage: Pick<Storage, "getItem"> | null, familyId: string): ReadCarry | null {
   if (!storage || !familyId) return null;
   let raw: string | null;
   try {
@@ -324,8 +434,21 @@ export function readCarry(
   const c = o as Record<string, unknown>;
   if (c.familyId !== familyId || typeof c.text !== "string" || typeof c.year !== "string") return null;
   const year = /^\d{1,4}$/.test(c.year.trim()) ? c.year.trim() : "";
-  if (!c.text.trim() && !year) return null;
-  return { text: c.text, year };
+  const participantIds = Array.isArray(c.participantIds) ? uniqueStrings(c.participantIds) : [];
+  const questionId = typeof c.questionId === "string" && c.questionId ? c.questionId : null;
+  const question = typeof c.question === "string" ? c.question : "";
+  const photoCount = wholeCount(c.photoCount);
+  if (!c.text.trim() && !year && !participantIds.length && !questionId && !question.trim() && !photoCount) {
+    return null;
+  }
+  return {
+    text: c.text,
+    year,
+    participantIds: participantIds.length ? participantIds : null,
+    questionId,
+    question,
+    photoCount,
+  };
 }
 
 /** Drops the carried story. Never throws. */
@@ -449,12 +572,21 @@ export interface CarriedDraft {
   year: string;
   /** People picked for a new memory; null when none were chosen (a second telling). */
   participantIds: string[] | null;
+  /**
+   * A question typed into the question field, brought back from the
+   * add-relative page. A picked question travels by id instead (the page
+   * picks it again), so this is only used when the form has no question.
+   */
+  question?: string | null;
+  /** The picked question's id (the page re-picks it; carryInto ignores it). */
+  questionId?: string | null;
 }
 
 /**
  * The starting values for a form that replaces another (a picked question, a
- * released one, another family's form), with what was typed carried in: the
- * story always; the year and people only into a new memory that has none of
+ * released one, another family's form, the same form back from the
+ * add-relative page), with what was typed carried in: the story always; the
+ * year, people and a typed question only into a new memory that has none of
  * its own (a second telling keeps its moment's). Nothing carried leaves
  * `initial` as it was.
  */
@@ -470,6 +602,8 @@ export function carryInto(
     if (carried.participantIds && carried.participantIds.length > 0 && !initial?.participantIds?.length) {
       out.participantIds = uniqueStrings(carried.participantIds);
     }
+    const typedQuestion = typeof carried.question === "string" ? carried.question : "";
+    if (typedQuestion.trim() && !(initial?.question ?? "").trim()) out.question = typedQuestion;
   }
   return Object.keys(out).length ? { ...initial, ...out } : initial;
 }

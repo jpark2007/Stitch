@@ -9,8 +9,13 @@ import {
   DRAFT_KEY_PREFIX,
   RUN_GONE_MESSAGE,
   TELLING_KEY_PREFIX,
+  addRelativeHref,
+  addedFromQuery,
+  carriedPhotosNote,
   carryInto,
   clearCarry,
+  preselectAdded,
+  withoutAdded,
   draftFromSent,
   familyChoice,
   hasTold,
@@ -32,7 +37,7 @@ import {
   tellingFromSubmit,
   withRunGone,
 } from "../addPage.ts";
-import { pickFamily } from "../session.ts";
+import { pickFamily, safeNext } from "../session.ts";
 
 /** A Map-backed Storage stand-in. */
 function memoryStorage() {
@@ -711,19 +716,22 @@ function fullStorage() {
   };
 }
 
+/** What readCarry gives back for a story and year alone. */
+const story = (text, year) => ({ text, year, participantIds: null, questionId: null, question: "", photoCount: 0 });
+
 describe("saveCarry / readCarry / clearCarry", () => {
   test("the story and year reach that family's form, and only that family's", () => {
     const st = fullStorage();
     saveCarry(st, { familyId: "fam2", text: "The green bike", year: "1997" });
-    assert.deepEqual(readCarry(st, "fam2"), { text: "The green bike", year: "1997" });
+    assert.deepEqual(readCarry(st, "fam2"), story("The green bike", "1997"));
     assert.equal(readCarry(st, "fam1"), null);
   });
 
   test("reading leaves it for a second read (a state initializer can run twice); clearing drops it", () => {
     const st = fullStorage();
     saveCarry(st, { familyId: "f", text: "t", year: "" });
-    assert.deepEqual(readCarry(st, "f"), { text: "t", year: "" });
-    assert.deepEqual(readCarry(st, "f"), { text: "t", year: "" });
+    assert.deepEqual(readCarry(st, "f"), story("t", ""));
+    assert.deepEqual(readCarry(st, "f"), story("t", ""));
     clearCarry(st);
     assert.equal(readCarry(st, "f"), null);
     assert.equal(st.map.size, 0);
@@ -739,7 +747,7 @@ describe("saveCarry / readCarry / clearCarry", () => {
   test("a year that is not a year is dropped; a story with only a bad year is nothing", () => {
     const st = fullStorage();
     st.setItem(CARRY_KEY, JSON.stringify({ familyId: "f", text: "t", year: "19x7" }));
-    assert.deepEqual(readCarry(st, "f"), { text: "t", year: "" });
+    assert.deepEqual(readCarry(st, "f"), story("t", ""));
     st.setItem(CARRY_KEY, JSON.stringify({ familyId: "f", text: " ", year: "abc" }));
     assert.equal(readCarry(st, "f"), null);
   });
@@ -809,5 +817,186 @@ describe("carryInto", () => {
   test("people are deduped and blanks dropped", () => {
     const res = carryInto(undefined, { text: "", year: "", participantIds: ["a", "", "a", "b"] }, false);
     assert.deepEqual(res, { participantIds: ["a", "b"] });
+  });
+
+  test("a typed question comes back into a new memory with no question of its own", () => {
+    const typed = { text: "t", year: "", participantIds: null, question: "Who taught you to swim?" };
+    assert.deepEqual(carryInto(undefined, typed, false), { text: "t", question: "Who taught you to swim?" });
+    // A picked question's own text wins; a second telling never takes one.
+    assert.deepEqual(carryInto({ question: "Picked?" }, typed, false), { question: "Picked?", text: "t" });
+    assert.deepEqual(carryInto(undefined, typed, true), { text: "t" });
+    // Blank questions are nothing.
+    assert.equal(carryInto(undefined, { text: "", year: "", participantIds: null, question: "  " }, false), undefined);
+  });
+});
+
+// ---- the add-relative round trip ----------------------------------------------
+
+describe("addRelativeHref", () => {
+  test("goes to the family's add-relative page, coming back to this family's /add", () => {
+    assert.equal(addRelativeHref("F"), "/families/F/people/new?next=%2Fadd%3Ffamily%3DF");
+    assert.equal(
+      addRelativeHref("6650c0ffee"),
+      "/families/6650c0ffee/people/new?next=%2Fadd%3Ffamily%3D6650c0ffee",
+    );
+  });
+
+  test("an odd family id is encoded in the path and inside next, so it survives the trip", () => {
+    const href = addRelativeHref("a&b c");
+    assert.equal(href, "/families/a%26b%20c/people/new?next=%2Fadd%3Ffamily%3Da%2526b%2520c");
+    const next = new URL(href, "http://x").searchParams.get("next");
+    assert.equal(next, "/add?family=a%26b%20c");
+    assert.equal(readAddQuery(next.slice(next.indexOf("?"))).familyId, "a&b c");
+  });
+
+  test("next is a path safeNext accepts (the add-relative page drops any other)", () => {
+    const next = new URL(addRelativeHref("fam_1"), "http://x").searchParams.get("next");
+    assert.equal(safeNext(next), "/add?family=fam_1");
+    assert.equal(safeNext(new URL(addRelativeHref("a&b c"), "http://x").searchParams.get("next")), "/add?family=a%26b%20c");
+  });
+});
+
+describe("addedFromQuery / withoutAdded", () => {
+  test("reads ?added=, null when missing or empty", () => {
+    assert.equal(addedFromQuery("?family=f&added=p1"), "p1");
+    assert.equal(addedFromQuery(new URLSearchParams("added=p%202")), "p 2");
+    assert.equal(addedFromQuery("?family=f"), null);
+    assert.equal(addedFromQuery("?added="), null);
+    assert.equal(addedFromQuery(""), null);
+    assert.equal(addedFromQuery(null), null);
+  });
+
+  test("drops added and keeps family, memoryId, run and retry", () => {
+    assert.equal(withoutAdded("?family=f&added=p1"), "/add?family=f");
+    assert.equal(
+      withoutAdded("?family=f&added=p1&memoryId=m&run=r&retry=x"),
+      "/add?family=f&memoryId=m&run=r&retry=x",
+    );
+    assert.equal(withoutAdded(new URLSearchParams("added=p1&added=p2")), "/add");
+    assert.equal(withoutAdded("?family=a%26b&added=p"), "/add?family=a%26b");
+    assert.equal(withoutAdded(""), "/add");
+    assert.equal(withoutAdded(null), "/add");
+  });
+});
+
+describe("preselectAdded", () => {
+  const known = ["me", "dad", "lily", "new_aunt"];
+
+  test("ticks the person just added, after the people carried over", () => {
+    assert.deepEqual(preselectAdded(["me", "dad"], "new_aunt", known), ["me", "dad", "new_aunt"]);
+    assert.deepEqual(preselectAdded(null, "new_aunt", known), ["new_aunt"]);
+  });
+
+  test("an unknown added id is ignored; nobody to tick is null", () => {
+    assert.deepEqual(preselectAdded(["dad"], "someone_else", known), ["dad"]);
+    assert.equal(preselectAdded(null, "someone_else", known), null);
+    assert.equal(preselectAdded(null, null, known), null);
+    assert.equal(preselectAdded([], "", known), null);
+  });
+
+  test("carried people no longer in the family are dropped, and nobody is ticked twice", () => {
+    assert.deepEqual(preselectAdded(["dad", "gone", "dad"], "dad", known), ["dad"]);
+  });
+});
+
+describe("carriedPhotosNote", () => {
+  test("says nothing without photos, one line with them", () => {
+    assert.equal(carriedPhotosNote(0), null);
+    assert.equal(carriedPhotosNote(-2), null);
+    assert.equal(carriedPhotosNote(Number.NaN), null);
+    assert.match(carriedPhotosNote(1), /Your photo didn’t come along, so add it again/);
+    assert.match(carriedPhotosNote(3), /Your photos didn’t come along, so add them again/);
+    assert.doesNotMatch(carriedPhotosNote(3), /\n/);
+  });
+});
+
+describe("the extended carry", () => {
+  test("keeps the people, the picked question and the photo count for the same family", () => {
+    const st = fullStorage();
+    saveCarry(st, {
+      familyId: "f",
+      text: "The lake",
+      year: "1979",
+      participantIds: ["dad", "", "dad", "lily"],
+      questionId: "q_lake",
+      question: null,
+      photoCount: 2,
+    });
+    assert.deepEqual(readCarry(st, "f"), {
+      text: "The lake",
+      year: "1979",
+      participantIds: ["dad", "lily"],
+      questionId: "q_lake",
+      question: "",
+      photoCount: 2,
+    });
+  });
+
+  test("a typed question travels as text", () => {
+    const st = fullStorage();
+    saveCarry(st, { familyId: "f", text: "", year: "", question: "Who taught you to swim?" });
+    assert.deepEqual(readCarry(st, "f"), { ...story("", ""), question: "Who taught you to swim?" });
+  });
+
+  test("people alone, a picked question alone or photos alone are worth keeping", () => {
+    for (const extra of [{ participantIds: ["dad"] }, { questionId: "q1" }, { photoCount: 1 }]) {
+      const st = fullStorage();
+      saveCarry(st, { familyId: "f", text: "", year: "", ...extra });
+      assert.ok(st.map.has(CARRY_KEY), JSON.stringify(extra));
+      assert.notEqual(readCarry(st, "f"), null, JSON.stringify(extra));
+    }
+    const st = fullStorage();
+    saveCarry(st, { familyId: "f", text: "old", year: "" });
+    saveCarry(st, { familyId: "f", text: " ", year: "", participantIds: [], questionId: "", question: " ", photoCount: 0 });
+    assert.equal(st.map.has(CARRY_KEY), false);
+  });
+
+  test("a carry saved before the new fields existed still reads, with none of them", () => {
+    const st = fullStorage();
+    st.setItem(CARRY_KEY, JSON.stringify({ familyId: "f", text: "The green bike", year: "1997" }));
+    assert.deepEqual(readCarry(st, "f"), story("The green bike", "1997"));
+  });
+
+  test("wrong-shaped new fields read as none instead of spoiling the story", () => {
+    const st = fullStorage();
+    st.setItem(
+      CARRY_KEY,
+      JSON.stringify({ familyId: "f", text: "t", year: "", participantIds: "dad", questionId: 7, question: [], photoCount: "2" }),
+    );
+    assert.deepEqual(readCarry(st, "f"), story("t", ""));
+    st.setItem(CARRY_KEY, JSON.stringify({ familyId: "f", text: "t", year: "", participantIds: ["a", 3, "b"], photoCount: 2.7 }));
+    assert.deepEqual(readCarry(st, "f"), { ...story("t", ""), participantIds: ["a", "b"], photoCount: 2 });
+  });
+
+  test("the round trip, end to end: carried draft plus ?added= give the form back", () => {
+    const st = fullStorage();
+    // On /add?family=f: typed, ticked Dad, picked a general question, attached a photo.
+    saveCarry(st, {
+      familyId: "f",
+      text: "Grandma's kitchen",
+      year: "1984",
+      participantIds: ["dad"],
+      questionId: "q_kitchen",
+      question: null,
+      photoCount: 1,
+    });
+    // Back on /add?family=f&added=aunt_rosa, after Aunt Rosa was added.
+    const c = readCarry(st, "f");
+    const ids = preselectAdded(c.participantIds, addedFromQuery("?family=f&added=aunt_rosa"), ["me", "dad", "aunt_rosa"]);
+    const initial = carryInto(
+      { question: "What did her kitchen smell like?", memoryId: null },
+      { text: c.text, year: c.year, participantIds: ids, question: c.question },
+      false,
+    );
+    assert.deepEqual(initial, {
+      question: "What did her kitchen smell like?",
+      memoryId: null,
+      text: "Grandma's kitchen",
+      year: "1984",
+      participantIds: ["dad", "aunt_rosa"],
+    });
+    assert.equal(c.questionId, "q_kitchen");
+    assert.ok(carriedPhotosNote(c.photoCount));
+    assert.equal(withoutAdded("?family=f&added=aunt_rosa"), "/add?family=f");
   });
 });

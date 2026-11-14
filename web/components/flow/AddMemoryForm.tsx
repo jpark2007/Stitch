@@ -15,11 +15,12 @@
 // in the second-telling banner. `onDraftChange` hears every edit, so the page
 // can carry what was typed into a form it remounts (a picked question, another
 // family).
+import Link from "next/link";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { SubmitMemoryFields } from "@/lib/types";
 import { isApiError } from "@/lib/api";
 import { Button, FOCUS_RING } from "./Button";
-import { FIELD_LABEL_CLASS, FIELD_OPTIONAL_CLASS, TextAreaField, TextField } from "./Field";
+import { FIELD_LABEL_CLASS, OptionalMark, TextAreaField, TextField } from "./Field";
 import { FormError, focusFirstError } from "./FormError";
 import {
   MEMORY_FIELDS,
@@ -71,6 +72,21 @@ export function AddMemoryForm(props: {
   onSubmit: (fields: SubmitMemoryFields, photos: File[]) => Promise<void>;
   /** Told after every change to the draft or the photos. */
   onDraftChange?: (draft: MemoryDraft, photos: File[]) => void;
+  /**
+   * Where "Someone missing? Add them to the family" goes (the add-relative
+   * page, which comes back here). Shown under "Who was there?" for a new
+   * memory only: a second telling's people are its moment's.
+   */
+  addPersonHref?: string | null;
+  /** Told just before that link is followed, so the page can keep the draft. */
+  onAddPerson?: () => void;
+  /**
+   * Someone to tick under "Who was there?" when this changes to their id
+   * (just added on the add-relative page), leaving the rest of the draft as
+   * it is. The value the form mounts with is not applied: the page puts that
+   * one in `initial`.
+   */
+  tickPersonId?: string | null;
 }) {
   const {
     people,
@@ -85,6 +101,9 @@ export function AddMemoryForm(props: {
     submitLabel = "Save this memory",
     onSubmit,
     onDraftChange,
+    addPersonHref = null,
+    onAddPerson,
+    tickPersonId = null,
   } = props;
 
   const [draft, setDraft] = useState<MemoryDraft>(() => emptyDraft(selfPersonId, initial));
@@ -115,6 +134,16 @@ export function AddMemoryForm(props: {
     setErrors({});
     setFormError(null);
     setQuestionOpen((initial?.question ?? "").trim() !== "");
+  }
+
+  // Someone just added to the family: tick them, keep everything else.
+  const [seenTick, setSeenTick] = useState(tickPersonId);
+  if (seenTick !== tickPersonId) {
+    setSeenTick(tickPersonId);
+    if (tickPersonId && !secondTellingOf) {
+      const id = tickPersonId;
+      setDraft((d) => (d.participantIds.includes(id) ? d : { ...d, participantIds: [...d.participantIds, id] }));
+    }
   }
 
   useEffect(() => {
@@ -248,7 +277,10 @@ export function AddMemoryForm(props: {
         </div>
       ) : null}
 
-      <fieldset disabled={locked} className="m-0 min-w-0 space-y-8 border-0 p-0">
+      {/* mx-0, not m-0: the sheet's space-y-8 gives the fieldset its bottom
+          margin, and m-0 would cancel it, leaving the dashed rule over the
+          send button pressed against the last field. */}
+      <fieldset disabled={locked} className="mx-0 min-w-0 space-y-8 border-0 p-0">
         <div>
           {/* A second telling needs only the story, so no key to the asterisk. */}
           {secondTellingOf ? null : (
@@ -356,7 +388,7 @@ export function AddMemoryForm(props: {
           label={
             <>
               Photos
-              <span className={FIELD_OPTIONAL_CLASS}>(optional)</span>
+              <OptionalMark />
             </>
           }
           hint="Old snapshots help us draw the scene."
@@ -377,16 +409,30 @@ export function AddMemoryForm(props: {
         />
 
         {secondTellingOf ? null : (
-          <PersonPicker
-            legend="Who was there?"
-            hint="You're already in. Add anyone else who was part of it."
-            people={people}
-            value={draft.participantIds}
-            onChange={(ids) => update("participantIds", ids)}
-            lockedIds={[selfPersonId]}
-            error={errors.participantIds}
-            disabled={locked}
-          />
+          <div>
+            <PersonPicker
+              legend="Who was there?"
+              hint="You're already in. Add anyone else who was part of it."
+              people={people}
+              value={draft.participantIds}
+              onChange={(ids) => update("participantIds", ids)}
+              lockedIds={[selfPersonId]}
+              error={errors.participantIds}
+              disabled={locked}
+            />
+            {addPersonHref ? (
+              <p className="mt-3 text-sm leading-snug text-ink-soft">
+                Someone missing?{" "}
+                <Link
+                  href={addPersonHref}
+                  onClick={onAddPerson}
+                  className={`rounded-paper font-medium text-accent-deep underline decoration-1 underline-offset-[0.2em] hover:decoration-2 ${FOCUS_RING}`}
+                >
+                  Add them to the family
+                </Link>
+              </p>
+            ) : null}
+          </div>
         )}
       </fieldset>
 
