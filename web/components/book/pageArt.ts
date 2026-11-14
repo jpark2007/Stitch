@@ -5,7 +5,7 @@
  */
 
 import { ACCENT, canvas, drawGutterStitches, drawStitchLine, INK, INK_FAINT, INK_SOFT, paper, setSpacing, wrap, type Ctx, type PageFonts } from "./paperArt";
-import { drawPullTabPrint, drawPuppetAvatar, drawTellerLabels, layoutTellerLabels, tellerLabelsHeight, type LabelRect } from "./labelArt";
+import { drawLabelsPrompt, drawPullTabPrint, drawPuppetAvatar, drawTellerLabels, layoutTellerLabels, tellerLabelsHeight, type LabelRect } from "./labelArt";
 import { drawPhoto } from "./photoArt";
 import type { BookCover, BookSpread } from "./types";
 
@@ -127,7 +127,8 @@ export async function drawStoryPage(
   let labels: LabelRect[] = [];
   if (tellings.length > 1) {
     // One taped label per telling, to hear the same scene told another way.
-    y += 40;
+    y += 58;
+    y += drawLabelsPrompt(ctx, left + 4, y, fonts, seed + 40) + 16;
     labels = layoutTellerLabels(tellings, left + 4, width - 8, y);
     drawTellerLabels(ctx, tellings, labels, active, fonts, seed + 50);
     y += tellerLabelsHeight(tellings.length) + 6;

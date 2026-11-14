@@ -127,6 +127,29 @@ export function tellerLabelsHeight(count: number): number {
   return rows * LABEL_H + (rows - 1) * 28;
 }
 
+/**
+ * A pencilled question over the labels, "Who's telling?", with a small
+ * curved arrow down to them. Returns the height it takes.
+ */
+export function drawLabelsPrompt(ctx: Ctx, x: number, y: number, fonts: PageFonts, seed: number): number {
+  ctx.save();
+  ctx.fillStyle = "rgba(78,72,68,0.78)";
+  ctx.font = `500 38px ${fonts.hand}`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.translate(x, y + 34);
+  ctx.rotate(-0.02);
+  const text = "Who\u2019s telling?";
+  ctx.fillText(text, 0, 0);
+  const w = ctx.measureText(text).width;
+  ctx.restore();
+  const from: [number, number] = [x + w + 14, y + 22];
+  const to: [number, number] = [x + w + 44, y + 64];
+  pencilCurve(ctx, from, [x + w + 46, y + 18], to, seed, 0.6);
+  pencilHead(ctx, to, Math.PI / 2 + 0.25, 11, seed + 1, 0.6);
+  return 52;
+}
+
 /** A little pencil wobble: a line drawn in two light passes, as by hand. */
 function pencilLine(ctx: Ctx, pts: [number, number][], seed: number, alpha = 0.7, width = 2.2) {
   const r = rng(seed);
@@ -214,16 +237,17 @@ export function drawTellerLabels(
     ctx.stroke();
 
     // The puppet, standing at the label's left.
-    const ph = h * 0.86;
-    drawPuppetAvatar(ctx, -w / 2 + 6, -h / 2 + h * 0.1, ph, t.color, on);
+    // Small enough that a raised hand stays under the label's top line.
+    const ph = h * 0.8;
+    drawPuppetAvatar(ctx, -w / 2 + 10, -h / 2 + h * 0.16, ph, t.color, on);
     if (on) {
       // Sound lines by the puppet's raised hand, in the teller's thread.
       ctx.save();
       ctx.strokeStyle = t.color;
       ctx.lineCap = "round";
       ctx.lineWidth = 2.6;
-      const cx = -w / 2 + 6 + ph * 0.66;
-      const cy = -h / 2 + h * 0.1 + ph * 0.14;
+      const cx = -w / 2 + 10 + ph * 0.66;
+      const cy = -h / 2 + h * 0.16 + ph * 0.14;
       for (let k = 0; k < 2; k++) {
         ctx.globalAlpha = 0.85 - k * 0.3;
         ctx.beginPath();
@@ -234,7 +258,7 @@ export function drawTellerLabels(
     }
 
     // "Hear" small, then "Ana's version" in hand.
-    const tx = -w / 2 + ph * 0.72 + 12;
+    const tx = -w / 2 + ph * 0.78 + 16;
     const maxW = w / 2 - tx - 12;
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
