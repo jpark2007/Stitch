@@ -15,7 +15,7 @@ Run modes, set with `STITCH_AGENT` when the API starts:
 | `off` | No agent; the add-a-memory routes answer 503. |
 | unset | `fake` when `STITCH_FAKE_DB` is on or `ANTHROPIC_API_KEY` is unset, otherwise `real`. |
 
-Offline, without the API: `uv run python -m agent.demo --fake --auto` runs one whole memory with a scripted brain and fake services.
+Offline, without the API or any key, `uv run python -m agent.demo --fake --auto` runs one whole memory with a scripted brain and fake services on the real compiler. `uv run python -m agent.demo --fake --auto --weekend` runs the whole stage demo path the same way: mom tells the story with a photo, the memory lands in her book and dad's, dad adds his second telling, and the last line (`timeline: valid, ...`) checks the saved timeline against the contract. Both exit 0. Without `--fake`, `agent.demo` (with or without `--weekend`) runs the real studio and exits 2 with `ANTHROPIC_API_KEY is not set` when the key is missing.
 
 ## Environment
 
@@ -121,7 +121,7 @@ All commands run from `api/` unless they say otherwise.
 `agent.production.describe()` names every service choice in one line, and `python -m agent.preflight` prints the exact line the API will build (`preflight.expected_log_line`). With only `ANTHROPIC_API_KEY` set it is:
 
 ```
-studio services: model=real subagent_model=studio repo=mongo persistence=memory art=placeholder tts=fake vision=real critic=real renderer=diagram compiler=screenplay.compiler limits=images=24 steps=1000 model_timeout=120s model_retries=2
+studio services: model=real subagent_model=studio repo=mongo persistence=memory art=placeholder tts=fake vision=real critic=real renderer=diagram compiler=screenplay.compiler limits=images=24 steps=1000 model_timeout=120s model_retries=2 run_timeout=1200s
 ```
 
 With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `persistence=mongo art=real tts=real renderer=playwright`.
@@ -148,11 +148,12 @@ Every service except the model has a fallback, so a missing or failing key degra
 | Service | When | What it looks like on stage |
 |---|---|---|
 | model, vision, critic | `ANTHROPIC_API_KEY` unset | **No fallback**: no studio. `STITCH_AGENT=real` falls back to scripted runs at startup; preflight exits 1. |
-| art | `IMAGE_API_KEY` unset; one generation failing (that prop or layer only); the run used its image budget (`STITCH_MAX_IMAGES_PER_RUN`, `0` means always) | **Placeholder art**: props and set layers are flat shapes in a placeholder color instead of painted cut-paper art. Cut-outs of uploaded photos still work. |
+| vision, critic | A Claude vision call failing in the middle of a run | The run goes on. `describe_photo` answers `could not describe photo <id>: <ExceptionType>`, so that photo is staged from the story text alone; `inspect_frames` answers `could not inspect frames: <ExceptionType>`, and the checker passes without a critique. |
+| art | `IMAGE_API_KEY` unset; one generation or background cut-out failing (that prop or layer only); the run used its image budget (`STITCH_MAX_IMAGES_PER_RUN`, `0` means always) | **Placeholder art**: props and set layers are flat shapes in a placeholder color instead of painted cut-paper art. Cut-outs of uploaded photos still work while the cut-out service does. |
 | tts | `ELEVENLABS_API_KEY` unset; or an ElevenLabs call failing in the middle of a run (a 401, a quota, a timeout) and its one retry failing too | **Silent narration**: no voice plays, but the narration text still highlights word by word on estimated timings (0.3 s a word). The run goes on; after a mid-run failure only that teller's voice pass is silent, and the narrator's tool result carries a `warning: the speech service failed` line. |
 | renderer | `STITCH_WEB_URL` unset; or, per render, the page unreachable, Playwright or Chromium missing, or the page lacking the render contract | **Diagram frames**: the family sees nothing different; the checker critiques labelled diagrams of the stage instead of screenshots, so it cannot catch art or layout problems (a puppet hidden behind scenery). |
 | persistence | `MONGODB_URI` unset, or `STITCH_FAKE_DB` on | **In memory**: a run in progress, and the studio's notes about each person, are lost if the API restarts. Saved memories are in the family database and survive, unless `STITCH_FAKE_DB` is on. |
-| persistence | `MONGODB_URI` set but unreachable when the API starts | Depends on your checkout. With the startup fallback (`agent/production.py` catching the failed Mongo connection) the studio runs in memory and logs `persistence=memory`. Without it, building the studio fails and `STITCH_AGENT=real` falls back to scripted runs. Either way `--live` shows the failed ping first: fix it, or unset `MONGODB_URI`, before going on stage. |
+| persistence | `MONGODB_URI` set but unreachable (or its credentials refused) when the API starts | **In memory**, as above: the studio still builds, logs one error naming only the exception type (`MongoDB at MONGODB_URI could not be used (ServerSelectionTimeoutError); falling back to in-memory persistence`) and the services line says `persistence=memory`. `--live` shows the failed ping first: fix it, or unset `MONGODB_URI`, before going on stage. |
 | compiler | `screenplay.compiler` has no `compile()` | **FakeCompiler** timelines (preflight warns). |
 | agent | `STITCH_AGENT=fake`, or `real` that fell back | **Scripted runs**: the feed plays a canned run; the story the family typed is not staged. |
 
@@ -168,7 +169,7 @@ Five environment variables bound one run (`agent.guards.RunLimits`). A blank, un
 | `STITCH_MAX_GRAPH_STEPS` | `1000` (at least `50`) | Graph steps in one run, so a director-checker loop cannot run forever. |
 | `STITCH_MODEL_TIMEOUT_S` | `120` | Seconds one Claude request may take. |
 | `STITCH_MODEL_MAX_RETRIES` | `2` | Retries of a failed Claude request. |
-| `STITCH_RUN_TIMEOUT_S` | `1200` | Seconds one run may take in all. The clock counts only while the run is running, never while it waits on the teller to answer a question, so a family that takes ten minutes to answer does not time out. Enforced by the run manager (`agent/runs.py`) once the run-timeout change is in your checkout. Until then the value is parsed and shown but has no effect, and preflight says so with a warning under `[limits]` (`not enforced in this checkout`); each Claude request is still bounded by `STITCH_MODEL_TIMEOUT_S`. |
+| `STITCH_RUN_TIMEOUT_S` | `1200` | Seconds one run may take in all. The clock counts only while the run is running, never while it waits on the teller to answer a question, so a family that takes ten minutes to answer does not time out. The run manager (`agent/runs.py`) ends a run past it with an error event (`the studio took too long on this story (over N minutes); please try again`), and the feed offers **Tell it again**. |
 
 ## The render page and the checker
 

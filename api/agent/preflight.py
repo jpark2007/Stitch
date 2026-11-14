@@ -739,9 +739,10 @@ def _persistence_report(env: Mapping[str, str], labels: Mapping[str, str]) -> Se
             report.notes.append("MONGODB_URI is ignored while STITCH_FAKE_DB is on")
     elif labels["persistence"] == "mongo":
         report.summary = "family data, run records, checkpoints and /memories/ on MongoDB; runs survive a restart"
-        report.notes.append(
-            "if MongoDB is unreachable when the API starts, the studio cannot keep runs there: "
-            "check the ping with --live (see api/agent/README.md for what happens then)"
+        report.fallback = (
+            f"{FALLBACKS['persistence']}, when MongoDB is unreachable or refuses the credentials as the API "
+            "starts (the studio still builds, logs an error and the services line says persistence=memory); "
+            "check the ping with --live"
         )
     else:
         report.summary = f"family data on {DEFAULT_MONGODB_URI} (db.client's default); runs in memory"
@@ -923,35 +924,13 @@ def _limits_report(env: Mapping[str, str], labels: Mapping[str, str]) -> Service
     report.summary = (
         f"at most {limits.max_images_per_run} image(s) and {limits.max_graph_steps} graph steps a run; "
         f"{limits.model_timeout_s:g} s per Claude request with {limits.model_max_retries} retries; "
-        f"{limits.run_timeout_s:g} s per run" + ("" if run_timeout_enforced() else " (not enforced yet, see below)")
+        f"{limits.run_timeout_s:g} s of running time per run"
     )
-    if run_timeout_enforced():
-        report.notes.append(
-            f"{guards.ENV_RUN_TIMEOUT_S} counts only while a run is running, never while it waits on the teller"
-        )
-    else:
-        report.problems.append(
-            (
-                "warning",
-                f"{guards.ENV_RUN_TIMEOUT_S} is not enforced in this checkout: agent/runs.py does not read "
-                "RunLimits.run_timeout_s yet, so a run has no overall time limit (each Claude request "
-                f"is still bounded by {guards.ENV_MODEL_TIMEOUT_S})",
-            )
-        )
+    report.notes.append(
+        f"{guards.ENV_RUN_TIMEOUT_S} counts only while a run is running, never while it waits on the teller; "
+        "a run past it ends with an error event and the feed offers Tell it again"
+    )
     return report
-
-
-def run_timeout_enforced() -> bool:
-    """Whether the run manager in this checkout ends a run that overruns STITCH_RUN_TIMEOUT_S.
-
-    The enforcement (agent.runs.RUN_TIMEOUT_ERROR and RunManager(run_timeout_s=...)) lands
-    separately from RunLimits, which only parses the value.
-    """
-    try:
-        from agent import runs
-    except Exception:  # noqa: BLE001 - a run manager that does not import enforces nothing
-        return False
-    return hasattr(runs, "RUN_TIMEOUT_ERROR")
 
 
 def build_report(
@@ -1287,7 +1266,6 @@ __all__ = [
     "redact_mongo_uri",
     "redact_url",
     "run_live",
-    "run_timeout_enforced",
     "scrub",
     "scrubbed_logs",
     "secret_values",
