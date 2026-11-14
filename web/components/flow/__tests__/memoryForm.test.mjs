@@ -1,0 +1,193 @@
+// Run with: cd web && node --test "components/flow/__tests__/*.test.mjs"
+// Node strips the erasable TypeScript in memoryForm.ts. memoryForm.ts imports
+// "./validation" without an extension (as the Next build wants), so this file
+// first adds a resolve hook that maps extensionless relative imports made from
+// .ts files to the .ts file next to them, then loads the module dynamically.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    const fromTs = typeof context.parentURL === "string" && context.parentURL.endsWith(".ts");
+    if (fromTs && /^\.\.?\//.test(specifier) && !/\.[cm]?[jt]sx?$/.test(specifier)) {
+      return nextResolve(`${specifier}.ts`, context);
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const {
+  MEMORY_FIELDS,
+  QUESTION_MAX,
+  SUGGESTED_QUESTIONS,
+  TEXT_MAX,
+  draftFromQuestion,
+  emptyDraft,
+  toSubmitFields,
+  validateDraft,
+} = await import("../memoryForm.ts");
+
+const SELF = "p_rose";
+const thisYear = new Date().getFullYear();
+
+function draft(over = {}) {
+  return { ...emptyDraft(SELF), text: "We met at the dance hall.", year: "1987", ...over };
+}
+
+test("SUGGESTED_QUESTIONS: four warm, distinct prompts", () => {
+  assert.equal(SUGGESTED_QUESTIONS.length, 4);
+  assert.equal(new Set(SUGGESTED_QUESTIONS).size, 4);
+  for (const q of SUGGESTED_QUESTIONS) {
+    assert.ok(q.endsWith("?"), q);
+    assert.ok(q.length <= QUESTION_MAX, q);
+  }
+  assert.deepEqual([...MEMORY_FIELDS].sort(), ["participantIds", "photos", "question", "text", "year"]);
+});
+
+test("emptyDraft: blank fields, self is the only participant", () => {
+  assert.deepEqual(emptyDraft(SELF), {
+    question: "",
+    text: "",
+    year: "",
+    participantIds: [SELF],
+    memoryId: null,
+  });
+});
+
+test("emptyDraft: self first and deduped, others kept in order", () => {
+  const d = emptyDraft(SELF, {
+    question: "How did you two meet?",
+    year: "1962",
+    participantIds: ["p_luis", SELF, "p_ana", "p_luis", "", SELF],
+    memoryId: "m_1",
+  });
+  assert.deepEqual(d.participantIds, [SELF, "p_luis", "p_ana"]);
+  assert.equal(d.question, "How did you two meet?");
+  assert.equal(d.year, "1962");
+  assert.equal(d.text, "");
+  assert.equal(d.memoryId, "m_1");
+});
+
+test("draftFromQuestion: without a moment it sets only question and memoryId", () => {
+  assert.deepEqual(draftFromQuestion({ text: "What was the wedding like?" }), {
+    question: "What was the wedding like?",
+    memoryId: null,
+  });
+  assert.deepEqual(draftFromQuestion({ text: "Where?", memoryId: null }, null), {
+    question: "Where?",
+    memoryId: null,
+  });
+});
+
+test("draftFromQuestion: with a moment it adds the year as a string and its people", () => {
+  const out = draftFromQuestion(
+    { text: "What do you remember of the wedding?", memoryId: "m_wedding" },
+    { year: 1962, participantIds: ["p_luis", "p_rosa", "p_luis"] },
+  );
+  assert.deepEqual(out, {
+    question: "What do you remember of the wedding?",
+    memoryId: "m_wedding",
+    year: "1962",
+    participantIds: ["p_luis", "p_rosa"],
+  });
+  // A moment without people leaves participants alone.
+  const noPeople = draftFromQuestion({ text: "Q", memoryId: "m_2" }, { year: 2001 });
+  assert.equal(noPeople.year, "2001");
+  assert.equal("participantIds" in noPeople, false);
+  // And it feeds emptyDraft with self put first.
+  assert.deepEqual(emptyDraft(SELF, out).participantIds, [SELF, "p_luis", "p_rosa"]);
+});
+
+test("validateDraft: a good draft has no errors", () => {
+  assert.deepEqual(validateDraft(draft(), SELF), {});
+  assert.deepEqual(validateDraft(draft({ question: "  How did you two meet?  " }), SELF), {});
+});
+
+test("validateDraft: empty or blank text", () => {
+  assert.equal(validateDraft(draft({ text: "" }), SELF).text, "Tell the story in your own words.");
+  assert.equal(validateDraft(draft({ text: "  \n\t " }), SELF).text, "Tell the story in your own words.");
+});
+
+test("validateDraft: overlong text, counted in characters after trimming", () => {
+  assert.equal(validateDraft(draft({ text: "a".repeat(TEXT_MAX) }), SELF).text, undefined);
+  assert.equal(validateDraft(draft({ text: `  ${"a".repeat(TEXT_MAX)}  ` }), SELF).text, undefined);
+  assert.equal(
+    validateDraft(draft({ text: "a".repeat(TEXT_MAX + 1) }), SELF).text,
+    "Keep your story to 10,000 characters or fewer.",
+  );
+  // 10,000 emoji are 10,000 characters, not 20,000 UTF-16 units.
+  assert.equal(validateDraft(draft({ text: "🧵".repeat(TEXT_MAX) }), SELF).text, undefined);
+});
+
+test("validateDraft: question is optional but capped", () => {
+  assert.equal(validateDraft(draft({ question: "" }), SELF).question, undefined);
+  assert.equal(validateDraft(draft({ question: "q".repeat(QUESTION_MAX) }), SELF).question, undefined);
+  assert.equal(
+    validateDraft(draft({ question: "q".repeat(QUESTION_MAX + 1) }), SELF).question,
+    "Keep the question to 300 characters or fewer.",
+  );
+});
+
+test("validateDraft: year is required and must be sensible", () => {
+  assert.equal(validateDraft(draft({ year: "" }), SELF).year, "Enter a year.");
+  assert.equal(validateDraft(draft({ year: "   " }), SELF).year, "Enter a year.");
+  assert.equal(validateDraft(draft({ year: "nineteen" }), SELF).year, "Enter the year as a number, like 1987.");
+  assert.equal(validateDraft(draft({ year: "1700" }), SELF).year, "Pick a year from 1850 on.");
+  assert.equal(validateDraft(draft({ year: String(thisYear + 1) }), SELF).year, "That year hasn't happened yet.");
+  assert.equal(validateDraft(draft({ year: String(thisYear) }), SELF).year, undefined);
+});
+
+test("validateDraft: participants must include self for a new moment", () => {
+  const errors = validateDraft(draft({ participantIds: ["p_luis"] }), SELF);
+  assert.equal(errors.participantIds, "You were there too: keep yourself in the list.");
+  assert.equal(validateDraft(draft({ participantIds: [] }), SELF).participantIds, errors.participantIds);
+  // A second telling keeps the moment's people, so the list is not checked.
+  assert.equal(validateDraft(draft({ participantIds: [], memoryId: "m_1" }), SELF).participantIds, undefined);
+});
+
+test("validateDraft: reports every problem at once", () => {
+  const errors = validateDraft(
+    { question: "q".repeat(QUESTION_MAX + 1), text: "", year: "", participantIds: [], memoryId: null },
+    SELF,
+  );
+  assert.deepEqual(Object.keys(errors).sort(), ["participantIds", "question", "text", "year"]);
+});
+
+test("toSubmitFields: trims, numbers the year, sends participants for a new moment", () => {
+  const fields = toSubmitFields(
+    draft({
+      question: "  How did you two meet?  ",
+      text: "\n  We met at the dance hall.  \n",
+      year: " 1987 ",
+      participantIds: [SELF, "p_luis", "p_luis", "p_ana", SELF],
+    }),
+  );
+  assert.deepEqual(fields, {
+    text: "We met at the dance hall.",
+    year: 1987,
+    question: "How did you two meet?",
+    participantIds: [SELF, "p_luis", "p_ana"],
+  });
+  assert.equal(typeof fields.year, "number");
+});
+
+test("toSubmitFields: a blank question is omitted", () => {
+  for (const question of ["", "   ", "\n"]) {
+    const fields = toSubmitFields(draft({ question }));
+    assert.equal("question" in fields, false, JSON.stringify(question));
+  }
+});
+
+test("toSubmitFields: memoryId set means a second telling, so participantIds are omitted", () => {
+  const fields = toSubmitFields(draft({ memoryId: "m_wedding", participantIds: [SELF, "p_luis"] }));
+  assert.deepEqual(fields, { text: "We met at the dance hall.", year: 1987, memoryId: "m_wedding" });
+  assert.equal("participantIds" in fields, false);
+});
+
+test("toSubmitFields: no memoryId key for a new moment", () => {
+  const fields = toSubmitFields(draft());
+  assert.equal("memoryId" in fields, false);
+  assert.deepEqual(fields.participantIds, [SELF]);
+  assert.equal("memoryId" in toSubmitFields(draft({ memoryId: "  " })), false);
+});
