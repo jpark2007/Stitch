@@ -13,7 +13,7 @@ export type LeafMode =
   | "auto"
   /** Held: p follows the pointer. */
   | "drag"
-  /** Corner peel under the pointer. */
+  /** Corner peel under the pointer (or, with `tilt`, a pop-up page tilting). */
   | "hover"
   /** Deterministic screenshot pose: no springs, no clock. */
   | "frozen";
@@ -35,6 +35,11 @@ export interface LeafState {
   dur: number;
   /** Drag springs are stiffer, so the sheet keeps up with the hand. */
   stiff: number;
+  /**
+   * A "hover" that tilts the sheet rigidly about the hinge (a page with its
+   * pop-up standing): `p` is then the tilt angle / PI, not turn progress.
+   */
+  tilt: boolean;
   /**
    * How far (page widths) the free edge, as the leaf last posed it, is from
    * where it lies on the left / right stack. Written by the leaf while it
@@ -77,6 +82,7 @@ export function createLeafState(p: number): LeafState {
     t0: 0,
     dur: 1,
     stiff: 1,
+    tilt: false,
     gapL: Infinity,
     gapR: Infinity,
   };

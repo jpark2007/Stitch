@@ -146,6 +146,57 @@ export function turnTargets(
   return out;
 }
 
+/**
+ * Hover on a page with a pop-up standing on it (radians). A pop-up page is
+ * stiff card: lifted by its fore-edge it tilts about the spine, pop-up and
+ * all, rather than curling up through what stands on it. About 2.9 degrees,
+ * so the fore-edge rises some 0.05 page widths.
+ */
+export const HOVER_TILT = 0.05;
+
+/**
+ * Segment angles of a sheet resting on the right (`rest`, from `restAngles`)
+ * tilted rigidly by `angle` about its root at the hinge.
+ */
+export function tiltTargets(rest: Float32Array, angle: number, out: Float32Array): Float32Array {
+  for (let i = 0; i < out.length; i++) out[i] = rest[i] + angle;
+  return out;
+}
+
+/**
+ * The point (px, py) rotated by `angle` (radians, counter-clockwise in x-y)
+ * about (pivotX, pivotY): where a thing standing on a tilted sheet goes when
+ * the sheet tilts about that pivot. Exactly (px, py) at angle 0.
+ */
+export function tiltAbout(px: number, py: number, pivotX: number, pivotY: number, angle: number): [number, number] {
+  if (angle === 0) return [px, py];
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const dx = px - pivotX;
+  const dy = py - pivotY;
+  return [pivotX + dx * c - dy * s, pivotY + dx * s + dy * c];
+}
+
+/** What `stageGoal` reads of a leaf (a LeafState). */
+export interface StageLeaf {
+  p: number;
+  mode: string;
+  dir: number;
+}
+
+/**
+ * How far (0..1) a spread's pop-up should stand: it rises once `before` (the
+ * leaf before its stage page) has turned clear, and folds the moment `page`
+ * (the leaf whose recto it stands on) lifts. A forward hover on the stage
+ * page does not fold it (the card tilts with its pop-up, or curls clear of
+ * it); a back peel of `page` from the left is a real lift over this page, so
+ * the previous spread's pop-up never rises under the current one.
+ */
+export function stageGoal(before: StageLeaf, page: StageLeaf, coverUp: number): number {
+  const pageDown = page.mode === "hover" && page.dir > 0 ? 1 : 1 - smoothstep(0.01, 0.06, page.p);
+  return coverUp * smoothstep(0.62, 0.97, before.p) * pageDown;
+}
+
 /** Total twist (radians) about the sheet's head edge: lifts the bottom corner. */
 export function turnTwist(input: TurnInput): number {
   const q = input.dir > 0 ? input.p : 1 - input.p;

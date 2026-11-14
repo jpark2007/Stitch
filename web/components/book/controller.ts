@@ -14,6 +14,7 @@ import {
   COVER_OVERHANG,
   COVER_T,
   HINGE_LIFT,
+  HOVER_TILT,
   LEAF_REST_GAP,
   PAGE_H,
   PAGE_W,
@@ -24,6 +25,8 @@ import {
   smoothstep,
   spineCrossing,
   stackTop,
+  stageGoal,
+  tiltAbout,
   tipOf,
   turnTargets,
 } from "./leafShape";
@@ -70,6 +73,9 @@ const SHOT_IN = 1.8;
 const SHOT_OUT = 1.5;
 const SHOT_YIELD = 0.9;
 const SHOT_TURN = 0.5;
+/** Rates (1/s) a pop-up page tilts up and down under the pointer, and its stage settles flat after a lift takes over. */
+const TILT_RATE = 12;
+const STAGE_UNTILT_RATE = 10;
 const now = () => performance.now() / 1000;
 
 export interface BookView {
@@ -177,6 +183,15 @@ export class BookController {
   private queue: (1 | -1)[] = [];
   private drag: Drag | null = null;
   private hoverLeaf = -1;
+  /**
+   * The stage group's tilt about the hinge (radians): the tilting stage page's
+   * own angle while it hovers, eased back flat once a turn takes the leaf over.
+   */
+  private stageTilt = 0;
+  /** The leaf that last tilted (its stage settles flat as a turn takes it over). */
+  private tiltLeaf = -1;
+  /** The stage group (BookParts.stage), as last posed. */
+  private stageGroup: Group | null = null;
   private frozen = false;
   private camKey = "";
   private viewKey = "";
@@ -257,6 +272,7 @@ export class BookController {
 
   private freeze(leaf: LeafState, p: number, dir: 1 | -1) {
     leaf.mode = "frozen";
+    leaf.tilt = false;
     leaf.p = p;
     leaf.dir = dir;
     leaf.corner = 0.55;
@@ -289,7 +305,7 @@ export class BookController {
     // The title leaf follows the cover over, a beat behind.
     const leaf = this.rt.leaves[0];
     const k = this.calm ? CALM : 1;
-    Object.assign(leaf, { mode: "auto", dir: 1, from: 0, to: 1, t0: now() + 0.32 * k, dur: 1.35 * k, curl: 0.3, corner: 0.2, stiff: 1 });
+    Object.assign(leaf, { mode: "auto", dir: 1, from: 0, to: 1, t0: now() + 0.32 * k, dur: 1.35 * k, curl: 0.3, corner: 0.2, stiff: 1, tilt: false });
     this.pos = 1;
     this.invalidate();
   }
@@ -408,7 +424,9 @@ export class BookController {
     if (this.hoverLeaf === k) this.hoverLeaf = -1;
     // Calm turns flip more plainly: less curl, less corner lift.
     const curl = this.calm ? 0.25 : 0.42;
-    Object.assign(leaf, { mode: "auto", dir, from: leaf.p, to: dir > 0 ? 1 : 0, t0: now(), dur, curl, corner: this.calm ? 0.3 : 0.55, stiff: 1 });
+    // A tilting pop-up page's p is its tilt, not progress: its turn starts from rest.
+    const from = leaf.tilt ? 0 : leaf.p;
+    Object.assign(leaf, { mode: "auto", dir, from, to: dir > 0 ? 1 : 0, t0: now(), dur, curl, corner: this.calm ? 0.3 : 0.55, stiff: 1, tilt: false });
     this.pos += dir;
     this.afterTurn(dir);
     pageTurn(dur, dir);
@@ -480,25 +498,78 @@ export class BookController {
     if (!this.drag) this.clearHover();
   }
 
+  /**
+   * The hover affordance on a turnable edge. A page with its pop-up standing
+   * is stiff card: it tilts a little about the spine and the pop-up tilts
+   * with it (the stage group takes the same rotation in frame()), so the
+   * paper never cuts through the scene, its caption or its pull tabs. Any
+   * other page (and every back peel, whose words are all in the leaf's
+   * texture) curls up at the corner. Leaned into a playing stage's shot the
+   * stage page does not tilt at all: the shot is mapped through the stage's
+   * world matrix, so a tilt would rock the camera. It can still be grabbed.
+   */
   private setHover(leaf: number, dir: 1 | -1, corner: number) {
     if (this.hoverLeaf === leaf) return;
     this.clearHover();
     const l = this.rt.leaves[leaf];
-    if (l.mode !== "rest") return;
-    Object.assign(l, { mode: "hover", dir, p: dir > 0 ? 0.045 : 0.955, curl: 0.55, corner: Math.max(0.6, corner), stiff: 1 });
+    // A pop-up page still tilting back down can be taken up again where it is.
+    const tilting = l.mode === "hover" && l.tilt;
+    if (l.mode !== "rest" && !tilting) return;
+    if (dir > 0 && this.popUp(leaf - 1)) {
+      if (this.shotW > 0.01) return;
+      Object.assign(l, { mode: "hover", dir, tilt: true, p: tilting ? l.p : 0, curl: 0, corner: 0, stiff: 1 });
+    } else {
+      if (tilting) return;
+      Object.assign(l, { mode: "hover", dir, tilt: false, p: dir > 0 ? 0.045 : 0.955, curl: 0.55, corner: Math.max(0.6, corner), stiff: 1 });
+    }
     this.hoverLeaf = leaf;
     this.invalidate();
+  }
+
+  /**
+   * A pop-up stands (or is rising or folding) in spread j's slot. Every
+   * spread's reveal runs, pop-up or not; Book3D mounts one slot group per
+   * mounted stage, in `stages` order, and a spread without a pop-up leaves
+   * its slot group empty.
+   */
+  private popUp(j: number): boolean {
+    if (!((this.reveals[j]?.current ?? 0) > 0.01)) return false;
+    const slots = this.stageGroup?.children;
+    if (!slots) return false;
+    const k = this.stages.indexOf(j);
+    // Mid-render the slots may not match `stages` yet: then any filled slot counts.
+    if (slots.length !== this.stages.length || k < 0) return slots.some((s) => s.children.length > 0);
+    return slots[k].children.length > 0;
   }
 
   private clearHover() {
     if (this.hoverLeaf < 0) return;
     const l = this.rt.leaves[this.hoverLeaf];
-    if (l.mode === "hover") {
+    // A tilting page eases back down (frame()); a peel drops at once.
+    if (l.mode === "hover" && !l.tilt) {
       l.mode = "rest";
       l.p = l.dir > 0 ? 0 : 1;
     }
     this.hoverLeaf = -1;
     this.invalidate();
+  }
+
+  /** Ease each tilting pop-up page toward its tilt (none once the pointer has left it). */
+  private stepTilts(dt: number): boolean {
+    let moving = false;
+    const leaves = this.rt.leaves;
+    for (let i = 0; i < leaves.length; i++) {
+      const l = leaves[i];
+      if (l.mode !== "hover" || !l.tilt) continue;
+      const goal = i === this.hoverLeaf && this.shotW <= 0.01 ? HOVER_TILT / Math.PI : 0;
+      if (dt === 0 || this.frozen || Math.abs(goal - l.p) < 1e-5) l.p = goal;
+      else l.p += (goal - l.p) * (1 - Math.exp(-dt * TILT_RATE));
+      if (goal === 0 && l.p < 1e-4) {
+        Object.assign(l, { mode: "rest", p: 0, tilt: false });
+        if (this.hoverLeaf === i) this.hoverLeaf = -1;
+      } else if (l.p !== goal) moving = true;
+    }
+    return moving;
   }
 
   /**
@@ -547,7 +618,8 @@ export class BookController {
       if (Math.hypot(clientX - d.startX, clientY - d.startY) < 6) return;
       d.active = true;
       if (this.hoverLeaf === d.leaf) this.hoverLeaf = -1;
-      Object.assign(leaf, { mode: "drag", dir: d.dir, curl: 0.5, corner: Math.max(0.45, d.corner), stiff: 1.7 });
+      // A tilting pop-up page springs on from its tilt.
+      Object.assign(leaf, { mode: "drag", dir: d.dir, curl: 0.5, corner: Math.max(0.45, d.corner), stiff: 1.7, tilt: false });
       paperLift();
     }
     const p = this.solveDragP(leaf, clientX);
@@ -701,14 +773,16 @@ export class BookController {
       }
       moving = true;
     }
+    if (this.stepTilts(dt)) moving = true;
 
     // Block thickness: a sheet leaves its stack as it lifts and joins the
-    // other as it lands.
+    // other as it lands. A tilting pop-up page still counts as lying on it.
     let cntL = 0;
     let cntR = 0;
     for (const leaf of rt.leaves) {
-      cntL += shareLeft(leaf.p);
-      cntR += shareRight(leaf.p);
+      const p = leaf.tilt ? 0 : leaf.p;
+      cntL += shareLeft(p);
+      cntR += shareRight(p);
     }
     const per = BLOCK_T / rt.leaves.length;
     const topL = stackTop(cntL, rt.leaves.length);
@@ -758,11 +832,10 @@ export class BookController {
     const coverUp = smoothstep(0.9, 1, this.open);
     let mounted = "";
     for (let j = 0; j < this.n; j++) {
-      const before = rt.leaves[j];
-      const page = rt.leaves[j + 1];
-      // A corner peel (hover) does not fold the stage; a real lift does.
-      const pageDown = page.mode === "hover" ? 1 : 1 - smoothstep(0.01, 0.06, page.p);
-      const goal = coverUp * smoothstep(0.62, 0.97, before.p) * pageDown;
+      // A forward hover on the stage page tilts it with its pop-up standing
+      // (or, with no pop-up, curls clear): it does not fold the stage. A back
+      // peel lifts the page over it, so the stage under it stays down.
+      const goal = stageGoal(rt.leaves[j], rt.leaves[j + 1], coverUp);
       const r = this.reveals[j];
       if (Math.abs(goal - r.current) > 1e-3) {
         // Rise gently, fold quickly (ahead of the lifting leaf).
@@ -776,8 +849,31 @@ export class BookController {
       this.stages = mounted ? mounted.slice(0, -1).split(",").map(Number) : [];
       this.onStages(this.stages);
     }
-    // The slot sits on the right page's surface, swell included.
-    if (parts.stage) parts.stage.position.y = rt.hinge + pageProfile(PAGE_W / 2, rt.depthR, rt.bow) + LEAF_REST_GAP;
+    // The slot sits on the right page's surface, swell included. While the
+    // stage page tilts under the pointer, the stage tilts with it about the
+    // same pivot (the leaf's root at the hinge), so sheet and pop-up share
+    // one rigid motion; once a turn takes the leaf over, it settles flat.
+    // (Only the settled spread's stage page tilts, and a turn started from it
+    // has moved `pos` on already: follow the leaf itself.)
+    let tilting = -1;
+    for (let i = 0; i < rt.leaves.length; i++) if (rt.leaves[i].mode === "hover" && rt.leaves[i].tilt) tilting = i;
+    if (tilting >= 0) this.tiltLeaf = tilting;
+    const page = rt.leaves[this.tiltLeaf];
+    if (tilting >= 0) this.stageTilt = page.p * Math.PI;
+    else if (!page || page.mode === "rest") this.stageTilt = 0;
+    else if (this.stageTilt !== 0) {
+      this.stageTilt *= dt === 0 || this.frozen ? 0 : Math.exp(-dt * STAGE_UNTILT_RATE);
+      if (this.stageTilt < 1e-5) this.stageTilt = 0;
+      else moving = true;
+    }
+    this.stageGroup = parts.stage;
+    if (parts.stage) {
+      const y0 = rt.hinge + pageProfile(PAGE_W / 2, rt.depthR, rt.bow) + LEAF_REST_GAP;
+      const [sx, sy] = tiltAbout(0, y0, 0, rt.hinge, this.stageTilt);
+      parts.stage.position.x = sx;
+      parts.stage.position.y = sy;
+      parts.stage.rotation.z = this.stageTilt;
+    }
 
     // Camera. While a leaf stands up the camera eases back a little, so the
     // upright page never clips the top of the frame.
