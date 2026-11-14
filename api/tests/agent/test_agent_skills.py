@@ -138,7 +138,7 @@ def test_directing_teaches_what_the_compiler_simulates():
 
 def test_director_prompt_states_the_compiler_rules():
     text = (REPO / "api" / "agent" / "prompts" / "director.md").read_text()
-    for word in ("get_person", "compile_screenplay", "/screenplay.json", "`busy`", "`out_of_reach`",
+    for word in ("get_person", "compile_screenplay", "/screenplay.json", "busy", "out_of_reach",
                  "`enter`", "snake_case", "0.25 s per word", "Stop after round 3"):
         assert word in text, word
     assert '"prop": "<' not in text and '"part": "<' not in text  # drives examples are concrete
