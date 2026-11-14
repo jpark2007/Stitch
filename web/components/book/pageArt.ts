@@ -812,7 +812,47 @@ export function drawBlankPage(seed: number, gutter: "left" | "right") {
 
 const KRAFT = "#b58c62";
 const SPINE_CLOTH = "#7a3a2c";
-const THREAD = "#f1e6cf";
+const THREAD = "#efe2c6";
+
+/** Binding holes, as fractions of the board's length (same on spine and face). */
+function stitchHoles(len: number) {
+  const n = 7;
+  const margin = 0.07;
+  return Array.from({ length: n }, (_, i) => len * (margin + ((1 - 2 * margin) * i) / (n - 1)));
+}
+
+/** A length of waxed linen thread: shadow, body, a twist of highlights. */
+function thread(ctx: Ctx, x0: number, y0: number, x1: number, y1: number, width: number) {
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "rgba(30,15,8,0.35)";
+  ctx.lineWidth = width + 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x0 + 1.2, y0 + 1.8);
+  ctx.lineTo(x1 + 1.2, y1 + 1.8);
+  ctx.stroke();
+  ctx.strokeStyle = THREAD;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
+  ctx.stroke();
+  // Twist: short diagonal glints along the strand.
+  const len = Math.hypot(x1 - x0, y1 - y0);
+  const ux = (x1 - x0) / len;
+  const uy = (y1 - y0) / len;
+  ctx.strokeStyle = "rgba(255,255,255,0.55)";
+  ctx.lineWidth = 1.1;
+  for (let d = 3; d < len - 2; d += 4.5) {
+    const cx = x0 + ux * d;
+    const cy = y0 + uy * d;
+    ctx.beginPath();
+    ctx.moveTo(cx - uy * width * 0.35 - ux, cy + ux * width * 0.35 - uy);
+    ctx.lineTo(cx + uy * width * 0.35 + ux, cy - ux * width * 0.35 + uy);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 
 /**
  * The cover's outside: kraft card, an oxblood cloth tape over the spine held
@@ -857,35 +897,17 @@ export function drawCoverArt(cover: BookCover, fonts: PageFonts, w: number, h: n
     ctx.lineTo(tapeW + 1 + r() * 3, y + (r() - 0.5) * 2);
     ctx.stroke();
   }
-  // Whip stitches over the tape's edge, and a running stitch down the spine.
-  const step = h / 15;
-  for (let i = 0; i < 15; i++) {
-    const y = step * (i + 0.5);
-    const xa = tapeW * 0.2;
-    const xb = tapeW + 16;
-    ctx.fillStyle = "rgba(40,25,15,0.45)";
+  // Stab binding: a row of holes through the tape, thread running hole to
+  // hole down the face and wrapping round the spine at every hole.
+  const holeX = tapeW * 0.58;
+  const holes = stitchHoles(h);
+  for (const y of holes) thread(ctx, 0, y, holeX, y, 5);
+  for (let i = 0; i < holes.length - 1; i++) thread(ctx, holeX, holes[i], holeX, holes[i + 1], 5);
+  for (const y of holes) {
+    ctx.fillStyle = "rgba(30,15,8,0.55)";
     ctx.beginPath();
-    ctx.arc(xb, y + step * 0.18, 3.2, 0, Math.PI * 2);
+    ctx.arc(holeX, y, 4.2, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = "rgba(40,25,15,0.3)";
-    ctx.lineWidth = 4.2;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(xa + 1, y - step * 0.18 + 2);
-    ctx.lineTo(xb + 1, y + step * 0.18 + 2);
-    ctx.stroke();
-    ctx.strokeStyle = THREAD;
-    ctx.lineWidth = 3.6;
-    ctx.beginPath();
-    ctx.moveTo(xa, y - step * 0.18);
-    ctx.lineTo(xb, y + step * 0.18);
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(255,255,255,0.5)";
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(xa, y - step * 0.18 - 1);
-    ctx.lineTo(xb, y + step * 0.18 - 1);
-    ctx.stroke();
   }
 
   // Pasted label.
@@ -1046,23 +1068,9 @@ export function drawSpineCloth() {
     ctx.fillRect(0, y, w, 1);
   }
   ctx.globalAlpha = 1;
-  const step = h / 15;
-  ctx.lineCap = "round";
-  for (let i = 0; i < 15; i++) {
-    const y = step * (i + 0.5);
-    ctx.strokeStyle = "rgba(40,25,15,0.35)";
-    ctx.lineWidth = 7;
-    ctx.beginPath();
-    ctx.moveTo(-4, y + 3);
-    ctx.lineTo(w + 4, y - step * 0.3 + 3);
-    ctx.stroke();
-    ctx.strokeStyle = THREAD;
-    ctx.lineWidth = 6;
-    ctx.beginPath();
-    ctx.moveTo(-4, y);
-    ctx.lineTo(w + 4, y - step * 0.3);
-    ctx.stroke();
-  }
+  // The wraps of the stab binding, at the same holes as on the cover (the
+  // hole rows are symmetric, so the flipped v lines up).
+  for (const y of stitchHoles(h)) thread(ctx, -4, y, w + 4, y, 6);
   // Worn, rounded spine: lighter where it catches the light.
   const g = ctx.createLinearGradient(0, 0, w, 0);
   g.addColorStop(0, "rgba(0,0,0,0.25)");
