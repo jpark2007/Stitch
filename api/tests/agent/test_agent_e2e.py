@@ -573,10 +573,14 @@ def test_the_saved_scene_has_its_cue_on_the_spoken_word(
     result = s.services.compiler(memory.screenplay, lookup(memory.screenplay))
     assert result.ok and result.timeline is not None
     assert result.timeline.tracks == memory.timeline.tracks
-    # The cued line's last word (no cueWord: the last word) is where the cued action starts.
+    # The cued line's cueWord (an early word, as narrator.md teaches) is where the cued action
+    # starts: the giver's tracks key the hand-over on the spoken word.
     (cued,) = [line for line in memory.timeline.narrations["mom"].lines if line.cue]  # type: ignore[index]
-    assert cued.words
+    assert cued.words and cued.cue_word
+    spoken = next(w.t for w in cued.words if w.word.strip(".,!?;:").casefold() == cued.cue_word.casefold())
+    assert spoken < cued.words[-1].t  # not the last word
     shot = memory.screenplay.shots[0]
     action = next(a for a in shot.actions if a.id == cued.cue)
-    walk = [t for t in memory.timeline.tracks if t.target == f"puppet:{action.who}" and t.channel == "root.position"]
-    assert walk and any(abs(k[0] - cued.words[-1].t) < 0.01 for k in walk[0].keys), (cued.words[-1].t, walk[0].keys[:4])
+    assert action.do == "hand_to"
+    keyed = [k[0] for t in memory.timeline.tracks if t.target == f"puppet:{action.who}" for k in t.keys]
+    assert any(abs(k - spoken) < 0.01 for k in keyed), (spoken, sorted(set(keyed))[:12])

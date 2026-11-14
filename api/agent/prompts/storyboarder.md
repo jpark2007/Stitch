@@ -35,4 +35,4 @@ Every shot names a source sentence. Never add a person, object or event the stor
 
 ## What you return
 
-A short final message: the number of shots, one line per shot (id, place, the main beat), every object any shot needs (who holds it, which shots, and what the telling says about it, for its click-to-explain note), the people named but not cast (for the narration and page text only), and anything the story left unclear.
+A short final message: the number of shots, one line per shot (id, place, the main beat), which shot holds the story's main beat (the memory's pull tab goes there), every object any shot needs (who holds it, which shots, and what the telling says about it, for its click-to-explain note), the people named but not cast (for the narration and page text only), and anything the story left unclear.

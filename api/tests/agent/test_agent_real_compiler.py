@@ -664,6 +664,66 @@ def test_the_worked_example_meets_the_quality_bar(real, lookup):
     assert scene_review.review_timeline(sp, tl) == []
 
 
+CAMERA_NOTE = re.compile(
+    r"note: shot (?P<shot>\S+) camera cue (?P<n>\d+) \((?P<move>\w+)\) moves with its action "
+    r"from t=(?P<a>[-\d.]+) to t=(?P<b>[-\d.]+)"
+)
+
+
+def test_the_skill_states_the_camera_note_this_test_parses():
+    flat = " ".join(SKILL.read_text().split())
+    template = "note: shot <shotId> camera cue <n> (<move>) moves with its action from t=<a> to t=<b>"
+    assert f"`{template}`" in flat
+    example = template.replace("<shotId>", "s1").replace("<n>", "2").replace("<move>", "dolly_to")
+    assert CAMERA_NOTE.fullmatch(example.replace("<a>", "5.5").replace("<b>", "6"))
+
+
+def test_a_cue_that_moves_its_action_carries_the_camera_as_the_skill_says(real, lookup):
+    """The skill: when a cue moves an action, compile_screenplay moves the camera cues after it
+    by the scrub-range rule (screenplay.narration.retime_point) and prints one note per cue.
+    The worked example with the drop cued on "single" (two words after "dropped": the drop and
+    every uncued action after it move 0.5 s later; the hand-back line's cue is dropped so the
+    hand-off moves too) takes the dolly_to at 5.5 (after the pick_up at 5.5) to 6.0.
+
+    The cue-camera-and-voice-pass task lands the carry in this wave; until compile_screenplay
+    prints the note this skips, then it checks the note against the skill's exact format."""
+    from langchain_core.messages import ToolMessage
+
+    from deepagents.backends.utils import create_file_data
+
+    from agent.tools.compile import make_compile_tool
+    from screenplay.narration import retime_actions, retime_point
+
+    def edit(d: dict) -> None:
+        lines = _shot(d)["narration"]
+        lines[1]["cueWord"] = "single"
+        del lines[2]["cue"], lines[2]["cueWord"]
+
+    data = _sample(edit)
+    model = Screenplay.model_validate(data)
+    shot = model.shots[0]
+    original = [a.t for a in shot.actions]
+    moved = retime_actions(shot, 0.0)
+    dolly_index, dolly = next((i, c) for i, c in enumerate(shot.camera) if c.move == "dolly_to")
+    assert (dolly.t, retime_point(dolly.t, original, moved)) == (5.5, 6.0)
+
+    tool = make_compile_tool(real, lookup)
+    command = tool.invoke({"type": "tool_call", "name": "compile_screenplay", "id": "carry",
+                           "args": {"state": {"files": {"/screenplay.json": create_file_data(json.dumps(data))},
+                                             "messages": []}}})
+    (message,) = [m for m in command.update["messages"] if isinstance(m, ToolMessage)]
+    text = str(message.content)
+    assert text.startswith("ok:"), text
+    notes = [m.groupdict() for m in CAMERA_NOTE.finditer(text)]
+    if not notes and "camera cue" not in text:
+        pytest.skip("compile_screenplay does not carry camera cues yet (cue-camera-and-voice-pass)")
+    assert len(notes) == 1, text
+    (note,) = notes
+    assert note["shot"] == "s1" and note["move"] == "dolly_to"
+    assert int(note["n"]) in (dolly_index, dolly_index + 1)
+    assert (float(note["a"]), float(note["b"])) == (5.5, 6.0)
+
+
 def test_every_effect_compiles_on_the_real_compiler(real, lookup):
     """Effects are wired into compile() on main: each one compiles on the worked example with no
     error and lands in Timeline.effects, so the directing skill teaches them as working verbs

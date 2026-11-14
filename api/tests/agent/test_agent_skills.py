@@ -825,3 +825,211 @@ def test_vehicle_riders_on_stacked_props_ride_along_as_the_skill_says():
                    {"t": 0, "who": "mom", "do": "drive_to", "what": "pickup", "to": "c"}],
                   start={"mom": {"at": "a", "in": "pickup.driver"}, "kid": {"at": "b"}}, **pickup)
     assert [e.code for e in compile_data(settling).errors] == ["busy"]
+
+
+# ---------------------------------------- (f) the error table against screenplay.errors' catalogue
+#
+# PR #171 gave every compile code a catalogue entry with a fix hint (screenplay/errors.py
+# ERROR_CODES, refined per situation by HINT_VARIANTS). The skill's "### Error codes" table is the
+# director's copy: every catalogue code is in the table or in INTERNAL_CODES with its reason, every
+# table code is in the catalogue (or is one compile.py reports around the compiler), and a row never
+# contradicts the hint: each verb a hint names to fix the error is named in the code's row too.
+
+from screenplay import errors as screenplay_errors  # noqa: E402
+
+
+def skill_code_rows() -> dict[str, str]:
+    """'### Error codes': code -> the fix cell of its row."""
+    rows: dict[str, str] = {}
+    for line in section(body("directing"), "### Error codes").splitlines():
+        if line.startswith("| `"):
+            codes, fix = [c.strip() for c in line.strip("|").split("|")]
+            for code in re.findall(r"`([a-z_]+)`", codes):
+                assert code not in rows, f"`{code}` has two rows"
+                rows[code] = fix
+    return rows
+
+
+def test_the_error_table_and_the_catalogue_agree_both_ways():
+    catalogue = set(screenplay_errors.ERROR_CODES)
+    table = set(skill_code_rows())
+    assert table == skill_code_table()
+    # The catalogue is the compiler's complete list (what compiler_codes finds in the source).
+    assert catalogue == compiler_codes(), sorted(catalogue ^ compiler_codes())
+    # Every catalogue code is in the table or internal, with a reason; never both.
+    assert catalogue - set(INTERNAL_CODES) <= table, sorted(catalogue - set(INTERNAL_CODES) - table)
+    assert set(INTERNAL_CODES) <= catalogue, sorted(set(INTERNAL_CODES) - catalogue)
+    assert not table & set(INTERNAL_CODES), sorted(table & set(INTERNAL_CODES))
+    assert all(reason.strip() for reason in INTERNAL_CODES.values())
+    # Every table code is in the catalogue, or is one compile_screenplay reports around it.
+    assert table - catalogue == {"invalid_json", "invalid_screenplay", "missing_file"} <= AGENT_TOOL_CODES
+
+
+# Hints whose verb-like words are a list of names, not a fix to follow.
+_HINT_NAME_LISTS = {"unknown_pose": "the hint lists every pose name, several of which are also verbs"}
+# (code, word) where a hint uses a verb's name as a plain English word.
+_HINT_ENGLISH = {("follow_cycle", "drop"): '"drop one of the follows": delete a follow, not the drop verb'}
+
+
+def _hint_verbs(hint: str) -> set[str]:
+    words = set(re.findall(r"[a-z_]+", re.sub(r"\{\w+\}", " ", hint)))
+    return words & (set(VOCAB["actions"]) | {"stand_up", "get_out", "walk_to"})
+
+
+def test_every_table_fix_names_the_verbs_of_the_catalogues_hint():
+    rows = skill_code_rows()
+    checked = 0
+    for code, entry in screenplay_errors.ERROR_CODES.items():
+        if code not in rows or code in _HINT_NAME_LISTS:
+            continue
+        hints = [entry.hint, *(h for _, h in screenplay_errors.HINT_VARIANTS.get(code, ()))]
+        row = set(re.findall(r"[a-z_]+", rows[code]))
+        for hint in filter(None, hints):
+            missing = {v for v in _hint_verbs(hint) - row if (code, v) not in _HINT_ENGLISH}
+            assert not missing, f"`{code}`: the catalogue's fix ({hint!r}) uses {sorted(missing)}; its row says {rows[code]!r}"
+            checked += 1
+    assert checked >= 30  # the comparison is live
+
+
+def test_rows_the_catalogue_corrected_say_what_the_compiler_does():
+    """Rows that once contradicted the hints: already_held is never fixed by another pick_up, a
+    prop someone else holds is handed over, and cue_before_start may move the line or the word."""
+    rows = skill_code_rows()
+    assert "pick_up" not in rows["already_held"] and "`hand_to`" in rows["already_held"]
+    assert "`hand_to`" in rows["not_holding"] and "`already_held`" in rows["not_holding"]
+    assert "Cue an earlier word" in rows["cue_before_start"] and "later `t`" in rows["cue_before_start"]
+    data = sp([{"t": 0, "who": "dad", "do": "pick_up", "what": "books"}],
+              start={"mom": {"at": "b", "holding": "books"}, "dad": {"at": "near"}}, props=["books"])
+    (err,) = compile_data(data).errors
+    assert err.code == "already_held" and "hand_to" in (screenplay_errors.hint_for(err) or "")
+    data = sp([{"t": 0, "who": "dad", "do": "drop", "what": "books"}],
+              start={"mom": {"at": "b", "holding": "books"}, "dad": {"at": "near"}}, props=["books"])
+    (err,) = compile_data(data).errors
+    assert err.code == "not_holding" and screenplay_errors.hint_for(err) == 'have mom hand_to books to dad before this drop'
+
+
+# ------------------------------------------------------- (g) the rules this audit added or checked
+
+
+def _flat_skill() -> str:
+    return " ".join(body("directing").split())
+
+
+def test_a_climb_takes_the_climbs_time_as_the_skill_says():
+    """screenplay/motion.py travel_distance (#190): a walk, run or follow that changes height lasts
+    max(ground, |dh|) / speed. The skill's worked numbers, and each gait, on the real compiler."""
+    text = _flat_skill()
+    assert "**A climb takes the climb's time.**" in text
+    assert "max(ground distance, |Δh|) / speed" in text
+    assert "max(ground, height climbed)" in duration_rows()["walk_to"]
+    ground, high = number(text, r"max\(([\d.]+), ([\d.]+)\) / 0.35 = ([\d.]+) s", 1), \
+        number(text, r"max\(([\d.]+), ([\d.]+)\) / 0.35 = ([\d.]+) s", 2)
+    stated = number(text, r"max\(([\d.]+), ([\d.]+)\) / 0.35 = ([\d.]+) s", 3)
+    assert stated == pytest.approx(max(ground, high) / 0.35, abs=0.005)
+    riser = {"riser": [0.5 + ground / 2, high]}  # u = 0.52 from b at u = 0.5: 0.04 of ground
+    walk = sp([{"t": 0, "who": "mom", "do": "walk_to", "to": "riser"}], marks=riser)
+    assert_compiles(walk)
+    ends_at(walk, "mom", max(ground, high) / 0.35)
+    run = sp([{"t": 0, "who": "mom", "do": "run_to", "to": "riser"}], marks=riser)
+    ends_at(run, "mom", max(ground, high) / 0.8)
+    follow = sp([{"t": 0, "who": "mom", "do": "walk_to", "to": "riser"},
+                 {"t": 0, "who": "dad", "do": "follow", "target": "mom"}],
+                start={"mom": {"at": "b"}, "dad": {"at": "near"}}, marks=riser)
+    assert_compiles(follow)
+
+
+def test_a_set_that_comes_back_rises_fresh_as_the_skill_says():
+    """#201: a prop left on a set's floor is not on that set when it comes back, unless placed."""
+    hall = schemas.SetDef(id="hall", name="hall", marks={"x": [0.5, 0.0]},
+                          layers=[schemas.SetLayer(art=None, depth=0, height=1.0, color="#cccccc")])
+
+    def shot(i: int, set_id: str, actions: list[dict], **extra: object) -> dict:
+        at = "b" if set_id == "room" else "x"
+        return {"id": f"s{i}", "set": set_id, "start": {"mom": {"at": at}}, "camera": [{"t": 0, "move": "wide"}],
+                "actions": actions, "pageText": "A page.", **extra}
+
+    data = {"memoryId": "m", "cast": ["mom"], "props": ["books"], "shots": [
+        shot(1, "room", [{"t": 0, "who": "mom", "do": "drop", "what": "books"}]),
+        shot(2, "hall", []),
+        shot(3, "room", [{"t": 0, "who": "mom", "do": "pick_up", "what": "books"}])]}
+    data["shots"][0]["start"]["mom"]["holding"] = "books"
+    sets = {"room": ROOM, "hall": hall}
+    assert [e.code for e in compile_data(data, sets=sets).errors] == ["not_on_stage"]
+    data["shots"][2]["propStart"] = {"books": {"at": "c"}}
+    assert_compiles(data, sets=sets)
+    assert "A set that comes back (s1 and s3 on the same set) rises fresh" in _flat_skill()
+
+
+def test_a_seated_person_never_walks_for_a_pick_up_as_the_skill_says():
+    far = sp([{"t": 0, "who": "mom", "do": "pick_up", "what": "books"}], start={"mom": {"at": "b", "in": "chair.seat"}},
+             props=["chair", "books"], propStart={"chair": {"at": "b"}, "books": {"at": "c"}})
+    assert [e.code for e in compile_data(far).errors] == ["seated"]
+    far["shots"][0]["actions"].insert(0, {"t": 0, "who": "mom", "do": "stand_up"})
+    far["shots"][0]["actions"][1]["t"] = 0.5
+    assert_compiles(far)
+    assert "a prop out of the seat's reach is `seated` (`stand_up` first)" in _flat_skill()
+
+
+def _cue_index_in(line: dict) -> int:
+    words = [w.strip(".,!?;:…\"'").casefold() for w in line["text"].split()]
+    words = [w for w in words if w]
+    return words.index(line["cueWord"].casefold())
+
+
+def test_cue_placement_is_the_compilers_word_time():
+    """word time = t + 0.25 x the words before it: every cued line of the worked example lands
+    its cue word on its action as written, so the compiler moves nothing; an early cue word is
+    the rule; an action too early for the cue word takes an earlier word, never a line before 0."""
+    from screenplay.narration import WORD_SECONDS, retime_actions
+
+    text = _flat_skill()
+    assert "word time = line `t` + 0.25 × the words before it" in text and WORD_SECONDS == 0.25
+    assert "**Prefer a cue word early in the line.**" in text
+    assert "cue an earlier word of the line rather than starting the line before t = 0" in text
+    shot = WORKED_EXAMPLE["shots"][0]
+    actions = {a.get("id"): a for a in shot["actions"]}
+    for line in shot["narration"]:
+        if line.get("cue"):
+            assert line["t"] + WORD_SECONDS * _cue_index_in(line) == pytest.approx(actions[line["cue"]]["t"])
+    model = Screenplay.model_validate(WORKED_EXAMPLE)
+    assert retime_actions(model.shots[0], 0.0) == [a.t for a in model.shots[0].actions]
+    # The drop at 0.5 instead: "dropped" (3 words in) would start the line at -0.25, which is bad_time;
+    # "then" (1 word in) starts it at 0.25 and nothing moves.
+    early = copy.deepcopy(WORKED_EXAMPLE)
+    s1 = early["shots"][0]
+    s1["actions"] = [a for a in s1["actions"] if a.get("id") == "drop"]
+    s1["actions"][0]["t"] = 0.5
+    s1["narration"] = [{**s1["narration"][1], "t": -0.25}]
+    s1["camera"] = [{"t": 0, "move": "wide"}]
+    early["interactions"], early["narrations"] = [], {}
+    assert [e.code for e in compile_data(early, **SAMPLE_SCENE).errors] == ["bad_time"]
+    s1["narration"][0].update(t=0.25, cueWord="then")
+    res = assert_compiles(early, **SAMPLE_SCENE)
+    assert retime_actions(Screenplay.model_validate(early).shots[0], 0.0) == [0.5]
+    assert res.timeline is not None
+
+
+def test_the_first_named_beat_comes_after_the_setup():
+    text = _flat_skill()
+    assert "**Put the first named beat of each shot about 2.5 s or more in**" in text
+    assert "after the unnamed setup actions" in text and "the worked example's drop is at 3.25" in text
+    for shot in WORKED_EXAMPLE["shots"]:
+        named = [a for a in shot["actions"] if a.get("id")]
+        first = min(named, key=lambda a: a["t"])
+        assert first["t"] >= 2.5 and first["id"] == "drop" and first["t"] == 3.25
+        assert all("id" not in a for a in shot["actions"] if a["t"] < first["t"])  # setup is unnamed
+        cued = next(line for line in shot["narration"] if line.get("cue") == first["id"])
+        assert cued["t"] > 0  # the opening line lands on it from inside the shot
+
+
+CAMERA_NOTE = "note: shot <shotId> camera cue <n> (<move>) moves with its action from t=<a> to t=<b>"
+
+
+def test_the_camera_moves_with_its_action_as_the_skill_says():
+    """The camera-carry statement, with the exact note compile_screenplay prints (the
+    cue-camera-and-voice-pass task implements it; test_agent_real_compiler checks it there)."""
+    text = _flat_skill()
+    assert "**The camera moves with its action.**" in text
+    assert "moves the shot's camera cues after it by the same rule as pull-tab scrub ranges" in text
+    assert f"`{CAMERA_NOTE}`" in text
+    assert "Big moves still crowd later actions, so still write `t` so nothing has to move" in text

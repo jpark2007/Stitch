@@ -24,14 +24,19 @@ from pydantic import BaseModel
 import schemas
 from agent import wiring
 from agent.fake_studio import (
+    FIRST_BEAT_SECONDS,
     FakeStory,
     bad_screenplay,
     build_screenplay,
+    early_cue_index,
     fake_studio_model,
     file_body,
     make_fake_studio_responder,
+    narration_by_shot,
     narration_lines,
     role_of,
+    shot_sentences,
+    surface_sockets,
 )
 from agent.repo import InMemoryRepo, load_sample_family
 from agent.subagents import STUDIO_PROMPT, SUBAGENT_NAMES, load_prompt
@@ -230,10 +235,15 @@ def test_new_memory_run_end_to_end(harnesses: list[Harness]) -> None:
     assert sp.interactions and sp.interactions[0].kind == "pull_tab"
     assert sp.interactions[0].drives.type == "scrub"
     assert {a.do for a in sp.shots[0].actions} >= {"walk_to", "hand_to", "pose"}
-    assert all(a.id for a in sp.shots[0].actions)
+    # The directing skill: the walk on is unnamed setup, every beat a line may cue has an id,
+    # and the first named beat is 2.5 s or more in.
+    named = [a for a in sp.shots[0].actions if a.id]
+    assert [a.id for a in named] == ["hand_over", "wave"]
+    assert all(a.id for a in sp.shots[0].actions if a.do != "walk_to")
+    assert min(a.t for a in named) >= FIRST_BEAT_SECONDS
     lines = sp.shots[0].narration
     assert lines and all(ln.source and ln.source.startswith("telling:mom:s") for ln in lines)
-    assert lines[0].cue == "walk"
+    assert lines[0].cue == "hand_over" and lines[0].cue_word
 
     assert tl.default_narrator == "mom"
     assert tl.audio is not None and h.repo.get_media(FAMILY, tl.audio) is not None
@@ -329,7 +339,8 @@ def test_prop_review_remove_leaves_the_prop_out(harnesses: list[Harness]) -> Non
     assert all(a.what is None for a in sp.shots[0].actions)
     assert all(s.holding is None for s in sp.shots[0].start.values())
     assert not any(e.target.startswith("prop:") for e in sp.explanations or [])
-    assert sp.interactions and sp.interactions[0].drives.targets == ["puppet:mom"]
+    # With no prop to hand over, the main beat is dad's wave, and the pull tab plays it.
+    assert sp.interactions and sp.interactions[0].drives.targets == ["puppet:dad"]
 
 
 # --------------------------------------------------------------------------- loops
@@ -417,6 +428,36 @@ def test_second_telling_adds_a_narration_over_the_same_action(harnesses: list[Ha
     assert [ln.source for ln in dad_lines] == ["telling:dad:s1", "telling:dad:s2"]
     # The linker asked dad for his version after the first run; his telling answered it.
     assert h.repo.list_questions(FAMILY) == []
+
+
+MOM_RETELLING = "The hymn books slipped and went everywhere. He gave every one of them back. I could not look up."
+
+
+def test_the_default_narrator_retelling_rewrites_each_shots_narration(harnesses: list[Harness]) -> None:
+    """narrator.md: when the teller is the memory's default narrator, the second-telling pass
+    rewrites each shot's own narration (never narrations[<authorId>], a duplicate_telling), cued
+    so its word falls where the action already is: the saved action stays where it was."""
+    h = make(harnesses)
+    original = saved_memory(h, h.run_through(h.start(), KEEP))
+    assert original.screenplay is not None and original.timeline is not None
+
+    run_id = h.start(person_id="mom", text=MOM_RETELLING, memory_id=original.id, participant_ids=["dad"])
+    events = h.run_through(run_id)
+    assert [n for n, _ in events][-1] == "done", [n for n, _ in events]
+    assert not [p for n, p in events if n == "compile_error"]
+    memory = saved_memory(h, events)
+    sp = memory.screenplay
+    assert sp is not None and memory.timeline is not None
+    assert "mom" not in (sp.narrations or {})
+    lines = sp.shots[0].narration
+    assert [ln.source for ln in lines] == ["telling:mom:s1", "telling:mom:s2", "telling:mom:s3"]
+    assert lines[0].text == "The hymn books slipped and went everywhere." and lines[0].cue == "hand_over"
+    assert lines[0].cue_word == "hymn"  # the first word after the filler "The"
+    assert memory.timeline.default_narrator == "mom"
+    # The shared action and its shots, apart from the narration, are as saved.
+    strip = {"narration"}
+    assert [s.model_dump(exclude=strip) for s in sp.shots] == [
+        s.model_dump(exclude=strip) for s in original.screenplay.shots]
 
 
 def test_second_telling_links_someone_new_to_the_moment(harnesses: list[Harness]) -> None:
@@ -529,7 +570,62 @@ def test_drafts_validate_and_the_bad_one_names_an_unknown_mark() -> None:
     assert bad.shots[0].actions[0].to == "nowhere"
     lines = narration_lines({"teller": "mom", "text": MOM_STORY}, build_screenplay(ctx))
     assert [ln["source"] for ln in lines] == ["telling:mom:s1", "telling:mom:s2", "telling:mom:s3"]
-    assert lines[0]["cue"] == "walk"
+    hand_over = next(a for a in good.shots[0].actions if a.id == "hand_over")
+    # An early cue word ("I was carrying ..."), its line started so the word falls on the action.
+    assert lines[0]["cue"] == "hand_over" and lines[0]["cueWord"] == "carrying"
+    assert lines[0]["t"] == round(hand_over.t - 2 * 0.25, 2)
+
+
+def test_the_default_draft_follows_the_directing_skill() -> None:
+    """Unnamed setup, the first named beat 2.5 s or more in, a close-up that lands on it, a pull
+    tab scrubbing it, and every shape (two people, one person, with and without a prop) compiles
+    on the real compiler with nothing moved by its narration."""
+    from agent.tools.compile import load_compiler, parse_and_compile
+    from agent.wiring import scene_for
+    from screenplay.narration import retime_actions
+
+    repo = InMemoryRepo()
+    load_sample_family(repo, FAMILY)
+    base = {"names": {"mom": "Ana", "dad": "David"}, "setId": "church_steps_1988", "year": 1988,
+            "place": "church steps", "marks": {"steps_left": [0.2, 0.0], "curb": [0.9, 0.0]}}
+    books = [{"id": "hymn_books", "name": "hymn books", "size": "carried"}]
+    for cast, props in ((["mom", "dad"], books), (["mom", "dad"], []), (["mom"], books), (["mom"], [])):
+        ctx = {**base, "teller": "mom", "cast": cast, "props": props}
+        draft = build_screenplay(ctx)
+        shot = draft["shots"][0]
+        named = [a for a in shot["actions"] if a.get("id")]
+        assert shot["actions"][0]["do"] == "walk_to" and "id" not in shot["actions"][0], cast
+        assert named and min(a["t"] for a in named) >= FIRST_BEAT_SECONDS, (cast, props)
+        beat = min(named, key=lambda a: a["t"])
+        wide, close = shot["camera"]
+        assert wide == {"t": 0, "move": "wide"}
+        assert close["move"] == "close_up" and close["t"] + close["dur"] == pytest.approx(beat["t"])
+        (tab,) = draft["interactions"]
+        assert tab["kind"] == "pull_tab" and tab["drives"]["from"] == beat["t"] < tab["drives"]["to"]
+        shot["narration"] = narration_lines({"teller": "mom", "text": MOM_STORY}, draft)
+        assert shot["narration"][0]["cue"] == beat["id"]
+        sp = Screenplay.model_validate(draft)
+        assert retime_actions(sp.shots[0], 0.0) == [a.t for a in sp.shots[0].actions]  # nothing moves
+        res = parse_and_compile(json.dumps(draft), load_compiler(), scene_for(repo, FAMILY))
+        assert res.ok, (cast, props, [e.message for e in res.errors])
+
+
+def test_the_narrator_cues_an_early_word_and_never_starts_before_zero() -> None:
+    words = "It was pouring at the bus stop".split()
+    assert early_cue_index(words, latest=10) == 2  # "pouring": the first word that names something
+    assert early_cue_index(words, latest=1) == 1  # the action is too early: an earlier word
+    assert early_cue_index(["the", "and", "of", "it", "was"], latest=10) == 3  # all filler: the 4th word
+    assert early_cue_index([], latest=3) == 0
+    draft = {"shots": [{"id": "s1", "actions": [{"t": 0.3, "do": "wave", "id": "wave"}]}]}
+    (line,) = narration_by_shot({"teller": "mom", "text": "It was pouring at the bus stop."}, draft)["s1"]
+    assert line["cueWord"] == "was" and line["t"] == 0.05  # 0.3 - 1 word * 0.25, not below 0
+
+
+def test_the_prop_master_gives_surface_furniture_its_socket() -> None:
+    assert surface_sockets("picnic table", "furniture") == {"top": [0.5, 0.1]}
+    assert surface_sockets("stove", "furniture") == {"burner": [0.5, 0.2]}
+    assert surface_sockets("park bench", "furniture") is None  # the default seat
+    assert surface_sockets("table lamp", "hand") is None
 
 
 def test_file_body_strips_the_read_file_header_and_old_gutters() -> None:
@@ -541,3 +637,149 @@ def test_file_body_strips_the_read_file_header_and_old_gutters() -> None:
 
 def test_default_prop_size_is_a_size_class() -> None:
     assert FakeStory().prop_size in SIZES
+
+
+# --------------------------------------------------------------------------- story options
+
+
+def test_story_options_default_to_the_one_shot_scene() -> None:
+    story = FakeStory()
+    assert story.extra_props == () and story.max_cast == 2 and story.screenplay is None
+    assert story.objects == ["hymn books"] and story.size_of("hymn books") == "carried"
+    more = FakeStory(prop="cake", extra_props=(("table", "furniture"), ("cake", "hand")))
+    assert more.objects == ["cake", "table", "cake"]
+    assert more.size_of("table") == "furniture" and more.size_of("cake") == "carried"
+
+
+def test_extra_props_are_confirmed_in_one_review_and_max_cast_limits_the_cast(harnesses: list[Harness]) -> None:
+    h = make(harnesses, FakeStory(extra_props=(("picnic basket", "carried"), ("park bench", "furniture")), max_cast=1))
+    run_id = h.start()  # mom tells it, dad was there
+    assert h.wait(run_id) == "waiting"
+    found = [p for n, p in h.manager.events(FAMILY, run_id) if n == "props_found"]
+    assert len(found) == 1
+    chips = found[0].props  # type: ignore[attr-defined]
+    assert [c.id for c in chips][0] == "hymn_books" and len(chips) == 3
+    events = h.run_through(run_id, KEEP)
+    assert [n for n, _ in events][-1] == "done"
+    assert len(h.tool_calls("confirm_props", "prop_master")) == 1
+    assert [c["description"] for c in h.tool_calls("find_prop", "prop_master")] == [
+        "hymn books", "picnic basket", "park bench"]
+    board = h.tool_calls("write_file", "storyboarder")[0]["content"]
+    assert "picnic_basket" in board and "park_bench" in board
+
+    memory = saved_memory(h, events)
+    sp = memory.screenplay
+    assert sp is not None
+    assert sp.cast == ["mom"]  # max_cast 1: the teller only, though dad was there
+    assert sp.props[0] == "hymn_books" and len(sp.props) == 3
+    bench = next(pid for pid in sp.props if "bench" in pid)
+    assert h.repo.get_prop(FAMILY, bench).size == "furniture"  # type: ignore[union-attr]
+    assert {e.target for e in sp.explanations or []} == {"puppet:mom", *(f"prop:{p}" for p in sp.props)}
+    assert "dad" in memory.participant_ids
+
+
+def test_a_story_screenplay_replaces_the_default_draft(harnesses: list[Harness]) -> None:
+    """`FakeStory.screenplay` is the director: its first draft is broken by bad_screenplay, the
+    second compiles, and the narrator narrates both of its shots."""
+    seen: list[dict] = []
+
+    def two_shots(ctx: dict) -> dict:
+        seen.append(ctx)
+        draft = build_screenplay(ctx)
+        second = json.loads(json.dumps(draft["shots"][0]))
+        second.update(id="s2", camera=[{"t": 0, "move": "close_up", "target": ctx["teller"], "dur": 1.5}],
+                      pageText="And again.")
+        draft["shots"].append(second)
+        return draft
+
+    h = make(harnesses, FakeStory(screenplay=two_shots))
+    events = h.run_through(h.start(), KEEP)
+    assert [n for n, _ in events][-1] == "done"
+    errors = [p for n, p in events if n == "compile_error"]
+    assert len(errors) == 1 and any("nowhere" in e.message for e in errors[0].errors)  # type: ignore[attr-defined]
+    ctx = seen[-1]
+    assert {"teller", "tellerName", "text", "year", "place", "cast", "names", "props", "setId", "marks"} <= set(ctx)
+    assert ctx["props"] == [{"id": "hymn_books", "name": "hymn books", "size": "hand"}]
+
+    sp = saved_memory(h, events).screenplay
+    assert sp is not None and [s.id for s in sp.shots] == ["s1", "s2"]
+    # Three sentences over two shots: two, then one; each shot's first line cued and voiced.
+    assert [ln.source for ln in sp.shots[0].narration] == ["telling:mom:s1", "telling:mom:s2"]
+    assert [ln.source for ln in sp.shots[1].narration] == ["telling:mom:s3"]
+    for shot in sp.shots:
+        assert shot.narration[0].cue == "hand_over" and all(ln.words for ln in shot.narration)
+
+
+def test_bad_screenplay_breaks_the_given_draft() -> None:
+    ctx = {"teller": "mom", "cast": ["mom"], "props": [], "setId": "set", "marks": {}}
+
+    def custom(_: dict) -> dict:
+        draft = build_screenplay(ctx)
+        draft["shots"][0]["actions"].insert(0, {"t": 0, "do": "rain"})
+        return draft
+
+    bad = bad_screenplay(ctx, custom)
+    assert bad["shots"][0]["actions"][0] == {"t": 0, "do": "rain", "to": "nowhere"}
+    assert bad_screenplay(ctx)["shots"][0]["actions"][0]["to"] == "nowhere"
+
+
+def test_shot_sentences_spreads_the_telling_in_order() -> None:
+    five = ["a.", "b.", "c.", "d.", "e."]
+    assert shot_sentences(five, 2) == [[(1, "a."), (2, "b."), (3, "c.")], [(4, "d."), (5, "e.")]]
+    assert shot_sentences(five[:2], 3) == [[(1, "a.")], [(2, "b.")], [(2, "b.")]]  # the last one reused
+    assert shot_sentences(five, 1) == [[(1, "a."), (2, "b."), (3, "c."), (4, "d.")]]  # at most 4 a shot
+    assert shot_sentences([], 2) == [[], []]
+    assert shot_sentences(five, 0) == []
+
+
+def _two_shot_draft() -> dict:
+    def shot(sid: str, actions: list[dict]) -> dict:
+        return {"id": sid, "set": "set", "start": {}, "camera": [], "actions": actions, "narration": []}
+
+    return {"shots": [
+        shot("s1", [{"t": 0, "do": "rain"}, {"t": 3.5, "do": "walk_to", "id": "late"},
+                    {"t": 0.5, "do": "enter", "id": "early"}]),
+        shot("s2", [{"t": 0.2, "do": "wave", "id": "wave"}]),
+        shot("s3", []),
+    ]}
+
+
+def test_narration_by_shot_cues_each_shots_first_named_action_without_overlap() -> None:
+    text = "We got there late. Everyone was already inside the hall. She waved at me from the door."
+    by_shot = narration_by_shot({"teller": "mom", "text": text}, _two_shot_draft())
+    assert list(by_shot) == ["s1", "s2", "s3"]
+    s1, s2, s3 = by_shot["s1"], by_shot["s2"], by_shot["s3"]
+    # The earliest named action, not the first in the list, on an early word ("got", after the
+    # filler "We") that lands on t=0.5: the line starts one word earlier.
+    assert s1[0]["cue"] == "early" and s1[0]["cueWord"] == "got" and s1[0]["t"] == 0.25
+    # An action at 0.2 leaves room for no word before the cue word: the first word, from 0.2.
+    assert s2[0]["cue"] == "wave" and s2[0]["cueWord"] == "Everyone" and s2[0]["t"] == 0.2
+    assert [ln["source"] for ln in s2] == ["telling:mom:s2"]
+    assert s3 == [{"t": 0.0, "text": "She waved at me from the door.", "source": "telling:mom:s3"}]  # nothing to cue
+    late = narration_by_shot({"teller": "mom", "text": "We got there late."},
+                             {"shots": [{"id": "s1", "actions": [{"t": 3.5, "do": "walk_to", "id": "late"}]}]})
+    assert late["s1"][0]["t"] == 3.25  # 3.5 - 1 word * 0.25: "got" is said as the walk starts
+    for lines in by_shot.values():
+        for a, b in zip(lines, lines[1:], strict=False):
+            assert b["t"] >= a["t"] + 0.25 * len(a["text"].split())
+
+
+def test_second_telling_narration_covers_every_shot_and_lands_on_the_shared_action() -> None:
+    draft = _two_shot_draft()
+    draft["shots"][0]["narration"] = [{"t": 0.0, "text": "We got there late.", "cue": "early",
+                                       "words": [{"t": 0.0, "word": "We"}, {"t": 0.3, "word": "got"},
+                                                 {"t": 0.6, "word": "there"}, {"t": 0.9, "word": "late"}]}]
+    long = "I remember every single second of that long and very strange and wonderful evening at the hall."
+    ctx = {"teller": "dad", "text": f"{long} We danced. Then she waved. It was late.", "mode": "second_telling"}
+    by_shot = narration_by_shot(ctx, draft)
+    assert list(by_shot) == ["s1", "s2", "s3"]
+    first = by_shot["s1"][0]
+    # The shared action is spoken at 0.9 s (mom's "late"). A last-word cue would start the line
+    # 3.1 s before the shot's t=0 (more than the 1.2 s its set takes to rise); the narrator cues
+    # an early word instead and starts the line so it falls on the action.
+    assert first["cue"] == "early" and first["cueWord"] == "remember" and first["t"] == 0.65
+    assert by_shot["s1"][1]["t"] > 0.9 + 0.25 * (len(long.split()) - 1)  # after the cued line is said
+    # Nothing cues the wave in the default telling: its written t, 0.2; "waved" is the 3rd word,
+    # so the line is written at 0 and the compiler starts it 0.3 s early, inside the 1.2 s rise.
+    second = by_shot["s2"][0]
+    assert second["cue"] == "wave" and second["cueWord"] == "waved" and second["t"] == 0.0

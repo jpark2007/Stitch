@@ -14,7 +14,8 @@ Every failed compile also blanks `/timeline.json`, so a timeline from an earlier
 compile can never be voiced, rendered or saved after the draft stopped compiling.
 
 After a successful compile the tool also runs `scene_review.review_scene` (pageText,
-explanations, pull tabs, narration sources) and `scene_review.review_timeline` (scrub ranges,
+explanations, pull tabs, narration sources), `scene_review.review_cue_drift` (narration cues
+that move their action far from the camera cues) and `scene_review.review_timeline` (scrub ranges,
 explanation targets, pageText windows and narration cues against the compiled timeline), and
 appends their warnings under the `ok:` summary, writing them to `/scene_review.txt`. Warnings
 never fail a compile and never use a round.
@@ -58,7 +59,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, ValidationError
 
 import schemas
-from agent.tools.scene_review import review_scene, review_timeline
+from agent.tools.scene_review import review_cue_drift, review_scene, review_timeline
 from screenplay.schema import CompileError, CompileResult, Screenplay
 
 log = logging.getLogger(__name__)
@@ -248,6 +249,10 @@ def _review(compiled: _Compiled) -> list[str]:
         warnings += review_scene(screenplay, props=props)
     except Exception:  # noqa: BLE001 - warnings are advice; a crash here must not fail a good compile
         log.exception("scene review crashed")
+    try:
+        warnings += review_cue_drift(screenplay)
+    except Exception:  # noqa: BLE001 - same: advice only
+        log.exception("cue drift review crashed")
     if timeline is not None:
         try:
             warnings += review_timeline(screenplay, timeline, props=props)

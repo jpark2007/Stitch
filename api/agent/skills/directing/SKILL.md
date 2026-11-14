@@ -74,8 +74,12 @@ NarrationLine { t, text, source, cue?, cueWord? }      never write `words`; TTS 
   starts** (its set rises in that time), so the set is up before anything moves. Every shot
   restarts at t = 0. Every `t` is 0 or more; every `dur` is more than 0 (`bad_time`).
 - Walk speed is 0.35 stage units/s, run 0.8, drive 0.9. Arrival time = t + distance / speed,
-  where distance is the ground distance |Δx| = 2 × |Δu| (a step up or down adds no time).
+  where distance is the ground distance |Δx| = 2 × |Δu|.
   Example: `offstage_left` (x = −1.3) to u = 0.2 (x = −0.6) walking: 0.7 / 0.35 = 2.0 s.
+- **A climb takes the climb's time.** A walk, run or follow that changes height lasts
+  max(ground distance, |Δh|) / speed: a step up adds no time when the ground covered is longer
+  than the step is high, but a steep climb does. Example: from u = 0.5 on the ground to a step
+  mark `[0.52, 0.3]` walking: max(0.04, 0.3) / 0.35 = 0.86 s, not 0.04 / 0.35 = 0.11 s.
 - **Movement notes change walking and running speed** (from `get_person`): a cane, walker,
   limp or shuffle walks at × 0.6 (0.7 / (0.35 × 0.6) = 3.33 s for the example above); slowly,
   slow, frail, elderly, stiff or carefully at × 0.75; quickly, fast, brisk, hurries, spry or
@@ -211,7 +215,7 @@ The person (and, where noted, the other person) is busy from `t` until `t` + thi
 
 | Verbs | Busy for |
 |---|---|
-| `enter`, `walk_to`, `run_to`, `exit` | distance / 0.35 (running: / 0.8), × the movement-note speed; 0.4 more first if sitting or kneeling on the floor |
+| `enter`, `walk_to`, `run_to`, `exit` | distance / 0.35 (running: / 0.8), × the movement-note speed, where distance is max(ground, height climbed) (a climb takes the climb's time); 0.4 more first if sitting or kneeling on the floor |
 | `pose` | 0.4 (with `dur`: `dur` + 0.4, then back to the previous pose) |
 | `wave`, `point_at`, `lean_toward` | `dur`, default 1.2 for `wave` and 1.0 for the others |
 | `hug` | walks up first if more than 0.2 apart in x (0.1 in u), then `dur` (default 1.5); **the other person too** |
@@ -226,7 +230,7 @@ The person (and, where noted, the other person) is busy from `t` until `t` + thi
 | `open`, `close` | 0.8 |
 | `drive_to` | distance / 0.9 for the driver; the others riding along stay free (to `wave`, say) |
 | `ride_to` | distance / 0.9; **everyone in the vehicle** |
-| `turn_to`, `set_state`, `follow` | no time / no time / until it stops behind the person it follows |
+| `turn_to`, `set_state`, `follow` | no time / no time / until it stops behind the person it follows (climbing after them takes the climb's time too) |
 | effects | nobody |
 
 ## Rules the compiler enforces
@@ -282,7 +286,8 @@ The person (and, where noted, the other person) is busy from `t` until `t` + thi
   person. A person kneeling or sitting on the floor stands up by themselves before walking
   (0.4 s), but must `stand_up` before `kneel` or `sit_on` (`not_standing`); `stand_up` of
   someone standing is `not_sitting`, and kneeling twice is `already_kneeling`. A seated person
-  reaches from the seat and never walks for a `pick_up`.
+  reaches from the seat and never walks for a `pick_up`: a prop out of the seat's reach is
+  `seated` (`stand_up` first).
 - **Vehicles**: only `vehicle` props take `get_in`, `get_out`, `drive_to` and `ride_to`
   (`not_a_vehicle`). `get_in` walks to the door and sits in `socket`, default `driver` if free
   (`no_free_seat` when all are taken). `drive_to` needs the person in the `driver` socket
@@ -302,7 +307,8 @@ The person (and, where noted, the other person) is busy from `t` until `t` + thi
 - **State carries between shots** (who holds what, prop states), but each shot's `start`
   places people again. Make `holding` agree with what happened in the previous shot. On a new
   set, a prop nobody carries in and not placed by `propStart` is not on stage
-  (`not_on_stage`).
+  (`not_on_stage`). A set that comes back (s1 and s3 on the same set) rises fresh: a prop left
+  on its floor in s1 is not on stage in s3 unless s3's `propStart` places it again.
 - Every person in `start`, `who`, `to` (hand_to) and `target` must be in `cast`; every prop
   in `holding`, `what` and `propStart` must be in `props`; every mark must exist in the set,
   in `Shot.marks`, or be built in. Action `id`s are unique within a shot.
@@ -321,6 +327,17 @@ The person (and, where noted, the other person) is busy from `t` until `t` + thi
   the cue word**, and moves every later action that has no cue of its own by the same amount.
   Write `t` so that word falls where the action already is (word time = line `t` + 0.25 × the
   words before it), so nothing moves and no one becomes `busy`.
+- **Prefer a cue word early in the line.** The real voice is slower than 0.25 s a word, so the
+  later the cue word, the further the spoken word lands from the estimate and the more the
+  action moves. If the action is too early for the cue word (its `t` would be below 0), cue an
+  earlier word of the line rather than starting the line before t = 0.
+- **Put the first named beat of each shot about 2.5 s or more in**, after the unnamed setup
+  actions (an `enter`, a walk on, a turn), so the opening line can land on it: the worked
+  example's drop is at 3.25, and its cued line starts at 2.5, after a first line from t 0.
+- **The camera moves with its action.** When a cue moves an action, `compile_screenplay` moves
+  the shot's camera cues after it by the same rule as pull-tab scrub ranges, and reports each
+  in a line `note: shot <shotId> camera cue <n> (<move>) moves with its action from t=<a> to t=<b>`.
+  Big moves still crowd later actions, so still write `t` so nothing has to move.
 - `cueWord` must be one word, exactly as it appears in `text`, without punctuation
   (`cue_word_missing`). An action takes one cue per telling (`cue_conflict`), and a cue word
   must land at or after the shot's t = 0 (`cue_before_start`).
@@ -341,14 +358,17 @@ shot's `narration`; every other teller goes in
   telling; cue the **same action ids** so both tellings land their words on the same moments.
 - The compiler shifts each cued line of another telling so its cue word lands on the action.
   After that shift its lines still must not overlap, and none may start more than 1.2 s before
-  the shot's t = 0. The default teller never also appears in `narrations` (`duplicate_telling`).
+  the shot's t = 0 (`cue_before_start`): cue a word early in the line, and an earlier one when
+  the action comes soon after t = 0. The default teller never also appears in `narrations`
+  (`duplicate_telling`).
 - For a second telling of an existing memory, load the existing screenplay, add
   `narrations.<newAuthorId>` and leave everything else as it was.
 - **The default-narrator exception**: when the new teller is the memory's default narrator (the
   teller whose words are each shot's `narration`, named by its sources), the retelling rewrites
   each shot's own `narration` lines, with sources `telling:<authorId>:s<n>` naming them, and
   never adds `narrations.<authorId>` (`duplicate_telling`). Every other teller's lines stay as
-  they were.
+  they were. Those rewritten lines move the action like any default line, so place each cued
+  one so its cue word falls where the action already is, and the shared action stays put.
 
 ## pageText
 
@@ -427,21 +447,30 @@ it helps, the names you may use instead.
 | `too_big` | Furniture, vehicles and buildings are never held: leave them out of `holding` and `pick_up` |
 | `no_shots` | Give the screenplay at least one shot |
 | `busy` | Move `t` to the "until" time the message names, or later |
-| `not_holding`, `already_held`, `hands_full`, `head_full`, `double_hold`, `prop_conflict` | Add the `pick_up` (or `drop`), or fix `start.holding` and `propStart` |
+| `not_holding` | Add a `pick_up` first; when someone else holds the prop, have them `hand_to` it to this person instead (a `pick_up` would be `already_held`). A prop worn on a head never comes off |
+| `already_held` | Delete this action, or have its holder `hand_to` it to this person |
+| `hands_full` | Have the person `drop` or `place_on` one of the two props first |
+| `head_full` | Something is already worn on that head: keep the second prop in a hand, or `put_on` it with someone else as `target` |
+| `double_hold`, `prop_conflict` | Give the prop one starting place: one person's `start.holding`, or `propStart`, never both |
 | `out_of_reach` | Put the marks closer (see "Reach"). For `open`/`close` of a held prop, `place_on` it at hand height first and open it there |
 | `offstage` | Add an `enter` first; for an effect, aim it at a mark on stage |
 | `already_on_stage` | Use `walk_to` instead of `enter` |
 | `not_on_stage` | Place the prop with `propStart` in this shot (or have someone carry it in) |
 | `held`, `occupied` | Someone holds the prop, or sits on it: `drop` or `place_on` it, or `stand_up` first |
-| `seated`, `not_standing`, `not_sitting`, `already_kneeling`, `already_seated` | Add the `stand_up` (or `get_out`) before, or delete the extra one |
-| `no_seat`, `socket_taken`, `vehicle_seat`, `seated_vehicle` | Use a prop with a free socket; `get_in`/`get_out` for a vehicle |
-| `not_a_vehicle`, `no_free_seat`, `not_driver`, `no_driver`, `not_in_vehicle`, `vehicle_moving`, `not_on_ground` | Fix the vehicle steps: `get_in` (driver first), wait for the drive to end, keep the vehicle on the ground |
+| `seated`, `not_standing`, `already_seated` | Add a `stand_up` (a `get_out` in a vehicle) for the person the message names, before this action |
+| `not_sitting`, `already_kneeling` | Delete the extra `stand_up` or `kneel` |
+| `no_seat`, `socket_taken` | `sit_on` a prop with a free seat socket, or move whoever is in it first |
+| `vehicle_seat`, `seated_vehicle` | A vehicle takes `get_in` instead of `sit_on`, and `get_out` instead of `stand_up` |
+| `not_a_vehicle` | Use a `vehicle` prop, or `sit_on` furniture instead |
+| `no_free_seat` | Have someone `get_out` first, or leave the extra rider out of the vehicle |
+| `not_driver`, `no_driver`, `not_in_vehicle`, `vehicle_moving`, `not_on_ground` | Fix the vehicle steps: `get_in` (the `driver` socket first), wait for the drive to end at the time the message gives, keep the vehicle on the ground |
 | `already_open`, `already_closed` | Delete the second `open` or `close`, or set the state with `propStart` |
 | `cycle` | A prop cannot rest on itself or on something resting on it: place them the other way round |
 | `bad_start` | A person starts in a seat of a prop that is not on stage, or rides a prop someone holds: fix `start` and `propStart` |
-| `nothing_to_follow`, `follow_order`, `follow_cycle` | See **follow**: give the follow a `dur`, move it to the leader's walk, or drop it |
+| `nothing_to_follow`, `follow_order`, `follow_cycle` | See **follow**: give the follow a `dur`, move it to the leader's walk, or delete it and `walk_to` a mark instead |
 | `bad_camera` | Move the camera cue to a time when its target prop is on stage, or target a person or mark |
-| `lines_overlap`, `cue_before_start`, `cue_conflict`, `cue_word_missing`, `cue_unknown_action` | Move the line's `t`, fix its `cue` or `cueWord`; not the action |
+| `lines_overlap`, `cue_conflict`, `cue_word_missing`, `cue_unknown_action` | Move the line's `t`, fix its `cue` or `cueWord`; not the action |
+| `cue_before_start` | Cue an earlier word of the line, or start the line later (another telling's line starts wherever its cue word puts it, so there only an earlier word helps). In the first telling you may instead give the action (or the one the message names) a later `t`; a second telling never moves the shared action |
 | `duplicate_telling`, `telling_unknown_shot` | One telling per teller; only the shot ids the screenplay has |
 | `explanation_unknown_target`, `explanation_bad_target` | Target `puppet:<personId>` in `cast` or `prop:<propId>` in `props` |
 | `interaction_unknown_shot`, `interaction_unknown_prop`, `interaction_unknown_part`, `interaction_bad_target`, `interaction_bad_range`, `interaction_missing_to` | Point the interaction at a real shot, prop, part or target, and keep its scrub range forward and inside the shot |
