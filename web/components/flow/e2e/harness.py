@@ -13,6 +13,7 @@ What it gives a sweep or demo script:
 - PageWatch: collects console errors, uncaught page errors, failed requests and 5xx
   responses per page, each prefixed with a label and the URL.
 - shot(): numbered full-page screenshots under <out_dir>/shots/.
+- wait_stage_ready(): wait for /render's ready flag (html[data-stage-ready="1"]).
 - SeamLog: one line per step (ok or not, who owns the fix), written to seams.json and
   printed as an aligned table.
 - For sweep scripts: VIEWPORTS, sweep_args() (the shared CLI), sweep_out_dir(),
@@ -522,6 +523,27 @@ def shot(page: Any, stack: Stack, name: str) -> Path:
 def shots_taken(out_dir: Path) -> list[Path]:
     """The screenshots shot() wrote to out_dir in this process, in order."""
     return list(_SHOTS_TAKEN.get(Path(out_dir), []))
+
+
+STAGE_READY_JS = (
+    "() => document.documentElement.dataset.stageReady === '1' || window.__STITCH_READY__ === true"
+)
+"""True once /render has drawn its first full frame (app/render/[memoryId]/page.tsx)."""
+
+
+def wait_stage_ready(page: Any, timeout_ms: float = 60_000) -> bool:
+    """Wait for the pop-up stage's ready flag: <html data-stage-ready="1"> or window.__STITCH_READY__.
+
+    True when it was set within `timeout_ms`, False on a timeout. Any other error (a closed
+    page, a crashed renderer) is raised.
+    """
+    try:
+        page.wait_for_function(STAGE_READY_JS, timeout=timeout_ms)
+    except Exception as exc:
+        if type(exc).__name__ == "TimeoutError":  # playwright's, without importing it here
+            return False
+        raise
+    return True
 
 
 # --------------------------------------------------------------------------- seams

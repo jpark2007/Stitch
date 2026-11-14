@@ -3,19 +3,23 @@
 From api/ (it uses the API's uv environment, which has Playwright):
 
     cd api && uv run python ../web/components/flow/e2e/demo_path.py [--headed] [--out DIR]
-        [--join claim|add-self] [--keep-going] [--api-port N] [--web-port N]
+        [--join claim|add-self] [--keep-going] [--strict-ethan] [--api-port N] [--web-port N]
 
 Person A signs up, starts a family and makes an invite link. Person B, in a second
 browser context, signs up from the invite and claims the relative A added (or adds
 themselves). A tells a story with the scripted agent, answers the follow-up, keeps the
-hymn books and waits for the scene. Both books get the memory. B answers the question
-the linker left them, which opens /add as a second telling, and B's narration track
-appears on the memory. Last, it looks at where the finished flow leads (the scene link,
-the home page, B's book page) and records what is missing there for Ethan.
+hymn books and waits for the scene; the finished run links to /memories/<id>?family=<fid>
+and 'Watch the scene' plays it on /render/<id>?family=<fid> until the stage says it is
+ready. Both books get the memory. B answers the question the linker left them, which
+opens /add as a second telling naming the moment, and the finished telling links into
+the moment and home; B's narration track appears on the memory. Last, it looks at where
+the finished flow leads (the scene link, the home page, B's book page, the way home from
+settings and /add) and records what is missing there for Ethan.
 
 Every step lands in seams.json (see harness.SeamLog) with a screenshot. Exit code 1 when
 a step owned by the flow pages or the API failed, 0 otherwise (Ethan's seams are
-reported, not failed). It exits 0 with a SKIP line when Playwright's Chromium is missing.
+reported, not failed, unless --strict-ethan). It exits 0 with a SKIP line when
+Playwright's Chromium is missing.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ import zlib  # noqa: E402
 from collections.abc import Callable  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
-from urllib.parse import unquote, urlsplit  # noqa: E402
+from urllib.parse import parse_qs, unquote, urlsplit  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -44,13 +48,17 @@ from harness import (  # noqa: E402
     SeamLog,
     Stack,
     StackError,
+    app_problems,
+    expected_noise,
     require_chromium,
     run_stack,
     shot,
     shots_taken,
+    wait_stage_ready,
 )
 
 TIMEOUT_MS = 30_000
+STAGE_READY_MS = 60_000
 PASSWORD = "stitch-e2e-password"
 STORY = (
     "We sang from the green hymn books on the church steps. "
@@ -69,23 +77,32 @@ ETHAN_PATHS = re.compile(r"^/(people|memories|threads|render)(/|$)|^/$")
 
 REQUEST_SCENE = (
     "REQUEST for Ethan: /memories/[id] shows the placeholder \"This page isn’t in the book yet\" "
-    "for every id except 'demo'. The add page links there when a scene is ready (\"Open your page\" "
-    "-> /memories/<memoryId>). Please load real moments: GET /families/{fid}/memories/{id} "
-    "(MemoryResponse: memory.timeline, memory.screenplay, props, sets, people) with the session "
-    "cookie, the family from localStorage 'stitch.familyId' or the signed-in user's first family "
-    "(GET /me), and render that moment's spread."
+    "for every id except 'demo' (app/memories/[id]/MemoryBook.tsx:48, `if (id !== \"demo\")`). The "
+    "add page links there when a scene is ready (\"Open your page\" -> /memories/<memoryId>?family=<fid>). "
+    "Please load real moments: GET /families/{fid}/memories/{id} (MemoryResponse: memory.timeline, "
+    "memory.screenplay, props, sets, people) with the session cookie, the family from ?family= (else "
+    "localStorage 'stitch.familyId', else the signed-in user's first family from GET /me), and render "
+    "that moment's spread."
 )
 REQUEST_HOME_FAMILY = (
-    "REQUEST for Ethan: the home page (/) always shows the demo tree \"{shown}\" "
-    "(components/tree/demoFamily.ts) instead of the signed-in family \"{family}\". Every flow page "
-    "sends people home when they finish (sign in, join, settings 'Home', add 'Family tree'). Please "
-    "read GET /me (credentials: 'include'), pick the family from localStorage 'stitch.familyId' "
-    "(else the first), and draw GET /families/{{fid}}/tree; keep the demo tree only when signed out."
+    "REQUEST for Ethan: the home page (/) shows \"{shown}\" instead of the signed-in family \"{family}\" "
+    "(components/tree/TreeHome.tsx:170, FamilyHome). Every flow page sends people home when they finish "
+    "(sign in, join, settings and add 'Family tree'). Please read GET /me (credentials: 'include'), pick "
+    "the family from localStorage 'stitch.familyId' (else the first), and draw GET /families/{{fid}}/tree; "
+    "keep the demo tree only when signed out."
 )
 REQUEST_HOME_LINKS = (
-    "REQUEST for Ethan: the home page (/) has no way into the flow pages. Please add, signed in: "
+    "REQUEST for Ethan: the home page (/) has no way into the flow pages (components/tree/TreeHome.tsx:170, "
+    "the signed-in FamilyHome inside HomeShell, whose nav has only 'Family threads'). Please add, signed in: "
     "'Add a memory' -> /add?family=<fid>, 'Family settings' -> /families/<fid>/settings; signed "
     "out: 'Log in' -> /login and 'Sign up' -> /signup. (Missing now: {missing}.)"
+)
+REQUEST_STAGE = (
+    "REQUEST for Ethan: the finished run's 'Watch the scene' ({href}) opens /render/[memoryId], but the "
+    "stage never set <html data-stage-ready=\"1\"> / window.__STITCH_READY__ within {seconds} s for a moment "
+    "the scripted agent made (app/render/[memoryId]/RenderView.tsx). Please load "
+    "GET /families/{{fid}}/memories/{{id}} from ?family= with the session cookie, play it, and set the "
+    "ready flag once the first frame is drawn (or show an error and still settle)."
 )
 REQUEST_PERSON_BOOK = (
     "REQUEST for Ethan: /people/[id] is a stub (it renders only \"Storybook\"), so a person's "
@@ -122,6 +139,34 @@ def tiny_png(width: int = 8, height: int = 8) -> bytes:
         + chunk(b"IDAT", zlib.compress(raw))
         + chunk(b"IEND", b"")
     )
+
+
+def check_scene_href(href: str, route: str, fid: str, what: str) -> str:
+    """The moment id in a finished run's link `/<route>/<id>?family=<fid>`.
+
+    Raises a 'pages' Seam naming the exact href when it is not that shape, or when its
+    `family` is missing or is not `fid` (the page would open the moment in the wrong family).
+    """
+    match = re.fullmatch(rf"/{re.escape(route)}/([^/?#]+)(?:\?([^#]*))?", href)
+    if not match:
+        raise Seam("pages", f"{what} links to {href!r}, not /{route}/<id>?family={fid}")
+    family = parse_qs(match.group(2) or "").get("family", [])
+    if family != [fid]:
+        shown = ", ".join(repr(f) for f in family) if family else "missing"
+        raise Seam("pages", f"{what} links to {href!r}: its family is {shown}, not the created family {fid!r}")
+    return unquote(match.group(1))
+
+
+def visible_hrefs(page: Any) -> list[str]:
+    """The href of every link a person can see on the page (role locators skip hidden ones)."""
+    return [h or "" for h in page.get_by_role("link").evaluate_all("els => els.map(e => e.getAttribute('href'))")]
+
+
+def banner_text(locator: Any) -> str:
+    try:
+        return str(locator.first.inner_text(timeout=1_000)).strip()
+    except Exception:  # noqa: BLE001 - only for a failure message
+        return "(not found)"
 
 
 def first_lines(text: str, n: int = 6) -> str:
@@ -181,6 +226,7 @@ class DemoPath:
         self.pid_b = ""
         self.memory_id = ""
         self.scene_href = ""
+        self.run_url = ""
         self.title = ""
 
     # ------------------------------------------------------------------ the runner
@@ -194,7 +240,13 @@ class DemoPath:
         owner: str = "pages",
         pages: tuple[str, ...] = ("A",),
         needs: tuple[str, ...] = (),
+        app_only: bool = False,
     ) -> None:
+        """Run one step: record its seam, screenshot `pages`, then the browser problems it caused.
+
+        With `app_only`, those browser problems leave out harness.expected_noise() (see
+        harness.app_problems); otherwise every problem PageWatch saw is recorded.
+        """
         missing = [n for n in needs if n not in self.done]
         if missing:
             self.seams.record(name, False, f"not run: needs step(s) {', '.join(missing)} first", owner)
@@ -218,14 +270,14 @@ class DemoPath:
         self.seams.record(name, ok, detail, result_owner)
         if ok:
             self.done.add(key)
-        self.record_browser_problems(name, marks)
+        self.record_browser_problems(name, marks, app_only=app_only)
         if not ok and result_owner == "pages" and not self.keep_going:
             raise Abort(name)
 
     def page(self, label: str) -> Any:
         return self.page_a if label == "A" else self.page_b
 
-    def record_browser_problems(self, name: str, marks: dict[str, int]) -> None:
+    def record_browser_problems(self, name: str, marks: dict[str, int], *, app_only: bool = False) -> None:
         for label, watch in (("A", self.watch_a), ("B", self.watch_b)):
             mark = marks[label]
             new = watch.since(mark)
@@ -233,6 +285,8 @@ class DemoPath:
                 continue
             groups: dict[str, list[str]] = {}
             for problem, event in zip(new, watch.events_since(mark), strict=True):
+                if app_only and expected_noise(problem):
+                    continue
                 groups.setdefault(problem_owner(event), []).append(problem)
             for owner, problems in groups.items():
                 self.seams.record(f"{name}: browser problems ({label})", False, "\n".join(problems), owner)
@@ -253,6 +307,17 @@ class DemoPath:
                 alerts = []
             if alerts:
                 parts.append(f"{label} shows: " + " | ".join(alerts))
+            if type(exc).__name__ == "TimeoutError":
+                # What a role locator could see when it gave up waiting: tells a missing
+                # element from one outside the accessibility tree (aria-hidden, inert).
+                try:
+                    names = page.get_by_role("button").evaluate_all(
+                        "els => els.map(e => (e.innerText || e.getAttribute('aria-label') || '').trim()"
+                        " + (e.disabled ? ' (disabled)' : ''))"
+                    )
+                    parts.append(f"{label} buttons: " + " | ".join(n for n in names if n)[:400])
+                except Exception:  # noqa: BLE001
+                    pass
         return "\n".join(parts)
 
     # ------------------------------------------------------------------ helpers
@@ -451,12 +516,38 @@ class DemoPath:
         open_page = page.get_by_role("link", name=re.compile(r"Open your page"))
         expect(open_page).to_be_visible()
         self.scene_href = open_page.get_attribute("href") or ""
-        match = re.fullmatch(r"/memories/([^/?#]+)", self.scene_href)
-        if not match:
-            raise AssertionError(f"'Open your page' links to {self.scene_href!r}, not /memories/<id>")
-        self.memory_id = unquote(match.group(1))
+        self.run_url = page.url
+        self.memory_id = check_scene_href(self.scene_href, "memories", self.fid, "'Open your page'")
         expect(page.get_by_role("link", name="Add another memory")).to_be_visible()
         return f"memory {self.memory_id}; scene link {self.scene_href}; run page {page.url}"
+
+    def s6b_watch_scene(self) -> str:
+        """The finished run's 'Watch the scene' plays the moment on the stage until it is ready."""
+        page = self.page_a
+        if self.run_url and page.url != self.run_url:
+            page.goto(self.run_url)  # reattach: the finished run shows its links again
+        watch = page.get_by_role("link", name="Watch the scene")
+        try:
+            self.expect(watch).to_be_visible()
+        except AssertionError as exc:
+            raise Seam("pages", f"the finished run at {page.url} has no 'Watch the scene' link") from exc
+        href = watch.get_attribute("href") or ""
+        memory_id = check_scene_href(href, "render", self.fid, "'Watch the scene'")
+        if memory_id != self.memory_id:
+            raise Seam("pages", f"'Watch the scene' links to {href!r}, a different moment than {self.memory_id!r}")
+
+        mark = len(self.watch_a.problems)
+        watch.click()
+        self.expect(page).to_have_url(re.compile(rf"/render/{re.escape(self.memory_id)}\?"))
+        ready = wait_stage_ready(page, STAGE_READY_MS)
+        problems = app_problems(self.watch_a, mark)
+        if not ready:
+            seen = "\n".join(problems) if problems else "(no console errors, failed requests or 5xx)"
+            raise Seam(
+                "ethan",
+                REQUEST_STAGE.format(href=href, seconds=STAGE_READY_MS // 1000) + f"\nseen at {page.url}\n{seen}",
+            )
+        return f"{href}: stage ready" + (f"; {len(problems)} browser problem(s)" if problems else "")
 
     def s7_books(self) -> str:
         memory = self.api_json(self.ctx_a, f"/families/{self.fid}/memories/{self.memory_id}")["memory"]
@@ -502,12 +593,27 @@ class DemoPath:
         expect(page.get_by_role("heading", name="Someone asked you")).to_be_visible()
         note = page.get_by_role("button", name=re.compile(re.escape(qtext)))
         expect(note).to_be_visible()
+        if not self.title:
+            raise Seam("api", f"memory {self.memory_id} has no title to show in the second telling")
+        # The prompt names the moment: on the question note itself, or (once picked) in
+        # the second-telling header. Either is enough; the detail says which.
+        named_on_note = self.title in note.inner_text()
         shot(page, self.stack, "8-B-question")
         note.click()
         expect(note).to_have_attribute("aria-pressed", "true")
         expect(page.get_by_role("heading", level=1, name="Add your telling")).to_be_visible()
         banner = self.text(page,re.compile(r"adding your version of"))
-        expect(banner).to_contain_text(self.title)
+        try:
+            expect(banner).to_contain_text(self.title)
+            named_in_header = True
+        except AssertionError:
+            named_in_header = False
+        if not (named_on_note or named_in_header):
+            raise Seam(
+                "pages",
+                f"the second telling never names the moment '{self.title}': not on the question note "
+                f"({note.inner_text()!r}) and not in the header ({banner_text(banner)!r})",
+            )
         expect(self.text(page,qtext, exact=True).first).to_be_visible()
         expect(self.label(page,"When was this?")).to_have_count(0)
         shot(page, self.stack, "8-B-second-telling-form")
@@ -515,7 +621,25 @@ class DemoPath:
         page.get_by_role("button", name="Save my telling").click()
         expect(page.get_by_role("heading", level=1, name="Your telling", exact=True)).to_be_visible()
         expect(page.get_by_role("heading", name="Your telling is stitched in")).to_be_visible()
-        return f"B answered '{qtext}' at {page.url}"
+
+        # The finished telling leads on: into the moment (in this family) and home.
+        scene = page.get_by_role("link", name=re.compile(r"^Open the moment|^Open your page"))
+        try:
+            expect(scene).to_be_visible()
+        except AssertionError as exc:
+            raise Seam("pages", f"the finished second telling at {page.url} has no link into the moment") from exc
+        scene_href = scene.get_attribute("href") or ""
+        moment = check_scene_href(scene_href, "memories", self.fid, "the finished telling's 'Open the moment'")
+        if moment != self.memory_id:
+            raise Seam("pages", f"the finished telling links to {scene_href!r}, not the moment {self.memory_id!r}")
+        homes = visible_hrefs(page).count("/")
+        if not homes:
+            raise Seam("pages", f"the finished second telling at {page.url} has no link home ('/')")
+        where = "on the question note" if named_on_note else "in the second-telling header"
+        return (
+            f"B answered '{qtext}' at {page.url}; '{self.title}' named {where}; "
+            f"links: {scene_href} and {homes} to '/'"
+        )
 
     def s9_narration(self) -> str:
         res = self.api_json(self.ctx_b, f"/families/{self.fid}/memories/{self.memory_id}")
@@ -593,6 +717,24 @@ class DemoPath:
         else:
             detail = REQUEST_PERSON_BOOK.format(title=self.title, name=self.b_name) + f"\nseen at {page.url}"
             self.seams.record("10d B's book page shows the memory", False, detail, "ethan")
+
+        # The flow pages lead back home: family settings and /add each have a link to '/'.
+        home_checks = (
+            ("10e family settings links home", "settings", f"/families/{self.fid}/settings", self.family),
+            ("10f /add links home", "add", f"/add?family={self.fid}", "Add a memory"),
+        )
+        for check, tag, path, heading in home_checks:
+            page.goto(f"{self.web}{path}")
+            try:
+                self.expect(page.get_by_role("heading", level=1, name=heading)).to_be_visible()
+                hrefs = visible_hrefs(page)
+                why = f"no visible link to '/' at {page.url} (links: {sorted(set(hrefs))})"
+            except Exception as exc:  # noqa: BLE001 - recorded as this check's failure
+                hrefs, why = [], first_lines(f"{type(exc).__name__}: {exc}", 2) + f"\nat {page.url}"
+            shot(page, self.stack, f"10-A-{tag}-home-link")
+            homes = hrefs.count("/")
+            self.seams.record(check, homes > 0, f"{homes} link(s) to '/' at {path}" if homes else why, "pages")
+            notes.append(f"{tag}: {homes} home link(s)")
         return "; ".join(notes)
 
     # ------------------------------------------------------------------ the path
@@ -610,6 +752,7 @@ class DemoPath:
                 join_needs = ("3",)
             self.step("5", f"5 B signs up and joins ({self.join_mode})", self.s5_join, pages=("B",), needs=join_needs)
             self.step("6", "6 A adds a story (follow-up, props, scene)", self.s6_add_story, needs=("5",))
+            self.step("6b", "6b A watches the scene", self.s6b_watch_scene, needs=("6",), app_only=True)
             self.step("7", "7 the memory is in A's and B's books", self.s7_books, owner="api", pages=(), needs=("6",))
             self.step(
                 "8a", "8a B opens /add?memoryId= (second telling by moment)", self.s8a_by_moment_id,
@@ -637,6 +780,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--out", type=Path, default=None, help="where seams.json, shots/ and the logs go (default: a new temp dir)")
     parser.add_argument("--join", choices=("claim", "add-self"), default="claim", help="how B joins (default %(default)s)")
     parser.add_argument("--keep-going", action="store_true", help="run every step even after a flow-page failure")
+    parser.add_argument(
+        "--strict-ethan",
+        action="store_true",
+        help="also exit 1 when one of Ethan's pages has a seam (default: reported only)",
+    )
     parser.add_argument("--api-port", type=int, default=None, help="API port (default: a free one)")
     parser.add_argument("--web-port", type=int, default=None, help="web port (default: a free one)")
     return parser.parse_args(argv)
@@ -664,7 +812,11 @@ def archive_previous_run(out: Path) -> Path | None:
     return dest
 
 
-def summarize(seams: SeamLog, out: Path) -> int:
+def summarize(seams: SeamLog, out: Path, strict_ethan: bool = False) -> int:
+    """Write seams.json, print the summary and every REQUEST for Ethan; return the exit code.
+
+    1 when a 'pages' or 'api' seam failed (or, with `strict_ethan`, an 'ethan' one), else 0.
+    """
     path = seams.write(out)
     shots = shots_taken(out)
     print(f"\nout dir:     {out}")
@@ -683,6 +835,9 @@ def summarize(seams: SeamLog, out: Path) -> int:
         for line in e["detail"].splitlines():
             if line.startswith("REQUEST"):
                 print(f"  {line}")
+    if strict_ethan and ethan:
+        print("--strict-ethan: Ethan's seams fail this run.")
+        return 1
     return 1 if failing else 0
 
 
@@ -716,7 +871,7 @@ def main(argv: list[str] | None = None) -> int:
         tb = "".join(traceback.format_exception(exc)[-6:]).rstrip()
         seams.record(where, False, f"{type(exc).__name__}: {exc}\n{tb}", "pages")
     print()
-    return summarize(seams, out)
+    return summarize(seams, out, strict_ethan=args.strict_ethan)
 
 
 if __name__ == "__main__":
