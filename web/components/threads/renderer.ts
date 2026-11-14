@@ -491,7 +491,13 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
  * a converging thread would blink on and off.
  */
 function crossedBy(g: FrameGeometry, self: number, x0: number, x1: number, y0: number, y1: number): boolean {
-  for (let j = 0; j < g.strands.length; j++) {
+  return crossings(g, self, x0, x1, y0, y1, 1) > 0;
+}
+
+/** How many threads but `self` pass through the box (as crossedBy), counting up to `limit`. */
+function crossings(g: FrameGeometry, self: number, x0: number, x1: number, y0: number, y1: number, limit: number): number {
+  let count = 0;
+  for (let j = 0; j < g.strands.length && count < limit; j++) {
     if (j === self) continue;
     const pts = g.strands[j];
     const n = g.strandLens[j];
@@ -509,10 +515,62 @@ function crossedBy(g: FrameGeometry, self: number, x0: number, x1: number, y0: n
       const dy = (pts[k * 2 + 1] - ya) / (xb - xa || 1);
       const p = ya + (sa - xa) * dy;
       const y = ya + (sb - xa) * dy;
-      if (Math.min(y, p) < y1 && Math.max(y, p) > y0) return true;
+      if (Math.min(y, p) < y1 && Math.max(y, p) > y0) {
+        count++;
+        break;
+      }
     }
   }
-  return false;
+  return count;
+}
+
+/**
+ * A thread that never settles in view: the left edge x (from x0 to x1) where
+ * a name `w` wide spans the flattest stretch of strand `self`, and the
+ * baseline `drop` off that stretch's highest point, with the name's box clear
+ * of knots. Null when there is no such stretch.
+ */
+function swingSpot(
+  g: FrameGeometry,
+  self: number,
+  w: number,
+  size: number,
+  x0: number,
+  x1: number,
+  drop: number,
+): { x: number; y: number } | null {
+  const pts = g.strands[self];
+  const n = g.strandLens[self];
+  if (x1 < x0) return null;
+  let bestX = NaN;
+  let bestY = 0;
+  let bestSpan = Infinity;
+  for (let k = 0; k < n; k++) {
+    const x = pts[k * 2];
+    if (x < x0) continue;
+    if (x > x1) break;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let j = k; j < n && pts[j * 2] <= x + w; j++) {
+      const y = pts[j * 2 + 1];
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+    }
+    if (!(hi - lo < bestSpan)) continue;
+    const yb = lo + drop;
+    let clear = true;
+    for (const h of g.knots) {
+      if (h && h.visible && h.x + h.r + 6 > x - 2 && h.x - h.r - 6 < x + w + 2 && h.y + h.r + 6 > yb - size && h.y - h.r - 6 < yb + 3) {
+        clear = false;
+        break;
+      }
+    }
+    if (!clear) continue;
+    bestSpan = hi - lo;
+    bestX = x;
+    bestY = yb;
+  }
+  return Number.isFinite(bestX) ? { x: bestX, y: bestY } : null;
 }
 
 /** Name size (px) for this layout: big families pack the lanes closer, names follow (never below legible). */
@@ -574,23 +632,28 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
     const endX = pts[(n - 1) * 2];
     // Does a label starting at x sit over level thread (all of it over the
     // thread, not past its end), clear of knots?
-    const fits = (k: number, x: number) => {
+    const settled = (k: number, x: number) => {
       if (x < margin || x + w > right || x + w > endX) return false;
       if (Math.abs(pts[k * 2 + 1] - lanePx) > 2) return false;
       for (let j = k; j < n && pts[j * 2] < x + w; j += 4) {
         if (Math.abs(pts[j * 2 + 1] - lanePx) > level) return false;
       }
-      if (
-        geom.knots.some(
-          (h) => h && h.visible && h.x + h.r + 8 > x && h.x - h.r - 8 < x + w + 6 && Math.abs(h.y - lanePx) < h.r + 22,
-        )
-      )
-        return false;
-      // Nor where another thread runs through the name.
-      const yb = lanePx + drop;
-      return !crossedBy(geom, i, x - 2, x + w + 2, yb - size, yb + 3);
+      return !geom.knots.some(
+        (h) => h && h.visible && h.x + h.r + 8 > x && h.x - h.r - 8 < x + w + 6 && Math.abs(h.y - lanePx) < h.r + 22,
+      );
     };
+    // How many other threads run through a name written at (x, baseline y).
+    const crossing = (x: number, yb: number) => crossings(geom, i, x - 2, x + w + 2, yb - size, yb + 3, 9);
+    // Settled, and no other thread runs through the name: a clean spot.
+    const fits = (k: number, x: number) => settled(k, x) && !crossedBy(geom, i, x - 2, x + w + 2, lanePx + drop - size, lanePx + drop + 3);
     const spots: NameSpot[] = [];
+    // Settled spots another thread runs through, with how many: offered (as
+    // a `cost`, the paper halo keeping the name legible) only when the
+    // thread has no clean spot, so a small family never loses a name to a
+    // neighbour merely passing by.
+    let crossedFwd: NameSpot | null = null;
+    let crossedBack: NameSpot | null = null;
+    let crossedEnd: NameSpot | null = null;
     const baseline = (k: number) => pts[k * 2 + 1] + drop;
     // Where the name was last frame, moved with the pan, so names.ts can keep
     // it there (or nudge it along) instead of hopping between spots.
@@ -604,11 +667,12 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
     for (let k = 0; k < n && spots.length < FORWARD_SPOTS; k++) {
       const px = Math.max(margin, pts[k * 2] + lead);
       if (px + w > right) break;
-      if (px < from) continue;
-      if (fits(k, px)) {
+      if (px < from || !settled(k, px)) continue;
+      const c = crossing(px, baseline(k));
+      if (!c) {
         spots.push({ x: px, y: baseline(k) });
         from = px + w + 18;
-      }
+      } else crossedFwd ??= { x: px, y: baseline(k), cost: c };
     }
     // Late in the view (a late thread near the right edge): sign the last
     // level stretch too, right-aligned.
@@ -620,10 +684,13 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
       // thread, though), but not wholly before it, nor back over the spots
       // found above.
       if (px < (inline ? startX + lead : startX + 12 - w) || px < from - w - 18) break;
-      if (fits(k0, px)) {
+      if (!settled(k0, px)) continue;
+      const c = crossing(px, baseline(k0));
+      if (!c) {
         spots.push({ x: px, y: baseline(k0) });
         break;
       }
+      crossedBack ??= { x: px, y: baseline(k0), cost: c };
     }
     // Written on the thread, a name can also lead in to it: just before the
     // knot it starts with (a thread born late in the view, near the edge).
@@ -633,11 +700,25 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
       const ly = pts[1] + drop;
       if (lx >= margin && !crossedBy(geom, i, lx - 6, startX - 6, ly - size, ly + 3)) spots.push({ x: lx, y: ly });
     }
-    // Nowhere level (a thread still swinging as it ends): sign its end, if
-    // no other thread runs through the name there.
+    // Nowhere clean (a thread still swinging as it ends): sign its end.
     if (!spots.length && endX <= right && endX - w >= margin) {
       const ey = baseline(n - 1);
-      if (!crossedBy(geom, i, endX - w - 2, endX + 2, ey - size, ey + 3)) spots.push({ x: endX - w, y: ey });
+      const c = crossing(endX - w, ey);
+      if (!c) spots.push({ x: endX - w, y: ey });
+      else crossedEnd = { x: endX - w, y: ey, cost: c };
+    }
+    // Still nowhere clean: the crossed spots, fewest threads through the name first.
+    if (!spots.length) {
+      for (const sp of [crossedFwd, crossedBack, crossedEnd]) if (sp) spots.push(sp);
+      spots.sort((a, b) => (a.cost ?? 0) - (b.cost ?? 0));
+    }
+    // Nowhere settled at all (a thread swinging the whole way across the
+    // view): over its flattest stretch inside the gutter, the name written
+    // just above the stretch's highest point, so its own thread stays clear
+    // of the letters. Not in tight lanes, where it would float into the next.
+    if (!spots.length && !inline) {
+      const sp = swingSpot(geom, i, w, size, Math.max(margin, startX + lead), Math.min(right, endX) - w, drop);
+      if (sp) spots.push({ x: sp.x, y: sp.y, cost: 10 + crossing(sp.x, sp.y) });
     }
     const pinned = i === st.highlight;
     if (pinned) {
@@ -656,10 +737,19 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
           return fits(k, x) ? baseline(k) : NaN;
         }
       : undefined;
+    // With only crossed spots: the same, other threads allowed through the name.
+    const fitCrossed =
+      Number.isFinite(held) && spots[0]?.cost
+        ? (x: number) => {
+            if (x < startX + lead) return NaN;
+            const k = Math.min(n - 1, Math.floor((x - startX) / step));
+            return settled(k, x) ? baseline(k) : NaN;
+          }
+        : undefined;
     if (!spots.length && !fit) continue;
     // Lit threads first, then the hovered one, then whoever is in the most moments.
     const rank = (st.dim[i] < 0.5 ? 1000 : 0) + st.lift[i] * 200 + strand.momentIds.length;
-    requests.push({ strand: i, width: w, spots, rank, pinned, held, fit });
+    requests.push({ strand: i, width: w, spots, rank, pinned, held, fit, fitCrossed });
   }
 
   const placed = placeNames(requests, { width: layout.width, size, shown: st.nameShown });

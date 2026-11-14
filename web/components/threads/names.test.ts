@@ -227,6 +227,81 @@ test("a name panned into one riding the margin queues up behind it, whatever the
   assert.ok(other.x >= 70 && other.x < 71, `queued at ${other.x}`);
 });
 
+test("a thread with only crossed spots is still named when nothing else is in the way", () => {
+  const placed = placeNames([{ strand: 0, width: 80, rank: 1, spots: [{ x: 200, y: 100, cost: 1 }] }], {
+    width: 390,
+    size: SIZE,
+  });
+  assert.deepEqual(
+    placed.map((p) => [p.strand, p.x, p.forced]),
+    [[0, 200, false]],
+  );
+});
+
+test("crossed spots go after every clean one: they never push out a clean name, even a lower-ranked one", () => {
+  const placed = placeNames(
+    [
+      { strand: 0, width: 80, rank: 9, spots: [{ x: 20, y: 100, cost: 1 }, { x: 200, y: 100, cost: 2 }] },
+      { strand: 1, width: 80, rank: 1, spots: [{ x: 24, y: 104 }] },
+    ],
+    { width: 390, size: SIZE },
+  );
+  assert.deepEqual(
+    placed.map((p) => [p.strand, p.x]),
+    [
+      [1, 24],
+      [0, 200],
+    ],
+  );
+  assertNoOverlap(placed);
+});
+
+test("a crossed spot is never taken over another name, nor across the gutter", () => {
+  const placed = placeNames(
+    [
+      { strand: 0, width: 80, rank: 1, spots: [{ x: 24, y: 104, cost: 1 }, { x: 330, y: 100, cost: 1 }] },
+      { strand: 1, width: 80, rank: 1, spots: [{ x: 20, y: 100 }] },
+    ],
+    { width: 390, size: SIZE },
+  );
+  assert.deepEqual(
+    placed.map((p) => p.strand),
+    [1],
+  );
+});
+
+test("the followed name takes a crossed spot before its forced one", () => {
+  const placed = placeNames(
+    [{ strand: 0, width: 80, rank: 1, pinned: true, spots: [{ x: 150, y: 100, cost: 1 }, { x: 20, y: 90, forced: true }] }],
+    { width: 390, size: SIZE },
+  );
+  assert.deepEqual(
+    placed.map((p) => [p.x, p.forced]),
+    [[150, false]],
+  );
+});
+
+test("a name held on a crossed spot stays there", () => {
+  const placed = placeNames(
+    [
+      {
+        strand: 0,
+        width: 80,
+        rank: 1,
+        spots: [{ x: 20, y: 100, cost: 1 }],
+        held: 97.5,
+        fit: () => NaN,
+        fitCrossed: levelFit(100),
+      },
+    ],
+    { width: 390, size: SIZE },
+  );
+  assert.deepEqual(
+    placed.map((p) => [p.x, p.y]),
+    [[97.5, 100]],
+  );
+});
+
 function assertNoOverlap(names: NameBox[]) {
   for (let i = 0; i < names.length; i++)
     for (let j = i + 1; j < names.length; j++) assert.ok(!overlap(names[i], names[j]), `names ${i} and ${j} overlap`);
@@ -440,6 +515,85 @@ test("9 people on a laptop, zoomed out: everyone's name is written", () => {
   const { geom } = frame(model, 1440, 900, initialCamera(1, null, b, []));
   assert.equal(geom.names.length, 9);
 });
+
+const demoPath = "../tree/demoFamily.ts";
+const { demoMoments, demoPeople }: typeof import("../tree/demoFamily") = await import(demoPath);
+
+/** The demo family (?demo=1), mapped as ThreadsScreen does. */
+function demo(): { people: ThreadPerson[]; moments: ThreadMoment[] } {
+  return {
+    people: demoPeople.map((p) => ({ id: p.id, name: p.name, born: p.born, parentIds: p.parentIds, spouseIds: p.spouseIds, color: p.character.color })),
+    moments: demoMoments.map((m) => ({ id: m.id, title: m.title, year: m.year, participantIds: m.participantIds })),
+  };
+}
+
+/** Width (px) of a thread's run inside the gutters. */
+function visibleRun(geom: ReturnType<typeof frame>["geom"], i: number, W: number): number {
+  const pts = geom.strands[i];
+  const len = geom.strandLens[i];
+  if (!pts || len < 2) return 0;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let k = 0; k < len; k++) {
+    const x = pts[k * 2];
+    if (x >= NAME_GUTTER && x <= W - NAME_GUTTER) {
+      lo = Math.min(lo, x);
+      hi = Math.max(hi, x);
+    }
+  }
+  return hi > lo ? hi - lo : 0;
+}
+
+for (const [who, make] of [
+  ["the demo family", demo],
+  ["9 people", () => family(9)],
+] as const) {
+  for (const [W, H] of SIZES) {
+    test(`${who} at ${W}px: every thread with room for its name inside the gutter is named, in every view`, () => {
+      const { people, moments } = make();
+      const model = buildModel(people, moments, NOW);
+      for (const [label, cam] of views(model, W)) {
+        const { geom, layout } = frame(model, W, H, cam);
+        assertClean(geom.names, W, `${who}, ${W}px, ${label}`);
+        const size = nameFontPx(layout);
+        for (let i = 0; i < model.strands.length; i++) {
+          const name = model.strands[i].person.name;
+          // As the stub measures it, plus the clear space at a knot it starts with.
+          if (visibleRun(geom, i, W) <= name.length * size * 0.5 + 24) continue;
+          assert.ok(
+            geom.names.some((b) => (b as { strand?: number }).strand === i),
+            `${who}, ${W}px, ${label}: ${name} has room but no name`,
+          );
+        }
+      }
+    });
+  }
+}
+
+for (const n of [9, 18, 24, 30]) {
+  for (const [W, H] of SIZES) {
+    test(`${n} people at ${W}px: the top-ranked thread in view is always named`, () => {
+      const { people, moments } = family(n);
+      const model = buildModel(people, moments, NOW);
+      for (const [label, cam] of views(model, W)) {
+        const { geom, layout } = frame(model, W, H, cam);
+        const size = nameFontPx(layout);
+        // Most moments first, ties to the lower strand (as names.ts orders them).
+        let top = -1;
+        for (let i = 0; i < model.strands.length; i++) {
+          const s = model.strands[i];
+          if (visibleRun(geom, i, W) <= s.person.name.length * size * 0.5 + 24) continue;
+          if (top < 0 || s.momentIds.length > model.strands[top].momentIds.length) top = i;
+        }
+        if (top < 0) continue;
+        assert.ok(
+          geom.names.some((b) => (b as { strand?: number }).strand === top),
+          `${n} people, ${W}px, ${label}: ${model.strands[top].person.name} (top-ranked) has no name`,
+        );
+      }
+    });
+  }
+}
 
 /* ---------------- while panning ---------------- */
 

@@ -12,7 +12,12 @@
  *  - the followed person's name is always written (placed first, and on a
  *    forced spot when no clean one is left);
  *  - text never shrinks below legibility to make room: names that do not
- *    fit are dropped, lowest priority first.
+ *    fit are dropped, lowest priority first;
+ *  - another thread passing through a name is a cost, not a veto: a thread
+ *    with no clean spot is offered spots with a `cost` (crossed by other
+ *    threads, or over a stretch still swinging), used once every clean name
+ *    is placed, cheapest first, so an uncrowded family still names every
+ *    thread in view.
  *
  * Priority is the caller's `rank` (lit, hovered, how many moments...), with
  * a small bonus for names shown last frame so they do not flicker while
@@ -41,6 +46,14 @@ export interface NameSpot {
   y: number;
   /** A last resort that ignores threads and knots: only the followed person's name uses it. */
   forced?: boolean;
+  /**
+   * A spot that is not clean, and how far from it: one for each other thread
+   * through the name, ten more where the name floats over a stretch its own
+   * thread still swings under (inside the gutter and clear of knots, still).
+   * A lower tier: taken only after every clean spot is placed, so it never
+   * pushes out a clean name, and still never over another name.
+   */
+  cost?: number;
 }
 
 export interface NameRequest {
@@ -65,6 +78,8 @@ export interface NameRequest {
    * is none. Lets the name stay exactly where it was, or be nudged along.
    */
   fit?: (x: number) => number;
+  /** As `fit`, other threads allowed through the name: holding a spot with a cost. */
+  fitCrossed?: (x: number) => number;
 }
 
 export interface NameBox {
@@ -145,22 +160,29 @@ export function placeNames(requests: NameRequest[], o: NameLayoutOptions): Place
   const put = (r: NameRequest, sp: NameSpot, forced = false) => {
     placed.push({ ...nameBox(sp.x, sp.y, r.width, size), strand: r.strand, x: sp.x, y: sp.y, forced });
   };
-  /** Holding a place and able to stay there (or be nudged along): placed. */
-  const stay = (r: NameRequest) => {
+  /**
+   * Holding a place and able to stay there (or be nudged along): placed.
+   * `crossed`: the place may have other threads through it (the lower tier).
+   */
+  const stay = (r: NameRequest, crossed = false) => {
     const held = r.held ?? NaN;
-    const sp = Number.isFinite(held) && r.fit ? keep(r, held, r.fit) : null;
+    const fit = crossed ? r.fitCrossed : r.fit;
+    const sp = Number.isFinite(held) && fit ? keep(r, held, fit) : null;
     if (sp) put(r, sp);
     return !!sp;
   };
-  /** The free spot nearest where it was (within a name's width), else the best free spot. */
-  const move = (r: NameRequest) => {
+  /**
+   * The free spot nearest where it was (within a name's width), else the
+   * best free spot, among the clean spots (or, `crossed`, those with a cost). Placed.
+   */
+  const move = (r: NameRequest, crossed = false) => {
     const held = r.held ?? NaN;
     const holding = Number.isFinite(held);
     let best: NameSpot | null = null;
     let near: NameSpot | null = null;
     let nearD = r.width;
     for (const sp of r.spots) {
-      if (sp.forced) continue;
+      if (sp.forced || !!sp.cost !== crossed) continue;
       const d = holding ? Math.abs(sp.x - held) : Infinity;
       if (best && !(d < nearD)) continue;
       const box = nameBox(sp.x, sp.y, r.width, size);
@@ -174,31 +196,35 @@ export function placeNames(requests: NameRequest[], o: NameLayoutOptions): Place
     }
     const pick = near ?? best;
     if (pick) put(r, pick);
-    else if (r.pinned) {
-      // The followed name goes first, so nothing is in its way: take the first
-      // spot (clean or forced), held inside the gutter.
+    return !!pick;
+  };
+  // The followed name first: clean, else crossed, else (nothing is in its
+  // way, it goes first) its forced spot, held inside the gutter.
+  let i0 = 0;
+  if (order.length && order[0].pinned) {
+    const r = order[0];
+    if (!stay(r) && !move(r) && !stay(r, true) && !move(r, true)) {
       const sp = r.spots.find((s) => s.forced) ?? r.spots[0];
       if (sp) put(r, { x: Math.max(NAME_GUTTER, Math.min(W - NAME_GUTTER - r.width, sp.x)), y: sp.y }, true);
     }
-  };
-  // The followed name first. Then every name that can stay where it was
-  // does, before any that must move, so a name that has to find a new spot
-  // never pushes out one that need not: those riding a margin first (the
-  // margin is a wall; a name panned into one queues up behind it rather
-  // than knocking it off), then the others. Then the rest, by priority.
-  let i0 = 0;
-  if (order.length && order[0].pinned) {
-    if (!stay(order[0])) move(order[0]);
     i0 = 1;
   }
-  const kept = new Uint8Array(order.length);
+  // Then every name that can stay where it was does, before any that must
+  // move, so a name that has to find a new spot never pushes out one that
+  // need not: those riding a margin first (the margin is a wall; a name
+  // panned into one queues up behind it rather than knocking it off), then
+  // the others. Then the rest, by priority. Last, names with only spots
+  // that have a cost, the same way (staying first), into what room is left.
+  const done = new Uint8Array(order.length);
   const riding = (r: NameRequest) => {
     const h = r.held ?? NaN;
     return h < NAME_GUTTER || h + r.width > W - NAME_GUTTER;
   };
-  for (let i = i0; i < order.length; i++) if (riding(order[i])) kept[i] = stay(order[i]) ? 1 : 2;
-  for (let i = i0; i < order.length; i++) if (!kept[i]) kept[i] = stay(order[i]) ? 1 : 2;
-  for (let i = i0; i < order.length; i++) if (kept[i] !== 1) move(order[i]);
+  for (let i = i0; i < order.length; i++) if (riding(order[i])) done[i] = stay(order[i]) ? 1 : 2;
+  for (let i = i0; i < order.length; i++) if (!done[i]) done[i] = stay(order[i]) ? 1 : 2;
+  for (let i = i0; i < order.length; i++) if (done[i] !== 1 && move(order[i])) done[i] = 1;
+  for (let i = i0; i < order.length; i++) if (done[i] !== 1 && stay(order[i], true)) done[i] = 1;
+  for (let i = i0; i < order.length; i++) if (done[i] !== 1) move(order[i], true);
   if (shown) {
     shown.fill(0);
     for (const p of placed) shown[p.strand] = 1;
