@@ -10,7 +10,7 @@
 
 import { toX, type Camera } from "./camera";
 import { relax, strandAt, type Knot, type Shape, type Strand, type ThreadsModel } from "./model";
-import { drawCrossStitch, drawHoles, drawTiedKnot, drawYarn, hashSeed, yarnInk, type Polyline } from "./yarn";
+import { drawCrossStitch, drawFrenchKnot, drawHoles, drawTiedKnot, drawYarn, hashSeed, yarnInk, type Polyline } from "./yarn";
 
 export interface Layout {
   width: number;
@@ -131,6 +131,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
   const knotClear = (knotRadius(s, 3) * 1.3) / s; // years either side of a knot left unbroken
 
   const geom: FrameGeometry = { strands: [], strandLens: [], knots: [], names: [], lod };
+  const starts: { i: number; x: number; y: number; ink: ReturnType<typeof yarnInk>; width: number }[] = [];
 
   // Faded strands first so highlighted ones sit on top.
   const order = model.strands.map((_, i) => i).sort((a, b) => st.dim[b] - st.dim[a] || st.lift[a] - st.lift[b]);
@@ -224,8 +225,9 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
     if (run.length >= 4) runs.push(run);
 
     if (holes.length) drawHoles(ctx, holes, Math.max(0.75, width * 0.28), ink);
-    // Where the thread comes up through the paper at its start.
-    if (strand.start.t >= tLeft - 1 && strand.start.t <= st.reveal) drawHoles(ctx, [buf[0], buf[1]], Math.max(1.3, width * 0.45), ink);
+    // Where a life begins, the thread is knotted before it is sewn (unless
+    // it is born straight into a moment, whose knot says it already).
+    if (t0 === strand.start.t && !bornInKnot(strand, model)) starts.push({ i, x: buf[0], y: buf[1], ink, width });
     // ...and where it goes back down, today.
     if (t1 >= model.tNow - 1e-6) {
       const e = (nSamples - 1) * 2;
@@ -233,6 +235,12 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
     }
     drawYarn(ctx, runs, ink, width, lod);
     if (lod >= 2) drawFibres(ctx, runs, ink.body, width, seed);
+  }
+
+  /* ---------------- start knots ---------------- */
+  const rStart = Math.max(3.4, Math.min(5.6, knotRadius(s, 1) * 0.6));
+  for (const k of starts) {
+    drawFrenchKnot(ctx, k.x, k.y, rStart * (1 + st.lift[k.i] * 0.15), k.ink, k.width * 0.8, hashSeed(model.strands[k.i].person.id), Math.max(1, lod), 1 - st.dim[k.i] * 0.75);
   }
 
   /* ---------------- knots ---------------- */
@@ -273,6 +281,12 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
   drawNames(ctx, model, st, geom, w0);
 
   return geom;
+}
+
+/** True when the thread starts inside its first moment's knot. */
+function bornInKnot(strand: Strand, model: ThreadsModel): boolean {
+  const id = strand.momentIds[0];
+  return id !== undefined && model.knots.some((k) => k.moment.id === id && Math.abs(k.t - strand.start.t) < 1e-6);
 }
 
 /** How faded a knot is: 0 as soon as any one of its people is lit. */
