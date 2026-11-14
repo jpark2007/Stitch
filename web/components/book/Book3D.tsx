@@ -111,7 +111,8 @@ export interface Book3DProps {
   debug?: boolean;
   /**
    * The book's view (opened, cover settled, the spread it is on), each time
-   * it changes: rarely, never per frame. Called once with the starting view.
+   * it changes: rarely, never per frame. Called from the book's frame loop
+   * (first on its first frame), as the book itself hears it.
    */
   onView?: (view: BookView) => void;
   /** The book's controls once it is drawn (null when it goes), for page chrome like a contents card. */
@@ -187,14 +188,17 @@ export function Book3D({
     controls.current = api;
     onControlsRef.current?.(api);
   }, []);
-  // The page hears the view as the book does (a change of spread, the cover settling).
+  // The page hears the view as the book does (a change of spread, the cover
+  // settling), in the same call, not an effect later: a slow frame loop can
+  // hold effects back for seconds.
   const onViewRef = useRef(onView);
   useEffect(() => {
     onViewRef.current = onView;
   }, [onView]);
-  useEffect(() => {
-    onViewRef.current?.(view);
-  }, [view]);
+  const changeView = useCallback((v: BookView) => {
+    setView(v);
+    onViewRef.current?.(v);
+  }, []);
   const muted = useSyncExternalStore(subscribeMuted, isMuted, () => false);
 
   // The art is drawn with the tellings of the moment it is built; later
@@ -296,7 +300,7 @@ export function Book3D({
               spreads={spreads}
               start={start}
               onControls={onControls}
-              onView={setView}
+              onView={changeView}
               renderStage={renderStage ?? (debug ? SlotProbe : undefined)}
               tellings={tellings}
               onTelling={chooseTelling}

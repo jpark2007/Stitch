@@ -84,13 +84,32 @@ function createNarration(): NarrationAudio | null {
 
 const MUTE = { get: isMuted, subscribe: subscribeMuted };
 
+/**
+ * Test hooks for the open spread's player: window.__stitchMoment always,
+ * the raw player as window.__moment with ?debug=1. Returns the uninstall.
+ */
+function installProbes(c: PlaybackController, debug: boolean): () => void {
+  const uninstall = installMomentProbe(c);
+  const w = window as Window & { __moment?: unknown };
+  if (debug) w.__moment = c;
+  return () => {
+    uninstall();
+    if (w.__moment === c) delete w.__moment;
+  };
+}
+
 /** For capture scripts: the open spread's scene is fully drawn. */
 function markStageReady(ready: boolean) {
   if (ready) document.documentElement.dataset.stageReady = "1";
   else delete document.documentElement.dataset.stageReady;
 }
 
-/** Replace query params on the current URL without a navigation. */
+/**
+ * Replace query params on the current URL without a navigation. The
+ * router's own replaceState is passed by: it would treat the new query as
+ * another page (cacheComponents keeps a page per URL) and render the book
+ * afresh beside this one, while this one keeps playing.
+ */
 function setQuery(changes: Record<string, string | null>) {
   try {
     const url = new URL(window.location.href);
@@ -98,7 +117,7 @@ function setQuery(changes: Record<string, string | null>) {
       if (v === null) url.searchParams.delete(k);
       else url.searchParams.set(k, v);
     }
-    window.history.replaceState(window.history.state, "", url);
+    History.prototype.replaceState.call(window.history, window.history.state, "", url);
   } catch {
     // The URL is a convenience; the book works without it.
   }
@@ -165,8 +184,7 @@ export function MomentBook({
     spread: first + 1,
   }));
   const openSpread = spreads[view.spread - 1] ?? null;
-  const openId = openSpread?.id ?? null;
-  const openRef = useRef(openId);
+  const openRef = useRef<string | null>(openSpread?.id ?? null);
   const controls = useRef<BookControls | null>(null);
   const onControls = useCallback((c: BookControls | null) => {
     controls.current = c;
@@ -175,12 +193,36 @@ export function MomentBook({
   // Narration elements and mute while the page is shown (an Activity hides it on navigation).
   useEffect(() => players.activate(), [players]);
 
+  // The book is on another spread: the players follow at once (from the
+  // book's own call, not an effect later), and so do the test hooks.
   const readyIds = useRef(new Set<string>());
+  const probeOff = useRef<(() => void) | null>(null);
+  const settle = useCallback(
+    (id: string | null) => {
+      openRef.current = id;
+      players.setOpen(id);
+      markStageReady(id !== null && readyIds.current.has(id));
+      probeOff.current?.();
+      const c = id ? players.player(id) : null;
+      probeOff.current = c ? installProbes(c, debug) : null;
+    },
+    [players, debug],
+  );
   useEffect(() => {
-    openRef.current = openId;
-    players.setOpen(openId);
-    markStageReady(openId !== null && readyIds.current.has(openId));
-  }, [players, openId]);
+    settle(openRef.current);
+    return () => {
+      probeOff.current?.();
+      probeOff.current = null;
+    };
+  }, [settle]);
+  const onView = useCallback(
+    (v: BookView) => {
+      setView(v);
+      const id = spreads[v.spread - 1]?.id ?? null;
+      if (id !== openRef.current) settle(id);
+    },
+    [spreads, settle],
+  );
 
   // The scenes start when their spread settles, not on a click, so a browser
   // may hold the voice back: the reader's next touch lets it in, in step.
@@ -194,18 +236,19 @@ export function MomentBook({
     };
   }, [players]);
 
-  // Test hooks: window.__stitchMoment, the open spread's player; the raw player as __moment with ?debug=1.
+  // Test hook with ?debug=1: the players as __momentBook.
   useEffect(() => {
-    const c = openId ? players.player(openId) : null;
-    if (!c) return;
-    const uninstall = installMomentProbe(c);
-    const w = window as Window & { __moment?: unknown };
-    if (debug) w.__moment = c;
-    return () => {
-      uninstall();
-      if (w.__moment === c) delete w.__moment;
+    if (!debug) return;
+    const w = window as Window & { __momentBook?: unknown };
+    w.__momentBook = {
+      open: () => players.openId,
+      live: () => players.liveIds,
+      tellings: () => players.get(),
     };
-  }, [players, openId, debug]);
+    return () => {
+      delete w.__momentBook;
+    };
+  }, [players, debug]);
 
   // The opening spread's scene was got ready before the book showed; the
   // rest get ready in the background, nearest first, without holding anything up.
@@ -265,7 +308,7 @@ export function MomentBook({
   const chrome = contents ? <ContentsCard spreads={spreads} view={view} onPick={goTo} /> : null;
   const actions = contents ? <ContentsTab spreads={spreads} view={view} onPick={goTo} /> : null;
 
-  const openScene = openId ? scenes[openId] : undefined;
+  const openScene = openSpread ? scenes[openSpread.id] : undefined;
   return (
     <>
       <Book3D
@@ -277,7 +320,7 @@ export function MomentBook({
         onTelling={onTelling}
         still={still}
         debug={debug}
-        onView={setView}
+        onView={onView}
         onControls={onControls}
         back={back}
         actions={actions}
