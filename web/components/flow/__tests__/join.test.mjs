@@ -167,6 +167,12 @@ test("inviteHeading: a blank name still reads well", () => {
   assert.equal(inviteHeading("  "), "You’re invited to a family’s book");
 });
 
+test("inviteHeading: a name that is only 'The' reads like a blank one, as familyPhrase does", () => {
+  for (const name of ["The", "the", " THE  ", "The "]) {
+    assert.equal(inviteHeading(name), "You’re invited to a family’s book", JSON.stringify(name));
+  }
+});
+
 test("waitingPeople: oldest first, blank names dropped, input left alone", () => {
   const input = [
     { id: "sam", name: "Sam", born: 1994 },

@@ -64,7 +64,8 @@ export function needsRelationships(c: JoinChoice): boolean {
  */
 export function inviteHeading(familyName: string): string {
   const raw = familyName.trim().replace(/\s+/g, " ");
-  if (!raw) return "You’re invited to a family’s book";
+  // A name that is only "The" says nothing more than a blank one (familyPhrase agrees).
+  if (!raw || /^the$/i.test(raw)) return "You’re invited to a family’s book";
   const name = raw.replace(/^the\s+/i, "");
   const startsWithThe = name !== raw;
   const hasFamilyWord = /\bfamily$/i.test(name);
