@@ -468,6 +468,24 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
 
 /* ---------------- names ---------------- */
 
+/** Does any thread but `self` pass through the box? Samples are evenly spaced in x. */
+function crossedBy(g: FrameGeometry, self: number, x0: number, x1: number, y0: number, y1: number): boolean {
+  for (let j = 0; j < g.strands.length; j++) {
+    if (j === self) continue;
+    const pts = g.strands[j];
+    const n = g.strandLens[j];
+    if (!pts || n < 2) continue;
+    const step = pts[2] - pts[0] || 1;
+    const k0 = Math.max(0, Math.floor((x0 - pts[0]) / step));
+    const k1 = Math.min(n - 1, Math.ceil((x1 - pts[0]) / step));
+    for (let k = k0; k <= k1; k++) {
+      const y = pts[k * 2 + 1];
+      if (y > y0 && y < y1) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Each thread is signed with its person's name, written just above it
  * where it first settles on its own lane (past the knot it may be born
@@ -498,9 +516,15 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
       for (let j = k; j < n && pts[j * 2] < x + w; j += 4) {
         if (Math.abs(pts[j * 2 + 1] - lanePx) > 6) return false;
       }
-      return !geom.knots.some(
-        (h) => h && h.visible && h.x + h.r + 8 > x && h.x - h.r - 8 < x + w + 6 && Math.abs(h.y - lanePx) < h.r + 22,
-      );
+      if (
+        geom.knots.some(
+          (h) => h && h.visible && h.x + h.r + 8 > x && h.x - h.r - 8 < x + w + 6 && Math.abs(h.y - lanePx) < h.r + 22,
+        )
+      )
+        return false;
+      // Nor where another thread runs through the name.
+      const yb = lanePx - w0 - 8;
+      return !crossedBy(geom, i, x - 2, x + w + 2, yb - size, yb + 3);
     };
     const lead = startX >= margin ? 6 : 0;
     let x = -1;
