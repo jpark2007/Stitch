@@ -15,6 +15,28 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from "react";
+import { FOCUS_RING } from "./Button";
+
+// One text style per role for every field in the kit (Field, YearInput,
+// PhotoUpload, PersonPicker, RelationshipPicker, AddMemoryForm), so labels,
+// legends, hints and errors read the same everywhere. Spacing rhythm: hint
+// mt-0.5 under the label, the control mt-2 under that, the error mt-1.5 below.
+// Client components only: this module is "use client".
+
+/** A field's <label>, a fieldset's <legend>, or the label of a custom control. */
+export const FIELD_LABEL_CLASS = "block text-[0.9375rem] leading-snug font-semibold text-ink";
+
+/** The quiet "(optional)" after a label. */
+export const FIELD_OPTIONAL_CLASS = "ml-1.5 font-normal text-ink-soft";
+
+/** A hint under a label. Add mt-0.5. */
+export const FIELD_HINT_CLASS = "text-sm leading-snug text-ink-soft";
+
+/**
+ * A field's error message. Add mt-1.5. The error red (#9c3b2a, 6.2:1 on
+ * paper-light) has no token in globals.css yet.
+ */
+export const FIELD_ERROR_CLASS = "text-sm leading-snug font-medium break-words text-[#9c3b2a]";
 
 /** What Field hands its control: spread it onto the input. */
 type ControlProps = {
@@ -61,23 +83,18 @@ export function Field(
 
   return (
     <div className="min-w-0">
-      <label
-        htmlFor={id}
-        className="block text-[0.9375rem] leading-snug font-semibold text-[var(--ink,#2f2620)]"
-      >
+      <label htmlFor={id} className={FIELD_LABEL_CLASS}>
         {label}
-        {optionalLabel ? (
-          <span className="ml-1.5 font-normal text-[var(--ink-soft,#5c4e43)]">(optional)</span>
-        ) : null}
+        {optionalLabel ? <span className={FIELD_OPTIONAL_CLASS}>(optional)</span> : null}
       </label>
       {hasHint ? (
-        <p id={hintId} className="mt-0.5 text-sm leading-snug text-[var(--ink-soft,#5c4e43)]">
+        <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
           {hint}
         </p>
       ) : null}
       <div className="mt-2">{children(control)}</div>
       {hasError ? (
-        <p id={errorId} className="mt-1.5 text-sm leading-snug font-medium break-words text-[#9c3b2a]">
+        <p id={errorId} className={`mt-1.5 ${FIELD_ERROR_CLASS}`}>
           {error}
         </p>
       ) : null}
@@ -85,22 +102,29 @@ export function Field(
   );
 }
 
-// A recessed paper well: paper-deep inset, ink text, accent focus outline.
+// A recessed paper well: paper-deep inset, ink text, the kit focus ring.
 // The resting border is ink-faint rather than the hairline rule so the field
 // edge keeps 3:1 contrast against the card (WCAG 1.4.11).
-function controlClass(invalid: boolean, extra?: string): string {
-  const base =
-    "block w-full min-w-0 min-h-11 rounded-[var(--radius-paper,2px)] border px-3 py-2.5 " +
-    "font-sans text-base leading-normal text-[var(--ink,#2f2620)] " +
-    "bg-[var(--paper-deep,#ebe0cb)]/45 shadow-[inset_0_1px_3px_rgb(74_47_29/0.12)] " +
-    "placeholder:text-[var(--ink-faint,#8f8173)] " +
-    "transition-[background-color,border-color] duration-150 motion-reduce:transition-none " +
-    "hover:border-[var(--ink-soft,#5c4e43)] focus:bg-[var(--paper-light,#fbf8f1)] " +
-    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent,#b9573d)] " +
-    "disabled:cursor-not-allowed disabled:opacity-60";
-  const border = invalid ? "border-[#9c3b2a] hover:border-[#9c3b2a]" : "border-[var(--ink-faint,#8f8173)]";
-  return extra ? `${base} ${border} ${extra}` : `${base} ${border}`;
+const CONTROL_BASE =
+  "block min-w-0 min-h-11 rounded-paper border px-3 py-2.5 " +
+  "font-sans text-base leading-normal text-ink " +
+  "bg-paper-deep/45 shadow-inset placeholder:text-ink-faint " +
+  "transition-[background-color,border-color] duration-150 ease-paper motion-reduce:transition-none " +
+  "hover:border-ink-soft focus:bg-paper-light " +
+  FOCUS_RING +
+  " disabled:cursor-not-allowed disabled:opacity-60";
+
+/**
+ * The class list of a kit text control (the recessed well), for a native
+ * input a page lays out itself. Full width unless `extra` sets a width.
+ */
+export function fieldControlClass(invalid: boolean, extra?: string): string {
+  const border = invalid ? "border-[#9c3b2a] hover:border-[#9c3b2a]" : "border-ink-faint";
+  const width = extra && /(^|\s)w-/.test(extra) ? "" : " w-full";
+  return `${CONTROL_BASE}${width} ${border}${extra ? ` ${extra}` : ""}`;
 }
+
+const controlClass = fieldControlClass;
 
 /** A labelled <input>. `className` goes on the input itself. */
 export function TextField(
@@ -238,7 +262,7 @@ export function SelectField(
           <svg
             aria-hidden="true"
             viewBox="0 0 16 16"
-            className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-[var(--ink-soft,#5c4e43)]"
+            className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-ink-soft"
           >
             <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
           </svg>

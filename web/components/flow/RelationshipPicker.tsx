@@ -2,8 +2,11 @@
 
 // Say how someone fits into the family: "child of Rosa and Luis, married to
 // Ana". Two plain checkbox groups (parents, spouses) with a live summary in
-// words. Self-contained; colours are Ethan's CSS variables with fallbacks.
+// words. Colours are the global look's theme utilities; text styles and the
+// focus ring are the kit's shared ones.
 import { useId, useState, type ReactNode } from "react";
+import { FOCUS_RING_WITHIN } from "./Button";
+import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS } from "./Field";
 import {
   MAX_PARENTS,
   describeRelationships,
@@ -20,10 +23,6 @@ interface PickablePerson {
 }
 
 type Kind = "parent" | "spouse";
-
-const FALLBACK_DOT = "#8f8173";
-const PAPER_SHADOW =
-  "var(--shadow-paper, 0 1px 1px rgb(74 47 29 / 0.08), 0 2px 6px rgb(74 47 29 / 0.08))";
 
 /** Names, with the born year added only where two people share a name. */
 function displayNames(people: PickablePerson[]): Record<string, string> {
@@ -84,23 +83,20 @@ export function RelationshipPicker(props: {
       aria-describedby={describedBy}
       className="min-w-0"
     >
-      <legend className="p-0 text-sm font-medium text-[var(--ink,#2f2620)]">{legend}</legend>
+      <legend className={`p-0 ${FIELD_LABEL_CLASS}`}>{legend}</legend>
       {hint ? (
-        <p id={hintId} className="mt-1 text-sm leading-relaxed text-[var(--ink-faint,#8f8173)]">
+        <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
           {hint}
         </p>
       ) : null}
 
       {people.length === 0 ? (
-        <p className="mt-3 text-sm text-[var(--ink-faint,#8f8173)] italic">
+        <p className="mt-2 text-sm text-ink-soft italic">
           No one else is in the family yet, so there&rsquo;s nobody to pick. You can add relatives
           later.
         </p>
       ) : (
-        <div
-          className="mt-3 grid gap-4 rounded-[var(--radius-card,6px)] border border-[var(--rule,#2f262024)] bg-[var(--paper-light,#fbf8f1)] p-4"
-          style={{ boxShadow: PAPER_SHADOW }}
-        >
+        <div className="mt-2 grid gap-4 rounded-card border border-rule bg-paper-light p-4 shadow-paper">
           <Group
             uid={`${uid}-parent`}
             title={`Parents (up to ${MAX_PARENTS})`}
@@ -114,13 +110,13 @@ export function RelationshipPicker(props: {
           {note ? (
             <p
               id={noteId}
-              className="-mt-2 text-sm text-[var(--accent-deep,#8f3f2a)]"
+              className="-mt-2 text-sm text-accent-deep"
               role="status"
             >
               {note}
             </p>
           ) : null}
-          <div aria-hidden="true" className="border-t border-dashed border-[var(--rule,#2f262024)]" />
+          <div aria-hidden="true" className="border-t border-dashed border-rule" />
           <Group
             uid={`${uid}-spouse`}
             title="Married to"
@@ -136,13 +132,13 @@ export function RelationshipPicker(props: {
       <p
         id={summaryId}
         aria-live="polite"
-        className="mt-3 font-serif text-base text-[var(--ink-soft,#5c4e43)] italic"
+        className="mt-3 font-display text-base text-ink-soft italic"
       >
         {describeRelationships(value, names)}
       </p>
 
       {error ? (
-        <p id={errorId} className="mt-1 text-sm text-[#9c3b2a]">
+        <p id={errorId} className={`mt-1.5 ${FIELD_ERROR_CLASS}`}>
           {error}
         </p>
       ) : null}
@@ -162,7 +158,9 @@ function Group(p: {
 }) {
   return (
     <fieldset className="min-w-0" aria-describedby={p.noteId}>
-      <legend className="p-0 text-xs font-medium tracking-wide text-[var(--ink-soft,#5c4e43)] uppercase">
+      {/* A sub-group heading inside the field, deliberately smaller than the
+          field's own legend above. */}
+      <legend className="p-0 text-xs font-medium tracking-wide text-ink-soft uppercase">
         {p.title}
       </legend>
       <ul className="mt-2 flex list-none flex-wrap gap-2 p-0">
@@ -174,12 +172,12 @@ function Group(p: {
               <label
                 htmlFor={inputId}
                 className={[
-                  "relative inline-flex min-h-11 cursor-pointer select-none items-center gap-2 rounded-full border px-3.5 text-sm transition-colors",
-                  "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[var(--accent,#b9573d)] has-[:focus-visible]:ring-offset-2 has-[:focus-visible]:ring-offset-[var(--paper-light,#fbf8f1)]",
+                  "relative inline-flex min-h-11 cursor-pointer select-none items-center gap-2 rounded-full border px-3.5 text-sm transition-colors duration-150 ease-paper motion-reduce:transition-none",
+                  FOCUS_RING_WITHIN,
                   "has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60",
                   checked
-                    ? "border-[var(--ink-soft,#5c4e43)] bg-[var(--paper-deep,#ebe0cb)] text-[var(--ink,#2f2620)] shadow-[inset_0_1px_2px_rgb(74_47_29/0.12)]"
-                    : "border-[var(--rule,#2f262024)] bg-[var(--paper,#f5eee1)] text-[var(--ink-soft,#5c4e43)] hover:border-[var(--accent,#b9573d)]",
+                    ? "border-ink-soft bg-paper-deep text-ink shadow-inset"
+                    : "border-rule bg-paper text-ink-soft hover:border-accent",
                 ].join(" ")}
               >
                 <input
@@ -191,19 +189,19 @@ function Group(p: {
                 />
                 <span
                   aria-hidden="true"
-                  className="h-3 w-3 shrink-0 rounded-full ring-1 ring-[var(--rule,#2f262024)]"
-                  style={{ backgroundColor: person.color || FALLBACK_DOT }}
+                  className="h-3 w-3 shrink-0 rounded-full bg-ink-faint ring-1 ring-rule"
+                  style={person.color ? { backgroundColor: person.color } : undefined}
                 />
                 <span>{p.names[person.id] ?? person.name}</span>
                 <svg
                   aria-hidden="true"
                   viewBox="0 0 12 12"
-                  className={`h-3 w-3 shrink-0 transition-opacity ${checked ? "opacity-100" : "opacity-0"}`}
+                  className={`h-3 w-3 shrink-0 text-accent-deep transition-opacity ${checked ? "opacity-100" : "opacity-0"}`}
                 >
                   <path
                     d="M2 6.5 4.8 9 10 3"
                     fill="none"
-                    stroke="var(--accent-deep, #8f3f2a)"
+                    stroke="currentColor"
                     strokeWidth="1.8"
                     strokeLinecap="round"
                     strokeLinejoin="round"

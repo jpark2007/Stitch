@@ -2,9 +2,11 @@
 
 // Pick people from the family (who was there for this memory). A plain
 // fieldset of real checkboxes, drawn as paper chips with each person's
-// thread colour. Self-contained: colours are Ethan's CSS variables with
-// literal fallbacks, so it looks right with or without the global sheet.
+// thread colour. Colours are the global look's theme utilities; text styles
+// and the focus ring are the kit's shared ones.
 import { useId, type ReactNode } from "react";
+import { FOCUS_RING_WITHIN } from "./Button";
+import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS } from "./Field";
 
 interface PickablePerson {
   id: string;
@@ -13,8 +15,6 @@ interface PickablePerson {
   /** Thread colour: Person.character.color or PersonSummary.color. */
   color?: string | null;
 }
-
-const FALLBACK_DOT = "#8f8173";
 
 /** Born year shown only when two people share a name, to tell them apart. */
 function sharedNames(people: PickablePerson[]): Set<string> {
@@ -60,19 +60,19 @@ export function PersonPicker(props: {
       aria-describedby={describedBy || undefined}
       className="min-w-0"
     >
-      <legend className="p-0 text-sm font-medium text-[var(--ink,#2f2620)]">{legend}</legend>
+      <legend className={`p-0 ${FIELD_LABEL_CLASS}`}>{legend}</legend>
       {hint ? (
-        <p id={hintId} className="mt-1 text-sm leading-relaxed text-[var(--ink-faint,#8f8173)]">
+        <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
           {hint}
         </p>
       ) : null}
 
       {people.length === 0 ? (
-        <p className="mt-3 text-sm text-[var(--ink-faint,#8f8173)] italic">
+        <p className="mt-2 text-sm text-ink-soft italic">
           No one else is in the family yet.
         </p>
       ) : (
-        <ul className="mt-3 flex list-none flex-wrap gap-2 p-0">
+        <ul className="mt-2 flex list-none flex-wrap gap-2 p-0">
           {people.map((person) => {
             const locked = lockedIds.includes(person.id);
             const checked = locked || value.includes(person.id);
@@ -84,12 +84,12 @@ export function PersonPicker(props: {
                 <label
                   htmlFor={inputId}
                   className={[
-                    "relative inline-flex min-h-11 select-none items-center gap-2 rounded-full border px-3.5 text-sm transition-colors",
-                    "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[var(--accent,#b9573d)] has-[:focus-visible]:ring-offset-2 has-[:focus-visible]:ring-offset-[var(--paper,#f5eee1)]",
+                    "relative inline-flex min-h-11 select-none items-center gap-2 rounded-full border px-3.5 text-sm transition-colors duration-150 ease-paper motion-reduce:transition-none",
+                    FOCUS_RING_WITHIN,
                     "has-[:disabled]:cursor-not-allowed",
                     checked
-                      ? "border-[var(--ink-soft,#5c4e43)] bg-[var(--paper-deep,#ebe0cb)] text-[var(--ink,#2f2620)] shadow-[inset_0_1px_2px_rgb(74_47_29/0.12)]"
-                      : "border-[var(--rule,#2f262024)] bg-[var(--paper-light,#fbf8f1)] text-[var(--ink-soft,#5c4e43)] shadow-[0_1px_1px_rgb(74_47_29/0.08)] hover:border-[var(--accent,#b9573d)]",
+                      ? "border-ink-soft bg-paper-deep text-ink shadow-inset"
+                      : "border-rule bg-paper-light text-ink-soft shadow-[0_1px_1px_rgb(74_47_29/0.08)] hover:border-accent",
                     disabled ? "opacity-60" : locked ? "" : "cursor-pointer",
                   ].join(" ")}
                 >
@@ -103,16 +103,16 @@ export function PersonPicker(props: {
                   />
                   <span
                     aria-hidden="true"
-                    className="h-3 w-3 shrink-0 rounded-full ring-1 ring-[var(--rule,#2f262024)]"
-                    style={{ backgroundColor: person.color || FALLBACK_DOT }}
+                    className="h-3 w-3 shrink-0 rounded-full bg-ink-faint ring-1 ring-rule"
+                    style={person.color ? { backgroundColor: person.color } : undefined}
                   />
                   <span>
                     {person.name}
                     {showYear ? (
-                      <span className="text-[var(--ink-faint,#8f8173)]"> ({person.born})</span>
+                      <span className="text-ink-faint"> ({person.born})</span>
                     ) : null}
                     {locked ? (
-                      <span className="text-[var(--ink-faint,#8f8173)]"> (you)</span>
+                      <span className="text-ink-faint"> (you)</span>
                     ) : null}
                   </span>
                   <CheckMark checked={checked} />
@@ -124,7 +124,7 @@ export function PersonPicker(props: {
       )}
 
       {error ? (
-        <p id={errorId} className="mt-2 text-sm text-[#9c3b2a]">
+        <p id={errorId} className={`mt-1.5 ${FIELD_ERROR_CLASS}`}>
           {error}
         </p>
       ) : null}
@@ -138,12 +138,12 @@ function CheckMark({ checked }: { checked: boolean }) {
     <svg
       aria-hidden="true"
       viewBox="0 0 12 12"
-      className={`h-3 w-3 shrink-0 transition-opacity ${checked ? "opacity-100" : "opacity-0"}`}
+      className={`h-3 w-3 shrink-0 text-accent-deep transition-opacity ${checked ? "opacity-100" : "opacity-0"}`}
     >
       <path
         d="M2 6.5 4.8 9 10 3"
         fill="none"
-        stroke="var(--accent-deep, #8f3f2a)"
+        stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
