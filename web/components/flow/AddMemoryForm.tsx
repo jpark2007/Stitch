@@ -1,7 +1,8 @@
 "use client";
 
-// The add-a-memory form: an optional question, the story, the year, optional
-// photos and who was there. Presentational: the page owns the API call and
+// The add-a-memory form: the story first, then an optional question (folded
+// away under "Answering a question?"), the year, optional photos and who was
+// there. Presentational: the page owns the API call and
 // passes it in as onSubmit; a rejected ApiError comes back here as field
 // errors (photos too big or the wrong type land on the photos field) or a
 // form-level message. What was typed is never cleared by an error.
@@ -9,6 +10,9 @@
 // With `secondTellingOf` it adds this person's version of an existing moment
 // (the draft's memoryId): the year is the moment's and its people are already
 // set, so the year is shown as text and the participant picker is hidden.
+// `questionArea` (from questionAreaFor) says whether the typed question field
+// and the generic starters show; `askedQuestion` is a question shown read-only
+// in the second-telling banner.
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { SubmitMemoryFields } from "@/lib/types";
 import { isApiError } from "@/lib/api";
@@ -19,10 +23,12 @@ import {
   MEMORY_FIELDS,
   SUGGESTED_QUESTIONS,
   emptyDraft,
+  questionAreaFor,
   toSubmitFields,
   validateDraft,
   type MemoryDraft,
   type MemoryField,
+  type QuestionArea,
 } from "./memoryForm";
 import { PaperCard } from "./PaperCard";
 import { PersonPicker } from "./PersonPicker";
@@ -49,6 +55,10 @@ export function AddMemoryForm(props: {
   selfPersonId: string;
   initial?: Partial<MemoryDraft>;
   secondTellingOf?: { title: string; year: number } | null;
+  /** The question a second telling answers, shown read-only in its banner. */
+  askedQuestion?: string | null;
+  /** Which question controls show. Defaults to questionAreaFor with no family questions. */
+  questionArea?: Pick<QuestionArea, "showQuestionField" | "showStarters">;
   disabled?: boolean;
   submitLabel?: string;
   onSubmit: (fields: SubmitMemoryFields, photos: File[]) => Promise<void>;
@@ -58,6 +68,8 @@ export function AddMemoryForm(props: {
     selfPersonId,
     initial,
     secondTellingOf = null,
+    askedQuestion = null,
+    questionArea,
     disabled = false,
     submitLabel = "Save this memory",
     onSubmit,
@@ -71,7 +83,12 @@ export function AddMemoryForm(props: {
   // Bumped after a failed submit; the effect moves focus once errors render.
   const [focusTick, setFocusTick] = useState(0);
   const formRef = useRef<HTMLFormElement>(null);
-  const suggestionsId = `${useId()}-suggestions`;
+  const questionRef = useRef<HTMLInputElement>(null);
+  const uid = useId();
+  const suggestionsId = `${uid}-suggestions`;
+  // The typed question stays folded away until asked for (or already filled).
+  const [questionOpen, setQuestionOpen] = useState(() => (initial?.question ?? "").trim() !== "");
+  const focusQuestionOnOpen = useRef(false);
 
   // Start over when the page hands in a different starting point (compared by
   // value, so a fresh object with the same contents changes nothing).
@@ -83,14 +100,29 @@ export function AddMemoryForm(props: {
     setPhotos([]);
     setErrors({});
     setFormError(null);
+    setQuestionOpen((initial?.question ?? "").trim() !== "");
   }
 
   useEffect(() => {
     if (focusTick > 0) focusFirstError(formRef.current);
   }, [focusTick]);
 
+  useEffect(() => {
+    if (questionOpen && focusQuestionOnOpen.current) {
+      focusQuestionOnOpen.current = false;
+      questionRef.current?.focus();
+    }
+  }, [questionOpen]);
+
   const locked = disabled || pending;
   const prefilledQuestion = (initial?.question ?? "").trim() !== "";
+  const area =
+    questionArea ??
+    questionAreaFor({ mode: secondTellingOf ? "second" : "new", openQuestions: 0, prefilledQuestion });
+  const showQuestionField = area.showQuestionField;
+  // An error on the question (or anything typed in it) keeps it unfolded.
+  const questionShown =
+    showQuestionField && (questionOpen || draft.question.trim() !== "" || Boolean(errors.question));
 
   function update<K extends keyof MemoryDraft>(key: K, value: MemoryDraft[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -106,10 +138,13 @@ export function AddMemoryForm(props: {
 
   /** Errors for fields this mode hides can only be read at the form level. */
   function splitHidden(fields: FieldErrors<MemoryField>, rest: string | null) {
-    if (!secondTellingOf) return { fields, rest };
+    const hidden: MemoryField[] = [];
+    if (!showQuestionField) hidden.push("question");
+    if (secondTellingOf) hidden.push("year", "participantIds");
+    if (hidden.length === 0) return { fields, rest };
     const shown = { ...fields };
     const extra: string[] = rest ? [rest] : [];
-    for (const key of ["year", "participantIds"] as const) {
+    for (const key of hidden) {
       const msg = shown[key];
       if (msg) {
         delete shown[key];
@@ -178,6 +213,14 @@ export function AddMemoryForm(props: {
           <p className="mt-1 text-sm leading-snug text-ink-soft">
             The same scene will play again, told in your words.
           </p>
+          {askedQuestion ? (
+            <p className="mt-3 border-t border-dashed border-rule pt-2.5 text-sm leading-snug text-ink-soft">
+              <span className="block">You were asked</span>
+              <span className="mt-0.5 block font-hand text-[1.375rem] leading-[1.15] text-pretty break-words text-ink">
+                {askedQuestion}
+              </span>
+            </p>
+          ) : null}
         </div>
       ) : null}
 
@@ -189,58 +232,77 @@ export function AddMemoryForm(props: {
               ? "Only your story is needed. Everything else is optional."
               : "Your story and the year are needed. Everything else is optional."}
           </p>
-          <TextField
-            label="What question are you answering?"
-            optionalLabel
-            name="question"
-            autoComplete="off"
-            value={draft.question}
-            onChange={(e) => update("question", e.target.value)}
-            error={errors.question}
+          <TextAreaField
+            label={
+              <>
+                Your story
+                <RequiredMark />
+              </>
+            }
+            hint="Small details help: who said what, the weather, a smell, a song."
+            required
+            name="text"
+            rows={7}
+            value={draft.text}
+            onChange={(e) => update("text", e.target.value)}
+            error={errors.text}
             disabled={locked}
-            placeholder="Leave blank to just tell a story"
           />
-          {prefilledQuestion ? null : (
-            <div className="mt-3">
-              <p id={suggestionsId} className="text-sm text-ink-soft">
-                Need a starting point?
-              </p>
-              <ul
-                aria-labelledby={suggestionsId}
-                className="mt-2 flex list-none flex-wrap gap-2 p-0"
-              >
-                {SUGGESTED_QUESTIONS.slice(0, 4).map((q) => (
-                  <li key={q}>
-                    <SuggestionChip
-                      picked={draft.question.trim() === q}
-                      disabled={locked}
-                      onClick={() => update("question", q)}
-                    >
-                      {q}
-                    </SuggestionChip>
-                  </li>
-                ))}
-              </ul>
+
+          {!showQuestionField ? null : questionShown ? (
+            <div className="mt-6">
+              <TextField
+                ref={questionRef}
+                label="What question are you answering?"
+                optionalLabel
+                name="question"
+                autoComplete="off"
+                value={draft.question}
+                onChange={(e) => update("question", e.target.value)}
+                error={errors.question}
+                disabled={locked}
+              />
+              {area.showStarters ? (
+                <div className="mt-3">
+                  <p id={suggestionsId} className="text-sm text-ink-soft">
+                    Or start from one of these
+                  </p>
+                  <ul
+                    aria-labelledby={suggestionsId}
+                    className="mt-2 flex list-none flex-wrap gap-2 p-0"
+                  >
+                    {SUGGESTED_QUESTIONS.slice(0, 4).map((q) => (
+                      <li key={q}>
+                        <SuggestionChip
+                          picked={draft.question.trim() === q}
+                          disabled={locked}
+                          onClick={() => update("question", q)}
+                        >
+                          {q}
+                        </SuggestionChip>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </div>
+          ) : (
+            <Button
+              variant="quiet"
+              disabled={locked}
+              onClick={() => {
+                focusQuestionOnOpen.current = true;
+                setQuestionOpen(true);
+              }}
+              className="mt-2 -ml-3"
+            >
+              <span aria-hidden="true" className="font-normal">
+                +
+              </span>
+              Answering a question?
+            </Button>
           )}
         </div>
-
-        <TextAreaField
-          label={
-            <>
-              Your story
-              <RequiredMark />
-            </>
-          }
-          hint="Tell it the way you would at the kitchen table. Small details help: who said what, the weather, a smell, a song."
-          required
-          name="text"
-          rows={7}
-          value={draft.text}
-          onChange={(e) => update("text", e.target.value)}
-          error={errors.text}
-          disabled={locked}
-        />
 
         {secondTellingOf ? (
           <div>
