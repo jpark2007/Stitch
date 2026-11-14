@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from screenplay.schema import Timeline, Track
-from screenplay.tracks import TrackSet, evaluate, round_value
+from screenplay.tracks import PLANT_CHANNEL, TrackSet, evaluate, round_value
 
 SAMPLES = Path(__file__).resolve().parents[3] / "web" / "public" / "samples"
 
@@ -187,3 +187,52 @@ def test_evaluate_matches_value_at(sample):
             a = ts.value_at(tr.target, tr.channel, t)
             b = evaluate(sample.tracks, tr.target, tr.channel, t)
             assert a == pytest.approx(b) if not isinstance(a, str) else a == b, (tr.target, tr.channel, t)
+
+
+# ------------------------------------------------------------ foot-planting markers
+
+def _marked() -> TrackSet:
+    ts = TrackSet()
+    ts.add("puppet:dad", "root.position", 0.0, [0.0, 0.0, 0.5])
+    ts.add("puppet:dad", "root.position", 2.0, [1.0, 0.0, 0.5])
+    for t in (1.5, 0.5, 1.0, 0.5, 1.0004, 9.0):
+        ts.add("puppet:dad", PLANT_CHANNEL, t, "walk")
+    ts.add("puppet:kid", PLANT_CHANNEL, 3.0, "run")  # markers only: no track at all
+    return ts
+
+
+def test_plant_markers_are_not_tracks():
+    ts = _marked()
+    assert [(tr.target, tr.channel) for tr in ts.tracks()] == [("puppet:dad", "root.position")]
+    assert not ts.has_track("puppet:dad", PLANT_CHANNEL)
+    assert not ts.has_track("puppet:kid", PLANT_CHANNEL)
+    assert ts.value_at("puppet:dad", PLANT_CHANNEL, 1.0) is None
+    assert ts.value_at("puppet:kid", PLANT_CHANNEL, 3.0) is None
+    assert ts.last_key_time() == 2.0  # the marker at 9.0 is not a key
+
+
+def test_plant_times_are_sorted_unique_and_rounded():
+    ts = _marked()
+    assert ts.plant_times("puppet:dad") == [0.5, 1.0, 1.5, 9.0]
+    assert ts.plant_times("puppet:kid") == [3.0]
+    assert ts.plant_times("puppet:mom") == []
+    assert ts.plant_targets() == ["puppet:dad", "puppet:kid"]
+
+
+def test_plant_markers_type_check_like_keys():
+    with pytest.raises(TypeError):
+        TrackSet().add("puppet:dad", PLANT_CHANNEL, "1", "walk")
+
+
+def test_replace_keys_and_raw_keys():
+    ts = _marked()
+    assert ts.raw_keys("puppet:dad", "root.position") == [(0.0, [0.0, 0.0, 0.5]), (2.0, [1.0, 0.0, 0.5])]
+    ts.replace_keys("puppet:dad", "root.position", [(2.0, [1.0, 0.0, 0.5]), (0.0, [0.0, 0.0, 0.5]),
+                                                    (1.0, [0.5, -0.02, 0.5])])
+    assert ts.tracks()[0].keys == [(0.0, [0.0, 0.0, 0.5]), (1.0, [0.5, -0.02, 0.5]), (2.0, [1.0, 0.0, 0.5])]
+    ts.replace_keys("puppet:dad", "root.position", [])
+    assert ts.tracks() == [] and not ts.has_track("puppet:dad", "root.position")
+    with pytest.raises(ValueError):
+        ts.replace_keys("puppet:dad", PLANT_CHANNEL, [(1.0, "walk")])
+    with pytest.raises(TypeError):
+        ts.replace_keys("puppet:dad", "root.position", [(1.0, {"x": 1})])

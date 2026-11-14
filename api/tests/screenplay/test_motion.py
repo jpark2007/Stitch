@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from screenplay import motion
+from screenplay.tracks import PLANT_CHANNEL
 from screenplay.motion import (
     LIMBS,
     enter_keys,
@@ -96,7 +97,11 @@ def test_reproduces_sample_dad_walks():
     for bone in LIMBS:
         want = [k for k in sample_track("puppet:dad", f"{bone}.rot") if k[0] <= 6.514]
         assert got[("puppet:dad", f"{bone}.rot")] == want, bone
-    assert set(got) == {("puppet:dad", "root.position")} | {("puppet:dad", f"{b}.rot") for b in LIMBS}
+    assert set(got) == {("puppet:dad", "root.position"), ("puppet:dad", PLANT_CHANNEL)} | {
+        ("puppet:dad", f"{b}.rot") for b in LIMBS}
+    # one foot-planting marker per interior cycle key, valued with the gait
+    rot_times = sorted({k[0] for k in got[("puppet:dad", "leg_l.upper.rot")]})
+    assert got[("puppet:dad", PLANT_CHANNEL)] == [[t, "walk"] for t in rot_times if t not in (1.2, 3.2, 4.8, 6.514)]
 
 
 def test_positions_are_lists():

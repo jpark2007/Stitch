@@ -10,6 +10,13 @@ decides who is seated where and uses these helpers to place them.
 Keys are (target, channel, t, value) tuples. Positions are emitted as [x, y, z]
 lists, rotations as floats, facing as the int 1 or -1. Values are not rounded;
 rounding is the compiler's job when it writes the Timeline.
+
+Foot planting: locomotion_keys also emits a marker (target, tracks.PLANT_CHANNEL, t, gait) at
+every interior cycle key time of a walk or run (not at its ends, where the legs are straight).
+Markers are not tracks (TrackSet files them apart); they ride along with the keys through every
+caller (enter_keys, exit_keys, follow_keys and the verb handlers) so planting.plant_feet knows,
+after the whole screenplay has run, where to lower root.position.y so the lowest foot is on the
+surface. A climb with no ground distance has no cycle and no markers.
 """
 from __future__ import annotations
 
@@ -18,6 +25,7 @@ import math
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from .schema import SHARED_DIR, VOCABULARY
+from .tracks import PLANT_CHANNEL
 
 Vec3 = tuple[float, float, float]
 Key = tuple[str, str, float, object]
@@ -98,7 +106,10 @@ def locomotion_keys(
     skip_bones: Iterable[str] = (),
     speed_scale: float = 1.0,
 ) -> tuple[list[Key], float, int]:
-    """Root slide from start to end plus cycle keys. Returns (keys, arrival, facing after)."""
+    """Root slide from start to end plus cycle keys. Returns (keys, arrival, facing after).
+
+    Every interior cycle key time also gets a PLANT_CHANNEL marker valued ``gait`` (module
+    docstring), after all the real keys."""
     if gait not in ("walk", "run"):
         raise ValueError(f"unknown gait {gait!r}")
     if speed_scale <= 0:
@@ -142,13 +153,16 @@ def locomotion_keys(
 
     for b in bones:
         keys.append((target, f"{b}.rot", t0, 0.0))
+    cycle_times: list[float] = []
     for i in range(1, n):
         frame = frames[i % 4]
         t = t0 + dur * i / n
+        cycle_times.append(t)
         for b in bones:
             keys.append((target, f"{b}.rot", t, float(frame.get(b, 0.0))))
     for b in bones:
         keys.append((target, f"{b}.rot", t1, 0.0))
+    keys.extend((target, PLANT_CHANNEL, t, gait) for t in cycle_times)
     return keys, t1, facing
 
 
