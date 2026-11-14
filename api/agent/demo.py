@@ -46,9 +46,13 @@ Exit codes: 0 when every run ends with done (and, after a done run, the memory i
 book of every person in it), 1 on error, a timeout or a missing book entry, 2 on missing
 configuration or arguments the run cannot start with.
 
-Usage notes: the real (keyed) mode has not been exercised yet; it was written against
-agent.production and seed.demo on a machine with no API keys. The --fake mode and the
-missing-key exit are covered by tests/agent/test_agent_demo.py.
+Env files: like api/main.py and agent.preflight, the real mode first loads api/.env, then
+the repo-root ../.env, into os.environ without overriding variables already set (the shell
+wins), and skips them with STITCH_NO_DOTENV=1. --fake loads no files and needs no keys.
+
+Usage notes: the real (keyed) mode was first exercised on 2026-11-14 (one run of the
+default hymn-books story with STITCH_FAKE_DB=1 and --auto finished with done). The --fake
+mode and the missing-key exit are covered by tests/agent/test_agent_demo.py.
 """
 
 from __future__ import annotations
@@ -59,7 +63,7 @@ import logging
 import mimetypes
 import os
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
@@ -579,6 +583,32 @@ def _store_photos(repo: AgentRepo, family_id: str, paths: list[str]) -> list[str
     return ids
 
 
+# Same files and order as api/main.py and agent.preflight.ENV_FILES.
+ENV_FILES: tuple[Path, ...] = (Path(__file__).resolve().parent.parent / ".env",
+                               Path(__file__).resolve().parent.parent.parent / ".env")
+
+
+def load_env(paths: Sequence[Path] | None = None, *, environ: Mapping[str, str] | None = None) -> list[Path]:
+    """Load api/.env, then ../.env, into os.environ (never overriding a set variable).
+
+    Same files and order as api/main.py; nothing is loaded with STITCH_NO_DOTENV=1 (or
+    true/yes). Returns the files loaded.
+    Mirrors agent.preflight.load_env_files rather than importing it: agent.preflight pulls in
+    agent.adapters and the network clients, and the missing-key exit must load none of them.
+    """
+    from dotenv import load_dotenv
+
+    env = os.environ if environ is None else environ
+    if (env.get("STITCH_NO_DOTENV") or "").strip().lower() in {"1", "true", "yes"}:
+        return []
+    loaded: list[Path] = []
+    for path in ENV_FILES if paths is None else paths:
+        if path.is_file():
+            load_dotenv(path, override=False)
+            loaded.append(path)
+    return loaded
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     out = sys.stdout
@@ -587,6 +617,10 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
+    if not args.fake:
+        loaded = load_env()
+        if loaded:
+            logging.getLogger(__name__).info("Loaded env from %s", ", ".join(str(p) for p in loaded))
     if not args.fake and not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
         print(MISSING_KEY_MESSAGE, file=sys.stderr)
         if args.weekend:

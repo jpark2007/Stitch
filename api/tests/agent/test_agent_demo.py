@@ -20,6 +20,8 @@ import schemas
 from agent import demo
 from screenplay.schema import CompileError
 
+REAL_ENV_FILES = demo.ENV_FILES  # before the autouse fixture points it at tmp
+
 API_DIR = Path(__file__).resolve().parents[2]
 
 REPRESENTATIVE: dict[str, BaseModel] = {
@@ -59,6 +61,12 @@ REPRESENTATIVE: dict[str, BaseModel] = {
 
 
 # --------------------------------------------------------------------------- format_event
+
+
+@pytest.fixture(autouse=True)
+def _no_real_env_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """main() loads api/.env in real mode: point it at an empty tmp dir so no test reads real keys."""
+    monkeypatch.setattr(demo, "ENV_FILES", (tmp_path / "none" / ".env",))
 
 
 def test_representative_payloads_cover_every_run_event() -> None:
@@ -328,6 +336,7 @@ def test_weekend_without_fake_or_key_exits_2_and_names_the_offline_command(
 def test_missing_key_exit_imports_no_network_clients() -> None:
     """In a fresh interpreter: main([]) returns 2 before agent.production or any client loads."""
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    env["STITCH_NO_DOTENV"] = "1"  # never read the developer's real api/.env
     code = (
         "import sys\n"
         "from agent.demo import main\n"
@@ -448,3 +457,81 @@ def test_sample_photo_is_a_png() -> None:
     data = demo.sample_photo_png()
     with Image.open(io.BytesIO(data)) as image:
         assert image.format == "PNG" and image.size == (160, 120)
+
+
+# --------------------------------------------------------------------------- env files
+
+
+def _unset(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Unset `name` so monkeypatch restores it afterwards, even if load_env sets it (delenv of
+    an absent variable records nothing, and the value would leak into later tests)."""
+    monkeypatch.setenv(name, "")
+    monkeypatch.delenv(name)
+
+
+def test_main_real_mode_loads_the_key_from_an_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_network: None
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("ANTHROPIC_API_KEY=from-file\n")
+    monkeypatch.setattr(demo, "ENV_FILES", (env_file, tmp_path / "missing.env"))
+    _unset(monkeypatch, "ANTHROPIC_API_KEY")
+    _unset(monkeypatch, "STITCH_NO_DOTENV")
+    seen: list[str | None] = []
+
+    def stop(args: object, out: object) -> None:
+        seen.append(os.environ.get("ANTHROPIC_API_KEY"))
+        raise SystemExit(7)
+
+    monkeypatch.setattr(demo, "_real_setup", stop)
+    with pytest.raises(SystemExit):
+        demo.main(["--auto"])
+    assert seen == ["from-file"]
+
+
+def test_load_env_keeps_a_variable_already_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    first, second = tmp_path / "a.env", tmp_path / "b.env"
+    first.write_text("ANTHROPIC_API_KEY=from-file\nSTITCH_DEMO_TEST_X=api\n")
+    second.write_text("STITCH_DEMO_TEST_X=root\nSTITCH_DEMO_TEST_Y=root\n")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-shell")
+    _unset(monkeypatch, "STITCH_DEMO_TEST_X")
+    _unset(monkeypatch, "STITCH_DEMO_TEST_Y")
+    _unset(monkeypatch, "STITCH_NO_DOTENV")
+    assert demo.load_env([first, second, tmp_path / "missing.env"]) == [first, second]
+    assert os.environ["ANTHROPIC_API_KEY"] == "from-shell"
+    assert os.environ["STITCH_DEMO_TEST_X"] == "api"
+    assert os.environ["STITCH_DEMO_TEST_Y"] == "root"
+
+
+@pytest.mark.parametrize("value", ["1", "true", "YES"])
+def test_stitch_no_dotenv_disables_loading(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: str) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("STITCH_DEMO_TEST_Z=loaded\n")
+    _unset(monkeypatch, "STITCH_DEMO_TEST_Z")
+    monkeypatch.setenv("STITCH_NO_DOTENV", value)
+    assert demo.load_env([env_file]) == []
+    assert "STITCH_DEMO_TEST_Z" not in os.environ
+
+
+def test_main_no_env_file_and_no_key_still_exits_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], no_network: None
+) -> None:
+    monkeypatch.setattr(demo, "ENV_FILES", (tmp_path / ".env", tmp_path / "root.env"))
+    _unset(monkeypatch, "ANTHROPIC_API_KEY")
+    _unset(monkeypatch, "STITCH_NO_DOTENV")
+    assert demo.main([]) == 2
+    assert "ANTHROPIC_API_KEY is not set" in capsys.readouterr().err
+
+
+def test_fake_mode_loads_no_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: list[bool] = []
+    monkeypatch.setattr(demo, "load_env", lambda *a, **k: called.append(True) or [])
+    _unset(monkeypatch, "ANTHROPIC_API_KEY")
+    assert demo.main(["--fake", "--auto"]) == 0
+    assert called == []
+
+
+def test_env_files_match_preflight() -> None:
+    from agent import preflight
+
+    assert REAL_ENV_FILES == preflight.ENV_FILES
