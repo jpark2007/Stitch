@@ -23,21 +23,25 @@ the timeline time when ``action.who`` is free again. It validates everything fir
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 
 from screenplay import motion
 from screenplay.body import POSE_SECONDS, sit_keys, stand_keys
 from screenplay.ik import RIG, Body, scale
-from screenplay.locate import held_arm_bones
+from screenplay.locate import Locate, bones_at, held_arm_bones, puppet_root, puppet_target
 from screenplay.schema import Action
 from screenplay.state import GROUND, StateError, World, fmt_t
 from screenplay.tracks import TrackSet
-from screenplay.verbs_core import _stand_up_keys
-
-Vec3 = tuple[float, float, float]
-Key = tuple[str, str, float, object]
-Locate = Callable[[str, float], Vec3]
-Handler = Callable[[World, TrackSet, Action, float, float, Locate], float]
+from screenplay.verb_helpers import (
+    Handler,
+    Key,
+    Vec3,
+    require_param,
+    require_person,
+    require_prop_on_stage,
+    stand_up_keys,
+    vec3,
+)
 
 ACTING_Z = motion.ACTING_Z
 WHEEL_RADIUS_FRACTION = 0.15  # wheel radius as a fraction of the vehicle's height
@@ -51,13 +55,9 @@ RIDING = "riding"
 
 # --------------------------------------------------------------------------- helpers
 
-def _require(action: Action, field: str) -> str:
-    value = getattr(action, field)
-    if value is None:
-        name = "from" if field == "from_" else field
-        raise StateError("missing_param", f"{action.do} needs {name}")
-    return value
-
+# Shared checks and geometry come from verb_helpers (require_param: "<verb> needs <field>";
+# require_person: unknown_id; require_prop_on_stage: not_on_stage; stand_up_keys; vec3) and
+# locate (puppet_root, bones_at, held_arm_bones, puppet_target).
 
 def _vehicle(world: World, what: str) -> None:
     """`what` is a known prop of size vehicle, else StateError."""
@@ -67,37 +67,14 @@ def _vehicle(world: World, what: str) -> None:
         raise StateError("not_a_vehicle", f"{what} is not a vehicle")
 
 
-def _person(world: World, who: str) -> None:
-    if who not in world.people:
-        raise StateError("unknown_id", f"{who} is not in the cast")
-
-
-def _vec3(v: Iterable[float]) -> Vec3:
-    x, y, z = (float(c) for c in v)
-    return (x, y, z)
-
-
-def _root(world: World, tracks: TrackSet, who: str, t: float) -> Vec3:
-    """A puppet's root.position at timeline time t: its track, else the world's position."""
-    v = tracks.value_at(f"puppet:{who}", "root.position", t)
-    return _vec3(v) if v is not None else _vec3(world.people[who].pos)
-
-
 def _anchor(world: World, tracks: TrackSet, what: str, t: float) -> Vec3:
     """A vehicle's anchor at timeline time t (its position track while on the ground)."""
     st = world.props[what]
     if st.parent == GROUND:
         v = tracks.value_at(f"prop:{what}", "position", t)
         if v is not None:
-            return _vec3(v)
-    if st.world_pos is None:
-        raise StateError("not_on_stage", f"{what} is not on stage")
-    return _vec3(st.world_pos)
-
-
-def _on_stage(world: World, what: str) -> None:
-    if world.props[what].world_pos is None:
-        raise StateError("not_on_stage", f"{what} is not on stage")
+            return vec3(v)
+    return vec3(require_prop_on_stage(world, what))
 
 
 def _moving_until(tracks: TrackSet, target: str, channel: str, t: float) -> float | None:
@@ -128,14 +105,10 @@ def _check_still(tracks: TrackSet, what: str, t: float, action_start: float) -> 
 
 
 def _bones(tracks: TrackSet, who: str, t: float, pending: Iterable[Key] = ()) -> dict[str, float]:
-    """Current rotation of every bone that has a track (or a pending key), at timeline time t."""
-    out: dict[str, float] = {}
-    target = f"puppet:{who}"
-    for bone in RIG["bones"]:
-        ch = f"{bone}.rot"
-        v = tracks.value_at(target, ch, t)
-        if v is not None:
-            out[bone] = float(v)
+    """Current rotation of every bone that has a track (locate.bones_at), overridden by the
+    latest pending key at or before t, at timeline time t."""
+    out = bones_at(tracks, who, t)
+    target = puppet_target(who)
     latest: dict[str, tuple[float, float]] = {}
     for tgt, ch, kt, value in pending:
         if tgt != target or not ch.endswith(".rot") or kt > t + _EPS:
@@ -169,11 +142,11 @@ def apply_get_in(world: World, tracks: TrackSet, action: Action, t: float, actio
                  locate: Locate) -> float:
     """Get up first if kneeling or sitting on the floor, walk up to the seat (if it is more than
     0.05 away in x), and sit with the hips on it. Arms holding props keep the hold pose."""
-    who = _require(action, "who")
-    what = _require(action, "what")
-    _person(world, who)
+    who = require_param(action, "who")
+    what = require_param(action, "what")
+    require_person(world, who)
     _vehicle(world, what)
-    _on_stage(world, what)
+    require_prop_on_stage(world, what)
     socket = world.copy().get_in(who, what, action.socket)  # validates seat choice and occupancy
     _check_still(tracks, what, t, action_start)
 
@@ -183,9 +156,10 @@ def apply_get_in(world: World, tracks: TrackSet, action: Action, t: float, actio
     seat: Vec3 = (anchor[0] + off[0], anchor[1] + off[1], anchor[2] + off[2])
     held = held_arm_bones(world, who)
 
-    # Kneeling or sitting on the floor: stand up where it is first (as verbs_core._travel_keys).
-    keys, t_up = _stand_up_keys(world, tracks, who, t)
-    root = _vec3(p.pos) if keys else _root(world, tracks, who, t)
+    # Kneeling or sitting on the floor: stand up where it is first (verb_helpers.stand_up_keys,
+    # as verbs_core._travel_keys does).
+    keys, t_up = stand_up_keys(world, tracks, who, t)
+    root = vec3(p.pos) if keys else puppet_root(world, tracks, who, t)
 
     t_sit, facing, ground = t_up, p.facing, root
     if abs(seat[0] - root[0]) > WALK_UP_THRESHOLD or abs(seat[2] - root[2]) > _EPS:
@@ -215,9 +189,9 @@ def apply_get_out(world: World, tracks: TrackSet, action: Action, t: float, acti
                   locate: Locate) -> float:
     """Stand up out of the seat onto the ground beside it, at the acting plane. Arms holding
     props keep the hold pose."""
-    who = _require(action, "who")
-    what = _require(action, "what")
-    _person(world, who)
+    who = require_param(action, "who")
+    what = require_param(action, "what")
+    require_person(world, who)
     _vehicle(world, what)
     world.copy().get_out(who, what)  # validates: who is in that vehicle
     _check_still(tracks, what, t, action_start)
@@ -228,7 +202,7 @@ def apply_get_out(world: World, tracks: TrackSet, action: Action, t: float, acti
     off = motion.prop_socket_offset(world.catalog[what], socket)
     seat_x = anchor[0] + off[0]
     stand_at = (seat_x, anchor[1])
-    root = _root(world, tracks, who, t)
+    root = puppet_root(world, tracks, who, t)
     body = Body(who, (root[0], root[1]), p.facing, p.build)
     held = held_arm_bones(world, who)  # arms holding props keep the hold pose
     current = {b: v for b, v in _bones(tracks, who, t).items() if b not in held}
@@ -258,17 +232,17 @@ def _drive(world: World, tracks: TrackSet, what: str, to: str, t: float, action_
 
     Returns (keys, arrival time, end anchor position).
     """
-    _on_stage(world, what)
+    require_prop_on_stage(world, what)
     st = world.props[what]
     if st.parent != GROUND:
         raise StateError("not_on_ground", f"{what} is not on the ground")
     _check_still(tracks, what, t, action_start)
     for seat, sock, rider in world.riders(what):
-        until = _moving_until(tracks, f"puppet:{rider}", "root.position", t)
+        until = _moving_until(tracks, puppet_target(rider), "root.position", t)
         if until is not None:
             where = f"{what}.{sock}" if seat == what else f"{seat}.{sock}, which rests on {what},"
             raise StateError("busy", f"{rider} is still settling into {where} until t={fmt_t(until - action_start)}")
-    end = _vec3(locate(to, t))
+    end = vec3(locate(to, t))
     start = _anchor(world, tracks, what, t)
     prop = world.catalog[what]
 
@@ -288,7 +262,7 @@ def _drive(world: World, tracks: TrackSet, what: str, to: str, t: float, action_
         out += motion.seated_root_keys(rider, path, motion.prop_socket_offset(prop, sock),
                                        _sit_root_offset(world.people[rider].build))
     for _, _, rider in _stacked(world, what):
-        out += _carried_root_keys(rider, _root(world, tracks, rider, t), start, path)
+        out += _carried_root_keys(rider, puppet_root(world, tracks, rider, t), start, path)
     return out, arrival, end
 
 
@@ -296,7 +270,7 @@ def _carried_root_keys(who: str, root: Vec3, start: Vec3, path: Iterable[tuple[f
     """``root.position`` keys for a puppet carried along by a moving vehicle without sitting in
     one of its sockets (it sits on a prop stacked on the vehicle): one key per path key, at the
     puppet's root plus the vehicle's travel from ``start`` (its anchor when the drive starts)."""
-    return [(f"puppet:{who}", "root.position", kt,
+    return [(puppet_target(who), "root.position", kt,
              [root[0] + a[0] - start[0], root[1] + a[1] - start[1], root[2] + a[2] - start[2]])
             for kt, a in path]
 
@@ -304,10 +278,10 @@ def _carried_root_keys(who: str, root: Vec3, start: Vec3, path: Iterable[tuple[f
 def apply_drive_to(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                    locate: Locate) -> float:
     """The driver drives the vehicle to a mark; everyone seated rides along."""
-    who = _require(action, "who")
-    what = _require(action, "what")
-    to = _require(action, "to")
-    _person(world, who)
+    who = require_param(action, "who")
+    what = require_param(action, "what")
+    to = require_param(action, "to")
+    require_person(world, who)
     _vehicle(world, what)
     world.check_driver(who, what)
     keys, arrival, end = _drive(world, tracks, what, to, t, action_start, locate)
@@ -324,10 +298,10 @@ def apply_ride_to(world: World, tracks: TrackSet, action: Action, t: float, acti
     The rider sits in the vehicle, or on a prop resting on it (World.check_rider). Everyone
     else carried along, the driver and riders on stacked props included, must be free, and is
     busy (driving / riding) until the vehicle arrives."""
-    who = _require(action, "who")
-    what = _require(action, "what")
-    to = _require(action, "to")
-    _person(world, who)
+    who = require_param(action, "who")
+    what = require_param(action, "what")
+    to = require_param(action, "to")
+    require_person(world, who)
     _vehicle(world, what)
     world.check_rider(who, what)
     driver = world.props[what].occupants[DRIVER_SOCKET].partition(":")[2]
