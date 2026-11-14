@@ -11,7 +11,7 @@ from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from db import client, conversations
-from .models import MAX_BODY_BYTES
+from .models import MAX_BODY_BYTES, MAX_PHOTO_BODY_BYTES
 
 MAX_SKEW_SECONDS = 300
 
@@ -46,10 +46,11 @@ async def authenticated_body(request: Request) -> bytes:
     if request.url.query:
         raise HTTPException(400, "Query parameters are not supported")
     raw = bytearray()
+    limit = MAX_PHOTO_BODY_BYTES if request.url.path == "/internal/channels/inbound-photo" else MAX_BODY_BYTES
     async for chunk in request.stream():
-        raw.extend(chunk)
-        if len(raw) > MAX_BODY_BYTES:
+        if len(raw) + len(chunk) > limit:
             raise HTTPException(413, "Message is too large")
+        raw.extend(chunk)
     body = bytes(raw)
     headers = request.headers
     timestamp = headers.get("x-channels-timestamp", "")
