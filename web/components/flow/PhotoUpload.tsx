@@ -1,8 +1,8 @@
 "use client";
 
-// Add up to six photos to a memory: a quiet "Add photos" action over a real
-// (visually hidden, still focusable) file input, the whole field taking
-// dropped files, with plain square thumbnails. Each
+// Add photos to a memory (up to six) or a tradition (up to `max`): a quiet
+// "Add photos" action over a real (visually hidden, still focusable) file
+// input, the whole field taking dropped files, with plain square thumbnails. Each
 // thumbnail owns its object URL and revokes it when it unmounts, so removing
 // a photo or leaving the page never leaks, including under StrictMode. A
 // photo the browser cannot draw (HEIC outside Safari) shows a paper tile with
@@ -52,8 +52,23 @@ export function PhotoUpload(props: {
    * details), rather than above it. Default "stacked".
    */
   layout?: "stacked" | "row";
+  /** Most photos this field takes. Defaults to MAX_PHOTOS (a memory's six). */
+  max?: number;
+  /** What the photos belong to, for the over-the-cap note. Defaults to "memory". */
+  holder?: string;
 }) {
-  const { label, files, onChange, hint, error, disabled, attempt = 0, layout = "stacked" } = props;
+  const {
+    label,
+    files,
+    onChange,
+    hint,
+    error,
+    disabled,
+    attempt = 0,
+    layout = "stacked",
+    max = MAX_PHOTOS,
+    holder,
+  } = props;
   const uid = useId();
   const inputId = `${uid}-input`;
   const labelId = `${uid}-label`;
@@ -84,7 +99,7 @@ export function PhotoUpload(props: {
 
   function add(incoming: File[]) {
     if (disabled || incoming.length === 0) return;
-    const { accepted, errors } = acceptPhotos(files, incoming);
+    const { accepted, errors } = acceptPhotos(files, incoming, max, holder);
     setProblems(errors);
     if (accepted.length > 0) onChange([...files, ...accepted.map((i) => incoming[i])]);
   }
@@ -132,7 +147,7 @@ export function PhotoUpload(props: {
   ]
     .filter(Boolean)
     .join(" ");
-  const full = files.length >= MAX_PHOTOS;
+  const full = files.length >= max;
   const keys = fileKeys(files);
   const invalid = !!error || problems.length > 0;
 
@@ -145,7 +160,7 @@ export function PhotoUpload(props: {
       aria-live="polite"
       className={files.length > 0 ? "shrink-0 text-sm text-ink-soft tabular-nums" : "sr-only"}
     >
-      {files.length} of {MAX_PHOTOS}
+      {files.length} of {max}
       <span className="sr-only"> photos added</span>
     </span>
   );
@@ -194,7 +209,7 @@ export function PhotoUpload(props: {
           {dragging
             ? "Let go to add them"
             : full
-              ? "That’s six. Remove one to add another."
+              ? `That’s ${countWord(max)}. Remove one to add another.`
               : files.length > 0
                 ? "Add more"
                 : "Add photos"}
@@ -203,7 +218,7 @@ export function PhotoUpload(props: {
       {count}
       {files.length > 0 ? null : (
         <span aria-hidden="true" className="text-sm text-ink-soft">
-          Up to {MAX_PHOTOS}, 10 MB each
+          Up to {max}, 10 MB each
         </span>
       )}
       </div>
@@ -345,6 +360,13 @@ function Thumb({
       </button>
     </figure>
   );
+}
+
+const COUNT_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+
+/** "six" for 6, "ten" for 10; digits past twelve. */
+function countWord(n: number): string {
+  return COUNT_WORDS[n] ?? String(n);
 }
 
 /** A short name for a photo's kind ("HEIC", "JPEG"), from its extension or type. */

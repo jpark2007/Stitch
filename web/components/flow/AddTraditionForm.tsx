@@ -20,6 +20,7 @@ import { PhotoUpload } from "./PhotoUpload";
 import {
   CATEGORY_OPTIONS,
   MONTH_NAMES,
+  PHOTOS_MAX,
   START_YEAR_MIN,
   WHEN_OPTIONS,
   emptyTraditionDraft,
@@ -281,6 +282,8 @@ export function AddTraditionForm(props: {
             </>
           }
           hint="Snapshots from any year it happened."
+          max={PHOTOS_MAX}
+          holder="tradition"
           files={photos}
           onChange={(files) => {
             setPhotos(files);
