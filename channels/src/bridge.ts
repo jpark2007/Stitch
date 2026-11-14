@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { Authenticator, MAX_BODY_BYTES, ProtocolError, parseMessage, signedHeaders, validateSecret, type Inbound, type Outbound } from "./protocol.ts";
+import { Authenticator, MAX_BODY_BYTES, MAX_PHOTO_BODY_BYTES, ProtocolError, parseAuthorization, parseMessage, parsePhoto, signedHeaders, validateSecret, type Authorization, type Inbound, type InboundPhoto, type Outbound, type Provider } from "./protocol.ts";
 
 export type Receipt = { status: number; body: unknown };
 type ClientOptions = { timeoutMs?: number; attempts?: number; fetch?: typeof fetch; delay?: (ms: number) => Promise<void> };
@@ -20,10 +20,13 @@ export class ApiClient {
   constructor(origin: string, secret: string, options: ClientOptions = {}) {
     this.origin = localApiUrl(origin); this.secret = validateSecret(secret); this.options = options;
   }
-  async post(path: "/internal/channels/inbound" | "/internal/channels/tick", value: Inbound | Record<string, never>): Promise<Receipt> {
+  async post(path: "/internal/channels/inbound" | "/internal/channels/tick" | "/internal/channels/authorize" | "/internal/channels/inbound-photo", value: Inbound | InboundPhoto | Authorization | Record<string, never>): Promise<Receipt> {
     if (path === "/internal/channels/inbound") parseMessage(value, true);
+    else if (path === "/internal/channels/inbound-photo") parsePhoto(value);
+    else if (path === "/internal/channels/authorize") parseAuthorization(value);
+    else if (path !== "/internal/channels/tick" || !value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 0) throw new ProtocolError(422, "Invalid request");
     const body = Buffer.from(JSON.stringify(value));
-    if (body.length > MAX_BODY_BYTES) throw new ProtocolError(413, "Request too large");
+    if (body.length > (path === "/internal/channels/inbound-photo" ? MAX_PHOTO_BODY_BYTES : MAX_BODY_BYTES)) throw new ProtocolError(413, "Request too large");
     const attempts = this.options.attempts ?? 3;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
@@ -69,27 +72,30 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 type Sender = (text: string) => Promise<unknown>;
 type Delivery = { fingerprint: string; result: Promise<void> };
 
-/** Local terminal only. Delivery records stay for the process lifetime, including uncertain failures. */
+/** One explicitly configured provider. Records stay for the process lifetime, including uncertain failures. */
 export class TerminalOutbox {
   private spaces = new Map<string, Sender>();
   private deliveries = new Map<string, Delivery>();
   private timeoutMs: number;
-  constructor(timeoutMs = 5_000) { this.timeoutMs = timeoutMs; }
-  register(spaceId: string, send: Sender): void {
-    if (!this.spaces.has(spaceId) && this.spaces.size >= 1_000) throw new ProtocolError(503, "Terminal space capacity reached");
-    this.spaces.set(spaceId, send);
+  private provider: Provider;
+  constructor(timeoutMs = 5_000, provider: Provider = "terminal") { this.timeoutMs = timeoutMs; this.provider = provider; }
+  register(spaceId: string, send: Sender, provider: Provider = "terminal"): void {
+    if (provider !== this.provider) throw new ProtocolError(422, "Provider is not enabled");
+    const key = JSON.stringify([provider, spaceId]);
+    if (!this.spaces.has(key) && this.spaces.size >= 1_000) throw new ProtocolError(503, "Space capacity reached");
+    this.spaces.set(key, send);
   }
   async send(message: Outbound): Promise<void> {
-    if (message.provider !== "terminal") throw new ProtocolError(422, "Only terminal delivery is enabled");
-    const key = message.messageId;
+    if (message.provider !== this.provider) throw new ProtocolError(422, this.provider === "terminal" ? "Only terminal delivery is enabled" : "Only configured iMessage delivery is enabled");
+    const key = JSON.stringify([message.provider, message.messageId]);
     const fingerprint = createHash("sha256").update(JSON.stringify([message.provider, message.spaceId, message.text])).digest("hex");
     const existing = this.deliveries.get(key);
     if (existing) {
       if (existing.fingerprint !== fingerprint) throw new ProtocolError(409, "Message ID already used for different content");
       return existing.result;
     }
-    const sender = this.spaces.get(message.spaceId);
-    if (!sender) throw new ProtocolError(404, "Unknown terminal space");
+    const sender = this.spaces.get(JSON.stringify([message.provider, message.spaceId]));
+    if (!sender) throw new ProtocolError(404, "Unknown provider space");
     if (this.deliveries.size >= 10_000) throw new ProtocolError(503, "Delivery capacity reached");
     // Promise callback defers provider work until the idempotency record exists.
     let timer: ReturnType<typeof setTimeout>;
@@ -97,7 +103,7 @@ export class TerminalOutbox {
       timer = setTimeout(() => reject(new Error("Delivery deadline")), this.timeoutMs);
     });
     const result = Promise.race([Promise.resolve().then(() => sender(message.text)), deadline]).then(() => undefined)
-      .catch(() => { throw new ProtocolError(502, "Terminal delivery uncertain; retained without retry"); })
+      .catch(() => { throw new ProtocolError(502, "Provider delivery uncertain; retained without retry"); })
       .finally(() => clearTimeout(timer));
     this.deliveries.set(key, { fingerprint, result });
     return result;
