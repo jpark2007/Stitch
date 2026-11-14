@@ -9,6 +9,8 @@ import {
   PROP_SIZE_LABELS,
   REUSED_PROP_LABEL,
   PROP_OPTION_CHIP_CLASS,
+  GENERIC_UPLOAD_ERROR,
+  uploadErrorMessage,
 } from "../propEdits.ts";
 
 const chips = [
@@ -267,4 +269,16 @@ test("a chosen option chip keeps paper-light text on ink, hovered or not", () =>
   ]) {
     assert.ok(tokens.includes(t), `missing ${t}`);
   }
+});
+
+test("uploadErrorMessage: the client's 4xx sentence, the generic line otherwise", () => {
+  const err = (status, message) => Object.assign(new Error(message), { status });
+  assert.equal(uploadErrorMessage(err(413, "That file is too large.")), "That file is too large.");
+  assert.equal(uploadErrorMessage(err(415, "Upload a JPEG, PNG, WebP, GIF or HEIC image")), "Upload a JPEG, PNG, WebP, GIF or HEIC image");
+  // The server's 5xx wording can carry internals: never shown.
+  for (const status of [500, 502, 503]) assert.equal(uploadErrorMessage(err(status, "disk full")), GENERIC_UPLOAD_ERROR);
+  assert.equal(uploadErrorMessage(err(0, "We can't reach Stitch right now.")), GENERIC_UPLOAD_ERROR);
+  assert.equal(uploadErrorMessage(new TypeError("Failed to fetch")), GENERIC_UPLOAD_ERROR);
+  assert.equal(uploadErrorMessage(null), GENERIC_UPLOAD_ERROR);
+  assert.equal(uploadErrorMessage(err(422, "  ")), GENERIC_UPLOAD_ERROR);
 });

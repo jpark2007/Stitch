@@ -545,3 +545,34 @@ test("a later error keeps the latest origin", () => {
   const t = run({ type: "connection_error", message: "lost" }, ev("error", { message: "boom" }));
   assert.equal(t.errorFrom, "run");
 });
+
+// ---------------------------------------------------------------------------
+// reconnecting: the notice between a dropped stream and the next event
+
+test("reconnecting is set by a drop and cleared by the next event, keeping the pause", () => {
+  assert.equal(initialRunState.reconnecting, false);
+  const paused = run(ev("plan", { todos: [] }), ev("question", { text: "Who drove?" }));
+  const dropped = run(ev("plan", { todos: [] }), ev("question", { text: "Who drove?" }), { type: "reconnecting" });
+  assert.equal(dropped.reconnecting, true);
+  // Nothing else changes: the card stays up and nothing is logged.
+  assert.equal(dropped.phase, "waiting");
+  assert.deepEqual(dropped.pending, paused.pending);
+  assert.deepEqual(dropped.log, paused.log);
+  const back = runReducer(dropped, ev("plan", { todos: [] }));
+  assert.equal(back.reconnecting, false);
+  assert.equal(back.phase, "waiting");
+});
+
+test("reconnecting is cleared by a reset and by giving up, and ignored when finished or failed", () => {
+  const dropped = run({ type: "reconnecting" });
+  assert.equal(dropped.reconnecting, true);
+  assert.equal(dropped.phase, "connecting");
+  assert.equal(runReducer(dropped, { type: "reset" }).reconnecting, false);
+  const gaveUp = runReducer(dropped, { type: "connection_error", message: "Lost." });
+  assert.equal(gaveUp.reconnecting, false);
+  assert.equal(gaveUp.phase, "error");
+  assert.equal(runReducer(gaveUp, { type: "reconnecting" }), gaveUp, "a failed run stays as it is");
+  const done = run(ev("done", { memoryId: "m" }));
+  assert.equal(runReducer(done, { type: "reconnecting" }), done);
+  assert.equal(runReducer(dropped, { type: "reconnecting" }), dropped, "a second drop changes nothing");
+});

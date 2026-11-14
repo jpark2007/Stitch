@@ -16,6 +16,9 @@ import {
   errorRecovery,
   finishedHeading,
   finishedNote,
+  openLabel,
+  readyLine,
+  workingHeading,
   hiddenEntryCount,
   pauseLine,
   phaseLine,
@@ -107,7 +110,7 @@ export default function AgentFeed(props: {
 
   const openButton = sceneHref ? (
     <ButtonLink href={sceneHref} className="gap-1.5">
-      Open your page <span aria-hidden="true">&rarr;</span>
+      {openLabel(subject)} <span aria-hidden="true">&rarr;</span>
     </ButtonLink>
   ) : null;
 
@@ -170,11 +173,11 @@ export default function AgentFeed(props: {
       >
         <header>
           <h2 id={headingId} className="font-display text-[1.625rem] leading-tight sm:text-[1.875rem]">
-            {finished ? finishedHeading(subject) : "Making your page"}
+            {finished ? finishedHeading(subject) : workingHeading(subject)}
           </h2>
           {line !== null && (
             <p className="mt-2 flex items-center gap-2 text-sm text-ink-soft">
-              <PhaseMark phase={state.phase} />
+              <PhaseMark phase={state.phase} reconnecting={state.reconnecting === true} />
               <span>{line}</span>
             </p>
           )}
@@ -183,7 +186,7 @@ export default function AgentFeed(props: {
         {finished ? (
           // One heading, one sentence, the way in; the steps fold away below.
           <>
-            <p className="mt-3 text-[1.0625rem] leading-relaxed text-pretty text-ink-soft">{finishedNote(state)}</p>
+            <p className="mt-3 text-[1.0625rem] leading-relaxed text-pretty text-ink-soft">{finishedNote(state, subject)}</p>
             {sceneReady && openButton && <div className="mt-5">{openButton}</div>}
             {log}
           </>
@@ -210,7 +213,7 @@ export default function AgentFeed(props: {
               <div className={`mt-7 pt-6 ${STITCH_TOP}`}>
                 <p className="flex items-start gap-2.5 font-display text-xl leading-snug">
                   <CheckIcon className={`mt-1.5 size-4 shrink-0 ${DONE_TEXT}`} />
-                  <span>Your page is ready</span>
+                  <span>{readyLine(subject)}</span>
                 </p>
                 <p className="mt-1 pl-[1.625rem] text-sm text-ink-soft">You can open it now.</p>
                 {openButton && <div className="mt-4 pl-[1.625rem]">{openButton}</div>}
@@ -246,7 +249,9 @@ export default function AgentFeed(props: {
   );
 }
 
-function PhaseMark({ phase }: { phase: RunPhase }) {
+function PhaseMark({ phase, reconnecting }: { phase: RunPhase; reconnecting: boolean }) {
+  // phaseLine says "Reconnecting…" then, whatever the phase: the mark keeps turning.
+  if (reconnecting && phase !== "done" && phase !== "error") return <StitchSpinner />;
   if (phase === "done" || phase === "scene_ready") {
     return <CheckIcon className={`size-3.5 shrink-0 ${DONE_TEXT}`} />;
   }
