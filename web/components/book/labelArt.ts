@@ -162,10 +162,10 @@ function pencilCurve(ctx: Ctx, from: [number, number], ctrl: [number, number], t
 }
 
 /** An arrowhead in pencil at `tip`, pointing along `angle`. */
-function pencilHead(ctx: Ctx, tip: [number, number], angle: number, size: number, seed: number, alpha = 0.7) {
+function pencilHead(ctx: Ctx, tip: [number, number], angle: number, size: number, seed: number, alpha = 0.7, width = 2.2) {
   const a1 = angle + Math.PI - 0.5;
   const a2 = angle + Math.PI + 0.5;
-  pencilLine(ctx, [[tip[0] + Math.cos(a1) * size, tip[1] + Math.sin(a1) * size], tip, [tip[0] + Math.cos(a2) * size, tip[1] + Math.sin(a2) * size]], seed, alpha);
+  pencilLine(ctx, [[tip[0] + Math.cos(a1) * size, tip[1] + Math.sin(a1) * size], tip, [tip[0] + Math.cos(a2) * size, tip[1] + Math.sin(a2) * size]], seed, alpha, width);
 }
 
 /**
@@ -334,13 +334,13 @@ export function drawPullTabPrint(ctx: Ctx, tab: BookPullTab, fonts: PageFonts, s
   // arrow from it down to where the lever pulls.
   ctx.save();
   ctx.fillStyle = "rgba(78,72,68,0.82)";
-  ctx.font = `500 31px ${fonts.hand}`;
+  ctx.font = `500 35px ${fonts.hand}`;
   ctx.textAlign = "right";
   ctx.textBaseline = "alphabetic";
   const endX = g.slitX + g.length + 8;
   const words = tab.label.trim();
-  const lines = ctx.measureText(words).width > 330 ? splitInTwo(words) : [words];
-  const lineH = 31;
+  const lines = ctx.measureText(words).width > 360 ? splitInTwo(words) : [words];
+  const lineH = 35;
   const baseY = g.y - g.width / 2 - 36 - (lines.length - 1) * lineH;
   ctx.translate(endX, baseY);
   ctx.rotate(-0.025);
@@ -403,7 +403,7 @@ export function drawLeverFace(w: number, h: number, fold: number, seed: number):
   const y = h / 2;
   const x0 = w * 0.16;
   const x1 = fx - 16;
-  pencilLine(ctx, [[x0, y + 1], [(x0 + x1) / 2, y - 1.5], [x1, y]], seed + 3, 0.85, 3.2);
-  pencilHead(ctx, [x1, y], 0, h * 0.26, seed + 4, 0.85);
+  pencilLine(ctx, [[x0, y + 1], [(x0 + x1) / 2, y - 2], [x1, y]], seed + 3, 0.95, 7);
+  pencilHead(ctx, [x1, y], 0, h * 0.3, seed + 4, 0.95, 7);
   return c;
 }

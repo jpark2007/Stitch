@@ -5,7 +5,7 @@
  */
 
 import { ACCENT, canvas, drawGutterStitches, drawStitchLine, INK, INK_FAINT, INK_SOFT, paper, setSpacing, wrap, type Ctx, type PageFonts } from "./paperArt";
-import { drawPullTabPrint, drawTellerLabels, layoutTellerLabels, tellerLabelsHeight, type LabelRect } from "./labelArt";
+import { drawPullTabPrint, drawPuppetAvatar, drawTellerLabels, layoutTellerLabels, tellerLabelsHeight, type LabelRect } from "./labelArt";
 import { drawPhoto } from "./photoArt";
 import type { BookCover, BookSpread } from "./types";
 
@@ -49,6 +49,11 @@ export async function drawStoryPage(
   const { c, ctx: pageCtx } = canvas(W, H);
   paper(pageCtx, W, H, { seed, gutter: "right" });
   drawGutterStitches(pageCtx, W, H, "right");
+  if (spread.kind === "end") {
+    drawEndPage(pageCtx, spread, fonts);
+    pageNumber(pageCtx, page, "left", fonts);
+    return { canvas: c, labels: [] };
+  }
   const left = 96;
   const right = W - 134;
   const width = right - left;
@@ -165,6 +170,38 @@ export async function drawStoryPage(
 }
 
 /**
+ * The last page: "The end" in hand, a stitched rule, a small line (the
+ * spread's text), and the tellers' paper puppets standing side by side.
+ */
+function drawEndPage(ctx: Ctx, spread: BookSpread, fonts: PageFonts) {
+  const W = PAGE_PX_W;
+  const H = PAGE_PX_H;
+  const cx = W / 2 - 18;
+  const top = H * 0.36;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = INK;
+  ctx.font = `600 96px ${fonts.hand}`;
+  ctx.save();
+  ctx.translate(cx, top);
+  ctx.rotate(-0.03);
+  ctx.fillText(spread.title || "The end", 0, 0);
+  ctx.restore();
+  drawStitchLine(ctx, cx - 80, top + 46, cx + 80, top + 46, ACCENT, 3.2, 16, 11);
+  if (spread.text) {
+    ctx.fillStyle = INK_SOFT;
+    ctx.font = `italic 400 32px ${fonts.display}`;
+    wrap(ctx, spread.text, 560).forEach((line, i) => ctx.fillText(line, cx, top + 118 + i * 44));
+  }
+  // The tellers, side by side, as on the tree.
+  const tellers = spread.tellings ?? [];
+  const h = 230;
+  const step = 132;
+  const x0 = cx - ((tellers.length - 1) * step) / 2 - (h * 100) / 130 / 2;
+  tellers.slice(0, 5).forEach((t, i) => drawPuppetAvatar(ctx, x0 + i * step, top + 190, h, t.color, false));
+}
+
+/**
  * The stage slot on the right page, in page pixels (x from the gutter edge,
  * y from the head). StoryPage.tsx turns it into world units for the stage.
  */
@@ -181,6 +218,10 @@ export function drawStagePage(spread: BookSpread, page: number, fonts: PageFonts
   const { c, ctx } = canvas(W, H);
   paper(ctx, W, H, { seed, gutter: "left" });
   drawGutterStitches(ctx, W, H, "left");
+  if (spread.kind === "end") {
+    pageNumber(ctx, page, "right", fonts);
+    return c;
+  }
   if (spread.stage) {
     (spread.stage.pullTabs ?? []).forEach((tab, i) => drawPullTabPrint(ctx, tab, fonts, seed + 20 + i));
     pageNumber(ctx, page, "right", fonts);

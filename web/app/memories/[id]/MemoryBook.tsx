@@ -130,11 +130,13 @@ function MomentBook({ id, family, ...rest }: MomentBookProps) {
   if (!loaded) return <BookLoading />;
   if (loaded.kind === "error") return <NotInBook detail={loaded.detail} />;
   const { moment } = loaded;
-  return moment.scene ? (
-    <PlayingBook moment={moment} scene={moment.scene} {...rest} />
-  ) : (
-    <Book3D spreads={[moment.spread]} cover={moment.cover} initial={rest.initial} still={rest.still} debug={rest.debug} />
-  );
+  return moment.scene ? <PlayingBook moment={moment} scene={moment.scene} {...rest} /> : <StillBook moment={moment} {...rest} />;
+}
+
+/** A moment with no compiled scene yet: its pages, no pop-up. */
+function StillBook({ moment, initial, still, debug }: Omit<MomentBookProps, "id" | "family"> & { moment: Moment }) {
+  const spreads = useMemo(() => [moment.spread, moment.end], [moment]);
+  return <Book3D spreads={spreads} cover={moment.cover} initial={initial} still={still} debug={debug} />;
 }
 
 function PlayingBook({
@@ -146,8 +148,8 @@ function PlayingBook({
   still,
   debug,
 }: Omit<MomentBookProps, "id" | "family"> & { moment: Moment; scene: SceneData }) {
-  const { spread, cover } = moment;
-  const spreads = useMemo(() => [spread], [spread]);
+  const { spread, end, cover } = moment;
+  const spreads = useMemo(() => [spread, end], [spread, end]);
   const familyId = scene.familyId;
   const resolveAudio = useCallback(
     (mediaId: string) => (familyId ? api.mediaUrl(familyId, bareMediaId(mediaId)) : null),
@@ -221,20 +223,22 @@ function PlayingBook({
     [controller],
   );
 
+  // The pop-up stands on the moment's spread only (not the closing one).
   const renderStage = useCallback(
-    (args: StageSlotArgs) => (
-      <MomentStage
-        controller={controller}
-        scene={scene}
-        spread={args.spread}
-        fonts={args.fonts}
-        reveal={args.reveal}
-        view={args.view}
-        size={[args.width, args.depth]}
-        freezeAt={freezeAt}
-        onReady={markStageReady}
-      />
-    ),
+    (args: StageSlotArgs) =>
+      args.spread.stage ? (
+        <MomentStage
+          controller={controller}
+          scene={scene}
+          spread={args.spread}
+          fonts={args.fonts}
+          reveal={args.reveal}
+          view={args.view}
+          size={[args.width, args.depth]}
+          freezeAt={freezeAt}
+          onReady={markStageReady}
+        />
+      ) : null,
     [controller, scene, freezeAt],
   );
 

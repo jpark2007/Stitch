@@ -68,6 +68,12 @@ export interface BookSpread {
    * pop-up rises here" marks), with its pull tabs' slits and pencil notes.
    */
   stage?: { pullTabs?: BookPullTab[] };
+  /**
+   * "end": the book's last spread, a closing page ("The end", the tellers'
+   * puppets side by side) facing a blank page. Its `text` is the small line
+   * under "The end". Default a moment.
+   */
+  kind?: "moment" | "end";
 }
 
 /** What is printed on the cover and the title page. */

@@ -393,7 +393,7 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
               <button
                 type="button"
                 onClick={() => onPick(i + 1)}
-                aria-label={`${s.title}, ${s.year}`}
+                aria-label={s.kind === "end" ? s.title : `${s.title}, ${s.year}`}
                 aria-current={active ? "page" : undefined}
                 title={s.title}
                 className="group flex w-14 flex-col items-center gap-1 py-1 outline-offset-2"
@@ -411,7 +411,7 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
                   className="font-sans text-[0.68rem] font-bold tracking-[0.14em] transition-colors duration-300"
                   style={{ color: active ? "rgb(243 230 207 / 0.92)" : "rgb(243 230 207 / 0.5)" }}
                 >
-                  {s.year}
+                  {s.kind === "end" ? "end" : s.year}
                 </span>
               </button>
             </li>

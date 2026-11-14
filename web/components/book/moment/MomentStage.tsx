@@ -53,8 +53,11 @@ export interface MomentStageProps {
   onReady?: () => void;
 }
 
-/** The spread must lie this open, and this much in view, before the scene starts. */
-const OPEN_TO_PLAY = 0.97;
+/**
+ * The spread must lie this open (the leaf over it has all but landed), and
+ * this much in view, before the scene starts.
+ */
+const OPEN_TO_PLAY = 0.85;
 const VIEW_TO_PLAY = 0.6;
 /** Below this the page has started to turn away: pause and re-arm. */
 const OPEN_TO_REARM = 0.4;
@@ -91,7 +94,9 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, si
     const v = view.current;
     if (r < OPEN_TO_REARM) {
       if (!g.armed) {
+        // Folded away: next time the page opens, the set rises from the start.
         controller.pause();
+        if (freezeAt === null) controller.seek(0);
         g.armed = true;
         g.awayPaused = false;
       }

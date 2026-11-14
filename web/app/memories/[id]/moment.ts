@@ -16,7 +16,10 @@ import type { BookCover, BookPhoto, BookPullTab, BookSpread, BookTeller } from "
 
 export interface Moment {
   scene: SceneData | null;
+  /** The moment's spread. */
   spread: BookSpread;
+  /** The book's closing spread, to turn to (and back from). */
+  end: BookSpread;
   cover: BookCover;
 }
 
@@ -100,5 +103,14 @@ export function momentFrom(res: MemoryResponse, scene: SceneData | null, familyI
     title: memory.title,
     subtitle: told ? `${memory.year} · as told by ${told}` : String(memory.year),
   };
-  return { scene, spread, cover };
+  const end: BookSpread = {
+    id: `${memory.id}:end`,
+    kind: "end",
+    title: "The end",
+    year: memory.year,
+    text: told ? `as ${told} remember it` : "",
+    tellings: tellers,
+    photos: [],
+  };
+  return { scene, spread, end, cover };
 }
