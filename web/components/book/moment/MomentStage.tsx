@@ -29,8 +29,9 @@
  * from stage space to the world as the stage stands in the page), and the
  * book's camera leans from its reading view into the pop-up and follows
  * those moves, scaled to keep the printed words in frame (../shot.ts). It
- * eases back out to the spread when the telling ends, the page turns, or the
- * reader taps to step back.
+ * eases back out to the spread a beat after the telling ends (its tellers
+ * there to choose again), as the page turns, or when the reader taps to step
+ * back; choosing a telling leans back in.
  */
 
 import { useFrame, useThree } from "@react-three/fiber";
@@ -76,6 +77,8 @@ const VIEW_TO_PLAY = 0.6;
 /** Below this the page has started to turn away: pause and re-arm. */
 const OPEN_TO_REARM = 0.4;
 const VIEW_TO_PAUSE = 0.3;
+/** Once told, the camera holds on the last line this long (ms) before it pulls back to the spread. */
+const END_HOLD_MS = 900;
 /** The page's centre line in slot space. */
 const CENTRE_X = PAGE_W / 2 - STAGE_SLOT.x;
 /** World units per page px, and the pencilled label's reach below a pull tab (page px). */
@@ -106,7 +109,7 @@ function ShotFeed({ shot, keep }: { shot: StageShot; keep: RefObject<Group | nul
 
 export function MomentStage({ controller, scene, spread, fonts, reveal, view, shot, size, freezeAt = null, onReady }: MomentStageProps) {
   const tellers: BookTeller[] = useMemo(() => spread.tellings ?? [], [spread]);
-  const gate = useRef({ ready: false, armed: true, awayPaused: false });
+  const gate = useRef({ ready: false, armed: true, awayPaused: false, endedAt: 0 });
   const [ready, setReady] = useState(false);
   const readyRef = useRef(onReady);
   useEffect(() => {
@@ -139,7 +142,14 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
     const v = view.current;
     // The camera leans in while the telling is under way on an open page
     // (held mid-scene too), and comes back out once it has been told.
-    shot.offer(!g.armed && r >= OPEN_TO_PLAY && !controller.getStatus().ended);
+    // The last line is held a beat in close-up before the camera pulls back.
+    const ended = controller.getStatus().ended;
+    const now = performance.now();
+    if (!ended) g.endedAt = 0;
+    else if (!g.endedAt) g.endedAt = now;
+    const holding = ended && now - g.endedAt < END_HOLD_MS;
+    if (holding) state.invalidate();
+    shot.offer(!g.armed && r >= OPEN_TO_PLAY && (!ended || holding));
     if (r < OPEN_TO_REARM) {
       if (!g.armed) {
         // Folded away: next time the page opens, the set rises from the start.
