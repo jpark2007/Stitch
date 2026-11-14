@@ -338,7 +338,7 @@ const RECIPES: Record<PaperKind, PaperRecipe> = {
     fibreWidth: [0.5, 1.1],
     fibreAlpha: [0.05, 0.16],
     flecks: 0,
-    normalStrength: 2.2,
+    normalStrength: 1.5,
     roughBase: 0.86,
     roughVar: 0.12,
   },
@@ -352,7 +352,7 @@ const RECIPES: Record<PaperKind, PaperRecipe> = {
     fibreWidth: [0.6, 1.4],
     fibreAlpha: [0.06, 0.2],
     flecks: 140,
-    normalStrength: 3.2,
+    normalStrength: 2.2,
     roughBase: 0.9,
     roughVar: 0.1,
   },
@@ -475,8 +475,8 @@ export function getPaperTextures(kind: PaperKind = "paper", repeat?: number | [n
 /* Wood table                                                                */
 /* ------------------------------------------------------------------------ */
 
-const WOOD_LIGHT = [176, 120, 76];
-const WOOD_DARK = [104, 63, 37];
+const WOOD_LIGHT = [150, 103, 68];
+const WOOD_DARK = [92, 58, 37];
 
 function buildWoodBase(): BaseSet {
   const w = 1024;
@@ -486,7 +486,7 @@ function buildWoodBase(): BaseSet {
   const plankH = h / planks;
 
   // Long streaks along x (grain), plus a slow warp for rings.
-  const streak = fbmField(w, h, 2, 64, 4, rand, 0.55);
+  const streak = fbmField(w, h, 2, 96, 4, rand, 0.5);
   const warp = fbmField(w, h, 2, 4, 3, rand, 0.5);
   const fine = fbmField(w, h, 8, 256, 2, rand, 0.5);
 
@@ -511,14 +511,14 @@ function buildWoodBase(): BaseSet {
       const s = streak[i];
       const ring = Math.sin((py * plankRing[p] + warp[i] * 6 + plankPhase[p]) * Math.PI);
       const ringLine = Math.pow(Math.abs(ring), 6); // thin darker late-wood lines
-      let t = 0.5 + (s - 0.5) * 1.4 + plankTone[p] - ringLine * 0.28 + (fine[i] - 0.5) * 0.25;
+      let t = 0.5 + (s - 0.5) * 1.0 + plankTone[p] - ringLine * 0.16 + (fine[i] - 0.5) * 0.2;
       // Seams: long edges and one butt joint per plank.
       const jx = Math.abs(x - joint[p]);
       const jd = Math.min(jx, w - jx);
       const seam = Math.min(seamY, jd);
       let groove = 0;
-      if (seam < 2.2) groove = 1 - seam / 2.2;
-      t -= groove * 0.55;
+      if (seam < 1.6) groove = 1 - seam / 1.6;
+      t -= groove * 0.35;
       t = Math.min(1, Math.max(0, t));
 
       const j = i * 4;

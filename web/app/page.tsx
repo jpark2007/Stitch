@@ -182,28 +182,28 @@ function Framing() {
   useEffect(() => {
     const { camera, invalidate } = get();
     if ("fov" in camera) {
-      camera.fov = portrait ? 46 : 30;
+      camera.fov = portrait ? 42 : 30;
       camera.updateProjectionMatrix();
     }
-    camera.lookAt(0, 0, 0.2);
+    camera.lookAt(0.45, 0, 0.1);
     invalidate();
   }, [get, portrait]);
   return null;
 }
 
 function SwatchScene() {
-  const wood = useWoodMaterial({ repeat: [2, 2] });
-  const sheet = usePaperMaterial({ color: "#f3ead8" });
-  const terracotta = useCardBoxMaterials({ color: "#c0603f" });
-  const kraft = useCardBoxMaterials({ color: "#c4a37a" });
-  const sage = useCutoutMaterial({ color: "#8fa77d", mask: { style: "torn", aspect: 1.5, seed: 3 } });
-  const mustard = useCutoutMaterial({ color: "#d9a640", mask: { style: "deckled", aspect: 1, seed: 5 } });
-  const sky = useCutoutMaterial({ color: "#7d9fbe", mask: { style: "torn", aspect: 1.2, seed: 8 } });
+  const wood = useWoodMaterial({ repeat: [1.6, 1.6] });
+  const sheet = usePaperMaterial({ color: "#f3ead8", repeat: [3, 3.6] });
+  const terracotta = useCardBoxMaterials({ color: "#c46a49", repeat: [2, 1.4] });
+  const kraft = useCardBoxMaterials({ color: "#cdae84", repeat: [1.8, 1.3] });
+  const sage = useCutoutMaterial({ color: "#9db58a", grain: 0.6, repeat: 2, mask: { style: "torn", aspect: 1.5, seed: 3 } });
+  const mustard = useCutoutMaterial({ color: "#e2b04c", grain: 0.6, repeat: 1, mask: { style: "deckled", aspect: 1, seed: 5 } });
+  const sky = useCutoutMaterial({ color: "#8fb0cc", grain: 0.6, repeat: 1.2, mask: { style: "torn", aspect: 1.2, seed: 8 } });
 
   return (
     <>
       <Framing />
-      <hemisphereLight args={["#fff1dc", "#5a3a22", 0.7]} />
+      <hemisphereLight args={["#fff1dc", "#6a4a30", 1.1]} />
       <directionalLight
         castShadow
         color="#ffd9aa"
@@ -217,7 +217,8 @@ function SwatchScene() {
         shadow-camera-top={4}
         shadow-camera-bottom={-4}
       />
-      <directionalLight color="#c9d6ff" intensity={0.35} position={[4, 3, -2]} />
+      {/* Soft fill from the camera side so standing cutouts aren't muddy. */}
+      <directionalLight color="#ffe6c8" intensity={0.9} position={[1.5, 2.5, 6]} />
 
       {/* Table */}
       <mesh rotation-x={-Math.PI / 2} receiveShadow material={wood}>
