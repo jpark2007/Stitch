@@ -60,7 +60,7 @@ import { PAGE_PX_H, PAGE_PX_W } from "./pageArt";
 import { isBookControl } from "./controls";
 import { BookRuntimeProvider } from "./pagePrint";
 import { isMuted, paperLift, setMuted, subscribeMuted, unlockAudio } from "./sound";
-import { SceneView, escapeAction, readSceneViewPref, writeSceneViewPref } from "./sceneView";
+import { SceneView, escapeAction, readSceneViewPref, viewSwitch, writeSceneViewPref } from "./sceneView";
 import {
   STAGE_SLOT,
   SlotProbe,
@@ -425,44 +425,55 @@ function TurnHint({ view, enabled }: { view: BookView; enabled: boolean }) {
 }
 
 /**
- * While a moment plays: a paper switch between its scene (the camera in the
- * pop-up) and the whole open book (the scene plays on). Escape does the same.
- * Renders nothing on a spread without a playing moment.
+ * While a moment plays: a paper button that names the view it goes to.
+ * In the cutscene (the camera in the pop-up) it reads "Whole book" and eases
+ * out to the whole open book; there it reads "Cutscene" and zooms back into
+ * the scene at the timeline's current shot. The scene plays on either way;
+ * Escape does the same. Renders nothing on a spread without a playing moment.
  */
 function SceneViewToggle({ view }: { view: SceneView }) {
   const { mode, available } = useSyncExternalStore(view.subscribe, view.get, view.get);
-  const book = mode === "book";
+  const next = viewSwitch(mode);
+  const toScene = next.to === "scene";
   return (
     <AnimatePresence initial={false}>
       {available ? (
         <motion.button
           key="scene-view"
           type="button"
-          onClick={() => view.toggle()}
-          aria-pressed={book}
+          onClick={() => view.choose(next.to)}
+          aria-label={next.action}
           aria-keyshortcuts="Escape"
-          title={book ? "Back to the scene (Esc)" : "See the whole book (Esc)"}
+          title={next.title}
           initial={{ opacity: 0, y: -4 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -4 }}
           transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-          className={`pointer-events-auto grid size-11 cursor-pointer place-items-center rounded-full font-display text-[0.95rem] text-[#5c4e43] outline-offset-2 outline-[#f3e6cf] transition-[background-color,box-shadow,scale] duration-200 hover:scale-105 focus-visible:outline-2 active:scale-95 lg:flex lg:w-auto lg:gap-2 lg:px-4 ${
-            book
-              ? "bg-[#e3cfab] text-[#4a3c31] shadow-[inset_0_1px_3px_rgb(0_0_0/0.4),0_1px_0_rgb(255_255_255/0.12)]"
-              : "bg-[#f5eee1]/95 shadow-[0_2px_3px_rgb(0_0_0/0.25),0_8px_20px_-6px_rgb(0_0_0/0.5)]"
+          className={`pointer-events-auto flex h-11 min-w-11 cursor-pointer items-center justify-center gap-1.5 rounded-full pr-3.5 pl-3 font-display text-[0.95rem] whitespace-nowrap shadow-[0_2px_3px_rgb(0_0_0/0.25),0_8px_20px_-6px_rgb(0_0_0/0.5)] outline-offset-2 outline-[#f3e6cf] transition-[background-color,color,scale] duration-200 hover:scale-105 focus-visible:outline-2 active:scale-95 max-sm:[&:has(~*~*)]:px-0 sm:gap-2 sm:px-4 ${
+            toScene ? "bg-[#e3cfab] text-[#4a3c31]" : "bg-[#f5eee1]/95 text-[#5c4e43]"
           }`}
         >
-          {/* An open book: outlined to ask for the whole book, inked in while it shows. */}
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden>
-            <path
-              d="M12 7c-1.9-1.3-4.6-1.8-8.5-1.6v12.4c3.9-.2 6.6.3 8.5 1.6 1.9-1.3 4.6-1.8 8.5-1.6V5.4C16.6 5.2 13.9 5.7 12 7z"
-              fill="currentColor"
-              fillOpacity={book ? 0.85 : 0.08}
-            />
-            <path d="M12 7v12.4" stroke={book ? "#e3cfab" : "currentColor"} strokeWidth={book ? 1.3 : 1.7} />
-          </svg>
-          {/* One name in every state (aria-pressed says which); shown beside the icon where there is room. */}
-          <span className="sr-only lg:not-sr-only">Whole book</span>
+          {toScene ? (
+            /* A magnifier over the page with a plus: zoom back in. */
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <circle cx="10.5" cy="10.5" r="6.5" fill="currentColor" fillOpacity="0.14" />
+              <path d="M15.3 15.3L20.5 20.5" strokeWidth="2.2" />
+              <path d="M10.5 7.8v5.4M7.8 10.5h5.4" />
+            </svg>
+          ) : (
+            /* An open book: out to the whole of it. */
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden>
+              <path
+                d="M12 7c-1.9-1.3-4.6-1.8-8.5-1.6v12.4c3.9-.2 6.6.3 8.5 1.6 1.9-1.3 4.6-1.8 8.5-1.6V5.4C16.6 5.2 13.9 5.7 12 7z"
+                fill="currentColor"
+                fillOpacity="0.08"
+              />
+              <path d="M12 7v12.4" />
+            </svg>
+          )}
+          {/* Beside the icon at every size, but on a phone whose header also holds other actions
+              (a Contents tab before mute) there is no room: there the icon alone says which way. */}
+          <span className="max-sm:[button:has(~*~*)>&]:sr-only">{next.label}</span>
         </motion.button>
       ) : null}
     </AnimatePresence>
