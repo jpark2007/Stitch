@@ -33,6 +33,9 @@ export interface CameraPose {
   /** Where to look instead on a narrow (portrait) screen, which cannot fit
    *  everything `target` centres. Default: `target`. */
   narrowTarget?: Vec3;
+  /** The share of the landscape framing's width the narrow framing needs to
+   *  keep in view (0..1]. Default 1. */
+  narrowWidth?: number;
 }
 
 export type CameraPath = (t: number) => CameraPose;
@@ -54,11 +57,13 @@ const DEG = Math.PI / 180;
 /**
  * The vertical FOV that shows a landscape-framed pose's horizontal extent on a
  * screen of `aspect` (width / height): unchanged at REF_ASPECT and wider,
- * widened on narrower screens, capped at MAX_FOV.
+ * widened on narrower screens, capped at MAX_FOV. `width` < 1 asks to keep only
+ * that share of the landscape width in view.
  */
-export function fitFov(fov: number, aspect: number): number {
-  if (!(aspect > 0) || aspect >= REF_ASPECT) return fov;
-  const wide = (2 * Math.atan((Math.tan((fov * DEG) / 2) * REF_ASPECT) / aspect)) / DEG;
+export function fitFov(fov: number, aspect: number, width = 1): number {
+  const ref = REF_ASPECT * width;
+  if (!(aspect > 0) || aspect >= ref) return fov;
+  const wide = (2 * Math.atan((Math.tan((fov * DEG) / 2) * ref) / aspect)) / DEG;
   return Math.min(Math.max(fov, MAX_FOV), wide);
 }
 
@@ -89,6 +94,7 @@ export function stagePoses(size: StageSize = DEFAULT_STAGE_SIZE) {
       target: [-0.36 * w, 0.2 * s, 0.1 * s],
       // A phone cannot fit the spread: frame the set on the stage page.
       narrowTarget: [0, 0.2 * s, 0.1 * s],
+      narrowWidth: 0.55,
       fov: 30,
     } as CameraPose,
   };
@@ -127,6 +133,7 @@ export function pan(from: CameraPose, delta: Vec3): CameraPose {
     position: add(from.position, delta),
     target: add(from.target, delta),
     narrowTarget: from.narrowTarget && add(from.narrowTarget, delta),
+    narrowWidth: from.narrowWidth,
     fov: from.fov,
   };
 }
@@ -134,7 +141,7 @@ export function pan(from: CameraPose, delta: Vec3): CameraPose {
 /** Back away from the target along the view line (`factor` > 1). */
 export function pullBack(from: CameraPose, factor = 1.5): CameraPose {
   const off = sub(from.position, from.target);
-  return { position: add(from.target, scale(off, factor)), target: from.target, narrowTarget: from.narrowTarget, fov: from.fov };
+  return { position: add(from.target, scale(off, factor)), target: from.target, narrowTarget: from.narrowTarget, narrowWidth: from.narrowWidth, fov: from.fov };
 }
 
 const mix = (a: Vec3, b: Vec3, k: number): Vec3 => [lerp(a[0], b[0], k), lerp(a[1], b[1], k), lerp(a[2], b[2], k)];
@@ -147,6 +154,7 @@ export function blendPose(a: CameraPose, b: CameraPose, k: number): CameraPose {
     fov: lerp(a.fov ?? 30, b.fov ?? 30, k),
   };
   if (a.narrowTarget || b.narrowTarget) pose.narrowTarget = mix(a.narrowTarget ?? a.target, b.narrowTarget ?? b.target, k);
+  if (a.narrowWidth !== undefined || b.narrowWidth !== undefined) pose.narrowWidth = lerp(a.narrowWidth ?? 1, b.narrowWidth ?? 1, k);
   return pose;
 }
 
@@ -196,8 +204,8 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
   // and from the frame state in useFrame, never as React values.
   const get = useThree((s) => s.get);
 
-  // Smoothed pose (for object poses): 10 springs (position, target, fov,
-  // narrow target).
+  // Smoothed pose (for object poses): 11 springs (position, target, fov,
+  // narrow target and width).
   const smooth = useRef<Spring[] | null>(null);
   // Orbit offsets: current springs and the drag target.
   const yaw = useRef<Spring>([0, 0]);
@@ -265,7 +273,7 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
     if (typeof pose === "function") {
       p = pose(now(state));
     } else {
-      const goal = [...pose.position, ...pose.target, pose.fov ?? 30, ...(pose.narrowTarget ?? pose.target)];
+      const goal = [...pose.position, ...pose.target, pose.fov ?? 30, ...(pose.narrowTarget ?? pose.target), pose.narrowWidth ?? 1];
       if (!smooth.current) smooth.current = goal.map((v) => [v, 0] as Spring);
       const s = smooth.current;
       for (let i = 0; i < goal.length; i++) smoothDamp(s[i], goal[i], smoothTime, dt);
@@ -274,6 +282,7 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
         target: [s[3][0], s[4][0], s[5][0]],
         fov: s[6][0],
         narrowTarget: [s[7][0], s[8][0], s[9][0]],
+        narrowWidth: s[10][0],
       };
     }
 
@@ -303,7 +312,7 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
     camera.lookAt(target);
     // What the camera looks at is what stays sharp (see DepthOfField).
     camera.userData.focus = off.length();
-    const fov = fitFov(p.fov ?? 30, aspect);
+    const fov = fitFov(p.fov ?? 30, aspect, lerp(1, p.narrowWidth ?? 1, narrowness(aspect)));
     if (camera instanceof PerspectiveCamera && Math.abs(camera.fov - fov) > 1e-3) {
       camera.fov = fov;
       camera.updateProjectionMatrix();
