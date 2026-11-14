@@ -57,6 +57,7 @@ from agent.tools.frames import (
     PlaywrightUnavailable,
 )
 from agent.run_info import RunInfo
+from agent.tools import narration as narration_tool
 from agent.tools.narration import Speech
 from agent.tools.photos import FakeVision, make_photo_tools
 from agent.tools.sets import make_set_tools
@@ -76,6 +77,21 @@ MOM_TEXT = (
 )
 
 Event = tuple[str, BaseModel]
+
+VOICE_PASS_DEGRADES = hasattr(narration_tool, "_speech_failed_warning") or "narrated silently" in (
+    narration_tool.__doc__ or ""
+)
+"""True once synthesize_narration narrates silently when the speech service fails (PR #131).
+
+Until that lands on main, a TTS failure still raises out of the voice pass and fails the run,
+so the speech cases are strict expected failures: they run, they must fail, and the marker
+lifts itself (they must pass) the moment the fallback is merged."""
+
+needs_voice_pass_fallback = pytest.mark.xfail(
+    not VOICE_PASS_DEGRADES,
+    reason="synthesize_narration has no TTS fallback on this branch yet (PR #131, voice pass timing)",
+    strict=True,
+)
 
 
 class ServiceDown(RuntimeError):
@@ -421,6 +437,7 @@ def test_c_cut_out_tool_with_the_remover_down_answers_use_a_placeholder() -> Non
 # --------------------------------------------------------------------------- (d) speech down
 
 
+@needs_voice_pass_fallback
 def test_d_speech_service_down_narrates_silently_with_estimated_timings(studios: Callable[..., Studio]) -> None:
     tts = DownTTS()
     s = studios(tts=tts)
@@ -568,6 +585,7 @@ def test_set_tools_with_the_family_store_down_answer_instead_of_raising() -> Non
 # --------------------------------------------------------------------------- everything down
 
 
+@needs_voice_pass_fallback
 def test_every_outside_service_down_at_once_still_saves_the_memory(studios: Callable[..., Studio]) -> None:
     """The first real run happens in front of people: with every outside service failing at
     once (art, cutouts, speech, photo vision, frame critic, browser) the run still ends 'done'."""
