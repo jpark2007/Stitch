@@ -9,11 +9,12 @@
  * with a small constant depth bias, so the page being turned always shows over
  * the stale one while content standing on it still shows over it.
  *
- * The bias only breaks exact ties. A landing sheet does worse than tie: its
- * gutter bones come to rest against the stack (clamped to the very same rest
- * shape) while its corner-lift twist is still springing out, and that twist
- * dips the sheet a hair below the stack top for a few frames, so the stale
- * page showed through near the gutter. So once a sheet coming down on a stack
+ * The bias only breaks exact ties. A landing sheet does worse than tie: as
+ * the stack thickens under it, its gutter bones come to rest against the
+ * stack (clamped to the very same rest shape), and the skinned surface
+ * between them, still bending and twisting toward rest, dips a hair below the
+ * stack top for a few frames, so the stale page showed through near the
+ * gutter. So once a sheet coming down on a stack
  * is within `LANDING_REACH` of it, that stack's top is not drawn at all: the
  * landing sheet already covers it, bar a sliver under its trailing fore-edge
  * where the page block's blank top shows instead (as it does anyway in the
@@ -41,12 +42,13 @@ export interface SheetLayer {
 
 /**
  * How near (in progress) a landing sheet comes to its stack before that
- * stack's top is hidden. In a simulated landing the sheet first dips below the
- * stack top about 0.09-0.1 out (any turn speed, either direction, up to nine
- * leaves; stacking.test.ts); this leaves a margin, while the landing sheet's
- * fore-edge falls short of the stack's by about 1% of a page.
+ * stack's top is hidden. Run through the leaf's real springs, a landing sheet
+ * first dips below the stack top 0.13 out (clicked, queued, calm, released or
+ * held turns, either way, 4 to 14 leaves, 20 to 240 fps; landing.test.ts);
+ * this leaves a margin, while the landing sheet's fore-edge still falls short
+ * of the stack's by little more than 1% of a page.
  */
-export const LANDING_REACH = 0.15;
+export const LANDING_REACH = 0.2;
 
 /**
  * The stack (1 left, 0 right) a sheet is coming down on and is within
