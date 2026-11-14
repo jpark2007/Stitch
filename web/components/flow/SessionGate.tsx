@@ -23,6 +23,16 @@ import { FlowFrame } from "./FlowPage";
 import { FormError } from "./FormError";
 import { PaperCard } from "./PaperCard";
 import { forgetFamily, forgetSignedIn, hrefs, rememberSignedIn } from "./session";
+import { clearAskCache } from "./askPage";
+
+/** window.sessionStorage, or null where it is missing or blocked. */
+function tabStorage(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
 
 export interface SessionValue {
   me: MeResponse;
@@ -164,6 +174,7 @@ export function SessionGate(props: {
     }
     forgetFamily();
     forgetSignedIn();
+    clearAskCache(tabStorage());
     // A full document load, not router.replace: with cacheComponents on, the
     // pages visited this session stay mounted in hidden Activity trees with
     // their state (a sent log in form, a half-written memory). Reloading
