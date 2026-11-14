@@ -10,20 +10,16 @@ import type { PropChip, PropEdit } from "@/lib/types";
 import {
   PROP_OPTION_CHIP_CLASS,
   REUSED_PROP_LABEL,
+  dropFailedPhoto,
   propSizeLabel,
   toPropEdits,
   uploadErrorMessage,
   validatePropDecisions,
+  type PhotoDraft,
   type PropDecision,
 } from "./propEdits";
 
 type Action = PropDecision["action"];
-
-type PhotoDraft = {
-  photoId: string | null;
-  fileName?: string;
-  previewUrl?: string;
-};
 
 // Paper tints behind a prop's initials when it has no picture yet.
 const SWATCHES = ["bg-card", "bg-kraft/40", "bg-sage/30", "bg-accent/20", "bg-mustard/30", "bg-sky/25"];
@@ -156,6 +152,16 @@ export default function PropChips(props: {
       setPhotos((prev) => ({ ...prev, [chip.id]: { ...prev[chip.id], photoId } }));
     } catch (err) {
       if (uploadSeq.current[chip.id] !== seq) return;
+      // A photo that did not upload is not used: drop its preview, so the
+      // card shows the drawing again beside the one line that says why.
+      setPhotos((prev) => {
+        const { draft, revoke } = dropFailedPhoto(prev[chip.id]);
+        if (revoke) {
+          URL.revokeObjectURL(revoke);
+          objectUrls.current.delete(revoke);
+        }
+        return { ...prev, [chip.id]: draft };
+      });
       setUploadErrors((prev) => ({ ...prev, [chip.id]: uploadErrorMessage(err) }));
     } finally {
       if (uploadSeq.current[chip.id] === seq) {

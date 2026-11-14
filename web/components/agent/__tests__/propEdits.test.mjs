@@ -11,6 +11,7 @@ import {
   PROP_OPTION_CHIP_CLASS,
   GENERIC_UPLOAD_ERROR,
   uploadErrorMessage,
+  dropFailedPhoto,
 } from "../propEdits.ts";
 
 const chips = [
@@ -281,4 +282,22 @@ test("uploadErrorMessage: the client's 4xx sentence, the generic line otherwise"
   assert.equal(uploadErrorMessage(new TypeError("Failed to fetch")), GENERIC_UPLOAD_ERROR);
   assert.equal(uploadErrorMessage(null), GENERIC_UPLOAD_ERROR);
   assert.equal(uploadErrorMessage(err(422, "  ")), GENERIC_UPLOAD_ERROR);
+});
+
+test("dropFailedPhoto: a photo that did not upload loses its preview and id, keeps its name", () => {
+  assert.deepEqual(dropFailedPhoto({ photoId: null, fileName: "pew.jpg", previewUrl: "blob:1" }), {
+    draft: { photoId: null, fileName: "pew.jpg" },
+    revoke: "blob:1",
+  });
+  // A photo id from an earlier pick never survives a failed new one.
+  const out = dropFailedPhoto({ photoId: "media_1", fileName: "pew.jpg", previewUrl: "blob:2" });
+  assert.equal(out.draft.photoId, null);
+  assert.equal("previewUrl" in out.draft, false);
+  assert.equal(out.revoke, "blob:2");
+  assert.deepEqual(dropFailedPhoto(undefined), { draft: { photoId: null }, revoke: null });
+  assert.deepEqual(dropFailedPhoto({ photoId: null }), { draft: { photoId: null }, revoke: null });
+  // So the card asks for a photo again instead of sending one.
+  const chip = [{ id: "pew", name: "Church pew", size: "furniture" }];
+  const decision = { pew: { action: "replace_photo", ...out.draft } };
+  assert.deepEqual(validatePropDecisions(chip, decision), { pew: "Choose a photo, or keep the drawing." });
 });
