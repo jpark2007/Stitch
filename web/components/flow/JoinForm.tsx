@@ -333,7 +333,7 @@ function ChoiceCard(props: {
   return (
     <label
       className={[
-        "flex min-h-14 cursor-pointer items-center gap-3 rounded-card border px-4 py-3",
+        "flex h-full min-h-14 cursor-pointer items-center gap-3 rounded-card border px-4 py-3",
         "transition-[background-color,border-color,box-shadow] duration-150 motion-reduce:transition-none",
         "has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60",
         dashed ? "border-dashed" : "",
