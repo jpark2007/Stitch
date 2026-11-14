@@ -221,7 +221,12 @@ export class ThreadsEngine {
   /** Eased pan by a fraction of the visible span (+ = later). */
   panBySpan(f: number) {
     const span = this.bounds.width / this.cam.s;
-    this.panTarget = (this.panTarget ?? this.cam.cx) + f * span;
+    this.panTo((this.panTarget ?? this.cam.cx) + f * span);
+  }
+
+  /** Ease the centre toward year `t`, held to where the camera can actually go. */
+  private panTo(t: number) {
+    this.panTarget = clampCam({ cx: t, s: this.cam.s }, this.bounds).cx;
     this.kick();
   }
 
@@ -237,7 +242,7 @@ export class ThreadsEngine {
     this.hoverKnot = i;
     const h = this.geom?.knots[i];
     const W = this.bounds.width;
-    if (h && (h.x < W * 0.15 || h.x > W * 0.85)) this.panTarget = this.model.knots[i].t;
+    if (h && (h.x < W * 0.15 || h.x > W * 0.85)) this.panTo(this.model.knots[i].t);
     this.kick();
   }
 
@@ -341,8 +346,12 @@ export class ThreadsEngine {
     if (this.panTarget !== null) {
       const k = 1 - Math.exp(-dt * 10);
       const cx = this.cam.cx + (this.panTarget - this.cam.cx) * k;
-      const done = Math.abs(cx - this.panTarget) * this.cam.s < 0.3;
-      this.cam = clampCam({ s: this.cam.s, cx: done ? this.panTarget : cx }, b);
+      const before = this.cam.cx;
+      const want = Math.abs(cx - this.panTarget) * this.cam.s < 0.3 ? this.panTarget : cx;
+      this.cam = clampCam({ s: this.cam.s, cx: want }, b);
+      // Arrived, or held at the edge (a zoom can move the bounds under the target).
+      const held = want !== before && this.cam.cx === before;
+      const done = held || Math.abs(this.cam.cx - this.panTarget) * this.cam.s < 0.3;
       if (done) this.panTarget = null;
       else moving = true;
     }
