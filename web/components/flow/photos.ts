@@ -1,8 +1,11 @@
 // Pure checks for photos picked for a memory. No runtime imports and only
 // erasable TypeScript, so `node --test` can load this file directly.
 
-/** Most photos one memory can carry. */
+/** Most photos one memory can carry: the default cap for a pick. */
 export const MAX_PHOTOS = 6;
+
+/** What the photos belong to, named in the over-the-cap line. */
+const DEFAULT_HOLDER = "memory";
 
 /** Largest single photo, in bytes (10 MB). */
 export const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
@@ -66,12 +69,17 @@ function quoted(name: string): string {
 const OVER_CAP_NAMED = 3;
 
 /**
- * The one line for every photo left out by the MAX_PHOTOS cap in a pick:
+ * The one line for every photo left out by the cap in a pick:
  * “e.png” and “f.png” weren't added: a memory can hold up to 6 photos.
  * At most three are named; the rest are counted ("and 2 more"). Empty for
- * no names.
+ * no names. `limit` and `holder` default to MAX_PHOTOS and "memory"; a
+ * tradition passes its own ("a tradition can hold up to 10 photos").
  */
-export function overCapMessage(names: readonly string[]): string {
+export function overCapMessage(
+  names: readonly string[],
+  limit: number = MAX_PHOTOS,
+  holder: string = DEFAULT_HOLDER,
+): string {
   if (names.length === 0) return "";
   const shown = names.slice(0, OVER_CAP_NAMED).map(quoted);
   const rest = names.length - shown.length;
@@ -80,7 +88,7 @@ export function overCapMessage(names: readonly string[]): string {
   else if (shown.length === 1) list = shown[0];
   else list = `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
   const verb = names.length === 1 ? "wasn't" : "weren't";
-  return `${list} ${verb} added: a memory can hold up to ${MAX_PHOTOS} photos.`;
+  return `${list} ${verb} added: a ${holder} can hold up to ${limit} photos.`;
 }
 
 /**
@@ -88,16 +96,19 @@ export function overCapMessage(names: readonly string[]): string {
  * Returns the indices of `incoming` to accept, in order, plus friendly
  * messages for the files left out: one per file that is the wrong type, too
  * big, empty or already added, then one line (overCapMessage) for all the
- * files over the MAX_PHOTOS cap together.
+ * files over the cap together. The cap is `limit` (default MAX_PHOTOS) and
+ * the over-the-cap line names `holder` (default "memory").
  */
 export function acceptPhotos(
   current: PhotoLike[],
   incoming: PhotoLike[],
+  limit: number = MAX_PHOTOS,
+  holder: string = DEFAULT_HOLDER,
 ): { accepted: number[]; errors: string[] } {
   const accepted: number[] = [];
   const errors: string[] = [];
   const seen = new Set(current.map((f) => `${f.name}\u0000${f.size}`));
-  let room = Math.max(0, MAX_PHOTOS - current.length);
+  let room = Math.max(0, limit - current.length);
   const overCap: string[] = [];
 
   incoming.forEach((file, i) => {
@@ -129,6 +140,6 @@ export function acceptPhotos(
     accepted.push(i);
   });
 
-  if (overCap.length > 0) errors.push(overCapMessage(overCap));
+  if (overCap.length > 0) errors.push(overCapMessage(overCap, limit, holder));
   return { accepted, errors };
 }

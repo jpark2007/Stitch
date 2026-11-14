@@ -51,12 +51,33 @@ export function PersonPicker(props: {
    * "row": the legend shown in a left column beside the chips (the
    * add-a-memory details), rather than above them. Default "stacked".
    */
-  layout?: "stacked" | "row";
+  layout?: "stacked" | "row" | "bare";
   /** Shown after the chips, in the same column (a quiet "add someone" link). */
   footer?: ReactNode;
+  /**
+   * "plain": names set as type in an even grid (the tradition form's
+   * specimen card): the picked ones in full ink with an accent underline, the
+   * rest muted, no chip outlines. Default "chips". With layout "bare" the
+   * legend is for assistive tech only and the caller draws the visible label.
+   */
+  appearance?: "chips" | "plain";
 }) {
-  const { legend, people, value, onChange, hint, error, disabled, layout = "stacked", footer } = props;
-  const row = layout === "row";
+  const {
+    legend,
+    people,
+    value,
+    onChange,
+    hint,
+    error,
+    disabled,
+    layout = "stacked",
+    footer,
+    appearance = "chips",
+  } = props;
+  const bare = layout === "bare";
+  // Bare lays out like a row's value column: the caller draws the label.
+  const row = layout === "row" || bare;
+  const plain = appearance === "plain";
   const lockedIds = props.lockedIds ?? [];
   const uid = useId();
   const hintId = `${uid}-hint`;
@@ -126,13 +147,66 @@ export function PersonPicker(props: {
           No one else is in the family yet.
         </p>
       ) : (
-        <ul className={`${row && !hint && !searchable ? "" : "mt-2 "}flex list-none flex-wrap gap-2 p-0`}>
+        <ul
+          className={`${row && !hint && !searchable ? "" : "mt-2 "}${
+            plain
+              ? // Names flow like a line of text, evenly spaced, the first flush
+                // with the column edge; a line breaks only between whole names,
+                // and a name only at its spaces (a word too long for a whole
+                // line breaks as a last resort).
+                "-mx-1 flex list-none flex-wrap gap-x-1.5 p-0"
+              : "flex list-none flex-wrap gap-2 p-0"
+          }`}
+        >
           {shown.map((person) => {
             const locked = lockedIds.includes(person.id);
             const checked = locked || value.includes(person.id);
             const inputId = `${uid}-${person.id}`;
             const showYear =
               duplicates.has(person.name.trim().toLowerCase()) && Number.isFinite(person.born);
+            if (plain) {
+              return (
+                <li key={person.id} className="max-w-full">
+                  <label
+                    htmlFor={inputId}
+                    className={[
+                      "group relative inline-flex max-w-full min-h-11 select-none items-center gap-2 rounded-paper px-1 font-serif text-[0.9375rem] leading-snug transition-colors duration-150 ease-paper motion-reduce:transition-none",
+                      FOCUS_RING_WITHIN,
+                      "has-[:disabled]:cursor-not-allowed",
+                      checked ? "text-ink" : "text-ink-soft hover:text-ink",
+                      disabled ? "opacity-60" : locked ? "" : "cursor-pointer",
+                    ].join(" ")}
+                  >
+                    <input
+                      id={inputId}
+                      type="checkbox"
+                      className="sr-only"
+                      checked={checked}
+                      disabled={locked || disabled}
+                      onChange={(e) => toggle(person.id, e.target.checked)}
+                    />
+                    {/* Their thread colour: a filled dot when picked, a hollow
+                        ring when not (shape, not colour alone). */}
+                    <span
+                      aria-hidden="true"
+                      className={`box-border h-2.5 w-2.5 shrink-0 rounded-full border-[1.5px] border-ink-soft transition-[background-color,opacity] duration-150 ease-paper motion-reduce:transition-none ${
+                        checked ? "bg-ink-soft" : "bg-transparent opacity-70 group-hover:opacity-100"
+                      }`}
+                      style={
+                        person.color
+                          ? { borderColor: person.color, backgroundColor: checked ? person.color : "transparent" }
+                          : undefined
+                      }
+                    />
+                    <ChosenText checked={checked}>
+                      {person.name}
+                      {showYear ? <span className="font-normal text-ink-soft"> ({person.born})</span> : null}
+                      {locked ? <span className="font-normal text-ink-soft"> (you)</span> : null}
+                    </ChosenText>
+                  </label>
+                </li>
+              );
+            }
             return (
               <li key={person.id}>
                 <label
@@ -192,6 +266,15 @@ export function PersonPicker(props: {
     </>
   );
 
+  if (bare) {
+    return (
+      <fieldset disabled={disabled} aria-describedby={describedBy || undefined} className="min-w-0">
+        <legend className="sr-only">{legend}</legend>
+        {body}
+      </fieldset>
+    );
+  }
+
   if (row) {
     // A rendered <legend> cannot sit in a grid cell, so the legend names the
     // group for assistive tech and a twin label (hidden from it) is drawn in
@@ -218,6 +301,30 @@ export function PersonPicker(props: {
       <legend className={`p-0 ${FIELD_LABEL_CLASS}`}>{legend}</legend>
       {body}
     </fieldset>
+  );
+}
+
+/**
+ * A chosen word or name in the plain appearance: semibold, with a 2px accent
+ * underline; unchosen it is plain. A hidden semibold twin in the same grid
+ * cell reserves the wider width, so choosing never shifts the words beside
+ * it. It wraps only at spaces; a single word longer than a whole line breaks
+ * as a last resort. Hover belongs to the caller (it only darkens the ink).
+ */
+export function ChosenText({ checked, children }: { checked: boolean; children: ReactNode }) {
+  return (
+    <span className="inline-grid max-w-full [overflow-wrap:anywhere]">
+      <span
+        className={`col-start-1 row-start-1 underline-offset-[0.38em] ${
+          checked ? "font-semibold underline decoration-accent-deep decoration-2" : ""
+        }`}
+      >
+        {children}
+      </span>
+      <span aria-hidden="true" className="invisible col-start-1 row-start-1 font-semibold">
+        {children}
+      </span>
+    </span>
   );
 }
 

@@ -323,6 +323,34 @@ test("a pick of twelve onto an empty form keeps six and says one line about the 
   ]);
 });
 
+test("acceptPhotos takes its own limit and holder: a tradition keeps ten", () => {
+  const incoming = Array.from({ length: 12 }, (_, i) => jpg(`t${i + 1}.jpg`));
+  const { accepted, errors } = acceptPhotos([], incoming, 10, "tradition");
+  assert.deepEqual(accepted, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(errors, [
+    "“t11.jpg” and “t12.jpg” weren't added: a tradition can hold up to 10 photos.",
+  ]);
+});
+
+test("acceptPhotos with a limit of ten counts what is already there", () => {
+  const current = Array.from({ length: 8 }, (_, i) => jpg(`c${i}`));
+  const { accepted, errors } = acceptPhotos(current, [jpg("x"), jpg("y"), jpg("z")], 10, "tradition");
+  assert.deepEqual(accepted, [0, 1]);
+  assert.deepEqual(errors, ["“z” wasn't added: a tradition can hold up to 10 photos."]);
+});
+
+test("acceptPhotos keeps eight of eight under a limit of ten, where the default would stop at six", () => {
+  const incoming = Array.from({ length: 8 }, (_, i) => jpg(`e${i}.jpg`));
+  assert.equal(acceptPhotos([], incoming, 10, "tradition").accepted.length, 8);
+  assert.equal(acceptPhotos([], incoming, 10, "tradition").errors.length, 0);
+  assert.equal(acceptPhotos([], incoming).accepted.length, 6);
+});
+
+test("overCapMessage takes its own limit and holder, defaulting to a memory's six", () => {
+  assert.equal(overCapMessage(["k.png"], 10, "tradition"), "“k.png” wasn't added: a tradition can hold up to 10 photos.");
+  assert.equal(overCapMessage(["k.png"], undefined, undefined), "“k.png” wasn't added: a memory can hold up to 6 photos.");
+});
+
 test("acceptPhotos with a full set rejects everything", () => {
   const current = ["a", "b", "c", "d", "e", "f"].map((n) => jpg(n));
   const { accepted, errors } = acceptPhotos(current, [jpg("g")]);

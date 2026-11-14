@@ -48,10 +48,17 @@ export function FlowPage(props: {
   lede?: ReactNode;
   back?: { href: string; label: string };
   width?: "narrow" | "wide";
+  /**
+   * "quiet": the title set small, in tracked capitals like the "Stitch" mark,
+   * for a page whose own first field is the headline (the tradition form's
+   * specimen card). Default "display", the storybook serif.
+   */
+  heading?: "display" | "quiet";
   children: ReactNode;
 }) {
-  const { title, lede, back, width = "narrow", children } = props;
-  const ledeClass = "mt-3 text-base leading-relaxed text-ink-soft";
+  const { title, lede, back, width = "narrow", heading = "display", children } = props;
+  const quiet = heading === "quiet";
+  const ledeClass = `${quiet ? "mt-2" : "mt-3"} text-base leading-relaxed text-ink-soft`;
 
   return (
     <FlowFrame width={width}>
@@ -65,8 +72,14 @@ export function FlowPage(props: {
         </Link>
       ) : null}
 
-      <header className="mb-10">
-        <h1 className="font-display text-[2rem] leading-[1.15] tracking-[-0.015em] text-balance break-words text-ink sm:text-[2.375rem]">
+      <header className={quiet ? "mb-6" : "mb-10"}>
+        <h1
+          className={
+            quiet
+              ? "font-sans text-[0.8125rem] leading-5 font-bold tracking-[0.16em] uppercase break-words text-ink-soft"
+              : "font-display text-[2rem] leading-[1.15] tracking-[-0.015em] text-balance break-words text-ink sm:text-[2.375rem]"
+          }
+        >
           {title}
         </h1>
         {lede == null || lede === false ? null : typeof lede === "string" ? (
