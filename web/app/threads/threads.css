@@ -118,3 +118,58 @@
   border: 1px dashed var(--rule);
   pointer-events: none;
 }
+
+/* The gesture hint: one handwritten line under the axis. */
+.threads-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 0.9rem;
+  transform: translateX(-50%);
+  margin: 0;
+  white-space: nowrap;
+  font-size: 1.15rem;
+  color: var(--ink-faint);
+  opacity: 0.9;
+  transition: opacity 700ms var(--ease-paper);
+  animation: threads-hint-in 900ms 1.6s var(--ease-paper) backwards;
+}
+
+@keyframes threads-hint-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.threads-hint-coarse {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .threads-hint-fine {
+    display: none;
+  }
+
+  .threads-hint-coarse {
+    display: inline;
+  }
+}
+
+/* Phones: beside the zoom buttons, which sit bottom right. */
+@media (max-width: 639px) {
+  .threads-hint {
+    left: var(--gutter);
+    bottom: 2.05rem;
+    transform: none;
+    font-size: 1.05rem;
+  }
+
+  .threads-hint-more {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .threads-hint {
+    animation: none;
+  }
+}

@@ -142,6 +142,9 @@ export default function ThreadsView(props: ThreadsViewProps) {
 
   const initialHighlight = model.strands.findIndex((s) => s.person.id === props.highlight);
   const [highlight, setHighlight] = useState(initialHighlight);
+  // The gesture hint fades for good after the first touch, scroll or key.
+  const [interacted, setInteracted] = useState(false);
+  const interact = useCallback(() => setInteracted(true), []);
 
   const eng = useRef<Engine | null>(null);
   const kick = useRef<() => void>(() => {});
@@ -584,6 +587,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
 
     const onWheel = (ev: WheelEvent) => {
       ev.preventDefault();
+      interact();
       const e = eng.current;
       if (!e) return;
       const { x } = local(ev);
@@ -607,6 +611,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
       const e = eng.current;
       if (!e) return;
       canvas.setPointerCapture(ev.pointerId);
+      interact();
       const p = local(ev);
       e.pointers.set(ev.pointerId, p);
       e.target = null;
@@ -735,7 +740,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
       canvas.removeEventListener("pointercancel", onUp);
       canvas.removeEventListener("pointerleave", onLeave);
     };
-  }, [hitTest, model, prefetchMoment, router, setLit]);
+  }, [hitTest, interact, model, prefetchMoment, router, setLit]);
 
   /* ---------------- buttons & keys ---------------- */
   const zoomButton = useCallback((dir: 1 | -1) => {
@@ -783,8 +788,9 @@ export default function ThreadsView(props: ThreadsViewProps) {
       } else if (ev.key === "Escape") setLit(-1);
       else return;
       ev.preventDefault();
+      interact();
     },
-    [model, setLit, zoomButton],
+    [interact, model, setLit, zoomButton],
   );
 
   const followed = highlight >= 0 ? model.strands[highlight] : null;
@@ -883,6 +889,14 @@ export default function ThreadsView(props: ThreadsViewProps) {
           <span aria-hidden>+</span>
         </button>
       </div>
+
+      {/* One quiet line on how to move about, gone after the first gesture. */}
+      <p className="threads-hint caption pointer-events-none" style={{ opacity: interacted ? 0 : undefined }} aria-hidden>
+        <span className="threads-hint-fine">
+          scroll to zoom &middot; drag through time<span className="threads-hint-more"> &middot; click a thread</span>
+        </span>
+        <span className="threads-hint-coarse">pinch to zoom &middot; drag through time</span>
+      </p>
 
       {/* For keyboard and screen-reader users: follow a person's thread. */}
       <nav className="sr-only" aria-label="Follow a thread">
