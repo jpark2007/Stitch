@@ -243,6 +243,8 @@ const SLOT_BEHIND = SLOTS.map((s) => s.z < 0.5);
 /** How far back (stage z) a leaning note's top may reach: in front of the acting plane (0.5), or of the backdrop. */
 const LEAN_FRONT_Z = 0.62;
 const LEAN_BACK_Z = 0.05;
+/** Above this (stage units) a note may reach back over the cast: their heads, on a step or a chair. */
+const HEADROOM = 0.95;
 /** How high its hinge sits off the page, stage units. */
 const BASE_Y = 0.004;
 /** Card thickness, stage units (about a postcard's, at the book's scale). */
@@ -1511,6 +1513,7 @@ class ExplainStage {
     input.targetX = rig.anchor.x;
     input.wantPx = per * (W < NARROW_W ? READ_PX_PHONE : READ_PX);
     input.minPx = per * MIN_PX;
+    input.aspect = rig.aspect;
     input.prevX = rig.isPlaced ? rig.x : null;
     const p = placeNote(input, s.place);
     const slot = SLOTS[p.depth] ?? SLOTS[0];
@@ -1526,16 +1529,21 @@ class ExplainStage {
 
   /**
    * How far a note `h` tall at stage x, in `slot`, leans back to face the
-   * camera: never so far that its top reaches back into the acting plane
-   * (a front slot) or the backdrop (a back one), so a tall note's top does
-   * not pass through the cast.
+   * camera: never so far that it passes through the cast (a front slot: no
+   * part of it reaches back past the acting plane below their heads) or the
+   * backdrop (a back slot).
    */
   private leanAt(x: number, h: number, slot: (typeof SLOTS)[number]): number {
     const c = this.s.cam;
     const el = Math.atan2(c.y - slot.raise - h * 0.5, Math.hypot(c.x - x, c.z - slot.z));
-    const room = Math.max(0, slot.z - (slot.z >= 0.5 ? LEAN_FRONT_Z : LEAN_BACK_Z)) / Math.max(1e-6, h);
-    const most = room >= 1 ? slot.lean : Math.min(slot.lean, Math.asin(room));
-    return Math.max(0, Math.min(most, el * 0.5));
+    const front = slot.z >= 0.5;
+    const depth = Math.max(0, slot.z - (front ? LEAN_FRONT_Z : LEAN_BACK_Z));
+    const room = depth / Math.max(1e-6, h);
+    // Its top stays in front of the plane...
+    let most = room >= 1 ? slot.lean : Math.asin(room);
+    // ...or, raised, crosses it only above the cast's heads.
+    if (front) most = Math.max(most, slot.raise >= HEADROOM ? slot.lean : Math.atan(depth / (HEADROOM - slot.raise)));
+    return Math.max(0, Math.min(slot.lean, most, el * 0.5));
   }
 
   /** placeNote's camera: the screen rect of the note being placed, standing at x, h tall, in depth slot d. */

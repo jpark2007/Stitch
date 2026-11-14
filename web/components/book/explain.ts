@@ -432,9 +432,15 @@ export interface PlaceInput {
   targetX: number;
   xMin: number;
   xMax: number;
-  /** The note's wanted screen height (px), and the smallest it may shrink to. */
+  /**
+   * The note's wanted screen height (px), and the smallest it may shrink to:
+   * as if seen face on (with `aspect`, the card's width over its height, a
+   * card foreshortened by a camera looking down on it is sized by its mean
+   * scale, not only its squashed height, so it is not made too wide).
+   */
   wantPx: number;
   minPx: number;
+  aspect?: number;
   /** The tallest it is wanted, stage units (it still grows to minPx when that is taller). */
   maxH: number;
   /** Where it stood before (stage x), to keep it from hopping as the camera eases; null for none. */
@@ -495,7 +501,8 @@ function searchNote(p: PlaceInput, out: Placement, clear: boolean): boolean {
   const r = out.rect;
   // Screen px per stage unit of height, where the target stands.
   p.rectAt(p.targetX, 1, 0, r);
-  const perUnit = Math.max(1e-6, r.y1 - r.y0);
+  const tall = Math.max(1e-6, r.y1 - r.y0);
+  const perUnit = p.aspect ? Math.sqrt(tall * Math.max(1e-6, (r.x1 - r.x0) / p.aspect)) : tall;
   // maxH caps the wanted size, but never below the smallest that still
   // reads (a long note on a phone's small stage would set its words too small).
   const hRead = p.minPx / perUnit;

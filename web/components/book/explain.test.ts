@@ -372,6 +372,23 @@ describe("placeNote", () => {
     assert.ok(p.rect.y1 - p.rect.y0 >= 150 - 1e-6, JSON.stringify(p.rect));
   });
 
+  it("sizes a card foreshortened by a camera looking down by its mean scale, not its squashed height", () => {
+    // Seen from above: a standing card shows half its height (0.9 aspect, 400 px per unit across).
+    const squash = (sx: number, h: number, _d: number, out: Parameters<Explain["placeNote"]>[1]["rect"]) => {
+      const w = h * 0.9 * 400;
+      out.x0 = 640 + sx * 400 - w / 2;
+      out.x1 = out.x0 + w;
+      out.y1 = 600;
+      out.y0 = 600 - h * 200;
+      return out;
+    };
+    const byHeight = x.placeNote(base({ rectAt: squash, wantPx: 200, minPx: 200 }), x.placement());
+    const byMean = x.placeNote(base({ rectAt: squash, wantPx: 200, minPx: 200, aspect: 0.9 }), x.placement());
+    // Face on it would be 200 px tall at 1 unit per 200 px; the mean scale (283 px per unit) makes it smaller.
+    assert.ok(Math.abs(byHeight.h - 1) < 1e-6, String(byHeight.h));
+    assert.ok(Math.abs(byMean.h - 200 / Math.sqrt(200 * 400)) < 1e-6, String(byMean.h));
+  });
+
   it("stays where it was while that still works", () => {
     const first = x.placeNote(base(), x.placement());
     const again = x.placeNote(base({ prevX: first.x, target: x.rect(602, 380, 682, 590) }), x.placement());
