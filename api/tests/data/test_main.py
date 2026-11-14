@@ -1,8 +1,10 @@
-"""main.py: every router is wired, CORS with credentials, never-fatal startup, STITCH_FAKE_DB mode."""
+"""main.py: every router is wired, CORS with credentials, never-fatal startup, STITCH_FAKE_DB mode,
+STITCH_AGENT run wiring and 422 bodies that never echo the request input."""
 
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import pkgutil
@@ -12,7 +14,9 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from fastapi import exception_handlers as fastapi_exception_handlers
 from fastapi import routing as fastapi_routing
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from pymongo.errors import ServerSelectionTimeoutError
 
@@ -28,11 +32,14 @@ ADMIN_EMAIL = "david@demo.stitch"
 @pytest.fixture(autouse=True)
 def _clean_env_and_db(monkeypatch: pytest.MonkeyPatch):
     """No STITCH_* env leaks in, and the db override is always restored afterwards."""
-    monkeypatch.delenv("STITCH_FAKE_DB", raising=False)
-    monkeypatch.delenv("STITCH_CORS_ORIGINS", raising=False)
+    for name in ("STITCH_FAKE_DB", "STITCH_CORS_ORIGINS", "STITCH_AGENT", "STITCH_FAKE_RUN_STEP", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     client.set_db(None)
     yield
     client.set_db(None)
+    runs = sys.modules.get("agent.runs")
+    if runs is not None:
+        runs.configure(None)
 
 
 def _route_set(routes_list) -> set[tuple[str, str]]:
@@ -344,7 +351,7 @@ _NO_AGENT_SCRIPT = textwrap.dedent(
 
 def test_app_and_read_routes_never_import_agent():
     env = {k: v for k, v in os.environ.items() if not k.startswith("STITCH_")}
-    env.update({"STITCH_FAKE_DB": "1", "JWT_SECRET": os.environ["JWT_SECRET"]})
+    env.update({"STITCH_FAKE_DB": "1", "STITCH_AGENT": "off", "JWT_SECRET": os.environ["JWT_SECRET"]})
     proc = subprocess.run(
         [sys.executable, "-c", _NO_AGENT_SCRIPT],
         cwd=API_DIR,
@@ -355,3 +362,442 @@ def test_app_and_read_routes_never_import_agent():
     )
     assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     assert proc.stdout.strip().endswith("ok")
+
+
+# ------------------------------------------------------------------------------- agent mode
+
+SAM_EMAIL = "sam@demo.stitch"
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32 + b"main"
+WAIT = 10.0
+
+
+def _warnings(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("off", "off"), ("fake", "fake"), ("real", "real"), (" REAL ", "real"), ("Off", "off"),
+])
+@pytest.mark.parametrize("fake_db", [False, True])
+@pytest.mark.parametrize("key", [None, "sk-test-not-a-real-key"])
+def test_agent_mode_explicit_values_win(monkeypatch, caplog, raw, expected, fake_db, key):
+    monkeypatch.setenv("STITCH_AGENT", raw)
+    if fake_db:
+        monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    if key:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    caplog.set_level(logging.WARNING)
+    assert main.agent_mode() == expected
+    assert _warnings(caplog) == []
+
+
+def test_agent_mode_default_is_fake_with_the_fake_db_even_with_a_key(monkeypatch):
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    assert main.agent_mode() == "fake"
+
+
+@pytest.mark.parametrize("key", [None, "", "   "])
+def test_agent_mode_default_is_fake_without_an_anthropic_key(monkeypatch, key):
+    if key is not None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    assert main.agent_mode() == "fake"
+
+
+@pytest.mark.parametrize("raw", [None, "", "  "])
+def test_agent_mode_default_is_real_with_a_key_and_no_fake_db(monkeypatch, caplog, raw):
+    if raw is not None:
+        monkeypatch.setenv("STITCH_AGENT", raw)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    caplog.set_level(logging.WARNING)
+    assert main.agent_mode() == "real"
+    assert _warnings(caplog) == [], "unset or empty is not worth a warning"
+
+
+@pytest.mark.parametrize(("key", "expected"), [(None, "fake"), ("sk-test-not-a-real-key", "real")])
+def test_agent_mode_unknown_value_warns_and_uses_the_default(monkeypatch, caplog, key, expected):
+    monkeypatch.setenv("STITCH_AGENT", "langgraph")
+    if key:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    caplog.set_level(logging.WARNING)
+    assert main.agent_mode() == expected
+    warnings = _warnings(caplog)
+    assert len(warnings) == 1
+    assert "STITCH_AGENT" in warnings[0] and "langgraph" in warnings[0]
+    assert key is None or key not in warnings[0]
+
+
+def test_agent_modes_constant():
+    assert main.AGENT_MODES == ("off", "fake", "real")
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    (None, 0.6), ("", 0.6), ("0", 0.0), ("1.5", 1.5), (" 0.05 ", 0.05),
+])
+def test_fake_run_step_seconds(monkeypatch, caplog, raw, expected):
+    if raw is not None:
+        monkeypatch.setenv("STITCH_FAKE_RUN_STEP", raw)
+    caplog.set_level(logging.WARNING)
+    assert main.fake_run_step_seconds() == expected
+    assert _warnings(caplog) == []
+
+
+@pytest.mark.parametrize("raw", ["fast", "-1", "nan", "inf", "1,5"])
+def test_fake_run_step_seconds_bad_value_warns_and_defaults(monkeypatch, caplog, raw):
+    monkeypatch.setenv("STITCH_FAKE_RUN_STEP", raw)
+    caplog.set_level(logging.WARNING)
+    assert main.fake_run_step_seconds() == 0.6
+    assert any("STITCH_FAKE_RUN_STEP" in w for w in _warnings(caplog))
+
+
+# ------------------------------------------------------------------------------- agent runs
+
+
+def _submit(c: TestClient, **extra: str):
+    form = {"text": "We sang from the green hymn books on the church steps.", "year": "1998", **extra}
+    return c.post(
+        f"/families/{DEMO_FAMILY_ID}/memories",
+        data=form,
+        files=[("photos", ("steps.png", PNG, "image/png"))],
+    )
+
+
+def _sse_events(text: str) -> list[tuple[str, dict]]:
+    events = []
+    for block in text.strip().split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.splitlines())
+        events.append((lines["event"], json.loads(lines["data"])))
+    return events
+
+
+def test_fake_db_default_agent_runs_the_scripted_add_a_memory_flow(monkeypatch, caplog):
+    """The README's no-keys flow: submit with a photo, follow-up, props review, scene in the books."""
+    import agent.runs
+
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_FAKE_RUN_STEP", "0")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")  # fake db still means fake runs
+    caplog.set_level(logging.INFO)
+    with TestClient(main.create_app()) as c:
+        _login(c, SAM_EMAIL)
+        res = _submit(c, participantIds="lily")
+        assert res.status_code == 202, res.text
+        run_id = res.json()["runId"]
+        assert isinstance(run_id, str) and run_id
+        assert res.json()["memoryId"] is None
+
+        manager = agent.runs.get_manager()
+        assert type(manager).__name__ == "ScriptedRunManager"
+        assert manager.wait(DEMO_FAMILY_ID, run_id, WAIT) == "waiting"
+        answer = c.post(
+            f"/families/{DEMO_FAMILY_ID}/runs/{run_id}/answer",
+            json={"kind": "answer", "text": "Lily held the umbrella."},
+        )
+        assert answer.status_code == 204, answer.text
+
+        assert manager.wait(DEMO_FAMILY_ID, run_id, WAIT) == "waiting"
+        chips = [p for name, p in manager.events(DEMO_FAMILY_ID, run_id) if name == "props_found"][0].props
+        review = c.post(
+            f"/families/{DEMO_FAMILY_ID}/runs/{run_id}/answer",
+            json={"kind": "props", "props": [{"id": chip.id, "action": "keep"} for chip in chips]},
+        )
+        assert review.status_code == 204, review.text
+        assert manager.wait(DEMO_FAMILY_ID, run_id, WAIT) == "done"
+
+        # A late subscriber replays the whole run as SSE.
+        stream = c.get(f"/families/{DEMO_FAMILY_ID}/runs/{run_id}/stream")
+        assert stream.status_code == 200
+        assert stream.headers["content-type"].startswith("text/event-stream")
+        events = _sse_events(stream.text)
+        names = [name for name, _ in events]
+        assert names[0] == "plan"
+        assert {"question", "props_found", "scene_ready"} <= set(names)
+        assert names[-1] == "done"
+        memory_id = events[-1][1]["memoryId"]
+
+        # The scene is in the teller's book and the participant's book.
+        for person_id in ("sam", "lily"):
+            book = c.get(f"/families/{DEMO_FAMILY_ID}/people/{person_id}/book")
+            assert book.status_code == 200
+            found = [m for m in book.json()["memories"] if m["id"] == memory_id]
+            assert len(found) == 1, person_id
+            assert found[0]["timeline"] is not None
+            assert "Lily held the umbrella." in json.dumps(found[0]["tellings"])
+
+    with pytest.raises(RuntimeError):
+        agent.runs.get_manager()
+    assert client._db_override is None
+
+    lines = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any(line.startswith("STITCH_AGENT=fake") for line in lines), lines
+
+
+def test_fake_agent_submit_returns_202_and_shutdown_clears_the_manager(monkeypatch):
+    import agent.runs
+
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_FAKE_RUN_STEP", "0")
+    with TestClient(main.create_app()) as c:
+        _login(c, SAM_EMAIL)
+        res = _submit(c)
+        assert res.status_code == 202, res.text
+        assert res.json()["runId"]
+        assert client._db_override is not None
+    with pytest.raises(RuntimeError):
+        agent.runs.get_manager()
+    assert client._db_override is None
+
+
+def test_fake_agent_uses_the_configured_step(monkeypatch):
+    import agent.runs
+
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_FAKE_RUN_STEP", "0.25")
+    with TestClient(main.create_app()):
+        assert agent.runs.get_manager()._step_seconds == 0.25
+
+
+def test_fake_agent_without_fake_db_scripts_runs_on_the_installed_db(mdb, monkeypatch):
+    """No ANTHROPIC_API_KEY and a real (here: mongomock) db: fake runs, the db override is kept."""
+    import agent.runs
+
+    client.set_db(mdb)
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+        assert type(agent.runs.get_manager()).__name__ == "ScriptedRunManager"
+    with pytest.raises(RuntimeError):
+        agent.runs.get_manager()
+    assert client.get_db() is mdb
+
+
+def test_agent_off_leaves_runs_unconfigured_and_submit_is_503(monkeypatch, caplog):
+    import agent.runs
+
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_AGENT", "off")
+    calls = []
+    monkeypatch.setattr(agent.runs, "configure", lambda manager: calls.append(manager))
+    caplog.set_level(logging.INFO)
+    with TestClient(main.create_app()) as c:
+        _login(c, SAM_EMAIL)
+        with pytest.raises(RuntimeError):
+            agent.runs.get_manager()
+        res = _submit(c)
+        assert res.status_code == 503
+        assert res.json() == {"detail": "Could not start the studio"}
+    assert calls == [], "off never configures nor clears agent runs"
+    assert any("STITCH_AGENT=off" in r.getMessage() for r in caplog.records)
+
+
+def test_agent_off_does_not_clear_a_manager_it_did_not_install(mdb, monkeypatch):
+    import agent.runs
+
+    sentinel = object()
+    agent.runs.configure(sentinel)
+    monkeypatch.setenv("STITCH_AGENT", "off")
+    client.set_db(mdb)
+    with TestClient(main.create_app()):
+        pass
+    assert agent.runs.get_manager() is sentinel
+
+
+def test_real_mode_without_configure_from_env_falls_back_to_scripted_runs(monkeypatch, caplog):
+    import agent.runs
+
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_FAKE_RUN_STEP", "0")
+    monkeypatch.setenv("STITCH_AGENT", "real")
+    monkeypatch.delattr(agent.runs, "configure_from_env", raising=False)
+    caplog.set_level(logging.INFO)
+    with TestClient(main.create_app()) as c:
+        assert type(agent.runs.get_manager()).__name__ == "ScriptedRunManager"
+        _login(c, SAM_EMAIL)
+        assert _submit(c).status_code == 202
+    with pytest.raises(RuntimeError):
+        agent.runs.get_manager()
+    warnings = _warnings(caplog)
+    assert any("configure_from_env" in w and "scripted" in w for w in warnings), warnings
+
+
+def test_real_mode_configure_from_env_that_raises_never_stops_startup(monkeypatch, caplog):
+    import agent.runs
+
+    def broken(_db):
+        raise RuntimeError("ANTHROPIC_API_KEY is not valid")
+
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_AGENT", "real")
+    monkeypatch.setattr(agent.runs, "configure_from_env", broken, raising=False)
+    caplog.set_level(logging.WARNING)
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+        assert type(agent.runs.get_manager()).__name__ == "ScriptedRunManager"
+    warnings = _warnings(caplog)
+    assert any("configure_from_env" in w and "not valid" in w for w in warnings), warnings
+
+
+class _FakeManager:
+    def __init__(self) -> None:
+        self.shutdowns = 0
+
+    def shutdown(self) -> None:
+        self.shutdowns += 1
+
+
+def test_real_mode_calls_configure_from_env_once_with_the_installed_db(mdb, monkeypatch, caplog):
+    import agent.runs
+
+    manager = _FakeManager()
+    calls = []
+
+    def configure_from_env(db):
+        calls.append(db)
+        agent.runs.configure(manager)
+
+    client.set_db(mdb)
+    monkeypatch.setenv("STITCH_AGENT", "real")
+    monkeypatch.setattr(agent.runs, "configure_from_env", configure_from_env, raising=False)
+    caplog.set_level(logging.INFO)
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+        assert agent.runs.get_manager() is manager
+    assert calls == [mdb]
+    assert manager.shutdowns == 1
+    with pytest.raises(RuntimeError):
+        agent.runs.get_manager()
+    assert any(r.getMessage().startswith("STITCH_AGENT=real") for r in caplog.records)
+    assert not any("STITCH_AGENT" in w for w in _warnings(caplog)), "no fallback when the studio is configured"
+
+
+def test_real_mode_default_with_a_key_calls_configure_from_env(mdb, monkeypatch):
+    import agent.runs
+
+    calls = []
+
+    def configure_from_env(db):
+        calls.append(db)
+        agent.runs.configure(_FakeManager())
+
+    client.set_db(mdb)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.setattr(agent.runs, "configure_from_env", configure_from_env, raising=False)
+    with TestClient(main.create_app()):
+        pass
+    assert calls == [mdb]
+
+
+def test_real_mode_configure_from_env_that_configures_nothing_falls_back(mdb, monkeypatch, caplog):
+    import agent.runs
+
+    client.set_db(mdb)
+    monkeypatch.setenv("STITCH_AGENT", "real")
+    monkeypatch.setattr(agent.runs, "configure_from_env", lambda db: None, raising=False)
+    caplog.set_level(logging.WARNING)
+    with TestClient(main.create_app()):
+        assert type(agent.runs.get_manager()).__name__ == "ScriptedRunManager"
+    assert any("did not configure" in w for w in _warnings(caplog))
+
+
+def test_agent_shutdown_errors_never_escape(mdb, monkeypatch, caplog):
+    import agent.runs
+
+    class Stubborn:
+        def shutdown(self) -> None:
+            raise RuntimeError("worker stuck")
+
+    client.set_db(mdb)
+    monkeypatch.setenv("STITCH_AGENT", "real")
+    monkeypatch.setattr(
+        agent.runs, "configure_from_env", lambda db: agent.runs.configure(Stubborn()), raising=False
+    )
+    caplog.set_level(logging.WARNING)
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+    with pytest.raises(RuntimeError):
+        agent.runs.get_manager()
+    assert any("worker stuck" in w for w in _warnings(caplog))
+
+
+def test_an_agent_step_that_raises_never_stops_startup(monkeypatch, caplog):
+    import agent.runs
+
+    def explode() -> bool:
+        raise ImportError("seed.fake_runs is broken")
+
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setattr(main, "_install_agent_fake", explode)
+    caplog.set_level(logging.WARNING)
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+        _login(c, SAM_EMAIL)
+        assert _submit(c).status_code == 503
+        with pytest.raises(RuntimeError):
+            agent.runs.get_manager()
+    assert any("seed.fake_runs is broken" in w for w in _warnings(caplog))
+
+
+def test_install_fake_runs_returning_false_logs_a_warning(monkeypatch, caplog):
+    import seed.fake_runs
+
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setattr(seed.fake_runs, "install_fake_runs", lambda step_seconds: False)
+    caplog.set_level(logging.WARNING)
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+    assert any("STITCH_AGENT=fake" in w and "not installed" in w for w in _warnings(caplog))
+
+
+# ------------------------------------------------------------------------------- 422 bodies
+
+SECRET_PASSWORD = "hunter2"  # shorter than 8: signup rejects it
+
+
+def _assert_redacted_422(res, secret: str) -> list[dict]:
+    assert res.status_code == 422, res.text
+    assert secret not in res.text
+    body = res.json()
+    assert set(body) == {"detail"}
+    assert body["detail"], "at least one error"
+    for error in body["detail"]:
+        assert set(error) == {"type", "loc", "msg"}, error
+        assert isinstance(error["loc"], list) and isinstance(error["msg"], str) and isinstance(error["type"], str)
+    assert '"input"' not in res.text
+    return body["detail"]
+
+
+def test_signup_with_a_short_password_does_not_echo_it():
+    c = TestClient(main.create_app())
+    res = c.post("/auth/signup", json={"email": "new@example.com", "password": SECRET_PASSWORD, "name": "New"})
+    detail = _assert_redacted_422(res, SECRET_PASSWORD)
+    assert detail == [{
+        "type": "string_too_short",
+        "loc": ["body", "password"],
+        "msg": "String should have at least 8 characters",
+    }]
+
+
+def test_login_missing_email_does_not_echo_the_password():
+    secret = "correct horse battery staple"
+    c = TestClient(main.create_app())
+    res = c.post("/auth/login", json={"password": secret})
+    detail = _assert_redacted_422(res, secret)
+    assert detail == [{"type": "missing", "loc": ["body", "email"], "msg": "Field required"}]
+
+
+def test_malformed_json_body_is_redacted_too():
+    secret = "my-secret-password"
+    c = TestClient(main.create_app())
+    res = c.post(
+        "/auth/login",
+        content=f'{{"email": "a@b.c", "password": "{secret}"',
+        headers={"Content-Type": "application/json"},
+    )
+    detail = _assert_redacted_422(res, secret)
+    assert detail[0]["type"] == "json_invalid"
+
+
+def test_validation_error_handler_is_registered():
+    for app in (main.app, main.create_app()):
+        handler = app.exception_handlers[RequestValidationError]
+        assert handler is main.validation_error_handler
+        assert handler is not fastapi_exception_handlers.request_validation_exception_handler
