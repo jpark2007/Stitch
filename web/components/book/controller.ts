@@ -19,8 +19,11 @@ import {
   PAGE_W,
   pageProfile,
   releaseCompletes,
+  shareLeft,
+  shareRight,
   smoothstep,
   spineCrossing,
+  stackTop,
   tipOf,
   turnTargets,
 } from "./leafShape";
@@ -615,12 +618,12 @@ export class BookController {
     let cntL = 0;
     let cntR = 0;
     for (const leaf of rt.leaves) {
-      cntL += smoothstep(0.82, 1, leaf.p);
-      cntR += 1 - smoothstep(0, 0.18, leaf.p);
+      cntL += shareLeft(leaf.p);
+      cntR += shareRight(leaf.p);
     }
     const per = BLOCK_T / rt.leaves.length;
-    const topL = COVER_T + cntL * per;
-    const topR = COVER_T + cntR * per;
+    const topL = stackTop(cntL, rt.leaves.length);
+    const topR = stackTop(cntR, rt.leaves.length);
     const o = easeInOut(clamp01(cover));
     // Closed, the block is flat; open, the pages dip into the gutter.
     rt.hinge = lerp(topR + LEAF_REST_GAP, COVER_T + HINGE_LIFT, clamp01(this.open * 1.4));
