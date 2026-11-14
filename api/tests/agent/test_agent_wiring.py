@@ -234,17 +234,39 @@ def test_build_run_graph_for_a_new_memory_and_a_second_telling() -> None:
         assert graph.checkpointer is svc.checkpointer
 
 
-def _narrate(run: RunInfo, repo: InMemoryRepo) -> Timeline:
-    tools = wiring.build_run_tools(run, services(repo))
+def _narrate(run: RunInfo, repo: InMemoryRepo, svc: wiring.Services | None = None) -> Timeline:
+    tools = wiring.build_run_tools(run, svc or services(repo))
     state = run_tool(tools["synthesize_narration"], sample_files())
     reply = state["messages"][-1]
     assert reply.content.startswith("Narrated"), reply.content
     return Timeline.model_validate_json(file_data_to_string(state["files"]["/timeline.json"]))
 
 
+def save_sample_memory(repo: InMemoryRepo, memory_id: str = "memory_1", **timeline_changes: Any) -> schemas.Memory:
+    """The hymn_books sample saved in FAMILY as `memory_id`, its timeline changed by `timeline_changes`."""
+    memory = SAMPLE.memory.model_copy(update={"id": memory_id, "family_id": FAMILY}, deep=True)
+    if timeline_changes:
+        assert memory.timeline is not None
+        memory.timeline = memory.timeline.model_copy(update=timeline_changes, deep=True)
+    return repo.save_memory(FAMILY, memory)
+
+
+class SpyCompiler:
+    """Passes every call to the real compiler and counts them."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.calls: list[Screenplay] = []
+
+    def __call__(self, screenplay: Screenplay, scene: Any) -> Any:
+        self.calls.append(screenplay)
+        return self.inner(screenplay, scene)
+
+
 def test_narration_is_bound_to_the_teller_and_the_kind_of_run() -> None:
     assert TIMELINE_RAW["defaultNarrator"] == "dad"
     repo = seeded_repo()
+    save_sample_memory(repo)
 
     # A second telling by mom adds her track but keeps dad as the default narrator.
     second = _narrate(run_info(author_id="mom", memory_id="memory_1"), repo)
@@ -261,6 +283,65 @@ def test_narration_is_bound_to_the_teller_and_the_kind_of_run() -> None:
     stored = repo.get_media(FAMILY, audio)
     assert stored is not None and stored[1].startswith("audio/")
     assert repo.get_media(OTHER, audio) is None
+
+
+def test_narration_recompiles_with_the_services_compiler() -> None:
+    repo = seeded_repo()
+    base = services(repo)
+    spy = SpyCompiler(base.compiler)
+    svc = wiring.Services(**{**base.__dict__, "compiler": spy})
+    tools = wiring.build_run_tools(run_info(), svc)
+
+    state = run_tool(tools["synthesize_narration"], sample_files())
+    assert "Recompiled" in state["messages"][-1].content, state["messages"][-1].content
+    # One recompile, of the screenplay with dad's spoken word timings in his lines.
+    (voiced,) = spy.calls
+    assert all(line.words for line in voiced.shots[0].narration)
+    written = Screenplay.model_validate_json(file_data_to_string(state["files"]["/screenplay.json"]))
+    assert written == voiced
+
+
+def test_second_telling_narration_lays_over_the_saved_memorys_timeline() -> None:
+    repo = seeded_repo()
+    # The saved action starts later than the draft's: the track must follow the saved one.
+    assert SAMPLE.memory.timeline is not None
+    saved_shots = [
+        shot.model_copy(update={"action_start": shot.action_start + 0.5}) for shot in SAMPLE.memory.timeline.shots
+    ]
+    saved = save_sample_memory(repo, "memory_1", shots=saved_shots)
+    assert saved.timeline is not None
+    base = services(repo)
+    spy = SpyCompiler(base.compiler)
+    svc = wiring.Services(**{**base.__dict__, "compiler": spy})
+
+    # Mom's draft lines, uncued so they compile with her real (FakeTTS) durations.
+    draft_raw = json.loads(json.dumps(SCREENPLAY_RAW))
+    for line in draft_raw["narrations"]["mom"]["s1"]:
+        line.pop("cue", None)
+        line.pop("cueWord", None)
+    files = {**sample_files(), "/screenplay.json": create_file_data(json.dumps(draft_raw))}
+    tools = wiring.build_run_tools(run_info(author_id="mom", memory_id="memory_1"), svc)
+    state = run_tool(tools["synthesize_narration"], files)
+    reply = state["messages"][-1].content
+    assert reply.startswith("Narrated") and "warning" not in reply, reply
+    timeline = Timeline.model_validate_json(file_data_to_string(state["files"]["/timeline.json"]))
+    assert len(spy.calls) == 1
+    assert timeline.tracks == saved.timeline.tracks
+    assert [s.action_start for s in timeline.shots] == [s.action_start for s in saved_shots]
+    assert [s.action_start for s in timeline.shots] != [s["actionStart"] for s in TIMELINE_RAW["shots"]]
+    mom = (timeline.narrations or {})["mom"]
+    # Mom's first line keeps its offset from the shot's actionStart in the draft compile.
+    draft = spy.calls[0]
+    compiled = base.compiler(draft, wiring.scene_for(repo, FAMILY)(draft))
+    assert compiled.ok and compiled.timeline is not None
+    offset = compiled.timeline.narrations["mom"].lines[0].t - compiled.timeline.shots[0].action_start
+    assert mom.lines[0].t == pytest.approx(saved_shots[0].action_start + offset, abs=0.01)
+    assert timeline.default_narrator == "dad"
+
+    # A second telling of a memory that is not saved is an error, not a guess.
+    tools = wiring.build_run_tools(run_info(author_id="mom", memory_id="memory_404"), services(repo))
+    reply = run_tool(tools["synthesize_narration"], sample_files())["messages"][-1]
+    assert reply.content.startswith("Error"), reply.content
 
 
 def test_studio_compiles_the_sample_screenplay() -> None:
