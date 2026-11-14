@@ -485,7 +485,10 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
 /**
  * Does any thread but `self` pass through the box? Samples are evenly spaced
  * in x; a steep stretch can step right over the box between two samples, so
- * each segment is tested, not just its ends.
+ * each segment is tested, not just its ends, cut to the box's sides: an
+ * untrimmed segment reaches up to a sample past the box, and whether it does
+ * changes as the view pans across the sample grid, so a name at the edge of
+ * a converging thread would blink on and off.
  */
 function crossedBy(g: FrameGeometry, self: number, x0: number, x1: number, y0: number, y1: number): boolean {
   for (let j = 0; j < g.strands.length; j++) {
@@ -494,12 +497,19 @@ function crossedBy(g: FrameGeometry, self: number, x0: number, x1: number, y0: n
     const n = g.strandLens[j];
     if (!pts || n < 2) continue;
     const step = pts[2] - pts[0] || 1;
-    const k0 = Math.max(0, Math.floor((x0 - pts[0]) / step));
+    const k0 = Math.max(1, Math.floor((x0 - pts[0]) / step));
     const k1 = Math.min(n - 1, Math.ceil((x1 - pts[0]) / step));
     for (let k = k0; k <= k1; k++) {
-      const y = pts[k * 2 + 1];
-      const p = k > 0 ? pts[k * 2 - 1] : y;
-      if ((y > y0 && y < y1) || (Math.min(y, p) < y1 && Math.max(y, p) > y0)) return true;
+      const xa = pts[k * 2 - 2];
+      const xb = pts[k * 2];
+      const sa = Math.max(x0, xa);
+      const sb = Math.min(x1, xb);
+      if (sa > sb) continue;
+      const ya = pts[k * 2 - 1];
+      const dy = (pts[k * 2 + 1] - ya) / (xb - xa || 1);
+      const p = ya + (sa - xa) * dy;
+      const y = ya + (sb - xa) * dy;
+      if (Math.min(y, p) < y1 && Math.max(y, p) > y0) return true;
     }
   }
   return false;

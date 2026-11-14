@@ -468,7 +468,7 @@ function pan(n: number, W: number, H: number, skip: number, frames: number): Map
 // Stretches of the pan (frames from the far left) where names used to hop most.
 for (const [n, W, H, skip, FRAMES] of [
   [30, 390, 844, 3500, 1500],
-  [24, 390, 844, 5000, 1000],
+  [24, 390, 844, 6000, 1000],
   [30, 1440, 900, 4000, 800],
 ] as const) {
   test(`${n} people at ${W}px, panned 1px a frame: names stay put on their threads, not hopping between spots`, () => {
@@ -477,7 +477,10 @@ for (const [n, W, H, skip, FRAMES] of [
     let shown = 0;
     // Per strand: the frame it last moved, and where (in pan-free px) it moved from.
     const left = new Map<number, { f: number; x: number; y: number }>();
+    const flips = new Map<number, number>();
     for (let f = 1; f < FRAMES; f++) {
+      // Shown or not: a name does not blink on and off.
+      for (let i = 0; i < n; i++) if (seq[f].has(i) !== seq[f - 1].has(i)) flips.set(i, (flips.get(i) ?? 0) + 1);
       for (const [i, c] of seq[f]) {
         shown++;
         const a = seq[f - 1].get(i);
@@ -499,5 +502,6 @@ for (const [n, W, H, skip, FRAMES] of [
     // A name moves only when its spot is taken or gone: rarely. (Before names
     // kept their places, about 20 in every 1000 name-frames on a phone hopped.)
     assert.ok(moves * 1000 <= shown * 5, `${moves} moves in ${shown} name-frames`);
+    for (const [i, k] of flips) assert.ok(k <= 6, `strand ${i} shown and hidden ${k} times`);
   });
 }
