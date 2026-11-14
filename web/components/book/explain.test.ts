@@ -334,6 +334,20 @@ describe("placeNote", () => {
     assert.ok(inside(q.rect, view));
   });
 
+  it("would rather stand in front of the cast than behind it when either covers them", () => {
+    // Both slots stand the note in the same place on screen, over someone; slot 1 is
+    // behind them (cheaper, but its words would be hidden).
+    const floor = camera(desktop.k, desktop.floor, desktop.cx, 0.9);
+    const same = (sx: number, h: number, _d: number, out: Parameters<Explain["placeNote"]>[1]["rect"]) => floor(sx, h, 0, out);
+    // A crowd everywhere: small cutouts tiling the screen.
+    const crowd: ReturnType<typeof x.rect>[] = [];
+    for (let i = 0; i < 16; i++) for (let j = 0; j < 10; j++) crowd.push(x.rect(i * 80, j * 80, i * 80 + 80, j * 80 + 80));
+    const p = x.placeNote(base({ rectAt: same, others: crowd, depths: 2, slotCost: [0.3, 0], behind: [false, true] }), x.placement());
+    assert.equal(p.depth, 0);
+    const q = x.placeNote(base({ rectAt: same, others: crowd, depths: 2, slotCost: [0.3, 0] }), x.placement());
+    assert.equal(q.depth, 1);
+  });
+
   it("prefers the cheaper slot when both are clear", () => {
     const p = x.placeNote(base({ depths: 3, slotCost: [0.5, 0, 0.5] }), x.placement());
     assert.equal(p.depth, 1);
@@ -349,6 +363,13 @@ describe("placeNote", () => {
   it("caps the note's height on the page", () => {
     const p = x.placeNote(base({ wantPx: 2000 }), x.placement());
     assert.ok(p.h <= 0.8 + 1e-9);
+  });
+
+  it("grows past its height cap rather than set its words too small to read", () => {
+    // A small stage (60 px per unit): a cap of 0.8 units would be 48 px.
+    const view = x.rect(0, 0, 400, 800);
+    const p = x.placeNote(base({ view, rectAt: camera(60, 700, 200, 0.9), target: x.rect(190, 670, 200, 700), wantPx: 300, minPx: 150 }), x.placement());
+    assert.ok(p.rect.y1 - p.rect.y0 >= 150 - 1e-6, JSON.stringify(p.rect));
   });
 
   it("stays where it was while that still works", () => {

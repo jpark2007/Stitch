@@ -84,6 +84,8 @@ import {
   LIFT,
   LIFT_GLOW,
   LIFT_RISE,
+  NOTE_LAYOUT,
+  NOTE_LAYOUT_NARROW,
   RISE_MS,
   WRITTEN,
   explainItems,
@@ -221,7 +223,9 @@ export class ExplainSession {
  * placement: on the page just in front of the front layer first; then a
  * little nearer the reader; then up at the back of the set on a post behind
  * the middle layer, over the backdrop and above the cast's heads (on a
- * phone, the way to keep the cast and the printed words both clear).
+ * phone, the way to keep the cast and the printed words both clear); and,
+ * for a note too big for any of those (a long one on a phone), up on a
+ * post in front of the set, over the cast but clear of the words.
  */
 const SLOTS = [
   { z: 0.8, raise: 0, lean: 0.38 },
@@ -229,8 +233,16 @@ const SLOTS = [
   { z: 1.24, raise: 0, lean: 0.38 },
   { z: 0.24, raise: 0.5, lean: 0.12 },
   { z: 0.24, raise: 0.72, lean: 0.12 },
+  { z: 0.8, raise: 0.3, lean: 0.38 },
+  { z: 0.8, raise: 0.6, lean: 0.38 },
+  { z: 1.02, raise: 0.5, lean: 0.38 },
 ] as const;
-const SLOT_COST = [0, 0.12, 0.24, 0.32, 0.42] as const;
+const SLOT_COST = [0, 0.12, 0.24, 0.32, 0.42, 0.5, 0.58, 0.62] as const;
+/** The back slots stand behind the cast: a cutout in front would hide the words. */
+const SLOT_BEHIND = SLOTS.map((s) => s.z < 0.5);
+/** How far back (stage z) a leaning note's top may reach: in front of the acting plane (0.5), or of the backdrop. */
+const LEAN_FRONT_Z = 0.62;
+const LEAN_BACK_Z = 0.05;
 /** How high its hinge sits off the page, stage units. */
 const BASE_Y = 0.004;
 /** Card thickness, stage units (about a postcard's, at the book's scale). */
@@ -308,9 +320,12 @@ interface NoteArt {
   plan: WritePlan;
 }
 
-/** The note's face: paper, the heading in the handwriting font over a short running stitch, then the words. */
-function drawNote(item: ExplainItem, fonts: PageFonts, measure: Measure): NoteArt {
-  const l = layoutNote(item.title, item.text, measure);
+/**
+ * The note's face: paper, the heading in the handwriting font over a short
+ * running stitch, then the words. `narrow`: set for a phone's one page.
+ */
+function drawNote(item: ExplainItem, fonts: PageFonts, measure: Measure, narrow: boolean): NoteArt {
+  const l = layoutNote(item.title, item.text, measure, narrow ? NOTE_LAYOUT_NARROW : NOTE_LAYOUT);
   const W = Math.ceil(l.width * SUPER);
   const H = Math.ceil(l.height * SUPER);
   const sheet = canvas(W, H);
@@ -337,10 +352,14 @@ function drawNote(item: ExplainItem, fonts: PageFonts, measure: Measure): NoteAr
     return m.measureText(text).width;
   });
   const aspect = l.width / l.height;
-  return { key: artKey(item, fonts), layout: l, paper: noteTexture(sheet.c, aspect), ink: noteTexture(c, aspect), plan };
+  return { key: artKey(item, fonts, narrow), layout: l, paper: noteTexture(sheet.c, aspect), ink: noteTexture(c, aspect), plan };
 }
 
-const artKey = (item: ExplainItem, fonts: PageFonts) => `${item.title}\n${item.text}\n${item.color}\n${fonts.hand}`;
+const artKey = (item: ExplainItem, fonts: PageFonts, narrow: boolean) =>
+  `${item.title}\n${item.text}\n${item.color}\n${fonts.hand}\n${narrow ? "narrow" : "wide"}`;
+
+/** Below this canvas width (CSS px) the book reads a page at a time: notes are set narrow. */
+const NARROW_W = 560;
 
 /** The thread's colour when the data gives none. */
 const THREAD = "#b9573d";
@@ -990,11 +1009,12 @@ class ExplainStage {
 
   /** An item's face: drawn ahead while idle, or now. */
   private artFor(item: ExplainItem, fonts: PageFonts, measure: Measure): NoteArt {
-    const key = artKey(item, fonts);
+    const narrow = this.get().size.width < NARROW_W;
+    const key = artKey(item, fonts, narrow);
     const had = this.arts.get(item.target);
     if (had && had.key === key) return had;
     if (had) this.retired.push(had);
-    const art = drawNote(item, fonts, measure);
+    const art = drawNote(item, fonts, measure, narrow);
     this.arts.set(item.target, art);
     return art;
   }
@@ -1489,7 +1509,7 @@ class ExplainStage {
     const per = rig.layout.height / rig.layout.font;
     input.others = rig.otherRects;
     input.targetX = rig.anchor.x;
-    input.wantPx = per * (W < 560 ? READ_PX_PHONE : READ_PX);
+    input.wantPx = per * (W < NARROW_W ? READ_PX_PHONE : READ_PX);
     input.minPx = per * MIN_PX;
     input.prevX = rig.isPlaced ? rig.x : null;
     const p = placeNote(input, s.place);
@@ -1504,11 +1524,18 @@ class ExplainStage {
     return Math.max(-MAX_YAW, Math.min(MAX_YAW, Math.atan2(c.x - x, c.z - z) * 0.55));
   }
 
-  /** How far a note `h` tall at stage x, in `slot`, leans back to face the camera. */
+  /**
+   * How far a note `h` tall at stage x, in `slot`, leans back to face the
+   * camera: never so far that its top reaches back into the acting plane
+   * (a front slot) or the backdrop (a back one), so a tall note's top does
+   * not pass through the cast.
+   */
   private leanAt(x: number, h: number, slot: (typeof SLOTS)[number]): number {
     const c = this.s.cam;
     const el = Math.atan2(c.y - slot.raise - h * 0.5, Math.hypot(c.x - x, c.z - slot.z));
-    return Math.max(0, Math.min(slot.lean, el * 0.5));
+    const room = Math.max(0, slot.z - (slot.z >= 0.5 ? LEAN_FRONT_Z : LEAN_BACK_Z)) / Math.max(1e-6, h);
+    const most = room >= 1 ? slot.lean : Math.min(slot.lean, Math.asin(room));
+    return Math.max(0, Math.min(most, el * 0.5));
   }
 
   /** placeNote's camera: the screen rect of the note being placed, standing at x, h tall, in depth slot d. */
@@ -1568,6 +1595,7 @@ class ExplainStage {
       rectAt: (x, h, d, out) => this.rectAt(x, h, d, out),
       depths: SLOTS.length,
       slotCost: SLOT_COST,
+      behind: SLOT_BEHIND,
       targetX: 0,
       xMin: -1,
       xMax: 1,

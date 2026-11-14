@@ -161,6 +161,12 @@ export const NOTE_LAYOUT: NoteLayoutOptions = {
   maxLines: 12,
 };
 
+/**
+ * A phone's: narrower, so a long note at the smallest type that reads still
+ * fits across one page; it grows taller instead.
+ */
+export const NOTE_LAYOUT_NARROW: NoteLayoutOptions = { ...NOTE_LAYOUT, minW: 220, maxW: 300, lines: 6, maxLines: 14 };
+
 export interface NoteLayout {
   /** Card size, card px. */
   width: number;
@@ -417,6 +423,11 @@ export interface PlaceInput {
   depths?: number;
   /** What standing in each slot costs, against the rest of the score (default 0.12 per slot). */
   slotCost?: readonly number[];
+  /**
+   * Slots that stand behind the cast: there, overlapping a cutout hides the
+   * note's words behind it as well as the cutout, so it costs twice over.
+   */
+  behind?: readonly boolean[];
   /** Stage x of the target's centre, and the range the note's centre may stand in. */
   targetX: number;
   xMin: number;
@@ -424,7 +435,7 @@ export interface PlaceInput {
   /** The note's wanted screen height (px), and the smallest it may shrink to. */
   wantPx: number;
   minPx: number;
-  /** Physical limits on its height, stage units. */
+  /** The tallest it is wanted, stage units (it still grows to minPx when that is taller). */
   maxH: number;
   /** Where it stood before (stage x), to keep it from hopping as the camera eases; null for none. */
   prevX: number | null;
@@ -485,8 +496,11 @@ function searchNote(p: PlaceInput, out: Placement, clear: boolean): boolean {
   // Screen px per stage unit of height, where the target stands.
   p.rectAt(p.targetX, 1, 0, r);
   const perUnit = Math.max(1e-6, r.y1 - r.y0);
-  const hWant = Math.min(p.maxH, p.wantPx / perUnit);
-  const hMin = Math.min(hWant, p.minPx / perUnit);
+  // maxH caps the wanted size, but never below the smallest that still
+  // reads (a long note on a phone's small stage would set its words too small).
+  const hRead = p.minPx / perUnit;
+  const hWant = Math.max(Math.min(p.maxH, p.wantPx / perUnit), Math.min(hRead, p.wantPx / perUnit));
+  const hMin = Math.min(hWant, hRead);
 
   let bestScore = Infinity;
   let bestX = p.targetX;
@@ -536,7 +550,8 @@ function searchNote(p: PlaceInput, out: Placement, clear: boolean): boolean {
         const dist = (Math.abs(gapX - gap) + 0.35 * Math.abs(cy - tcy)) / vw;
         const hop = p.prevX === null ? 0 : Math.abs(x - p.prevX) * 0.4;
         const slot = p.slotCost?.[d] ?? 0.12 * d;
-        const score = 6 * hide + 2.5 * crowd + 2 * avoidCost + dist + hop + small + slot;
+        const back = p.behind?.[d] ? 2 : 1;
+        const score = back * (6 * hide + 2.5 * crowd) + 2 * avoidCost + dist + hop + small + slot;
         if (score < bestScore) {
           bestScore = score;
           bestX = x;
