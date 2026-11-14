@@ -14,7 +14,8 @@ and the two skills the sub-agents read (popup-style, storyboarding):
 (d) every virtual file path is a constant the tools or the studio use, or a draft that one
     prompt tells its agent to write, and no prompt writes a file a tool owns;
 (e) the run context keys the studio prompt names are exactly `agent.runs.run_context`'s;
-(f) no prompt is a prefix of another (the fake studio tells agents apart by prefix).
+(f) no prompt is a prefix of another (the fake studio tells agents apart by prefix);
+(g) every prompt that follows a skill (subagents.SUBAGENT_SKILLS) names it exactly, up front.
 
 Extraction is plain regex over backticks and `name(` patterns. director.md and the
 directing skill are owned by another task: director.md's known mismatches sit in the one
@@ -98,7 +99,8 @@ def unit_text(unit: str) -> str:
 
 
 def skill_users(skill: str) -> list[str]:
-    return [name for name, paths in SUBAGENT_SKILLS.items() if f"{SKILLS_ROOT}{skill}/" in paths]
+    """The sub-agents whose prompts tell them to follow `skill` (all of them can see it)."""
+    return [name for name, skills in SUBAGENT_SKILLS.items() if skill in skills]
 
 
 # --------------------------------------------------------------------------- the real tools
@@ -716,6 +718,28 @@ def test_f_every_agent_is_told_apart_by_its_prompt():
     """The real graph's system prompts each start with exactly one prompt (fake_studio.role_of)."""
     roles = {_role(messages) for _names, messages in _drive_every_agent()}
     assert roles == set(PROMPT_UNITS)
+
+
+# --------------------------------------------------------------------------- (g) skills by name
+
+
+SKILL_FOLLOWERS: tuple[str, ...] = tuple(name for name in SUBAGENT_NAMES if SUBAGENT_SKILLS[name])
+
+
+def test_g_the_skill_followers_are_the_five_expected():
+    assert set(SKILL_FOLLOWERS) == {"storyboarder", "prop_master", "set_designer", "director", "checker"}
+
+
+@pytest.mark.parametrize("name", SKILL_FOLLOWERS)
+def test_g_each_prompt_names_its_skills_exactly(name):
+    """Every sub-agent sees every skill listed by name; its prompt must name the ones it follows,
+    exactly as the skills list spells them, and tell it to read that SKILL.md."""
+    text = load_prompt(name)
+    first_paragraph = text.split("\n\n")[1]
+    for skill in SUBAGENT_SKILLS[name]:
+        assert (SKILLS_DIR / skill / "SKILL.md").is_file(), skill
+        assert f"`{skill}`" in first_paragraph, f"{name}.md never names the `{skill}` skill up front"
+    assert "SKILL.md" in first_paragraph, f"{name}.md never says to read the skill's SKILL.md"
 
 
 # --------------------------------------------------------------------------- the studio's story

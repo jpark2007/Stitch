@@ -229,7 +229,9 @@ def test_subagents_get_the_skills_too(skills_dir: Path) -> None:
             if turns(messages) == 0:
                 return tool_call("task", {"subagent_type": "director", "description": "Stage it."})
             return done()
-        assert "directing" in prompt  # skills listed for the director as well
+        # skills listed for the director as well, with the path it must read
+        assert "/skills/directing/SKILL.md" in prompt
+        assert "No skills available" not in prompt
         return done("ok")
 
     graph, _ = make_studio(responder, skills_dir=skills_dir)
@@ -394,6 +396,12 @@ def test_subagent_with_its_own_interrupt_config_keeps_the_studio_gates() -> None
     assert prepared["interrupt_on"] == {"ask_teller": True, "confirm_props": True, "find_prop": True}
     assert prepared["skills"] == studio.SKILL_SOURCES
     assert "interrupt_on" not in studio._prepare_subagent(DIRECTOR, {"ask_teller": True})  # inherits by default
+
+
+def test_subagent_with_a_single_skill_folder_source_is_rejected() -> None:
+    with pytest.raises(ValueError, match="single skill folder"):
+        studio._prepare_subagent({**DIRECTOR, "skills": ["/skills/directing/"]}, {})
+    assert studio._prepare_subagent({**DIRECTOR, "skills": ["/skills/"]}, {})["skills"] == ["/skills/"]
 
 
 # ---------------------------------------------------------------- fake model

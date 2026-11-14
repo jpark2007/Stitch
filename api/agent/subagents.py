@@ -5,6 +5,8 @@ interviewer, storyboarder, prop_master, set_designer, director, narrator, checke
 Each spec is a `deepagents.middleware.subagents.SubAgent` dict. Prompts live in
 `agent/prompts/<name>.md`. Tools are passed in by name, so the studio decides which
 real or fake implementations a run uses; this module only says who gets what.
+Skills are not handed out per agent: every sub-agent loads the skills root
+`/skills/` and its prompt names the skill(s) it follows (SUBAGENT_SKILLS).
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from pathlib import Path
 from deepagents.middleware.subagents import SubAgent
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
+
+from agent.studio import SKILL_SOURCES, SKILLS_ROUTE
 
 logger = logging.getLogger(__name__)
 
@@ -64,23 +68,27 @@ REQUIRED_TOOLS: dict[str, list[str]] = {
     "director": ["compile_screenplay"],
 }
 
-SKILLS_ROOT = "/skills/"
-
-
-def _skill(name: str) -> str:
-    return f"{SKILLS_ROOT}{name}/"
-
+SKILLS_ROOT = SKILLS_ROUTE
+"""Where the skills live in the agent's filesystem: `/skills/<name>/SKILL.md`."""
 
 SUBAGENT_SKILLS: dict[str, list[str]] = {
     "interviewer": [],
-    "storyboarder": [_skill("storyboarding")],
-    "prop_master": [_skill("popup-style")],
-    "set_designer": [_skill("popup-style")],
-    "director": [_skill("directing")],
+    "storyboarder": ["storyboarding"],
+    "prop_master": ["popup-style"],
+    "set_designer": ["popup-style"],
+    "director": ["directing"],
     "narrator": [],
-    "checker": [_skill("directing"), _skill("popup-style")],
+    "checker": ["directing", "popup-style"],
     "linker": [],
 }
+"""Skill NAMES each sub-agent's prompt tells it to follow (the folder and frontmatter name).
+
+This is not the spec's `skills`: every sub-agent gets the skills root SKILL_SOURCES
+(`/skills/`), so all three skills are listed in its prompt by name, description and
+SKILL.md path, and the agent reads the ones its prompt names. A single skill folder
+such as `/skills/directing/` cannot be a source: SkillsMiddleware would find no
+skill sub-folders in it and load nothing.
+"""
 
 SUBAGENT_DESCRIPTIONS: dict[str, str] = {
     "interviewer": (
@@ -131,6 +139,8 @@ def build_subagents(
     SUBAGENT_TOOLS that are present in `tools`; a missing tool is skipped with a
     warning, except a REQUIRED_TOOLS entry, which raises ValueError. `model`, when
     given, is set on every spec; otherwise each sub-agent uses the studio's model.
+    Every spec's `skills` is the skills root (studio.SKILL_SOURCES), so every
+    sub-agent sees every skill; SUBAGENT_SKILLS says which ones its prompt names.
     """
     specs: list[SubAgent] = []
     for name in SUBAGENT_NAMES:
@@ -146,9 +156,8 @@ def build_subagents(
             "description": SUBAGENT_DESCRIPTIONS[name],
             "system_prompt": load_prompt(name),
             "tools": [tools[t] for t in SUBAGENT_TOOLS[name] if t in tools],
+            "skills": list(SKILL_SOURCES),
         }
-        if SUBAGENT_SKILLS[name]:
-            spec["skills"] = list(SUBAGENT_SKILLS[name])
         if model is not None:
             spec["model"] = model
         specs.append(spec)

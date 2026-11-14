@@ -108,20 +108,19 @@ def test_model_is_set_when_given(all_tools):
     assert all(s["model"] == "anthropic:claude-test" for s in specs)
 
 
-def test_skills_are_source_paths_under_skills_root(all_tools):
+def test_every_subagent_loads_the_skills_root_and_names_its_skills(all_tools):
     assert SKILLS_ROOT == "/skills/"
-    assert SUBAGENT_SKILLS["storyboarder"] == ["/skills/storyboarding/"]
-    assert SUBAGENT_SKILLS["prop_master"] == ["/skills/popup-style/"]
-    assert SUBAGENT_SKILLS["set_designer"] == ["/skills/popup-style/"]
-    assert SUBAGENT_SKILLS["director"] == ["/skills/directing/"]
-    assert sorted(SUBAGENT_SKILLS["checker"]) == ["/skills/directing/", "/skills/popup-style/"]
+    assert SUBAGENT_SKILLS["storyboarder"] == ["storyboarding"]
+    assert SUBAGENT_SKILLS["prop_master"] == ["popup-style"]
+    assert SUBAGENT_SKILLS["set_designer"] == ["popup-style"]
+    assert SUBAGENT_SKILLS["director"] == ["directing"]
+    assert sorted(SUBAGENT_SKILLS["checker"]) == ["directing", "popup-style"]
     for spec in build_subagents(all_tools):
-        expected = SUBAGENT_SKILLS[spec["name"]]
-        assert spec.get("skills", []) == expected
-        for path in expected:
-            folder = path.removeprefix(SKILLS_ROOT).strip("/")
-            assert folder in SKILL_FOLDERS
-            assert (PROMPTS_DIR.parent / "skills" / folder).is_dir()
+        # The source is the root (a single skill folder would load nothing).
+        assert spec["skills"] == [SKILLS_ROOT]
+        for skill in SUBAGENT_SKILLS[spec["name"]]:
+            assert skill in SKILL_FOLDERS
+            assert (PROMPTS_DIR.parent / "skills" / skill / "SKILL.md").is_file()
 
 
 def test_missing_optional_tools_are_skipped_with_a_warning(all_tools, caplog):

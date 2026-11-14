@@ -47,11 +47,15 @@ SKILLS_ROUTE = "/skills/"
 MEMORIES_ROUTE = "/memories/"
 
 SKILL_SOURCES = [SKILLS_ROUTE]
-"""Skill sources for deepagents' SkillsMiddleware.
+"""Skill sources for deepagents' SkillsMiddleware, for the studio and every sub-agent.
 
-A source is a directory whose sub-directories each hold a SKILL.md
+A source is a skills ROOT: a directory whose sub-directories each hold a SKILL.md
 (`/skills/popup-style/SKILL.md`, `/skills/storyboarding/SKILL.md`,
 `/skills/directing/SKILL.md`), so the one source `/skills/` loads all three.
+One skill's own folder (`/skills/directing/`) is NOT a source: the middleware
+lists a source's sub-folders, finds none there, and loads nothing
+(`check_skill_sources` rejects it). Only each skill's name, description and
+SKILL.md path go into the system prompt; the agent reads a body when it needs it.
 Each SKILL.md needs YAML frontmatter with `name` (equal to its folder name) and
 `description`, or the middleware skips it.
 """
@@ -155,14 +159,42 @@ SKILLS_READ_ONLY = FilesystemPermission(operations=["write"], paths=[f"{SKILLS_R
 # --------------------------------------------------------------------------
 
 
+def _source_path(source: str | tuple[str, str]) -> str:
+    """The path of a SkillsMiddleware source: a bare path or a `(path, label)` pair."""
+    return source[0] if isinstance(source, tuple) else source
+
+
+def check_skill_sources(sources: Sequence[str | tuple[str, str]], *, owner: str = "studio") -> None:
+    """Raise ValueError for a source that is one skill's folder instead of a skills root.
+
+    SkillsMiddleware keeps only a source's sub-folders that hold a SKILL.md, so
+    `/skills/directing/` (or any path under SKILLS_ROUTE other than the root)
+    silently loads zero skills. `owner` names the agent in the message.
+    """
+    for source in sources:
+        path = _source_path(source)
+        normalized = path.rstrip("/") + "/"
+        if normalized != SKILLS_ROUTE and normalized.startswith(SKILLS_ROUTE):
+            msg = (
+                f"{owner}: skills source {path!r} is a single skill folder; a source must be a skills root "
+                f"such as {SKILLS_ROUTE!r} (SkillsMiddleware loads the sub-folders of a source that hold a "
+                f"SKILL.md, so a single skill folder loads nothing)"
+            )
+            raise ValueError(msg)
+
+
 def _prepare_subagent(spec: SubAgent, interrupt_on: Mapping[str, Any]) -> SubAgent:
     """Fill in what a sub-agent must share with the studio.
 
     - interrupt_on: deepagents already passes the studio's config to a sub-agent
       that sets none; one that sets its own gets the studio's gates merged under
       it, so `ask_teller` / `confirm_props` always pause wherever they are called.
-    - skills: declarative sub-agents do not inherit skills, so they get the
-      studio's (the director needs `directing`) unless they name their own.
+    - skills: declarative sub-agents do not inherit skills, so one that names no
+      sources gets the studio's SKILL_SOURCES. `build_subagents` already gives
+      every sub-agent SKILL_SOURCES: each sees all three skills by name and
+      description, and its prompt names the ones it must follow
+      (`subagents.SUBAGENT_SKILLS`). A source that is a single skill folder
+      (`/skills/directing/`) loads nothing and raises ValueError.
     - permissions: a sub-agent's own rules would replace the studio's, so the
       `/skills/` write ban is appended to them.
     """
@@ -171,6 +203,7 @@ def _prepare_subagent(spec: SubAgent, interrupt_on: Mapping[str, Any]) -> SubAge
         prepared["interrupt_on"] = {**interrupt_on, **prepared["interrupt_on"]}
     if not prepared.get("skills") and prepared.get("mode") != "fork":
         prepared["skills"] = list(SKILL_SOURCES)
+    check_skill_sources(prepared.get("skills") or [], owner=f"sub-agent {prepared.get('name')!r}")
     if "permissions" in prepared:
         prepared["permissions"] = [*prepared["permissions"], SKILLS_READ_ONLY]
     return prepared  # type: ignore[return-value]
