@@ -14,7 +14,7 @@ import { useAgentRun, type RunSource, type UseAgentRunOptions } from "@/componen
 import type { PendingInput } from "@/components/agent/runState";
 
 import { ButtonLink } from "./Button";
-import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor } from "./memoryRun";
+import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor } from "./memoryRunState";
 import { TellingNote } from "./TellingNote";
 
 export interface MemoryRunTelling {
@@ -117,8 +117,10 @@ export function MemoryRun(props: {
     <div className="flex w-full min-w-0 flex-col gap-6">
       <TellingNote {...telling} />
 
-      {/* The feed is a full sheet in this column, the same width as the note above it. */}
-      <div ref={feedRef} className="min-w-0 [&>section]:max-w-none">
+      {/* The feed is a full sheet in this column, the same width as the note
+          above it. `*:` lifts the cap on whatever element AgentFeed renders at
+          its top, so a restyle that changes that tag keeps the column even. */}
+      <div ref={feedRef} className="min-w-0 *:max-w-none">
         <AgentFeed
           state={state}
           mediaUrl={mediaUrl}

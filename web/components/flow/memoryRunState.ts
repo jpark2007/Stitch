@@ -2,6 +2,8 @@
 // show, the key that remounts it for each new pause, and the two bits of the
 // panel that depend on how far the run has got. No runtime imports, and only
 // erasable TypeScript, so `node --test` can load this file directly.
+// Named apart from MemoryRun.tsx on purpose: on a case-insensitive disk
+// (macOS) "memoryRun.ts" would shadow "MemoryRun.tsx" for every importer.
 import type { RunState } from "@/components/agent/runState";
 
 /** The card the run is paused on. Matches PendingInput.kind and AnswerRequest.kind. */

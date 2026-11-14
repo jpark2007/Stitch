@@ -1,12 +1,12 @@
 // Run with: cd web && node --test "components/flow/__tests__/*.test.mjs"
-// Node strips the erasable TypeScript in memoryRun.ts and runState.ts. States
+// Node strips the erasable TypeScript in memoryRunState.ts and runState.ts. States
 // are built with the real run reducer, so the keys are checked against the
 // sequence numbers it actually hands out.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { initialRunState, runReducer } from "../../agent/runState.ts";
-import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor } from "../memoryRun.ts";
+import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor } from "../memoryRunState.ts";
 
 const ev = (event, data) => ({ type: "event", message: { event, data } });
 const answered = (kind, summary = "ok") => ({ type: "answered", kind, summary });
