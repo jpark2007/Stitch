@@ -9,9 +9,10 @@ Both external services sit behind interfaces with deterministic fakes, so tests 
 
 - `FrameRenderer.render(scene, times) -> list[bytes]`: `PlaywrightFrameRenderer` screenshots
   the web app's `/render/[memoryId]` route in headless Chromium (through an injectable page
-  factory, so it is testable offline) and falls back, per render, to the diagram when the
-  browser or the render page cannot deliver; `FakeFrameRenderer` draws a flat diagram of the
-  stage with Pillow.
+  factory, so it is testable offline), serving the draft's own art to the page from the run's
+  media store, and falls back, per render, to the diagram when the browser or the render page
+  cannot deliver (an error page fails at once; two failures in a row skip the browser for
+  FAILURE_COOLDOWN_S); `FakeFrameRenderer` draws a flat diagram of the stage with Pillow.
 - `photos.VisionModel.describe(images, prompt) -> str`: `FakeFrameCritic` flags frames that
   are almost a single flat color.
 
@@ -47,17 +48,19 @@ import concurrent.futures
 import contextlib
 import functools
 import hashlib
+import inspect
 import io
 import json
 import logging
 import math
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
 from typing import Annotated, Any, Literal, NamedTuple, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 from deepagents.backends.utils import create_file_data, file_data_to_string
 from langchain_core.messages import ToolMessage
@@ -129,6 +132,16 @@ class FrameRenderError(RuntimeError):
     """Rendering failed; the tool reports it to the checker and the run continues."""
 
 
+class RenderPageError(FrameRenderError):
+    """The render page said it cannot draw the scene, so waiting for it to be ready is pointless.
+
+    Raised as soon as the page sets `window.__STITCH_RENDER_ERROR__` (a string; proposed to the
+    Stage owner) or shows an error page (`ERROR_PAGE_TEXTS`, e.g. the render page's "This
+    moment could not be opened."), or the navigation answers HTTP 400 or more, instead of
+    waiting out the ready timeout. The message starts with "render page error: ".
+    """
+
+
 class RenderContractMissing(FrameRenderError):
     """The render page loaded but does not draw the injected scene.
 
@@ -158,17 +171,38 @@ class FrameRenderer(Protocol):
         ...
 
 
+MediaSource = Callable[[str, str], "tuple[bytes, str] | None"]
+"""`(family_id, media_id) -> (bytes, content_type) | None`: the draft's media (AgentRepo.get_media)."""
+
+
+def _accepts_media(method: Callable[..., Any]) -> bool:
+    try:
+        params = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "media" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+
+
 def render_with_note(
-    renderer: FrameRenderer, scene: schemas.MemoryResponse, times: Sequence[float]
+    renderer: FrameRenderer,
+    scene: schemas.MemoryResponse,
+    times: Sequence[float],
+    *,
+    media: MediaSource | None = None,
 ) -> tuple[list[bytes], str | None]:
     """Render, and say what the frames are: (PNGs, critic note or None for the real stage).
 
     Uses the renderer's own `render_with_note` when it has one, else `render` plus its
-    `critic_note` attribute (None when it has none).
+    `critic_note` attribute (None when it has none). `media` (the run's media store) is
+    passed on to a `render_with_note` that takes a `media` keyword, so a renderer can serve
+    the draft's own art (stored with put_media, not saved yet) to the page it screenshots.
     """
     method = getattr(renderer, "render_with_note", None)
     if callable(method):
-        pngs, note = method(scene, times)
+        if media is not None and _accepts_media(method):
+            pngs, note = method(scene, times, media=media)
+        else:
+            pngs, note = method(scene, times)
         return list(pngs), note
     return renderer.render(scene, times), getattr(renderer, "critic_note", None)
 
@@ -454,8 +488,51 @@ class FakeFrameRenderer:
 
 # ----------------------------------------------------------------- playwright renderer
 
-READY_EXPR = "window.__STITCH_READY__ === true || document.documentElement.dataset.stageReady === '1'"
-"""Waited for after each navigation: the page is ready, by the contract or the legacy way."""
+RENDER_ERROR_FLAG = "__STITCH_RENDER_ERROR__"
+"""`window.__STITCH_RENDER_ERROR__`: a string the render page sets when it cannot draw the scene.
+
+Proposed to the Stage owner (not on the page yet); the renderer already fails fast on it.
+"""
+
+ERROR_PAGE_TEXTS: tuple[str, ...] = (
+    "This moment could not be opened.",  # web/app/render/[memoryId]/TimelineView.tsx on failure
+    "Application error: a client-side exception has occurred",  # Next.js's production crash page
+    "This page could not be found.",  # Next.js's 404 page
+)
+"""Text of a `<p>`, `<h1>` or `<h2>` that means the page will never draw the scene."""
+
+READY_EXPR = (
+    "(() => {"
+    f" const err = window.{RENDER_ERROR_FLAG};"
+    " if (typeof err === 'string' && err.trim()) return {error: err.trim().slice(0, 300)};"
+    " if (window.__STITCH_READY__ === true) return 'contract';"
+    " if (document.documentElement.dataset.stageReady === '1') return 'legacy';"
+    f" const texts = {json.dumps(list(ERROR_PAGE_TEXTS))};"
+    " for (const el of document.querySelectorAll('p, h1, h2')) {"
+    "  const text = (el.textContent || '').trim();"
+    "  if (texts.some((s) => text.startsWith(s)))"
+    "   return {error: (el.innerText || text).replace(/\\s+/g, ' ').trim().slice(0, 300)};"
+    " }"
+    " return false;"
+    "})()"
+)
+"""Waited for after each navigation: the page is ready, by the contract
+(`window.__STITCH_READY__ === true`) or the legacy way (`stageReady === '1'`), or it has failed.
+
+It evaluates to "contract" or "legacy" when ready, and to `{error: message}` as soon as the
+page sets `window.__STITCH_RENDER_ERROR__` or shows an error page (ERROR_PAGE_TEXTS), so a
+broken page costs one poll, not the whole ready timeout. Only `textContent` is read while
+polling (no layout); `innerText` only for the message of an error that was found.
+
+"contract" skips the CONTRACT_EXPR grace wait: on a busy page (software WebGL draws a frame a
+second) even an instant wait can miss a 1.5 s timeout, which once read as RenderContractMissing.
+"""
+
+CHROMIUM_ARGS: tuple[str, ...] = ("--use-angle=metal",) if sys.platform == "darwin" else ()
+"""Launch arguments for the default page factory: on macOS, WebGL on the GPU through Metal
+(headless Chromium otherwise draws with SwiftShader, about twice as slow to the first ready
+frame and starving the page's main thread). `STITCH_CHROMIUM_ARGS` (space-separated) replaces
+them; set it to an empty string for none."""
 
 CONTRACT_EXPR = "window.__STITCH_READY__ === true"
 """The contract's readiness flag: the page has drawn the injected `window.__STITCH_RENDER__`."""
@@ -465,6 +542,23 @@ READY_GRACE_MS = 1500
 
 FALLBACK_COOLDOWN_S = 600.0
 """After RenderContractMissing, render with the fallback this long before trying the page again."""
+
+FAILURE_STREAK = 2
+"""Consecutive failed browser renders (FrameRenderError, not RenderContractMissing) that start
+the failure cool-down."""
+
+FAILURE_COOLDOWN_S = 120.0
+"""After FAILURE_STREAK failed renders in a row, skip the browser this long (a checker round on
+a broken or hanging page costs at most two ready timeouts, not one per render)."""
+
+HIDE_DEV_OVERLAY_CSS = "nextjs-portal { display: none !important; }"
+"""Added to each page after navigation: `next dev` draws its indicator (the "N" badge, and a
+"Cache disabled" pill whenever requests are routed) over the stage, and the critic would
+report it. The element does not exist under `next start`."""
+
+MEDIA_ROUTE = "**/families/*/media/**"
+"""The API's media URLs as the page builds them (`api.mediaUrl`), intercepted when the renderer
+has a MediaSource, so the draft's unsaved art is served to the headless browser directly."""
 
 PROBE_MEMORY_ID = "draft-preflight"
 
@@ -500,9 +594,11 @@ def playwright_page(viewport: tuple[int, int]) -> Iterator[PageDriver]:
     except ImportError as exc:
         raise PlaywrightUnavailable("playwright is not installed") from exc
     width, height = viewport
+    raw_args = os.environ.get("STITCH_CHROMIUM_ARGS")
+    args = list(CHROMIUM_ARGS) if raw_args is None else raw_args.split()
     with sync_playwright() as pw:
         try:
-            browser = pw.chromium.launch(headless=True)
+            browser = pw.chromium.launch(headless=True, args=args) if args else pw.chromium.launch(headless=True)
         except Exception as exc:  # noqa: BLE001 - a missing browser binary, a sandbox refusal
             raise PlaywrightUnavailable(f"chromium would not start: {type(exc).__name__}: {str(exc)[:300]}") from exc
         try:
@@ -516,14 +612,33 @@ def _is_timeout(exc: BaseException) -> bool:
     return isinstance(exc, TimeoutError) or type(exc).__name__ == "TimeoutError"
 
 
+def _js_value(handle: Any) -> Any:
+    """The value a `wait_for_function` resolved with: Playwright gives a JSHandle, fakes a value."""
+    getter = getattr(handle, "json_value", None)
+    return getter() if callable(getter) else handle
+
+
 def _open_ready(page: PageDriver, url: str, *, timeout_ms: int, grace_ms: int) -> None:
     """Navigate to `url` and wait until the page has drawn the injected scene.
 
-    Raises RenderContractMissing when the page becomes ready only the legacy way and stays
-    without `__STITCH_READY__` for `grace_ms`; anything else propagates (the caller wraps it).
+    Raises RenderPageError at once when the navigation answers HTTP 400 or more, or when the
+    page reports an error (READY_EXPR resolves with `{error}`); RenderContractMissing when
+    the page becomes ready only the legacy way and stays without `__STITCH_READY__` for
+    `grace_ms`; anything else propagates (the caller wraps it).
     """
-    page.goto(url, timeout=timeout_ms)
-    page.wait_for_function(READY_EXPR, timeout=timeout_ms)
+    response = page.goto(url, timeout=timeout_ms)
+    status = getattr(response, "status", None)
+    if isinstance(status, int) and status >= 400:
+        raise RenderPageError(f"render page error: HTTP {status} from {url}")
+    add_style = getattr(page, "add_style_tag", None)
+    if callable(add_style):
+        add_style(content=HIDE_DEV_OVERLAY_CSS)
+    value = _js_value(page.wait_for_function(READY_EXPR, timeout=timeout_ms))
+    if isinstance(value, dict) and "error" in value:
+        message = " ".join(str(value.get("error") or "unknown error").split())[:300]
+        raise RenderPageError(f"render page error: {message}")
+    if value == "contract":
+        return  # __STITCH_READY__ was already set when the wait resolved
     try:
         page.wait_for_function(CONTRACT_EXPR, timeout=grace_ms)  # at once on a contract page
     except Exception as exc:  # noqa: BLE001 - only a timeout means "no contract"
@@ -538,6 +653,55 @@ def _open_ready(page: PageDriver, url: str, *, timeout_ms: int, grace_ms: int) -
 def _render_script(scene: schemas.MemoryResponse) -> str:
     payload = json.dumps(scene.model_dump(mode="json", by_alias=True))
     return f"window.__STITCH_RENDER__ = {payload};"
+
+
+def _media_ref(url: str) -> tuple[str, str] | None:
+    """(family id, media id) from an API media URL `.../families/{fid}/media/{id}`, else None."""
+    parts = urlsplit(url).path.split("/")
+    for i in range(len(parts) - 3, -1, -1):
+        if parts[i] == "families" and parts[i + 2] == "media":
+            fid, mid = unquote(parts[i + 1]), unquote("/".join(parts[i + 3 :]))
+            return (fid, mid) if fid and mid else None
+    return None
+
+
+def _serve_media(page: PageDriver, media: MediaSource, family_id: str) -> None:
+    """Serve the draft's media to `page` from `media` instead of the API (when the page can route).
+
+    The page asks the API for art with an anonymous `<img crossOrigin>` request, which carries
+    no session cookie, and the headless browser has none anyway, so the API (members only)
+    answers 401 and the stage keeps its placeholder cards. Here a request for one of the run's
+    family's media is fulfilled from the run's own store (art the draft made with put_media,
+    not saved yet included); anything else, or an id the store does not have, goes on to the
+    network as before.
+    """
+    route_fn = getattr(page, "route", None)
+    if not callable(route_fn):
+        return
+
+    def handle(route: Any) -> None:
+        ref = _media_ref(str(route.request.url))
+        found = None
+        if ref is not None and ref[0] == family_id:
+            try:
+                found = media(*ref)
+            except Exception:  # noqa: BLE001 - a store error must not break the render
+                log.info("render_frames could not read media %s", ref[1], exc_info=True)
+        if found is None:
+            route.continue_()
+            return
+        data, content_type = found
+        route.fulfill(
+            status=200,
+            body=data,
+            headers={
+                "Content-Type": content_type or "application/octet-stream",
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "no-store",
+            },
+        )
+
+    route_fn(MEDIA_ROUTE, handle)
 
 
 def _off_the_loop(fn: Callable[[], Any]) -> Any:
@@ -574,18 +738,29 @@ class PlaywrightFrameRenderer:
     `timeout_ms`) for `__STITCH_READY__` or the legacy `<html data-stage-ready="1">`. A page
     that is ready only the legacy way gets `ready_grace_ms` more to set `__STITCH_READY__`;
     if it does not, it ignores the injected scene and the render raises
-    RenderContractMissing. Then it takes a viewport PNG screenshot. Navigation errors,
-    timeouts and a missing Playwright or browser raise FrameRenderError.
+    RenderContractMissing. A page that reports an error (`window.__STITCH_RENDER_ERROR__`,
+    an error page such as "This moment could not be opened.", or HTTP 400+) raises
+    RenderPageError at once, without waiting out `timeout_ms` and without a screenshot.
+    Then it takes a viewport PNG screenshot. Navigation errors, timeouts and a missing
+    Playwright or browser raise FrameRenderError.
 
     Per render, a FrameRenderError falls back to `fallback` (by default the Pillow diagram,
-    FakeFrameRenderer) for the same times, so the checker always gets frames. After a
-    RenderContractMissing the renderer stays on the fallback for `cooldown_s` (by `clock`)
-    without opening a browser, then tries the page again. One warning is logged per switch
-    between screenshots and the fallback. `fallback=None` makes render failures raise.
+    FakeFrameRenderer) for the same times, so the checker always gets frames. Two cool-downs
+    skip the browser for a while (by `clock`), so a broken page does not cost a timeout per
+    render: after a RenderContractMissing, `cooldown_s`; after `failure_streak` other
+    FrameRenderErrors in a row, `failure_cooldown_s`. When a cool-down ends the page gets
+    one try; a success clears the streak. During a cool-down renders go to the fallback, or,
+    with `fallback=None`, a failure cool-down raises FrameRenderError at once (a
+    contract-missing one still tries the page). One warning is logged per switch between
+    screenshots and the fallback. `fallback=None` makes render failures raise.
 
     `render_with_note` answers which renderer drew the frames: the screenshots come with no
     note, the fallback's frames with its `critic_note`. The class attribute `critic_note`
     (None) describes the screenshots only.
+
+    `media` (also per render: `render_with_note(..., media=...)`) serves the scene's family's
+    media to the page from the run's store instead of the API, which the headless browser
+    cannot read (see `_serve_media`), so the draft's own art shows in the screenshots.
 
     `page_factory(viewport)` opens a page (a context manager); the default,
     `playwright_page`, launches headless Chromium with `sync_playwright`.
@@ -604,6 +779,9 @@ class PlaywrightFrameRenderer:
         ready_grace_ms: int = READY_GRACE_MS,
         cooldown_s: float = FALLBACK_COOLDOWN_S,
         clock: Callable[[], float] = time.monotonic,
+        failure_streak: int = FAILURE_STREAK,
+        failure_cooldown_s: float = FAILURE_COOLDOWN_S,
+        media: MediaSource | None = None,
     ) -> None:
         self.base_url = (base_url or os.environ.get("STITCH_WEB_URL") or "http://localhost:3000").rstrip("/")
         self.timeout_ms = timeout_ms
@@ -613,8 +791,13 @@ class PlaywrightFrameRenderer:
         self.ready_grace_ms = ready_grace_ms
         self.cooldown_s = cooldown_s
         self.clock = clock
+        self.failure_streak = max(1, int(failure_streak))
+        self.failure_cooldown_s = failure_cooldown_s
+        self.media = media
         self._lock = threading.Lock()
         self._skip_browser_until: float | None = None  # clock time the cool-down ends
+        self._cooldown_cause: FrameRenderError | None = None  # the failure behind a failure cool-down
+        self._failures = 0  # FrameRenderErrors in a row (not RenderContractMissing)
         self._on_fallback = False  # the last render used the fallback (for one log per switch)
 
     def url_for(self, memory_id: str, t: float) -> str:
@@ -622,7 +805,7 @@ class PlaywrightFrameRenderer:
 
     @property
     def cooling_down(self) -> bool:
-        """True while a RenderContractMissing keeps renders on the fallback."""
+        """True while a cool-down (contract missing, or failures in a row) skips the browser."""
         with self._lock:
             until = self._skip_browser_until
         return until is not None and self.clock() < until
@@ -631,46 +814,81 @@ class PlaywrightFrameRenderer:
         return self.render_with_note(scene, times)[0]
 
     def render_with_note(
-        self, scene: schemas.MemoryResponse, times: Sequence[float]
+        self,
+        scene: schemas.MemoryResponse,
+        times: Sequence[float],
+        *,
+        media: MediaSource | None = None,
     ) -> tuple[list[bytes], str | None]:
-        """(PNGs, None) from the browser, or (PNGs, the fallback's note) from the fallback."""
+        """(PNGs, None) from the browser, or (PNGs, the fallback's note) from the fallback.
+
+        `media` overrides the constructor's MediaSource for this render.
+        """
         times = [float(t) for t in times]
         if not times:
             return [], None
-        if self.fallback is not None and self.cooling_down:
-            return self._fall_back(scene, times, None)
+        if self.cooling_down:
+            if self.fallback is not None:
+                return self._fall_back(scene, times, None)
+            with self._lock:
+                cause = self._cooldown_cause
+            if cause is not None:
+                raise FrameRenderError(
+                    f"render page skipped for {self.failure_cooldown_s:g} s after "
+                    f"{self.failure_streak} failed renders in a row; last: {cause}"
+                ) from cause
+        source = media if media is not None else self.media
         try:
-            shots = _off_the_loop(lambda: self._render(scene, times))
+            shots = _off_the_loop(lambda: self._render(scene, times, source))
         except RenderContractMissing as exc:
             with self._lock:
                 self._skip_browser_until = self.clock() + self.cooldown_s
+                self._cooldown_cause = None
+                self._failures = 0
             if self.fallback is None:
                 raise
-            return self._fall_back(scene, times, exc)
+            return self._fall_back(scene, times, exc, pause_s=self.cooldown_s)
         except FrameRenderError as exc:
+            with self._lock:
+                self._failures += 1
+                failures = self._failures
+                streak = failures >= self.failure_streak
+                if streak:
+                    self._skip_browser_until = self.clock() + self.failure_cooldown_s
+                    self._cooldown_cause = exc
+            if streak:
+                log.info(
+                    "render page %s failed %d renders in a row; skipping it for %g s",
+                    self.base_url,
+                    failures,
+                    self.failure_cooldown_s,
+                )
             if self.fallback is None:
                 raise
-            return self._fall_back(scene, times, exc)
+            return self._fall_back(scene, times, exc, pause_s=self.failure_cooldown_s if streak else None)
         with self._lock:
             switched, self._on_fallback = self._on_fallback, False
             self._skip_browser_until = None
+            self._cooldown_cause = None
+            self._failures = 0
         if switched:
             log.warning("render page %s now draws the scene: the checker sees real screenshots again", self.base_url)
         return shots, None
 
     def _fall_back(
-        self, scene: schemas.MemoryResponse, times: list[float], cause: FrameRenderError | None
+        self,
+        scene: schemas.MemoryResponse,
+        times: list[float],
+        cause: FrameRenderError | None,
+        *,
+        pause_s: float | None = None,
     ) -> tuple[list[bytes], str | None]:
         assert self.fallback is not None
         with self._lock:
             switched, self._on_fallback = not self._on_fallback, True
         if switched:
             why = str(cause) if cause is not None else "the render page is cooling down"
-            pause = (
-                f"; not retrying the browser for {self.cooldown_s:g} s"
-                if isinstance(cause, RenderContractMissing)
-                else ""
-            )
+            pause = f"; not retrying the browser for {pause_s:g} s" if pause_s is not None else ""
             log.warning("render_frames falls back to labelled diagrams (%s)%s", why, pause)
         elif cause is not None:
             log.info("render_frames still on the fallback: %s", cause)
@@ -681,13 +899,17 @@ class PlaywrightFrameRenderer:
                 raise
             raise FrameRenderError(f"{cause}; the fallback failed too: {exc}") from exc
 
-    def _render(self, scene: schemas.MemoryResponse, times: list[float]) -> list[bytes]:
+    def _render(
+        self, scene: schemas.MemoryResponse, times: list[float], media: MediaSource | None = None
+    ) -> list[bytes]:
         """Screenshots from the browser, one per time; raises FrameRenderError."""
         script = _render_script(scene)
         shots: list[bytes] = []
         try:
             with self.page_factory(self.viewport) as page:
                 page.add_init_script(script)
+                if media is not None:
+                    _serve_media(page, media, scene.memory.family_id)
                 for t in times:
                     _open_ready(
                         page, self.url_for(scene.memory.id, t), timeout_ms=self.timeout_ms, grace_ms=self.ready_grace_ms
@@ -729,7 +951,8 @@ def probe_render_page(
 
     - "contract": it draws an injected scene and sets `window.__STITCH_READY__`;
     - "legacy": it marks `data-stage-ready` but never sets `__STITCH_READY__` (diagrams only);
-    - "unreachable": navigation failed or the page never became ready within `timeout_ms`;
+    - "unreachable": navigation failed, the page reported an error (RenderPageError, logged
+      as a warning with the page's message), or it never became ready within `timeout_ms`;
     - "no_playwright": Playwright or its Chromium is not installed.
 
     Opens one page at `{base_url}/render/draft-preflight?t=0.000` with a minimal scene
@@ -748,6 +971,9 @@ def probe_render_page(
             return "no_playwright"
         except RenderContractMissing:
             return "legacy"
+        except RenderPageError as exc:
+            log.warning("render page probe of %s: %s", url, exc)
+            return "unreachable"
         except Exception:  # noqa: BLE001 - navigation errors and timeouts
             log.info("render page probe of %s failed", url, exc_info=True)
             return "unreachable"
@@ -966,6 +1192,39 @@ def _clean_times(times: Sequence[Any], duration: float) -> list[float]:
     return sorted(out)
 
 
+def draft_scene(
+    run: RunInfo, screenplay: Screenplay, timeline: Timeline, scene: SceneInputs
+) -> schemas.MemoryResponse:
+    """The unsaved draft as the render page gets it: memory id `draft-<runId>` in the run's
+    family, the run's telling, the compiled timeline, and the scene's props, sets and people."""
+    fields = run.fields
+    memory = schemas.Memory(
+        id=f"draft-{run.run_id}",
+        family_id=run.family_id,
+        title=fields.title or "Draft",
+        year=fields.year,
+        participant_ids=list(screenplay.cast),
+        tellings=[
+            schemas.Telling(
+                author_id=run.author_id,
+                question=fields.question,
+                text=fields.text,
+                photo_ids=list(run.photo_ids),
+            )
+        ],
+        screenplay=screenplay,
+        timeline=timeline,
+        prop_ids=list(scene.props),
+        set_ids=list(scene.sets),
+    )
+    return schemas.MemoryResponse(
+        memory=memory,
+        props=list(scene.props.values()),
+        sets=list(scene.sets.values()),
+        people=list(scene.people.values()),
+    )
+
+
 def make_frame_tools(
     repo: AgentRepo,
     run: RunInfo,
@@ -973,35 +1232,14 @@ def make_frame_tools(
     vision: VisionModel,
     scene_for: Callable[[Screenplay], SceneInputs],
 ) -> list[BaseTool]:
-    """Build [render_frames, inspect_frames] bound to one run, renderer and vision model."""
+    """Build [render_frames, inspect_frames] bound to one run, renderer and vision model.
 
-    def draft_scene(screenplay: Screenplay, timeline: Timeline, scene: SceneInputs) -> schemas.MemoryResponse:
-        fields = run.fields
-        memory = schemas.Memory(
-            id=f"draft-{run.run_id}",
-            family_id=run.family_id,
-            title=fields.title or "Draft",
-            year=fields.year,
-            participant_ids=list(screenplay.cast),
-            tellings=[
-                schemas.Telling(
-                    author_id=run.author_id,
-                    question=fields.question,
-                    text=fields.text,
-                    photo_ids=list(run.photo_ids),
-                )
-            ],
-            screenplay=screenplay,
-            timeline=timeline,
-            prop_ids=list(scene.props),
-            set_ids=list(scene.sets),
-        )
-        return schemas.MemoryResponse(
-            memory=memory,
-            props=list(scene.props.values()),
-            sets=list(scene.sets.values()),
-            people=list(scene.people.values()),
-        )
+    render_frames hands the renderer the run's media store (only this family's media), so a
+    browser renderer can show the draft's unsaved art.
+    """
+
+    def run_media(family_id: str, media_id: str) -> tuple[bytes, str] | None:
+        return repo.get_media(run.family_id, media_id) if family_id == run.family_id else None
 
     @tool("render_frames")
     def render_frames(
@@ -1015,9 +1253,10 @@ def make_frame_tools(
         each is clamped into the scene, rounded to 0.01 s and deduplicated, and anything past
         the first 12 (in time order) is dropped. Returns /frames.json, a list of
         {"t", "mediaId", "timeline"} for every frame rendered for the current compiled
-        timeline: after a recompile, frames of the older draft are dropped from it. A frame
-        marked "diagram": true is a labelled diagram of the stage, not a screenshot of the
-        finished art. Then call inspect_frames.
+        timeline: after a recompile, frames of the older draft are dropped from it. Frames are
+        screenshots of the finished stage; one marked "diagram": true is a labelled diagram
+        instead, drawn when the render page was unreachable or broken. Then call
+        inspect_frames.
         """
         files: dict[str, Any] = state.get("files") or {}
         sp_text, tl_text = _read(files, SCREENPLAY_PATH), _read(files, TIMELINE_PATH)
@@ -1050,10 +1289,10 @@ def make_frame_tools(
         except KeyError as exc:
             missing = exc.args[0] if exc.args else "?"
             return f"could not render frames: unknown reference {missing}"
-        draft = draft_scene(screenplay, timeline, scene)
+        draft = draft_scene(run, screenplay, timeline, scene)
 
         try:
-            pngs, note = render_with_note(renderer, draft, clean)
+            pngs, note = render_with_note(renderer, draft, clean, media=run_media)
         except FrameRenderError as exc:
             log.warning("render_frames failed: %s", exc)
             return f"could not render frames: {exc}"
@@ -1175,22 +1414,30 @@ __all__ = [
     "FRAME_PROMPT_BODY",
     "FRAME_PROMPT_PREAMBLE",
     "CONTRACT_EXPR",
+    "ERROR_PAGE_TEXTS",
+    "FAILURE_COOLDOWN_S",
+    "FAILURE_STREAK",
     "FALLBACK_COOLDOWN_S",
     "MAX_CHECK_FIX_ROUNDS",
     "MAX_FRAMES",
+    "MEDIA_ROUTE",
     "READY_EXPR",
     "READY_GRACE_MS",
     "RECOMPILED_TEXT",
+    "RENDER_ERROR_FLAG",
     "FakeFrameCritic",
     "FakeFrameRenderer",
     "FrameRenderError",
     "FrameRenderer",
+    "MediaSource",
     "PageDriver",
     "PageFactory",
     "PlaywrightFrameRenderer",
     "PlaywrightUnavailable",
     "RenderContractMissing",
+    "RenderPageError",
     "RenderPageState",
+    "draft_scene",
     "frame_prompt",
     "make_frame_tools",
     "playwright_page",

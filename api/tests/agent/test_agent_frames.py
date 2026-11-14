@@ -7,7 +7,6 @@ import base64
 import dataclasses
 import io
 import json
-import os
 import re
 import subprocess
 import sys
@@ -1023,7 +1022,7 @@ def _install_fake_playwright(monkeypatch, fail_on: str | None = None) -> list:
             log.append(("close",))
 
     class Chromium:
-        def launch(self, headless):
+        def launch(self, headless, args=None):
             log.append(("launch", headless))
             return Browser()
 
@@ -1104,23 +1103,155 @@ def test_playwright_renderer_without_playwright_raises_frame_render_error(monkey
     assert len(pngs) == 1 and note == DIAGRAM_CRITIC_NOTE
 
 
-def _chromium_installed() -> bool:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return False
-    try:
-        with sync_playwright() as pw:
-            return Path(pw.chromium.executable_path).exists()
-    except Exception:  # noqa: BLE001
-        return False
+# --------------------------------------------------- the draft's own art, served to the page
 
 
-@pytest.mark.skipif(not os.environ.get("STITCH_WEB_URL"), reason="STITCH_WEB_URL not set (no web app to render)")
-def test_playwright_renderer_against_the_real_web_app():
-    if not _chromium_installed():
-        pytest.skip("chromium is not installed for Playwright")
-    pngs = PlaywrightFrameRenderer().render(SAMPLE, [3.2])
-    assert len(pngs) == 1
-    img = Image.open(io.BytesIO(pngs[0]))
-    assert img.size == (1280, 720)
+class _Route:
+    """A fake Playwright Route for one request: records whether it was fulfilled or continued."""
+
+    def __init__(self, url: str) -> None:
+        self.request = types.SimpleNamespace(url=url)
+        self.outcome: tuple | None = None
+
+    def fulfill(self, **kwargs) -> None:
+        self.outcome = ("fulfill", kwargs)
+
+    def continue_(self) -> None:
+        self.outcome = ("continue",)
+
+
+class _RoutingPage(_StagePage):
+    """A contract page that routes: on each goto it asks for the media URLs in `requests`
+    (as the stage does through api.mediaUrl) and keeps every Route it handled."""
+
+    def __init__(self, requests: list[str]) -> None:
+        super().__init__(lambda url: "contract")
+        self.requests = requests
+        self.handlers: list = []
+        self.routes: list[_Route] = []
+        self.styles: list[str] = []
+
+    def route(self, pattern: str, handler) -> None:
+        self.handlers.append((pattern, handler))
+
+    def add_style_tag(self, content: str) -> None:
+        self.styles.append(content)
+
+    def goto(self, url: str, timeout: int) -> None:
+        super().goto(url, timeout)
+        for request in self.requests:
+            route = _Route(request)
+            for _, handler in self.handlers:
+                handler(route)
+            self.routes.append(route)
+
+
+def _routing(page: _RoutingPage):
+    import contextlib
+
+    @contextlib.contextmanager
+    def factory(viewport):
+        yield page
+
+    return factory
+
+
+def test_media_ref_reads_family_and_id_from_an_api_media_url():
+    from agent.tools.frames import _media_ref
+
+    assert _media_ref("http://localhost:8000/families/fam_1/media/abc123") == ("fam_1", "abc123")
+    assert _media_ref("https://api.example/v1/families/f%20x/media/media%2Fabc?x=1") == ("f x", "media/abc")
+    assert _media_ref("http://localhost:8000/families/fam_1/media/") is None
+    assert _media_ref("http://localhost:8000/families/fam_1/people/abc") is None
+    assert _media_ref("http://localhost:3000/render/draft-run_1") is None
+
+
+def test_render_frames_serves_the_drafts_unsaved_art_to_the_page():
+    """Set art put by the set tool before save is served from the run's store, not the API
+    (which the headless browser cannot read: no session cookie). Other ids go to the network."""
+    from agent.tools.frames import HIDE_DEV_OVERLAY_CSS, MEDIA_ROUTE
+
+    repo = make_repo()
+    art = b"\x89PNG fake set art"
+    art_id = repo.put_media(FAM, art, "image/png", kind="cutout")
+    other_repo_id = repo.put_media("fam_other", b"secret", "image/png", kind="cutout")
+    bare = art_id.removeprefix("media/")
+    page = _RoutingPage(
+        [
+            f"http://localhost:8000/families/{FAM}/media/{bare}",
+            f"http://localhost:8000/families/{FAM}/media/{art_id.replace('/', '%2F')}",
+            f"http://localhost:8000/families/{FAM}/media/ffffffffffffffffffffffff",
+            f"http://localhost:8000/families/fam_other/media/{other_repo_id.removeprefix('media/')}",
+        ]
+    )
+    renderer = PlaywrightFrameRenderer("http://web:3000", page_factory=_routing(page), fallback=None)
+    graph, _, _ = build(renderer=renderer, repo=repo)
+    _, state, _ = call(graph, "art", 1, "render_frames", {"times": [3.2]}, files=sample_files())
+
+    (entry,) = frames_file(state)
+    assert "diagram" not in entry
+    assert [p for p, _ in page.handlers] == [MEDIA_ROUTE]
+    own, own_ref, unknown, other = page.routes
+    for route in (own, own_ref):
+        kind, kwargs = route.outcome
+        assert kind == "fulfill" and kwargs["status"] == 200 and kwargs["body"] == art
+        assert kwargs["headers"]["Content-Type"] == "image/png"
+        assert kwargs["headers"]["Access-Control-Allow-Origin"] == "*"  # the stage loads art crossOrigin
+    assert unknown.outcome == ("continue",)
+    assert other.outcome == ("continue",)  # another family's media is never served
+    assert page.styles == [HIDE_DEV_OVERLAY_CSS]
+
+
+def test_a_media_source_that_fails_lets_the_request_through():
+    def broken(fid, mid):
+        raise RuntimeError("db down")
+
+    page = _RoutingPage([f"http://localhost:8000/families/{SAMPLE.memory.family_id}/media/abc"])
+    renderer = PlaywrightFrameRenderer("http://web:3000", page_factory=_routing(page), fallback=None, media=broken)
+    pngs, note = renderer.render_with_note(SAMPLE, [1.0])
+    assert note is None and len(pngs) == 1
+    assert page.routes[0].outcome == ("continue",)
+
+
+def test_without_a_media_source_nothing_is_routed():
+    page = _RoutingPage([f"http://localhost:8000/families/{SAMPLE.memory.family_id}/media/abc"])
+    PlaywrightFrameRenderer("http://web:3000", page_factory=_routing(page), fallback=None).render(SAMPLE, [1.0])
+    assert page.handlers == [] and page.routes[0].outcome is None
+
+
+def test_render_with_note_passes_media_only_to_renderers_that_take_it():
+    from agent.tools.frames import render_with_note
+
+    seen: list = []
+
+    class TakesMedia(PlainRenderer):
+        def render_with_note(self, scene, times, *, media=None):
+            seen.append(media)
+            return self.render(scene, times), None
+
+    class NoMedia(PlainRenderer):
+        def render_with_note(self, scene, times):
+            seen.append("no media")
+            return self.render(scene, times), None
+
+    def source(fid, mid):
+        return None
+
+    render_with_note(TakesMedia(), SAMPLE, [1.0], media=source)
+    render_with_note(NoMedia(), SAMPLE, [1.0], media=source)
+    render_with_note(TakesMedia(), SAMPLE, [1.0])
+    assert seen == [source, "no media", None]
+    assert render_with_note(PlainRenderer(), SAMPLE, [1.0], media=source)[1] is None  # render() only
+
+
+def test_draft_scene_is_what_the_render_page_gets():
+    from agent.tools.frames import draft_scene
+
+    repo = make_repo()
+    sp = Screenplay.model_validate_json(SCREENPLAY_TEXT)
+    scene = make_scene_for(repo)(sp)
+    draft = draft_scene(RUN, sp, TIMELINE, scene)
+    assert draft.memory.id == "draft-run_1" and draft.memory.family_id == FAM
+    assert draft.memory.timeline == TIMELINE and draft.memory.participant_ids == list(sp.cast)
+    assert {p.id for p in draft.people} == set(sp.cast) and {s.id for s in draft.sets} == {s.set for s in sp.shots}
+    assert draft.memory.tellings[0].text == RUN.fields.text
