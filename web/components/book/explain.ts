@@ -12,6 +12,7 @@
  *   explainStep(open, event)                  which note is open after a click, key or turn
  *   resumesAfter(reason)                      whether closing hands the scene back to play
  *   mayExplain(gate) / turnedAway(gate)       when cutouts may be clicked, and when a turning page shuts the note
+ *   standsUp(angle)                           a cutout risen enough with its layer to be clicked
  *   noteRise(ms) / noteFold(ms) / sewAt(...)  the pop-up's motion over time
  *
  * The 3D half (moment/ExplainNote.tsx) hit-tests the cutouts, raises the
@@ -672,6 +673,21 @@ export interface ExplainGate {
  */
 export function mayExplain(g: ExplainGate): boolean {
   return g.ready && !g.armed && g.reveal >= g.openAt;
+}
+
+/**
+ * The most a cutout may lean back off upright with its layer (its mount's
+ * hinge angle: 0 upright .. π/2 lying flat) and still be clicked: its layer
+ * four-fifths risen. Clicks open from the telling's first frame, while the
+ * set may still be folding up (and a ?t= frame may hold it there): a cutout
+ * still lying on the page is not yet anyone to ask about. Leaves room for
+ * the book's reveal, which caps every fold, at the gate's OPEN_TO_PLAY.
+ */
+export const STAND_ANGLE = 0.2 * (Math.PI / 2);
+
+/** A cutout leaning back `angle` off upright stands enough to be clicked. */
+export function standsUp(angle: number): boolean {
+  return Number.isFinite(angle) && Math.abs(angle) <= STAND_ANGLE + 1e-9;
 }
 
 /**

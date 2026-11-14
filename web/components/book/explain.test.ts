@@ -495,6 +495,15 @@ describe("when cutouts may be clicked", () => {
     assert.ok(started);
   });
 
+  it("leaves a cutout still lying on the page with its folding layer be", () => {
+    assert.equal(x.standsUp(0), true);
+    // Its layer risen as far as the book's reveal lets it when the telling starts.
+    assert.equal(x.standsUp((1 - gate.OPEN_TO_PLAY) * (Math.PI / 2)), true);
+    assert.equal(x.standsUp(Math.PI / 2), false);
+    assert.equal(x.standsUp(0.5 * (Math.PI / 2)), false);
+    assert.equal(x.standsUp(Number.NaN), false);
+  });
+
   it("does not shut a note opened just as the gate opens, but does before the gate re-arms", () => {
     assert.equal(x.turnedAway(g({ reveal: gate.OPEN_TO_PLAY })), false);
     assert.equal(x.turnedAway(g({ reveal: 1 })), false);

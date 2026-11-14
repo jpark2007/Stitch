@@ -27,7 +27,7 @@ import { Puppet, scaleForBuild, type PuppetHandle, type PuppetInputs } from "../
 import { BONES, RIG } from "../puppet/rig";
 import type { Rotations } from "../puppet/kinematics";
 import { FootPlanter } from "./planting";
-import { PRIORITY, standUp, useScene, useWingClip } from "./SceneProvider";
+import { PRIORITY, registerMount, standUp, useScene, useWingClip } from "./SceneProvider";
 import type { Mount } from "./standing";
 
 /**
@@ -77,6 +77,7 @@ export function PuppetActor({ id, person: given, index = 0 }: PuppetActorProps) 
   const inner = useRef<Group>(null);
   const mount = useMemo<Mount>(() => ({ angle: 0, dy: 0, dz: 0 }), []);
   useEffect(() => runtime.registerPuppet(id, handle), [runtime, id]);
+  useEffect(() => registerMount(runtime, `puppet:${id}`, mount), [runtime, id, mount]);
 
   const readRot = useMemo(() => (bone: string) => driver.current.rot[bone] ?? 0, []);
 

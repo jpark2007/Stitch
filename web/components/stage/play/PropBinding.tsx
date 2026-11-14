@@ -25,7 +25,7 @@ import {
   setState,
   type PropActorHandle,
 } from "../PropActor";
-import { PRIORITY, standStill, standUp, tiltAbout, useScene, useWingClip } from "./SceneProvider";
+import { PRIORITY, registerMount, standStill, standUp, tiltAbout, useScene, useWingClip } from "./SceneProvider";
 import type { Mount } from "./standing";
 
 export interface PropBindingProps {
@@ -41,6 +41,7 @@ export function PropBinding({ prop }: PropBindingProps) {
   const inner = useRef<Group>(null);
   const mount = useMemo<Mount>(() => ({ angle: 0, dy: 0, dz: 0 }), []);
   const scratch = useMemo(() => ({ m: new Matrix4(), v: new Vector3() }), []);
+  useEffect(() => (pf ? registerMount(runtime, pf.target, mount) : undefined), [runtime, pf, mount]);
 
   // A missing image resolves to an empty string: the actor draws its
   // placeholder card in prop.color instead.

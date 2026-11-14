@@ -100,6 +100,7 @@ import {
   rect,
   resumesAfter,
   sewAt,
+  standsUp,
   stepLift,
   turnedAway,
   underlineEnd,
@@ -1160,10 +1161,16 @@ class ExplainStage {
     return !!g && mayExplain(g);
   }
 
+  /** The cutout has risen with its layer (not still lying on the page as the set folds up). */
+  private standing(target: string): boolean {
+    const m = this.runtime.mounts.get(target);
+    return !m || standsUp(m.angle);
+  }
+
   canOpen(target: string): boolean {
     if (!this.clickable || !this.items.some((i) => i.target === target)) return false;
     const obj = this.objectOf(target);
-    return !!obj && this.standsOnSet(obj);
+    return !!obj && this.standing(target) && this.standsOnSet(obj);
   }
 
   /**
@@ -1247,7 +1254,7 @@ class ExplainStage {
   }
 
   private raycastTarget(t: Target, raycaster: Raycaster, intersects: Intersection[]) {
-    if (!this.clickable) return;
+    if (!this.clickable || !this.standing(t.item.target)) return;
     const obj = this.objectOf(t.item.target);
     if (!obj || !this.standsOnSet(obj)) return;
     // Right on the paper: as near as it is. Only within the slack round its
