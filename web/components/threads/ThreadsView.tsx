@@ -27,6 +27,7 @@ import {
 } from "./camera";
 import { buildModel, type ThreadMoment, type ThreadPerson } from "./model";
 import { drawFrame, makeLayout, type FrameGeometry, type Layout } from "./renderer";
+import { paperAt, placeTitles, TITLE_FONT_PX, type TitleBox } from "./titles";
 
 export interface ThreadsViewProps {
   familyName: string;
@@ -39,16 +40,7 @@ export interface ThreadsViewProps {
 }
 
 const NOW = new Date().getFullYear();
-const TITLE_FONT_PX = 20;
 const KNOT_POP_MS = 460;
-
-interface TitleBox {
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
-  knot: number;
-}
 
 interface Engine {
   ctx: CanvasRenderingContext2D | null;
@@ -85,47 +77,6 @@ interface Engine {
   /** Last tap (time, x, y), to catch a double tap. */
   lastTap: { t: number; x: number; y: number } | null;
   drawMs: number;
-}
-
-/**
- * The paper colour at screen height y: the page is lit from the top and
- * darkens towards the bottom (globals.css), so a title halo in plain
- * --paper would show as a pale patch low on the screen. Measured from
- * screenshots; good to a few levels either way.
- */
-function paperAt(y: number): string {
-  const k = Math.min(1, Math.max(0, y / 620));
-  const c = (a: number, b: number) => Math.round(a + (b - a) * k);
-  return `rgb(${c(244, 227)},${c(237, 216)},${c(224, 201)})`;
-}
-
-/** 0 below `a`, 1 above `b`, smooth in between. */
-function ramp(a: number, b: number, x: number): number {
-  const u = Math.min(1, Math.max(0, (x - a) / (b - a)));
-  return u * u * (3 - 2 * u);
-}
-
-/**
- * How much thread runs through a title box: samples inside it, faded
- * threads counting for less. Samples are evenly spaced in x, so only the
- * slice under the box is checked.
- */
-function threadsThrough(g: FrameGeometry, dim: number[], box: { x0: number; y0: number; x1: number; y1: number }): number {
-  let score = 0;
-  for (let i = 0; i < g.strands.length; i++) {
-    const pts = g.strands[i];
-    const n = g.strandLens[i];
-    if (!pts || n < 2) continue;
-    const step = pts[2] - pts[0] || 1;
-    const k0 = Math.max(0, Math.floor((box.x0 - pts[0]) / step));
-    const k1 = Math.min(n - 1, Math.ceil((box.x1 - pts[0]) / step));
-    const weight = 1 - dim[i] * 0.9;
-    for (let k = k0; k <= k1; k += 2) {
-      const y = pts[k * 2 + 1];
-      if (y > box.y0 - 3 && y < box.y1 + 3) score += weight;
-    }
-  }
-  return score;
 }
 
 export default function ThreadsView(props: ThreadsViewProps) {
@@ -339,98 +290,17 @@ export default function ThreadsView(props: ThreadsViewProps) {
     const placeOverlay = (e: Engine) => {
       const g = e.geom;
       if (!g) return;
-      const W = e.layout.width;
-      const s = e.cam.s;
-      // Titles fade in as you zoom towards single years; the followed
-      // person's and the hovered knot's show at any zoom. They are placed
-      // greedily above or below their knot without overlapping.
-      const base = ramp(50, 80, s);
-      const alpha = new Map<number, number>();
-      const candidates: number[] = [];
-      for (let i = 0; i < model.knots.length; i++) {
-        const h = g.knots[i];
-        if (!h || !h.visible) continue;
-        const lit = model.knots[i].people.some((p) => {
-          const idx = model.strands.findIndex((q) => q.person.id === p.id);
-          return e.dim[idx] < 0.5;
-        });
-        const o = i === e.hoverKnot || (e.highlight >= 0 && lit) ? 1 : e.highlight < 0 ? base : 0;
-        if (o > 0.02) {
-          candidates.push(i);
-          alpha.set(i, o);
-        }
-      }
-      candidates.sort((a, b) => {
-        if (a === e.hoverKnot) return -1;
-        if (b === e.hoverKnot) return 1;
-        return model.knots[b].people.length - model.knots[a].people.length || a - b;
+      const { boxes, shown } = placeTitles(model, {
+        geom: g,
+        dim: e.dim,
+        highlight: e.highlight,
+        hoverKnot: e.hoverKnot,
+        s: e.cam.s,
+        width: e.layout.width,
+        widths: e.titleW,
+        spots: e.titleSpot,
       });
-      const placed: TitleBox[] = [];
-      const shown = new Map<number, { dx: number; dy: number }>();
-      const knotsBoxes = g.knots.filter((k) => k && k.visible);
-      const hTxt = TITLE_FONT_PX * 1.15;
-      for (const i of candidates) {
-        const h = g.knots[i];
-        const w = e.titleW[i];
-        const up = -(h.r + 8 + hTxt);
-        const down = h.r + 8;
-        const tries = [
-          { dy: up, dx: -w / 2 },
-          { dy: down, dx: -w / 2 },
-          { dy: up, dx: -w * 0.12 },
-          { dy: up, dx: -w * 0.88 },
-          { dy: down, dx: -w * 0.12 },
-          { dy: down, dx: -w * 0.88 },
-          { dy: up - hTxt * 0.9, dx: -w / 2 },
-          { dy: down + hTxt * 0.9, dx: -w / 2 },
-        ];
-        // Of the spots that collide with nothing, take the one the fewest
-        // (lit) threads run through, preferring earlier spots on a tie.
-        // The spot used last frame wins unless another is clearly better, so
-        // titles do not hop while panning.
-        let bestBox: TitleBox | null = null;
-        let bestTry = tries[0];
-        let bestScore = Infinity;
-        let bestIdx = -1;
-        let prevBox: TitleBox | null = null;
-        let prevScore = Infinity;
-        const prevIdx = e.titleSpot.get(i) ?? -1;
-        for (let ti = 0; ti < tries.length; ti++) {
-          const tr = tries[ti];
-          const box: TitleBox = { x0: h.x + tr.dx, y0: h.y + tr.dy, x1: h.x + tr.dx + w, y1: h.y + tr.dy + hTxt, knot: i };
-          if (box.x0 < 8 || box.x1 > W - 8) continue;
-          const hitsTitle = placed.some((b) => b.x0 < box.x1 + 10 && box.x0 < b.x1 + 10 && b.y0 < box.y1 + 2 && box.y0 < b.y1 + 2);
-          const hitsKnot = knotsBoxes.some(
-            (k) => k.index !== i && k.x + k.r > box.x0 && k.x - k.r < box.x1 && k.y + k.r > box.y0 && k.y - k.r < box.y1,
-          );
-          const hitsName = g.names.some((b) => b.x0 < box.x1 + 6 && box.x0 < b.x1 + 6 && b.y0 < box.y1 && box.y0 < b.y1);
-          const hitsHeader = box.y0 < (W < 640 ? 150 : 136) && box.x0 < 520;
-          if (hitsTitle || hitsKnot || hitsName || hitsHeader) continue;
-          // Centred spots first: each step down the list must earn its place.
-          const score = threadsThrough(g, e.dim, box) + ti * 2;
-          if (ti === prevIdx) {
-            prevBox = box;
-            prevScore = score;
-          }
-          if (score < bestScore - 0.5) {
-            bestScore = score;
-            bestBox = box;
-            bestTry = tr;
-            bestIdx = ti;
-          }
-        }
-        if (prevBox && prevScore <= bestScore + 4) {
-          bestBox = prevBox;
-          bestTry = tries[prevIdx];
-          bestIdx = prevIdx;
-        }
-        if (bestBox) {
-          placed.push(bestBox);
-          shown.set(i, bestTry);
-          e.titleSpot.set(i, bestIdx);
-        } else e.titleSpot.delete(i);
-      }
-      e.titles = placed;
+      e.titles = boxes;
 
       for (let i = 0; i < model.knots.length; i++) {
         const a = linkRefs.current[i];
@@ -462,7 +332,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
             t.dataset.band = band;
             t.style.setProperty("--halo", paperAt((h.y + pl.dy + TITLE_FONT_PX * 0.6)));
           }
-          const o = (alpha.get(i) ?? 1).toFixed(2);
+          const o = pl.alpha.toFixed(2);
           if (t.style.opacity !== o) t.style.opacity = o;
         } else if (t.style.opacity !== "0") {
           t.style.opacity = "0";
