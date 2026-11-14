@@ -217,6 +217,10 @@ class Timeline(Model):
         default=None, description="authorId -> narration track. Switching teller swaps audio and captions only."
     )
     default_narrator: str | None = Field(default=None, description="authorId whose narration is `audio`/`captions`")
+    feet_planted: bool | None = Field(
+        default=None,
+        description="true when root.position.y already includes foot planting for walk/run keys; the stage must then not plant feet itself",
+    )
     interactions: list[Interaction] | None = None
     explanations: list[Explanation] | None = None
 

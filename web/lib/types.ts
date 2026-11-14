@@ -588,6 +588,8 @@ export interface Timeline {
   narrations?: Record<string, NarrationTrack> | null;
   /** authorId whose narration is `audio`/`captions` */
   defaultNarrator?: string | null;
+  /** true when root.position.y already includes foot planting for walk/run keys; the stage must then not plant feet itself */
+  feetPlanted?: boolean | null;
   interactions?: Interaction[] | null;
   explanations?: Explanation[] | null;
 }
