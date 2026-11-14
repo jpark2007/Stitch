@@ -231,6 +231,66 @@ def test_handover_point_coincident_shoulders():
     assert meet == shoulder_world("arm_r", a.ground, a.facing, a.build)
 
 
+
+def _along(meet, sg, st):
+    """Where ``meet`` lies on the giver-to-taker shoulder line: 0 at the giver's, 1 at the taker's."""
+    dx, dy = st[0] - sg[0], st[1] - sg[1]
+    return ((meet[0] - sg[0]) * dx + (meet[1] - sg[1]) * dy) / (dx * dx + dy * dy)
+
+
+@pytest.mark.parametrize("dx", [0.05, 0.1, 0.15, 0.2, 0.22])
+@pytest.mark.parametrize(("giver_build", "taker_build"), [("average", "average"), ("tall", "small"), ("small", "tall")])
+def test_close_handover_never_reaches_behind_the_taker(dx, giver_build, taker_build):
+    """Bug: with the shoulders closer than 0.83 of the giver's reach, the hands met beyond the
+    taker's shoulder, so the taker reached back behind itself (two seeded demo scenes did:
+    a 0.07 and a 0.11 shoulder gap). Close up, the hands meet two thirds of the way across."""
+    g = Body("g", (0.0, 0.0), 1, giver_build)
+    k = Body("k", (dx, 0.0), -1, taker_build)
+    sg = shoulder_world("arm_r", g.ground, g.facing, g.build)
+    st = shoulder_world("arm_r", k.ground, k.facing, k.build)
+    meet = handover_point(g, k)
+    along = _along(meet, sg, st)
+    assert 0 < along <= 2 / 3 + 1e-12
+    cross = (meet[0] - sg[0]) * (st[1] - sg[1]) - (meet[1] - sg[1]) * (st[0] - sg[0])
+    assert cross == pytest.approx(0.0, abs=1e-12)  # on the shoulder line
+    for body in (g, k):  # both hands get there
+        up, lo = solve_arm("arm_r", meet, body.ground, body.facing, body.build)
+        assert socket_world("hand_r", {"arm_r.upper": up, "arm_r.lower": lo}, body.ground, body.facing,
+                            body.build) == pytest.approx(meet)
+
+
+def test_close_handover_meets_two_thirds_across():
+    g = Body("g", (0.0, 0.0), 1, "average")
+    k = Body("k", (0.15, 0.0), -1, "average")
+    sg = shoulder_world("arm_r", g.ground, g.facing, g.build)
+    st = shoulder_world("arm_r", k.ground, k.facing, k.build)
+    assert handover_point(g, k) == pytest.approx((sg[0] + (st[0] - sg[0]) * 2 / 3, sg[1]))
+
+
+@pytest.mark.parametrize("dx", [0.33, 0.36, 0.38])
+def test_handover_at_arms_length_keeps_the_reference_formula(dx):
+    """Once 0.83 of the giver's reach is at most two thirds of the gap, nothing changes."""
+    g = Body("g", (0.0, 0.0), 1, "average")
+    k = Body("k", (dx, 0.05), -1, "average")
+    sg = shoulder_world("arm_r", g.ground, g.facing, g.build)
+    st = shoulder_world("arm_r", k.ground, k.facing, k.build)
+    gap = math.hypot(st[0] - sg[0], st[1] - sg[1])
+    f = 0.83 * arm_reach("average") / gap
+    assert f <= 2 / 3
+    assert handover_point(g, k) == (sg[0] + (st[0] - sg[0]) * f, sg[1] + (st[1] - sg[1]) * f)
+
+
+def test_handover_point_is_continuous_across_the_two_thirds_cap():
+    g = Body("g", (0.0, 0.0), 1, "average")
+    sg = shoulder_world("arm_r", g.ground, g.facing, g.build)
+    # the shoulder gap at which 0.83 * reach is exactly two thirds of it
+    edge = 0.83 * arm_reach("average") * 1.5
+    k_x = sg[0] + edge + 0.09 * scale("average")  # facing -1, its shoulder is 0.045 left of its root
+    near = handover_point(g, Body("k", (k_x - 1e-9, 0.0), -1, "average"))
+    far = handover_point(g, Body("k", (k_x + 1e-9, 0.0), -1, "average"))
+    assert near == pytest.approx(far, abs=1e-8)
+
+
 # --------------------------------------------- agreement with the reference generator
 
 def _reference_helpers() -> dict:
@@ -512,3 +572,48 @@ def test_body_socket_uses_the_body_torso_unless_given():
     assert body_socket(body, "hand_r", {**rots, "torso": 0.1}) == socket_world(
         "hand_r", {"torso": 0.1, **rots}, (0.0, 0.0), 1, "tall"
     )
+
+
+# ------------------------------------------- bug hunt: every build, exact edges of the solver
+
+ALL_BUILDS = sorted(__import__("screenplay.schema", fromlist=["VOCABULARY"]).VOCABULARY["builds"])
+
+
+def test_scale_matches_the_stage_formula_for_every_build():
+    """kinematics.ts puppetScale is stageHeight * build / rig.height; ik.scale leaves out the
+    height, which is only the same while the rig's height is 1.0."""
+    from screenplay.schema import VOCABULARY
+
+    assert RIG["height"] == 1.0
+    for build, mult in VOCABULARY["builds"].items():
+        assert scale(build) == RIG["stageHeight"] * mult / RIG["height"]
+
+
+def _hand(arm, rots, ground, facing, build):
+    return socket_world(arm_socket(arm), rots, ground, facing, build)
+
+
+@pytest.mark.parametrize("build", ALL_BUILDS)
+@pytest.mark.parametrize("facing", FACINGS)
+@pytest.mark.parametrize("arm", ARMS)
+@pytest.mark.parametrize("torso", [0.0, -0.25, 0.4])
+def test_exact_full_reach_zero_distance_and_behind_the_shoulder(build, facing, arm, torso):
+    ground = (0.1, 0.2)
+    sh = shoulder_world(arm, ground, facing, build, torso=torso)
+    reach = arm_reach(build, arm)
+    upper, lower = arm_bones(arm)
+    targets = [sh]  # zero distance: the hand folds back onto the shoulder
+    for ang in (0.0, 0.8, math.pi / 2, math.pi, -1.0, -2.6, 2.9):  # forward, up, behind, below
+        targets.append((sh[0] + reach * math.sin(ang), sh[1] - reach * math.cos(ang)))  # exactly full reach
+        targets.append((sh[0] + 0.5 * reach * math.sin(ang), sh[1] - 0.5 * reach * math.cos(ang)))
+    for target in targets:
+        u, lo = solve_arm(arm, target, ground, facing, build, torso=torso)
+        assert math.isfinite(u) and math.isfinite(lo)
+        got = _hand(arm, {"torso": torso, upper: u, lower: lo}, ground, facing, build)
+        assert got == pytest.approx(target, abs=1e-9)
+    # just past full reach: OutOfReach with distances in stage units, measured from the torso's shoulder
+    far = (sh[0] + 1.5 * reach * facing, sh[1])
+    with pytest.raises(OutOfReach) as info:
+        solve_arm(arm, far, ground, facing, build, torso=torso)
+    assert info.value.distance == pytest.approx(1.5 * reach)
+    assert info.value.reach == pytest.approx(reach)
