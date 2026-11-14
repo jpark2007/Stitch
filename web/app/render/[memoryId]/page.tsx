@@ -13,6 +13,8 @@
 //   /render/hymn_books?narrator=mom   start with Mom's telling (a tab per teller switches)
 //   /render/hymn_books?autoplay=0     wait for play (default 1)
 //   /render/hymn_books?ui=0      hide the tabs and transport (captions stay)
+//   /render/hymn_books?fps       print the frame rate in a corner (it is always in
+//                                <html data-fps> for capture scripts)
 //   /render/<id> with window.__STITCH_RENDER__ = <MemoryResponse> injected before any
 //                                script runs (the checker, api/agent/tools/frames.py): that
 //                                scene, paused at ?t, bare (no chrome, no captions); the
@@ -50,6 +52,7 @@ async function RenderParams({ params, searchParams }: { params: Promise<{ memory
       narrator={one(q.narrator) ?? null}
       autoplay={one(q.autoplay) !== "0"}
       ui={one(q.ui) !== "0"}
+      fps={q.fps !== undefined && one(q.fps) !== "0"}
     />
   );
 }

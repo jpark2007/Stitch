@@ -29,6 +29,7 @@ import type { MemoryResponse } from "@/lib/types";
 import { useTimelinePlayer, type PlaybackController } from "@/components/stage/playback";
 import {
   CaptionStrip,
+  FpsProbe,
   PlayerControls,
   SAMPLE_SCENES,
   SoundHint,
@@ -61,6 +62,8 @@ export interface TimelineViewProps {
   autoplay: boolean;
   /** Show the transport and tabs (?ui=0 hides them for frame captures). */
   ui: boolean;
+  /** Print the measured frame rate in a corner (?fps). It is always in `<html data-fps>`. */
+  fps?: boolean;
   /** Shown when there is no scene for this id. */
   fallback?: ReactNode;
 }
@@ -110,6 +113,7 @@ export function TimelineView({ memoryId, fallback = null, ...rest }: TimelineVie
 }
 
 const IDLE_MS = 2600;
+const FPS_READOUT = "stage-fps";
 
 /**
  * The shot's storybook line under the title while the set rises, before the
@@ -128,7 +132,8 @@ function ShotLine({ controller, scene }: { controller: PlaybackController; scene
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, transition: { duration: 0.45 } }}
           transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-          className="mt-1.5 max-w-[min(30rem,80vw)] font-serif text-[0.98rem] italic leading-snug text-[#f4ecdd]/80 [text-shadow:0_1px_10px_rgb(20_10_4/0.7)]"
+          // Phones put the teller tabs under the title: no room for it there.
+          className="mt-1.5 hidden max-w-[min(30rem,80vw)] font-serif md:block text-[0.98rem] italic leading-snug text-[#f4ecdd]/80 [text-shadow:0_1px_10px_rgb(20_10_4/0.7)]"
         >
           {text}
         </motion.p>
@@ -143,8 +148,11 @@ function Player({
   narrator,
   autoplay,
   ui,
+  fps = false,
   captions = true,
 }: Omit<TimelineViewProps, "memoryId" | "fallback"> & { scene: SceneData; captions?: boolean }) {
+  // Stable, so the memoised stage never re-renders for it.
+  const overlay = useMemo(() => <FpsProbe target={fps ? FPS_READOUT : undefined} />, [fps]);
   const familyId = scene.familyId;
   const resolveAudio = useCallback(
     (mediaId: string) => (familyId ? api.mediaUrl(familyId, bareMediaId(mediaId)) : null),
@@ -254,6 +262,7 @@ function Player({
         scene={scene}
         onReady={onStageReady}
         lift={captions ? 0.065 : 0}
+        overlay={overlay}
       />
       {/* Soft lens vignette: the lamp's pool, falling off into the room. */}
       <div
@@ -299,6 +308,12 @@ function Player({
           </div>
         )}
       </div>
+      {fps && (
+        <span
+          id={FPS_READOUT}
+          className="pointer-events-none absolute bottom-3 left-3 font-sans text-xs tabular-nums text-[#f4ecdd]/60"
+        />
+      )}
     </motion.div>
   );
 }

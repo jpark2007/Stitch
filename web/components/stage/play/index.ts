@@ -37,6 +37,7 @@ export { LayerBinding, SetLayers, sceneCutoutSpecs, type LayerBindingProps } fro
 export { Standing, foldToRise, layerZ, risersFor, type Mount, type Riser } from "./standing";
 export { CameraBinding, type CameraBindingProps } from "./CameraBinding";
 export { EffectBindings } from "./EffectBindings";
+export { FpsProbe } from "./FpsProbe";
 export { CaptionStrip, type CaptionStripProps, type Teller } from "./CaptionStrip";
 export { PlayerControls, SoundHint, TellerTabs, type PlayerControlsProps, type TellerTabsProps } from "./PlayerControls";
 export {

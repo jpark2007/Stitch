@@ -30,6 +30,8 @@ export interface RenderViewProps {
   autoplay?: boolean;
   /** Timeline scenes: show the tabs and transport (?ui, default true). */
   ui?: boolean;
+  /** Timeline scenes: print the frame rate (?fps). */
+  fps?: boolean;
 }
 
 /** The closed book, centred: the intro state a scrubbed ?open=0 starts from. */
@@ -58,6 +60,7 @@ export function RenderView(props: RenderViewProps) {
       narrator={props.narrator ?? null}
       autoplay={props.autoplay ?? true}
       ui={props.ui ?? true}
+      fps={props.fps ?? false}
       fallback={<DioramaView {...props} />}
     />
   );
