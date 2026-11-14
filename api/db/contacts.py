@@ -176,7 +176,7 @@ def create_pending_enrollment(db, family_id: str, person_id: str, actor_id: str,
         "enrollmentHash": hashlib.sha256(code.encode()).hexdigest(),
         "enrollmentExpiresAt": now + timedelta(minutes=10), "enrollmentAttempts": 0,
         "enrollmentInitiator": actor_id, "enrollmentPersonUserId": person.get("userId"),
-        "verifiedAt": None, "optInAt": None, "spaceId": None}
+        "verifiedAt": None, "optInAt": None, "spaceId": None, "spaceKind": None}
     if existing is None:
         # A deterministic new-contact key serializes creation for the same handle
         # across API workers/families without changing legacy contact indexes.
@@ -224,7 +224,9 @@ def stop_settings_contact(db, family_id: str, person_id: str, actor_id: str) -> 
 
 
 def redeem_enrollment(db, provider: str, handle: str, code: str, space_id: str,
-                      *, now: datetime | None = None) -> bool:
+                      *, space_kind: str, now: datetime | None = None) -> bool:
+    if space_kind != "direct":
+        return False
     now = now or datetime.now(timezone.utc)
     rows = matching_contacts(db, provider, handle)
     if len(rows) != 1:
@@ -255,7 +257,7 @@ def redeem_enrollment(db, provider: str, handle: str, code: str, space_id: str,
     # Consume proof and activate in one compare-and-set. STOP/reissue/concurrent
     # redemption all change this predicate; none can revive a stopped contact.
     active = db.contacts.find_one_and_update(query,
-        {"$set": {"status": "active", "verifiedAt": now, "optInAt": now, "spaceId": space_id},
+        {"$set": {"status": "active", "verifiedAt": now, "optInAt": now, "spaceId": space_id, "spaceKind": space_kind},
          "$unset": {"enrollmentHash": "", "enrollmentExpiresAt": "", "enrollmentInitiator": "",
                     "enrollmentPersonUserId": "", "enrollmentAttempts": ""}},
         return_document=ReturnDocument.AFTER)
