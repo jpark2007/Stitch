@@ -1,5 +1,32 @@
 {
-  "$comment": "Bones, lengths, pivots, and sockets of the shared paper puppet",
-  "bones": {},
-  "sockets": {}
+  "$comment": "The one shared paper puppet. Rig units: standing height = 1.0. A flat doll in its local XY plane: +x is the way it faces, +y is up. Every bone rotates about z, radians, counter-clockwise positive seen from the front. See shared/CONTRACTS.md.",
+  "height": 1.0,
+  "stageHeight": 0.5,
+  "hipHeight": 0.48,
+  "root": "root",
+  "bones": {
+    "torso":       { "parent": "root",        "pivot": [0.0, 0.0],    "dir": [0, 1],  "length": 0.30 },
+    "head":        { "parent": "torso",       "pivot": [0.0, 0.30],   "dir": [0, 1],  "length": 0.22 },
+    "arm_l.upper": { "parent": "torso",       "pivot": [-0.09, 0.28], "dir": [0, -1], "length": 0.17 },
+    "arm_l.lower": { "parent": "arm_l.upper", "pivot": [0.0, -0.17],  "dir": [0, -1], "length": 0.17 },
+    "hand_l":      { "parent": "arm_l.lower", "pivot": [0.0, -0.17],  "dir": [0, -1], "length": 0.05 },
+    "arm_r.upper": { "parent": "torso",       "pivot": [0.09, 0.28],  "dir": [0, -1], "length": 0.17 },
+    "arm_r.lower": { "parent": "arm_r.upper", "pivot": [0.0, -0.17],  "dir": [0, -1], "length": 0.17 },
+    "hand_r":      { "parent": "arm_r.lower", "pivot": [0.0, -0.17],  "dir": [0, -1], "length": 0.05 },
+    "leg_l.upper": { "parent": "root",        "pivot": [-0.05, 0.0],  "dir": [0, -1], "length": 0.24 },
+    "leg_l.lower": { "parent": "leg_l.upper", "pivot": [0.0, -0.24],  "dir": [0, -1], "length": 0.24 },
+    "leg_r.upper": { "parent": "root",        "pivot": [0.05, 0.0],   "dir": [0, -1], "length": 0.24 },
+    "leg_r.lower": { "parent": "leg_r.upper", "pivot": [0.0, -0.24],  "dir": [0, -1], "length": 0.24 }
+  },
+  "drawOrder": ["arm_l.upper", "arm_l.lower", "hand_l", "leg_l.upper", "leg_l.lower", "torso", "head", "leg_r.upper", "leg_r.lower", "arm_r.upper", "arm_r.lower", "hand_r"],
+  "sockets": {
+    "hand_l": { "bone": "hand_l", "at": [0.0, 0.0] },
+    "hand_r": { "bone": "hand_r", "at": [0.0, 0.0] },
+    "head":   { "bone": "head",   "at": [0.0, 0.22] }
+  },
+  "ik": {
+    "arm_l": { "upper": "arm_l.upper", "lower": "arm_l.lower", "socket": "hand_l" },
+    "arm_r": { "upper": "arm_r.upper", "lower": "arm_r.lower", "socket": "hand_r" }
+  },
+  "defaultHand": "hand_r"
 }
