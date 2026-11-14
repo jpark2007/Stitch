@@ -15,12 +15,18 @@
 //
 // With `demo`, a handwritten note gives the demo account and a button that
 // fills both fields, so a visitor can look around without signing up.
+//
+// next dev renders this form on the server. What is typed before React takes
+// it over is kept (useTypedBeforeHydration), and Log in stays disabled until
+// then, so an early press never becomes the browser's own GET submit with the
+// password in the URL.
 import Link from "next/link";
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import type { LoginRequest } from "@/lib/types";
 import { isApiError } from "@/lib/api";
 import {
   LOGIN_FIELDS,
+  adoptTypedValues,
   loginDraftAfterSuccess,
   serverErrorState,
   toLoginRequest,
@@ -31,7 +37,7 @@ import {
 } from "./accountForms";
 import { Button, FOCUS_RING } from "./Button";
 import { TextField } from "./Field";
-import { FormError, focusFirstError } from "./FormError";
+import { FormError, focusFirstError, useHydrated, useTypedBeforeHydration } from "./FormError";
 import { PaperCard } from "./PaperCard";
 import type { FieldErrors } from "./validation";
 
@@ -62,6 +68,13 @@ export function LoginForm(props: {
   // Set before the call so a navigation that hides this form first still
   // finds it set.
   const sentRef = useRef(false);
+  const hydrated = useHydrated();
+
+  useTypedBeforeHydration(
+    formRef,
+    LOGIN_FIELDS,
+    useCallback((typed: Partial<LoginDraft>) => setDraft((d) => adoptTypedValues(d, typed)), []),
+  );
 
   useEffect(() => {
     if (focusTick > 0) focusFirstError(formRef.current);
@@ -102,8 +115,9 @@ export function LoginForm(props: {
       return;
     }
 
-    setErrors({});
-    setFormError(null);
+    // The last try's messages stay (dimmed while busy) until this one answers.
+    // Removing them now would move Log in up from under the pointer, and the
+    // second click of a double click would land on the link below it.
     setPending(true);
     sentRef.current = true;
     try {
@@ -167,6 +181,7 @@ export function LoginForm(props: {
           <Button
             ref={submitRef}
             type="submit"
+            disabled={!hydrated}
             busy={pending}
             busyLabel="Logging in…"
             className="w-full"

@@ -190,6 +190,35 @@ export function serverErrorState<K extends string>(
   return { fields: merged.fields, formError: parts.length ? parts.join(" ") : null };
 }
 
+// ---------------------------------------------------------------------------
+// Typed before hydration
+//
+// When the server renders a form (next dev does for /login and /signup), a
+// fast typist (or a password manager, or a test) can fill it before React
+// takes it over. Hydration leaves those values in the DOM but not in state,
+// so the next render of a controlled input puts the old state back and the
+// text vanishes. The forms read their controls once on mount and adopt what
+// is there (useTypedBeforeHydration in FormError.tsx).
+
+/**
+ * `draft` with the values typed before hydration. `typed` maps a field to its
+ * control's value as found on mount; a field the draft does not have, a
+ * non-string, or a value equal to the draft's changes nothing. Returns
+ * `draft` itself when nothing changed, so adopting is free when nothing was
+ * typed (the usual client-side render, where DOM and state already agree).
+ */
+export function adoptTypedValues<D extends object>(draft: D, typed: Partial<Record<string, unknown>>): D {
+  let next: D | null = null;
+  for (const [key, value] of Object.entries(typed)) {
+    if (typeof value !== "string" || !Object.hasOwn(draft, key)) continue;
+    const current = (draft as Record<string, unknown>)[key];
+    if (typeof current !== "string" || current === value) continue;
+    next ??= { ...draft };
+    (next as Record<string, unknown>)[key] = value;
+  }
+  return next ?? draft;
+}
+
 /** A copy of `errors` without `key`, or `errors` itself when it has none. */
 export function withoutError<K extends string>(errors: FieldErrors<K>, key: K): FieldErrors<K> {
   if (!(key in errors)) return errors;
