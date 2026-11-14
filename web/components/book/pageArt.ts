@@ -5,6 +5,7 @@
  */
 
 import { ACCENT, canvas, drawGutterStitches, drawStitchLine, INK, INK_FAINT, INK_SOFT, paper, setSpacing, wrap, type Ctx, type PageFonts } from "./paperArt";
+import { drawPullTabPrint, drawTellerLabels, layoutTellerLabels, tellerLabelsHeight, type LabelRect } from "./labelArt";
 import { drawPhoto } from "./photoArt";
 import type { BookCover, BookSpread } from "./types";
 
@@ -25,8 +26,24 @@ function pageNumber(ctx: Ctx, n: number, side: "left" | "right", fonts: PageFont
   ctx.fillText(String(n), side === "left" ? 96 : PAGE_PX_W - 96, PAGE_PX_H - 74);
 }
 
-/** Left page: year, title, storybook text, tellers and taped-in photos. */
-export async function drawStoryPage(spread: BookSpread, page: number, fonts: PageFonts, seed: number) {
+/** A drawn story page, and where its teller labels are (page px) for hit testing. */
+export interface StoryPageArt {
+  canvas: HTMLCanvasElement;
+  labels: LabelRect[];
+}
+
+/**
+ * Left page: year, title, storybook text, tellers and taped-in photos. With
+ * `spread.tellings`, the tellers are taped labels to choose a telling by,
+ * the `active` one inked as playing.
+ */
+export async function drawStoryPage(
+  spread: BookSpread,
+  page: number,
+  fonts: PageFonts,
+  seed: number,
+  active: string | null = null,
+): Promise<StoryPageArt> {
   const W = PAGE_PX_W;
   const H = PAGE_PX_H;
   const { c, ctx } = canvas(W, H);
@@ -66,8 +83,10 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
   y += 58;
 
   // Storybook text, opening on a two-line drop cap like a printed storybook.
+  // A line or two is set larger, so a short page still reads as a page.
   const text = spread.text.trim();
-  const lead = 46;
+  const short = text.length < 150;
+  const lead = short ? 54 : 46;
   const first = text.charAt(0);
   const capSize = Math.round(lead * 2.3);
   ctx.font = `600 ${capSize}px ${fonts.display}`;
@@ -79,7 +98,7 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
   // The cap's baseline sits on the second line's baseline.
   ctx.fillText(first, left - 2, y + lead);
   ctx.fillStyle = INK_SOFT;
-  ctx.font = `400 31px ${fonts.display}`;
+  ctx.font = `400 ${short ? 37 : 31}px ${fonts.display}`;
   // No widows: narrow the measure a little until the last line has company.
   let body = wrap(ctx, text.slice(1), (i) => (i < 2 ? width - capW : width));
   for (let k = 1; k <= 10 && body.length > 2 && !body[body.length - 1].includes(" "); k++) {
@@ -91,7 +110,15 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
     y += lead;
   });
 
-  if (spread.tellers?.length) {
+  let labels: LabelRect[] = [];
+  const tellings = spread.tellings ?? [];
+  if (tellings.length > 1) {
+    // One taped label per telling, to hear the same scene told another way.
+    y += 40;
+    labels = layoutTellerLabels(tellings, left + 4, width - 8, y);
+    drawTellerLabels(ctx, tellings, labels, active, fonts, seed + 50);
+    y += tellerLabelsHeight(tellings.length) + 6;
+  } else if (spread.tellers?.length) {
     y += 14;
     ctx.fillStyle = INK_FAINT;
     ctx.font = `500 38px ${fonts.hand}`;
@@ -119,7 +146,7 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
   }
 
   pageNumber(ctx, page, "left", fonts);
-  return c;
+  return { canvas: c, labels };
 }
 
 /**
@@ -128,13 +155,22 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
  */
 export const STAGE_SLOT_PX = { x0: 134, x1: PAGE_PX_W - 96, y0: 104, y1: PAGE_PX_H - 132 } as const;
 
-/** Right page: an empty, clearly marked slot where the pop-up stage mounts. */
+/**
+ * Right page: an empty, clearly marked slot where the pop-up stage mounts.
+ * Under a real pop-up (`spread.stage`) the page is printed plain, with the
+ * slits and pencilled labels of its pull tabs.
+ */
 export function drawStagePage(spread: BookSpread, page: number, fonts: PageFonts, seed: number) {
   const W = PAGE_PX_W;
   const H = PAGE_PX_H;
   const { c, ctx } = canvas(W, H);
   paper(ctx, W, H, { seed, gutter: "left" });
   drawGutterStitches(ctx, W, H, "left");
+  if (spread.stage) {
+    (spread.stage.pullTabs ?? []).forEach((tab, i) => drawPullTabPrint(ctx, tab, fonts, seed + 20 + i));
+    pageNumber(ctx, page, "right", fonts);
+    return c;
+  }
 
   const { x0, x1, y0, y1 } = STAGE_SLOT_PX;
   // Pencil-dashed slot outline.

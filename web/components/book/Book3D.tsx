@@ -53,8 +53,19 @@ import { createBlockGeometry } from "./blockGeometry";
 import { BOARD_D, BOARD_W, BookController, COVER_PIVOT_Y, HIT_MARGIN, type BookStart, type BookView } from "./controller";
 import { Leaf, type LeafTextures } from "./Leaf";
 import { BLOCK_T, COVER_T, PAGE_H, PAGE_W } from "./leafShape";
-import { isMuted, setMuted, subscribeMuted, unlockAudio } from "./sound";
-import { STAGE_SLOT, SlotProbe, StageSlot, buildBookArt, useBookTextures, type BookArt, type StageSlotArgs } from "./StoryPage";
+import { PAGE_PX_H, PAGE_PX_W } from "./pageArt";
+import { BookRuntimeProvider } from "./pagePrint";
+import { isMuted, paperLift, setMuted, subscribeMuted, unlockAudio } from "./sound";
+import {
+  STAGE_SLOT,
+  SlotProbe,
+  StageSlot,
+  buildBookArt,
+  drawSpreadStory,
+  useBookTextures,
+  type BookArt,
+  type StageSlotArgs,
+} from "./StoryPage";
 import type { BookCover, BookSpread } from "./types";
 
 const LEAF_MASK: DeckledMaskOptions = { aspect: PAGE_W / PAGE_H, style: "deckled", amount: 0.7, seed: 11, resolution: 1024 };
@@ -81,6 +92,14 @@ export interface Book3DProps {
   initial?: BookInitial;
   /** The pop-up stage for a spread, mounted in the right page's slot. */
   renderStage?: (args: StageSlotArgs) => ReactNode;
+  /**
+   * Which telling is playing on each spread with `tellings` (spread id ->
+   * teller id). Its label is printed as playing; a change reprints only that
+   * story page.
+   */
+  tellings?: Readonly<Record<string, string>>;
+  /** A teller's label was chosen on a story page. */
+  onTelling?: (spreadId: string, tellerId: string) => void;
   /** Screenshots and tests: no parallax, no hover peels, no hints. */
   still?: boolean;
   /** Tests: expose the raw controller as `window.__book`, and stand a probe card in empty stage slots. */
@@ -111,7 +130,18 @@ function resolveStart(initial: BookInitial | undefined, n: number): BookStart {
 /* Shell: loading, overlay UI                                                */
 /* ------------------------------------------------------------------------ */
 
-export function Book3D({ spreads, cover, initial, renderStage, still = false, debug = false }: Book3DProps) {
+const NO_TELLINGS: Readonly<Record<string, string>> = {};
+
+export function Book3D({
+  spreads,
+  cover,
+  initial,
+  renderStage,
+  tellings = NO_TELLINGS,
+  onTelling,
+  still = false,
+  debug = false,
+}: Book3DProps) {
   // The starting view is read once; later prop changes do not reset the book.
   const [start] = useState(() => resolveStart(initial, spreads.length));
   const [art, setArt] = useState<BookArt | null>(null);
@@ -122,10 +152,22 @@ export function Book3D({ spreads, cover, initial, renderStage, still = false, de
   }, []);
   const muted = useSyncExternalStore(subscribeMuted, isMuted, () => false);
 
+  // The art is drawn with the tellings of the moment it is built; later
+  // changes reprint single pages (BookModel).
+  const tellingsNow = useRef(tellings);
+  useEffect(() => {
+    tellingsNow.current = tellings;
+  }, [tellings]);
+  const onTellingRef = useRef(onTelling);
+  useEffect(() => {
+    onTellingRef.current = onTelling;
+  }, [onTelling]);
+  const chooseTelling = useCallback((spreadId: string, tellerId: string) => onTellingRef.current?.(spreadId, tellerId), []);
+
   useEffect(() => {
     let live = true;
     Promise.all([
-      buildBookArt(spreads, cover),
+      buildBookArt(spreads, cover, tellingsNow.current),
       preloadPaperTextures({ kinds: ["paper", "card"], wood: true, masks: [LEAF_MASK] }),
     ]).then(([a]) => {
       if (live) setArt(a);
@@ -211,6 +253,8 @@ export function Book3D({ spreads, cover, initial, renderStage, still = false, de
               onControls={onControls}
               onView={setView}
               renderStage={renderStage ?? (debug ? SlotProbe : undefined)}
+              tellings={tellings}
+              onTelling={chooseTelling}
               still={still}
               debug={debug}
             />
@@ -389,6 +433,8 @@ interface SceneProps {
   onControls: (api: BookControls | null) => void;
   onView: (v: BookView) => void;
   renderStage?: (args: StageSlotArgs) => ReactNode;
+  tellings: Readonly<Record<string, string>>;
+  onTelling: (spreadId: string, tellerId: string) => void;
   still: boolean;
   debug: boolean;
 }
@@ -517,7 +563,7 @@ function useBookGeometry() {
   return geo;
 }
 
-function BookModel({ art, spreads, start, onControls, onView, renderStage, still, debug }: SceneProps) {
+function BookModel({ art, spreads, start, onControls, onView, renderStage, tellings, onTelling, still, debug }: SceneProps) {
   const camera = useThree((s) => s.camera) as PerspectiveCamera;
   const gl = useThree((s) => s.gl);
   const invalidate = useThree((s) => s.invalidate);
@@ -560,6 +606,29 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
       normalMap: grain.normalMap,
     }));
   }, [textures, leafMasks]);
+
+  // A telling chosen: reprint that story page (its labels), in place.
+  useEffect(() => {
+    let live = true;
+    spreads.forEach((spread, i) => {
+      const want = tellings[spread.id] ?? null;
+      const leaf = art.leaves[i];
+      if (!leaf || leaf.active === want) return;
+      leaf.active = want;
+      drawSpreadStory(spread, i, art.fonts, want).then((story) => {
+        if (!live || leaf.active !== want) return;
+        leaf.back = story.canvas;
+        leaf.labels = story.labels;
+        const t = textures.leaves[i].back;
+        t.image = story.canvas;
+        t.needsUpdate = true;
+        invalidate();
+      });
+    });
+    return () => {
+      live = false;
+    };
+  }, [tellings, spreads, art, textures, invalidate]);
 
   useEffect(() => {
     ctl.attach(camera, () => gl.domElement.getBoundingClientRect());
@@ -652,7 +721,54 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
     document.body.style.cursor = c;
   };
 
+  /**
+   * The teller label under the pointer on the open spread's story page, if
+   * the book lies still. The ray meets the page at its own height, not the
+   * pointer target's, so the labels hit where they are drawn.
+   */
+  const labelAt = (e: ThreeEvent<PointerEvent>): { spread: number; id: string } | null => {
+    const j = ctl.settledSpread;
+    const leaf = j > 0 ? art.leaves[j - 1] : null;
+    if (!leaf || leaf.labels.length === 0) return null;
+    const { origin, direction } = e.ray;
+    if (Math.abs(direction.y) < 1e-6) return null;
+    const k = (ctl.leftSurfaceY - origin.y) / direction.y;
+    const x = origin.x + direction.x * k - (book.current?.position.x ?? 0);
+    const z = origin.z + direction.z * k;
+    // The story page: x from -PAGE_W (outer edge) to 0 (gutter), z down the page.
+    const px = ((x + PAGE_W) / PAGE_W) * PAGE_PX_W;
+    const py = ((z + PAGE_H / 2) / PAGE_H) * PAGE_PX_H;
+    const hit = leaf.labels.find((r) => px >= r.x - 6 && px <= r.x + r.w + 6 && py >= r.y - 10 && py <= r.y + r.h + 6);
+    return hit ? { spread: j - 1, id: hit.id } : null;
+  };
+
+  /** A control standing on the page (a pull tab) is under the pointer: it handles the event. */
+  const overControl = (e: ThreeEvent<PointerEvent>) => e.intersections.some((i) => i.object.userData.pageControl === true);
+
+  const onLabelDown = (e: ThreeEvent<PointerEvent>, label: { spread: number; id: string }) => {
+    e.stopPropagation();
+    const id = e.pointerId;
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    const up = (ev: PointerEvent) => {
+      if (ev.pointerId !== id) return;
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      if (ev.type !== "pointerup" || Math.hypot(ev.clientX - x0, ev.clientY - y0) > 10) return;
+      paperLift();
+      onTelling(spreads[label.spread].id, label.id);
+      // Show the stage the new telling plays on: a phone pans to it, a
+      // close look at the story page steps back to the spread.
+      if (ctl.focus === -1) ctl.setFocus(ctl.onePage ? 1 : 0);
+    };
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+
   const onPageDown = (e: ThreeEvent<PointerEvent>) => {
+    if (overControl(e)) return;
+    const label = labelAt(e);
+    if (label) return onLabelDown(e, label);
     if (!ctl.pageDown(toBook(e), e.clientX, e.clientY)) return;
     e.stopPropagation();
     const id = e.pointerId;
@@ -707,7 +823,18 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
         position={[0, COVER_T + BLOCK_T * 0.6, 0]}
         rotation-x={-Math.PI / 2}
         material={mats.hit}
-        onPointerMove={(e) => setCursor(ctl.pageMove(toBook(e)))}
+        onPointerMove={(e) => {
+          if (overControl(e)) {
+            ctl.pageLeave();
+            return;
+          }
+          if (labelAt(e)) {
+            ctl.pageLeave();
+            setCursor("pointer");
+            return;
+          }
+          setCursor(ctl.pageMove(toBook(e)));
+        }}
         onPointerLeave={() => {
           ctl.pageLeave();
           setCursor("");
@@ -740,16 +867,25 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
       </mesh>
 
       <group ref={stage}>
-        {renderStage
-          ? stages.map((i) => (
-              <StageSlot key={spreads[i].id}>
-                <StageMount
-                  render={renderStage}
-                  args={{ spread: spreads[i], index: i, reveal: ctl.reveals[i], width: STAGE_SLOT.width, depth: STAGE_SLOT.depth }}
-                />
-              </StageSlot>
-            ))
-          : null}
+        <BookRuntimeProvider runtime={ctl.rt}>
+          {renderStage
+            ? stages.map((i) => (
+                <StageSlot key={spreads[i].id}>
+                  <StageMount
+                    render={renderStage}
+                    args={{
+                      spread: spreads[i],
+                      index: i,
+                      reveal: ctl.reveals[i],
+                      view: ctl.stageView,
+                      width: STAGE_SLOT.width,
+                      depth: STAGE_SLOT.depth,
+                    }}
+                  />
+                </StageSlot>
+              ))
+            : null}
+        </BookRuntimeProvider>
       </group>
     </group>
   );

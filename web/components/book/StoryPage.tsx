@@ -17,11 +17,17 @@ import { CanvasTexture, ClampToEdgeWrapping, RepeatWrapping, SRGBColorSpace, typ
 import { COVER_OVERHANG, PAGE_H, PAGE_W } from "./leafShape";
 import { drawContactShadow, drawCoverArt, drawEndpaper, drawPageEdges, drawSpineCloth } from "./coverArt";
 import { drawBlankPage, drawStagePage, drawStoryPage, drawTitlePage, PAGE_PX_W, STAGE_SLOT_PX } from "./pageArt";
-import { loadPageFonts } from "./paperArt";
+import type { LabelRect } from "./labelArt";
+import { loadPageFonts, type PageFonts } from "./paperArt";
 import type { BookCover, BookSpread } from "./types";
 
 export interface BookArt {
-  leaves: { front: HTMLCanvasElement; back: HTMLCanvasElement }[];
+  /**
+   * Per leaf: its recto and verso. `labels` are the verso's teller labels
+   * (page px), and `active` the telling drawn as playing there.
+   */
+  leaves: { front: HTMLCanvasElement; back: HTMLCanvasElement; labels: LabelRect[]; active: string | null }[];
+  fonts: PageFonts;
   coverOutside: HTMLCanvasElement;
   endpaper: HTMLCanvasElement;
   edges: HTMLCanvasElement;
@@ -37,17 +43,30 @@ const yieldTask = () =>
     else setTimeout(resolve, 0);
   });
 
-/** Draw every page of the book (fonts first). Browser-only. */
-export async function buildBookArt(spreads: BookSpread[], cover: BookCover): Promise<BookArt> {
+/** Spread i's story page (leaf i's verso), with `active` drawn as the telling playing. */
+export function drawSpreadStory(spread: BookSpread, i: number, fonts: PageFonts, active: string | null) {
+  return drawStoryPage(spread, 2 * (i + 1), fonts, 30 + i, active);
+}
+
+/**
+ * Draw every page of the book (fonts first). Browser-only. `tellings`
+ * (spread id -> teller id) says which telling each story page shows playing.
+ */
+export async function buildBookArt(
+  spreads: BookSpread[],
+  cover: BookCover,
+  tellings: Readonly<Record<string, string>> = {},
+): Promise<BookArt> {
   const fonts = await loadPageFonts();
   const n = spreads.length;
   const leaves: BookArt["leaves"] = [];
   for (let i = 0; i <= n; i++) {
     const front = i === 0 ? drawTitlePage(cover, fonts, 3) : drawStagePage(spreads[i - 1], 2 * i + 1, fonts, 10 + i);
     await yieldTask();
-    const back = i < n ? await drawStoryPage(spreads[i], 2 * (i + 1), fonts, 30 + i) : drawBlankPage(90, "right");
+    const active = i < n ? (tellings[spreads[i].id] ?? null) : null;
+    const story = i < n ? await drawSpreadStory(spreads[i], i, fonts, active) : null;
     await yieldTask();
-    leaves.push({ front, back });
+    leaves.push({ front, back: story?.canvas ?? drawBlankPage(90, "right"), labels: story?.labels ?? [], active });
   }
   const bw = 860;
   const bh = Math.round((bw * (PAGE_H + 2 * COVER_OVERHANG)) / (PAGE_W + COVER_OVERHANG));
@@ -55,6 +74,7 @@ export async function buildBookArt(spreads: BookSpread[], cover: BookCover): Pro
   await yieldTask();
   return {
     leaves,
+    fonts,
     coverOutside,
     endpaper: drawEndpaper(512, Math.round((512 * bh) / bw)),
     edges: drawPageEdges(),
@@ -125,6 +145,13 @@ export interface StageSlotArgs {
   spread: BookSpread;
   /** 0-based spread index. */
   index: number;
+  /**
+   * 0..1, how much the stage page is the page being read, as a live ref
+   * (read it in useFrame): 1 with the whole spread in view; on a phone,
+   * which reads one page at a time, it falls toward 0 as the camera pans
+   * to the story page. A stage can wait for it before it plays.
+   */
+  view: { readonly current: number };
   /**
    * 0..1, how far the pop-up should stand, as a live ref: read
    * `reveal.current` in useFrame (it changes every frame without a

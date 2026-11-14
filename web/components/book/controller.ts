@@ -138,6 +138,12 @@ export class BookController {
    * as a leaf lifts off or comes down over it. Read `.current` in useFrame.
    */
   readonly reveals: { current: number }[];
+  /**
+   * 0..1: how much the stage page is the page being read. 1 with the whole
+   * spread in view; a phone, reading one page at a time, pans it toward 0 on
+   * the story page. Read `.current` in useFrame.
+   */
+  readonly stageView = { current: 1 };
 
   private open: number;
   private opening = false;
@@ -301,6 +307,22 @@ export class BookController {
 
   get focus() {
     return this.focusGoal;
+  }
+
+  /** Reading one page at a time (a portrait phone). */
+  get onePage() {
+    return this.phone;
+  }
+
+  /** The open spread (1-based) when the book lies still on it, else 0. */
+  get settledSpread() {
+    return this.open >= 1 && !this.drag && !this.busy() ? this.pos : 0;
+  }
+
+  /** Height of the left page's surface at its centre line (book space). */
+  get leftSurfaceY() {
+    const rt = this.rt;
+    return rt.hinge + pageProfile(PAGE_W / 2, rt.depthL, rt.bow) + LEAF_REST_GAP;
   }
 
   /**
@@ -728,6 +750,8 @@ export class BookController {
       this.focusE = focusGoal;
       this.single = singleGoal;
     }
+    // A phone reads one page: the stage is in view once the camera has panned to it.
+    this.stageView.current = this.phone ? smoothstep(-0.2, 0.7, this.focusE) : 1;
     // Parallax holds still while a page is held, so the drag maps cleanly.
     if (!this.drag?.active) {
       const on = this.parallaxOn && !this.calm && !this.frozen;

@@ -20,6 +20,28 @@ export interface BookPhoto {
   aspect?: number;
 }
 
+/**
+ * A teller of a moment with more than one telling: a small taped label on
+ * the story page ("Hear Ana's version") with their puppet's portrait.
+ */
+export interface BookTeller {
+  /** Person id (the telling's author). */
+  id: string;
+  name: string;
+  /** Thread colour (character.color): the puppet and the label's tape. */
+  color: string;
+}
+
+/** A pull tab printed on the stage page: a paper lever in a slit. */
+export interface BookPullTab {
+  /** Interaction id. */
+  id: string;
+  /** Pencilled beside the tab, e.g. "Pull to drop the books". */
+  label: string;
+  /** [u, v] on the stage page, fractions from its top-left (Interaction.at). */
+  at: readonly [number, number];
+}
+
 /** One moment = one spread: story on the left, the pop-up stage on the right. */
 export interface BookSpread {
   /** The memory id. */
@@ -30,7 +52,17 @@ export interface BookSpread {
   text: string;
   /** Names of the people who told it ("David", "Ana"). */
   tellers?: string[];
+  /**
+   * One taped label per telling, to switch between them. When set they
+   * replace the "as told by" line; Book3D's `tellings` says which is playing.
+   */
+  tellings?: BookTeller[];
   photos: BookPhoto[];
+  /**
+   * A real pop-up stands on the right page: it is printed plain (no "the
+   * pop-up rises here" marks), with its pull tabs' slits and pencil notes.
+   */
+  stage?: { pullTabs?: BookPullTab[] };
 }
 
 /** What is printed on the cover and the title page. */
