@@ -15,7 +15,7 @@ import { getCutout, type CutoutSpec } from "@/components/stage/cutout";
 import { PaperEffect, type EffectKind, type PaperEffectProps } from "@/components/stage/Effects";
 import { SetPiece } from "@/components/stage/SetPiece";
 import { PALETTE, bush, church, skyCard, trees } from "@/components/stage/art";
-import { easeInOutSine } from "@/components/stage/timeline";
+import { easeInOutSine, linear } from "@/components/stage/timeline";
 
 export const DEMO_OPEN_AT = 0.5;
 
@@ -43,6 +43,8 @@ export const demoCamera: CameraPath = cameraPath([
   { at: 0, pose: poses.wide },
   { at: 2.6, pose: poses.wide },
   { at: 8.6, pose: closeUp([0.24, 0.5, -0.5], { distance: 3.05, height: 0.78, yaw: -0.16, fov: 30 }), ease: easeInOutSine },
+  // Never quite stop: a slow drift keeps the held shot alive.
+  { at: 20, pose: closeUp([0.2, 0.5, -0.5], { distance: 2.85, height: 0.74, yaw: -0.05, fov: 30 }), ease: linear },
 ]);
 
 const EFFECTS: Record<EffectKind, Omit<PaperEffectProps, "kind">> = {
