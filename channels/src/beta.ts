@@ -9,13 +9,18 @@ import { PHOTO_TYPES, MAX_PHOTO_BYTES, ProtocolError, linkCode, parseMessage, pa
 
 type Obj = Record<string, any>;
 const fail = (message = "Invalid Photon Beta event"): never => { throw new ProtocolError(422, message); };
+const transient = (error: unknown): boolean => error instanceof ProtocolError
+  ? error.status === 408 || error.status === 429 || error.status >= 500
+  : error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name);
 function object(value: unknown): Obj { if (!value || typeof value !== "object" || Array.isArray(value)) fail(); return value as Obj; }
 function id(value: unknown, prefix: string): string { if (typeof value !== "string" || !new RegExp(`^pho_${prefix}_[0-7][0-9a-hjkmnp-tv-z]{25}$`).test(value)) return fail(); return value; }
 function bound(value: unknown, max = 256): string { if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > max || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value)) return fail(); return value; }
 async function boundedOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   let rejectAbort: () => void;
   const aborted = new Promise<never>((_, reject) => { rejectAbort = () => reject(new ProtocolError(504, "Photon request timed out")); signal.addEventListener("abort", rejectAbort, { once: true }); if (signal.aborted) rejectAbort(); });
-  try { return await Promise.race([operation, aborted]); } finally { signal.removeEventListener("abort", rejectAbort!); }
+  try { return await Promise.race([operation, aborted]); }
+  catch (error) { if (error instanceof TypeError) throw new ProtocolError(502, "Photon transport failed"); throw error; }
+  finally { signal.removeEventListener("abort", rejectAbort!); }
 }
 export type BetaConfig = { projectId: string; apiKey: string; webhookSecret: string; agentHandle: string; statePath: string; webhookPort: number };
 export function betaConfig(env: NodeJS.ProcessEnv): BetaConfig {
@@ -24,6 +29,8 @@ export function betaConfig(env: NodeJS.ProcessEnv): BetaConfig {
   const apiKey = env.PHOTON_API_KEY ?? "", webhookSecret = env.PHOTON_WEBHOOK_SECRET ?? "";
   if (!/^pho_sk_[A-Za-z0-9_-]+$/.test(apiKey)) throw new Error("PHOTON_API_KEY must be a Beta project key");
   if (!/^whsec_[A-Za-z0-9+/]+={0,2}$/.test(webhookSecret)) throw new Error("PHOTON_WEBHOOK_SECRET must be a destination signing secret");
+  const decoded = Buffer.from(webhookSecret.slice(6), "base64");
+  if (decoded.length < 24 || decoded.toString("base64") !== webhookSecret.slice(6)) throw new Error("PHOTON_WEBHOOK_SECRET requires at least 24 bytes in canonical base64");
   new Webhook(webhookSecret);
   const webhookPort = Number(env.PHOTON_WEBHOOK_PORT ?? "3012");
   if (!Number.isInteger(webhookPort) || webhookPort < 1 || webhookPort > 65535) throw new Error("Invalid PHOTON_WEBHOOK_PORT");
@@ -84,8 +91,8 @@ export class BetaApi {
       method: options.body === undefined ? "GET" : "POST", redirect: "error", signal,
       headers: { Authorization: `Bearer ${this.config.apiKey}`, ...(options.body === undefined ? {} : { "Content-Type": "application/json", "Idempotency-Key": options.key! }) },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    }), signal);
-    if (!response.ok) { void response.body?.cancel(); throw new ProtocolError(502, "Photon Beta request failed"); }
+    }), signal).catch(error => { if (error instanceof ProtocolError) throw error; throw new ProtocolError(502, "Photon Beta unreachable"); });
+    if (!response.ok) { void response.body?.cancel(); throw new ProtocolError(response.status, "Photon Beta request failed"); }
     if (options.binary) {
       const mime = response.headers.get("content-type")?.split(";")[0] ?? "";
       if (!response.body) fail();
@@ -128,17 +135,21 @@ export class BetaBridge {
     this.running = true;
     try {
       const row = this.store.next(); if (!row) return;
+      let retrySafe = true;
+      let routeId: string | undefined;
       try {
         const signal = AbortSignal.timeout(60_000);
         const event = parseBetaEvent(JSON.parse(row.body), projectId, row.id, agentHandle), p = event.proof;
+        routeId = p.spaceId;
         await this.api.verify(p, signal);
-        this.store.saveRoute(p.spaceId, p);
         for (const [index, part] of event.parts.entries()) {
+          if (index < row.part) continue;
           signal.throwIfAborted();
           const common = { messageId: `${event.messageId}:part:${index}`, provider: "imessage" as const, spaceId: p.spaceId, senderId: p.handle };
           if (part.type === "text") {
             const code = linkCode(part.text);
             if (code !== null) {
+              retrySafe = false; // One-use proof: a lost ACK cannot be replayed.
               const receipt = await this.client.post("/internal/channels/enroll", { ...common, spaceKind: "direct", code });
               if (object(receipt.body).status !== "active") fail("Enrollment outcome uncertain");
             } else {
@@ -152,12 +163,30 @@ export class BetaBridge {
             const { raw, mime } = await this.api.request(`/attachments/${part.attachmentId}/content`, { binary: true, signal });
             if (mime !== meta.contentType || raw.length !== meta.sizeBytes) fail("Photon attachment mismatch");
             await this.api.verify(p, signal);
+            retrySafe = false; // Photo storage may have an uncertain external effect.
             const receipt = await this.client.post("/internal/channels/inbound-photo", parsePhoto({ ...common, attachmentId: part.attachmentId, mimeType: meta.contentType, dataBase64: raw.toString("base64") }));
             if (receipt.status !== 202 || object(receipt.body).accepted !== true) fail("Photo receipt outcome uncertain");
           }
+          retrySafe = false; // A failed local checkpoint also stays uncertain.
+          this.store.checkpoint(row.id, index + 1);
+          retrySafe = true;
         }
         this.store.finish(row.id, "done");
-      } catch { this.store.finish(row.id, "blocked"); console.warn("Photon event blocked; inspect private ledger before manual reconciliation."); }
+        // Route cache availability must not prevent or undo consent commands.
+        try { this.store.saveRoute(p.spaceId, p); }
+        catch { console.warn("Photon reply route unavailable; inbound receipt completed."); }
+      } catch (error) {
+        if (error instanceof ProtocolError && [403, 404].includes(error.status)) {
+          this.store.finish(row.id, "done");
+          if (routeId) this.store.forgetRoute(routeId);
+          console.warn("Photon event refused; private payload removed.");
+        } else if (retrySafe && transient(error) && this.store.retry(row.id)) {
+          console.warn("Photon event deferred for bounded retry.");
+        } else {
+          this.store.finish(row.id, "blocked");
+          console.warn("Photon event blocked; retries exhausted or outcome uncertain. Inspect ledger and apply unresolved STOP in settings.");
+        }
+      }
     } finally { this.running = false; }
   }
   async send(message: Outbound): Promise<void> {
@@ -171,14 +200,16 @@ export class BetaBridge {
   private async sendReserved(message: Outbound): Promise<void> {
     parseMessage(message, false);
     if (message.provider !== "imessage") fail();
+    const hash = digest(JSON.stringify([message.provider, message.spaceId, message.text]));
+    if (this.store.replySent(message.messageId, hash)) return;
     const proof = this.store.route(message.spaceId) as Proof | undefined;
     if (!proof) throw new ProtocolError(404, "Unknown verified Photon space");
-    const hash = digest(JSON.stringify([message.provider, message.spaceId, message.text]));
-    if (!this.store.reserveReply(message.messageId, hash)) return;
     const signal = AbortSignal.timeout(4_000);
     await this.api.verify(proof, signal);
     await this.authorize(proof.handle);
     signal.throwIfAborted();
+    // No provider effect has begun; consent/verification failures reserve nothing.
+    if (!this.store.reserveReply(message.messageId, hash)) return;
     const result = object(await this.api.request("/messages", { signal, key: `stitch:${digest(message.messageId)}`, body: {
       senderId: proof.agentId, spaceId: proof.spaceId, content: { type: "text", format: "plain", text: message.text },
     } }));
@@ -193,7 +224,9 @@ export class BetaBridge {
 
 export function createBetaWebhook(config: BetaConfig, store: BetaStore): Server {
   const verifier = new Webhook(config.webhookSecret);
-  const server = createServer(async (request, response) => {
+  const server = createServer({ connectionsCheckingInterval: 1000 }, async (request, response) => {
+    const deadline = setTimeout(() => request.destroy(), 10_000);
+    deadline.unref();
     try {
       if (request.method !== "POST" || request.url !== "/photon/webhook") throw new ProtocolError(404, "Not found");
       if (request.headers["content-type"]?.split(";")[0] !== "application/json") throw new ProtocolError(415, "Expected application/json");
@@ -209,7 +242,9 @@ export function createBetaWebhook(config: BetaConfig, store: BetaStore): Server 
       store.accept(headers["webhook-id"], raw.toString("utf8"));
       response.writeHead(204).end();
     } catch (error) { const status = error instanceof ProtocolError ? error.status : 503; response.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "Photon webhook not accepted" })); }
+    finally { clearTimeout(deadline); }
   });
+  server.maxConnections = 64;
   server.requestTimeout = 10_000; server.headersTimeout = 5_000; server.setTimeout(10_000, socket => socket.destroy());
   return server;
 }
