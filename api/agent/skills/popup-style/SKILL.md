@@ -90,7 +90,10 @@ the nearest edge of the cut-out shape, so a rough point is fine.
 
 If art is missing or generation fails, the prop or layer still works: its art is `null` and it
 is drawn as a paper card in a warm color the code picks. You never pass a color; carry on with
-the scene.
+the scene. Placeholder art is acceptable, never a problem to report or fix. When a result
+carries the note "image budget for this run is used up ...", every later picture this run is
+a placeholder too: never call again to retry the art. Still make every prop and layer the scene
+needs (they come back as cards) and use the ids the results give.
 
 ## Sets (scenery)
 

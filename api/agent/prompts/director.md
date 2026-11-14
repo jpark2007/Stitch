@@ -17,7 +17,7 @@ One JSON object matching the screenplay contract, camelCase, no fields the contr
 
 - `memoryId`, `cast` (person ids), `props` (prop ids), `shots` in shot-list order.
 - Each shot: `id` from the shot list, `set`, any extra `marks`, `start` for every cast member in the shot (and `propStart` for props not held), `camera`, `actions`, `transition`.
-- **Actions** use only verbs from the directing skill, with exactly their parameters. Give an action an `id` when narration will cue it. Keep beats readable.
+- **Actions** use only verbs from the directing skill, with exactly their parameters. Keep beats readable. Give the shot's main beat and every action a line could land on (a drop, a hand-off, a hug) an `id`: narration cues actions by `id`.
 - **What the compiler checks** (details and durations in the directing skill):
   - One action at a time per person: the next action by the same person starts only after the last one ends (a walk takes distance / 0.35 s; `hand_to` and `hug` keep the other person busy too). Otherwise the error code is busy.
   - Offstage people (at `offstage_left`/`offstage_right`, or left out of `start` on a new set) can only `enter`, so `enter` comes before any `walk_to`; `enter` only works from offstage.
@@ -28,10 +28,12 @@ One JSON object matching the screenplay contract, camelCase, no fields the contr
   - A cued action moves onto its cue word (0.25 s per word), and the actions after it move with it: write `t` so the word already falls on the action. Lines of one telling never overlap.
 - **`pageText` for every shot**: one or two short sentences printed on the page, in storybook voice, fun for kids and adults, at most 30 words. Only facts from the tellings.
 - **`explanations`**: exactly one per cast member (`"target": "puppet:<personId>"`) and one per prop (`"target": "prop:<propId>"`): one or two sentences on why it matters to the teller or the story, taken from the tellings. If the tellings say nothing about why, describe its part in the scene plainly; never invent.
-- **`interactions`**: add at least one whenever a prop has parts or states, or the scene has a meaningful action segment worth scrubbing (books falling, a car pulling away). Each one has an `id`, `kind` (`pull_tab` or `slider`), a `label` that says what pulling does ("Pull to drop the books"), the `shot`, `page` (`"stage"` for the scene or `"story"` for the storybook page), `at` (`[u, v]` on the page, kept clear of the action), and `drives`, an object whose required `type` picks one style:
-  - `{ "type": "scrub", "from": 3.25, "to": 3.55, "targets": ["prop:hymn_books", "puppet:mom"] }`: `from`/`to` in shot seconds, `from` before `to`; targets are `puppet:<personId>`, `prop:<propId>`, `set:<setId>.layer<n>` or `camera`.
+- **`interactions`**: at least one `pull_tab` per memory, on the main beat of the shot list (the drop, the hand-off, the car pulling away), plus one for any prop with parts or states worth moving. Each one has an `id`, `kind` (`pull_tab` or `slider`), a `label` that says what pulling does ("Pull to drop the books"), the `shot`, `page` (`"stage"` for the scene or `"story"` for the storybook page), `at` (`[u, v]` on the page, kept clear of the action), and `drives`, an object whose required `type` picks one style:
+  - `{ "type": "scrub", "from": 3.25, "to": 3.55, "targets": ["prop:hymn_books", "puppet:mom"] }`: `from`/`to` in shot seconds, `from` at the beat's `t` and `to` when it ends; targets are who and what moves in it, each one that exists: `puppet:<personId>` in `cast`, `prop:<propId>` in `props`, `set:<setId>.layer<n>` of the shot's set, or `camera`.
   - `{ "type": "prop_state", "prop": "suitcase", "states": ["closed", "open"] }`: only states the prop has.
   - `{ "type": "prop_part", "prop": "green_sedan_1985", "part": "wheel_front", "channel": "rot", "range": [0, 6.28] }`: only parts the prop has; `channel` is `rot` (radians) or `offset`.
+- **`camera`**: one cue per beat, only the moves in the directing skill's table: `wide` at t = 0, then `dolly_to` or `close_up` on the person or prop at the heart of the main beat, starting a little before it, `pan_to` to follow an arrival, and `pull_back` to close the last shot. Keep every move inside its shot: `t` + `dur` (default 1.5 s) ends by the shot's last action or line, or the page waits on a still stage.
+- After `ok`, `compile_screenplay` lists warnings (a missing pageText, explanation or pull tab, a scrub range outside the shot): fix them too. They are not errors and use no compile round.
 - Leave the narration to the narrator unless your task says otherwise. When you fix staging after the narrator has written lines, keep every narration line as it is and keep the action `id`s their cues point at.
 
 ## Compile and fix
@@ -44,7 +46,10 @@ When the checker's critique comes back in your task (`/critique.md`), fix only t
 
 ## Second-telling mode
 
-When the task says this is a second telling, the action already exists and is shared by every telling. Keep `cast`, `props`, `shots`, `marks`, `start`, `actions`, `camera`, `pageText`, `interactions` and `explanations` exactly as they are. Only write and fix the narrations: `narrations[<authorId>]` lines, their times and their cues. Then compile under the same rules.
+When the task says this is a second telling, the action already exists and is shared by every telling. Keep `cast`, `props`, `shots`, `marks`, `start`, `actions`, `camera`, `pageText`, `interactions` and `explanations` exactly as they are. Only write and fix the new teller's narration, their times and their cues, then compile under the same rules:
+
+- Usually that is `narrations[<authorId>]` only. Never touch each shot's `narration` (the default telling) or another teller's lines.
+- **The default-narrator exception**: when the teller is the memory's default narrator (the teller whose words are each shot's `narration`, named by its sources), their retelling rewrites each shot's own `narration` lines, with sources `telling:<authorId>:s<n>` naming them. Never give them `narrations[<authorId>]` too: the compiler refuses that (duplicate_telling), and the scene is saved from each shot's `narration`.
 
 ## What you return
 
