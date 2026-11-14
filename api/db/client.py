@@ -78,6 +78,10 @@ INDEXES: dict[str, list[tuple[str, list[tuple[str, int]], dict[str, Any]]]] = {
     "sets": [
         ("sets_familyId_name", [("familyId", ASCENDING), ("name", ASCENDING)], {}),
     ],
+    "traditions": [
+        # list_traditions: one family's traditions, oldest first (createdAt, then _id).
+        ("traditions_familyId_createdAt", [("familyId", ASCENDING), ("createdAt", ASCENDING), ("_id", ASCENDING)], {}),
+    ],
     "revoked_sessions": [
         # TTL: a revoked session id is dropped once its token would have expired anyway.
         ("revoked_sessions_expiresAt_ttl", [("expiresAt", ASCENDING)], {"expireAfterSeconds": 0}),

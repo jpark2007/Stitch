@@ -70,6 +70,7 @@ from db import people as people_db
 from db import props as props_db
 from db import search as search_db
 from db import sessions as sessions_db
+from db import traditions as traditions_db
 from db import users as users_db
 from seed import realdb
 
@@ -493,7 +494,7 @@ class Preflight:
     # -------------------------------------------------------------- round trip
 
     ROUND_TRIP_STAGES = ("users", "families", "people", "memories", "questions", "props", "sets",
-                         "revoked_sessions", "media")
+                         "traditions", "revoked_sessions", "media")
 
     def check_round_trip(self) -> tuple[str, str]:
         """One document per collection; a failure names the collection it happened at."""
@@ -569,6 +570,20 @@ class Preflight:
         back_set = props_db.get_set(db, ids.family_id, ids.set_id)
         _expect(back_set is not None and back_set.name == set_def.name, "sets: the set did not read back")
         done.append("sets")
+
+        tradition = traditions_db.create_tradition(
+            db, ids.family_id,
+            schemas.CreateTraditionRequest(title="Preflight picnic", category="food",
+                                           when=schemas.TraditionWhen(kind="yearly", month=7),
+                                           participant_ids=[ids.parent_id, ids.child_id]),
+            created_by=ids.user_id, now=now,
+        )
+        back_tradition = traditions_db.get_tradition(db, ids.family_id, tradition.id)
+        _expect(back_tradition is not None and back_tradition.title == tradition.title
+                and back_tradition.participant_ids == [ids.parent_id, ids.child_id]
+                and back_tradition.when.month == 7,
+                "traditions: the tradition did not read back")
+        done.append("traditions")
 
         sessions_db.revoke_session(db, ids.jti, now + timedelta(hours=1))
         _expect(sessions_db.is_revoked(db, ids.jti), "revoked_sessions: the revoked session did not read back")

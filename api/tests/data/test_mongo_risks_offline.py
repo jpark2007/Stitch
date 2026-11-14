@@ -94,7 +94,7 @@ def test_every_seeded_document_is_bson_encodable_and_under_budget(seeded):
         if size > sizes.get(name, (0, None))[0]:
             sizes[name] = (size, doc["_id"])
         assert size < PER_DOCUMENT_BUDGET, (name, doc["_id"], size)
-    for name in ("users", "families", "people", "memories", "questions", "props", "sets"):
+    for name in ("users", "families", "people", "memories", "questions", "props", "sets", "traditions"):
         assert name in sizes, f"the demo seed wrote no {name}"
 
 

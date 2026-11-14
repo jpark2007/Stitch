@@ -118,6 +118,7 @@ import routes.auth  # noqa: E402
 import routes.families  # noqa: E402
 import routes.memories  # noqa: E402
 import routes.props  # noqa: E402
+import routes.traditions  # noqa: E402
 import routes.tree  # noqa: E402
 from db import client, search  # noqa: E402
 from db.embeddings import embedder_from_env  # noqa: E402
@@ -134,6 +135,7 @@ ROUTERS: tuple[APIRouter, ...] = (
     routes.props.router,
     routes.ask.router,
     routes.memories.router,
+    routes.traditions.router,
 )
 
 DEFAULT_CORS_ORIGINS: tuple[str, ...] = ("http://localhost:3000", "http://127.0.0.1:3000")

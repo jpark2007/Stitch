@@ -11,6 +11,9 @@ README "Scope for the weekend": the stage demo starts with a full tree and books
   tellings by different people, and most have two to six participants so threads cross;
 - the props and sets those scenes use (placeholder art: `art` null with a color);
 - two placeholder photos on the 1972 road trip;
+- five traditions for the Book of Family Traditions, the same ids and text as the web
+  mock (web/components/flow/mock/demoTraditions.ts) with this family's person ids; the
+  summer road trip reuses the peach-stand photo;
 - open questions asking participants of a moment who have not told it yet for their
   version (every one points at a moment with a scene, so either studio can add the
   telling), and one general prompt for Ana that starts a new memory.
@@ -36,7 +39,7 @@ It prints only the redacted target (scheme and hosts) and the database name, cre
 indexes and, best effort, the Atlas Vector Search indexes, then seeds. Exit codes: 0 done,
 1 bad demo data (nothing written), 2 bad arguments, 3 MongoDB unreachable or failing;
 errors are one scrubbed message on stderr, never a traceback. Every run writes the same ids
-(people, memories, props, sets, photos, questions), so two seeded databases match.
+(people, memories, props, sets, photos, questions, traditions), so two seeded databases match.
 
 Every read and write, including the reset, goes through the db/ functions; the reset is
 scoped to the demo family id, the demo user ids and the demo emails, so non-demo data is
@@ -49,7 +52,7 @@ import argparse
 import io
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
@@ -65,6 +68,7 @@ from db import media as media_db
 from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
+from db import traditions as traditions_db
 from db import users as users_db
 from screenplay import compiler
 from screenplay.narration import default_author
@@ -107,6 +111,7 @@ class DemoSeed:
     person_ids: list[str]
     memory_ids: list[str]
     created: bool
+    tradition_ids: list[str] = field(default_factory=list)
 
 
 class DemoDataError(ValueError):
@@ -371,6 +376,79 @@ DEMO_QUESTIONS: tuple[tuple[str, str, str | None], ...] = (
 )
 
 
+# The Book of Family Traditions. Same ids, titles, descriptions, categories, `when` and
+# started years as web/components/flow/mock/demoTraditions.ts, in the same order (each is
+# created a second after the one before, so the book lists them in this order). The mock's
+# person ids map to this family's: rosa -> grandma_rosa, luis -> grandpa_luis, maya ->
+# lily; dad, mom and sam are the same. Its user_david / user_ana are the demo accounts.
+# (id, created by, request; photoIds are filled in at build time from _TRADITION_PHOTOS.)
+DEMO_TRADITIONS: tuple[tuple[str, str, schemas.CreateTraditionRequest], ...] = (
+    ("tamales_christmas_eve", "demo_user_david", schemas.CreateTraditionRequest(
+        title="Tamales on Christmas Eve",
+        description=(
+            "Every Christmas Eve the whole kitchen turns into an assembly line. Rosa spreads the masa, Luis folds, "
+            "and the kids are in charge of the corn husks until they're old enough to be trusted with the filling. "
+            "We eat the first batch standing up, straight out of the pot."
+        ),
+        category="food",
+        when=schemas.TraditionWhen(kind="yearly", label="Christmas Eve", month=12),
+        participant_ids=["grandma_rosa", "grandpa_luis", "dad", "mom", "lily", "sam"],
+        started_year=1962,
+    )),
+    ("sunday_pancakes", "demo_user_ana", schemas.CreateTraditionRequest(
+        title="Sunday pancakes",
+        description=(
+            "David makes pancakes every Sunday morning, always one shaped like the first letter of your name. "
+            "Sam once asked for an S and got something closer to a snake. Nobody is allowed to skip breakfast."
+        ),
+        category="food",
+        when=schemas.TraditionWhen(kind="weekly", label="every Sunday"),
+        participant_ids=["dad", "mom", "lily", "sam"],
+        started_year=1995,
+    )),
+    ("summer_road_trip", "demo_user_david", schemas.CreateTraditionRequest(
+        title="The summer road trip to the coast",
+        description=(
+            "Each July we pack the car the night before and leave before the sun is up. "
+            "The first stop is always the same diner for cinnamon rolls, and whoever spots the ocean first "
+            "picks the music for the rest of the drive."
+        ),
+        category="trip",
+        when=schemas.TraditionWhen(kind="yearly", label="every July", month=7),
+        participant_ids=["dad", "mom", "lily", "sam"],
+        started_year=1997,
+    )),
+    ("hymns_after_dinner", "demo_user_ana", schemas.CreateTraditionRequest(
+        title="Hymns after dinner",
+        description=(
+            "When the family is all at one table, someone starts humming and Rosa takes it from there. "
+            "Ana carries the harmony, David pretends he doesn't know the words, and by the second verse "
+            "everyone is singing."
+        ),
+        category="music",
+        when=schemas.TraditionWhen(kind="occasional", label="when everyone is home"),
+        participant_ids=["grandma_rosa", "dad", "mom", "lily", "sam"],
+        started_year=None,
+    )),
+    ("rosas_easter_hats", "demo_user_david", schemas.CreateTraditionRequest(
+        title="Rosa's Easter hats",
+        description=(
+            "Rosa makes a new Easter hat for each of the grandchildren, out of whatever she has: ribbon, paper "
+            "flowers, once a whole bird's nest. We wear them to church and then to lunch, no matter how tall they "
+            "are. She has never made the same hat twice."
+        ),
+        category="craft",
+        when=schemas.TraditionWhen(kind="yearly", label="Easter Sunday", month=4),
+        participant_ids=["grandma_rosa", "lily", "sam"],
+        started_year=1992,
+    )),
+)
+DEMO_TRADITION_IDS: tuple[str, ...] = tuple(t[0] for t in DEMO_TRADITIONS)
+# Tradition id -> indexes into the seeded photos (DEMO_PHOTO_IDS) it shows. The peach stand
+# is a roadside stop with no year printed on it, so it fits the road trip.
+_TRADITION_PHOTOS: dict[str, tuple[int, ...]] = {"summer_road_trip": (1,)}
+
+
 # ------------------------------------------------------------------------- the scenes
 
 class DemoScene(NamedTuple):
@@ -562,6 +640,7 @@ def _demo_seed(created: bool) -> DemoSeed:
         person_ids=list(DEMO_PERSON_IDS),
         memory_ids=list(DEMO_MEMORY_IDS),
         created=created,
+        tradition_ids=list(DEMO_TRADITION_IDS),
     )
 
 
@@ -642,6 +721,13 @@ def _build(db: Database, data: DemoData) -> None:
     ):
         memories_db.create_question(db, DEMO_FAMILY_ID, person_id=person_id, text=text, memory_id=memory_id,
                                     question_id=question_id, now=base + timedelta(seconds=offset))
+
+    for offset, (tradition_id, created_by, request) in enumerate(DEMO_TRADITIONS):
+        photos = [photo_ids[i] for i in _TRADITION_PHOTOS.get(tradition_id, ())]
+        traditions_db.create_tradition(
+            db, DEMO_FAMILY_ID, request.model_copy(update={"photo_ids": photos}),
+            created_by=created_by, tradition_id=tradition_id, now=base + timedelta(seconds=offset),
+        )
 
     # The family document goes last, with every member in the same insert: its existence
     # marks a complete seed, so an interrupted run never leaves a half-joined family.

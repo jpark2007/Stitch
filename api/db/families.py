@@ -155,12 +155,12 @@ def get_family(db: Database, family_id: str) -> schemas.Family | None:
 
 
 # Every collection whose documents carry a `familyId` and belong to exactly one family.
-FAMILY_SCOPED = ("people", "memories", "questions", "props", "sets")
+FAMILY_SCOPED = ("people", "memories", "questions", "props", "sets", "traditions")
 
 
 def purge_family(db: Database, family_id: str) -> None:
     """Delete a family and everything it owns: its document, its people, memories,
-    questions, props and sets, and its media. Nothing of any other family is touched.
+    questions, props, sets and traditions, and its media. Nothing of any other family is touched.
 
     Accounts are not family data and stay (see `users.delete_users`). ValueError on a
     blank family_id, so a bad argument can never widen a filter.
