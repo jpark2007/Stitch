@@ -358,6 +358,11 @@ export class BookController {
     return this.shotW > 0.25 && !this.shotYield;
   }
 
+  /** How far the camera is into the stage's shot (0 the reading view .. 1), for capture scripts. */
+  get shotWeight() {
+    return this.shotW;
+  }
+
   /** A telling chosen again: the camera may lean back into its stage. */
   resumeShot() {
     if (!this.shotYield) return;

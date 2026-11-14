@@ -667,6 +667,8 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
       ...api,
       frames: () => ctl.rt.frames,
       focus: () => ctl.focus,
+      /** How far the camera is into the playing stage's shot (0..1). */
+      shot: () => ctl.shotWeight,
       leaves: () => ctl.rt.leaves.map((l) => `${l.mode}:${l.p.toFixed(3)}${l.visible ? "" : "(hidden)"}`),
       /** Screen points (CSS px) of the open spread's teller labels, by teller id. */
       labels: () => {
