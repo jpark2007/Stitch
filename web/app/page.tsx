@@ -27,7 +27,7 @@ export default function HomePage() {
             Family threads
           </Link>
         </nav>
-        <h1 className="mt-8 text-[clamp(2rem,4.4vw,3.4rem)] sm:mt-6">{demoFamily.name}</h1>
+        <h1 className="mt-8 text-[clamp(2rem,4.4vw,3.4rem)] sm:mt-6">{keepDashedTogether(demoFamily.name)}</h1>
         <p className="caption mt-2">pick anyone to open their book</p>
       </header>
 
@@ -38,4 +38,9 @@ export default function HomePage() {
       </section>
     </main>
   );
+}
+
+/** Word joiners around dashes, so "Alvarez–Moore" never breaks at the dash. */
+function keepDashedTogether(text: string): string {
+  return text.replace(/\s*([–-])\s*/g, "\u2060$1\u2060");
 }
