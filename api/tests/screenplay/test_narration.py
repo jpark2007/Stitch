@@ -19,7 +19,9 @@ from screenplay.narration import (
     default_author,
     last_word_time,
     line_words,
+    narrate_shot,
     retime_actions,
+    shot_tellings,
     tokenize,
 )
 from screenplay.schema import (
@@ -350,7 +352,8 @@ def test_other_telling_errors_carry_author_shot_and_line(sp):
     e = _err(build_shot_narration, shot, ACTION_START, retimed, {"mom": bad}, "dad")
     assert (e.code, e.author, e.shot, e.line_index) == ("cue_conflict", "mom", "s1", 2)
 
-    # "everywhere" is the 6th word: landing it on drop at shot t=0.5 needs a start of -0.75.
+    # "everywhere" is the 6th word (1.25 s in): landing it on drop at shot t=0.0 needs a start of
+    # -1.25, before the set starts rising at -1.2.
     early = shot.model_copy(deep=True)
     early.narration[1].t = -0.75  # dad's "dropped" at shot t=0.0
     retimed_early = retime_actions(early, ACTION_START)
@@ -479,3 +482,187 @@ def test_convert_interactions_unknown_shot():
     )
     e = _err(convert_interactions, [scrub], {"s1": 1.2}, "s1")
     assert (e.code, e.shot, e.line_index) == ("interaction_unknown_shot", "s9", 0)
+
+
+# ------------------------------------------------------------- shot_tellings / narrate_shot
+
+def test_cue_word_missing_exact_message(sp):
+    shot = sp.shots[0].model_copy(deep=True)
+    shot.narration[1].cue_word = "fell"
+    e = _err(retime_actions, shot, ACTION_START, author="dad")
+    assert (e.code, e.author, e.shot, e.line_index) == ("cue_word_missing", "dad", "s1", 1)
+    assert str(e) == e.message == (
+        "shot s1, dad's narration line 1: "
+        'cueWord "fell" is not a word of "…and then she dropped every single hymn book."; '
+        'its words are: "and", "then", "she", "dropped", "every", "single", "hymn", "book"'
+    )
+
+
+def test_shot_tellings(sp):
+    assert shot_tellings(sp, "s1") == {"mom": sp.narrations["mom"]["s1"]}
+    assert shot_tellings(sp, "s2") == {}
+    data = sp.model_dump(by_alias=True)
+    data["narrations"] = {
+        "gran": {"s1": [{"t": 0, "text": "Hello"}]},
+        "kid": {"s1": []},  # no lines for the shot: left out
+        "mom": data["narrations"]["mom"],
+        "uncle": {"s2": [{"t": 0, "text": "Elsewhere"}]},
+    }
+    assert list(shot_tellings(Screenplay.model_validate(data), "s1")) == ["gran", "mom"]
+    assert shot_tellings(sp.model_copy(update={"narrations": None}), "s1") == {}
+
+
+def test_narrate_shot_reproduces_sample(sp, tl):
+    shot = sp.shots[0]
+    retimed, built = narrate_shot(sp, shot, tl.shots[0].action_start, default_author(sp))
+    assert retimed == [0, 3.25, 3.6, 5.5, 6.6, 7.7]
+    assert list(built) == ["dad", "mom"]
+    tracks, captions = assemble([built], "dad")
+    assert list(tracks) == list(tl.narrations)
+    for author, track in tracks.items():
+        want = tl.narrations[author]
+        assert track.author_id == want.author_id and track.audio == want.audio
+        for got_c, want_c in zip(track.captions, want.captions, strict=True):
+            assert got_c.text == want_c.text and abs(got_c.t - want_c.t) < 1e-3
+        for got_l, want_l in zip(track.lines, want.lines, strict=True):
+            assert (got_l.text, got_l.source, got_l.cue, got_l.cue_word) == (
+                want_l.text, want_l.source, want_l.cue, want_l.cue_word)
+            assert abs(got_l.t - want_l.t) < 1e-3
+            for gw, ww in zip(got_l.words, want_l.words, strict=True):
+                assert gw.word == ww.word and abs(gw.t - ww.t) < 1e-3
+    for got_c, want_c in zip(captions, tl.captions, strict=True):
+        assert got_c.text == want_c.text and abs(got_c.t - want_c.t) < 1e-3
+    inter = convert_interactions(sp.interactions, {"s1": tl.shots[0].action_start}, "s1")
+    for got_i, want_i in zip(inter, tl.interactions, strict=True):
+        assert abs(got_i.drives.from_ - want_i.drives.from_) < 1e-3
+        assert abs(got_i.drives.to - want_i.drives.to) < 1e-3
+        assert got_i.model_copy(update={"drives": None}) == want_i.model_copy(update={"drives": None})
+        assert got_i.drives.targets == want_i.drives.targets
+
+
+def test_narrate_shot_names_the_default_teller_in_errors(sp):
+    shot = sp.shots[0].model_copy(deep=True)
+    shot.narration[2].cue = "nope"
+    e = _err(narrate_shot, sp, shot, ACTION_START, "dad")
+    assert (e.code, e.author, e.line_index) == ("cue_unknown_action", "dad", 2)
+
+
+# ------------------------------------------- bug 1: a ripple pushes an action before t=0
+
+def test_ripple_pushing_an_uncued_action_before_the_shot_is_an_error():
+    # p (1.5) < q (2.0) < wave (2.2). Line 0 pins q at 0 (-2.0): wave ripples to 0.2.
+    # Line 1 then pins p at 0.25 (-1.25): q is pinned, but wave ripples again, to -1.05.
+    shot = Shot(
+        id="s1",
+        set="x",
+        actions=[
+            Action(t=1.5, do="pose", who="a", pose="x", id="p"),
+            Action(t=2.0, do="pose", who="a", pose="y", id="q"),
+            Action(t=2.2, do="wave", who="b"),
+        ],
+        narration=[line(0.0, "Now", cue="q"), line(0.25, "Then", cue="p")],
+    )
+    e = _err(retime_actions, shot, 0.0, author="dad")
+    assert (e.code, e.author, e.shot, e.line_index) == ("cue_before_start", "dad", "s1", 1)
+    assert e.reason == (
+        "action 2 (wave) would start at shot t=-1.05, before the shot starts: it keeps its spacing "
+        "after action 0 (p), which this line moves to shot t=0.25; give action 2 a later t or a cue of its own"
+    )
+    # The same cues in the other order, or with wave cued itself, are fine.
+    shot.narration.reverse()
+    assert retime_actions(shot, 0.0) == [0.25, 0.0, 0.2]
+    shot.narration.reverse()
+    shot.narration.append(line(0.5, "Bye", cue="wave"))
+    assert retime_actions(shot, 0.0) == [0.25, 0.0, 0.5]
+
+
+# ------------------------------------------------ bug 2: overlapping lines in one telling
+
+def test_default_telling_lines_overlap():
+    shot = Shot(id="s1", set="x", narration=[line(0.0, "one two three four"), line(0.5, "five six")])
+    e = _err(build_shot_narration, shot, ACTION_START, [], {}, "dad")
+    assert (e.code, e.author, e.shot, e.line_index) == ("lines_overlap", "dad", "s1", 1)
+    assert e.reason == (
+        "line 1 starts at shot t=0.50, before line 0 has been said (its last word ends at shot t=1.00); "
+        "start line 1 later or shorten line 0"
+    )
+    assert str(e).startswith("shot s1, dad's narration line 1: line 1 starts")
+
+
+def test_lines_may_follow_back_to_back():
+    # "four" is at 0.75 and is said by 1.0: a line may start exactly then.
+    shot = Shot(id="s1", set="x", narration=[line(0.0, "one two three four"), line(1.0, "five six")])
+    built = build_shot_narration(shot, ACTION_START, [], {}, "dad")
+    assert [ln.t for ln in built["dad"]] == [1.2, 2.2]
+
+
+def test_overlap_uses_tts_word_times_and_skips_silent_lines():
+    given = [WordTiming(t=0.0, word="Well"), WordTiming(t=1.4, word="then")]
+    shot = Shot(id="s1", set="x", narration=[line(0.0, "Well then", words=given), line(0.5, "…"), line(1.5, "Go")])
+    e = _err(build_shot_narration, shot, 0.0, [], {}, "dad")
+    assert (e.code, e.line_index) == ("lines_overlap", 2)
+    assert e.reason == (
+        "line 2 starts at shot t=1.50, before line 0 has been said (its last word ends at shot t=1.65); "
+        "start line 2 later or shorten line 0"
+    )
+    shot.narration[2].t = 1.65
+    build_shot_narration(shot, 0.0, [], {}, "dad")
+
+
+def test_other_telling_overlaps_after_its_alignment_shift(sp):
+    shot = sp.shots[0]
+    retimed = retime_actions(shot, ACTION_START)
+    mom = [ln.model_copy(deep=True) for ln in sp.narrations["mom"]["s1"]]
+    # Aligned, line 1 starts at 2.0 ("everywhere" lands on the drop at 3.25). A 12-word
+    # line 0 is said until 3.0 and runs into it.
+    mom[0].text = "I was carrying far too many hymn books up those stone steps."
+    e = _err(build_shot_narration, shot, ACTION_START, retimed, {"mom": mom}, "dad")
+    assert (e.code, e.author, e.shot, e.line_index) == ("lines_overlap", "mom", "s1", 1)
+    assert e.reason == (
+        "line 1 starts at shot t=2.00, before line 0 has been said (its last word ends at shot t=3.00); "
+        "start line 1 later or shorten line 0"
+    )
+    assert str(e).startswith("shot s1, mom's narration line 1: ")
+
+
+def test_sample_lines_are_back_to_back_and_build(sp):
+    # dad's line 1 and mom's line 1 each start exactly when the line before has been said.
+    _, _, built = run_sample(sp)
+    for author in ("dad", "mom"):
+        first, second = built[author][0], built[author][1]
+        assert second.t == pytest.approx(first.words[-1].t + WORD_SECONDS)
+
+
+# ------------------------------------- bug 3: another telling may start during the set rise
+
+def _rise_shot(drop_at: float) -> Shot:
+    return Shot(
+        id="s1",
+        set="x",
+        actions=[Action(t=drop_at, do="drop", who="mom", what="b", id="drop")],
+        narration=[line(drop_at, "Down", cue="drop")],
+    )
+
+
+def test_other_telling_may_start_while_the_set_rises():
+    shot = _rise_shot(0.5)
+    mom = [line(0.0, "a b c d e f", cue="drop", cue_word="f")]  # "f" is 1.25 s in
+    built = build_shot_narration(shot, ACTION_START, retime_actions(shot, ACTION_START), {"mom": mom}, "dad")
+    assert built["mom"][0].t == pytest.approx(ACTION_START - 0.75)
+    assert built["mom"][0].words[-1].t == pytest.approx(ACTION_START + 0.5)
+    # Exactly when the set starts rising is still fine.
+    shot = _rise_shot(0.55)
+    mom = [line(0.0, "a b c d e f g h", cue="drop", cue_word="h")]  # "h" is 1.75 s in
+    built = build_shot_narration(shot, ACTION_START, retime_actions(shot, ACTION_START), {"mom": mom}, "dad")
+    assert built["mom"][0].t == pytest.approx(0.0)
+
+
+def test_other_telling_before_the_set_rises_is_an_error():
+    shot = _rise_shot(0.5)
+    mom = [line(0.0, "a b c d e f g h", cue="drop", cue_word="h")]
+    e = _err(build_shot_narration, shot, ACTION_START, retime_actions(shot, ACTION_START), {"mom": mom}, "dad")
+    assert (e.code, e.author, e.shot, e.line_index) == ("cue_before_start", "mom", "s1", 0)
+    assert e.reason == (
+        'to land its cue word on the action, "a b c d e f g h" would start at shot t=-1.25, before the set '
+        "starts rising at shot t=-1.20; shorten the words before the cue word or move the action later"
+    )
