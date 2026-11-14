@@ -11,18 +11,24 @@
  * states swap the art.
  *
  * Driving it. Pass a mutable PropPose and change it in place every frame
- * (the timeline player writes it; see props/poseTrack for a sampler). The
- * actor reads it in useFrame, so moving a prop never re-renders React:
+ * (the timeline player writes it; samplePropTracks fills one from a
+ * timeline). The actor reads it in useFrame, so moving a prop never
+ * re-renders React. Mutate it through samplePropTracks or the set* helpers
+ * (React's lint forbids assigning fields of a value passed as a prop):
  *
- *   const pose = useMemo(() => createPropPose({ parent: "ground", position: [0, 0, 0.5] }), []);
+ *   const tracks = useMemo(() => compilePropTracks(timeline.tracks, prop.id), [timeline, prop.id]);
+ *   const pose = useMemo(() => createPropPose(), []);
  *   useFrame(() => samplePropTracks(tracks, time(), pose));
  *   <PropActor prop={prop} pose={pose} registry={registry} resolveSocket={puppetSockets} />
  *
  * Placement, from `pose.parent`:
  *   "ground"                 the anchor sits on `pose.position` (stage space)
- *   "puppet:<id>.<socket>"   the grip sits on that socket, offset by
- *   "prop:<id>.<socket>"     `pose.position` in the socket's space
- * `pose.rotation` (radians about z) turns the card about the anchor or grip.
+ *   "puppet:<id>.<socket>"   held: the grip sits on that socket, offset by
+ *                            `pose.position` in the socket's space
+ *   "prop:<id>.<socket>"     resting on a seat, tabletop or roof: the anchor
+ *                            sits on the socket (the grip with
+ *                            propSocketPivot="grip"), same offset rule
+ * `pose.rotation` (radians about z) turns the card about that point.
  * `pose.state` picks the art; `pose.parts[name]` turns each part.
  *
  * Mount it in stage space (the group whose units are CONTRACTS.md stage
