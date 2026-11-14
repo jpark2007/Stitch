@@ -12,7 +12,7 @@ For now all work is split between two owners, roughly half each. Ethan has every
 
 | Owner | GitHub | Takes | Paths |
 |---|---|---|---|
-| Jonah | `jpark2007` | Agent + compiler, Data, and the flow pages (sign-up, login, start a family, join, add-a-memory, agent feed) | all of `api/`, `web/app/(auth)/`, `web/app/families/`, `web/app/join/`, `web/app/add/`, `web/components/agent/`, `web/lib/api.ts` |
+| Jonah | `jpark2007` | Agent + compiler, Data, and the flow pages (sign-up, login, start a family, join, add-a-memory, agent feed), and the Book of Family Traditions | all of `api/`, `web/app/(auth)/`, `web/app/families/`, `web/app/join/`, `web/app/add/`, `web/app/traditions/`, `web/components/agent/`, `web/components/traditions/`, `web/lib/api.ts` |
 | Ethan | `ethanm9720` | Stage and book, tree home, person and moment pages, threads screen, global look | `web/components/stage/`, `web/components/book/`, `web/components/paper/`, `web/components/tree/`, `web/components/threads/`, `web/app/page.tsx`, `web/app/people/`, `web/app/memories/`, `web/app/render/`, `web/app/threads/`, `web/app/layout.tsx`, `web/app/globals.css`, `web/public/textures/`, web config (`web/package.json`, `next.config.ts`, etc.) |
 
 - Nate (`natek1228`) and Carsten (`CarstenMacosko`) have no fixed area yet. When either picks up work, agree on Issue #1 which paths move to them and update this table in the same PR.

@@ -41,6 +41,9 @@ import type {
   Telling,
   ThreadsResponse,
   Timeline,
+  Tradition,
+  TraditionsResponse,
+  TraditionWhen,
   TreeResponse,
   User,
 } from "@/lib/types";
@@ -197,6 +200,8 @@ interface MockState {
   questions: Question[];
   props: Prop[];
   sets: SetDef[];
+  /** Added after v1 shipped: a stored state without it gets the seed's (see restore). */
+  traditions: Tradition[];
 }
 
 /** The scene a new moment starts from: the seed's first memory with a screenplay. */
@@ -664,6 +669,182 @@ function optionalIdList(body: Json, key: string, loc: Loc, errors: FieldError[])
   return [...(value as string[])];
 }
 
+// ---------------------------------------------------------------------------
+// Traditions (api/schemas.py CreateTraditionRequest / UpdateTraditionRequest):
+// the request model's bounds, as pydantic reports them (a 422 list).
+
+export const TRADITION_CATEGORIES = ["food", "holiday", "trip", "music", "game", "faith", "craft", "other"] as const;
+export const TRADITION_WHEN_KINDS = ["yearly", "seasonal", "monthly", "weekly", "occasional"] as const;
+export const MAX_TRADITION_TITLE_CHARS = 200;
+export const MAX_TRADITION_DESCRIPTION_CHARS = 5_000;
+export const MAX_TRADITION_LABEL_CHARS = 100;
+export const MAX_TRADITION_PEOPLE = 100;
+export const MAX_TRADITION_PHOTOS = 10;
+export const MIN_TRADITION_YEAR = 1800;
+const TRADITION_NOT_FOUND = "Tradition not found";
+const TRADITION_FIELDS = ["title", "description", "category", "when", "participantIds", "photoIds", "startedYear"];
+const WHEN_FIELDS = ["kind", "label", "month"];
+
+/** Pydantic's literal_error sentence: "Input should be 'a', 'b' or 'c'". */
+function literalMessage(values: readonly string[]): string {
+  const quoted = values.map((v) => `'${v}'`);
+  return `Input should be ${quoted.slice(0, -1).join(", ")} or ${quoted[quoted.length - 1]}`;
+}
+
+function extraFields(body: Json, allowed: string[], loc: Loc, errors: FieldError[]): void {
+  for (const key of Object.keys(body)) {
+    if (!allowed.includes(key)) {
+      errors.push({ loc: [...loc, key], msg: "Extra inputs are not permitted", type: "extra_forbidden" });
+    }
+  }
+}
+
+/** A trimmed, bounded string (StringConstraints(strip_whitespace=True, ...)). Code points, like Python's len. */
+function boundedString(value: unknown, loc: Loc, errors: FieldError[], min: number, max: number): string | null {
+  if (typeof value !== "string") {
+    errors.push({ loc, msg: "Input should be a valid string", type: "string_type" });
+    return null;
+  }
+  const trimmed = value.trim();
+  const length = [...trimmed].length;
+  if (length < min) {
+    errors.push({
+      loc,
+      msg: `String should have at least ${min} character${min === 1 ? "" : "s"}`,
+      type: "string_too_short",
+    });
+    return null;
+  }
+  if (length > max) {
+    errors.push({ loc, msg: `String should have at most ${max} characters`, type: "string_too_long" });
+    return null;
+  }
+  return trimmed;
+}
+
+function literalField<T extends string>(value: unknown, values: readonly T[], loc: Loc, errors: FieldError[]): T | null {
+  if (typeof value === "string" && (values as readonly string[]).includes(value)) return value as T;
+  errors.push({ loc, msg: literalMessage(values), type: "literal_error" });
+  return null;
+}
+
+function boundedIdList(value: unknown, max: number, loc: Loc, errors: FieldError[]): string[] | null {
+  if (!Array.isArray(value)) {
+    errors.push({ loc, msg: "Input should be a valid list", type: "list_type" });
+    return null;
+  }
+  const bad = value.findIndex((v) => typeof v !== "string");
+  if (bad !== -1) {
+    errors.push({ loc: [...loc, bad], msg: "Input should be a valid string", type: "string_type" });
+    return null;
+  }
+  if (value.length > max) {
+    errors.push({
+      loc,
+      msg: `List should have at most ${max} items after validation, not ${value.length}`,
+      type: "too_long",
+    });
+    return null;
+  }
+  return [...(value as string[])];
+}
+
+function readWhen(value: unknown, loc: Loc, errors: FieldError[]): TraditionWhen | null {
+  if (!isRecord(value)) {
+    errors.push({ loc, msg: "Input should be a valid dictionary or instance of TraditionWhen", type: "model_type" });
+    return null;
+  }
+  const before = errors.length;
+  extraFields(value, WHEN_FIELDS, loc, errors);
+  let kind: TraditionWhen["kind"] | null = null;
+  if (value.kind === undefined) errors.push({ loc: [...loc, "kind"], msg: "Field required", type: "missing" });
+  else kind = literalField(value.kind, TRADITION_WHEN_KINDS, [...loc, "kind"], errors);
+  const label =
+    value.label === undefined || value.label === null
+      ? null
+      : boundedString(value.label, [...loc, "label"], errors, 0, MAX_TRADITION_LABEL_CHARS);
+  const month = optionalYear(value, "month", loc, errors);
+  if (month !== null && month < 1) {
+    errors.push({ loc: [...loc, "month"], msg: "Input should be greater than or equal to 1", type: "greater_than_equal" });
+  } else if (month !== null && month > 12) {
+    errors.push({ loc: [...loc, "month"], msg: "Input should be less than or equal to 12", type: "less_than_equal" });
+  }
+  if (errors.length > before || !kind) return null;
+  const when: TraditionWhen = { kind };
+  if (label !== null) when.label = label;
+  if (month !== null) when.month = month;
+  return when;
+}
+
+type TraditionFields = Partial<Omit<Tradition, "id" | "familyId" | "createdBy" | "createdAt" | "updatedAt">>;
+
+/**
+ * A traditions request body, checked as api/schemas.py's request models do.
+ * POST: title, category and when are required; the rest take their defaults.
+ * PATCH (`partial`): only the keys sent come back. A null leaves a field as it
+ * is, except `startedYear: null`, which clears it.
+ */
+function readTradition(body: Json, errors: FieldError[], now: Date, opts: { partial: boolean }): TraditionFields {
+  const loc: Loc = ["body"];
+  const out: TraditionFields = {};
+  extraFields(body, TRADITION_FIELDS, loc, errors);
+  /** Whether to read `key`: sent and not null (a POST null fails the field's own check). */
+  const present = (key: string): boolean => {
+    if (body[key] === undefined) {
+      if (!opts.partial && (key === "title" || key === "category" || key === "when")) {
+        errors.push({ loc: [...loc, key], msg: "Field required", type: "missing" });
+      }
+      return false;
+    }
+    return !(opts.partial && body[key] === null);
+  };
+
+  if (present("title")) {
+    const title = boundedString(body.title, [...loc, "title"], errors, 1, MAX_TRADITION_TITLE_CHARS);
+    if (title !== null) out.title = title;
+  }
+  if (present("description")) {
+    const description = boundedString(body.description, [...loc, "description"], errors, 0, MAX_TRADITION_DESCRIPTION_CHARS);
+    if (description !== null) out.description = description;
+  } else if (!opts.partial) {
+    out.description = "";
+  }
+  if (present("category")) {
+    const category = literalField(body.category, TRADITION_CATEGORIES, [...loc, "category"], errors);
+    if (category !== null) out.category = category;
+  }
+  if (present("when")) {
+    const when = readWhen(body.when, [...loc, "when"], errors);
+    if (when !== null) out.when = when;
+  }
+  for (const [key, max] of [
+    ["participantIds", MAX_TRADITION_PEOPLE],
+    ["photoIds", MAX_TRADITION_PHOTOS],
+  ] as const) {
+    if (present(key)) {
+      const list = boundedIdList(body[key], max, [...loc, key], errors);
+      if (list !== null) out[key] = list;
+    } else if (!opts.partial) {
+      out[key] = [];
+    }
+  }
+  if (body.startedYear === null || (body.startedYear === undefined && !opts.partial)) {
+    out.startedYear = null;
+  } else if (body.startedYear !== undefined) {
+    const year = optionalYear(body, "startedYear", loc, errors);
+    if (year !== null && (year < MIN_TRADITION_YEAR || year > now.getUTCFullYear())) {
+      errors.push({
+        loc: [...loc, "startedYear"],
+        msg: `Value error, Started year must be between ${MIN_TRADITION_YEAR} and this year`,
+        type: "value_error",
+      });
+    } else if (year !== null) {
+      out.startedYear = year;
+    }
+  }
+  return out;
+}
+
 function optionalCharacter(
   body: Json,
   loc: Loc,
@@ -951,6 +1132,8 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
 
   let state: MockState | null = null;
   let template: SceneTemplate | null = null;
+  /** The seed's traditions, for a stored state saved before traditions existed. */
+  let seedTraditions: Tradition[] = [];
   let loading: Promise<void> | null = null;
   /** Bumped by reset(), so work started before a reset can tell it is stale. */
   let generation = 0;
@@ -989,6 +1172,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       if (parsed.session !== null && typeof parsed.session !== "string") return null;
       const users = parsed.users as unknown[];
       if (!users.every((u) => isRecord(u) && typeof u.id === "string" && typeof u.email === "string")) return null;
+      if (!Array.isArray(parsed.traditions)) parsed.traditions = clone(seedTraditions);
       return parsed as unknown as MockState;
     } catch {
       return null;
@@ -1112,6 +1296,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       questions: clone(seed.questions),
       props: clone(seed.props ?? []),
       sets: clone(seed.sets ?? []),
+      traditions: clone(seed.traditions ?? []),
     };
   }
 
@@ -1142,6 +1327,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
         const seed = await opts.seed();
         if (gen !== generation) return;
         template = templateFromSeed(seed);
+        seedTraditions = clone(seed.traditions ?? []);
         state = restore() ?? stateFromSeed(seed);
       })();
       loading = pending;
@@ -2630,6 +2816,70 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       : [];
     const out: QuestionsResponse = { questions };
     return json(200, out);
+  });
+
+  // The Book of Family Traditions: any member reads and writes; another
+  // family's tradition is a 404, like one that doesn't exist.
+
+  function findTradition(s: MockState, fid: string, id: string): Tradition {
+    const tradition = s.traditions.find((t) => t.familyId === fid && t.id === id);
+    if (!tradition) fail(404, TRADITION_NOT_FOUND);
+    return tradition;
+  }
+
+  route("GET", "/families/{fid}/traditions", (s, _req, [fid]) => {
+    requireMember(s, fid);
+    const out: TraditionsResponse = { traditions: s.traditions.filter((t) => t.familyId === fid) };
+    return json(200, out);
+  });
+
+  route("GET", "/families/{fid}/traditions/{id}", (s, _req, [fid, id]) => {
+    requireMember(s, fid);
+    return json(200, findTradition(s, fid, id));
+  });
+
+  route("POST", "/families/{fid}/traditions", (s, req, [fid]) => {
+    const { user } = requireMember(s, fid);
+    const errors: FieldError[] = [];
+    const fields = readTradition(jsonBody(req.body), errors, now(), { partial: false });
+    check(errors);
+    const at = now().toISOString();
+    const tradition: Tradition = {
+      id: newId("tradition"),
+      familyId: fid,
+      title: fields.title ?? "",
+      description: fields.description ?? "",
+      category: fields.category ?? "other",
+      when: fields.when ?? { kind: "occasional" },
+      participantIds: fields.participantIds ?? [],
+      photoIds: fields.photoIds ?? [],
+      startedYear: fields.startedYear ?? null,
+      createdBy: user.id,
+      createdAt: at,
+      updatedAt: at,
+    };
+    s.traditions.push(tradition);
+    save();
+    return json(201, tradition);
+  });
+
+  route("PATCH", "/families/{fid}/traditions/{id}", (s, req, [fid, id]) => {
+    requireMember(s, fid);
+    const errors: FieldError[] = [];
+    const fields = readTradition(jsonBody(req.body), errors, now(), { partial: true });
+    check(errors);
+    const tradition = findTradition(s, fid, id);
+    Object.assign(tradition, fields, { updatedAt: now().toISOString() });
+    save();
+    return json(200, tradition);
+  });
+
+  route("DELETE", "/families/{fid}/traditions/{id}", (s, _req, [fid, id]) => {
+    requireMember(s, fid);
+    const tradition = findTradition(s, fid, id);
+    s.traditions = s.traditions.filter((t) => t !== tradition);
+    save();
+    return noContent();
   });
 
   route("POST", "/families/{fid}/ask", (s, req, [fid]) => {

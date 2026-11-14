@@ -9,10 +9,10 @@ web/lib/types.ts is generated from these models by shared/gen_types.py.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal
+from datetime import UTC, datetime
+from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, StringConstraints, field_validator
 
 from screenplay.schema import (
     VOCABULARY,
@@ -398,6 +398,102 @@ class MemberRolePatch(Model):
 
 class ErrorResponse(Model):
     detail: str
+
+
+# ---------------------------------------------------------------- family traditions
+# The Book of Family Traditions: things the family does again and again, as opposed to
+# a moment (one real-world event). Routes: GET/POST /families/{fid}/traditions and
+# GET/PATCH/DELETE /families/{fid}/traditions/{id}.
+#
+# Bounds live on the request models (a 422 list when broken), not on the response, so
+# a stored tradition always reads back. Text is trimmed before it is measured.
+
+TraditionCategory = Literal["food", "holiday", "trip", "music", "game", "faith", "craft", "other"]
+TraditionWhenKind = Literal["yearly", "seasonal", "monthly", "weekly", "occasional"]
+
+MAX_TRADITION_TITLE_CHARS = 200  # as a memory's title (routes/memories.py MAX_TITLE_CHARS)
+MAX_TRADITION_DESCRIPTION_CHARS = 5_000
+MAX_TRADITION_LABEL_CHARS = 100
+MAX_TRADITION_PEOPLE = 100  # as a memory's participants (MAX_PARTICIPANTS)
+MAX_TRADITION_PHOTOS = 10  # as a memory's photos (MAX_PHOTOS)
+MIN_TRADITION_YEAR = 1800  # as a memory's year (MIN_YEAR); the latest is this year
+
+TraditionTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_TRADITION_TITLE_CHARS)]
+TraditionDescription = Annotated[str, StringConstraints(strip_whitespace=True, max_length=MAX_TRADITION_DESCRIPTION_CHARS)]
+
+
+def _check_started_year(year: int | None) -> int | None:
+    if year is not None and not MIN_TRADITION_YEAR <= year <= datetime.now(UTC).year:
+        raise ValueError(f"Started year must be between {MIN_TRADITION_YEAR} and this year")
+    return year
+
+
+class TraditionWhen(Model):
+    """When a tradition happens. `label` is free text ("Christmas Eve", "every Sunday"), at
+    most 100 characters after trimming; `month` is 1-12 for the month it happens in, if any."""
+
+    kind: TraditionWhenKind
+    label: Annotated[str, StringConstraints(strip_whitespace=True, max_length=MAX_TRADITION_LABEL_CHARS)] | None = Field(
+        default=None, description='e.g. "Christmas Eve", "every Sunday"'
+    )
+    month: int | None = Field(default=None, ge=1, le=12, description="1 = January ... 12 = December")
+
+
+class Tradition(Model):
+    """Something the family does again and again: one page in the Book of Family Traditions."""
+
+    id: str
+    family_id: str
+    title: str
+    description: str = Field(description="May be empty")
+    category: TraditionCategory
+    when: TraditionWhen
+    participant_ids: list[str] = Field(description="Person ids of the people who keep it")
+    photo_ids: list[str] = Field(description="Media ids (as returned by POST /families/{fid}/media)")
+    started_year: int | None = Field(default=None, description="The year it began, when known")
+    created_by: str = Field(description="User id of whoever added it")
+    created_at: datetime
+    updated_at: datetime
+
+
+class TraditionsResponse(Model):
+    """GET /families/{fid}/traditions: every tradition in the family."""
+
+    traditions: list[Tradition]
+
+
+class CreateTraditionRequest(Model):
+    """POST /families/{fid}/traditions. Bounds (422 when broken): title 1-200 characters
+    after trimming; description at most 5,000 (may be empty); when.label at most 100;
+    when.month 1-12; at most 100 participantIds and 10 photoIds; startedYear from 1800 to
+    this year."""
+
+    title: TraditionTitle
+    description: TraditionDescription = ""
+    category: TraditionCategory
+    when: TraditionWhen
+    participant_ids: list[str] = Field(default_factory=list, max_length=MAX_TRADITION_PEOPLE)
+    photo_ids: list[str] = Field(default_factory=list, max_length=MAX_TRADITION_PHOTOS)
+    started_year: int | None = None
+
+    _started_year = field_validator("started_year")(_check_started_year)
+
+
+class UpdateTraditionRequest(Model):
+    """PATCH /families/{fid}/traditions/{id}. Every field is optional; an omitted field is
+    left as it is and `when` is replaced whole. Send `startedYear: null` to clear it (the
+    route tells null from omitted with `model_fields_set`). Same bounds as
+    CreateTraditionRequest."""
+
+    title: TraditionTitle | None = None
+    description: TraditionDescription | None = None
+    category: TraditionCategory | None = None
+    when: TraditionWhen | None = None
+    participant_ids: list[str] | None = Field(default=None, max_length=MAX_TRADITION_PEOPLE)
+    photo_ids: list[str] | None = Field(default=None, max_length=MAX_TRADITION_PHOTOS)
+    started_year: int | None = None
+
+    _started_year = field_validator("started_year")(_check_started_year)
 
 
 # ------------------------------------------------------------------- run stream (SSE)

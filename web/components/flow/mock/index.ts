@@ -7,12 +7,14 @@
 // it composes directly.
 import type { MemoryResponse } from "@/lib/types";
 import { buildDemoSeed } from "./demoSeed";
+import { buildDemoTraditions } from "./demoTraditions";
 import { createMockBackend, MOCK_RUNS_KEY, MOCK_STORAGE_KEY } from "./mockBackend";
 import type { MockBackend, MockFault } from "./mockBackend";
 
 export type { MockBackend, MockBackendOptions, MockFault } from "./mockBackend";
 export type { MockSeed } from "./demoSeed";
 export { DEMO_INVITE_CODE, DEMO_PASSWORD } from "./demoSeed";
+export { DEMO_TRADITIONS } from "./demoTraditions";
 
 const SAMPLE_URL = "/samples/hymn_books.memory.json";
 /** How often a page load checks the runs it follows for a driver that went away. */
@@ -24,7 +26,8 @@ async function loadSeed() {
   const res = await fetch(SAMPLE_URL);
   if (!res.ok) throw new Error(`Couldn't load ${SAMPLE_URL} (${res.status})`);
   const sample = (await res.json()) as MemoryResponse;
-  return buildDemoSeed(sample);
+  const seed = buildDemoSeed(sample);
+  return { ...seed, traditions: buildDemoTraditions(seed.families[0].id) };
 }
 
 function browserStorage(): Storage | null {
