@@ -246,6 +246,39 @@ describe("placeNote", () => {
     assert.ok(ox < caption.x1 - caption.x0);
   });
 
+  it("keeps wholly clear of the caption when any spot allows, shrinking or taking a costlier slot first", () => {
+    // A phone: the caption just under the set, the floor slots all reach it.
+    const view = x.rect(16, 64, 374, 780);
+    const caption = x.rect(40, 488, 350, 540);
+    // Slot 1 stands raised: higher on screen, clear of the words.
+    const floor = camera(150, 500, 195, 1.3);
+    const rectAt = (sx: number, h: number, d: number, out: Parameters<Explain["placeNote"]>[1]["rect"]) => {
+      floor(sx, h, 0, out);
+      if (d === 1) {
+        out.y0 -= 120;
+        out.y1 -= 120;
+      }
+      return out;
+    };
+    const target = x.rect(90, 380, 130, 495);
+    const p = x.placeNote(
+      base({ view, rectAt, target, targetX: -0.6, wantPx: 160, minPx: 110, avoid: [caption], depths: 2, slotCost: [0, 0.4] }),
+      x.placement(),
+    );
+    assert.equal(p.fits, true);
+    assert.ok(!overlaps(p.rect, caption), JSON.stringify(p));
+    assert.equal(p.depth, 1);
+    // With no clear spot at all, it still stands, as little over the words as it can.
+    const wide = x.rect(0, 0, 400, 2000);
+    const q = x.placeNote(base({ view, rectAt: floor, target, targetX: -0.6, wantPx: 160, minPx: 110, avoid: [wide] }), x.placement());
+    assert.ok(inside(q.rect, view));
+  });
+
+  it("prefers the cheaper slot when both are clear", () => {
+    const p = x.placeNote(base({ depths: 3, slotCost: [0.5, 0, 0.5] }), x.placement());
+    assert.equal(p.depth, 1);
+  });
+
   it("returns the least-bad spot, at its smallest, when nothing fits", () => {
     const view = x.rect(0, 0, 100, 100);
     const p = x.placeNote(base({ view, wantPx: 400, minPx: 300 }), x.placement());

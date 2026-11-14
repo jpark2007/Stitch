@@ -266,7 +266,11 @@ export interface PlaceInput {
   target: Rect;
   /** Where the whole note must stay: the canvas less its margins (and any chrome over it). */
   view: Rect;
-  /** Things the note may overlap but never cover entirely (the printed caption). */
+  /**
+   * What the note keeps clear of (the printed caption): wholly clear
+   * wherever any spot allows (it shrinks, slides or stands elsewhere first);
+   * failing that, overlapped as little as may be and never covered entirely.
+   */
   avoid: readonly Rect[];
   /** Other cutouts on the set (the rest of the cast): better not hidden. */
   others?: readonly Rect[];
@@ -280,6 +284,8 @@ export interface PlaceInput {
   rectAt(x: number, h: number, d: number, out: Rect): Rect;
   /** How many depth slots there are. Default 1. */
   depths?: number;
+  /** What standing in each slot costs, against the rest of the score (default 0.12 per slot). */
+  slotCost?: readonly number[];
   /** Stage x of the target's centre, and the range the note's centre may stand in. */
   targetX: number;
   xMin: number;
@@ -315,14 +321,26 @@ const SAMPLES = 40;
 const SHRINK = 0.88;
 const PASSES = 8;
 
+/** Any overlap with an avoided rect up to this many px² still counts as clear (an antialiased corner). */
+const CLEAR_SLACK = 24;
+
 /**
- * Where the note stands: beside its target, wholly on screen, never over
- * all of the caption, and as large as wanted while that keeps it off the
- * target and the rest of the cast (smaller, toward minPx, or further toward
- * the reader, when that hides less of them). Writes into `out` and
- * allocates nothing, so it can run on every frame the camera moves.
+ * Where the note stands: beside its target, wholly on screen, clear of the
+ * caption (never over all of it, when nothing else fits), and as large as
+ * wanted while that keeps it off the target and the rest of the cast
+ * (smaller, toward minPx, or in a costlier slot, when that hides less of
+ * them). Writes into `out` and allocates nothing, so it can run on every
+ * frame the camera moves.
  */
 export function placeNote(p: PlaceInput, out: Placement): Placement {
+  // First wholly clear of the caption; only if no spot is, the least over it.
+  if (p.avoid.length > 0 && searchNote(p, out, true)) return out;
+  searchNote(p, out, false);
+  return out;
+}
+
+/** One pass of placeNote's search, `clear` of the avoided rects or not; true when a spot fits. */
+function searchNote(p: PlaceInput, out: Placement, clear: boolean): boolean {
   const tw = p.target.x1 - p.target.x0;
   const th = p.target.y1 - p.target.y0;
   const tArea = Math.max(1, tw * th);
@@ -371,8 +389,9 @@ export function placeNote(p: PlaceInput, out: Placement): Placement {
         let covered = false;
         let avoidCost = 0;
         for (const a of p.avoid) {
-          const k = overlap(r, a) / Math.max(1, area(a));
-          if (k > 0.97) covered = true;
+          const o = overlap(r, a);
+          const k = o / Math.max(1, area(a));
+          if (k > 0.97 || (clear && o > CLEAR_SLACK)) covered = true;
           avoidCost += k;
         }
         if (covered) continue;
@@ -385,7 +404,8 @@ export function placeNote(p: PlaceInput, out: Placement): Placement {
         const gapX = Math.max(0, Math.abs(cx - tcx) - (r.x1 - r.x0) / 2 - tw / 2);
         const dist = (Math.abs(gapX - gap) + 0.35 * Math.abs(cy - tcy)) / vw;
         const hop = p.prevX === null ? 0 : Math.abs(x - p.prevX) * 0.4;
-        const score = 6 * hide + 2.5 * crowd + 0.8 * avoidCost + dist + hop + small + 0.12 * d;
+        const slot = p.slotCost?.[d] ?? 0.12 * d;
+        const score = 6 * hide + 2.5 * crowd + 2 * avoidCost + dist + hop + small + slot;
         if (score < bestScore) {
           bestScore = score;
           bestX = x;
@@ -398,13 +418,14 @@ export function placeNote(p: PlaceInput, out: Placement): Placement {
     h = Math.max(hMin, h * SHRINK);
   }
   const fits = bestScore < Infinity;
+  if (clear && !fits) return false;
   out.x = fits ? bestX : bestOutX;
   out.h = fits ? bestH : bestOutH;
   out.depth = fits ? bestD : bestOutD;
   out.fits = fits;
   out.side = out.x >= p.targetX ? 1 : -1;
   p.rectAt(out.x, out.h, out.depth, r);
-  return out;
+  return fits;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -487,7 +508,7 @@ export const LIFT_RISE = 0.014;
 /** A hovered cutout lifts this fraction of the way. */
 export const HOVER_LIFT = 0.65;
 /** How much a fully lifted cutout brightens, as if it rose into the lamp (a fraction of its own colour). */
-export const LIFT_GLOW = 0.28;
+export const LIFT_GLOW = 0.22;
 
 const clamp01 = (t: number) => (t < 0 ? 0 : t > 1 ? 1 : t);
 export const smooth = (t: number) => {

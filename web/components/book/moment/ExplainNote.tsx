@@ -205,11 +205,21 @@ export class ExplainSession {
 /* ------------------------------------------------------------------------ */
 
 /**
- * Where the note may stand, stage z: just in front of the front layer (and
- * behind the printed words) first; on a small screen, if that hides its
- * target, further toward the reader, over the start of the words.
+ * Where the note may stand (stage z; how high it is raised on a paper post,
+ * stage units; the most it may lean back there), and what each costs
+ * placement: on the page just in front of the front layer first; then a
+ * little nearer the reader; then up at the back of the set on a post behind
+ * the middle layer, over the backdrop and above the cast's heads (on a
+ * phone, the way to keep the cast and the printed words both clear).
  */
-const NOTE_Z = [0.8, 1.02, 1.24] as const;
+const SLOTS = [
+  { z: 0.8, raise: 0, lean: 0.38 },
+  { z: 1.02, raise: 0, lean: 0.38 },
+  { z: 1.24, raise: 0, lean: 0.38 },
+  { z: 0.24, raise: 0.5, lean: 0.12 },
+  { z: 0.24, raise: 0.72, lean: 0.12 },
+] as const;
+const SLOT_COST = [0, 0.12, 0.24, 0.32, 0.42] as const;
 /** How high its hinge sits off the page, stage units. */
 const BASE_Y = 0.004;
 /** Card thickness, stage units (about a postcard's, at the book's scale). */
@@ -227,9 +237,8 @@ const MIN_PX = 15;
 const MAX_H = 0.95;
 /** Screen margins the note keeps clear of (the book's header, its bottom hints and buttons). */
 const VIEW_PAD = { top: 58, bottom: 74, side: 12 };
-/** Most a note turns toward the camera, and leans back to face it, radians. */
+/** Most a note turns toward the camera, radians (how far it may lean back is its slot's). */
 const MAX_YAW = 0.3;
-const MAX_LEAN = 0.38;
 /** Pointer slack round a cutout's edge, px: a mouse, and a finger. */
 const SLACK_FINE = 5;
 const SLACK_TOUCH = 14;
@@ -336,6 +345,8 @@ class NoteRig {
   private readonly attach = new Object3D();
   private readonly card: Mesh;
   private readonly strut: Mesh;
+  /** The paper post a raised note stands on. */
+  private readonly post: Mesh;
   private readonly thread: InstancedMesh;
   private readonly knotA: Mesh;
   private readonly knotB: Mesh;
@@ -353,10 +364,11 @@ class NoteRig {
   /** Placement, eased toward its goal. */
   x = 0;
   h = 0.3;
-  private z: number = NOTE_Z[0];
+  private z: number = SLOTS[0].z;
+  private raise = 0;
   private yaw = 0;
   private lean = 0;
-  private readonly goal = { x: 0, h: 0.3, z: NOTE_Z[0] as number, yaw: 0, lean: 0 };
+  private readonly goal = { x: 0, h: 0.3, z: SLOTS[0].z as number, raise: 0, yaw: 0, lean: 0 };
   /** The target's thread end in stage space, without its lift. */
   readonly anchor = new Vector3();
   /** The target's paper, world space, as it was when the note opened (for placement). */
@@ -411,6 +423,11 @@ class NoteRig {
     this.strut = new Mesh(shared.strut, this.edge);
     this.strut.castShadow = true;
     this.root.add(this.strut);
+    this.post = new Mesh(shared.strut, [this.edge, this.edge, this.edge, this.edge, this.back, this.back]);
+    this.post.castShadow = true;
+    this.post.receiveShadow = true;
+    this.post.visible = false;
+    this.root.add(this.post);
 
     this.thread = new InstancedMesh(shared.stitch, this.threadMat, STITCHES);
     this.thread.count = 0;
@@ -442,19 +459,22 @@ class NoteRig {
   }
 
   /** Where it should stand, and which edge the thread leaves from; the first placement is where it rises. */
-  setGoal(x: number, h: number, z: number, yaw: number, lean: number, tie: -1 | 1) {
+  setGoal(x: number, h: number, z: number, raise: number, yaw: number, lean: number, tie: -1 | 1) {
     const g = this.goal;
     g.x = x;
     g.h = h;
     g.z = z;
+    g.raise = raise;
     g.yaw = yaw;
     g.lean = lean;
-    this.attach.position.set(tie * (this.aspect / 2 - 0.07), 0.86, 1);
+    // Tied on at the near top corner; a raised note, up over its target, at the near bottom one.
+    this.attach.position.set(tie * (this.aspect / 2 - 0.07), raise > 0 ? 0.1 : 0.86, 1);
     if (!this.placed) {
       this.placed = true;
       this.x = x;
       this.h = h;
       this.z = z;
+      this.raise = raise;
       this.yaw = yaw;
       this.lean = lean;
     }
@@ -501,11 +521,18 @@ class NoteRig {
     // Glide to a new placement (the camera moved), quickly.
     const k = 1 - Math.exp(-dt / 90);
     const g = this.goal;
-    const far = Math.abs(g.x - this.x) + Math.abs(g.h - this.h) + Math.abs(g.z - this.z) + Math.abs(g.yaw - this.yaw) + Math.abs(g.lean - this.lean);
+    const far =
+      Math.abs(g.x - this.x) +
+      Math.abs(g.h - this.h) +
+      Math.abs(g.z - this.z) +
+      Math.abs(g.raise - this.raise) +
+      Math.abs(g.yaw - this.yaw) +
+      Math.abs(g.lean - this.lean);
     if (far > 1e-4) {
       this.x += (g.x - this.x) * k;
       this.h += (g.h - this.h) * k;
       this.z += (g.z - this.z) * k;
+      this.raise += (g.raise - this.raise) * k;
       this.yaw += (g.yaw - this.yaw) * k;
       this.lean += (g.lean - this.lean) * k;
       moving = true;
@@ -513,25 +540,37 @@ class NoteRig {
       this.x = g.x;
       this.h = g.h;
       this.z = g.z;
+      this.raise = g.raise;
       this.yaw = g.yaw;
       this.lean = g.lean;
     }
 
     // The card on its hinge: face down on the page toward the reader at 0
     // (so it never sweeps through the set behind it), standing and leaning
-    // back a touch at 1, past that mid-bounce.
+    // back a touch at 1, past that mid-bounce. A raised note's post comes
+    // up with it, so it still starts (and ends) flat on the page.
+    const lifted = this.raise * Math.min(1, Math.max(0, up));
     this.root.position.set(this.x, BASE_Y, this.z);
     this.root.rotation.set(0, this.yaw, 0);
+    this.hinge.position.y = lifted;
     this.hinge.rotation.x = (Math.PI / 2) * (1 - up) - this.lean * up;
     this.sizer.scale.set(this.h, this.h, CARD_T);
 
-    // The strut: from the page behind the card to its back, under half way up (once it stands).
+    // The post: a folded paper column from the page to the hinge, behind the card's middle.
+    this.post.visible = lifted > 0.01;
+    if (this.post.visible) {
+      this.post.position.set(0, lifted / 2, -0.012);
+      this.post.rotation.set(0, 0, 0);
+      this.post.scale.set(0.2 * this.h * this.aspect, lifted, 0.022);
+    }
+
+    // The strut: from the page behind the card to its back, under half way up (once it stands on the page).
     const a = -this.hinge.rotation.x;
     const reach = 0.42 * this.h;
     const by = reach * Math.cos(a);
     const bz = -reach * Math.sin(a) - CARD_T;
     const foot = -0.16 * this.h;
-    this.strut.visible = a > 0.02 && up > 0.6;
+    this.strut.visible = a > 0.02 && up > 0.6 && this.raise < 0.01;
     this.strut.position.set(0, by / 2, (bz + foot) / 2);
     this.strut.rotation.set(Math.atan2(bz - foot, by), 0, 0);
     this.strut.scale.set(0.24 * this.h * this.aspect, Math.hypot(by, bz - foot), CARD_T * 0.8);
@@ -1170,8 +1209,8 @@ class ExplainStage {
     input.minPx = per * MIN_PX;
     input.prevX = rig.isPlaced ? rig.x : null;
     const p = placeNote(input, s.place);
-    const z = NOTE_Z[p.depth] ?? NOTE_Z[0];
-    rig.setGoal(p.x, p.h, z, this.yawAt(p.x, z), this.leanAt(p.x, p.h, z), p.side > 0 ? -1 : 1);
+    const slot = SLOTS[p.depth] ?? SLOTS[0];
+    rig.setGoal(p.x, p.h, slot.z, slot.raise, this.yawAt(p.x, slot.z), this.leanAt(p.x, p.h, slot), p.side > 0 ? -1 : 1);
     pl.rig = null;
   }
 
@@ -1181,11 +1220,11 @@ class ExplainStage {
     return Math.max(-MAX_YAW, Math.min(MAX_YAW, Math.atan2(c.x - x, c.z - z) * 0.55));
   }
 
-  /** How far a note `h` tall at (x, z) leans back to face the camera. */
-  private leanAt(x: number, h: number, z: number): number {
+  /** How far a note `h` tall at stage x, in `slot`, leans back to face the camera. */
+  private leanAt(x: number, h: number, slot: (typeof SLOTS)[number]): number {
     const c = this.s.cam;
-    const el = Math.atan2(c.y - h * 0.5, Math.hypot(c.x - x, c.z - z));
-    return Math.max(0, Math.min(MAX_LEAN, el * 0.5));
+    const el = Math.atan2(c.y - slot.raise - h * 0.5, Math.hypot(c.x - x, c.z - slot.z));
+    return Math.max(0, Math.min(slot.lean, el * 0.5));
   }
 
   /** placeNote's camera: the screen rect of the note being placed, standing at x, h tall, in depth slot d. */
@@ -1201,19 +1240,20 @@ class ExplainStage {
       out.x1 = out.y1 = 1e6;
       return out;
     }
-    const z = NOTE_Z[d] ?? NOTE_Z[0];
+    const slot = SLOTS[d] ?? SLOTS[0];
+    const { z, raise } = slot;
     const yaw = this.yawAt(x, z);
-    const lean = this.leanAt(x, h, z);
+    const lean = this.leanAt(x, h, slot);
     const cy = Math.cos(yaw);
     const sy = Math.sin(yaw);
     const v = this.s.v;
     for (let i = 0; i < 4; i++) {
-      // Card-local (u across, v up) -> leaned back -> turned -> stood at (x, BASE_Y, z).
+      // Card-local (u across, v up) -> leaned back -> turned -> stood at (x, BASE_Y + raise, z).
       const u = (i & 1 ? 0.5 : -0.5) * h * rig.aspect;
       const up = i & 2 ? h : 0;
       const ly = up * Math.cos(lean);
       const lz = -up * Math.sin(lean);
-      v.set(x + u * cy + lz * sy, BASE_Y + ly, z - u * sy + lz * cy).applyMatrix4(root.matrixWorld);
+      v.set(x + u * cy + lz * sy, BASE_Y + raise + ly, z - u * sy + lz * cy).applyMatrix4(root.matrixWorld);
       addPoint(v, camera, w, H, out);
     }
     return out;
@@ -1242,7 +1282,8 @@ class ExplainStage {
       avoid: [],
       others: [],
       rectAt: (x, h, d, out) => this.rectAt(x, h, d, out),
-      depths: NOTE_Z.length,
+      depths: SLOTS.length,
+      slotCost: SLOT_COST,
       targetX: 0,
       xMin: -1,
       xMax: 1,
@@ -1328,7 +1369,8 @@ class ExplainStage {
       t.off.copy(t.dir).multiplyScalar(t.lift);
       if (t.lift === 0) lifts.delete(key);
       else lifts.set(key, t.off);
-      this.glow(t, t.lift);
+      // Lit in full by the time a hover has it up; no brighter with its note open.
+      this.glow(t, Math.min(1, t.lift / HOVER_LIFT));
       moving = true;
     }
 
