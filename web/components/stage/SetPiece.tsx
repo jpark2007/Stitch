@@ -1,2 +1,278 @@
-// Hinged paper layer that rises and folds
-export {};
+"use client";
+
+/**
+ * Hinged paper set pieces.
+ *
+ * A <SetPiece> is one card cutout standing on its bottom fold: an alpha-masked
+ * front, a plain card back, and thin walls tracing the outline so the card has
+ * visible thickness. It hangs off nested groups:
+ *
+ *   base (on the page, at the fold)
+ *     hinge   rotation.x: flat (folded towards the reader) -> upright
+ *       half  rotation.y: V-fold panels swing about the centre crease
+ *         front / back / edge meshes
+ *
+ * How far each piece has risen comes from the nearest <PopUp>:
+ *   open: number   scrubbed, e.g. by a page-turn angle. Pieces rise in a depth
+ *                  stagger (back first), no springs, so any value is a pose.
+ *   open: boolean  played. Each flip schedules critically damped springs per
+ *                  piece (back first when opening, front first when closing),
+ *                  with a velocity kick that gives one small overshoot and
+ *                  settle. Evaluated in closed form from stage time, so frozen
+ *                  frames are exact.
+ *
+ * Folded flat, back pieces lie on top of front ones (they fold forwards over
+ * them), which is why they must rise first.
+ */
+
+import { useFrame, useThree } from "@react-three/fiber";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  BackSide,
+  DoubleSide,
+  FrontSide,
+  MeshStandardMaterial,
+  PlaneGeometry,
+  type BufferGeometry,
+  type Group,
+} from "three";
+import { createCardEdgeMaterial, createPaperMaterial, getPaperTextures } from "@/components/paper/materials";
+import { useStageTime } from "./clock";
+import type { Cutout } from "./cutout";
+import { clamp, smootherstep, smoothstep, springAt, type SpringEvent } from "./timeline";
+
+/* ------------------------------------------------------------------------ */
+/* Pop-up controller                                                         */
+/* ------------------------------------------------------------------------ */
+
+export interface PopUpTiming {
+  /** Seconds between pieces when opening (back first). */
+  openStagger: number;
+  /** Seconds between pieces when closing (front first). */
+  closeStagger: number;
+  /** For scrubbed `open`: share of the 0..1 range between piece starts. */
+  scrubStagger: number;
+}
+
+const DEFAULT_TIMING: PopUpTiming = { openStagger: 0.17, closeStagger: 0.09, scrubStagger: 0.16 };
+
+interface PopUpValue {
+  /** Rise of a piece, 0 flat .. 1 upright (briefly above 1 on overshoot). */
+  rise(order: number, count: number, t: number, omega: number): number;
+}
+
+const PopUpContext = createContext<PopUpValue>({ rise: () => 1 });
+
+interface Flip {
+  at: number;
+  open: boolean;
+}
+
+export interface PopUpProps {
+  /** Scrub (0..1) or play (boolean). Default true. */
+  open?: number | boolean;
+  /** When `open` starts true: stage time at which the set begins to rise. */
+  openAt?: number;
+  timing?: Partial<PopUpTiming>;
+  children?: ReactNode;
+}
+
+export function PopUp({ open = true, openAt = 0.4, timing, children }: PopUpProps) {
+  const t = { ...DEFAULT_TIMING, ...timing };
+  const { openStagger, closeStagger, scrubStagger } = t;
+  const now = useStageTime();
+  const get = useThree((s) => s.get);
+  // Boolean mode: the history of flips, in stage time. Starts with the
+  // initial state; later flips are appended when `open` changes.
+  const [initial] = useState<Flip[]>(() => (open === true ? [{ at: openAt, open: true }] : []));
+  const flips = useRef<Flip[]>(initial);
+  const last = useRef(open);
+  useEffect(() => {
+    if (typeof open !== "boolean" || open === last.current) return;
+    last.current = open;
+    flips.current = [...flips.current, { at: now(get()), open }];
+  }, [open, now, get]);
+
+  const value = useMemo<PopUpValue>(() => {
+    if (typeof open === "number") {
+      return {
+        rise(order, count) {
+          const s = Math.min(scrubStagger, 0.8 / Math.max(1, count - 1));
+          const span = 1 - s * (count - 1);
+          return smootherstep((open - order * s) / span);
+        },
+      };
+    }
+    return {
+      rise(order, count, time, omega) {
+        const evs: SpringEvent[] = flips.current.map((f) => ({
+          at: f.at + (f.open ? order * openStagger : (count - 1 - order) * closeStagger),
+          target: f.open ? 1 : 0,
+          kick: f.open ? 1.75 * omega : 0,
+        }));
+        // Close-stagger can reorder events; keep them in time order.
+        evs.sort((a, b) => a.at - b.at);
+        return Math.max(0, springAt(evs, time, omega, 0));
+      },
+    };
+  }, [open, openStagger, closeStagger, scrubStagger]);
+
+  return <PopUpContext.Provider value={value}>{children}</PopUpContext.Provider>;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Set piece                                                                 */
+/* ------------------------------------------------------------------------ */
+
+export interface SetPieceProps {
+  cutout: Cutout;
+  /** Height of the card in world units (width follows the cutout's aspect). */
+  height: number;
+  /** Fold line centre on the page. */
+  x?: number;
+  z?: number;
+  /** Turn about the vertical axis (radians), for pieces set at an angle. */
+  yaw?: number;
+  /** Stagger slot: 0 rises first. Pieces further back should come first. */
+  order?: number;
+  count?: number;
+  /** V-fold: the angle each panel swings back from the crease at full open. 0 = flat piece. */
+  vfold?: number;
+  /** Card thickness. Default 0.007. */
+  thickness?: number;
+  /** Colour of the card's back and cut edge. */
+  backColor?: string;
+  /** Spring speed (rad/s). Default scales with height: tall cards are slower. */
+  omega?: number;
+}
+
+type Half = { key: string; plane: BufferGeometry; edge: BufferGeometry; sign: number };
+
+function halfPlane(aspect: number, side: -1 | 0 | 1) {
+  const w = side === 0 ? aspect : aspect / 2;
+  const g = new PlaneGeometry(w, 1);
+  g.translate(side * (aspect / 4), 0.5, 0);
+  if (side !== 0) {
+    const uv = g.getAttribute("uv");
+    for (let i = 0; i < uv.count; i++) uv.setX(i, (side < 0 ? 0 : 0.5) + uv.getX(i) * 0.5);
+    uv.needsUpdate = true;
+  }
+  return g;
+}
+
+export function SetPiece({
+  cutout,
+  height,
+  x = 0,
+  z = 0,
+  yaw = 0,
+  order = 0,
+  count = 1,
+  vfold = 0,
+  thickness = 0.007,
+  backColor = "#e9dfcb",
+  omega,
+}: SetPieceProps) {
+  const { rise } = useContext(PopUpContext);
+  const now = useStageTime();
+  const hinge = useRef<Group>(null);
+  const halvesRef = useRef<(Group | null)[]>([]);
+  const w = cutout.aspect * height;
+  const springOmega = omega ?? 6.4 / Math.sqrt(Math.max(0.2, height));
+
+  const halves = useMemo<Half[]>(
+    () =>
+      vfold > 0
+        ? [
+            { key: "l", plane: halfPlane(cutout.aspect, -1), edge: cutout.edgeLeft, sign: -1 },
+            { key: "r", plane: halfPlane(cutout.aspect, 1), edge: cutout.edgeRight, sign: 1 },
+          ]
+        : [{ key: "f", plane: halfPlane(cutout.aspect, 0), edge: cutout.edge, sign: 0 }],
+    [cutout, vfold],
+  );
+  useEffect(() => () => halves.forEach((h) => h.plane.dispose()), [halves]);
+
+  const materials = useMemo(() => {
+    const rep: [number, number] = [Math.max(0.5, w * 1.1), Math.max(0.5, height * 1.1)];
+    const grain = getPaperTextures("card", rep);
+    const front = new MeshStandardMaterial({
+      map: cutout.map,
+      alphaMap: cutout.alphaMap,
+      alphaTest: 0.5,
+      roughness: 0.93,
+      metalness: 0,
+      side: FrontSide,
+    });
+    front.alphaToCoverage = true;
+    // Cast from both faces: the default (back faces only) loses the shadow
+    // whenever the card faces the light.
+    front.shadowSide = DoubleSide;
+    front.normalMap = grain.normalMap;
+    front.normalScale.set(0.55, 0.55);
+    front.roughnessMap = grain.roughnessMap;
+    front.name = "stage:cutout-front";
+    const back = createPaperMaterial({ color: backColor, kind: "card", repeat: rep, side: BackSide, grain: 0.7 });
+    back.alphaMap = cutout.alphaMap;
+    back.alphaTest = 0.5;
+    back.alphaToCoverage = true;
+    const edge = createCardEdgeMaterial({ color: backColor, darken: 0.12 });
+    return { front, back, edge };
+  }, [cutout, w, height, backColor]);
+  useEffect(() => () => Object.values(materials).forEach((m) => m.dispose()), [materials]);
+
+  // Folded flat, a piece lies on the ones in front of it: stack them so they
+  // never intersect, and let each sink to the page as it stands up.
+  const stackY = thickness / 2 + 0.0012 + (count - 1 - order) * (thickness + 0.0018);
+
+  useFrame((state) => {
+    const r = rise(order, count, now(state), springOmega);
+    const g = hinge.current;
+    if (!g) return;
+    g.rotation.x = Math.min(1, 1 - r) * (Math.PI / 2);
+    g.position.y = stackY * (1 - smoothstep(r));
+    if (vfold > 0) {
+      const v = vfold * smoothstep(clamp((r - 0.45) / 0.55, 0, 1.2));
+      for (let i = 0; i < halves.length; i++) {
+        const h = halvesRef.current[i];
+        if (h) h.rotation.y = halves[i].sign * v;
+      }
+    }
+  });
+
+  return (
+    <group position={[x, 0, z]} rotation-y={yaw}>
+      <group ref={hinge}>
+        {halves.map((h, i) => (
+          // V-fold panels pivot on the crease line of the printed face, so
+          // the two faces meet cleanly and the card backs tuck behind.
+          <group
+            key={h.key}
+            position-z={thickness / 2}
+            ref={(el) => {
+              halvesRef.current[i] = el;
+            }}
+          >
+            <group position-z={-thickness / 2}>
+              <mesh
+                geometry={h.plane}
+                material={materials.front}
+                position-z={thickness / 2}
+                scale={[height, height, 1]}
+                castShadow
+                receiveShadow
+              />
+              <mesh
+                geometry={h.plane}
+                material={materials.back}
+                position-z={-thickness / 2}
+                scale={[height, height, 1]}
+                receiveShadow
+              />
+              <mesh geometry={h.edge} material={materials.edge} scale={[height, height, thickness]} />
+            </group>
+          </group>
+        ))}
+      </group>
+    </group>
+  );
+}
