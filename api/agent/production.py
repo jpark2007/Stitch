@@ -12,7 +12,9 @@ the agent, so the API needs no startup hook. Each service is picked from env var
     IMAGE_API_KEY          real prop and set art; unset: placeholder art (null art + color)
     ELEVENLABS_API_KEY     real narration voices; unset: FakeTTS (silent audio, real timings)
     STITCH_WEB_URL         render_frames screenshots the web /render/[memoryId] page with
-                           Playwright; unset: the Pillow diagram renderer (FakeFrameRenderer)
+                           Playwright; unset: the Pillow diagram renderer (FakeFrameRenderer),
+                           whose labelled diagrams the critic is told are not the real stage
+                           (a warning is logged)
 
 The family data goes through `MongoRepo(db.client.get_db())`, so it follows whatever
 database the API uses, including the STITCH_FAKE_DB mongomock override.
@@ -164,9 +166,15 @@ def production_services() -> Services:
         renderer = PlaywrightFrameRenderer(web_url)
         labels["renderer"] = "playwright"
     else:
-        # No web app to screenshot: the checker sees Pillow diagrams of the stage.
+        # No web app to screenshot: the checker sees Pillow diagrams of the stage, and the
+        # renderer's critic_note tells the vision critic so.
         renderer = FakeFrameRenderer()
         labels["renderer"] = "diagram"
+        logger.warning(
+            "STITCH_WEB_URL is not set: the checker sees labelled diagrams of the stage, not "
+            "the real stage; set STITCH_WEB_URL to the running web app (e.g. "
+            "http://localhost:3000) for real screenshots"
+        )
 
     compiler = load_compiler()
     labels["compiler"] = compiler_label(compiler)

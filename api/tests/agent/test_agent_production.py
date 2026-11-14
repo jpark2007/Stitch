@@ -187,6 +187,33 @@ def test_web_url_selects_the_playwright_renderer(monkeypatch: pytest.MonkeyPatch
     assert no_network == []
 
 
+def test_without_a_web_url_the_checker_sees_labelled_diagrams_and_a_warning_says_so(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, no_network: list[Any]
+) -> None:
+    dummy_keys(monkeypatch)
+    caplog.set_level("WARNING", logger="agent.production")
+    svc = production.production_services()
+    assert isinstance(svc.renderer, FakeFrameRenderer) and svc.labels["renderer"] == "diagram"
+    assert svc.renderer.critic_note  # the vision critic is told these are diagrams
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING" and "STITCH_WEB_URL" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "diagrams" in warnings[0] and "real stage" in warnings[0]
+    assert no_network == []
+
+
+def test_with_a_web_url_there_is_no_diagram_warning(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    dummy_keys(monkeypatch)
+    monkeypatch.setenv("STITCH_WEB_URL", "http://localhost:3999")
+    caplog.set_level("WARNING", logger="agent.production")
+    launched: list[Any] = []
+    monkeypatch.setattr(PlaywrightFrameRenderer, "_render", lambda self, *a: launched.append(a) or [])
+    svc = production.production_services()
+    assert isinstance(svc.renderer, PlaywrightFrameRenderer) and svc.labels["renderer"] == "playwright"
+    assert svc.renderer.critic_note is None
+    assert not [r for r in caplog.records if "STITCH_WEB_URL" in r.getMessage()]
+    assert launched == []  # building the services never opens a browser
+
+
 def test_describe_is_one_line_in_a_stable_order(monkeypatch: pytest.MonkeyPatch) -> None:
     dummy_keys(monkeypatch, art=False)
     line = production.describe(production.production_services())

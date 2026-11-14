@@ -7,6 +7,7 @@ import base64
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import types
@@ -27,16 +28,22 @@ from agent.run_info import RunInfo
 from agent.tools.compile import SceneInputs, SceneLookupError
 from agent.tools.frames import (
     CHECK_LOG_PATH,
+    DIAGRAM_CRITIC_NOTE,
     FRAME_PROMPT,
+    FRAME_PROMPT_BODY,
+    FRAME_PROMPT_PREAMBLE,
     FRAMES_PATH,
     MAX_FRAMES,
+    RECOMPILED_TEXT,
     FakeFrameCritic,
     FakeFrameRenderer,
     FrameRenderError,
     PlaywrightFrameRenderer,
+    _load_frames,
+    frame_prompt,
     make_frame_tools,
 )
-from screenplay.schema import Screenplay, Timeline
+from screenplay.schema import Screenplay, Timeline, TimelineShot, Track
 
 API = Path(__file__).resolve().parents[2]
 SAMPLES = API.parent / "web" / "public" / "samples"
@@ -100,6 +107,12 @@ class RecordingRenderer(FakeFrameRenderer):
         return super().render(scene, times)
 
 
+class PlainRenderer(FakeFrameRenderer):
+    """The diagram renderer posing as a real one: no critic_note, like PlaywrightFrameRenderer."""
+
+    critic_note = None
+
+
 class FailingRenderer:
     def render(self, scene, times):
         raise FrameRenderError("browser crashed")
@@ -136,6 +149,17 @@ def call(graph, thread: str, n: int, name: str, args: dict, files: dict | None =
     last = state["messages"][-1]
     assert isinstance(last, ToolMessage) and last.name == name
     return last, state, events
+
+
+def digest(timeline_text: str) -> str:
+    """The short digest /frames.json entries carry: the first 16 hex of the text's sha256."""
+    import hashlib
+
+    return hashlib.sha256(timeline_text.encode("utf-8")).hexdigest()[:16]
+
+
+def frame_lines(prompt: str) -> list[str]:
+    return [line for line in prompt.splitlines() if re.match(r"^frame \d+: ", line)]
 
 
 def frames_file(state) -> list[dict]:
@@ -213,8 +237,11 @@ def test_render_frames_appends_to_earlier_renders():
     assert listed[:1] == first
     assert [f["t"] for f in listed] == [1.0, 2.0, 5.0]
     assert json.loads(msg.content) == listed
-    # The event only carries the new frames.
+    # Every frame of the same timeline carries the same digest.
+    assert {f["timeline"] for f in listed} == {digest(TIMELINE_TEXT)}
+    # The event only carries the new frames, as plain FrameShots.
     assert [s["t"] for s in events[0]["data"]["frames"]] == [2.0, 5.0]
+    assert all(set(s) == {"t", "mediaId"} for s in events[0]["data"]["frames"])
 
 
 def test_render_frames_clamps_rounds_and_dedupes_times():
@@ -382,6 +409,65 @@ def test_fake_renderer_draws_set_layers_and_the_held_prop():
     assert min(x for x, _ in books) > 320
 
 
+def front_band_scene(z: float = 0.5) -> schemas.MemoryResponse:
+    """dad standing at x=0, z, in front of nothing but a tall front set layer (depth 2, z 0.7)."""
+    set_def = schemas.SetDef(
+        id="hedge_set", name="hedge", layers=[schemas.SetLayer(art=None, depth=2, height=0.6, color="#7d9a5b")]
+    )
+    dad = next(p for p in SAMPLE.people if p.id == "dad")
+    timeline = Timeline(
+        duration=5.0,
+        tracks=[Track(target="puppet:dad", channel="root.position", keys=[(0.0, [0.0, 0.0, z])])],
+        shots=[TimelineShot(id="s1", set="hedge_set", start=0.0, action_start=0.0, end=5.0)],
+    )
+    memory = SAMPLE.memory.model_copy(update={"timeline": timeline, "set_ids": ["hedge_set"], "prop_ids": []})
+    return schemas.MemoryResponse(memory=memory, props=[], sets=[set_def], people=[dad])
+
+
+def test_fake_renderer_draws_set_bands_behind_every_puppet():
+    renderer = FakeFrameRenderer()
+    (png,) = renderer.render(front_band_scene(0.5), [1.0])
+    img = Image.open(io.BytesIO(png)).convert("RGB")
+    # The band (0.6 tall, z 0.7) covers dad's whole height, yet his lower body shows.
+    lower_body = (320, round(FakeFrameRenderer.GROUND_Y - 0.1 * FakeFrameRenderer.SCALE))
+    assert img.getpixel(lower_body) == DAD_RGB
+    assert img.getpixel((40, lower_body[1])) == (0x7D, 0x9A, 0x5B)  # the band beside him
+    assert FakeFrameRenderer().render(front_band_scene(0.5), [1.0]) == [png]
+
+
+def test_fake_renderer_labels_puppets_and_props():
+    def dark_pixels(png: bytes, box: tuple[int, int, int, int]) -> int:
+        img = Image.open(io.BytesIO(png)).convert("RGB").crop(box)
+        return sum(1 for px in img.get_flattened_data() if max(px) < 70)
+
+    (png,) = FakeFrameRenderer().render(front_band_scene(), [1.0])
+    ground = int(FakeFrameRenderer.GROUND_Y)
+    assert dark_pixels(png, (290, ground + 1, 350, 360)) > 5  # "David" under his feet
+
+    # The first name, or the id when the name is blank.
+    scene = front_band_scene()
+    nameless = scene.model_copy(update={"people": [scene.people[0].model_copy(update={"name": " "})]})
+    (unnamed,) = FakeFrameRenderer().render(nameless, [1.0])
+    assert unnamed != png and dark_pixels(unnamed, (290, ground + 1, 350, 360)) > 5
+
+    # A prop's id sits above its square: the books in dad's hand at 7.5 s (see the test above).
+    (held,) = FakeFrameRenderer().render(SAMPLE, [7.5])
+    books = color_pixels(held, (0x2F, 0x4A, 0x7A))
+    top = min(y for _, y in books)
+    left, right = min(x for x, _ in books), max(x for x, _ in books)
+    assert dark_pixels(held, (left - 10, top - 14, right + 30, top)) > 5
+
+
+def test_fake_renderer_keeps_labels_inside_the_image():
+    scene = front_band_scene()
+    track = Track(target="puppet:dad", channel="root.position", keys=[(0.0, [-0.99, 0.0, 0.5])])
+    timeline = scene.memory.timeline.model_copy(update={"tracks": [track]})
+    edge = scene.model_copy(update={"memory": scene.memory.model_copy(update={"timeline": timeline})})
+    (png,) = FakeFrameRenderer().render(edge, [1.0])
+    img = Image.open(io.BytesIO(png)).convert("RGB").crop((0, int(FakeFrameRenderer.GROUND_Y) + 1, 60, 360))
+    assert sum(1 for px in img.get_flattened_data() if max(px) < 70) > 5  # "David", pushed right of x=0
+
+
 def test_fake_renderer_without_a_known_set_draws_grey():
     scene = SAMPLE.model_copy(update={"sets": [], "people": [], "props": []})
     (png,) = FakeFrameRenderer().render(scene, [5.0])
@@ -419,7 +505,7 @@ def test_frame_prompt_lists_what_the_checker_looks_for():
 
 def test_inspect_frames_critiques_every_frame_by_default():
     critic = FakeFrameCritic()
-    graph, _, _ = build(vision=critic)
+    graph, _, _ = build(renderer=PlainRenderer(), vision=critic)
     _, state, _ = call(graph, "i1", 1, "render_frames", {"times": [3.2, 7.5]}, files=sample_files())
     listed = frames_file(state)
     msg, _, events = call(graph, "i1", 2, "inspect_frames", {})
@@ -427,6 +513,7 @@ def test_inspect_frames_critiques_every_frame_by_default():
     ((count, prompt),) = critic.calls
     assert count == 2
     assert prompt.startswith(FRAME_PROMPT)
+    assert prompt.startswith(FRAME_PROMPT_PREAMBLE)
     assert "frame 1: shot s1, t=3.20" in prompt and "frame 2: shot s1, t=7.50" in prompt
 
     (event,) = events
@@ -488,6 +575,190 @@ def test_inspect_frames_truncates_a_long_critique():
     assert events[0]["data"]["critique"] == msg.content
 
 
+# --------------------------------------------------- inspect_frames: only the current draft
+
+
+def empty_draft_timeline() -> str:
+    """A compiled draft with no tracks: the set and nothing on it."""
+    text = Timeline(
+        duration=10.0,
+        tracks=[],
+        shots=[TimelineShot(id="s1", set="church_steps_1988", start=0.0, action_start=0.0, end=10.0)],
+    ).model_dump_json(by_alias=True)
+    assert text != TIMELINE_TEXT
+    return text
+
+
+def test_inspect_frames_after_a_recompile_sees_only_the_new_draft():
+    """Regression: inspect_frames() used to send every older draft's frames too."""
+    critic = FakeFrameCritic()
+    graph, _, _ = build(vision=critic)
+    thread = "stale"
+    draft = empty_draft_timeline()
+    files = {"/screenplay.json": create_file_data(SCREENPLAY_TEXT), "/timeline.json": create_file_data(draft)}
+    _, state, _ = call(graph, thread, 1, "render_frames", {"times": [3]}, files=files)
+    (old,) = frames_file(state)
+    assert old["timeline"] == digest(draft)
+    call(graph, thread, 2, "inspect_frames", {})
+    assert critic.calls[0][0] == 1
+
+    # The director recompiles: a different timeline, rendered at the same time.
+    files = {"/timeline.json": create_file_data(TIMELINE_TEXT)}
+    msg, state, events = call(graph, thread, 3, "render_frames", {"times": [3]}, files=files)
+    (new,) = frames_file(state)
+    assert new["mediaId"] != old["mediaId"]
+    assert new == {"t": 3.0, "mediaId": new["mediaId"], "timeline": digest(TIMELINE_TEXT)}
+    assert json.loads(msg.content) == [new]
+    assert [s["mediaId"] for s in events[0]["data"]["frames"]] == [new["mediaId"]]
+
+    msg, _, events = call(graph, thread, 4, "inspect_frames", {})
+    count, prompt = critic.calls[1]
+    assert count == 1
+    assert frame_lines(prompt) == ["frame 1: shot s1, t=3.00"]
+    assert [s["mediaId"] for s in events[0]["data"]["frames"]] == [new["mediaId"]]
+
+
+def test_inspect_frames_after_a_recompile_without_a_render_asks_for_one():
+    critic = FakeFrameCritic()
+    graph, _, _ = build(vision=critic)
+    thread = "stale_no_render"
+    draft = empty_draft_timeline()
+    files = {"/screenplay.json": create_file_data(SCREENPLAY_TEXT), "/timeline.json": create_file_data(draft)}
+    _, state, _ = call(graph, thread, 1, "render_frames", {"times": [3]}, files=files)
+    (old,) = frames_file(state)
+
+    msg, _, events = call(graph, thread, 2, "inspect_frames", {}, files={"/timeline.json": create_file_data(TIMELINE_TEXT)})
+    assert msg.content == RECOMPILED_TEXT
+    assert msg.content == "the scene was recompiled since the last render; call render_frames first"
+    assert critic.calls == [] and events == []
+
+    # Asking for the old frame by id is refused too, before and after a fresh render (which
+    # drops it from /frames.json).
+    older = f"frame {old['mediaId']} is from an older draft; render the current scene"
+    msg, _, _ = call(graph, thread, 3, "inspect_frames", {"media_ids": [old["mediaId"]]})
+    assert msg.content == older
+    _, state, _ = call(graph, thread, 4, "render_frames", {"times": [5]})
+    (new,) = frames_file(state)
+    msg, _, events = call(graph, thread, 5, "inspect_frames", {"media_ids": [old["mediaId"]]})
+    assert msg.content == older
+    msg, _, _ = call(graph, thread, 6, "inspect_frames", {"media_ids": [new["mediaId"], old["mediaId"]]})
+    assert msg.content == older
+    assert critic.calls == [] and events == []
+    # The current frame by id is fine.
+    call(graph, thread, 7, "inspect_frames", {"media_ids": [new["mediaId"]]})
+    assert [c[0] for c in critic.calls] == [1]
+
+
+def test_inspect_frames_refuses_an_older_drafts_frame_by_id():
+    critic = FakeFrameCritic()
+    graph, _, _ = build(vision=critic)
+    thread = "stale_ids"
+    draft = empty_draft_timeline()
+    files = {"/screenplay.json": create_file_data(SCREENPLAY_TEXT), "/timeline.json": create_file_data(draft)}
+    _, state, _ = call(graph, thread, 1, "render_frames", {"times": [3]}, files=files)
+    (old,) = frames_file(state)
+    # A recompile whose render failed partway would leave the old entry; simulate a file that
+    # still lists it next to a frame of the current timeline.
+    _, state, _ = call(graph, thread, 2, "render_frames", {"times": [4]}, files={"/timeline.json": create_file_data(TIMELINE_TEXT)})
+    (new,) = frames_file(state)
+    mixed = [old, new]
+    msg, _, events = call(
+        graph, thread, 3, "inspect_frames", {"media_ids": [new["mediaId"], old["mediaId"]]},
+        files={FRAMES_PATH: create_file_data(json.dumps(mixed))},
+    )
+    assert msg.content == f"frame {old['mediaId']} is from an older draft; render the current scene"
+    assert critic.calls == [] and events == []
+
+    # With no ids, only the current timeline's frame is inspected.
+    call(graph, thread, 4, "inspect_frames", {})
+    ((count, prompt),) = critic.calls
+    assert count == 1 and frame_lines(prompt) == ["frame 1: shot s1, t=4.00"]
+
+
+def test_rerendering_the_same_timeline_keeps_its_frames_and_dedupes():
+    graph, _, _ = build()
+    _, state, _ = call(graph, "same", 1, "render_frames", {"times": [1.0, 2.0]}, files=sample_files())
+    first = frames_file(state)
+    _, state, _ = call(graph, "same", 2, "render_frames", {"times": [2.0, 3.0]})
+    listed = frames_file(state)
+    assert listed[:2] == first and len(listed) == 4
+    assert len({f["mediaId"] for f in listed}) == 4
+    assert {f["timeline"] for f in listed} == {digest(TIMELINE_TEXT)}
+
+
+def test_a_legacy_frames_file_loads_and_counts_as_stale():
+    critic = FakeFrameCritic()
+    repo = make_repo()
+    legacy_id = repo.put_media(FAM, FakeFrameRenderer().render(SAMPLE, [3.2])[0], "image/png", kind="frame")
+    legacy = json.dumps([{"t": 3.2, "mediaId": legacy_id}])
+
+    (frame,) = _load_frames({FRAMES_PATH: create_file_data(legacy)})
+    assert frame.shot == schemas.FrameShot(t=3.2, media_id=legacy_id) and frame.timeline is None
+
+    graph, _, _ = build(vision=critic, repo=repo)
+    files = {**sample_files(), FRAMES_PATH: create_file_data(legacy)}
+    msg, _, _ = call(graph, "legacy", 1, "inspect_frames", {}, files=files)
+    assert msg.content == RECOMPILED_TEXT
+    msg, _, _ = call(graph, "legacy", 2, "inspect_frames", {"media_ids": [legacy_id]})
+    assert "older draft" in msg.content
+    assert critic.calls == []
+
+    # The next render of the current timeline drops the legacy entry.
+    _, state, _ = call(graph, "legacy", 3, "render_frames", {"times": [1.0]})
+    (only,) = frames_file(state)
+    assert only["mediaId"] != legacy_id and only["timeline"] == digest(TIMELINE_TEXT)
+
+
+def test_load_frames_skips_garbage():
+    assert _load_frames({FRAMES_PATH: create_file_data("not json")}) == []
+    assert _load_frames({FRAMES_PATH: create_file_data('{"t": 1}')}) == []
+    entries = [{"t": 1, "mediaId": "media/1", "timeline": "abc"}, {"t": "soon"}, 7, {"t": 2, "mediaId": "media/2", "timeline": 5}]
+    frames = _load_frames({FRAMES_PATH: create_file_data(json.dumps(entries))})
+    assert [(f.shot.media_id, f.timeline) for f in frames] == [("media/1", "abc"), ("media/2", None)]
+
+
+# --------------------------------------------------------- inspect_frames: the critic's prompt
+
+
+def test_frame_prompt_is_the_preamble_plus_the_body():
+    assert FRAME_PROMPT == FRAME_PROMPT_PREAMBLE + FRAME_PROMPT_BODY
+    assert FRAME_PROMPT_PREAMBLE.startswith("These are frames from a cut-paper pop-up storybook scene")
+    assert frame_prompt(None) == frame_prompt("  ") == FRAME_PROMPT
+    note_prompt = frame_prompt(DIAGRAM_CRITIC_NOTE)
+    assert note_prompt.endswith(FRAME_PROMPT_BODY)
+    assert "storybook" not in note_prompt
+
+
+def test_diagram_frames_come_with_their_legend():
+    assert FakeFrameRenderer.critic_note == DIAGRAM_CRITIC_NOTE
+    assert PlaywrightFrameRenderer.critic_note is None
+    critic = FakeFrameCritic()
+    graph, _, _ = build(vision=critic)  # FakeFrameRenderer
+    call(graph, "legend", 1, "render_frames", {"times": [3.2, 7.5]}, files=sample_files())
+    call(graph, "legend", 2, "inspect_frames", {"focus": "does dad hold the books?"})
+    ((_, prompt),) = critic.calls
+    lowered = prompt.lower()
+    assert prompt.startswith(DIAGRAM_CRITIC_NOTE.strip())
+    for phrase in ("diagram", "head", "labelled", "held", "do not report colors"):
+        assert phrase in lowered
+    assert "cut-paper pop-up storybook" not in prompt
+    assert FRAME_PROMPT_BODY in prompt  # the same problem list and output format
+    assert frame_lines(prompt) == ["frame 1: shot s1, t=3.20", "frame 2: shot s1, t=7.50"]
+
+
+def test_a_renderer_without_a_critic_note_attribute_gets_frame_prompt():
+    class Bare:
+        def render(self, scene, times):
+            return FakeFrameRenderer().render(scene, times)
+
+    critic = FakeFrameCritic()
+    graph, _, _ = build(renderer=Bare(), vision=critic)
+    call(graph, "bare", 1, "render_frames", {"times": [3.2]}, files=sample_files())
+    call(graph, "bare", 2, "inspect_frames", {})
+    ((_, prompt),) = critic.calls
+    assert prompt.startswith(FRAME_PROMPT)
+
+
 class _FakeAnthropicMessages:
     """Stands in for `anthropic.Anthropic().messages`: records calls, never touches the network."""
 
@@ -506,7 +777,7 @@ def test_inspect_frames_with_anthropic_vision_on_a_fake_client():
     critique = "verdict: fix\n1. shot s1, t=7.50: dad is facing away from mom"
     messages = _FakeAnthropicMessages(f"  {critique}\n")
     vision = AnthropicVision(model="claude-test-vision", client=types.SimpleNamespace(messages=messages))
-    graph, repo, _ = build(vision=vision)
+    graph, repo, _ = build(renderer=PlainRenderer(), vision=vision)
     _, state, _ = call(graph, "i7", 1, "render_frames", {"times": [3.2, 7.5]}, files=sample_files())
     listed = frames_file(state)
     msg, _, events = call(graph, "i7", 2, "inspect_frames", {"focus": "is dad facing mom?"})
