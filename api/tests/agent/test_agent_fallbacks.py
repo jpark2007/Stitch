@@ -12,15 +12,34 @@ the contract, and the degraded output is the documented fallback:
     service     trigger                                  fallback
     ----------  ---------------------------------------  ----------------------------------------
     images      the image model raises on every call     props and set layers: art null + color
+    images      the real adapter gets HTTP 503 over the  the same, after its bounded retries
+                wire (OpenAIImageModel, fake transport)
+    images      no IMAGE_API_KEY (ArtService(None, ..),  the same, with no image model at all
+                as agent.production builds it)
     images      STITCH_MAX_IMAGES_PER_RUN=0              placeholder art, image model never called
+    images      a budget of 2 runs out mid-run           2 drawings, the rest placeholder + a note
     cutout      the background remover raises            props, middle and front layers: placeholder
                                                          (the back layer is never cut out: real art)
     tts         the speech service raises on every call  silent audio, estimated word timings, and a
                                                          'warning:' line from synthesize_narration
+    tts         the real adapter gets HTTP 500 over the  the same; the provider's message stays in
+                wire (ElevenLabsTTS, fake transport)     the server log
+    tts         no ELEVENLABS_API_KEY (FakeTTS(tone=     silent audio with real word timings, no
+                False), as agent.production builds it)   warning: nothing failed
     vision      describe_photo's model raises            the photo is skipped; the run goes on
+    vision      the real adapter's key is rejected       the same, after one request (401 is never
+                (AnthropicVision, HTTP 401 over the SDK) retried)
+    vision      the API is overloaded with Retry-After:  the same, after capped 8 s waits (the SDK
+                3600 (AnthropicVision over the SDK)      alone would wait an hour per retry)
     critic      inspect_frames' model raises             the checker passes without a critique
     renderer    the browser renderer fails               labelled Pillow diagrams (FakeFrameRenderer)
     renderer    a renderer with no fallback fails        no frames; the checker passes without them
+    repo        the family store drops out mid-run:      each tool answers 'error: ... (<Type>);
+                prop and set searches and media reads    try again ...' or 'could not describe
+                raise                                    photo ...'; the studio generates instead
+
+No ANTHROPIC_API_KEY at all is not a row: agent.production refuses to build the studio without
+it (the studio model needs it), so photo vision can never be the only service missing its key.
 
 No keys, no network; every wait has a timeout.
 """
@@ -33,9 +52,12 @@ import dataclasses
 import io
 import json
 import wave
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
+import anthropic._base_client as sdk_base
+import httpx
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from PIL import Image
@@ -43,6 +65,9 @@ from pydantic import BaseModel
 
 import schemas
 from agent import wiring
+from agent.adapters import AlphaAwareRemover, AnthropicVision, ElevenLabsTTS, OpenAIImageModel
+from agent.adapters import images as images_mod
+from agent.adapters import vision as vision_mod
 from agent.fake_llm import ScriptedChatModel
 from agent.fake_studio import FakeStory, make_fake_studio_responder
 from agent.guards import RunLimits
@@ -57,9 +82,9 @@ from agent.tools.frames import (
     PlaywrightUnavailable,
 )
 from agent.run_info import RunInfo
-from agent.tools import narration as narration_tool
-from agent.tools.narration import Speech
+from agent.tools.narration import FakeTTS, Speech
 from agent.tools.photos import FakeVision, make_photo_tools
+from agent.tools.props import make_prop_tools
 from agent.tools.sets import make_set_tools
 
 FAMILY = "fam_fallbacks"
@@ -77,22 +102,6 @@ MOM_TEXT = (
 )
 
 Event = tuple[str, BaseModel]
-
-VOICE_PASS_DEGRADES = hasattr(narration_tool, "_speech_failed_warning") or "narrated silently" in (
-    narration_tool.__doc__ or ""
-)
-"""True once synthesize_narration narrates silently when the speech service fails (PR #131).
-
-Until that lands on main, a TTS failure still raises out of the voice pass and fails the run,
-so the speech cases are strict expected failures: they run, they must fail, and the marker
-lifts itself (they must pass) the moment the fallback is merged."""
-
-needs_voice_pass_fallback = pytest.mark.xfail(
-    not VOICE_PASS_DEGRADES,
-    reason="synthesize_narration has no TTS fallback on this branch yet (PR #131, voice pass timing)",
-    strict=True,
-)
-
 
 class ServiceDown(RuntimeError):
     """What every failing fake raises: an outside service that is down."""
@@ -213,8 +222,15 @@ class ToolLog:
 class Studio:
     """One family's RunManager on fake services, with `overrides` replacing some of them."""
 
-    def __init__(self, *, art: ArtService | None = None, story: FakeStory = STORY, **overrides: Any) -> None:
-        self.repo = InMemoryRepo()
+    def __init__(
+        self,
+        *,
+        art: ArtService | None = None,
+        story: FakeStory = STORY,
+        repo: InMemoryRepo | None = None,
+        **overrides: Any,
+    ) -> None:
+        self.repo = repo if repo is not None else InMemoryRepo()
         load_sample_family(self.repo, FAMILY)
         self.tools = ToolLog(make_fake_studio_responder(story))
         services = wiring.fake_services(model=ScriptedChatModel(responder=self.tools), repo=self.repo, art=art)
@@ -329,6 +345,68 @@ def wav_samples(data: bytes) -> bytes:
         return wav.readframes(wav.getnframes())
 
 
+def speech_warning(exc_name: str) -> str:
+    """synthesize_narration's line when the speech service failed (agent.tools.narration)."""
+    return f"warning: the speech service failed ({exc_name}); narrated silently with estimated word timings"
+
+
+def warnings_of(texts: list[str]) -> list[str]:
+    return [line for text in texts for line in text.splitlines() if line.startswith("warning:")]
+
+
+def assert_silent_narration(s: Studio, memory: schemas.Memory) -> None:
+    """The teller's track: word timings in order on every spoken line, captions, and silent audio."""
+    timeline = memory.timeline
+    assert timeline is not None
+    assert timeline.default_narrator == "mom"
+    track = (timeline.narrations or {})["mom"]
+    spoken = [line for line in track.lines if line.text.strip()]
+    assert spoken
+    for line in spoken:
+        words = line.words or []
+        assert words, line
+        assert all(w.t >= line.t - 1e-6 for w in words)
+        assert [w.t for w in words] == sorted(w.t for w in words)
+    assert track.captions
+    # Silence: never the provider's audio, never a test hum.
+    assert track.audio is not None
+    media = s.repo.get_media(FAMILY, track.audio)
+    assert media is not None and media[1] == "audio/wav"
+    samples = wav_samples(media[0])
+    assert samples and not any(samples)
+
+
+def no_sleep(seconds: float) -> None:
+    """The real adapters' retry waits, skipped (each test still checks how many requests were made)."""
+
+
+class WireLog:
+    """A fake provider over httpx (or httpx2, for the anthropic SDK): every request answers `status`."""
+
+    def __init__(self, transport_module: Any, status: int, *, headers: dict[str, str] | None = None,
+                 body: dict[str, Any] | None = None) -> None:
+        self.module = transport_module
+        self.status = status
+        self.headers = headers or {}
+        self.body = body or {"error": {"message": "provider is down"}}
+        self.requests: list[Any] = []
+
+    def __call__(self, request: Any) -> Any:
+        self.requests.append(request)
+        return self.module.Response(self.status, headers=self.headers, json=self.body)
+
+    def transport(self) -> Any:
+        return self.module.MockTransport(self)
+
+
+SDK_HTTPX = getattr(sdk_base, "httpx2", None) or sdk_base.httpx
+"""The anthropic SDK speaks httpx2, a separate package, so its fake transport is httpx2's."""
+
+
+def anthropic_error(kind: str) -> dict[str, Any]:
+    return {"type": "error", "error": {"type": kind, "message": "nope"}}
+
+
 # --------------------------------------------------------------------------- baseline
 
 
@@ -368,6 +446,39 @@ def test_a_image_model_down_gives_placeholder_props_and_sets(studios: Callable[.
     assert len(made) == 4 and all(r["art"] == "placeholder" and "note" not in r for r in made)
 
 
+def test_a_image_api_down_over_the_wire_gives_placeholder_art(studios: Callable[..., Studio]) -> None:
+    """The production adapter, not a stand-in: HTTP 503 on every request, retried within its bound."""
+    api = WireLog(httpx, 503)
+    model = OpenAIImageModel(api_key="sk-test-not-a-key", transport=api.transport(), sleep=no_sleep)
+    s = studios(art=ArtService(model, AlphaAwareRemover(), max_images_per_run=24))
+    run_id, events = s.drive()
+    s.saved(run_id, events)
+
+    # Four drawings (one prop, three layers), each tried 1 + DEFAULT_MAX_RETRIES times.
+    assert len(api.requests) == 4 * (1 + images_mod.DEFAULT_MAX_RETRIES)
+    (prop,) = s.new_props()
+    (set_def,) = s.new_sets()
+    assert_placeholder_prop(prop)
+    assert all(layer.art is None and layer.color for layer in set_def.layers)
+    made = json_results(s.tools.of("generate_prop") + s.tools.of("generate_set_layer"))
+    assert len(made) == 4 and all(r["art"] == "placeholder" and "note" not in r for r in made)
+
+
+def test_a_no_image_key_gives_placeholder_art(studios: Callable[..., Studio]) -> None:
+    """IMAGE_API_KEY unset: agent.production builds ArtService(None, AlphaAwareRemover())."""
+    s = studios(art=ArtService(None, AlphaAwareRemover()))
+    run_id, events = s.drive()
+    s.saved(run_id, events)
+
+    (prop,) = s.new_props()
+    (set_def,) = s.new_sets()
+    assert_placeholder_prop(prop)
+    assert all(layer.art is None and layer.color for layer in set_def.layers)
+    made = json_results(s.tools.of("generate_prop") + s.tools.of("generate_set_layer"))
+    # No budget note: there is no budget to spend, only no image model.
+    assert len(made) == 4 and all(r["art"] == "placeholder" and "note" not in r for r in made)
+
+
 # --------------------------------------------------------------------------- (b) no image budget
 
 
@@ -391,6 +502,27 @@ def test_b_image_budget_of_zero_never_calls_the_image_model(
     made = json_results(s.tools.of("generate_prop") + s.tools.of("generate_set_layer"))
     assert len(made) == 4
     assert all(r["art"] == "placeholder" and "image budget" in r["note"] for r in made)
+
+
+def test_b_image_budget_used_up_mid_run_makes_the_rest_placeholder_art(studios: Callable[..., Studio]) -> None:
+    model = CountingImageModel()
+    s = studios(art=ArtService(model, FakeBackgroundRemover(), max_images_per_run=2))
+    run_id, events = s.drive()
+    s.saved(run_id, events)
+
+    assert len(model.calls) == 2  # the cap, never more
+    (prop,) = s.new_props()
+    (set_def,) = s.new_sets()
+    drawn = [prop.art.get("body") is not None] + [layer.art is not None for layer in set_def.layers]
+    assert sorted(drawn) == [False, False, True, True]
+    made = json_results(s.tools.of("generate_prop") + s.tools.of("generate_set_layer"))
+    assert len(made) == 4
+    generated = [r for r in made if r["art"] == "generated"]
+    placeholder = [r for r in made if r["art"] == "placeholder"]
+    assert len(generated) == 2 and all("note" not in r for r in generated)
+    # Which two calls came first depends on thread timing; whichever were refused say why.
+    assert len(placeholder) == 2
+    assert all("image budget for this run is used up (2 images)" in r["note"] for r in placeholder)
 
 
 # --------------------------------------------------------------------------- (c) cutout down
@@ -437,36 +569,45 @@ def test_c_cut_out_tool_with_the_remover_down_answers_use_a_placeholder() -> Non
 # --------------------------------------------------------------------------- (d) speech down
 
 
-@needs_voice_pass_fallback
 def test_d_speech_service_down_narrates_silently_with_estimated_timings(studios: Callable[..., Studio]) -> None:
     tts = DownTTS()
     s = studios(tts=tts)
     run_id, events = s.drive()
     memory = s.saved(run_id, events)
 
-    assert tts.calls >= 1
+    assert tts.calls >= 2  # the voice pass retries the speech service once before going silent
     voiced = s.tools.of("synthesize_narration")
     assert voiced, "the narrator never voiced the telling"
-    warnings = [line for text in voiced for line in text.splitlines() if line.startswith("warning:")]
-    assert any("speech service failed" in w and "ServiceDown" in w for w in warnings), voiced
+    assert speech_warning("ServiceDown") in warnings_of(voiced), voiced
     assert all("HTTP 500" not in text for text in voiced)  # the provider's message stays in the log
+    assert_silent_narration(s, memory)
 
-    timeline = memory.timeline
-    assert timeline is not None
-    track = (timeline.narrations or {})["mom"]
-    assert timeline.default_narrator == "mom"
-    # Estimated word timings: in timeline time, in order, one per spoken word.
-    for line in track.lines:
-        words = line.words or []
-        assert [w.word for w in words] and all(w.t >= line.t - 1e-6 for w in words)
-        assert [w.t for w in words] == sorted(w.t for w in words)
-    assert track.captions
-    # Silent audio (or none at all): never the provider's, never a test hum.
-    if track.audio is not None:
-        media = s.repo.get_media(FAMILY, track.audio)
-        assert media is not None
-        samples = wav_samples(media[0])
-        assert samples and not any(samples)
+
+def test_d_speech_api_down_over_the_wire_narrates_silently(studios: Callable[..., Studio]) -> None:
+    """The production adapter, not a stand-in: HTTP 500 on every request, retried within its bound."""
+    api = WireLog(httpx, 500)
+    tts = ElevenLabsTTS(api_key="el-test-not-a-key", transport=api.transport(), sleep=no_sleep)
+    s = studios(tts=tts)
+    run_id, events = s.drive()
+    memory = s.saved(run_id, events)
+
+    assert api.requests  # the provider was really asked
+    voiced = s.tools.of("synthesize_narration")
+    # The adapter raises RuntimeError naming the status; the tool names only the type.
+    assert speech_warning("RuntimeError") in warnings_of(voiced), voiced
+    assert all("HTTP 500" not in text and "provider is down" not in text for text in voiced)
+    assert_silent_narration(s, memory)
+
+
+def test_d_no_speech_key_narrates_silently_without_a_warning(studios: Callable[..., Studio]) -> None:
+    """ELEVENLABS_API_KEY unset: agent.production voices every teller with FakeTTS(tone=False)."""
+    s = studios(tts=FakeTTS(tone=False))
+    run_id, events = s.drive()
+    memory = s.saved(run_id, events)
+
+    voiced = s.tools.of("synthesize_narration")
+    assert voiced and warnings_of(voiced) == []  # nothing failed: silence is the configured voice
+    assert_silent_narration(s, memory)
 
 
 # --------------------------------------------------------------------------- (e) vision down
@@ -482,6 +623,45 @@ def test_e_photo_vision_down_skips_the_photo_and_the_run_goes_on(studios: Callab
     assert vision.calls == 1
     assert s.tools.of("describe_photo") == [f"could not describe photo {photo}: ServiceDown"]
     assert photo in memory.tellings[0].photo_ids  # the photo stays with the telling
+
+
+def wired_vision(api: WireLog, sleeps: list[float], monkeypatch: pytest.MonkeyPatch) -> AnthropicVision:
+    """The production vision adapter on the real SDK client it builds, over a fake transport."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-a-key")
+    http_client = SDK_HTTPX.Client(transport=api.transport())
+    return AnthropicVision(http_client=http_client, sleep=sleeps.append, timeout=5, max_retries=2)
+
+
+def test_e_vision_key_rejected_skips_the_photo_after_one_request(
+    studios: Callable[..., Studio], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = WireLog(SDK_HTTPX, 401, body=anthropic_error("authentication_error"))
+    sleeps: list[float] = []
+    s = studios(vision=wired_vision(api, sleeps, monkeypatch))
+    photo = s.repo.put_media(FAMILY, photo_png(), "image/png", kind="photo")
+    run_id, events = s.drive(photo_ids=[photo])
+    memory = s.saved(run_id, events)
+
+    assert len(api.requests) == 1 and sleeps == []  # a refused key is never retried
+    assert s.tools.of("describe_photo") == [f"could not describe photo {photo}: AuthenticationError"]
+    assert photo in memory.tellings[0].photo_ids
+
+
+def test_e_vision_overloaded_waits_at_most_the_cap_then_skips_the_photo(
+    studios: Callable[..., Studio], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = WireLog(SDK_HTTPX, 529, headers={"retry-after": "3600"}, body=anthropic_error("overloaded_error"))
+    sleeps: list[float] = []
+    s = studios(vision=wired_vision(api, sleeps, monkeypatch))
+    photo = s.repo.put_media(FAMILY, photo_png(), "image/png", kind="photo")
+    run_id, events = s.drive(photo_ids=[photo])
+    s.saved(run_id, events)
+
+    # Three requests, two waits of at most 8 s each, where the SDK alone would wait 3600 s twice.
+    assert len(api.requests) == 3
+    assert sleeps == [vision_mod.MAX_BACKOFF_S, vision_mod.MAX_BACKOFF_S]
+    (answer,) = s.tools.of("describe_photo")
+    assert answer.startswith(f"could not describe photo {photo}: ") and "3600" not in answer
 
 
 # --------------------------------------------------------------------------- (f) critic down
@@ -582,10 +762,129 @@ def test_set_tools_with_the_family_store_down_answer_instead_of_raising() -> Non
     assert bad.startswith("error: bad marks")
 
 
+def test_set_layer_from_a_photo_the_store_cannot_read_answers_try_again() -> None:
+    repo = BrokenStore()
+    find_set, generate_set_layer = make_set_tools(repo, a_run(["media/p1"]), ArtService(None, None))
+    result = generate_set_layer.invoke(
+        {"place": "lake dock", "layer": "back", "description": "the far shore", "reference_photo_id": "media/p1"}
+    )
+    assert result == (
+        "error: could not read photo 'media/p1' (ServiceDown); nothing was saved; "
+        "try again, or generate the layer without the photo"
+    )
+
+
+class PropStoreDown(InMemoryRepo):
+    """A family store whose prop search, media reads and media writes fail."""
+
+    def find_props(self, family_id: str, text: str, *, limit: int = 5) -> list[schemas.Prop]:
+        raise ServiceDown("prop store unavailable")
+
+    def get_media(self, family_id: str, media_id: str) -> tuple[bytes, str] | None:
+        raise ServiceDown("media store unavailable")
+
+    def put_media(self, family_id: str, data: bytes, content_type: str, *, kind: str) -> str:
+        raise ServiceDown("media store unavailable")
+
+
+def test_prop_tools_with_the_family_store_down_answer_instead_of_raising() -> None:
+    repo = PropStoreDown()
+    load_sample_family(repo, FAMILY)
+    find_prop, generate_prop, confirm_props = make_prop_tools(
+        repo, a_run(["media/p1"]), ArtService(FakeImageModel(), FakeBackgroundRemover())
+    )
+    assert find_prop.invoke({"description": "picnic basket"}) == (
+        "error: could not search the family's props (ServiceDown); try again, and if it fails again generate the prop"
+    )
+    from_photo = generate_prop.invoke(
+        {"name": "picnic basket", "description": "wicker", "size": "carried", "reference_photo_id": "media/p1"}
+    )
+    assert from_photo == (
+        "error: could not read photo 'media/p1' (ServiceDown); try again, or generate the prop without the photo"
+    )
+    # Drawn, but the media store cannot keep the drawing: a placeholder card is saved instead.
+    made = json.loads(generate_prop.invoke({"name": "picnic basket", "description": "wicker", "size": "carried"}))
+    assert made["art"] == "placeholder" and made["preview"] is None and "note" not in made
+    saved = repo.get_prop(FAMILY, made["id"])
+    assert saved is not None
+    assert_placeholder_prop(saved)
+
+
+def test_prop_review_with_the_prop_store_down_answers_instead_of_raising() -> None:
+    class ReviewStoreDown(InMemoryRepo):
+        def get_prop(self, family_id: str, prop_id: str) -> schemas.Prop | None:
+            raise ServiceDown("prop store unavailable")
+
+    _, _, confirm_props = make_prop_tools(ReviewStoreDown(), a_run(), ArtService(None, None))
+    chip = {"id": "picnic_basket", "name": "picnic basket", "description": None, "size": "carried",
+            "art": None, "reused": False}
+    answer = confirm_props.invoke({"props": [chip], "edits": [{"id": "picnic_basket", "action": "keep"}]})
+    assert answer == "error: could not apply the review (ServiceDown); keep the props as they were"
+
+
+class StoreDropsOut(InMemoryRepo):
+    """The family store, seeded and working, that drops out once the run starts: prop and set
+    searches and reads of the uploaded photos raise (writes and the other reads still work).
+
+    Only the photos' reads fail: inspect_frames (agent.tools.frames) and the family tools
+    (agent.tools.family) still raise on a failing store, which ends the run; those belong to
+    other owners and are reported, not covered here."""
+
+    FAILING = ("find_props", "find_sets", "get_media")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.down = False
+        self.photos: set[str] = set()
+        self.failed: Counter[str] = Counter()
+
+    def _check(self, what: str) -> None:
+        if self.down:
+            self.failed[what] += 1
+            raise ServiceDown(f"{what}: the family store is unavailable")
+
+    def find_props(self, family_id: str, text: str, *, limit: int = 5) -> list[schemas.Prop]:
+        self._check("find_props")
+        return super().find_props(family_id, text, limit=limit)
+
+    def find_sets(self, family_id: str, text: str, *, limit: int = 5) -> list[schemas.SetDef]:
+        self._check("find_sets")
+        return super().find_sets(family_id, text, limit=limit)
+
+    def get_media(self, family_id: str, media_id: str) -> tuple[bytes, str] | None:
+        if media_id in self.photos:
+            self._check("get_media")
+        return super().get_media(family_id, media_id)
+
+
+def test_h_family_store_dropping_out_mid_run_answers_the_agent_and_the_memory_saves(
+    studios: Callable[..., Studio],
+) -> None:
+    store = StoreDropsOut()
+    s = studios(repo=store, art=ArtService(CountingImageModel(), FakeBackgroundRemover()))
+    photo = s.repo.put_media(FAMILY, photo_png(), "image/png", kind="photo")
+    store.photos.add(photo)
+    store.down = True
+    run_id, events = s.drive(photo_ids=[photo])
+    s.saved(run_id, events)
+
+    assert set(store.failed) == set(StoreDropsOut.FAILING), store.failed
+    # Each read that failed answered the agent with a line it can act on; none raised.
+    assert s.tools.of("find_prop") == [
+        "error: could not search the family's props (ServiceDown); try again, and if it fails again generate the prop"
+    ]
+    assert s.tools.of("find_set") == ["error: could not search the family's places (ServiceDown); try again"]
+    assert s.tools.of("describe_photo") == [f"could not describe photo {photo}: ServiceDown"]
+    # The studio generated what it could not find, with real art (writes still work).
+    (prop,) = s.new_props()
+    (set_def,) = s.new_sets()
+    assert prop.art.get("body") is not None
+    assert all(layer.art is not None for layer in set_def.layers)
+
+
 # --------------------------------------------------------------------------- everything down
 
 
-@needs_voice_pass_fallback
 def test_every_outside_service_down_at_once_still_saves_the_memory(studios: Callable[..., Studio]) -> None:
     """The first real run happens in front of people: with every outside service failing at
     once (art, cutouts, speech, photo vision, frame critic, browser) the run still ends 'done'."""
@@ -598,8 +897,14 @@ def test_every_outside_service_down_at_once_still_saves_the_memory(studios: Call
     )
     photo = s.repo.put_media(FAMILY, photo_png(), "image/png", kind="photo")
     run_id, events = s.drive(photo_ids=[photo])
-    s.saved(run_id, events)
+    memory = s.saved(run_id, events)
     (prop,) = s.new_props()
     (set_def,) = s.new_sets()
     assert_placeholder_prop(prop)
     assert all(layer.art is None and layer.color for layer in set_def.layers)
+    assert s.tools.of("describe_photo") == [f"could not describe photo {photo}: ServiceDown"]
+    assert speech_warning("ServiceDown") in warnings_of(s.tools.of("synthesize_narration"))
+    assert_silent_narration(s, memory)
+    assert all(r == "could not inspect frames: ServiceDown" for r in s.tools.of("inspect_frames"))
+    rendered = [json.loads(text) for text in s.tools.of("render_frames")]
+    assert rendered and all(frame.get("diagram") is True for frames in rendered for frame in frames)

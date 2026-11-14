@@ -510,6 +510,138 @@ def test_mongo_library_props(mongo: MongoRepo, empty_library) -> None:
     db_props.library_props.cache_clear()  # type: ignore[attr-defined]
 
 
+# ------------------------------------------------------------- books: end-to-end parity
+#
+# The weekend demo checked books only through InMemoryRepo.find_memories. Here the same
+# runs go through the whole studio (agent.wiring over the fake studio, the real compiler)
+# on InMemoryRepo and on MongoRepo, and every participant's book must come out the same.
+
+PARITY_FAMILY = "fam_parity"
+PARITY_STORY_TEXT = (
+    "We carried the picnic basket down to the lake dock. "
+    "I nearly dropped it at the end of the boards. "
+    "He took it from me and laughed."
+)
+PARITY_SECOND_TEXT = "She was sure the basket would go in the lake. I took it before it did, and we both laughed."
+PARITY_SOLO_TEXT = "I rowed out alone at dawn with the picnic basket and ate breakfast on the water."
+PARITY_WAIT = 25.0
+
+
+def _drive_run(manager, user_id: str, author_id: str, fields) -> str:
+    """Start a run, keep every prop at each review pause, and return the saved memory id."""
+    import asyncio
+
+    import schemas
+
+    run_id = manager.start_run(PARITY_FAMILY, user_id, author_id, fields, [])
+    for _ in range(5):
+        status = manager.wait(PARITY_FAMILY, run_id, PARITY_WAIT)
+        assert status != "running", [n for n, _ in manager.events(PARITY_FAMILY, run_id)]
+        if status != "waiting":
+            break
+        events = manager.events(PARITY_FAMILY, run_id)
+        found = [p for n, p in events if n == "props_found"]
+        assert found, [n for n, _ in events]
+        edits = [schemas.PropEdit(id=c.id, action="keep") for c in found[-1].props]
+        manager.answer_run(PARITY_FAMILY, run_id, user_id, schemas.AnswerRequest(kind="props", props=edits))
+
+    async def replay() -> list:
+        return [e async for e in manager.stream_run(PARITY_FAMILY, run_id)]
+
+    events = asyncio.run(asyncio.wait_for(replay(), PARITY_WAIT))
+    names = [n for n, _ in events]
+    assert names[-1] == "done" and "error" not in names, [p for n, p in events if n == "error"]
+    return events[-1][1].memory_id
+
+
+def _tell_the_parity_story(repo: SeedableRepo) -> list[str]:
+    """Mom tells a memory with dad in it; dad adds his telling to it; dad tells one alone, earlier.
+
+    Returns the memory ids in the order the runs saved them.
+    """
+    import schemas
+    from agent import wiring
+    from agent.fake_studio import FakeStory, fake_studio_model
+
+    load_sample_family(repo, PARITY_FAMILY)
+    story = FakeStory(place="lake dock", prop="picnic basket", prop_size="carried", compile_failures=0)
+    manager = wiring.make_manager(wiring.fake_services(model=fake_studio_model(story), repo=repo))
+    try:
+        both = _drive_run(manager, "user_mom", "mom",
+                          schemas.SubmitMemoryFields(text=PARITY_STORY_TEXT, year=1994, participant_ids=["dad"]))
+        second = _drive_run(manager, "user_dad", "dad",
+                            schemas.SubmitMemoryFields(text=PARITY_SECOND_TEXT, year=1994, memory_id=both))
+        assert second == both
+        solo = _drive_run(manager, "user_dad", "dad", schemas.SubmitMemoryFields(text=PARITY_SOLO_TEXT, year=1990))
+    finally:
+        manager.shutdown(wait=True)
+    return [both, solo]
+
+
+def _canonical(memories: list[Memory], ids: list[str]) -> list[dict]:
+    """The memories as the API sends them, with what each store names its own way made equal:
+    memory ids (by the order the runs saved them), media ids, and the db's created_at stamps."""
+    import re
+
+    rename = {mid: f"memory#{i}" for i, mid in enumerate(ids)}
+    out = []
+    for m in memories:
+        text = m.model_dump_json(by_alias=True)
+        for old, new in rename.items():
+            text = text.replace(f'"{old}"', f'"{new}"')
+        text = re.sub(r'"media/[^"]+"', '"media/*"', text)
+        data = json.loads(text)
+        for telling in data.get("tellings", []):
+            telling.pop("createdAt", None)
+        out.append(data)
+    return out
+
+
+@pytest.mark.parametrize("mongo_db", ["mock_db", "real_db"])
+def test_books_are_the_same_on_both_repos_after_a_memory_and_a_second_telling(
+    request: pytest.FixtureRequest, mongo_db: str, empty_library
+) -> None:
+    """On mongomock always; on a real MongoDB too when MONGODB_URI_TEST is set (else skipped)."""
+    from db import memories as db_memories
+
+    database = request.getfixturevalue(mongo_db)
+    memory_repo = InMemoryRepo()
+    mongo_repo = MongoRepo(database)
+    ids = {"memory": _tell_the_parity_story(memory_repo), "mongo": _tell_the_parity_story(mongo_repo)}
+    repos: dict[str, SeedableRepo] = {"memory": memory_repo, "mongo": mongo_repo}
+
+    def book(name: str, person_id: str) -> list[dict]:
+        found = repos[name].find_memories(PARITY_FAMILY, person_id=person_id, limit=100)
+        return _canonical(found, ids[name])
+
+    for person_id in ("mom", "dad"):
+        expected = book("memory", person_id)
+        assert book("mongo", person_id) == expected, person_id
+        # The API's book route reads db.memories.get_book directly: the same again.
+        assert _canonical(db_memories.get_book(database, PARITY_FAMILY, person_id), ids["mongo"]) == expected
+
+    # The books themselves: mom is in one memory, dad in both, oldest first.
+    assert [m["id"] for m in book("memory", "mom")] == ["memory#0"]
+    assert [m["id"] for m in book("memory", "dad")] == ["memory#1", "memory#0"]
+    told = book("memory", "dad")[1]
+    assert [t["authorId"] for t in told["tellings"]] == ["mom", "dad"]
+    assert told["version"] == 2 and set(told["timeline"]["narrations"]) == {"mom", "dad"}
+    assert told["participantIds"] == ["mom", "dad"]
+
+    # The whole family, and a search, agree too.
+    everything = {name: _canonical(r.find_memories(PARITY_FAMILY, limit=100), ids[name]) for name, r in repos.items()}
+    assert everything["mongo"] == everything["memory"]
+    searched = {name: [m.id for m in r.find_memories(PARITY_FAMILY, query="picnic basket")] for name, r in repos.items()}
+    assert [ids["mongo"].index(i) for i in searched["mongo"]] == [ids["memory"].index(i) for i in searched["memory"]]
+
+    # Whatever questions the runs left open, both stores left the same ones.
+    open_questions = {
+        name: [(q.person_id, q.memory_id and ids[name].index(q.memory_id), q.text) for q in r.list_questions(PARITY_FAMILY)]  # type: ignore[attr-defined]
+        for name, r in repos.items()
+    }
+    assert open_questions["mongo"] == open_questions["memory"]
+
+
 def test_mongo_find_props_uses_the_embedder_when_set(mongo: MongoRepo, monkeypatch: pytest.MonkeyPatch) -> None:
     import db.search as db_search
 

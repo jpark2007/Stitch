@@ -33,6 +33,11 @@ Image budget: each layer drawn counts against the run's image budget
 (`ArtService.max_images_per_run`, keyed by the run id). Once it is spent the layer is saved
 with placeholder art (null art + color), the call still succeeds, and the result carries a
 `note` saying the budget is used up.
+
+The family store failing mid-run never ends the run: a failed search, photo read or set save
+answers `error: ... (<ExceptionType>) ...; try again ...` (nothing is saved; the exception's
+message goes to the server log only), and art the media store cannot keep becomes a
+placeholder layer.
 """
 
 from __future__ import annotations
@@ -231,7 +236,14 @@ def make_set_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[BaseT
             return [], None
         if photo_id not in allowed_photos:
             return [], f"error: {photo_id!r} is not one of this telling's photos; nothing was saved"
-        stored = repo.get_media(family_id, photo_id)
+        try:
+            stored = repo.get_media(family_id, photo_id)
+        except Exception as exc:  # noqa: BLE001 - the media store failing must not end the run
+            log.warning("could not read photo %r: %s: %s", photo_id, type(exc).__name__, exc)
+            return [], (
+                f"error: could not read photo {photo_id!r} ({type(exc).__name__}); nothing was saved; "
+                "try again, or generate the layer without the photo"
+            )
         if stored is None:
             return [], f"error: photo {photo_id!r} could not be read; nothing was saved"
         data, content_type = stored
