@@ -189,13 +189,10 @@ describe("layoutStory", () => {
         assert.ok(l.photos <= Math.min(2, photos));
         assert.ok(l.body.size >= 24, `body ${l.body.size}px is under the readable floor`);
         if (l.photos > 0) {
-          const room = art.photoRoom(l.photos, bottom(l));
-          assert.ok(room >= art.PHOTO_MIN_ROOM, `photo room ${room}`);
           // The widths drawStoryPage hands drawPhoto.
-          for (let i = 0; i < l.photos; i++) {
-            const w = l.photos === 1 ? Math.min(520, room * ASPECTS[0] * 0.9) : Math.min(i ? 330 : 430, room * ASPECTS[i] * (i ? 0.72 : 0.82));
-            assert.ok(w > 0 && Number.isFinite(w), `photo ${i} width ${w}`);
-          }
+          const widths = art.photoWidths(art.photoRoom(l.photos, bottom(l)), ASPECTS.slice(0, l.photos));
+          assert.equal(widths.length, l.photos);
+          for (const w of widths) assert.ok(Number.isFinite(w) && w >= art.PHOTO_MIN_W, `photo width ${w}`);
         } else {
           assert.ok(bottom(l) <= 1300 - 150, `words run to ${bottom(l)}`);
         }
@@ -215,6 +212,20 @@ describe("layoutStory", () => {
     const short = layout("A day at the sea.", 1);
     assert.equal(short.body.size, 37);
     assert.equal(short.photos, 1);
+    // The demo's first page: two tellings' labels above two photos.
+    const tail = art.storyTailHeight({ tellings: [{ id: "a", name: "Ana", color: "#b2473a" }, { id: "b", name: "David", color: "#34465c" }] });
+    const told = layout(story(230), 2, tail);
+    assert.equal(told.body.size, 31);
+    assert.equal(told.photos, 2);
+  });
+
+  it("leaves out a photo too narrow to print", () => {
+    assert.deepEqual(art.photoWidths(-40, [4 / 3]).map((w) => w > 0), [false]);
+    // Three tellings' labels leave the photos no room: they are left out, the words keep their size.
+    const tellings = ["a", "b", "c"].map((id) => ({ id, name: id, color: "#b2473a" }));
+    const l = layout(story(230), 2, art.storyTailHeight({ tellings }));
+    assert.equal(l.photos, 0);
+    assert.equal(l.body.size, 31);
   });
 
   it("steps the size down before leaving photos out", () => {

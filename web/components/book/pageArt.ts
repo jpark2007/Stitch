@@ -162,16 +162,14 @@ export async function drawStoryPage(
     labels = labels.map((r) => ({ ...r, y: r.y + dy }));
   }
 
-  // Photos, taped into the space that is left (layoutStory kept it at least
-  // PHOTO_MIN_ROOM, leaving out the ones it could not).
+  // Photos, taped into the space that is left (layoutStory kept only those
+  // at least PHOTO_MIN_W wide in it).
   const top = photoTop(y);
+  const room = photoRoom(photos.length, y);
+  const [w0, w1] = photoWidths(room, photos.map((p) => photoAspect(p.aspect)));
   if (photos.length === 1) {
-    const pw = Math.min(520, photoRoom(1, y) * photoAspect(photos[0].aspect) * 0.9);
-    if (pw > 0) await drawPhoto(ctx, photos[0], left + (width - pw) / 2 + 10, top, pw, -0.03, seed + 1, fonts, "top");
+    if (w0 > 0) await drawPhoto(ctx, photos[0], left + (width - w0) / 2 + 10, top, w0, -0.03, seed + 1, fonts, "top");
   } else if (photos.length >= 2) {
-    const room = photoRoom(2, y);
-    const w0 = Math.min(430, room * photoAspect(photos[0].aspect) * 0.82);
-    const w1 = Math.min(330, room * photoAspect(photos[1].aspect) * 0.72);
     if (w0 > 0) await drawPhoto(ctx, photos[0], left - 6, top, w0, -0.055, seed + 1, fonts, "top");
     if (w1 > 0) await drawPhoto(ctx, photos[1], right - w1 + 8, top + Math.min(70, room * 0.16), w1, 0.06, seed + 2, fonts, "corners");
   }
@@ -193,11 +191,11 @@ const TITLE_MAX_LINES = 3;
 /** The lowest the words (and tellers) may run on a page without photos. */
 const TEXT_FOOT = PAGE_PX_H - 150;
 /**
- * The least room (page px, from the photos' top to the foot margin) a taped
- * photo is given. Less than this and the photo is left out, rather than
- * shrunk to a postage stamp (or, past zero, to nothing at all).
+ * The narrowest a taped photo is printed, page px. A photo the words leave
+ * less room than this is left out, rather than shrunk to a postage stamp
+ * (or, past zero, to nothing at all).
  */
-export const PHOTO_MIN_ROOM = 220;
+export const PHOTO_MIN_W = 120;
 /**
  * Body sizes, [font px, line lead px], largest first. A short text opens at
  * the large size; a long one steps down to a readable floor (the last) to
@@ -228,6 +226,17 @@ function photoTop(y: number) {
 /** The photos' room under words ending at y (two photos stand a little lower). */
 export function photoRoom(count: number, y: number) {
   return PAGE_PX_H - (count >= 2 ? 140 : 150) - photoTop(y);
+}
+
+/**
+ * Each photo's print width in `room` (photoRoom), by aspect: one photo
+ * centred, or two, the second smaller and set lower. Not positive when the
+ * room is not.
+ */
+export function photoWidths(room: number, aspects: readonly number[]): number[] {
+  if (aspects.length === 1) return [Math.min(520, room * aspects[0] * 0.9)];
+  if (aspects.length >= 2) return [Math.min(430, room * aspects[0] * 0.82), Math.min(330, room * aspects[1] * 0.72)];
+  return [];
 }
 
 /** How far the tellers' line, or the tellings' labels, run below the words. */
@@ -313,8 +322,8 @@ function clampLines(ctx: Ctx, lines: string[], max: number, widthFor: (line: num
 /**
  * Fit a story page's text, for any length. Words and photos are set as they
  * always were while they fit; past that the text steps down through
- * BODY_SIZES, keeping each photo at least PHOTO_MIN_ROOM of room, then
- * leaves photos out (the last first), and at the floor size with no photos
+ * BODY_SIZES, keeping each photo at least PHOTO_MIN_W wide, then leaves
+ * photos out (the last first), and at the floor size with no photos
  * is cut, ending in "…". Every photo kept has a positive size. `ctx` is only
  * measured with; its font is left changed.
  */
@@ -324,7 +333,8 @@ export function layoutStory(ctx: Ctx, text: string, fonts: PageFonts, o: StoryLa
   const sizes = words.length < 150 ? [SHORT_SIZE, ...BODY_SIZES] : BODY_SIZES;
   const fits = (b: StoryBody, n: number) => {
     const end = o.top + b.height + o.tail;
-    return n === 0 ? end <= TEXT_FOOT : photoRoom(n, end) >= PHOTO_MIN_ROOM;
+    if (n === 0) return end <= TEXT_FOOT;
+    return photoWidths(photoRoom(n, end), o.photos.slice(0, n)).every((w) => w >= PHOTO_MIN_W);
   };
   if (!cut) {
     for (let n = Math.min(2, o.photos.length); n >= 0; n--) {
