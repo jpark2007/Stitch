@@ -113,23 +113,30 @@
   transition: color 0.3s var(--ease-paper);
 }
 
-/* Longer names step down a size; long ones wrap onto a second line. */
-.ft-name[data-size="l"] {
-  font-size: calc(var(--u) * 25);
+/* Longer names step down a size (inline, from nameFit); long ones take two
+ * lines, and a line that still will not fit ends in an ellipsis. */
+.ft-name {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
 }
 
-.ft-name[data-size="xl"] {
-  display: -webkit-box;
-  max-width: 100%;
-  overflow: hidden;
-  font-size: calc(var(--u) * 22);
-  line-height: 0.98;
-  text-align: center;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+.ft-name-line {
+  display: block;
+}
+
+/* Only a name already at the smallest size can still be too long. Clip
+ * sideways only, so descenders and swashes are never cut. */
+.ft-name[data-tight] .ft-name-line {
+  max-width: calc(var(--u) * 124);
+  overflow-x: clip;
+  overflow-clip-margin: calc(var(--u) * 4);
+  text-overflow: ellipsis;
+}
+
+.ft-name[data-lines="2"] {
+  line-height: 1;
 }
 
 /* ---- Loading placeholder: blank paper figures that breathe. ---- */
@@ -229,7 +236,7 @@
 }
 
 .ft-bar-title {
-  width: min(9em, 70vw);
+  width: min(6.5em, 70vw);
 }
 
 .ft-bar-caption {
@@ -240,6 +247,15 @@
 /* While another family loads, the current tree steps back a little. */
 .ft-home-tree {
   transition: opacity 0.3s var(--ease-paper);
+}
+
+/* A tree too wide for the screen scrolls edge to edge, through the gutter,
+ * so the cut-off threads at the sides say there is more. */
+.ft-home-tree .ft-scroll {
+  width: auto;
+  margin-inline: calc(-1 * var(--gutter));
+  padding-inline: var(--gutter);
+  scroll-padding-inline: var(--gutter);
 }
 
 .ft-home-tree.is-switching {
@@ -274,6 +290,7 @@
 }
 
 .ft-switch select {
+  field-sizing: content;
   min-width: 0;
   max-width: 13rem;
   overflow: hidden;

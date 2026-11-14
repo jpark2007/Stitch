@@ -52,8 +52,7 @@ export function TreeHome() {
   useEffect(() => {
     if (!live) return;
     let current = true;
-    loadHome(api, chosen ?? recallFamily())
-      .catch((): HomeView => ({ kind: "error", message: "" }))
+    loadOnce(`${attempt}:${chosen ?? ""}`, () => loadHome(api, chosen ?? recallFamily()))
       .then((next) => {
         if (!current) return;
         if (next.kind === "tree") rememberFamily(next.familyId);
@@ -92,6 +91,24 @@ export function TreeHome() {
     case "tree":
       return <FamilyHome view={view} switching={switching} onSwitch={switchTo} />;
   }
+}
+
+/**
+ * One request per load: strict mode's second effect run (and a remount while
+ * the first is still out) joins the request in flight instead of sending
+ * another. Once it settles the next arrival asks afresh.
+ */
+let inflight: { key: string; promise: Promise<HomeView> } | null = null;
+
+function loadOnce(key: string, load: () => Promise<HomeView>): Promise<HomeView> {
+  if (inflight?.key === key) return inflight.promise;
+  const promise = load()
+    .catch((): HomeView => ({ kind: "error", message: "" }))
+    .finally(() => {
+      if (inflight?.promise === promise) inflight = null;
+    });
+  inflight = { key, promise };
+  return promise;
 }
 
 /* ------------------------------------------------------------------ views */

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { CSSProperties } from "react";
 import { DEFAULT_LAYOUT, layoutFamily, type TreeLayout } from "./layout";
+import { NAME_MIN, NAME_SIZE, nameExtra, nameFit } from "./nameFit";
 import { Puppet, PuppetDefs } from "./Puppet";
 import { hashSeed, wobblyCubic, wobblyLine, type Pt } from "./sketch";
 import type { TreePerson } from "./treeData";
@@ -46,18 +47,6 @@ const HEAD_TOP = (9 / 130) * FIG_H;
 const STITCH = "6 4.6";
 const GHOST_COLOR = "#d6c6a8";
 
-/**
- * How big a name is set: short names in the full hand size, longer ones a
- * little smaller, and long ones smaller again over up to two lines.
- */
-export function nameSize(name: string): "m" | "l" | "xl" {
-  const n = [...name].length;
-  if (n <= 9) return "m";
-  return n <= 12 ? "l" : "xl";
-}
-
-/** Extra drop below a name that may wrap to a second line. */
-const NAME_EXTRA = { m: 0, l: 0, xl: 22 } as const;
 
 interface Thread {
   key: string;
@@ -72,7 +61,7 @@ function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>, ghost
   const threads: Thread[] = [];
   const knots: { key: string; at: Pt; delay: number; ids: string[] }[] = [];
   const colorOf = (id: string) => (ghost ? GHOST_COLOR : (people.get(id)?.character.color ?? "#8f8173"));
-  const nameExtra = (id: string) => (ghost ? 0 : NAME_EXTRA[nameSize(people.get(id)?.name ?? "")]);
+  const extraFor = (id: string) => (ghost ? 0 : nameExtra(people.get(id)?.name ?? ""));
 
   const coupleKnot = new Map<string, Pt>();
   for (const c of layout.couples) {
@@ -108,7 +97,7 @@ function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>, ghost
     const lowest = Math.max(...parents.map((p) => p.y));
     const knot = coupleKnot.get([...fam.parentIds].sort().join("+"));
     // A lone parent's thread starts under their name (which may run to two lines).
-    const start: Pt = knot ?? [fam.anchorX, lowest + NODE_H - 4 + Math.max(...fam.parentIds.map(nameExtra))];
+    const start: Pt = knot ?? [fam.anchorX, lowest + NODE_H - 4 + Math.max(...fam.parentIds.map(extraFor))];
     // A short shared trunk drops between the parents' names, then each
     // child's strand branches off toward them.
     const branchY = Math.max(lowest + NODE_H + 2, start[1] + 8);
@@ -138,6 +127,21 @@ function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>, ghost
     });
   }
   return { threads, knots };
+}
+
+/** A person's name in their own hand, sized (and broken) to sit under them. */
+function NameLabel({ name }: { name: string }) {
+  const { lines, size } = nameFit(name);
+  const style = size === NAME_SIZE ? undefined : { fontSize: `calc(var(--u) * ${size})` };
+  return (
+    <span className="ft-name" data-lines={lines.length} data-tight={size <= NAME_MIN ? "" : undefined} style={style}>
+      {lines.map((line, i) => (
+        <span key={i} className="ft-name-line">
+          {line}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 /** Ids safe to drop into a CSS attribute selector and an SVG url(#...). */
@@ -264,9 +268,7 @@ export function FamilyTree({ people, maxHeight, minScale, hrefFor = defaultHref,
                 aria-label={`${person.name}: open their book`}
               >
                 {figure}
-                <span className="ft-name" data-size={nameSize(person.name)}>
-                  {person.name}
-                </span>
+                <NameLabel name={person.name} />
               </Link>
             );
           })}

@@ -17,6 +17,9 @@ const treeDataPath = "./treeData.ts";
 const homeDataPath = "./homeData.ts";
 const { cleanColor, toTreePeople }: TreeData = await import(treeDataPath);
 const { loadHome, personHref, threadsHref, viewForError }: HomeData = await import(homeDataPath);
+type NameFit = typeof import("./nameFit");
+const nameFitPath = "./nameFit.ts";
+const { NAME_MIN, NAME_SIZE, nameExtra, nameFit }: NameFit = await import(nameFitPath);
 
 describe("toTreePeople", () => {
   it("keeps the first of repeated ids and drops links to people not in the tree", () => {
@@ -140,6 +143,33 @@ describe("loadHome", () => {
   it("turns anything thrown into a friendly view", () => {
     assert.equal(viewForError(new Error("boom")).kind, "error");
     assert.equal(viewForError("nope").kind, "error");
+  });
+});
+
+describe("nameFit", () => {
+  it("keeps short names in the full hand size on one line", () => {
+    for (const name of ["Ana", "Joseph", "Christina"]) assert.deepEqual(nameFit(name), { lines: [name], size: NAME_SIZE });
+  });
+
+  it("sets slightly longer names a little smaller", () => {
+    const { lines, size } = nameFit("Christopher");
+    assert.deepEqual(lines, ["Christopher"]);
+    assert.ok(size < NAME_SIZE && size >= 24);
+  });
+
+  it("breaks long names over two balanced lines, at a space or after a hyphen", () => {
+    assert.deepEqual(nameFit("Margaret Fitzgerald").lines, ["Margaret", "Fitzgerald"]);
+    assert.deepEqual(nameFit("Great-grandpa Chinedu").lines, ["Great-grandpa", "Chinedu"]);
+    assert.deepEqual(nameFit("Okonkwo-Fitzgeraldson").lines, ["Okonkwo-", "Fitzgeraldson"]);
+    assert.ok(nameExtra("Margaret Fitzgerald") > 0);
+    assert.equal(nameExtra("Ana"), 0);
+  });
+
+  it("never goes below the smallest size", () => {
+    const fit = nameFit("Wolfeschlegelsteinhausenbergerdorff");
+    assert.equal(fit.lines.length, 1);
+    assert.equal(fit.size, NAME_MIN);
+    assert.equal(nameFit("A B").lines.length, 1);
   });
 });
 
