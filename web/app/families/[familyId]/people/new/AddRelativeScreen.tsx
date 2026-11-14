@@ -46,8 +46,9 @@ export function AddRelativeScreen() {
   const fid = typeof params?.familyId === "string" ? params.familyId : "";
   const next = safeNext(search?.get("next"));
 
+  // Wide like the page, so the column doesn't jump when it arrives.
   return (
-    <SessionGate requireFamily>
+    <SessionGate requireFamily width="wide">
       <AddRelativeGate fid={fid} next={next} />
     </SessionGate>
   );
