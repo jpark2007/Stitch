@@ -567,6 +567,67 @@ def test_regression_a_follow_of_a_passenger_waits_for_the_drive(fake_follow, ran
     assert call["leader"][-1][0] > 4.2 and call["leader"][-1][1][0] < call["leader"][0][1][0]
 
 
+def sedan_shot(actions):
+    """mom in the sedan's driver seat and kid in its passenger seat at the curb; dad at the steps."""
+    data = follow_shot(actions)
+    data["props"].append("sedan")
+    shot = data["shots"][0]
+    shot["start"] = {"dad": {"at": "steps_foot", "facing": "right"},
+                     "mom": {"at": "curb", "in": "sedan.driver"},
+                     "kid": {"at": "curb", "in": "sedan.passenger"}}
+    shot["propStart"] = {"sedan": {"at": "curb"}}
+    return data
+
+
+def test_regression_a_drive_after_the_leader_got_out_does_not_hold_the_follow_back(fake_follow, ran):
+    """Bug: a follow waited for every drive of a vehicle its leader was in at any time in the
+    shot. kid gets out at t=0, so mom's drive at t=4 never moves kid, but dad's follow waited
+    for it; mom's wave at dad (behind the follow) then made a false follow_order loop."""
+    minimal = acts(
+        {"t": 0, "who": "kid", "do": "get_out", "what": "sedan"},
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 2, "who": "mom", "do": "wave", "target": "dad"},
+        {"t": 4, "who": "mom", "do": "drive_to", "what": "sedan", "to": "steps_left"},
+    )
+    seated = {"kid": "sedan", "mom": "sedan"}
+    assert schedule(minimal, CAST, {"sedan"}, seated) == ([0, 1, 2, 3], [])
+    # once kid gets back in, the next drive carries kid again and the follow waits for it
+    back_in = acts(
+        {"t": 0, "who": "kid", "do": "get_out", "what": "sedan"},
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 3, "who": "kid", "do": "get_in", "what": "sedan"},
+        {"t": 4, "who": "mom", "do": "drive_to", "what": "sedan", "to": "steps_left"},
+    )
+    assert schedule(back_in, CAST, {"sedan"}, seated) == ([0, 2, 3, 1], [])
+    # end to end: it compiles, and the follow runs at its own time, before the drive
+    res = run(sedan_shot([a.model_dump(exclude_none=True) for a in minimal]))
+    assert res.ok, messages(res)
+    assert ran == [("mom", "wave"), ("mom", "drive_to")]
+    assert [(c["who"], c["now"]) for c in fake_follow["calls"]] == [("dad", 1.0)]
+
+
+def test_regression_a_drive_before_the_leader_gets_in_is_not_blamed():
+    """Bug: the same rule made a drive at t=3 count as moving kid, who only gets in at t=5. The
+    loop here is real (dad's follow needs kid's get_in, which reads where the drive left the
+    sedan, after mom's hand_to to dad), but it was reported on the drive ("this drive_to
+    included"). It is the get_in that moves kid."""
+    actions = acts(
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 2, "who": "mom", "do": "hand_to", "what": "books", "to": "dad"},
+        {"t": 3, "who": "mom", "do": "drive_to", "what": "sedan", "to": "curb"},
+        {"t": 5, "who": "kid", "do": "get_in", "what": "sedan"},
+    )
+    assert schedule(actions, CAST, {"books", "sedan"}, {"mom": "sedan"}) == (
+        [0, 1, 2],
+        [(3, "follow_order",
+          ("kid's get_in at t=5 has to come after mom's drive_to at t=3, which comes after mom's hand_to "
+           "at t=2, which comes after dad's follow of kid at t=1, but that follow is only worked out after "
+           "everything that moves kid, this get_in included; move the get_in before t=1, or drop the follow"))],
+    )
+    # without the hand_to there is no loop: the drive runs at its time, and the follow after the get_in
+    assert schedule([actions[0], actions[2], actions[3]], CAST, {"sedan"}, {"mom": "sedan"}) == ([1, 2, 0], [])
+
+
 # ----------------------------------------------------- property test with a brute-force oracle
 
 PUPPETS = ("dad", "mom", "kid", "gran")
@@ -590,7 +651,9 @@ def random_shot(rng: random.Random):
         who = rng.choice(cast)
         thing = rng.choice(props) if props else "ball"
         roll = rng.random()
-        if roll < 0.35:
+        if "sedan" in props and rng.random() < 0.3:  # riders get in, get out and are driven about
+            a = {"who": who, "do": rng.choice(["get_in", "get_out", "drive_to", "ride_to"]), "what": "sedan", "to": "curb"}
+        elif roll < 0.35:
             a = {"who": who, "do": "follow", "target": rng.choice(cast + cast + [who, "nobody", thing])}
         elif roll < 0.43:
             a = {"who": who, "do": "hand_to", "what": thing, "to": rng.choice(cast)}
@@ -605,7 +668,7 @@ def random_shot(rng: random.Random):
         elif roll < 0.82:
             a = {"who": who, "do": "wave", **({"target": rng.choice(named)} if rng.random() < 0.5 else {})}
         elif roll < 0.88:
-            a = {"who": who, "do": rng.choice(["get_in", "drive_to", "ride_to"]), "what": "sedan", "to": "curb"}
+            a = {"who": who, "do": rng.choice(["get_in", "get_out", "drive_to", "ride_to"]), "what": "sedan", "to": "curb"}
         elif roll < 0.94:
             a = {"do": "set_state", "what": thing, "state": "open"}
         else:
@@ -627,16 +690,24 @@ def precedence(actions, retimed, cast, props, seated_in) -> dict[tuple[int, int]
     """Every constraint "i runs before j", labelled (b), (c) or (d)."""
     key = [(retimed[i], i) for i in range(len(actions))]
     touch = [oracle_touches(a, cast, props) for a in actions]
+    # Who sits where as the shot plays out in time order, and so who each vehicle move carries.
+    seat = dict(seated_in)
+    carries: dict[int, set[str]] = {}
+    for i in sorted(range(len(actions)), key=key.__getitem__):
+        a = actions[i]
+        if a.do in ("drive_to", "ride_to"):
+            carries[i] = {p for p, v in seat.items() if v == a.what}
+        if a.do == "get_in":
+            seat[a.who] = a.what
+        elif a.do == "get_out" and seat.get(a.who) == a.what:
+            del seat[a.who]
     edges: dict[tuple[int, int], str] = {}
     for j, f in enumerate(actions):
         if f.do != "follow" or f.target not in cast or f.target == f.who:
             continue
         leader = f.target
-        rides = {a.what for a in actions if a.who == leader and a.do == "get_in"} | (
-            {seated_in[leader]} if leader in seated_in else set())
         for i, a in enumerate(actions):
-            if i != j and ((a.who == leader and a.do not in ORACLE_STILL)
-                           or (a.do in ("drive_to", "ride_to") and a.what in rides)):
+            if i != j and ((a.who == leader and a.do not in ORACLE_STILL) or leader in carries.get(i, ())):
                 edges[(i, j)] = "c"
     for i, a in enumerate(actions):
         for j, b in enumerate(actions):
@@ -690,6 +761,19 @@ def check_shot(actions, retimed, cast, props, seated_in) -> list[str]:
     # (e) nothing is left out exactly when the constraints have no loop
     if brute_force_acyclic(range(len(actions)), edges) != (not out):
         problems.append(f"(e) acyclic={not out} is wrong: left_out={left_out}")
+    # (g) with no loop, nothing waits more than it must: the earliest action (retimed t, index)
+    # whose constraints are all met runs next. This catches a wait the oracle does not have.
+    if not out:
+        earliest_first, left = [], set(range(len(actions)))
+        while left:
+            ready = [v for v in left if not any(i in left and j == v for (i, j) in edges)]
+            if not ready:
+                break
+            v = min(ready, key=lambda v: (retimed[v], v))
+            earliest_first.append(v)
+            left.discard(v)
+        if order != earliest_first:
+            problems.append(f"(g) order={order}, earliest runnable first gives {earliest_first}")
     # every action left out is on a loop, and the codes are the two loop codes
     for i, code, reason in left_out:
         if not reaches(edges, i, i):
@@ -727,11 +811,27 @@ def test_the_oracle_flags_a_wrong_order():
     assert not brute_force_acyclic(range(2), precedence(loop, [1.0, 2.0], ["dad", "kid"], [], {}))
 
 
+def test_the_property_test_catches_the_old_vehicle_rule(monkeypatch):
+    """The oracle's vehicle rule is worked out on its own (who sits where, in time order), so
+    the old rule (a follow waits for every drive of any vehicle its leader is in at any time
+    in the shot) fails the property test."""
+    def old_moves(actions, who, seated_in, by_time):
+        rides = {a.what for a in actions if a.who == who and a.do == "get_in"} | (
+            {seated_in[who]} if who in seated_in else set())
+        return [i for i in by_time
+                if (actions[i].who == who and actions[i].do not in C.STILL_VERBS)
+                or (actions[i].do in ("drive_to", "ride_to") and actions[i].what in rides)]
+
+    monkeypatch.setattr(C, "_moves", old_moves)
+    failing = [seed for seed in range(2500) if check_shot(*random_shot(random.Random(seed)))]
+    assert failing, "the property test no longer tells the old vehicle rule apart"
+
+
 # ------------------------------------------------------------------ the verb cases still hold
 
 EFFECTS = {"confetti", "steam", "rain", "smoke", "time_of_day"}
-NOT_YET = {"exit", "turn_to", "follow"}  # verbs_motion is another task's (PR #70)
-VERB_CASES = [c for c in CASES if c.verb not in EFFECTS | NOT_YET and not c.verb.startswith("camera")]
+# exit, turn_to and follow (verbs_motion, PR #70) are on main now and run through compile() too.
+VERB_CASES = [c for c in CASES if c.verb not in EFFECTS and not c.verb.startswith("camera")]
 
 
 def _compile_case(case):
