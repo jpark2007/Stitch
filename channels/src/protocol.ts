@@ -109,11 +109,7 @@ export function configureProviderEnvironment(env: NodeJS.ProcessEnv): Provider {
     delete env.SPECTRUM_WEBHOOK_SECRET;
     return provider;
   }
-  if (provider !== "imessage") throw new Error("CHANNELS_PROVIDER must be terminal or imessage");
-  const project = env.SPECTRUM_PROJECT_ID?.trim();
-  if (!project || !env.SPECTRUM_PROJECT_SECRET?.trim()) throw new Error("iMessage requires Stable SPECTRUM_PROJECT_ID and SPECTRUM_PROJECT_SECRET");
-  if (project.startsWith("pho_prj_")) throw new Error("Photon Beta project is incompatible; use a Stable Spectrum project");
-  return provider;
+  throw new Error("Spectrum is terminal-only; cloud iMessage must use the explicit Photon Beta adapter");
 }
 
 export function parseMessage(value: unknown, inbound: true): Inbound;
