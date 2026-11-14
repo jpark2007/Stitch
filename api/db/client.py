@@ -82,6 +82,11 @@ INDEXES: dict[str, list[tuple[str, list[tuple[str, int]], dict[str, Any]]]] = {
         # list_traditions: one family's traditions, oldest first (createdAt, then _id).
         ("traditions_familyId_createdAt", [("familyId", ASCENDING), ("createdAt", ASCENDING), ("_id", ASCENDING)], {}),
     ],
+    "films": [
+        # list_films: one family's films, newest first (createdAt, then _id, both descending;
+        # the index is walked backwards).
+        ("films_familyId_createdAt", [("familyId", ASCENDING), ("createdAt", ASCENDING), ("_id", ASCENDING)], {}),
+    ],
     "revoked_sessions": [
         # TTL: a revoked session id is dropped once its token would have expired anyway.
         ("revoked_sessions_expiresAt_ttl", [("expiresAt", ASCENDING)], {"expireAfterSeconds": 0}),
