@@ -41,6 +41,9 @@ Checks:
   unchanged value); test_story_scenarios has that as a strict xfail.
   Given the scene's props (``sanity_problems(tl, props=...)``), a prop is on stage when any part
   of its drawn width overlaps the stage, not just its anchor: a car parked at x=-1.3 still shows.
+  The prop's position is sampled as the stage samples it (``prop_position_at``): it steps at each
+  parent key, never interpolating across a parent change, so a prop parked offstage and later
+  picked up stays parked until the parent key.
 
 Props are the one input besides the timeline: optional, and only for that width. A drawn width
 is ``sizes[size] * aspect`` (shared/vocabulary.json, CONTRACTS.md 'World size'); the art may be
@@ -64,7 +67,8 @@ from screenplay.schema import Timeline
 
 __all__ = [
     "CHECKS", "SEAT_TOL", "STAGE_EDGE", "check_finite", "check_hands", "check_parent_position",
-    "check_props_on_set", "check_seated", "check_times", "half_extent", "sanity_problems", "value_at",
+    "check_props_on_set", "check_seated", "check_times", "half_extent", "prop_position_at", "sanity_problems",
+    "value_at",
 ]
 
 TIME_TOL = 1e-6
@@ -101,9 +105,14 @@ def _t(t: float) -> str:
     return f"t={round(t, 3) + 0.0:g}"
 
 
-def value_at(keys: Keys, t: float, *, before: bool = False) -> Any:
+def value_at(keys: Keys, t: float, *, before: bool = False, parent_times: list[float] | None = None) -> Any:
     """A track's value at ``t`` (CONTRACTS.md interpolation). ``before=True`` gives the limit from
-    the left, so a step key exactly at ``t`` does not count yet. None for an empty track."""
+    the left, so a step key exactly at ``t`` does not count yet. None for an empty track.
+
+    ``parent_times`` (sorted; a prop's ``parent`` key times, for its ``position`` track) applies
+    CONTRACTS.md 'never interpolate across a parent change': between bracketing keys
+    ``(t0, v0), (t1, v1)``, a parent key time ``p`` in ``(t0, t1]`` gives ``v0`` before ``p`` and
+    ``v1`` from ``p`` on (with ``before=True``, ``v0`` at ``p`` too). Off by default."""
     if not keys:
         return None
     times = [k[0] for k in keys]
@@ -117,10 +126,21 @@ def value_at(keys: Keys, t: float, *, before: bool = False) -> Any:
     t1, v1 = keys[i]
     if isinstance(v1, str) or v1 is None or t1 <= t0:
         return v0
+    if parent_times:
+        j = bisect.bisect_right(parent_times, t0)  # the first parent key after t0
+        if j < len(parent_times) and parent_times[j] <= t1:
+            p = parent_times[j]
+            return v0 if (t <= p if before else t < p) else v1
     s = (t - t0) / (t1 - t0)
     if isinstance(v0, list):
         return [a + (b - a) * s for a, b in zip(v0, v1)]
     return v0 + (v1 - v0) * s
+
+
+def prop_position_at(position: Keys, parent: Keys, t: float, *, before: bool = False) -> Any:
+    """A prop's ``position`` at ``t``, stepping (never interpolating) at each of its ``parent``
+    key times, as the stage's sampler does (CONTRACTS.md 'Prop position and parent')."""
+    return value_at(position, t, before=before, parent_times=sorted(pt for pt, _ in parent))
 
 
 def _numbers(value: Any, path: str) -> Iterator[tuple[str, float]]:
@@ -298,13 +318,14 @@ def check_finite(tl: Timeline) -> list[str]:
 
 
 def _ground_x(parent: Keys, position: Keys, t: float) -> float | None:
-    """The prop's world x at ``t`` (same-time steps applied) when its parent is the ground, else
-    None. No parent track is the ground and no position track is [0, 0, 0] (CONTRACTS.md
-    Clarification 8). None too for a malformed position (check_finite reports that)."""
+    """The prop's world x at ``t`` (same-time steps applied, position stepped at parent keys) when
+    its parent is the ground, else None. No parent track is the ground and no position track is
+    [0, 0, 0] (CONTRACTS.md Clarification 8). None too for a malformed position (check_finite
+    reports that)."""
     p = value_at(parent, t)
     if p not in (None, "ground"):
         return None
-    pos = value_at(position, t) if position else [0.0, 0.0, 0.0]
+    pos = prop_position_at(position, parent, t) if position else [0.0, 0.0, 0.0]
     if not isinstance(pos, list) or not pos or isinstance(pos[0], bool) or not isinstance(pos[0], (int, float)):
         return None
     return float(pos[0])
