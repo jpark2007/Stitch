@@ -55,6 +55,14 @@ export interface InputHandlers {
   interact(): void;
 }
 
+/**
+ * Distance between two fingers for pinch zoom: the full gap, floored so that
+ * fingers set down close together cannot turn a small spread into a huge ratio.
+ */
+function pinchGap(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  return Math.max(40, Math.hypot(a.x - b.x, a.y - b.y));
+}
+
 interface Drag {
   x: number;
   moved: boolean;
@@ -453,7 +461,7 @@ export class ThreadsEngine {
         this.drag = { x: p.x, moved: false, lastX: p.x, lastT: performance.now(), pinch: 0 };
       } else if (this.pointers.size === 2 && this.drag) {
         const [a, b] = [...this.pointers.values()];
-        this.drag.pinch = Math.abs(a.x - b.x) || 1;
+        this.drag.pinch = pinchGap(a, b);
         this.drag.moved = true;
         this.drag.lastX = (a.x + b.x) / 2;
       }
@@ -481,10 +489,11 @@ export class ThreadsEngine {
       if (this.pointers.size >= 2) {
         const [a, b] = [...this.pointers.values()];
         const mid = (a.x + b.x) / 2;
-        const dist = Math.abs(a.x - b.x) || 1;
-        // Pan with the midpoint, zoom about it.
+        const dist = pinchGap(a, b);
+        // Pan with the midpoint, zoom about it; one event never jumps more than 2x.
+        const factor = Math.min(2, Math.max(0.5, dist / drag.pinch));
         this.cam = clampCam({ s: this.cam.s, cx: this.cam.cx - (mid - drag.lastX) / this.cam.s }, this.bounds);
-        this.cam = zoomAt(this.cam, dist / drag.pinch, mid, this.bounds);
+        this.cam = zoomAt(this.cam, factor, mid, this.bounds);
         drag.pinch = dist;
         drag.lastX = mid;
         this.kick();
