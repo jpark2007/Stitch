@@ -78,8 +78,14 @@ export function AddTraditionForm(props: {
   submitLabel?: string;
   /** Save it. Resolve once saved (the page then leaves); reject with the ApiError to show it here. */
   onSubmit: (draft: TraditionDraft, photos: File[]) => Promise<void>;
+  /**
+   * What the form holds now, told after every change (and once to start
+   * with), for the book beside it. The photos array is the same one until
+   * the photos change.
+   */
+  onPreview?: (draft: TraditionDraft, photos: File[]) => void;
 }) {
-  const { people, selfPersonId, disabled = false, submitLabel = "Save this tradition", onSubmit } = props;
+  const { people, selfPersonId, disabled = false, submitLabel = "Save this tradition", onSubmit, onPreview } = props;
 
   const [draft, setDraft] = useState<TraditionDraft>(() => emptyTraditionDraft(selfPersonId));
   const [photos, setPhotos] = useState<File[]>([]);
@@ -95,6 +101,10 @@ export function AddTraditionForm(props: {
   useEffect(() => {
     if (focusTick > 0) focusFirstError(formRef.current);
   }, [focusTick]);
+
+  useEffect(() => {
+    onPreview?.(draft, photos);
+  }, [onPreview, draft, photos]);
 
   const locked = disabled || pending;
   const showMonth = monthMakesSense(draft.kind);
@@ -457,7 +467,8 @@ function Blank(props: {
  * hidden) radio buttons, so arrow keys move between them and the kit's
  * dashed ring shows focus. The chosen word is semibold, in full ink, with an
  * accent underline (weight and shape, not colour alone); the rest are muted
- * and only darken on hover. One line from sm up; on a phone the words flow
+ * and only darken on hover. One line where the column has room (the page's
+ * full width; beside the book from 1440px); narrower, as on a phone, the words flow
  * like a line of text, evenly spaced and wrapping only between whole words,
  * as the names under "Who" do. Its legend is for assistive tech (SpecRow
  * draws the label).
@@ -484,7 +495,7 @@ function ChoiceLine<T extends string>(props: {
     >
       <legend className="sr-only">{legend}</legend>
       {/* -mx-1 pulls each word's padding out, so the words sit flush with the column. */}
-      <ul className="-mx-1 flex list-none flex-wrap gap-x-1.5 p-0 sm:flex-nowrap">
+      <ul className="-mx-1 flex list-none flex-wrap gap-x-1.5 p-0">
         {options.map((o, i) => {
           const checked = value === o.value;
           const inputId = `${uid}-${o.value}`;

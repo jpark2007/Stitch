@@ -1,17 +1,25 @@
 "use client";
 
-// The "Add a tradition" screen. Reads ?family=, waits for the session (signed
-// out goes to log in and comes back; no family goes to start one), picks the
-// family as /add does (the asked-for one if the person belongs to it, else
-// the remembered one, else their first), loads its tree for "Who takes
-// part?", then shows the form. Saving uploads the photos (each once, even
-// across retries), creates the tradition and goes back to the book.
+// The "Add a tradition" screen, set as /add is: the writing on the left and,
+// from 1024px, the family's Book of Traditions lying open beside it at its
+// next blank page, the tradition printing into it as it is written
+// (TraditionDraftBook; the desk is BookDesk, shared with /add's book).
+// Reads ?family=, waits for the session (signed out goes to log in and comes
+// back; no family goes to start one), picks the family as /add does (the
+// asked-for one if the person belongs to it, else the remembered one, else
+// their first), loads its tree for "Who takes part?" and its traditions (for
+// which kit the new one gets), then shows the form. Saving uploads the
+// photos (each once, even across retries) and creates the tradition; the
+// book beside the form shows it saved a moment, then the page goes to the
+// book, opened at the new tradition's spread.
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { LoadingSheet } from "@/app/add/parts";
+import { BookDesk, usePrefersReducedMotion, useWideDesk } from "@/components/flow/BookDesk";
 import { Button, ButtonLink, FOCUS_RING } from "@/components/flow/Button";
+import { createWatch } from "@/components/flow/crafting";
 import { FlowPage } from "@/components/flow/FlowPage";
 import { FormError } from "@/components/flow/FormError";
 import { PaperCard } from "@/components/flow/PaperCard";
@@ -20,18 +28,27 @@ import { AddTraditionForm } from "@/components/flow/AddTraditionForm";
 import { familyChoice, type FamilyChoice } from "@/components/flow/addPage";
 import { hrefs, recallFamily, rememberFamily } from "@/components/flow/session";
 import { toCreateTraditionRequest, type TraditionDraft } from "@/components/flow/traditionForm";
+import { traditionHref } from "@/components/traditions/openAt";
+import { traditionsCover, traditionsTitle } from "@/components/traditions/traditionBook";
 import { isApiError } from "@/lib/api";
+import type { Person, Tradition } from "@/lib/types";
+
+import { TraditionDraftBook, type TraditionInput } from "./TraditionDraftBook";
 
 const TITLE = "Add a tradition";
 // No lede, as on /add: the form's placeholders carry the invitation. Only
 // someone in two or more families gets a line (which family, and a switch).
 const LOAD_ERROR = "We couldn't open the page for adding a tradition. Check your connection and try again.";
+/** The aside the book lies in, for assistive tech. */
+const BOOK_LABEL = "The book of traditions";
+/** How long the book shows the tradition saved before the page goes to the book, ms. */
+const SAVED_BEAT_MS = 950;
 
 type PickablePerson = { id: string; name: string; born?: number | null; color?: string | null };
 
-/** The quiet link back to the book, for the family on this page. */
-function backTo(familyId: string | null) {
-  return { href: hrefs.traditions({ familyId }), label: "Back to the traditions" };
+/** The quiet link back to the book, for the family on this page ("The Rivera Book of Traditions"). */
+function backTo(familyId: string | null, familyName: string | null) {
+  return { href: hrefs.traditions({ familyId }), label: familyName ? traditionsTitle(familyName) : "The Book of Traditions" };
 }
 
 /** The path and query of this page, for coming back after logging in. */
@@ -39,10 +56,18 @@ function currentPath(): string {
   return `${window.location.pathname}${window.location.search}`;
 }
 
-/** The page shell with a quiet loading sheet, so nothing jumps when the form arrives. */
+/** The page shell with a quiet loading sheet, on the desk, so nothing jumps when the form arrives. */
 export function NewTraditionLoading(props: { familyId: string | null }) {
   return (
-    <FlowPage title={TITLE} back={backTo(props.familyId)} width="wide" heading="quiet">
+    <BookDesk mode="write" book={null} label={BOOK_LABEL} loading="opening the book…">
+      <LoadingPage back={backTo(props.familyId, null)} />
+    </BookDesk>
+  );
+}
+
+function LoadingPage(props: { back: { href: string; label: string }; lede?: ReactNode }) {
+  return (
+    <FlowPage title={TITLE} lede={props.lede} back={props.back} width="wide" heading="quiet">
       <LoadingSheet label="Opening your family’s pages…" />
     </FlowPage>
   );
@@ -61,7 +86,15 @@ export function NewTraditionScreen() {
 type Status =
   | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "ready"; people: PickablePerson[] };
+  | {
+      kind: "ready";
+      /** For "Who takes part?". */
+      people: PickablePerson[];
+      /** The same people as the book draws them. */
+      persons: Person[];
+      /** The family's traditions already in the book. */
+      traditions: Tradition[];
+    };
 
 function NewTraditionFlow(props: { session: SessionValue; familyId: string | null }) {
   const { session, familyId } = props;
@@ -79,24 +112,31 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
     if (fid) rememberFamily(fid);
   }, [fid]);
 
-  // The family's people, for "Who takes part?". Keyed by family and try, so
-  // a switch or a retry shows the loading sheet again, never stale people.
+  // The family's people, for "Who takes part?", and its traditions, for the
+  // book (without them the page still works: the new one gets its kind's
+  // first kit). Keyed by family and try, so a switch or a retry shows the
+  // loading sheet again, never stale people.
   const [loadTry, setLoadTry] = useState(0);
   const loadKey = fid ? `${fid}#${loadTry}` : null;
   const [loaded, setLoaded] = useState<{ key: string; status: Status } | null>(null);
   useEffect(() => {
     if (!fid || !loadKey) return;
     let live = true;
-    api.getTree(fid).then(
-      (tree) => {
+    const traditions = api.listTraditions(fid).then(
+      (r) => (Array.isArray(r?.traditions) ? r.traditions : []),
+      () => [] as Tradition[],
+    );
+    Promise.all([api.getTree(fid), traditions]).then(
+      ([tree, list]) => {
         if (!live) return;
-        const people = tree.people.map((p) => ({
+        const persons = Array.isArray(tree.people) ? tree.people : [];
+        const people = persons.map((p) => ({
           id: p.id,
           name: p.name,
           born: p.born ?? null,
           color: p.character?.color ?? null,
         }));
-        setLoaded({ key: loadKey, status: { kind: "ready", people } });
+        setLoaded({ key: loadKey, status: { kind: "ready", people, persons, traditions: list } });
       },
       (e: unknown) => {
         if (!live) return;
@@ -118,6 +158,15 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
   // error does not upload them twice.
   const uploaded = useRef(new Map<File, string>());
 
+  // The book beside the form reads what the form holds, and the tradition
+  // once saved, itself: a keystroke re-renders the book alone, not the page.
+  const [input] = useState(() => createWatch<TraditionInput | null>(null));
+  const [saved] = useState(() => createWatch<Tradition | null>(null));
+  // The form tells it once as it mounts (a switch of family remounts it).
+  const onPreview = useCallback((draft: TraditionDraft, photos: File[]) => input.set({ draft, photos }), [input]);
+
+  const wide = useWideDesk();
+  const reduced = usePrefersReducedMotion();
   const onSubmit = useCallback(
     async (draft: TraditionDraft, photos: File[]) => {
       if (!fid) return;
@@ -130,11 +179,25 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
         }
         photoIds.push(id);
       }
-      await api.createTradition(fid, toCreateTraditionRequest(draft, photoIds));
-      router.push(hrefs.traditions({ familyId: fid }));
+      const created = await api.createTradition(fid, toCreateTraditionRequest(draft, photoIds));
+      // Beside the form, the book shows the page as saved a moment first
+      // (not on a phone, which has no book, nor under reduced motion).
+      if (wide && !reduced) {
+        saved.set(created);
+        await new Promise((resolve) => window.setTimeout(resolve, SAVED_BEAT_MS));
+      }
+      router.push(traditionHref(fid, created.id));
     },
-    [api, fid, router],
+    [api, fid, router, wide, reduced, saved],
   );
+
+  const familyName = family?.name ?? null;
+  const owner = useMemo(
+    () => ({ title: traditionsTitle(familyName), href: hrefs.traditions({ familyId: fid }) }),
+    [familyName, fid],
+  );
+  const existing = status.kind === "ready" ? status.traditions : NO_TRADITIONS;
+  const cover = useMemo(() => traditionsCover(familyName, existing), [familyName, existing]);
 
   if (!family || !fid) {
     // SessionGate's requireFamily sends people without a family away; this
@@ -152,40 +215,59 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
   }
 
   const lede = choice.show ? <FamilyLede choice={choice} /> : undefined;
-  const back = backTo(fid);
+  const back = backTo(fid, family.name);
 
   if (status.kind === "loading") {
     return (
-      <FlowPage title={TITLE} lede={lede} back={back} width="wide" heading="quiet">
-        <LoadingSheet label="Opening your family’s pages…" />
-      </FlowPage>
+      <BookDesk mode="write" book={null} label={BOOK_LABEL} loading="opening the book…">
+        <LoadingPage back={back} lede={lede} />
+      </BookDesk>
     );
   }
 
   if (status.kind === "error") {
     return (
-      <FlowPage title={TITLE} lede={lede} back={back} width="wide" heading="quiet">
-        <PaperCard className="flex flex-col gap-5">
-          <FormError message={status.message} />
-          <div>
-            <Button onClick={() => setLoadTry((n) => n + 1)}>Try again</Button>
-          </div>
-        </PaperCard>
-      </FlowPage>
+      <BookDesk mode="write" book={null} label={BOOK_LABEL} loading={null}>
+        <FlowPage title={TITLE} lede={lede} back={back} width="wide" heading="quiet">
+          <PaperCard className="flex flex-col gap-5">
+            <FormError message={status.message} />
+            <div>
+              <Button onClick={() => setLoadTry((n) => n + 1)}>Try again</Button>
+            </div>
+          </PaperCard>
+        </FlowPage>
+      </BookDesk>
     );
   }
 
+  const book = (
+    <TraditionDraftBook
+      key={fid}
+      owner={owner}
+      cover={cover}
+      people={status.persons}
+      existing={status.traditions}
+      selfPersonId={family.personId ?? null}
+      input={input}
+      saved={saved}
+    />
+  );
   return (
-    <FlowPage title={TITLE} lede={lede} back={back} width="wide" heading="quiet">
-      <AddTraditionForm
-        key={fid}
-        people={status.people}
-        selfPersonId={family.personId ?? null}
-        onSubmit={onSubmit}
-      />
-    </FlowPage>
+    <BookDesk mode="write" book={book} label={BOOK_LABEL}>
+      <FlowPage title={TITLE} lede={lede} back={back} width="wide" heading="quiet">
+        <AddTraditionForm
+          key={fid}
+          people={status.people}
+          selfPersonId={family.personId ?? null}
+          onSubmit={onSubmit}
+          onPreview={onPreview}
+        />
+      </FlowPage>
+    </BookDesk>
   );
 }
+
+const NO_TRADITIONS: Tradition[] = [];
 
 const SWITCH_LINK = `rounded-paper font-medium text-accent-deep underline decoration-1 underline-offset-[0.2em] hover:decoration-2 ${FOCUS_RING}`;
 
