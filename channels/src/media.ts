@@ -1,7 +1,7 @@
 import { ProtocolError } from "./protocol.ts";
 
 export type MediaSource = { mimeType: string; size?: number; stream(): Promise<ReadableStream<Uint8Array>> };
-export type DownloadOptions = { timeoutMs?: number };
+export type DownloadOptions = { timeoutMs?: number; signal?: AbortSignal };
 
 /** Consume only the SDK stream. One absolute deadline covers opening and every read. */
 export async function downloadMedia(source: MediaSource, types: ReadonlySet<string>, maxBytes: number, label: string, options: DownloadOptions = {}): Promise<Buffer> {
@@ -13,13 +13,17 @@ export async function downloadMedia(source: MediaSource, types: ReadonlySet<stri
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout>;
+  let abort: () => void;
   const timeoutError = () => new ProtocolError(504, `${label} download timed out`);
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
+    abort = () => {
       timedOut = true;
       reject(timeoutError());
       void reader?.cancel().catch(() => {});
-    }, timeoutMs);
+    };
+    timer = setTimeout(abort, timeoutMs);
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
   });
   // SDK stream() has no abort parameter. Cancel late resolution without awaiting it.
   const opening = Promise.resolve().then(() => source.stream()).then((stream) => {
@@ -76,5 +80,6 @@ export async function downloadMedia(source: MediaSource, types: ReadonlySet<stri
     return await Promise.race([consume(), deadline]);
   } finally {
     clearTimeout(timer!);
+    options.signal?.removeEventListener("abort", abort!);
   }
 }

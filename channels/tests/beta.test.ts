@@ -127,7 +127,9 @@ test("outbound reserves before send, persists success and uncertainty across res
   const client = { post: async () => ({ status: 200, body: { allowed: true } }) };
   const message = { messageId: "reply-1", provider: "imessage" as const, spaceId: dm.id, text: "A follow-up" };
   await new BetaBridge(f.store, a.api, client).send(message);
-  await new BetaBridge(f.restart(), a.api, client).send(message);
+  const reordered = { text: message.text, spaceId: message.spaceId, provider: message.provider, messageId: message.messageId };
+  await new BetaBridge(f.store, a.api, client).send(reordered);
+  await new BetaBridge(f.restart(), a.api, client).send(reordered);
   assert.equal(a.calls.filter(c => c.url.endsWith("/messages")).length, 1);
   const request = a.calls.find(c => c.url.endsWith("/messages"))!;
   assert.equal(JSON.parse(String(request.init.body)).senderId, agent.id);
@@ -209,6 +211,34 @@ test("Beta transport uses actual signed local inbox and outbound HTTP contracts"
   const raw = Buffer.from(JSON.stringify({ messageId: "http-reply", provider: "imessage", spaceId: dm.id, text: "Tell me more" }));
   const response = await fetch(`http://127.0.0.1:${(outbound.address() as any).port}/send`, { method: "POST", headers: signedHeaders(localSecret, "/send", raw), body: raw });
   assert.equal(response.status, 200);
+  const reordered = Buffer.from(JSON.stringify({ text: "Tell me more", spaceId: dm.id, provider: "imessage", messageId: "http-reply" }));
+  const duplicate = await fetch(`http://127.0.0.1:${(outbound.address() as any).port}/send`, { method: "POST", headers: signedHeaders(localSecret, "/send", reordered), body: reordered });
+  assert.equal(duplicate.status, 200);
   assert.equal(a.calls.filter(c => c.url.endsWith("/messages")).length, 1);
   assert.equal(received[1].path, "/internal/channels/authorize");
+});
+
+test("Beta binary download obeys caller abort immediately and cancels its reader", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); },
+    cancel() { cancelled = true; return new Promise<void>(() => {}); },
+  });
+  const api = new BetaApi(config, async () => new Response(stream, { headers: { "content-type": "image/png" } }));
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 10);
+  const started = performance.now();
+  try { await assert.rejects(api.request(`/attachments/${ident("att")}/content`, { binary: true, signal: controller.signal }), /timed out/); }
+  finally { clearTimeout(timer); }
+  assert.ok(performance.now() - started < 500, "must use caller deadline, not the 15-second download timeout");
+  assert.equal(cancelled, true);
+});
+
+test("Beta rejects unsupported binary MIME while cancelling the response body", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({ cancel() { cancelled = true; return new Promise<void>(() => {}); } });
+  const api = new BetaApi(config, async () => new Response(stream, { headers: { "content-type": "text/html" } }));
+  const started = performance.now();
+  await assert.rejects(api.request(`/attachments/${ident("att")}/content`, { binary: true }), /Unsupported photo/);
+  assert.ok(performance.now() - started < 500);
+  assert.equal(cancelled, true);
 });

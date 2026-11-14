@@ -89,7 +89,11 @@ export class BetaApi {
     if (options.binary) {
       const mime = response.headers.get("content-type")?.split(";")[0] ?? "";
       if (!response.body) fail();
-      const raw = await downloadMedia({ mimeType: mime, stream: async () => response.body! }, PHOTO_TYPES, MAX_PHOTO_BYTES, "Photo");
+      if (!PHOTO_TYPES.has(mime)) {
+        void response.body!.cancel().catch(() => {});
+        throw new ProtocolError(415, "Unsupported photo type");
+      }
+      const raw = await downloadMedia({ mimeType: mime, stream: async () => response.body! }, PHOTO_TYPES, MAX_PHOTO_BYTES, "Photo", { signal });
       signal.throwIfAborted();
       return { raw, mime };
     }
@@ -169,7 +173,7 @@ export class BetaBridge {
     if (message.provider !== "imessage") fail();
     const proof = this.store.route(message.spaceId) as Proof | undefined;
     if (!proof) throw new ProtocolError(404, "Unknown verified Photon space");
-    const hash = digest(JSON.stringify(message));
+    const hash = digest(JSON.stringify([message.provider, message.spaceId, message.text]));
     if (!this.store.reserveReply(message.messageId, hash)) return;
     const signal = AbortSignal.timeout(4_000);
     await this.api.verify(proof, signal);
