@@ -38,12 +38,28 @@ one is shown and answered; it is resumed with `Command(resume={id: payload})` (l
 refuses a bare resume when several are pending), and the others surface again after
 the resume, each as its own event.
 
-Runs live in a process-local dict: a restart forgets the run ids (the graph state
-itself persists in whatever checkpointer `build_graph` used). That is fine for one API
-process; several processes would need a shared run registry. A finished run (done or
-error) drops its graph at once and is forgotten `RunManager.finished_run_ttl` seconds
-after it ended (checked whenever a run starts), so late subscribers have that long to
-replay it and the dict does not grow without bound.
+Live runs are kept in a process-local dict. A finished run (done or error) drops its
+graph at once and leaves the dict `RunManager.finished_run_ttl` seconds after it ended
+(checked whenever a run starts), so the dict does not grow without bound.
+
+Surviving a restart: given a langgraph `BaseStore` (`RunManager(..., store=...)`, the
+same store the studio uses; MongoDBStore in production), every run is also written to
+the store under namespace `('stitch_runs', family_id)`, key `run_id` (see `run_record`):
+on start, after every event (before subscribers are told) and on every status change.
+A run id missing from the dict is looked up there, only under its own family:
+
+- done / error: the stored events are replayed and the stream ends.
+- waiting: the studio is rebuilt with `build_graph(RunInfo)` on the same thread, the
+  pending interrupt is read back from `graph.get_state`, and the starting user's answer
+  resumes that thread as usual.
+- running: the process died mid-step. The run is driven again from its last checkpoint
+  (streaming input None on the same thread, or the answer it had accepted when that
+  answer's interrupt is still pending); a log line, not an event, says so.
+
+The graph state itself lives in whatever checkpointer `build_graph` uses, so this only
+survives a restart when that checkpointer persists too (MongoDBSaver in production).
+Without a store, a restart forgets the run ids, as before. One API process per store:
+a second process sharing it would drive again a run the first one is still driving.
 """
 
 from __future__ import annotations
@@ -61,6 +77,7 @@ from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.utils import create_file_data
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langgraph.store.base import BaseStore
 from langgraph.types import Command, Interrupt
 from pydantic import BaseModel, ValidationError
 
@@ -86,6 +103,9 @@ ERROR_TEXT_LIMIT = 300
 """Longest piece of the studio's last message quoted in an error event."""
 FINISHED_RUN_TTL_SECONDS = 3600.0
 """How long a finished run stays replayable before the manager forgets it."""
+
+RUNS_NAMESPACE = "stitch_runs"
+"""Root label of the store namespace that holds run records: ('stitch_runs', family_id)."""
 
 NEEDS_INPUT_EVENTS = frozenset({"question", "props_found", "merge"})
 TERMINAL_EVENTS = frozenset({"done", "error"})
@@ -159,6 +179,29 @@ def _resume_command(pending: Interrupt, payload: Any, pending_count: int) -> Com
     return Command(resume={pending.id: payload}) if pending_count > 1 else Command(resume=payload)
 
 
+def run_namespace(family_id: str) -> tuple[str, str]:
+    """Where a family's run records live in the store."""
+    return (RUNS_NAMESPACE, family_id)
+
+
+def _info_from_record(record: dict[str, Any]) -> RunInfo:
+    return RunInfo(
+        run_id=str(record["run_id"]),
+        family_id=str(record["family_id"]),
+        user_id=str(record["user_id"]),
+        author_id=str(record["author_id"]),
+        fields=schemas.SubmitMemoryFields.model_validate_json(record["fields"]),
+        photo_ids=tuple(str(p) for p in record.get("photo_ids") or ()),
+    )
+
+
+def _events_from_record(record: dict[str, Any]) -> list[Event]:
+    events: list[Event] = []
+    for name, payload in record.get("events") or ():
+        events.append((name, schemas.RUN_EVENTS[name].model_validate_json(payload)))
+    return events
+
+
 # --------------------------------------------------------------------------- one run
 
 
@@ -184,6 +227,15 @@ class _Run:
     ended_tasks: set[str] = field(default_factory=set)
     subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = field(default_factory=list)
     finished_at: float | None = None  # time.monotonic() when done or error was appended
+    # Where the run record is written (None: the run lives in this process only).
+    store: BaseStore | None = None
+    # The last accepted answer, (interrupt id, resume payload), until the run asks again or
+    # ends: a restart while the resume is still in flight replays it from the record.
+    answered: tuple[str, Any] | None = None
+    # A question already in the event log that the restored thread has not reached yet
+    # (the process died before checkpointing it): when the thread asks it again, it is
+    # shown without being logged twice.
+    logged_interrupt: str | None = None
 
     @property
     def terminal(self) -> bool:
@@ -206,10 +258,52 @@ class _Run:
             self.graph = None
             self.pending = None
             self.queued = None
+            self.answered = None
             self.tasks.clear()
             self.ended_tasks.clear()
             self.seen_interrupts.clear()
+        # Stored before anyone hears of it, so a subscriber never sees an event a restart would lose.
+        self.persist()
         self.notify()
+
+    def record(self) -> dict[str, Any]:
+        """The run as the store keeps it (plain JSON; event payloads and fields as JSON strings)."""
+        info = self.info
+        return {
+            "run_id": info.run_id,
+            "family_id": info.family_id,
+            "user_id": info.user_id,
+            "author_id": info.author_id,
+            "fields": info.fields.model_dump_json(by_alias=True),
+            "photo_ids": list(info.photo_ids),
+            "status": self.status,
+            "memory_id": self.memory_id,
+            "pending_interrupt_id": self.pending.id if self.pending is not None else None,
+            "answered": self._answered_record(),
+            "tasks": [[call_id, name] for call_id, name in self.tasks.items()],
+            "ended_tasks": sorted(self.ended_tasks),
+            "events": [[name, payload.model_dump_json(by_alias=True)] for name, payload in self.events],
+        }
+
+    def _answered_record(self) -> dict[str, str] | None:
+        if self.answered is None:
+            return None
+        interrupt_id, payload = self.answered
+        try:
+            return {"interrupt_id": interrupt_id, "payload": json.dumps(payload, ensure_ascii=False)}
+        except (TypeError, ValueError) as exc:  # the rest of the record still matters more
+            logger.warning("run %s: the accepted answer is not JSON, so a restart cannot replay it: %s",
+                           self.info.run_id, exc)
+            return None
+
+    def persist(self) -> None:
+        """Write the run record (a no-op without a store). A failed write is logged, never raised."""
+        if self.store is None:
+            return
+        try:
+            self.store.put(run_namespace(self.info.family_id), self.info.run_id, self.record(), index=False)
+        except Exception:  # noqa: BLE001 - the run goes on in this process even if the store is down
+            logger.exception("run %s: could not write the run record", self.info.run_id)
 
     def notify(self) -> None:
         self.cond.notify_all()
@@ -229,11 +323,23 @@ class RunManager:
     finished_run_ttl: float = FINISHED_RUN_TTL_SECONDS
     """Seconds a finished run stays replayable; set it on an instance to change it."""
 
-    def __init__(self, *, repo: AgentRepo, build_graph: GraphFactory, max_workers: int = 4) -> None:
+    def __init__(
+        self,
+        *,
+        repo: AgentRepo,
+        build_graph: GraphFactory,
+        max_workers: int = 4,
+        store: BaseStore | None = None,
+    ) -> None:
+        """`store`: where run records are kept so runs survive a restart (module docstring).
+        None keeps runs in this process only."""
         self._repo = repo
         self._build_graph = build_graph
+        self._store = store
         self._runs: dict[str, _Run] = {}
         self._lock = threading.Lock()
+        # Serializes loading runs from the store, so one run id is never restored twice.
+        self._restore_lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="studio-run")
 
     # ------------------------------------------------------------------ public API
@@ -252,20 +358,6 @@ class RunManager:
         MemoryNotFound if `fields.memory_id` is set but is not a memory of this family
         with a compiled scene. The graph is built and driven on a worker thread.
         """
-        person = self._repo.get_person(family_id, person_id)
-        if person is None:
-            raise ValueError(f"person {person_id!r} is not in this family")
-
-        files: dict[str, Any] = {}
-        if fields.memory_id is not None:
-            memory = self._repo.get_memory(family_id, fields.memory_id)
-            if memory is None or memory.screenplay is None or memory.timeline is None:
-                raise MemoryNotFound(f"memory {fields.memory_id!r} not found, or it has no scene yet")
-            files = {
-                SCREENPLAY_PATH: create_file_data(_scene_json(memory.screenplay)),
-                TIMELINE_PATH: create_file_data(_scene_json(memory.timeline)),
-            }
-
         run_id = uuid.uuid4().hex
         info = RunInfo(
             run_id=run_id,
@@ -275,12 +367,11 @@ class RunManager:
             fields=fields,
             photo_ids=tuple(photo_ids),
         )
-        context = json.dumps(run_context(info, person.name), indent=2, ensure_ascii=False)
-        graph_input: dict[str, Any] = {"messages": [HumanMessage(content=context)]}
-        if files:
-            graph_input["files"] = files
+        graph_input = self._initial_input(info)  # ValueError / MemoryNotFound: nothing started
 
-        run = _Run(info=info, config=studio.thread_config(run_id), driving=True)
+        run = _Run(info=info, config=studio.thread_config(run_id), driving=True, store=self._store)
+        with run.cond:
+            run.persist()
         with self._lock:
             self._prune_finished()
             self._runs[run_id] = run
@@ -293,9 +384,12 @@ class RunManager:
         RunNotFound is raised on the first iteration, before anything is yielded, when
         the run is unknown or belongs to another family. While the run waits for an
         answer the iterator stays open. Any number of subscribers may follow one run;
-        each gets the full sequence.
+        each gets the full sequence. A run this process does not hold is loaded from the
+        store on a worker thread, so the event loop never waits on the database.
         """
-        run = self._get(family_id, run_id)
+        run = self._cached(family_id, run_id)
+        if run is None:
+            run = await asyncio.to_thread(self._get, family_id, run_id)
         loop = asyncio.get_running_loop()
         wake = asyncio.Event()
         with run.cond:
@@ -341,10 +435,12 @@ class RunManager:
             payload = answer_to_resume(pending.value, answer)  # ValueError propagates; still waiting
             run.status = "running"
             run.pending = None
+            run.answered = (pending.id, payload)
             if run.driving:
                 # The step that asked is still streaming (a sibling branch is working);
                 # _settle resumes with this answer when the stream closes.
                 run.queued = (pending, payload)
+                run.persist()
                 run.notify()
                 return
             resume = _resume_command(pending, payload, run.pending_count)
@@ -352,6 +448,7 @@ class RunManager:
             # Interrupts still pending after this resume surface again with the same id.
             run.seen_interrupts.clear()
             run.driving = True
+            run.persist()
             run.notify()
         self._pool.submit(self._drive, run, resume)
 
@@ -383,23 +480,202 @@ class RunManager:
 
     # ------------------------------------------------------------------ internals
 
-    def _get(self, family_id: str, run_id: str) -> _Run:
+    def _initial_input(self, info: RunInfo) -> dict[str, Any]:
+        """The studio's first input for a run: the run context message, plus the memory's
+        screenplay and timeline as draft files for a second telling.
+
+        Raises ValueError if the teller is not a person in the family, and MemoryNotFound
+        if `fields.memory_id` is not a memory of this family with a compiled scene.
+        """
+        family_id, fields = info.family_id, info.fields
+        person = self._repo.get_person(family_id, info.author_id)
+        if person is None:
+            raise ValueError(f"person {info.author_id!r} is not in this family")
+
+        files: dict[str, Any] = {}
+        if fields.memory_id is not None:
+            memory = self._repo.get_memory(family_id, fields.memory_id)
+            if memory is None or memory.screenplay is None or memory.timeline is None:
+                raise MemoryNotFound(f"memory {fields.memory_id!r} not found, or it has no scene yet")
+            files = {
+                SCREENPLAY_PATH: create_file_data(_scene_json(memory.screenplay)),
+                TIMELINE_PATH: create_file_data(_scene_json(memory.timeline)),
+            }
+
+        context = json.dumps(run_context(info, person.name), indent=2, ensure_ascii=False)
+        graph_input: dict[str, Any] = {"messages": [HumanMessage(content=context)]}
+        if files:
+            graph_input["files"] = files
+        return graph_input
+
+    def _cached(self, family_id: str, run_id: str) -> _Run | None:
+        """The run if this process holds it. RunNotFound if it belongs to another family."""
         with self._lock:
             run = self._runs.get(run_id)
+        if run is not None and run.info.family_id != family_id:
+            raise RunNotFound(f"run {run_id!r} not found")
+        return run
+
+    def _get(self, family_id: str, run_id: str) -> _Run:
+        run = self._cached(family_id, run_id)
+        if run is None:
+            run = self._restore(family_id, run_id)
         if run is None or run.info.family_id != family_id:
             raise RunNotFound(f"run {run_id!r} not found")
         return run
 
     def _prune_finished(self) -> None:
-        """Forget runs that ended more than `finished_run_ttl` seconds ago. Call with `_lock` held."""
+        """Forget runs that ended more than `finished_run_ttl` seconds ago. Call with `_lock` held.
+
+        Only the process forgets them: their records stay in the store, so they still replay.
+        """
         cutoff = time.monotonic() - self.finished_run_ttl
         stale = [rid for rid, r in self._runs.items() if r.finished_at is not None and r.finished_at <= cutoff]
         for rid in stale:
             del self._runs[rid]
 
-    def _drive(self, run: _Run, graph_input: Any) -> None:
+    # ------------------------------------------------------------------ restore after a restart
+
+    def _restore(self, family_id: str, run_id: str) -> _Run | None:
+        """Load a run this process does not hold from the store (None if there is none).
+
+        Only the record under this family's namespace is read. A finished run is restored
+        as a replay; a waiting one gets its graph and pending interrupt back; a running
+        one is driven again from its last checkpoint on a worker.
+        """
+        if self._store is None:
+            return None
+        with self._restore_lock:
+            with self._lock:
+                run = self._runs.get(run_id)
+            if run is not None:  # restored (or started) meanwhile
+                return run
+            try:
+                item = self._store.get(run_namespace(family_id), run_id)
+            except Exception:  # noqa: BLE001 - an unreachable store reads as an unknown run
+                logger.exception("run %s: could not read the run record", run_id)
+                return None
+            if item is None:
+                return None
+            record = dict(item.value)
+            try:
+                info = _info_from_record(record)
+                events = _events_from_record(record)
+                status = record.get("status")
+                if status not in ("running", "waiting", "done", "error"):
+                    raise ValueError(f"unknown status {status!r}")
+                answered = record.get("answered")
+                if isinstance(answered, dict) and answered.get("interrupt_id"):
+                    answered = (str(answered["interrupt_id"]), json.loads(answered["payload"]))
+                else:
+                    answered = None
+            except (KeyError, TypeError, ValueError) as exc:  # pydantic ValidationError is a ValueError
+                logger.error("run %s: unreadable run record: %s", run_id, exc)
+                return None
+            if info.family_id != family_id or info.run_id != run_id:
+                logger.error("run %s: the record under family %s names another run", run_id, family_id)
+                return None
+
+            run = _Run(info=info, config=studio.thread_config(run_id), store=self._store, events=events)
+            run.memory_id = record.get("memory_id")
+            run.tasks = {str(call_id): str(name) for call_id, name in record.get("tasks") or ()}
+            run.ended_tasks = {str(call_id) for call_id in record.get("ended_tasks") or ()}
+            run.last_plan = next((p for n, p in reversed(events) if n == "plan"), None)  # type: ignore[misc]
+            run.answered = answered
+
+            redrive = False
+            if status in ("done", "error"):
+                run.status = status
+                run.finished_at = time.monotonic()
+            elif status == "waiting":
+                redrive = not self._restore_waiting(run, record.get("pending_interrupt_id"))
+            else:
+                redrive = True
+            if redrive:
+                with run.cond:
+                    run.status = "running"
+                    run.driving = True
+                    run.persist()
+            with self._lock:
+                self._runs[run_id] = run
+        if redrive:
+            self._pool.submit(self._redrive, run)
+        return run
+
+    def _restore_waiting(self, run: _Run, pending_id: Any) -> bool:
+        """Rebuild a waiting run's graph and read its pending interrupt back.
+
+        True when the run is ready for an answer (or ended in error); False when nothing
+        is pending on the thread any more and it has to be driven on instead.
+        """
+        try:
+            graph = self._build_graph(run.info)
+            interrupts = list(graph.get_state(run.config).interrupts)
+        except Exception as exc:  # noqa: BLE001 - the family sees why the run cannot go on
+            logger.exception("run %s: could not restore its studio", run.info.run_id)
+            with run.cond:
+                run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
+            return True
+        with run.cond:
+            run.graph = graph
+            if not interrupts:
+                # The record got ahead of the checkpoint: drive on, and when the thread
+                # asks this question again it is not logged a second time.
+                run.logged_interrupt = pending_id if isinstance(pending_id, str) else None
+                return False
+            run.pending_count = len(interrupts)
+            shown = next((i for i in interrupts if i.id == pending_id), None)
+            if shown is not None:
+                run.pending = shown
+                run.status = "waiting"
+                run.seen_interrupts = {shown.id}
+                return True
+            # The question on record is gone; show what the thread is waiting for now.
+            run.status = "running"
+            self._interrupt(run, interrupts[0])
+            return True
+
+    def _redrive(self, run: _Run) -> None:
+        """Drive a run that was mid-step when the process died, from its last checkpoint.
+
+        No checkpoint yet: start it again from its first input. Its accepted answer still
+        pending on the thread: resume with that answer. Otherwise stream input None on the
+        same thread, which reruns the step that was cut short. Never raises.
+        """
+        run_id = run.info.run_id
+        logger.warning("run %s: was running when the API stopped; resuming it from its last checkpoint", run_id)
+        try:
+            with run.cond:
+                graph = run.graph
+                answered = run.answered
+            if graph is None:
+                graph = self._build_graph(run.info)
+                with run.cond:
+                    run.graph = graph
+            state = graph.get_state(run.config)
+            graph_input: Any = None
+            if state.created_at is None and not state.values:
+                graph_input = self._initial_input(run.info)
+            else:
+                interrupts = list(state.interrupts)
+                match = next((i for i in interrupts if answered is not None and i.id == answered[0]), None)
+                if match is not None and answered is not None:
+                    graph_input = _resume_command(match, answered[1], len(interrupts))
+        except Exception as exc:  # noqa: BLE001 - every failure becomes the run's error event
+            logger.exception("run %s failed to resume", run_id)
+            with run.cond:
+                run.driving = False
+                run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
+            return
+        self._drive(run, graph_input, from_checkpoint=graph_input is None)
+
+    # ------------------------------------------------------------------ driving
+
+    def _drive(self, run: _Run, graph_input: Any, *, from_checkpoint: bool = False) -> None:
         """Stream the graph (start or resume) and translate it, then resume with any
-        answer queued meanwhile, until the run waits or ends. Never raises."""
+        answer queued meanwhile, until the run waits or ends. Never raises.
+
+        `from_checkpoint`: stream once with input None (continue the thread where it stopped)."""
         run_id = run.info.run_id
         try:
             with run.cond:
@@ -408,7 +684,8 @@ class RunManager:
                 graph = self._build_graph(run.info)
                 with run.cond:
                     run.graph = graph
-            while graph_input is not None:
+            while graph_input is not None or from_checkpoint:
+                from_checkpoint = False
                 for chunk in graph.stream(graph_input, run.config, stream_mode=["updates", "custom"], subgraphs=True):
                     if not self._translate(run, chunk):
                         with run.cond:
@@ -501,6 +778,14 @@ class RunManager:
             # One question at a time: this one surfaces again after the shown one is answered.
             return
         run.seen_interrupts.add(interrupt_id)
+        if interrupt_id == run.logged_interrupt:
+            run.logged_interrupt = None
+            run.pending = interrupt
+            run.status = "waiting"
+            run.answered = None
+            run.persist()
+            run.notify()
+            return
         try:
             name, payload = interrupt_to_event(interrupt)
         except ValueError as exc:
@@ -509,6 +794,7 @@ class RunManager:
         # Waiting from the moment the family can see it, even if a sibling branch is still working.
         run.pending = interrupt
         run.status = "waiting"
+        run.answered = None  # the answer before this one has been taken in
         run.append(name, payload)
 
     def _settle(self, run: _Run, graph: Any) -> Command | None:
@@ -536,11 +822,13 @@ class RunManager:
                     run.pending = None
                     run.status = "running"
                     run.seen_interrupts.clear()
-                    self._interrupt(run, interrupts[0])
+                    shown = next((i for i in interrupts if i.id == run.logged_interrupt), interrupts[0])
+                    self._interrupt(run, shown)
                     if run.terminal:
                         return None
                 run.pending_count = len(interrupts)
                 run.status = "waiting"
+                run.persist()
                 run.notify()
                 return None
             run.pending = None
@@ -618,9 +906,11 @@ __all__ = [
     "RunManager",
     "RunNotFound",
     "RunNotWaiting",
+    "RUNS_NAMESPACE",
     "answer_run",
     "configure",
     "get_manager",
+    "run_namespace",
     "start_run",
     "stream_run",
 ]

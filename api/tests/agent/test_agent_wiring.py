@@ -23,12 +23,13 @@ from langgraph.prebuilt import ToolNode
 from PIL import Image
 
 import schemas
-from agent import studio, subagents, wiring
+from agent import runs, studio, subagents, wiring
 from agent.fake_llm import ScriptedChatModel, tool_call
 from agent.repo import SAMPLE_MEMORY_PATH, InMemoryRepo, load_sample_family
 from agent.run_info import RunInfo
 from agent.tools import ask
 from agent.tools.compile import SceneLookupError
+from agent.tools.frames import FakeFrameCritic, FakeFrameRenderer
 from agent.tools.photos import UNKNOWN_PHOTO
 from screenplay.schema import Screenplay, Timeline
 
@@ -59,8 +60,6 @@ EXPECTED_TOOLS = {
     "compile_screenplay",
     "synthesize_narration",
 }
-
-needs_frames = pytest.mark.skipif(not wiring.frames_available(), reason="agent.tools.frames has no make_frame_tools yet")
 
 Step = Callable[[list[BaseMessage]], AIMessage] | AIMessage
 
@@ -144,17 +143,17 @@ def test_build_run_tools_returns_every_tool_by_name() -> None:
     assert tools["merge_people"] is ask.merge_people
 
 
-@needs_frames
 def test_build_run_tools_includes_the_frame_tools() -> None:
     tools = wiring.build_run_tools(run_info(), services())
     assert {"render_frames", "inspect_frames"} <= set(tools)
     assert set(wiring.STUDIO_TOOL_NAMES) <= set(tools)
 
 
-def test_frame_tools_are_left_out_without_a_renderer() -> None:
+@pytest.mark.parametrize("missing", ["renderer", "critic"])
+def test_frame_tools_are_left_out_without_a_renderer_or_critic(missing: str) -> None:
     base = services()
-    no_renderer = wiring.Services(**{**base.__dict__, "renderer": None})
-    tools = wiring.build_run_tools(run_info(), no_renderer)
+    without = wiring.Services(**{**base.__dict__, missing: None})
+    tools = wiring.build_run_tools(run_info(), without)
     assert "render_frames" not in tools
     assert "inspect_frames" not in tools
     assert EXPECTED_TOOLS <= set(tools)
@@ -175,11 +174,11 @@ def test_fake_services_are_all_offline_fakes() -> None:
     assert svc.subagent_model is None
     # The compiler is deterministic and offline whether it is the fake or screenplay.compiler.
     others = {k: v for k, v in svc.labels.items() if k != "compiler"}
-    allowed = {"fake", "placeholder"} if wiring.frames_available() else {"fake", "placeholder", "missing"}
-    assert set(others.values()) <= allowed, svc.labels
+    assert set(others.values()) <= {"fake", "placeholder"}, svc.labels
     assert svc.labels["art"] == "placeholder"
-    if wiring.frames_available():
-        assert svc.renderer is not None and svc.labels["renderer"] == "fake"
+    assert svc.labels["renderer"] == "fake"
+    assert isinstance(svc.renderer, FakeFrameRenderer)
+    assert isinstance(svc.critic, FakeFrameCritic)
 
 
 # ------------------------------------------------------------------ graph
@@ -383,6 +382,7 @@ def test_make_manager_runs_a_studio_that_saves_a_scene() -> None:
     ))
     svc = services(repo, model)
     manager = wiring.make_manager(svc, max_workers=1)
+    assert manager._store is svc.store  # run records go where the studio keeps its notes
     try:
         fields = schemas.SubmitMemoryFields(text="Dad passed the hymn books down the pew.", year=1988)
         run_id = manager.start_run(FAMILY, USER, "dad", fields, [])
@@ -404,3 +404,29 @@ def test_make_manager_runs_a_studio_that_saves_a_scene() -> None:
     assert memory.timeline.default_narrator == "dad"
     assert memory.timeline.narrations is not None and "dad" in memory.timeline.narrations
     assert repo.get_memory(OTHER, done.memory_id) is None
+
+    # The run's record is in the services' store, under its family.
+    record = svc.store.get(runs.run_namespace(FAMILY), run_id)
+    assert record is not None and record.value["status"] == "done"
+    assert record.value["memory_id"] == done.memory_id
+    assert [name for name, _ in record.value["events"]] == names
+    assert svc.store.get(runs.run_namespace(OTHER), run_id) is None
+
+
+def test_make_manager_passes_the_store_and_its_runs_survive_a_restart() -> None:
+    svc = services()
+    first = wiring.make_manager(svc, max_workers=1)
+    second = wiring.make_manager(svc, max_workers=1)
+    try:
+        assert first._store is svc.store and second._store is svc.store
+        fields = schemas.SubmitMemoryFields(text="Dad passed the hymn books down the pew.", year=1988)
+        run_id = first.start_run(FAMILY, USER, "dad", fields, [])
+        assert first.wait(FAMILY, run_id, timeout=30) == "error"  # the idle studio never saves
+        first.shutdown()
+        # A manager made from the same services (a restart) replays it from the store.
+        assert [name for name, _ in second.events(FAMILY, run_id)] == ["error"]
+        with pytest.raises(runs.RunNotFound):
+            second.events(OTHER, run_id)
+    finally:
+        first.shutdown()
+        second.shutdown()
