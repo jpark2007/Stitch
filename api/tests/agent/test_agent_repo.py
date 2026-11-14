@@ -78,6 +78,18 @@ def test_round_trips_every_entity(repo: InMemoryRepo) -> None:
     assert repo.get_memory(FAM_A, "m1").version == 2  # type: ignore[union-attr]
 
 
+def test_list_questions_returns_only_open_questions(repo: InMemoryRepo) -> None:
+    answered = repo.create_question(FAM_A, person_id="mom", text="What do you remember?", memory_id="m1")
+    elsewhere = repo.create_question(FAM_A, person_id="mom", text="What do you remember?", memory_id="m0")
+    stored = repo.get_memory(FAM_A, "m1")
+    assert stored is not None
+    stored.tellings.append(Telling(author_id="mom", text="I watched from the shore."))
+    repo.save_memory(FAM_A, stored)
+
+    assert repo.list_questions(FAM_A) == [elsewhere]
+    assert answered.id not in {q.id for q in repo.list_questions(FAM_A)}
+
+
 def test_new_id_is_deterministic_and_unique() -> None:
     r = InMemoryRepo()
     assert [r.new_id(FAM_A, "memory"), r.new_id(FAM_B, "memory"), r.new_id(FAM_A, "question")] == [

@@ -253,6 +253,51 @@ def test_questions(seeded: SeedableRepo) -> None:
     assert seeded.list_questions(FAM_B) == []  # type: ignore[attr-defined]
 
 
+def open_ids(repo: SeedableRepo, family_id: str = FAM_A) -> list[str]:
+    return [q.id for q in repo.list_questions(family_id)]  # type: ignore[attr-defined]
+
+
+def test_new_telling_closes_the_questions_it_answers(seeded: SeedableRepo) -> None:
+    asked = "What do you remember?"
+    on_m1 = seeded.create_question(FAM_A, person_id="mom", text="The lake?", memory_id="m1")
+    other_memory = seeded.create_question(FAM_A, person_id="mom", text=asked, memory_id="m0")
+    free = seeded.create_question(FAM_A, person_id="mom", text=asked, memory_id=None)
+    dads = seeded.create_question(FAM_A, person_id="dad", text=asked, memory_id="m1")
+    assert open_ids(seeded) == [on_m1.id, other_memory.id, free.id, dads.id]  # oldest first
+
+    stored = seeded.get_memory(FAM_A, "m1")
+    assert stored is not None
+    stored.tellings.append(Telling(author_id="mom", text="I watched from the shore.", question=f"  {asked} "))
+    stored.participant_ids.append("mom")
+    seeded.save_memory(FAM_A, stored)
+
+    # Bound to m1, or the free question she answered: closed. Same text but bound to
+    # another memory, or someone else's question: still open.
+    assert open_ids(seeded) == [other_memory.id, dads.id]
+    assert all(q.status == "open" for q in seeded.list_questions(FAM_A))  # type: ignore[attr-defined]
+
+    # Saving again with no new telling closes nothing, even a fresh question on m1.
+    later = seeded.create_question(FAM_A, person_id="mom", text="Anything else?", memory_id="m1")
+    again = seeded.get_memory(FAM_A, "m1")
+    assert again is not None
+    seeded.save_memory(FAM_A, again)
+    assert open_ids(seeded) == [other_memory.id, dads.id, later.id]
+
+
+def test_new_memory_with_a_telling_closes_the_authors_questions(seeded: SeedableRepo) -> None:
+    asked = "Tell us about the fair."
+    answered = seeded.create_question(FAM_A, person_id="kid", text=asked, memory_id=None)
+    unrelated = seeded.create_question(FAM_A, person_id="kid", text="What was your first pet?", memory_id=None)
+    on_m1 = seeded.create_question(FAM_A, person_id="kid", text=asked, memory_id="m1")
+    moms = seeded.create_question(FAM_A, person_id="mom", text=asked, memory_id=None)
+
+    fair = memory("m5", year=2001, title="The fair", text="A goldfish in a bag.", author="kid")
+    fair.tellings[0].question = asked
+    seeded.save_memory(FAM_A, fair)
+    assert open_ids(seeded) == [unrelated.id, on_m1.id, moms.id]
+    assert answered.id not in open_ids(seeded)
+
+
 def test_props_save_get_list_and_replace(seeded: SeedableRepo) -> None:
     assert seeded.get_prop(FAM_A, "canoe") == prop("canoe", description="a red wooden canoe")
     assert [p.id for p in seeded.list_props(FAM_A)] == ["canoe"]
