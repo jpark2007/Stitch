@@ -5,11 +5,12 @@
 // thread colour. Colours are the global look's theme utilities; text styles
 // and the focus ring are the kit's shared ones. A big family (more than
 // PICKER_SEARCH_FROM people) also gets a "Find someone" field; whoever is
-// picked stays in view whatever it holds.
+// picked stays in view whatever it holds. Enter in that field never submits
+// the surrounding form (see pickerSearchKey).
 import { useId, useState, type ReactNode } from "react";
 import { FOCUS_RING_WITHIN } from "./Button";
 import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS, fieldControlClass } from "./Field";
-import { PICKER_SEARCH_FROM, filterPeople } from "./memoryForm";
+import { PICKER_SEARCH_FROM, filterPeople, pickerSearchKey } from "./memoryForm";
 
 interface PickablePerson {
   id: string;
@@ -89,9 +90,15 @@ export function PersonPicker(props: {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              // Escape empties the search instead of leaving the page's focus.
-              if (e.key === "Escape" && query) {
-                e.preventDefault();
+              // Enter never sends the memory from here: it picks the one
+              // match, or does nothing. Escape empties the search.
+              const result = pickerSearchKey(e.key, query, people, [...lockedIds, ...value]);
+              if (!result) return;
+              e.preventDefault();
+              if (result.action === "pick") {
+                toggle(result.pickId, true);
+                setQuery("");
+              } else if (result.action === "clear") {
                 setQuery("");
               }
             }}

@@ -26,6 +26,7 @@ const {
   draftFromQuestion,
   emptyDraft,
   filterPeople,
+  pickerSearchKey,
   questionAreaFor,
   submitErrorMessage,
   toSubmitFields,
@@ -300,4 +301,31 @@ test("filterPeople: matches anywhere in the name, ignoring case, accents and ext
 test("filterPeople: the picked stay in view, in family order", () => {
   assert.deepEqual(filterPeople(family, "lily", ["sam"]).map((p) => p.id), ["sam", "lily"]);
   assert.deepEqual(filterPeople(family, "zzz", ["rosa"]).map((p) => p.id), ["rosa"]);
+});
+
+// ---- pickerSearchKey ------------------------------------------------------------------
+
+test("pickerSearchKey: Enter never falls through to the form", () => {
+  // Blank search, several matches, no match: Enter is swallowed, nothing changes.
+  assert.deepEqual(pickerSearchKey("Enter", "", family), { action: "stay" });
+  assert.deepEqual(pickerSearchKey("Enter", "   ", family), { action: "stay" });
+  assert.deepEqual(pickerSearchKey("Enter", "mao", family), { action: "stay" });
+  assert.deepEqual(pickerSearchKey("Enter", "zzz", family), { action: "stay" });
+});
+
+test("pickerSearchKey: Enter with exactly one match picks that person", () => {
+  assert.deepEqual(pickerSearchKey("Enter", "Sof", [...family, { id: "sofia", name: "Sofía" }]), {
+    action: "pick",
+    pickId: "sofia",
+  });
+  assert.deepEqual(pickerSearchKey("Enter", "jose", family), { action: "pick", pickId: "jose" });
+  // Already picked (or locked, passed in pickedIds): never unpicks, just stays.
+  assert.deepEqual(pickerSearchKey("Enter", "jose", family, ["jose"]), { action: "stay" });
+});
+
+test("pickerSearchKey: Escape clears a search, other keys are left alone", () => {
+  assert.deepEqual(pickerSearchKey("Escape", "ro", family), { action: "clear" });
+  assert.equal(pickerSearchKey("Escape", "", family), null);
+  assert.equal(pickerSearchKey("a", "ro", family), null);
+  assert.equal(pickerSearchKey("Tab", "ro", family), null);
 });

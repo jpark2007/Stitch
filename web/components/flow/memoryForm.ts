@@ -237,3 +237,30 @@ export function filterPeople<P extends { id: string; name: string }>(
     return foldName(p.name).includes(q);
   });
 }
+
+/**
+ * What a key press in the picker's "Find someone" field does. The field sits
+ * inside the memory form, so Enter must never fall through to the form (that
+ * would send the memory, or fire its validation, mid-search):
+ * - "pick": Enter with exactly one unpicked match picks that person
+ *   (`pickId`) and clears the search;
+ * - "stay": any other Enter is swallowed and nothing changes;
+ * - "clear": Escape with something typed empties the search;
+ * - null: every other key behaves as normal.
+ * Callers call preventDefault for any non-null action.
+ */
+export function pickerSearchKey<P extends { id: string; name: string }>(
+  key: string,
+  query: string,
+  people: readonly P[],
+  pickedIds: readonly string[] = [],
+): { action: "pick"; pickId: string } | { action: "stay" | "clear" } | null {
+  if (key === "Escape") return query ? { action: "clear" } : null;
+  if (key !== "Enter") return null;
+  if (!foldName(query)) return { action: "stay" };
+  const matches = filterPeople(people, query);
+  if (matches.length === 1 && !pickedIds.includes(matches[0].id)) {
+    return { action: "pick", pickId: matches[0].id };
+  }
+  return { action: "stay" };
+}
