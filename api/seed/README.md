@@ -342,17 +342,125 @@ Nothing authored is ever left out of the stored screenplay. An effect that canno
 placed (say `at` names someone not on stage) fails the seed like any other `CompileError`.
 `test_seed_scenes.py` checks that every authored effect is in the stored timeline.
 
-## Seed a real MongoDB
+## Preflight a real MongoDB
 
-From `api/`, with `MONGODB_URI` and `MONGODB_DB` set (defaults: `mongodb://localhost:27017`
-and `stitch`). The seed CLI does not read `.env` files itself, so pass yours to `uv run`:
+Before the API or the seed touches a real database (the Atlas cluster on demo day), check it
+end to end. Put `MONGODB_URI` (and `MONGODB_DB` if not `stitch`) in `api/.env` or the
+repo-root `.env`, then from `api/`:
 
 ```sh
 cd api
-uv run --env-file .env python -m seed.demo           # creates the indexes, then seeds; a no-op if the family exists
-uv run --env-file .env python -m seed.demo --reset   # deletes the demo data and rebuilds it
-# or --env-file ../.env if you keep it at the repo root
+uv run python -m seed.preflight              # the table below; about 10 to 70 seconds on Atlas
+uv run python -m seed.preflight --wait 180   # give freshly created vector indexes longer to build
+uv run python -m seed.preflight --json       # the same rows as JSON
 ```
+
+Options: `--timeout-ms N` (server selection and connect timeout, default 5000), `--wait
+SECONDS` (how long to poll vector indexes that are still building, and a vector search that
+finds nothing yet; default 60, `0` does not wait), `--skip-checkpointer` (skip the LangGraph
+check). Like the API, it reads the environment, then `api/.env`, then `../.env`, and a
+variable already set wins (`STITCH_NO_DOTENV=1` turns the files off). That includes
+`EMBEDDING_DIM`: the vector indexes it creates have the same `numDimensions` as the API's
+queries, even when `EMBEDDING_DIM` is set only in a `.env` file (`seed.demo` does the same).
+
+It never prints, logs or puts in the JSON the URI's user, password or query string: only the
+scheme and hosts (`mongodb+srv://<credentials redacted>@cluster0.xxxxx.mongodb.net`) and the
+database name, and every error text is scrubbed of them. Everything it writes goes into a
+throwaway family `preflight_<12 hex>` and account `preflight-<hex>@preflight.invalid`, which
+it deletes again at the end, **even when a check failed**, and then checks that no document
+with those ids is left anywhere. It never calls Voyage or any model: the only network it
+uses is MongoDB.
+
+What a healthy Atlas cluster should look like (illustrative: the preflight has only run
+against mongomock here, see [What is not verified](#what-is-not-verified)):
+
+```text
+Stitch MongoDB preflight
+  target    mongodb+srv://<credentials redacted>@cluster0.xxxxx.mongodb.net
+  database  stitch
+
+CHECK                         STATUS  SECONDS  DETAIL
+connect                       PASS       0.41  ping answered within 5000 ms
+server                        PASS       0.09  MongoDB 8.0.4; topology replica set atlas-xxxxx-shard-0; is_atlas yes (.mongodb.net host: yes; atlasVersion: 20250115.0.0)
+indexes                       PASS       1.73  0 present, 11 created (users_email_unique, families_members_userId, ...)
+vector index memories_vector  PASS      31.02  created now; ready (status READY, queryable); the app wants numDimensions 1024 (EMBEDDING_DIM)
+vector index props_vector     PASS      31.02  created now; ready (status READY, queryable); the app wants numDimensions 1024 (EMBEDDING_DIM)
+vector index sets_vector      PASS      31.02  created now; ready (status READY, queryable); the app wants numDimensions 1024 (EMBEDDING_DIM)
+round trip                    PASS       1.12  wrote and read back users, families, people x2, memories, questions, props, sets, revoked_sessions, media (GridFS: media.files + 1 chunk(s) in media.chunks)
+tree                          PASS       0.08  get_tree ok (2 people, 2 generations); native $graphLookup reached both
+search                        PASS       2.20  $vectorSearch ran: 1 hit(s), the throwaway memory among them; keyword fallback found the memory for 'lighthouse'
+checkpointer                  PASS       0.61  checkpoint put/get_tuple/put_writes/delete_thread in agent_checkpoints, agent_checkpoint_writes; store put/get/delete in agent_store
+cleanup                       PASS       0.35  deleted family preflight_3f9a1c0b7e42 and its account, session and checkpoints; 0 documents left
+
+PREFLIGHT PASS
+```
+
+On a second run the indexes say `11 present, 0 created` and the vector indexes `already
+existed; ready`. What each row checks:
+
+| Row | What it does | PASS / WARN / FAIL |
+|---|---|---|
+| `connect` | Pings within `--timeout-ms`. | FAIL (exit 3) with one sentence: unreachable or not on the Atlas IP access list, authentication failed, a malformed URI (an unescaped character in the password is named, never quoted), or a DNS SRV lookup failure. Nothing else runs. |
+| `server` | Version (`buildInfo`), topology (`hello`: standalone, replica set or sharded), and `is_atlas`: true when a host ends in `.mongodb.net` or the server answers `atlasVersion` (both signals are shown). | WARN when the version cannot be read (mongomock). |
+| `indexes` | `db.client.ensure_indexes`, then every index of `db.client.INDEXES` as present (already there) or created. | FAIL with the server's message on a spec conflict (an index with the same name and another definition). |
+| `vector index <name>` | One row per Atlas Vector Search index (`memories_vector`, `props_vector`, `sets_vector`): `db.client.ensure_search_indexes_report`, then `db.client.search_index_status` polled every 5 s for up to `--wait` seconds. Says whether it already existed, was created now, or had a stale definition that was updated. | PASS ready. WARN pending (with "re-run with --wait 180"), stale, or unsupported on a server that is not Atlas. FAIL when a search index of another type has the name, or when Atlas refuses to create it (the server's own message is shown). |
+| `round trip` | One document per collection through the `db/` functions, read back and compared: `users`, `families`, two `people` (parent and child), `memories` (with a telling), `questions`, `props`, `sets`, `revoked_sessions`, and one media file (real GridFS on a real server: the file is checked in `media.files` and `media.chunks`). | FAIL names the step that failed. `tree` and `search` are then skipped; cleanup still runs. |
+| `tree` | `db.people.get_tree`, then the native `$graphLookup` pipeline once directly. | WARN "via the Python fallback" when the server refuses `$graphLookup` (the API falls back silently). |
+| `search` | Puts a synthetic unit vector (`EMBEDDING_DIM` long) on the throwaway memory, runs one `$vectorSearch` (polled for up to `--wait` seconds while it finds nothing: Atlas syncs new documents within seconds), then the keyword search, which must find the memory. | PASS when the vector search finds it. WARN when it ran but found nothing yet (index pending or not synced), or is unavailable off Atlas. FAIL when it is unavailable on Atlas, or the keyword fallback misses. |
+| `checkpointer` | The model studio's LangGraph persistence (`agent.studio.mongo_persistence`): one checkpoint put, read back, a pending write, `delete_thread`; one store item put, read, deleted; the documents are checked in `agent_checkpoints`, `agent_checkpoint_writes` and `agent_store`. | SKIP with `--skip-checkpointer`. |
+| `cleanup` | Always runs after a successful connect: purges the throwaway family (and its media), deletes its account, revoked session, checkpoints and store item, then looks in every collection for anything left with those ids. | FAIL lists the leftovers by collection and id. |
+
+The last line is `PREFLIGHT PASS`, `PREFLIGHT PASS with N warnings` or `PREFLIGHT FAIL:
+<checks>`. Exit codes (constants in `seed.preflight`):
+
+| Exit code | Constant | Meaning |
+|---|---|---|
+| 0 | `seed.preflight.EXIT_OK` | Every check passed; warnings allowed. |
+| 1 | `seed.preflight.EXIT_FAILED` | A check failed (the last line names it). |
+| 2 | (argparse) | Bad command-line arguments. |
+| 3 | `seed.preflight.EXIT_NO_DATABASE` | `MONGODB_URI` is not set ("MONGODB_URI is not set (looked in the environment, api/.env, ../.env)"), or the `connect` row failed. |
+
+Two Atlas things to know:
+
+- **The IP access list.** A `connect` FAIL that says "Could not reach MongoDB before the
+  timeout" on Atlas is almost always this machine's IP missing from the cluster's access
+  list: Atlas > Security > Network Access > Add IP Address (venue Wi-Fi changes it).
+- **Three search indexes, at most.** The M0 (free) and Flex tiers allow at most 3 search
+  indexes per cluster, and Stitch needs exactly 3 (`memories_vector`, `props_vector`,
+  `sets_vector`). Any other search index on the cluster, in any database, makes one of
+  ours fail to create; the row shows Atlas's own message. Drop the extra index in Atlas >
+  Atlas Search, then re-run the preflight.
+
+Known mongomock-only risks and how to verify each on a real database: [../db/REAL_MONGODB.md](../db/REAL_MONGODB.md)
+
+## Seed a real MongoDB
+
+One command from `api/`, safe to re-run:
+
+```sh
+cd api
+uv run python -m seed.demo           # indexes, vector indexes (best effort), then seeds; a no-op if the family exists
+uv run python -m seed.demo --reset   # deletes the demo data and rebuilds it
+```
+
+It reads `MONGODB_URI` and `MONGODB_DB` from the environment, then `api/.env`, then
+`../.env`, like the API (a variable already set wins; `STITCH_NO_DOTENV=1` turns the files
+off), so `uv run --env-file .env ...` is no longer needed (still accepted; its values are
+set first, so they win). It prints the target as scheme and hosts only, never the
+credentials or query string:
+
+```text
+Seeding mongodb+srv://<credentials redacted>@cluster0.xxxxx.mongodb.net, database 'stitch' ...
+Vector search indexes: created memories_vector, props_vector, sets_vector (python -m seed.preflight shows their status).
+Demo family 'demo_family' (The Maos) seeded in database 'stitch'.
+```
+
+With `MONGODB_URI` unset it says so before connecting, so nothing is seeded somewhere
+unexpected: `MONGODB_URI is not set (looked in the environment, api/.env, ../.env): seeding
+db.client's default, mongodb://localhost:27017.` It creates the indexes, then tries the
+Atlas Vector Search indexes and reports them in one line (created, already present, or "not
+supported on this server (not Atlas)"; that never stops the seed). On a new cluster, run
+`uv run python -m seed.preflight` first.
 
 Seeding is idempotent. `--reset` deletes only demo data: the three demo users (by email),
 the `demo_family` family, and its people, memories, questions, props, sets and media. Other
@@ -368,14 +476,16 @@ The CLI's exit codes (constants in `seed.demo`):
 | 0 | `EXIT_OK` | Seeded, or already present (nothing written). |
 | 1 | `EXIT_BAD_DATA` | A file in `seed/demo_family/` is malformed or does not compile (`DemoDataError` or `DemoCompileError`); nothing was deleted or written. |
 | 2 | (argparse) | Bad command-line arguments, for example `--bogus`. |
-| 3 | `EXIT_NO_DATABASE` | MongoDB is unreachable or refused the writes. |
+| 3 | `EXIT_NO_DATABASE` | MongoDB is unreachable, refused the login, or refused the writes. |
 
-Errors are one readable message on stderr, never a traceback. For example, with nothing
-listening on the URI:
+Errors are one readable sentence on stderr, never a traceback, and never the URI's
+credentials or query string (the same sentences as the preflight's `connect` row). For
+example, with nothing listening on the URI (it gives up after 5 seconds):
 
 ```text
-$ MONGODB_URI='mongodb://localhost:1/?serverSelectionTimeoutMS=500' uv run python -m seed.demo; echo $?
-Demo seed failed: MongoDB error on database 'stitch' (ServerSelectionTimeoutError: ...). Check MONGODB_URI and MONGODB_DB, or run the API with STITCH_FAKE_DB=1 to use the in-memory demo database instead.
+$ MONGODB_URI='mongodb://localhost:1/' uv run python -m seed.demo; echo $?
+Seeding mongodb://localhost:1, database 'stitch' ...
+Demo seed failed: Could not reach MongoDB before the timeout: the server is down or unreachable, or on Atlas, add this machine's IP address to the cluster's IP access list (Atlas > Security > Network Access) (ServerSelectionTimeoutError: localhost:1: [Errno 61] Connection refused ...). Check MONGODB_URI and MONGODB_DB (or run `uv run python -m seed.preflight` for a full check), or run the API with STITCH_FAKE_DB=1 to use the in-memory demo database instead.
 3
 ```
 
@@ -670,11 +780,13 @@ the same commands; a real run takes minutes (`--timeout`, default 900 seconds).
 ## Run the API on a real MongoDB
 
 Put `MONGODB_URI` (and `JWT_SECRET`, model keys) in `api/.env` (`cp .env.example api/.env`
-from the repo root), seed once, then start the server:
+from the repo root), check the database, seed once, then start the server. All three read
+the `.env` files themselves:
 
 ```sh
 cd api
-uv run --env-file .env python -m seed.demo
+uv run python -m seed.preflight   # PREFLIGHT PASS (warnings allowed) before going further
+uv run python -m seed.demo        # safe to re-run: a no-op once the demo family is there
 uv run uvicorn main:app --reload
 ```
 
@@ -739,8 +851,16 @@ MongoDB, Docker and Atlas were not available where this demo was built and check
 - Atlas Vector Search has never run: in demo mode there is no embedder, and "ask the
   family" and prop and set matching use their keyword fallbacks. The vector indexes and
   `$vectorSearch` queries are untested against a real Atlas cluster.
-- The real-MongoDB tests (`tests/data/test_real_mongo.py`) skip unless `MONGODB_URI_TEST`
-  points at a disposable database.
+- The real-MongoDB tests (`tests/data/test_real_mongo.py`, and the real run in
+  `tests/data/test_seed_preflight.py`) skip unless `MONGODB_URI_TEST` points at a
+  disposable database.
+- The preflight (`python -m seed.preflight`) itself has only run against mongomock, through
+  its test seams, and against nothing listening (the unreachable, DNS and bad-URI
+  sentences). Its sample PASS table above is illustrative, not captured. Every Atlas branch
+  (search index statuses, the M0 limit message, `$vectorSearch`, `atlasVersion`, GridFS,
+  the LangGraph checkpointer and store on MongoDB) is exercised only by fakes shaped from
+  Atlas's documented answers until it runs against the real cluster. The same goes for
+  `python -m seed.demo` on a real database.
 - Nothing here was run in Docker.
 - No browser click-through: the second-telling path and the
   [Presenter run sheet](#presenter-run-sheet) were checked over HTTP (`seed.smoke` and
