@@ -8,6 +8,7 @@
  *                           OfflineAudioContext, faster than real time -> WAV
  *   stats() / hub()         the live engine and the shared context
  *   prefetch(era)           the live engine's prefetch (the next spread's era)
+ *   startCost(era)          main-thread ms to start an era, cold vs prefetched
  *   mount(on)               mount or unmount the engine's component (teardown)
  *
  * It never touches the live AudioContext beyond reading its state.
@@ -21,6 +22,8 @@ export interface MusicProbe {
   render(cues: OfflineCue[], seconds: number): Promise<{ wav: string; notes: number; busyMs: number; maxTickMs: number }>;
   stats(): ReturnType<EraMusic["stats"]> | null;
   prefetch(era: EraId): void;
+  /** Main-thread ms to start an era cold vs prefetched (fresh offline cores). */
+  startCost(era: EraId): { coldMs: number; prefetchedMs: number };
   mount(on: boolean): void;
   hub(): { context: AudioContextState | "none"; awake: boolean };
 }
@@ -51,6 +54,7 @@ export function useMusicProbe(on: boolean, music: RefObject<EraMusic | null>, se
         },
         stats: () => music.current?.stats() ?? null,
         prefetch: (era) => music.current?.prefetch(era),
+        startCost: (era) => offline.measureEraStart(era),
         mount: setMounted,
         hub: () => ({ context: hub.musicContext()?.state ?? "none", awake: hub.musicAwake() }),
       };

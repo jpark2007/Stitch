@@ -90,6 +90,32 @@ export async function renderEraMusic(cues: OfflineCue[], seconds: number, sample
   return { buffer, notes, busyMs, maxTickMs };
 }
 
+/**
+ * Main-thread cost of starting an era (the voice's build plus its first
+ * scheduling passes, which build its strings), cold or after prefetch(),
+ * each on a fresh core. For checking what prefetching saves.
+ */
+export function measureEraStart(era: EraId, passes = 6): { coldMs: number; prefetchedMs: number } {
+  const run = (prefetch: boolean) => {
+    const ctx = new OfflineAudioContext(2, 44100, 44100);
+    const core = new MusicCore(ctx, ctx.destination);
+    if (prefetch) {
+      core.prefetch(era);
+      while (core.warmingUp) core.warm(50);
+    }
+    const t0 = performance.now();
+    core.setEra(era, 0);
+    for (let i = 0; i < passes; i++) core.tick(i * STEP);
+    const ms = performance.now() - t0;
+    core.dispose(0, 0);
+    return ms;
+  };
+  // Once each to warm the JIT, then the measured pair.
+  run(false);
+  run(true);
+  return { coldMs: run(false), prefetchedMs: run(true) };
+}
+
 /** 16-bit PCM WAV of a buffer (for saving renders). */
 export function encodeWav(buffer: AudioBuffer): ArrayBuffer {
   const ch = buffer.numberOfChannels;
