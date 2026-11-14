@@ -154,6 +154,10 @@ MALFORMED_PAUSE_ERROR = "the studio could not put together a question for you; p
 """The error the family sees when the studio keeps pausing on arguments the web cannot show."""
 RUN_TIMEOUT_ERROR = "the studio took too long on this story (over {minutes} minutes); please try again"
 """The error the family sees when a run passes its time limit; `minutes` is the limit, rounded up."""
+RUN_ERROR = "the studio ran into a problem ({kind}); please try again"
+"""The error the family sees when building, driving or restoring a run raises; `kind` is the
+exception's class name. The exception's own text (which can carry a provider's response body,
+a URL or a connection string) goes to the log only (`run_error_message`)."""
 ELAPSED_RECORD_INTERVAL_S = 30.0
 """Running time after which a stream chunk writes the record even with no new event, so a
 restart loses at most this much of the time used (plus the call in flight)."""
@@ -238,6 +242,11 @@ def _resume_command(pending: Interrupt, payload: Any, pending_count: int) -> Com
 def run_timeout_message(limit_s: float) -> str:
     """RUN_TIMEOUT_ERROR for a run whose limit is `limit_s` seconds (minutes rounded up, at least 1)."""
     return RUN_TIMEOUT_ERROR.format(minutes=max(1, math.ceil(limit_s / 60)))
+
+
+def run_error_message(exc: BaseException) -> str:
+    """RUN_ERROR for `exc`: its class name only, never its text (log that with logger.exception)."""
+    return RUN_ERROR.format(kind=type(exc).__name__)
 
 
 def _seconds(value: Any, *, positive: bool) -> float | None:
@@ -890,7 +899,7 @@ class RunManager:
         except Exception as exc:  # noqa: BLE001 - the family sees why the run cannot go on
             logger.exception("run %s: could not restore its studio", run.info.run_id)
             with run.changing():
-                run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
+                run.append("error", schemas.ErrorEvent(message=run_error_message(exc)))
             return True
         with run.changing():
             run.graph = graph
@@ -954,7 +963,7 @@ class RunManager:
             logger.exception("run %s failed to resume", run_id)
             with run.changing():
                 run.driving = False
-                run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
+                run.append("error", schemas.ErrorEvent(message=run_error_message(exc)))
             return
         self._drive_on(run, graph_input, from_checkpoint=graph_input is None)
 
@@ -990,7 +999,7 @@ class RunManager:
             logger.exception("run %s failed", run_id)
             with run.changing():
                 run.driving = False
-                run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
+                run.append("error", schemas.ErrorEvent(message=run_error_message(exc)))
 
     def _translate(self, run: _Run, chunk: Any) -> bool:
         """Turn one stream chunk into events. Returns False once the run has ended (or has
@@ -1177,8 +1186,10 @@ class RunManager:
                 (m for m in reversed(state.values.get("messages", [])) if isinstance(m, AIMessage)),
                 None,
             )
+            # The studio's own last words, capped; no dangling colon when it said nothing.
             said = _clip(_text_of(last), ERROR_TEXT_LIMIT) if last is not None else ""
-            run.append("error", schemas.ErrorEvent(message="the studio finished without saving a scene: " + said))
+            message = "the studio finished without saving a scene" + (f": {said}" if said else "")
+            run.append("error", schemas.ErrorEvent(message=message))
             return None
 
 
@@ -1273,10 +1284,12 @@ __all__ = [
     "RunNotFound",
     "RunNotWaiting",
     "RUNS_NAMESPACE",
+    "RUN_ERROR",
     "RUN_TIMEOUT_ERROR",
     "answer_run",
     "configure",
     "get_manager",
+    "run_error_message",
     "run_namespace",
     "run_timeout_message",
     "start_run",

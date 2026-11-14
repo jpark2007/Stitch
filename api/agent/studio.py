@@ -278,7 +278,8 @@ def mongo_persistence(uri: str | None = None, db_name: str = "stitch") -> tuple[
 
     Checkpoints go to `agent_checkpoints` / `agent_checkpoint_writes`, the
     long-term store to `agent_store`. One MongoClient backs both; it lives as
-    long as the process.
+    long as the process. If building the saver or the store raises, the client
+    is closed (its monitor threads stop) and the error is raised again.
     """
     from langgraph.checkpoint.mongodb import MongoDBSaver
     from langgraph.store.mongodb import MongoDBStore
@@ -289,11 +290,15 @@ def mongo_persistence(uri: str | None = None, db_name: str = "stitch") -> tuple[
         msg = "MONGODB_URI is not set"
         raise RuntimeError(msg)
     client: MongoClient = MongoClient(uri, appname="stitch-studio")
-    saver = MongoDBSaver(
-        client,
-        db_name=db_name,
-        checkpoint_collection_name="agent_checkpoints",
-        writes_collection_name="agent_checkpoint_writes",
-    )
-    store = MongoDBStore(collection=client[db_name]["agent_store"])
+    try:
+        saver = MongoDBSaver(
+            client,
+            db_name=db_name,
+            checkpoint_collection_name="agent_checkpoints",
+            writes_collection_name="agent_checkpoint_writes",
+        )
+        store = MongoDBStore(collection=client[db_name]["agent_store"])
+    except BaseException:
+        client.close()
+        raise
     return saver, store

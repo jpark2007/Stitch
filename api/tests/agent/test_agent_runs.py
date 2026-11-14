@@ -673,7 +673,9 @@ def test_a_tool_that_raises_ends_in_one_error(harnesses: list[Harness]) -> None:
     assert_typed(events)
     names = [n for n, _ in events]
     assert names.count("error") == 1 and names[-1] == "error" and "done" not in names
-    assert "the paper tore" in events[-1][1].message
+    # The family sees the kind of failure only; the exception's text stays in the log.
+    assert events[-1][1].message == runs.RUN_ERROR.format(kind="RuntimeError")
+    assert "the paper tore" not in events[-1][1].message
     assert collect(h.manager, run_id)[-1][0] == "error"  # a subscriber ends too
     with pytest.raises(runs.RunNotWaiting):
         h.answer(run_id, "anything")
@@ -712,7 +714,9 @@ def test_a_graph_that_cannot_be_built_is_an_error(harnesses: list[Harness]) -> N
     harnesses.append(h)
     run_id = h.start()
     assert h.wait(run_id) == "error"
-    assert dumped(h.manager.events(FAMILY, run_id)) == [("error", {"message": "RuntimeError: no model configured"})]
+    assert dumped(h.manager.events(FAMILY, run_id)) == [
+        ("error", {"message": "the studio ran into a problem (RuntimeError); please try again"}),
+    ]
 
 
 def test_tool_custom_events_pass_through_and_reserved_ones_are_ignored(harnesses: list[Harness]) -> None:
@@ -1253,7 +1257,7 @@ def test_an_errored_run_replays_its_error_after_a_restart(harnesses: list[Harnes
     manager = h.restart()
     replay = collect(manager, run_id)
     assert dumped(replay) == original and replay[-1][0] == "error"
-    assert "the paper tore" in replay[-1][1].message
+    assert replay[-1][1].message == runs.RUN_ERROR.format(kind="RuntimeError")
 
 
 def test_run_records_are_isolated_per_family(harnesses: list[Harness]) -> None:
