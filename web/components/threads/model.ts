@@ -16,6 +16,8 @@ export interface ThreadPerson {
   /** Shorter name written on the thread when the full one is long; else `name`. */
   label?: string;
   born: number;
+  /** Year of death, when known: the thread is tied off there instead of running on to today. */
+  died?: number | null;
   parentIds: string[];
   spouseIds: string[];
   /** Thread colour (person.character.color), hex. */
@@ -47,8 +49,10 @@ export interface Strand {
   start: Anchor;
   /** True when the thread is spun out of its parents' threads. */
   fromParents: boolean;
-  /** Where the thread ends ("now"); it settles back on its lane by then. */
+  /** Where the thread ends (now, or the year they died); it settles back on its lane by then. */
   end: number;
+  /** True when the thread ends before now (a life that has ended): it is knotted there. */
+  tiedOff: boolean;
   anchors: Anchor[];
   /** Moment ids this person is in, oldest first. */
   momentIds: string[];
@@ -444,7 +448,9 @@ export function buildModel(people: ThreadPerson[], moments: ThreadMoment[], now:
     // A parent link that loops back (bad data) is ignored rather than followed forever.
     const parents = p.parentIds
       .map((id) => byId.get(id))
-      .filter((q): q is ThreadPerson => !!q && laneOf.has(q.id) && !building.has(q.id));
+      .filter((q): q is ThreadPerson => !!q && laneOf.has(q.id) && !building.has(q.id))
+      // Spun only from threads still running when they are born.
+      .filter((q) => typeof q.died !== "number" || q.died + 1 >= p.born);
     let start: Anchor = { t: p.born, y: lane };
     let fromParents = false;
     const firstKnot = mine[0];
@@ -457,7 +463,21 @@ export function buildModel(people: ThreadPerson[], moments: ThreadMoment[], now:
       fromParents = true;
       anchors.unshift(start);
     }
-    const s: Strand = { person: p, lane, start, fromParents, end, anchors, momentIds: mine.map((k) => k.moment.id) };
+    // A life that has ended is tied off mid-year, though never before its
+    // own last moment (dates can disagree) nor right on top of its start.
+    const lastT = anchors.length ? anchors[anchors.length - 1].t : start.t;
+    const died = typeof p.died === "number" && Number.isFinite(p.died) ? p.died : null;
+    const myEnd = died !== null && died + 0.5 < end ? Math.min(end, Math.max(died + 0.5, lastT + 0.6, start.t + 1)) : end;
+    const s: Strand = {
+      person: p,
+      lane,
+      start,
+      fromParents,
+      end: myEnd,
+      tiedOff: myEnd < end,
+      anchors,
+      momentIds: mine.map((k) => k.moment.id),
+    };
     strands.set(p.id, s);
     building.delete(p.id);
     return s;

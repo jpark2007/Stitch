@@ -143,7 +143,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
     const ink = yarnInk(strand.person.color, st.dim[i]);
     const width = w0 + st.lift[i] * 1.2;
     const t0 = Math.max(strand.start.t, tLeft - 30 / s);
-    const t1 = Math.min(model.tNow, tRight + 30 / s, st.reveal);
+    const t1 = Math.min(strand.end, tRight + 30 / s, st.reveal);
     if (t1 <= t0) {
       geom.strands[i] = new Float32Array(0);
       geom.strandLens[i] = 0;
@@ -230,16 +230,18 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
     // Where a life begins, the thread is knotted before it is sewn (unless
     // it is born straight into a moment, whose knot says it already).
     if (t0 === strand.start.t && !bornInKnot(strand, model)) starts.push({ i, x: buf[0], y: buf[1], ink, width });
-    // ...and where it goes back down, today.
-    if (t1 >= model.tNow - 1e-6) {
+    // ...and where it goes back down, today; a life that has ended is
+    // knotted off where it ends, as it was where it began.
+    if (t1 >= strand.end - 1e-6) {
       const e = (nSamples - 1) * 2;
-      drawHoles(ctx, [buf[e] + width * 0.6, buf[e + 1]], Math.max(1.3, width * 0.45), ink);
+      if (strand.tiedOff) starts.push({ i, x: buf[e], y: buf[e + 1], ink, width });
+      else drawHoles(ctx, [buf[e] + width * 0.6, buf[e + 1]], Math.max(1.3, width * 0.45), ink);
     }
     drawYarn(ctx, runs, ink, width, lod);
     if (lod >= 2) drawFibres(ctx, runs, ink.body, width, seed);
   }
 
-  /* ---------------- start knots ---------------- */
+  /* ---------------- start (and end) knots ---------------- */
   const rStart = Math.max(3.4, Math.min(5.6, knotRadius(s, 1) * 0.6));
   for (const k of starts) {
     drawFrenchKnot(ctx, k.x, k.y, rStart * (1 + st.lift[k.i] * 0.15), k.ink, k.width * 0.8, hashSeed(model.strands[k.i].person.id), Math.max(1, lod), 1 - st.dim[k.i] * 0.75);

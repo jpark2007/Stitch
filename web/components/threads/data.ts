@@ -250,11 +250,17 @@ export function toThreadsData(
   );
   const labels = threadLabels(ids.map((id) => ({ id, name: names.get(id)! })));
 
+  const diedIn = (id: string): number | null => {
+    const y = full.get(id)?.died;
+    return usableYear(y, now) && y >= born.get(id)! ? Math.floor(y) : null;
+  };
+
   const people: ThreadPerson[] = ids.map((id) => ({
     id,
     name: names.get(id)!,
     label: labels.get(id),
     born: born.get(id)!,
+    died: diedIn(id),
     parentIds: parents.get(id)!,
     spouseIds: spouses.get(id)!,
     color:

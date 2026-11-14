@@ -116,6 +116,33 @@ test("parent links that loop are cut, so the layout terminates", () => {
   assert.equal(model.strands.length, 2);
 });
 
+test("a life that has ended is tied off, but never before its own last moment", () => {
+  const d = toThreadsData(
+    {
+      people: [],
+      moments: [
+        { id: "m1", title: "T", year: 1990, participantIds: ["a", "b"] },
+        { id: "m2", title: "Late", year: 2005, participantIds: ["b"] },
+      ],
+    },
+    {
+      people: [
+        person("a", { born: 1950, died: 2000 }),
+        person("b", { born: 1950, died: 2001 }),
+        person("c", { born: 1950, died: 1900 }),
+      ] as never,
+    },
+    NOW,
+  );
+  const died = Object.fromEntries(d.people.map((p) => [p.id, p.died]));
+  assert.deepEqual(died, { a: 2000, b: 2001, c: null });
+  const model = buildModel(d.people, d.moments, NOW);
+  const end = Object.fromEntries(model.strands.map((s) => [s.person.id, [s.end, s.tiedOff]]));
+  assert.deepEqual(end.a, [2000.5, true]);
+  assert.ok((end.b[0] as number) > 2005.5 - 1e-9 && end.b[1], "held past the 2005 moment");
+  assert.deepEqual(end.c, [model.tNow, false]);
+});
+
 test("long names get short thread labels that stay distinct", () => {
   const labels = threadLabels([
     { id: "1", name: "Maria Guadalupe Fernández" },

@@ -14,9 +14,10 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from "react";
 import { parseZoom } from "./camera";
 import { ThreadsEngine } from "./engine";
+import { MenuDisclosure } from "./MenuDisclosure";
 import { buildModel, type ThreadMoment, type ThreadPerson } from "./model";
 import { paperAt, TITLE_FONT_PX, TITLE_FONT_PX_COMPACT } from "./titles";
 
@@ -24,6 +25,17 @@ export interface ThreadsViewProps {
   familyName: string;
   people: ThreadPerson[];
   moments: ThreadMoment[];
+  /**
+   * The family these threads belong to. Moment and book links carry it as
+   * ?family=<id> (those pages are not under /families/<id>/ yet); left out
+   * for the local demo family.
+   */
+  familyId?: string;
+  /** The user's families, for the switcher under the title (shown for two or more). */
+  families?: { id: string; name: string }[];
+  onSwitchFamily?: (id: string) => void;
+  /** One quiet line under the title: where the data comes from, moments without a year. */
+  note?: ReactNode;
   /** Raw query params: ?zoom=decade|year|<multiple>, ?focus=<year>, ?highlight=<personId>. */
   zoom?: string;
   focus?: string;
@@ -32,8 +44,16 @@ export interface ThreadsViewProps {
 
 const NOW = new Date().getFullYear();
 
+const enc = encodeURIComponent;
+
+const TITLE_CLASS = "mt-1 text-[1.6rem] leading-tight sm:text-[2rem]";
+const TITLE_STYLE = { fontVariationSettings: '"SOFT" 100, "WONK" 1' } as const;
+
 export default function ThreadsView(props: ThreadsViewProps) {
-  const { people, moments, familyName } = props;
+  const { people, moments, familyName, familyId, families, onSwitchFamily, note } = props;
+  const familyQuery = familyId ? `?family=${enc(familyId)}` : "";
+  const momentHref = (id: string) => `/memories/${enc(id)}${familyQuery}`;
+  const personHref = (id: string) => `/people/${enc(id)}${familyQuery}`;
   const router = useRouter();
   const model = useMemo(() => buildModel(people, moments, NOW), [people, moments]);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -123,9 +143,9 @@ export default function ThreadsView(props: ThreadsViewProps) {
   const prefetchMoment = useEffectEvent((i: number) => {
     if (prefetched.current.has(i)) return;
     prefetched.current.add(i);
-    router.prefetch(`/memories/${model.knots[i].moment.id}`);
+    router.prefetch(momentHref(model.knots[i].moment.id));
   });
-  const openMoment = useEffectEvent((i: number) => router.push(`/memories/${model.knots[i].moment.id}`));
+  const openMoment = useEffectEvent((i: number) => router.push(momentHref(model.knots[i].moment.id)));
   const follow = useEffectEvent((i: number) => setLit(i));
   const firstTouch = useEffectEvent(() => interact());
 
@@ -229,7 +249,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
           {model.knots.map((k, i) => (
             <Link
               key={k.moment.id}
-              href={`/memories/${k.moment.id}`}
+              href={momentHref(k.moment.id)}
               prefetch={false}
               data-moment={k.moment.id}
               onFocus={() => focusKnot(i)}
@@ -252,11 +272,11 @@ export default function ThreadsView(props: ThreadsViewProps) {
                   titleRefs.current[i] = el;
                 }}
                 className="threads-title absolute left-0 top-0 whitespace-nowrap"
-                data-title={k.moment.title}
+                data-title={k.moment.label ?? k.moment.title}
                 style={{ opacity: 0 }}
                 aria-hidden
               >
-                {k.moment.title}
+                {k.moment.label ?? k.moment.title}
               </span>
             </Link>
           ))}
@@ -265,7 +285,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
 
       {/* Quiet header: where you are, and whose thread you are following. */}
       <header className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between px-[var(--gutter)] pt-6 sm:pt-8">
-        <div className="pointer-events-auto">
+        <div className="pointer-events-auto min-w-0 max-w-full sm:max-w-[min(44rem,calc(100%-7rem))]">
           <p className="kicker">
             <Link href="/" className="text-ink-faint no-underline transition-colors hover:text-ink-soft">
               Family tree
@@ -275,21 +295,69 @@ export default function ThreadsView(props: ThreadsViewProps) {
             </span>
             <span className="text-ink-soft">Threads</span>
           </p>
-          <h1 className="mt-1 text-[1.6rem] leading-tight sm:text-[2rem]" style={{ fontVariationSettings: '"SOFT" 100, "WONK" 1' }}>
-            {familyName}
-          </h1>
-          <p className="caption mt-1 h-7 text-[1.25rem]" aria-live="polite">
+          {families && families.length > 1 && onSwitchFamily ? (
+            <MenuDisclosure
+              className="block"
+              ariaLabel={`${familyName}. Switch family`}
+              buttonClassName="flex items-center"
+              trigger={(button) => (
+                <h1 className={TITLE_CLASS} style={TITLE_STYLE} title={familyName}>
+                  {button}
+                </h1>
+              )}
+              label={
+                <>
+                  <span className="threads-clip min-w-0">{familyName}</span>
+                  <svg width="16" height="10" viewBox="0 0 16 10" aria-hidden className="ml-2 mt-1 shrink-0 text-ink-faint">
+                    <path d="M2 2.5 L8 7.5 L14 2.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeDasharray="2.6 1.8" strokeLinecap="round" />
+                  </svg>
+                </>
+              }
+            >
+              <p className="kicker px-3 pb-1 pt-1.5">Your families</p>
+              {families.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  className="threads-menu-item font-display text-[1.05rem] leading-snug"
+                  aria-current={f.id === familyId ? "true" : undefined}
+                  onClick={() => f.id !== familyId && onSwitchFamily(f.id)}
+                >
+                  <span className="min-w-0 break-words">{f.name}</span>
+                </button>
+              ))}
+            </MenuDisclosure>
+          ) : (
+            <h1 className={TITLE_CLASS} style={TITLE_STYLE} title={familyName}>
+              <span className="threads-clip block">{familyName}</span>
+            </h1>
+          )}
+          {note ? <div className="-mt-0.5 text-[0.85rem] leading-snug text-ink-faint">{note}</div> : null}
+          <p className="caption mt-1 flex h-7 min-w-0 items-baseline gap-3 text-[1.25rem]" aria-live="polite">
             {followed ? (
-              <button
-                type="button"
-                onClick={() => setLit(-1)}
-                className="cursor-pointer text-left"
-                style={{ color: followed.person.color }}
-                aria-label={`Following ${followed.person.name}. Show everyone.`}
-              >
-                {followed.person.name}&rsquo;s thread &middot; {followedCount} {followedCount === 1 ? "moment" : "moments"}
-                <span className="ml-2 text-ink-faint">&times;</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setLit(-1)}
+                  className="flex min-w-0 cursor-pointer items-baseline text-left"
+                  style={{ color: followed.person.color }}
+                  aria-label={`Following ${followed.person.name}. Show everyone.`}
+                >
+                  {/* Padded so the clip never shaves the handwriting's last stroke. */}
+                  <span className="min-w-0 truncate pr-[0.2em]">{followed.person.name}&rsquo;s thread</span>
+                  <span className="shrink-0 whitespace-pre">
+                    &middot; {followedCount} {followedCount === 1 ? "moment" : "moments"}
+                  </span>
+                  <span className="ml-2 shrink-0 text-ink-faint">&times;</span>
+                </button>
+                <Link
+                  href={personHref(followed.person.id)}
+                  className="shrink-0 text-ink-faint no-underline transition-colors hover:text-ink-soft"
+                  aria-label={`Open ${followed.person.name}'s book`}
+                >
+                  their book &rarr;
+                </Link>
+              </>
             ) : null}
           </p>
         </div>
