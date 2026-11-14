@@ -348,25 +348,50 @@ function torso(): Outline {
 
 function head(): Outline {
   const { cx, cy, rx, ry } = HEAD;
-  const nr = 0.021; // neck half-width
-  const nb = -0.035; // neck bottom, tucked under the torso's top edge
+  const nr = 0.017; // neck half-width
+  // The neck ends in a small round tab just under the pin (the head's pivot),
+  // so little of the lighter head paper shows on the torso.
+  const tab = 0.0125;
   const tR = -Math.acos((nr - cx) / rx);
   const tL = -Math.acos((-nr - cx) / rx) + Math.PI * 2;
   return new PathBuilder()
-    .move(-nr, nb)
-    .line(nr, nb)
+    .arc(0, 0, tab, Math.PI, Math.PI * 2)
+    .line(nr, 0.006)
     .line(nr, cy + Math.sin(tR) * ry)
     .arc(cx, cy, rx, tR, tL, ry)
-    .line(-nr, nb)
+    .line(-nr, 0.006)
+    .close();
+}
+
+/** Foot geometry shared by the lower leg and the shoe. */
+function footOf(len: number) {
+  const sole = -len;
+  return {
+    sole,
+    heel: { x: -0.007, y: sole + 0.018, r: 0.018 },
+    toe: { x: 0.06, y: sole + 0.0125, r: 0.0125 },
+  };
+}
+
+/** A little paper shoe over the foot of the lower leg. */
+function shoe(len: number): Outline {
+  const { sole, heel, toe } = footOf(len);
+  const g = 0.0016; // overhang, so the shoe covers the foot's cut edge
+  return new PathBuilder()
+    .move(heel.x, sole - g)
+    .line(toe.x, sole - g)
+    .arc(toe.x, toe.y, toe.r + g, -Math.PI / 2, Math.PI / 2)
+    .quad(0.034, toe.y + toe.r + 0.005, 0.026, sole + 0.04)
+    .quad(0.0, sole + 0.05, -0.028, sole + 0.037)
+    .line(heel.x - heel.r - g, heel.y)
+    .arc(heel.x, heel.y, heel.r + g, Math.PI, Math.PI * 1.5)
     .close();
 }
 
 function lowerLeg(len: number): Outline {
   // Shin with a foot pointing forward (+x): the clearest facing cue a
   // faceless profile doll has. The sole sits exactly at the bone's tip.
-  const sole = -len;
-  const heel = { x: -0.007, y: sole + 0.018, r: 0.018 };
-  const toe = { x: 0.06, y: sole + 0.0125, r: 0.0125 };
+  const { sole, heel, toe } = footOf(len);
   const knee = 0.028;
   return new PathBuilder()
     .move(heel.x, sole)
@@ -378,6 +403,11 @@ function lowerLeg(len: number): Outline {
     .line(heel.x - heel.r, heel.y)
     .arc(heel.x, heel.y, heel.r, Math.PI, Math.PI * 1.5)
     .close();
+}
+
+/** The shoe outline, in the lower leg's frame. */
+export function shoePiece(lowerLegLength: number): Piece {
+  return { outline: shoe(lowerLegLength) };
 }
 
 /** Per-bone piece outlines (before the hand-cut edge is applied). */

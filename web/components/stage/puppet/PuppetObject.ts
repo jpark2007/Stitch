@@ -15,7 +15,7 @@
 import { Group, Mesh, Object3D } from "three";
 import type { ItemKind } from "./items";
 import type { BodyTone, PuppetMaterials } from "./colors";
-import { getBoneKit, getItemKit, getPin, LAYER_GAP, THICKNESS, type ItemPieceKit } from "./kit";
+import { getBoneKit, getItemKit, getPin, getShoe, LAYER_GAP, THICKNESS, type ItemPieceKit } from "./kit";
 import { BONES, RIG, SOCKETS, type SocketName } from "./rig";
 import type { Rotations } from "./kinematics";
 
@@ -79,6 +79,20 @@ export class PuppetObject {
       halo.name = `${n}:halo`;
       halo.position.set(0, -HALO_DROP, z - HALO_BEHIND);
       g.add(halo);
+
+      if (n === "leg_l.lower" || n === "leg_r.lower") {
+        // A paper shoe glued over the foot.
+        const shoe = getShoe();
+        const s = new Mesh(shoe.piece.geometry, [n === "leg_l.lower" ? shoe.far : shoe.near, shoe.edge]);
+        s.name = `${n}:shoe`;
+        s.position.z = z + THICKNESS + 0.0016;
+        s.castShadow = true;
+        s.receiveShadow = true;
+        const sh = new Mesh(shoe.piece.halo, shoe.piece.haloMaterial);
+        sh.position.set(0, -HALO_DROP * 0.5, z + THICKNESS + 0.0008);
+        g.add(sh, s);
+        this.shadowCasters.push(s);
+      }
 
       // Split pin through this piece and the one it hangs from, its head on
       // whichever of the two is nearer the viewer. (Legs hang from the hip,

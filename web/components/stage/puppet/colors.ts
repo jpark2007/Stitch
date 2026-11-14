@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useMemo } from "react";
-import { Color, type MeshStandardMaterial } from "three";
+import { Color, SRGBColorSpace, type MeshStandardMaterial } from "three";
 import { createCardEdgeMaterial, createPaperMaterial } from "@/components/paper/materials";
 import type { ItemKind } from "./items";
 import type { ItemTone } from "./itemArt";
@@ -36,10 +36,13 @@ const ITEM_DEFAULT: Record<ItemKind, string> = {
   token: "#e8c25a",
 };
 
-/** Perceptual-ish distance between two colours (sRGB, 0..~1.7). */
+/** HSL as a designer means it: of the sRGB colour, not three's linear working space. */
+const hslOf = (c: Color) => c.getHSL({ h: 0, s: 0, l: 0 }, SRGBColorSpace);
+
+/** Perceptual-ish distance between two colours (sRGB HSL, 0..~1.7). */
 function distance(a: Color, b: Color): number {
-  const ah = a.getHSL({ h: 0, s: 0, l: 0 });
-  const bh = b.getHSL({ h: 0, s: 0, l: 0 });
+  const ah = hslOf(a);
+  const bh = hslOf(b);
   const dh = Math.min(Math.abs(ah.h - bh.h), 1 - Math.abs(ah.h - bh.h)) * 2;
   return dh * Math.min(ah.s, bh.s) + Math.abs(ah.l - bh.l) * 1.5 + Math.abs(ah.s - bh.s) * 0.5;
 }
@@ -50,20 +53,25 @@ export interface PuppetPalette {
   item: Record<ItemTone, Color>;
 }
 
-/** Shift a colour's lightness and saturation in HSL, keeping its hue. */
+/** Shift a colour's sRGB lightness and saturation, keeping its hue. */
 function shade(c: Color, dl: number, sMul = 1): Color {
-  const hsl = c.getHSL({ h: 0, s: 0, l: 0 });
-  return new Color().setHSL(hsl.h, Math.min(1, hsl.s * sMul), Math.min(0.92, Math.max(0.05, hsl.l + dl)));
+  const hsl = hslOf(c);
+  return new Color().setHSL(
+    hsl.h,
+    Math.min(1, hsl.s * sMul),
+    Math.min(0.92, Math.max(0.05, hsl.l + dl)),
+    SRGBColorSpace,
+  );
 }
 
 /** The colours (no GPU work), for previews and tests. */
 export function puppetPalette(color: string, kind: ItemKind, itemColor: string | null): PuppetPalette {
   const base = new Color(color);
   const body = base.clone();
-  const far = base.clone().multiplyScalar(0.8);
+  const far = base.clone().multiplyScalar(0.74);
   // Head and hands: the same paper a shade lighter (hue kept, so a blue
   // puppet never gets a grey head).
-  const light = shade(base, 0.09, 0.92);
+  const light = shade(base, 0.08, 0.95);
   const farLight = light.clone().multiplyScalar(0.84);
   const edge = base.clone().lerp(CREAM, 0.72);
 
@@ -73,7 +81,7 @@ export function puppetPalette(color: string, kind: ItemKind, itemColor: string |
     // its hue and moves darker (or lighter on dark puppets); an unnamed
     // default is swapped for cream.
     if (!itemColor) main = new Color("#efe4cc");
-    else main = shade(main, base.getHSL({ h: 0, s: 0, l: 0 }).l > 0.32 ? -0.14 : 0.16);
+    else main = shade(main, hslOf(base).l > 0.36 ? -0.15 : 0.16);
   }
   const dark = main.clone().multiplyScalar(0.74);
   const lightItem = main.clone().lerp(CREAM, 0.5);

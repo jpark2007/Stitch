@@ -118,17 +118,16 @@ function scarfTail(x0: number, y0: number, len: number, lean: number, w: number)
 
 function scarf(socketY: number): ItemPiece[] {
   // In the socket frame the neck (head pivot) is at y = −socketY.
+  // A thick wrap round the neck with both ends thrown back over the shoulder,
+  // trailing behind the way the puppet faces.
   const neck = -socketY;
-  const wrap = superellipse(0.004, neck + 0.004, 0.052, 0.022, 3.6);
-  const back = scarfTail(-0.03, neck - 0.002, 0.15, -0.028, 0.034);
-  const front = scarfTail(0.022, neck - 0.006, 0.1, 0.014, 0.03);
-  const stripe = (x: number, y: number, w: number) => superellipse(x, y, w / 2, 0.0045, 6);
+  const wrap = superellipse(0.002, neck + 0.002, 0.06, 0.026, 3.4);
+  const under = scarfTail(-0.024, neck - 0.004, 0.118, -0.02, 0.036);
+  const over = scarfTail(-0.04, neck - 0.002, 0.15, -0.034, 0.042);
   return [
-    { outline: back, tone: "main", layer: 0, rough: 1.2 },
-    { outline: stripe(-0.058 + 0.0005, neck - 0.122, 0.034), tone: "light", layer: 1 },
-    { outline: front, tone: "dark", layer: 1, rough: 1.2 },
-    { outline: stripe(0.0355, neck - 0.082, 0.03), tone: "light", layer: 2 },
-    { outline: wrap, tone: "main", layer: 3 },
+    { outline: under, tone: "dark", layer: 0, rough: 1.2 },
+    { outline: over, tone: "main", layer: 1, rough: 1.2 },
+    { outline: wrap, tone: "main", layer: 2 },
   ];
 }
 
@@ -137,17 +136,17 @@ function glasses(h: ReturnType<typeof headIn>): ItemPiece[] {
   // running back to the ear. The lens is a ring (the head shows through).
   const ly = h.cy + 0.006;
   const lx = h.cx + h.rx - 0.004;
-  const lens = ellipse(lx, ly, 0.022, 0.021);
-  const hole = ellipse(lx, ly, 0.0145, 0.0138);
+  const lens = ellipse(lx, ly, 0.024, 0.022);
+  const hole = ellipse(lx, ly, 0.0168, 0.0152);
   const arm: number[] = [];
   const b = new PathBuilder()
-    .move(lx - 0.022, ly + 0.003)
+    .move(lx - 0.024, ly + 0.003)
     .quad(h.cx - 0.02, ly + 0.01, h.cx - 0.045, ly + 0.002)
     .quad(h.cx - 0.055, ly - 0.002, h.cx - 0.054, ly - 0.014);
   arm.push(...b.pts);
   return [
     { outline: lens, holes: [hole], tone: "ink", layer: 1, rough: 0.5 },
-    { outline: stroke(arm, 0.0065), tone: "ink", layer: 0, rough: 0.5 },
+    { outline: stroke(arm, 0.0055), tone: "ink", layer: 0, rough: 0.5 },
   ];
 }
 

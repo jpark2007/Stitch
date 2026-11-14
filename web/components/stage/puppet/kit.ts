@@ -26,7 +26,8 @@ import {
 import type { ItemKind } from "./items";
 import { itemPieces, type ItemTone } from "./itemArt";
 import { RIG } from "./rig";
-import { bonePieces, bounds, deckle, ensureCCW, type Outline, type Piece } from "./shapes";
+import { bonePieces, bounds, deckle, ensureCCW, shoePiece, type Outline, type Piece } from "./shapes";
+import { createCardEdgeMaterial, createPaperMaterial } from "@/components/paper/materials";
 
 /** Card thickness, rig units (about 1.5 mm on a 20 cm doll). */
 export const THICKNESS = 0.0065;
@@ -53,6 +54,10 @@ export interface ItemPieceKit extends PieceKit {
 
 interface Kit {
   bones: Record<string, PieceKit>;
+  /** Paper shoe over the foot of each lower leg. */
+  shoe: PieceKit;
+  /** Shoe papers: [near face, far face, cut edge]. */
+  shoeMaterials: [MeshStandardMaterial, MeshStandardMaterial, MeshStandardMaterial];
   items: Map<ItemKind, ItemPieceKit[]>;
   pin: SphereGeometry;
   pinMaterial: MeshStandardMaterial;
@@ -142,7 +147,7 @@ function haloFor(o: Outline, holes: Outline[] | undefined): { geometry: PlaneGeo
     color: "#3a2414",
     alphaMap: tex,
     transparent: true,
-    opacity: 0.34,
+    opacity: 0.4,
     depthWrite: false,
     toneMapped: false,
   });
@@ -173,8 +178,21 @@ function getKit(): Kit {
   pin.scale(1, 1, 0.34);
   const pinMaterial = new MeshStandardMaterial({ color: "#bf9c5c", metalness: 0.4, roughness: 0.45 });
   pinMaterial.name = "puppet:pin";
-  kit = { bones, items: new Map(), pin, pinMaterial };
+
+  const shoe = buildPiece(shoePiece(RIG.bones["leg_r.lower"].length), 77);
+  const shoeMaterials: Kit["shoeMaterials"] = [
+    createPaperMaterial({ color: "#4d3729", grain: 0.5, roughness: 0.86 }),
+    createPaperMaterial({ color: "#3b2a20", grain: 0.5, roughness: 0.88 }),
+    createCardEdgeMaterial({ color: "#a88a6c", darken: 0 }),
+  ];
+  kit = { bones, shoe, shoeMaterials, items: new Map(), pin, pinMaterial };
   return kit;
+}
+
+/** The shared shoe piece and its papers. */
+export function getShoe(): { piece: PieceKit; near: MeshStandardMaterial; far: MeshStandardMaterial; edge: MeshStandardMaterial } {
+  const k = getKit();
+  return { piece: k.shoe, near: k.shoeMaterials[0], far: k.shoeMaterials[1], edge: k.shoeMaterials[2] };
 }
 
 /** The shared pieces for every bone, keyed by bone name. */
@@ -207,7 +225,8 @@ export function getPin(): { geometry: SphereGeometry; material: MeshStandardMate
 export function disposePuppetKit(): void {
   if (!kit) return;
   const geos: BufferGeometry[] = [kit.pin];
-  const all: PieceKit[] = [...Object.values(kit.bones), ...[...kit.items.values()].flat()];
+  const all: PieceKit[] = [...Object.values(kit.bones), kit.shoe, ...[...kit.items.values()].flat()];
+  kit.shoeMaterials.forEach((m) => m.dispose());
   for (const p of all) {
     geos.push(p.geometry, p.halo);
     p.haloMaterial.alphaMap?.dispose();
