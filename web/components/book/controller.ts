@@ -115,6 +115,9 @@ export class BookController {
   private stageSpread: number;
   private camPos = new Vector3();
   private camTarget = new Vector3();
+  /** Eased 0..1: how far a leaf stands up; the camera eases back for it. */
+  private lift = 0;
+  private lastFrameT = 0;
   private tmpAngles: Float32Array;
   private tmpV = new Vector3();
   private camera: PerspectiveCamera | null = null;
@@ -484,12 +487,28 @@ export class BookController {
       this.onStage(stage);
     }
 
-    // Camera.
+    // Camera. While a leaf stands up the camera eases back a little, so the
+    // upright page never clips the top of the frame.
+    const dt = this.lastFrameT ? Math.min(0.05, t - this.lastFrameT) : 0;
+    this.lastFrameT = t;
+    let liftGoal = 0;
+    let liftFrozen = false;
+    for (const leaf of rt.leaves) {
+      if (leaf.mode === "auto" || leaf.mode === "drag" || leaf.mode === "frozen") {
+        liftGoal = Math.max(liftGoal, Math.sin(Math.PI * clamp01(leaf.p)));
+        if (leaf.mode === "frozen") liftFrozen = true;
+      }
+    }
+    if (liftFrozen || dt === 0) this.lift = liftGoal;
+    else this.lift += (liftGoal - this.lift) * (1 - Math.exp(-dt * 5));
+    if (Math.abs(liftGoal - this.lift) > 1e-3) moving = true;
+    else this.lift = liftGoal;
+
     const aspect = ctx.width / Math.max(1, ctx.height);
-    const key = `${o.toFixed(4)}|${aspect.toFixed(3)}`;
+    const key = `${o.toFixed(4)}|${aspect.toFixed(3)}|${this.lift.toFixed(4)}`;
     if (key !== this.camKey) {
       this.camKey = key;
-      frameCamera(o, aspect, ctx.camera.fov, this.camPos, this.camTarget);
+      frameCamera({ open: o, lift: this.lift }, aspect, ctx.camera.fov, this.camPos, this.camTarget);
       ctx.camera.position.copy(this.camPos);
       ctx.camera.lookAt(this.camTarget);
       const fog = ctx.scene.fog;
@@ -540,27 +559,37 @@ function writeSpine(g: BufferGeometry, angle: number, py: number) {
   g.computeBoundingSphere();
 }
 
+export interface CameraPose {
+  /** 0 closed .. 1 open (eased). */
+  open: number;
+  /** 0..1: a leaf standing up mid-turn. */
+  lift: number;
+}
+
 /** Camera: a 3/4 view of the closed book, a reading view when open. */
-function frameCamera(open: number, aspect: number, fov: number, pos: Vector3, target: Vector3) {
+export function frameCamera(pose: CameraPose, aspect: number, fov: number, pos: Vector3, target: Vector3) {
+  const { open, lift } = pose;
   const tanV = Math.tan((fov * DEG) / 2);
   const tanH = tanV * aspect;
   const portrait = aspect < 1;
-  const halfD = BOARD_D / 2 + 0.2;
-  // Open: fit the whole spread with a little table around it.
-  // Steep enough that a page standing up mid-turn stays in frame.
-  const eO = (portrait ? 66 : 60) * DEG;
-  const halfW = BOARD_W + (portrait ? 0.06 : 0.26);
-  const dO = Math.max(halfW / tanH, (halfD * Math.sin(eO) + 0.27) / tanV);
+  // Open: the spread fills the frame, leaving room for the dots below.
+  const eO = (portrait ? 66 : 58) * DEG;
+  const halfDO = BOARD_D / 2 + 0.05;
+  // (The near edge is closer than the spine, so it reads wider: pad for it.)
+  const halfW = BOARD_W + (portrait ? 0.06 : 0.33);
+  const dO = Math.max(halfW / tanH, (halfDO * Math.sin(eO) + 0.16) / tanV);
   // Closed: a 3/4 view from the left so the stitched spine shows.
   const eC = (portrait ? 62 : 50) * DEG;
+  const halfDC = BOARD_D / 2 + 0.2;
   const halfWC = BOARD_W / 2 + (portrait ? 0.24 : 0.85);
-  const dC = Math.max(halfWC / tanH, (halfD * Math.sin(eC) + 0.42) / tanV);
-  const d = lerp(dC, dO, open);
+  const dC = Math.max(halfWC / tanH, (halfDC * Math.sin(eC) + 0.42) / tanV);
+  // A standing leaf (about a page tall over the spine): back off and look up a little.
+  const l = lift * open;
+  const d = lerp(dC, dO, open) * (1 + 0.2 * l);
   const e = lerp(eC, eO, open);
   const az = lerp(portrait ? -10 : -16, 0, open) * DEG;
-  // Open, aim a little beyond the book so it sits low, leaving headroom for a
-  // page standing up mid-turn.
-  target.set(0, lerp(0.1, 0.06, open), lerp(0.04, portrait ? -0.02 : -0.15, open));
+  // Aim a touch nearer the reader than the spine, so the dots have room below.
+  target.set(0, lerp(0.1, 0.03, open) + 0.26 * l, lerp(0.04, portrait ? 0 : 0.07, open) - 0.1 * l);
   pos.set(
     target.x + d * Math.cos(e) * Math.sin(az),
     target.y + d * Math.sin(e),
