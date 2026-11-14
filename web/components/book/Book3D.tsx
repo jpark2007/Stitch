@@ -109,7 +109,23 @@ export interface Book3DProps {
   still?: boolean;
   /** Tests: expose the raw controller as `window.__book`, and stand a probe card in empty stage slots. */
   debug?: boolean;
+  /**
+   * The book's view (opened, cover settled, the spread it is on), each time
+   * it changes: rarely, never per frame. Called from the book's frame loop
+   * (first on its first frame), as the book itself hears it.
+   */
+  onView?: (view: BookView) => void;
+  /** The book's controls once it is drawn (null when it goes), for page chrome like a contents card. */
+  onControls?: (controls: BookControls | null) => void;
+  /** The way out in the top corner; default "Stitch", home. */
+  back?: { href: string; label: string };
+  /** Quiet controls beside the mute button (a contents tab). */
+  actions?: ReactNode;
+  /** Page chrome over the table, under the header (a contents card), shown once the book's art is drawn. */
+  children?: ReactNode;
 }
+
+export type { BookView };
 
 export interface BookControls {
   open(): void;
@@ -153,14 +169,35 @@ export function Book3D({
   onTelling,
   still = false,
   debug = false,
+  onView,
+  onControls: onControlsProp,
+  back,
+  actions,
+  children,
 }: Book3DProps) {
   // The starting view is read once; later prop changes do not reset the book.
   const [start] = useState(() => resolveStart(initial, spreads.length));
   const [art, setArt] = useState<BookArt | null>(null);
   const [view, setView] = useState<BookView>({ opened: start.opened, ready: start.opened, spread: start.spread });
   const controls = useRef<BookControls | null>(null);
+  const onControlsRef = useRef(onControlsProp);
+  useEffect(() => {
+    onControlsRef.current = onControlsProp;
+  }, [onControlsProp]);
   const onControls = useCallback((api: BookControls | null) => {
     controls.current = api;
+    onControlsRef.current?.(api);
+  }, []);
+  // The page hears the view as the book does (a change of spread, the cover
+  // settling), in the same call, not an effect later: a slow frame loop can
+  // hold effects back for seconds.
+  const onViewRef = useRef(onView);
+  useEffect(() => {
+    onViewRef.current = onView;
+  }, [onView]);
+  const changeView = useCallback((v: BookView) => {
+    setView(v);
+    onViewRef.current?.(v);
   }, []);
   const muted = useSyncExternalStore(subscribeMuted, isMuted, () => false);
 
@@ -263,7 +300,7 @@ export function Book3D({
               spreads={spreads}
               start={start}
               onControls={onControls}
-              onView={setView}
+              onView={changeView}
               renderStage={renderStage ?? (debug ? SlotProbe : undefined)}
               tellings={tellings}
               onTelling={chooseTelling}
@@ -272,7 +309,12 @@ export function Book3D({
             />
           </Canvas>
         </motion.div>
-      ) : null}
+      ) : (
+        // The pages are being printed: the same quiet line as the route's loading table.
+        <p role="status" className="absolute inset-0 grid place-items-center font-hand text-2xl text-[#f3e6cf]/60">
+          opening the book&hellip;
+        </p>
+      )}
 
       {/* Lens: a warm vignette. Depth of field is faked in the scene (fog and
           the lamp's falloff); a CSS backdrop blur here cost frames mid-turn. */}
@@ -280,13 +322,27 @@ export function Book3D({
 
       <header className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between px-4 pt-4 sm:px-6 sm:pt-5">
         <Link
-          href="/"
+          href={back?.href ?? "/"}
           className="pointer-events-auto font-display text-lg tracking-tight text-[#f3e6cf]/80 no-underline transition-colors hover:text-[#f3e6cf]"
         >
-          Stitch
+          {back ? (
+            <>
+              <span aria-hidden className="mr-1.5 inline-block -translate-y-px">
+                &larr;
+              </span>
+              {back.label}
+            </>
+          ) : (
+            "Stitch"
+          )}
         </Link>
-        <MuteButton muted={muted} />
+        <div className="flex items-center gap-3">
+          {actions}
+          <MuteButton muted={muted} />
+        </div>
       </header>
+      {/* Page chrome lies on the table with the book, not before it. */}
+      {art ? children : null}
 
       <NavDots spreads={spreads} view={view} onPick={(i) => controls.current?.goTo(i)} />
 
@@ -397,18 +453,24 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
       transition={{ duration: 0.6, delay: view.opened ? 0.8 : 0, ease: [0.22, 1, 0.36, 1] }}
       style={{ pointerEvents: view.opened ? "auto" : "none" }}
     >
-      <ol className="flex items-start gap-1 rounded-full bg-[#140c07]/45 px-3 py-1.5">
+      <ol className="flex max-w-[calc(100vw-1rem)] items-start gap-1 rounded-full bg-[#140c07]/45 px-3 py-1.5">
         {spreads.map((s, i) => {
           const active = view.spread === i + 1;
+          const dated = Number.isFinite(s.year) && s.year > 0;
+          // A long book narrows its dots to fit the screen; past nine, only
+          // the open one, the first and the last keep their years.
+          const label = s.kind === "end" ? "end" : dated ? String(s.year) : "·";
+          const quiet = spreads.length > 9 && !active && i !== 0 && i !== spreads.length - 1;
           return (
             <li key={s.id}>
               <button
                 type="button"
                 onClick={() => onPick(i + 1)}
-                aria-label={s.kind === "end" ? s.title : `${s.title}, ${s.year}`}
+                aria-label={s.kind === "end" ? s.title : dated ? `${s.title}, ${s.year}` : s.title}
                 aria-current={active ? "page" : undefined}
                 title={s.title}
-                className="group flex w-14 flex-col items-center gap-1 py-1 outline-offset-2"
+                className="group flex flex-col items-center gap-1 py-1 outline-offset-2"
+                style={{ width: `min(3.5rem, calc((100vw - 3.5rem) / ${spreads.length} - 0.25rem))` }}
               >
                 <span
                   className="block rounded-full transition-all duration-300"
@@ -421,9 +483,12 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
                 />
                 <span
                   className="font-sans text-[0.68rem] font-bold tracking-[0.14em] transition-colors duration-300"
-                  style={{ color: active ? "rgb(243 230 207 / 0.92)" : "rgb(243 230 207 / 0.5)" }}
+                  style={{
+                    color: active ? "rgb(243 230 207 / 0.92)" : "rgb(243 230 207 / 0.5)",
+                    visibility: quiet ? "hidden" : undefined,
+                  }}
                 >
-                  {s.kind === "end" ? "end" : s.year}
+                  {label}
                 </span>
               </button>
             </li>

@@ -156,7 +156,7 @@ export function drawCoverArt(cover: BookCover, fonts: PageFonts, w: number, h: n
     ctx.fillStyle = INK_FAINT;
     ctx.font = `700 ${Math.round(w * 0.019)}px ${fonts.sans}`;
     setSpacing(ctx, Math.round(w * 0.005));
-    ctx.fillText(cover.kicker.toUpperCase(), 0, -lh * 0.22);
+    ctx.fillText(cover.kicker.toUpperCase(), 0, -lh * 0.22, lw * 0.86);
     setSpacing(ctx, 0);
   }
   ctx.fillStyle = INK;
@@ -171,8 +171,14 @@ export function drawCoverArt(cover: BookCover, fonts: PageFonts, w: number, h: n
   drawStitchLine(ctx, -lw * 0.16, lh * 0.19, lw * 0.16, lh * 0.19, ACCENT, 3, 14, 10);
   if (cover.subtitle) {
     ctx.fillStyle = INK_SOFT;
-    ctx.font = `500 ${Math.round(w * 0.042)}px ${fonts.hand}`;
-    ctx.fillText(cover.subtitle, 0, lh * 0.37);
+    // Long names ("as told by Avery Quill & Blair Quill") step down to fit too.
+    let sub = Math.round(w * 0.042);
+    ctx.font = `500 ${sub}px ${fonts.hand}`;
+    while (sub > w * 0.026 && ctx.measureText(cover.subtitle).width > lw * 0.86) {
+      sub -= 1;
+      ctx.font = `500 ${sub}px ${fonts.hand}`;
+    }
+    ctx.fillText(cover.subtitle, 0, lh * 0.37, lw * 0.9);
   }
   ctx.restore();
   // Tape holding the label down at two corners.
