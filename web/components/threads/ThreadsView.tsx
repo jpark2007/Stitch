@@ -78,6 +78,8 @@ interface Engine {
   ready: boolean;
   pointers: Map<number, { x: number; y: number }>;
   drag: { x: number; moved: boolean; lastX: number; lastT: number; pinch: number; startCx: number } | null;
+  /** Last tap (time, x, y), to catch a double tap. */
+  lastTap: { t: number; x: number; y: number } | null;
   drawMs: number;
 }
 
@@ -157,6 +159,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
       ready: false,
       pointers: new Map(),
       drag: null,
+      lastTap: null,
       drawMs: 0,
     };
     if (reduced) e.revealStart = -1e9;
@@ -632,6 +635,15 @@ export default function ThreadsView(props: ThreadsViewProps) {
       if (d && !d.moved) {
         e.velocity = 0;
         const p = local(ev);
+        // A second tap close by and soon after: zoom in about it.
+        const now = performance.now();
+        const lt = e.lastTap;
+        if (lt && now - lt.t < 320 && Math.hypot(p.x - lt.x, p.y - lt.y) < 24) {
+          e.lastTap = null;
+          zoomBy(2.2, p.x);
+          return;
+        }
+        e.lastTap = { t: now, x: p.x, y: p.y };
         const hit = hitTest(p.x, p.y);
         if (hit?.kind === "knot") {
           router.push(`/memories/${model.knots[hit.i].moment.id}`);
