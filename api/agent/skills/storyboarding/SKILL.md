@@ -71,7 +71,8 @@ per shot, shot ids `s1`, `s2`, ... in order. No other sections.
 
 - **shot id**: `s1`, `s2`, ... matching the screenplay's shot ids.
 - **set/place**: a short place name the set designer can reuse or generate ("grandma's kitchen",
-  "church steps, 1988"). Use a saved set's id if `find_set` returned one.
+  "church steps, 1988"). If `find_memories` shows an earlier moment at the same place, use the
+  same place name so the set designer finds the saved set.
 - **who**: comma-separated person ids of everyone on stage.
 - **what happens**: the visible actions in order, short clauses separated by `;`. Only things
   the action vocabulary can show.
@@ -92,16 +93,16 @@ Each shot gets `pageText`: the text printed on the page, like a picture book.
 
 ## A second telling of an existing memory
 
-When the run is a second telling (`memory_id` set), the memory already has shots and action.
+When the run is a second telling (the run context has `memoryId` set), the memory already has
+its shots and action, shared by every telling. The studio does not storyboard it: the narrator
+places the new teller's sentences over the existing shots. If you are asked about one anyway:
 
-- **Do not make new shots or change the action.** Read the existing screenplay's shots.
+- **Do not make new shots or change the action.** Read the existing shots in `/screenplay.json`.
 - Map the new teller's sentences onto the **same shot ids**: which sentence goes over which
   shot, in order. A sentence about something no shot shows is either left out or placed over
   the nearest shot, never a reason to restage.
 - Their narration goes in `narrations.<newAuthorId>.<shotId>` with sources
   `telling:<newAuthorId>:s<n>`, numbered from their own telling.
 - If the new teller's version disagrees with the existing action ("I didn't drop them, he
-  bumped me"), keep the action and let their narration carry their side. Note the disagreement
-  in `/open_questions.md` instead of changing the scene.
-- Write `/shotlist.md` for the new telling with the existing shot ids and the new sources, so
-  the narrator knows which of their sentences goes where.
+  bumped me"), keep the action and let their narration carry their side. Report the
+  disagreement in your final message instead of changing the scene.
