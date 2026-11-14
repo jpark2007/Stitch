@@ -281,20 +281,27 @@ interface SceneProps {
 }
 
 function BookScene(props: SceneProps) {
-  const wood = useMemo(() => createWoodMaterial({ repeat: [7, 7], color: "#f2dcc4" }), []);
+  // Planks about half a page wide; tinted down so the paper is the brightest thing.
+  const wood = useMemo(() => {
+    const m = createWoodMaterial({ repeat: [11, 11], color: "#b39478" });
+    // Calmer relief: the table is a backdrop, not a subject.
+    m.normalScale.set(0.45, 0.45);
+    return m;
+  }, []);
   useEffect(() => () => wood.dispose(), [wood]);
   return (
     <>
       <color attach="background" args={[TABLE_BG]} />
       <fog attach="fog" args={[TABLE_BG, 4, 11]} />
-      <hemisphereLight args={["#ffe7c9", "#3a2415", 0.5]} />
+      <hemisphereLight args={["#ffe9d0", "#2a1a10", 0.32]} />
+      {/* Key: a warm lamp up and to the left, a soft pool on the table. */}
       <spotLight
         castShadow
-        color="#ffd7a6"
-        intensity={52}
-        position={[-1.7, 4.3, 2.1]}
-        angle={0.62}
-        penumbra={0.95}
+        color="#ffdcb0"
+        intensity={64}
+        position={[-1.5, 4.6, 2.2]}
+        angle={0.5}
+        penumbra={1}
         decay={2}
         distance={0}
         shadow-mapSize={[2048, 2048]}
@@ -463,7 +470,8 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage }: Sce
       },
     });
     if (moving) state.invalidate();
-    if (ctl.rt.frames === 4) document.documentElement.dataset.bookReady = "1";
+    // Screenshot hook: the scene has drawn (a still closed book stops at ~2 frames).
+    if (ctl.rt.frames === 2) document.documentElement.dataset.bookReady = "1";
   });
 
   const toBook = (e: ThreeEvent<PointerEvent>) => ({ x: e.point.x - (book.current?.position.x ?? 0), z: e.point.z });
