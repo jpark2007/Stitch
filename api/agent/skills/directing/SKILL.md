@@ -327,7 +327,9 @@ story, from the tellings and person records only. No invented ages, names or fac
      the person hold the prop.
    - `offstage`: add an `enter` first; `already_on_stage`: use `walk_to` instead of `enter`.
    - `lines_overlap`, `cue_before_start`, `cue_conflict`: move the line's `t`, not the action.
-   - `unsupported_verb` on an effect: delete that effect and keep everything else.
+   - `unsupported_verb`: the compiler cannot do that verb yet. Delete an effect; replace `exit`
+     with `walk_to` `offstage_left`/`offstage_right`, `follow` with a `walk_to` a beat later;
+     delete a `turn_to`. Keep everything else.
    - an unknown field (`invalid_screenplay`): delete it.
 4. Compile again. **At most 3 rounds** (3 calls to `compile_screenplay`). If the third still
    fails, stop and report the remaining errors exactly as returned. Never loop further.
