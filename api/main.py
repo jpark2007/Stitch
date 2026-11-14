@@ -135,11 +135,13 @@ def cors_origins() -> list[str]:
     """Allowed browser origins: STITCH_CORS_ORIGINS (comma-separated) or the defaults.
 
     Never "*": the session cookie needs credentialed requests, which a wildcard forbids.
+    A trailing slash is dropped ("https://stitch.app/" -> "https://stitch.app"): a
+    browser's Origin header never has one, and CORS compares origins exactly.
     """
     raw = os.environ.get("STITCH_CORS_ORIGINS") or ""
     origins: list[str] = []
     for part in raw.split(","):
-        origin = part.strip()
+        origin = part.strip().rstrip("/")
         if not origin:
             continue
         if origin == "*":

@@ -25,6 +25,8 @@ router = APIRouter(tags=["props"])
 ALLOWED_IMAGE_TYPES: frozenset[str] = frozenset(
     {"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"}
 )
+MAX_PROP_NAME_CHARS = 200
+NOT_A_PHOTO = "That file is not a photo"
 
 
 @router.get("/families/{fid}/props", response_model=schemas.PropsResponse)
@@ -58,8 +60,9 @@ def patch_prop(
 ) -> schemas.Prop:
     """Rename a saved prop and/or replace its art with an uploaded photo.
 
-    422: neither field set, or a blank name. 404: a library prop, an unknown id, or another
-    family's prop. 400 "Unknown photo": photo_id is not one of this family's media ids.
+    422: neither field set, or a blank name or one over MAX_PROP_NAME_CHARS. 404: a library
+    prop, an unknown id, or another family's prop. 400 "Unknown photo": photo_id is not one
+    of this family's media ids; 400 NOT_A_PHOTO: it is, but not an image (narration audio).
     The stored art uses the 'media/<id>' form whichever form the client sent.
     """
     fid = access.family_id
@@ -74,6 +77,11 @@ def patch_prop(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Name must not be blank"
             )
+        if len(name) > MAX_PROP_NAME_CHARS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Name must be at most {MAX_PROP_NAME_CHARS} characters",
+            )
 
     # Only the family's own saved props can be edited. get_prop also returns library
     # props (family_id None), which are shared and read-only, so they are a 404 too.
@@ -84,8 +92,12 @@ def patch_prop(
     photo_ref: str | None = None
     if patch.photo_id is not None:
         bare = media_db.parse_media_ref(patch.photo_id)
-        if bare is None or not media_db.media_exists(db, fid, bare):
+        found = media_db.get_media(db, fid, bare) if bare is not None else None
+        if found is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown photo")
+        # The family's media also holds narration audio; only an image can be a prop's art.
+        if not found.content_type.lower().startswith("image/"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=NOT_A_PHOTO)
         photo_ref = media_db.media_ref(bare)
 
     updated = props_db.update_prop(

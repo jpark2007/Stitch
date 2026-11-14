@@ -664,7 +664,8 @@ def test_answer_missing_fields_are_422(env, body):
     [
         (LookupError("no run"), 404, "Run not found"),
         (PermissionError("other user"), 403, "Only the person who started this run can answer"),
-        (ValueError("The run is not waiting for an answer"), 409, "The run is not waiting for an answer"),
+        # The exception's own text never reaches the client; known cases map to a fixed sentence.
+        (ValueError("run run-1 is done, not waiting for an answer"), 409, "This run is not waiting for an answer"),
     ],
 )
 def test_answer_seam_errors(env, exc, code, detail):
@@ -695,7 +696,8 @@ ANSWER = {"kind": "answer", "text": "Green"}
         (RunNotWaiting("run run-1 is done, not waiting for an answer"), 409, "This run is not waiting for an answer"),
         (RunNotFound("run 'run-1' not found"), 404, "Run not found"),
         (NotRunOwner("only the person who started this run can answer it"), 403, "Only the person who started this run can answer"),
-        (ValueError("This question needs a text answer"), 409, "This question needs a text answer"),
+        (ValueError("an answer needs text"), 409, "An answer needs text"),
+        (ValueError("This question wants something else entirely"), 409, "Run cannot take that answer"),
         (ValueError(""), 409, "Run cannot take that answer"),
     ],
 )
@@ -794,7 +796,7 @@ def test_real_submit_starts_run(env, real):
     ("exc", "code", "detail"),
     [
         (MemoryNotFound("memory 'm' not found, or it has no scene yet"), 404, "Memory not found"),
-        (ValueError("person 'p' is not in this family"), 422, "person 'p' is not in this family"),
+        (ValueError("person 'p' is not in this family"), 422, "This memory could not be started with those details"),
         (RuntimeError("graph exploded"), 503, "Could not start the studio"),
     ],
 )

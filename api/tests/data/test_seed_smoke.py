@@ -270,7 +270,8 @@ def test_answer_rejected_fails_with_detail(api: TestClient, monkeypatch: pytest.
     monkeypatch.setattr(manager, "answer_run", answer_run)
     result, _ = _run(api, _opts())
     assert not result.ok
-    assert result.message == "answer to question: HTTP 409 That answer does not fit"
+    # The route never echoes the agent's ValueError text; it sends a fixed sentence.
+    assert result.message == "answer to question: HTTP 409 Run cannot take that answer"
 
 
 def test_timeout_stops_the_stream(api: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

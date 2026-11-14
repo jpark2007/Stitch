@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error, InvalidHashError
-from fastapi import Cookie, Depends, HTTPException, Response, status
+from fastapi import Cookie, Depends, HTTPException, Request, Response, status
 from pymongo.database import Database
 
 import schemas
@@ -128,12 +128,34 @@ def session_expiry(claims: dict) -> datetime:
 
 # ---------------------------------------------------------------- cookies
 
-def _cookie_secure() -> bool:
-    return os.environ.get("COOKIE_SECURE") == "1"
+_COOKIE_SECURE_ON = frozenset({"1", "true", "yes"})
+_COOKIE_SECURE_OFF = frozenset({"0", "false", "no"})
 
 
-def set_session_cookie(response: Response, user_id: str) -> None:
-    """Start a session: httpOnly, SameSite=Lax, whole site, SESSION_DAYS long."""
+def _cookie_secure(request: Request | None = None) -> bool:
+    """Whether the session cookie gets the Secure flag.
+
+    COOKIE_SECURE=1/true/yes forces it on and 0/false/no forces it off (any case).
+    Unset or anything else: on exactly when the request came in over https, so a
+    deployment behind TLS is Secure without extra configuration, while plain
+    http://localhost development still works (Safari drops Secure cookies over http).
+    Behind a proxy that terminates TLS, uvicorn sees https only when it trusts the
+    proxy's X-Forwarded-Proto (--proxy-headers, --forwarded-allow-ips); otherwise set
+    COOKIE_SECURE=1.
+    """
+    raw = (os.environ.get("COOKIE_SECURE") or "").strip().lower()
+    if raw in _COOKIE_SECURE_ON:
+        return True
+    if raw in _COOKIE_SECURE_OFF:
+        return False
+    return request is not None and request.url.scheme == "https"
+
+
+def set_session_cookie(response: Response, user_id: str, request: Request | None = None) -> None:
+    """Start a session: httpOnly, SameSite=Lax, whole site, SESSION_DAYS long.
+
+    Pass the request so an https request gets a Secure cookie (see _cookie_secure).
+    """
     response.set_cookie(
         key=COOKIE_NAME,
         value=create_session_token(user_id),
@@ -141,18 +163,18 @@ def set_session_cookie(response: Response, user_id: str) -> None:
         path="/",
         httponly=True,
         samesite="lax",
-        secure=_cookie_secure(),
+        secure=_cookie_secure(request),
     )
 
 
-def clear_session_cookie(response: Response) -> None:
+def clear_session_cookie(response: Response, request: Request | None = None) -> None:
     """End a session (expire the cookie with the same attributes it was set with)."""
     response.delete_cookie(
         key=COOKIE_NAME,
         path="/",
         httponly=True,
         samesite="lax",
-        secure=_cookie_secure(),
+        secure=_cookie_secure(request),
     )
 
 

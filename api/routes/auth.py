@@ -10,7 +10,7 @@ import logging
 import secrets
 import threading
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from pymongo.database import Database
 from pymongo.errors import PyMongoError
 
@@ -57,6 +57,7 @@ def _me(db: Database, user: schemas.User) -> schemas.MeResponse:
 )
 def signup(
     body: schemas.SignupRequest,
+    request: Request,
     response: Response,
     db: Database = Depends(get_db),
 ) -> schemas.MeResponse:
@@ -79,13 +80,14 @@ def signup(
         raise HTTPException(
             status.HTTP_409_CONFLICT, detail="An account with this email already exists"
         ) from None
-    auth.set_session_cookie(response, user.id)
+    auth.set_session_cookie(response, user.id, request)
     return schemas.MeResponse(user=user, families=[])
 
 
 @router.post("/auth/login", response_model=schemas.MeResponse)
 def login(
     body: schemas.LoginRequest,
+    request: Request,
     response: Response,
     db: Database = Depends(get_db),
 ) -> schemas.MeResponse:
@@ -97,7 +99,7 @@ def login(
     user, password_hash = found
     if not auth.verify_password(password_hash, body.password):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=INVALID_LOGIN)
-    auth.set_session_cookie(response, user.id)
+    auth.set_session_cookie(response, user.id, request)
     return _me(db, user)
 
 
@@ -107,6 +109,7 @@ def login(
     response_class=Response,
 )
 def logout(
+    request: Request,
     session: str | None = Cookie(default=None, alias=auth.COOKIE_NAME),
     db: Database = Depends(get_db),
 ) -> Response:
@@ -124,7 +127,7 @@ def logout(
             # Still clear the cookie; the browser's copy is gone even if the record is not.
             log.exception("Could not record the revoked session")
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
-    auth.clear_session_cookie(response)
+    auth.clear_session_cookie(response, request)
     return response
 
 
