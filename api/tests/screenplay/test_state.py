@@ -285,6 +285,20 @@ def test_busy_reason(world: World):
     world.occupy("dad", 7, "waving")
 
 
+def test_busy_time_offset_shifts_only_the_shown_time(world: World):
+    opening(world)
+    world.occupy("dad", 7.3, "picking up")
+    world.now = 7.0
+    world.busy_time_offset = -1.0  # the compiler: written t 6.0 runs at retimed 7.0
+    raises("busy", "dad is still picking up until t=6.3", world.check_free, "dad")
+    raises("busy", "dad is still picking up until t=6.3", world.occupy, "dad", 8.0, "handing over")
+    assert world.people["dad"].busy_until == 7.3  # the busy time itself is untouched
+    assert world.copy().busy_time_offset == -1.0
+    world.busy_time_offset = 0.0
+    raises("busy", "dad is still picking up until t=7.3", world.check_free, "dad")
+    world.check_free("dad", 7.3)
+
+
 def test_begin_shot_resets_busy(world: World):
     opening(world)
     world.occupy("dad", 9.0, "walking")
@@ -1151,3 +1165,57 @@ def test_wearers_own_start_holding_uses_the_free_hand():
     w.begin_shot(shot(id="s2", start={"grandpa": {"at": "home", "holding": "flat_cap"}}),
                  MARKS, same_set_as_previous=True)
     assert w.people["grandpa"].holding == {"hand_r": "cup", "hand_l": "flat_cap"}
+
+
+# ------------------------------------------------------- riders of a re-placed prop
+
+def _seat_root(world: World):
+    """A stand-in seated-root formula: 0.1 below the seat socket."""
+    return lambda who, seat: (seat[0], seat[1] - 0.1, seat[2])
+
+
+def test_reseat_riders_moves_a_seated_puppet_to_its_seat_at_the_new_place(world: World):
+    world.begin_shot(shot(start={"dad": {"at": "home", "in": "sedan.driver"}, "kid": {"at": "curb"}},
+                          propStart={"sedan": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    world.move_vehicle("sedan", MARKS["curb"])
+    at_curb = world.people["dad"].pos
+    world.begin_shot(shot(id="s2", start={"kid": {"at": "steps_left"}}, propStart={"sedan": {"at": "home"}}),
+                     MARKS, same_set_as_previous=True)
+    # begin_shot keeps dad seated but does not move him
+    assert world.people["dad"].seat == ("sedan", "driver") and world.people["dad"].pos == at_curb
+    seat = world.socket_world("sedan", "driver")
+    assert world.reseat_riders(["sedan"], _seat_root(world), skip={"kid"}) == {"dad": (seat[0], seat[1] - 0.1, seat[2])}
+    assert world.people["dad"].pos == (seat[0], seat[1] - 0.1, seat[2])
+    assert world.people["dad"].seat == ("sedan", "driver") and world.people["dad"].pose == "sit"
+
+
+def test_reseat_riders_follows_props_stacked_on_the_moved_one(world: World):
+    world.begin_shot(shot(start={"mom": {"at": "home", "in": "chair.seat"}},
+                          propStart={"wagon": {"at": "home"}, "chair": {"on": "wagon.bed"}}),
+                     MARKS, same_set_as_previous=False)
+    world.begin_shot(shot(id="s2", propStart={"wagon": {"at": "curb"}}), MARKS, same_set_as_previous=True)
+    seat = world.socket_world("chair", "seat")
+    assert seat[0] > 0.5  # the chair rode along on the wagon
+    assert world.reseat_riders(["wagon"], _seat_root(world)) == {"mom": (seat[0], seat[1] - 0.1, seat[2])}
+
+
+def test_reseat_riders_skips_listed_unrelated_and_unseated_puppets(world: World):
+    world.begin_shot(shot(start={"dad": {"at": "home", "in": "sedan.driver"}, "mom": {"at": "curb", "in": "chair.seat"}},
+                          propStart={"sedan": {"at": "home"}, "chair": {"at": "curb"}}), MARKS, same_set_as_previous=False)
+    before = world.people["mom"].pos
+    assert world.reseat_riders(["sedan"], _seat_root(world), skip={"dad"}) == {}
+    assert world.reseat_riders([], _seat_root(world)) == {}
+    assert world.reseat_riders(["chair"], _seat_root(world)) == {"mom": world.people["mom"].pos}
+    assert world.people["mom"].pos != before
+
+
+def test_reseat_riders_leaves_a_puppet_whose_seat_has_no_world_position(world: World):
+    # mom stays seated in the chair, which s2 puts on a crate dad is carrying
+    world.begin_shot(shot(start={"mom": {"at": "home", "in": "chair.seat"}, "dad": {"at": "curb"}},
+                          propStart={"chair": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    world.begin_shot(shot(id="s2", start={"dad": {"at": "curb", "holding": "crate"}},
+                          propStart={"chair": {"on": "crate.top"}}), MARKS, same_set_as_previous=True)
+    assert world.people["mom"].seat == ("chair", "seat") and world.socket_world("chair", "seat") is None
+    before = world.people["mom"].pos
+    assert world.reseat_riders(["chair"], _seat_root(world)) == {"mom": None}
+    assert world.people["mom"].pos == before

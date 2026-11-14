@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import copy as _copy
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -135,6 +135,9 @@ class World:
                 self.people[p.id].item = item
                 self._attach_puppet(item, p.id, HEAD)
         self.now: float = 0.0  # shot time; the compiler may set it before calling occupy()
+        # Added to every time a busy reason shows (check_free), so the compiler can state it in
+        # the blocked action's written frame when cues moved the shot's actions. 0.0 = as is.
+        self.busy_time_offset: float = 0.0
 
     # ------------------------------------------------------------------ basics
 
@@ -144,6 +147,7 @@ class World:
         w.props = _copy.deepcopy(self.props)
         w.catalog = self.catalog  # immutable definitions, shared
         w.now = self.now
+        w.busy_time_offset = self.busy_time_offset
         return w
 
     def __eq__(self, other: object) -> bool:
@@ -359,6 +363,36 @@ class World:
 
     # ---------------------------------------------------------------- shots
 
+    def reseat_riders(
+        self,
+        moved: Iterable[str],
+        seated_root: Callable[[str, Vec3], Vec3],
+        skip: Collection[str] = (),
+    ) -> dict[str, Vec3 | None]:
+        """Carry seated puppets along with props that a shot's prop_start re-placed.
+
+        Every puppet not in ``skip`` that sits on one of the ``moved`` props, or on a prop resting
+        on one of them, gets ``pos = seated_root(who, seat)``, where ``seat`` is the world
+        position of its seat socket (the compiler's formula for a seated root). Returns
+        ``{who: new pos}`` in cast order; the value is None, and ``pos`` is left alone, when the
+        seat has no world position (the prop it rests on is held). Never raises.
+        """
+        riders: set[str] = set()
+        for what in moved:
+            if what in self.props:
+                riders.update(self._riders(what))
+        out: dict[str, Vec3 | None] = {}
+        for who, p in self.people.items():
+            if who not in riders or who in skip or p.seat is None:
+                continue
+            seat = self.socket_world(*p.seat)
+            if seat is None:
+                out[who] = None
+                continue
+            p.pos = _vec(seated_root(who, seat))
+            out[who] = p.pos
+        return out
+
     def begin_shot(self, shot: Shot, marks: dict[str, Vec3], same_set_as_previous: bool) -> None:
         """Apply a shot's start and prop_start. All-or-nothing: on error the world is unchanged."""
         w = self.copy()
@@ -541,10 +575,13 @@ class World:
         self._person(who).pose = pose
 
     def check_free(self, who: str, at: float | None = None) -> None:
+        """Raise ``busy`` when ``who`` is still busy at ``at`` (default now). The reason shows
+        ``busy_until + busy_time_offset``."""
         p = self._person(who)
         t = self.now if at is None else at
         if t < p.busy_until - TIME_EPS:
-            raise StateError("busy", f"{who} is still {p.activity or 'busy'} until t={fmt_t(p.busy_until)}")
+            shown = p.busy_until + self.busy_time_offset if self.busy_time_offset else p.busy_until
+            raise StateError("busy", f"{who} is still {p.activity or 'busy'} until t={fmt_t(shown)}")
 
     def occupy(self, who: str, until: float, activity: str, at: float | None = None) -> None:
         """Mark `who` busy with `activity` (an -ing word, e.g. 'walking') from `at` (default now) to `until`."""
