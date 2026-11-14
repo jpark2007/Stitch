@@ -11,6 +11,23 @@
     "marks": {"steps_left": [0.2, 0.0], "steps_foot": [0.5, 0.0], "steps_top": [0.6, 0.3], "curb": [0.9, 0.0]}
   },
   {
+    "id": "st_marys_churchyard_1958",
+    "name": "St. Mary's churchyard",
+    "description": "the lawn beside St. Mary's: the side door, a gravel path, a low stone wall and a lilac bush",
+    "layers": [
+      {"art": null, "depth": 0, "height": 0.95, "color": "#bcd6e6"},
+      {"art": null, "depth": 1, "height": 0.5, "color": "#b5654a"},
+      {"art": null, "depth": 2, "height": 0.12, "color": "#8fb46a"}
+    ],
+    "marks": {
+      "church_door": [0.14, 0.0],
+      "path": [0.3, 0.0],
+      "lawn_mid": [0.48, 0.0],
+      "lawn_right": [0.64, 0.0],
+      "lilac": [0.86, 0.0]
+    }
+  },
+  {
     "id": "carmen_kitchen_1970",
     "name": "Carmen's kitchen",
     "description": "a small yellow kitchen with a gas stove, a window over the sink and a wooden table",
@@ -22,6 +39,7 @@
     "marks": {
       "stove": [0.14, 0.0],
       "by_stove": [0.24, 0.0],
+      "stool_spot": [0.32, 0.0],
       "table_left": [0.4, 0.0],
       "table_spot": [0.5, 0.0],
       "table_right": [0.6, 0.0],
@@ -67,7 +85,14 @@
       {"art": null, "depth": 1, "height": 0.5, "color": "#b0624a"},
       {"art": null, "depth": 2, "height": 0.08, "color": "#9c9c94"}
     ],
-    "marks": {"garage": [0.18, 0.0], "bike_spot": [0.45, 0.0], "beside_bike": [0.53, 0.0], "sidewalk": [0.8, 0.0]}
+    "marks": {
+      "garage": [0.18, 0.0],
+      "behind_bike": [0.3, 0.0],
+      "bike_spot": [0.45, 0.0],
+      "beside_bike": [0.53, 0.0],
+      "sidewalk": [0.8, 0.0],
+      "street_end": [1.35, 0.0]
+    }
   },
   {
     "id": "maple_corner_1997",
@@ -78,7 +103,13 @@
       {"art": null, "depth": 1, "height": 0.35, "color": "#6f9a58"},
       {"art": null, "depth": 2, "height": 0.08, "color": "#9c9c94"}
     ],
-    "marks": {"halfway": [0.35, 0.0], "near_corner": [0.6, 0.0], "corner": [0.75, 0.0]}
+    "marks": {
+      "street_in": [0.08, 0.0],
+      "let_go": [0.2, 0.0],
+      "halfway": [0.4, 0.0],
+      "near_corner": [0.6, 0.0],
+      "corner": [0.75, 0.0]
+    }
   },
   {
     "id": "school_hall_2015",

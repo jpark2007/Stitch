@@ -1,7 +1,7 @@
 {
   "memoryId": "demo_sam_wedding_2019",
   "cast": ["sam", "lily", "mom", "dad"],
-  "props": ["ring_box", "garden_bench"],
+  "props": ["ring_box", "garden_bench", "boutonniere"],
   "shots": [
     {
       "id": "s1",
@@ -10,7 +10,7 @@
       "start": {
         "mom": {"at": "bench_spot", "in": "garden_bench.left", "facing": "right"},
         "dad": {"at": "bench_spot", "in": "garden_bench.right", "facing": "right"},
-        "sam": {"at": "arch", "facing": "left"},
+        "sam": {"at": "arch", "holding": "boutonniere", "facing": "left"},
         "lily": {"at": "offstage_left", "holding": "ring_box", "facing": "right"}
       },
       "propStart": {"garden_bench": {"at": "bench_spot"}},
@@ -20,7 +20,8 @@
         {"t": 8.0, "move": "pan_to", "target": "garden_bench", "dur": 1.5}
       ],
       "actions": [
-        {"t": 0.3, "who": "lily", "do": "enter", "from": "offstage_left", "to": "beside_groom"},
+        {"t": 0, "who": "sam", "do": "pose", "pose": "slumped", "dur": 1.6, "id": "nervous"},
+        {"t": 0.3, "who": "lily", "do": "enter", "from": "offstage_left", "to": "beside_groom", "id": "aisle"},
         {"t": 5.1, "who": "lily", "do": "hand_to", "what": "ring_box", "to": "sam", "id": "rings"},
         {"t": 7.0, "who": "sam", "do": "set_state", "what": "ring_box", "state": "open"},
         {"t": 9.5, "who": "mom", "do": "lean_toward", "target": "dad", "dur": 2.0, "id": "lean"}
@@ -50,7 +51,7 @@
       "set": "reception_tent_2019",
       "marks": {},
       "start": {
-        "sam": {"at": "floor_mid", "facing": "left"},
+        "sam": {"at": "floor_mid", "holding": "boutonniere", "facing": "left"},
         "mom": {"at": "floor_left", "facing": "right"},
         "dad": {"at": "tent_right", "facing": "left"},
         "lily": {"at": "floor_right", "facing": "left"}
@@ -64,9 +65,11 @@
       "actions": [
         {"t": 0, "do": "time_of_day", "value": "dusk", "dur": 1.5},
         {"t": 1.5, "who": "mom", "do": "hug", "target": "sam", "dur": 2.0, "id": "hug"},
-        {"t": 3.0, "do": "confetti", "at": "sam", "dur": 3.0},
+        {"t": 4.0, "who": "sam", "do": "drop", "what": "boutonniere", "id": "fell_off"},
+        {"t": 4.0, "do": "confetti", "at": "sam", "dur": 3.0},
         {"t": 4.5, "who": "dad", "do": "wave", "target": "sam", "dur": 1.6, "id": "wave_all"},
-        {"t": 6.4, "who": "lily", "do": "hug", "target": "dad", "id": "lily_hug"}
+        {"t": 5.0, "who": "lily", "do": "pick_up", "what": "boutonniere", "id": "rescue"},
+        {"t": 7.0, "who": "lily", "do": "hand_to", "what": "boutonniere", "to": "sam", "id": "pin_back"}
       ],
       "narration": [
         {
@@ -78,7 +81,7 @@
         }
       ],
       "transition": "fold",
-      "pageText": "Under the lights of the tent: confetti, one lost boutonniere, and Dad waving at everyone."
+      "pageText": "Under the tent lights: one big hug, one lost flower, and Dad waving at everyone."
     }
   ],
   "narrations": {
@@ -125,7 +128,7 @@
       "shot": "s2",
       "page": "story",
       "at": [0.4, 0.82],
-      "drives": {"type": "scrub", "from": 1.5, "to": 3.5, "targets": ["puppet:mom", "puppet:sam"]}
+      "drives": {"type": "scrub", "from": 1.5, "to": 4.6, "targets": ["puppet:mom", "puppet:sam", "prop:boutonniere"]}
     }
   ],
   "explanations": [
@@ -143,6 +146,10 @@
     {
       "target": "prop:garden_bench",
       "text": "The front bench in the orchard, where David and Ana held hands through the whole ceremony."
+    },
+    {
+      "target": "prop:boutonniere",
+      "text": "An apple blossom from the orchard, pinned on by Lily that morning. Mom's hug knocked it off, and Lily saved it again."
     }
   ]
 }

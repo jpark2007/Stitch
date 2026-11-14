@@ -6,34 +6,34 @@
     {
       "id": "s1",
       "set": "church_steps_1988",
-      "marks": {"steps_near": [0.54, 0.0], "upper_step": [0.62, 0.16], "below_steps": [0.62, 0.0]},
+      "marks": {"steps_near": [0.54, 0.0], "upper_step": [0.62, 0.16]},
       "start": {
-        "grandpa_joseph": {"at": "steps_left", "holding": "black_umbrella", "facing": "right"},
-        "grandma_rosa": {"at": "upper_step", "facing": "left"}
+        "grandpa_joseph": {"at": "offstage_left", "holding": "black_umbrella", "facing": "right"},
+        "grandma_rosa": {"at": "steps_top", "facing": "left"}
       },
       "propStart": {},
       "camera": [
         {"t": 0, "move": "wide"},
-        {"t": 11.4, "move": "close_up", "target": "grandpa_joseph", "dur": 1.2},
-        {"t": 14, "move": "pull_back", "dur": 2}
+        {"t": 3.0, "move": "pan_to", "target": "grandpa_joseph", "dur": 1.5},
+        {"t": 6.8, "move": "close_up", "target": "black_umbrella", "dur": 1.2},
+        {"t": 10.4, "move": "pull_back", "dur": 1.5}
       ],
       "actions": [
-        {"t": 0, "do": "rain", "dur": 6},
-        {"t": 0, "who": "grandpa_joseph", "do": "walk_to", "to": "steps_near", "id": "arrive"},
+        {"t": 0, "do": "time_of_day", "value": "dawn", "dur": 1.0},
+        {"t": 0, "do": "rain"},
+        {"t": 0, "do": "set_state", "what": "black_umbrella", "state": "open"},
+        {"t": 0, "who": "grandpa_joseph", "do": "enter", "from": "offstage_left", "to": "steps_near", "id": "arrive"},
+        {"t": 4.6, "who": "grandma_rosa", "do": "walk_to", "to": "upper_step"},
         {
-          "t": 5.5,
+          "t": 7.4,
           "who": "grandpa_joseph",
           "do": "hand_to",
           "what": "black_umbrella",
           "to": "grandma_rosa",
           "id": "umbrella"
         },
-        {"t": 8.0, "who": "grandma_rosa", "do": "walk_to", "to": "below_steps"},
-        {"t": 9.5, "do": "time_of_day", "value": "day", "dur": 1.5},
-        {"t": 10.0, "who": "grandma_rosa", "do": "hug", "target": "grandpa_joseph", "id": "hug"},
-        {"t": 12.0, "who": "grandpa_joseph", "do": "kneel", "dur": 1.6, "id": "socks"},
-        {"t": 12.2, "do": "confetti", "at": "grandma_rosa", "dur": 2.5},
-        {"t": 13.2, "who": "grandma_rosa", "do": "wave", "target": "grandpa_joseph"}
+        {"t": 9.0, "who": "grandpa_joseph", "do": "pose", "pose": "bow_head", "dur": 1.6, "id": "soaked"},
+        {"t": 9.2, "who": "grandma_rosa", "do": "lean_toward", "target": "grandpa_joseph", "dur": 1.4}
       ],
       "narration": [
         {
@@ -42,21 +42,50 @@
           "source": "telling:grandma_rosa:s1"
         },
         {
-          "t": 3.4,
+          "t": 4.8,
           "text": "Joseph showed up with his good shoes soaked through and gave me his umbrella without a word.",
           "source": "telling:grandma_rosa:s2",
           "cue": "umbrella",
           "cueWord": "gave"
-        },
+        }
+      ],
+      "transition": "fold",
+      "pageText": "June 1958, on the same church steps where David would meet Ana. It poured, and Joseph gave Rosa his umbrella."
+    },
+    {
+      "id": "s2",
+      "set": "st_marys_churchyard_1958",
+      "marks": {},
+      "start": {
+        "grandma_rosa": {"at": "church_door", "holding": "black_umbrella", "facing": "right"},
+        "grandpa_joseph": {"at": "path", "facing": "right"}
+      },
+      "propStart": {},
+      "camera": [
+        {"t": 0, "move": "wide"},
+        {"t": 4.6, "move": "close_up", "target": "grandpa_joseph", "dur": 1.2},
+        {"t": 7.6, "move": "pull_back", "dur": 1.5}
+      ],
+      "actions": [
+        {"t": 0, "do": "time_of_day", "value": "day", "dur": 2.0, "id": "sun"},
+        {"t": 0, "do": "set_state", "what": "black_umbrella", "state": "closed"},
+        {"t": 0.4, "who": "grandpa_joseph", "do": "walk_to", "to": "lawn_right"},
+        {"t": 0.6, "who": "grandma_rosa", "do": "walk_to", "to": "lawn_mid", "id": "out"},
+        {"t": 2.6, "do": "confetti", "at": "grandma_rosa", "dur": 2.5},
+        {"t": 4.8, "who": "grandpa_joseph", "do": "kneel", "dur": 1.6, "id": "socks"},
+        {"t": 5.0, "who": "grandma_rosa", "do": "point_at", "target": "grandpa_joseph", "dur": 1.2, "id": "laugh"},
+        {"t": 7.6, "who": "grandma_rosa", "do": "hug", "target": "grandpa_joseph", "dur": 1.8, "id": "hug"}
+      ],
+      "narration": [
         {
-          "t": 7.8,
+          "t": 0,
           "text": "By the time we came out of the church the sun was out.",
           "source": "telling:grandma_rosa:s3",
-          "cue": "hug",
+          "cue": "out",
           "cueWord": "sun"
         },
         {
-          "t": 11.6,
+          "t": 3.8,
           "text": "And everyone was laughing at his socks.",
           "source": "telling:grandma_rosa:s4",
           "cue": "socks",
@@ -64,7 +93,7 @@
         }
       ],
       "transition": "fold",
-      "pageText": "June 1958. It poured on the church steps, and Joseph gave Rosa his umbrella without a word."
+      "pageText": "Then the sun came out, the rice flew, and everyone laughed at Joseph's soggy socks."
     }
   ],
   "narrations": {
@@ -73,17 +102,21 @@
         {
           "t": 0,
           "text": "Mom always says it rained, and Dad always says it didn't.",
-          "source": "telling:dad:s1"
+          "source": "telling:dad:s1",
+          "cue": "arrive",
+          "cueWord": "rained"
         },
         {
-          "t": 4.5,
+          "t": 5.6,
           "text": "The one photo we have shows wet steps and a lot of umbrellas.",
           "source": "telling:dad:s2",
           "cue": "umbrella",
           "cueWord": "umbrellas"
-        },
+        }
+      ],
+      "s2": [
         {
-          "t": 9.5,
+          "t": 4.2,
           "text": "So I think she wins that one.",
           "source": "telling:dad:s3",
           "cue": "socks",
@@ -103,27 +136,36 @@
       "drives": {"type": "prop_state", "prop": "black_umbrella", "states": ["closed", "open"]}
     },
     {
+      "id": "socks_tab",
+      "kind": "pull_tab",
+      "label": "Pull to see Joseph's soggy socks",
+      "shot": "s2",
+      "page": "stage",
+      "at": [0.72, 0.82],
+      "drives": {"type": "scrub", "from": 4.8, "to": 6.4, "targets": ["puppet:grandpa_joseph", "puppet:grandma_rosa"]}
+    },
+    {
       "id": "hug_tab",
       "kind": "pull_tab",
       "label": "Pull to bring them together",
-      "shot": "s1",
+      "shot": "s2",
       "page": "story",
       "at": [0.82, 0.74],
-      "drives": {"type": "scrub", "from": 8.0, "to": 11.8, "targets": ["puppet:grandma_rosa", "puppet:grandpa_joseph"]}
+      "drives": {"type": "scrub", "from": 7.6, "to": 9.4, "targets": ["puppet:grandma_rosa", "puppet:grandpa_joseph"]}
     }
   ],
   "explanations": [
     {
       "target": "puppet:grandma_rosa",
-      "text": "Rosa was twenty and had sewn the hem of her dress herself the night before."
+      "text": "Rosa was twenty and sewed her own hem the night before. Thirty years later, her son David met Ana on these same church steps."
     },
     {
       "target": "puppet:grandpa_joseph",
-      "text": "Joseph was twenty-four. He walked the whole way from the bus stop in the rain rather than be late."
+      "text": "Joseph was twenty-four. He walked from the bus stop in the rain rather than be late, and stood through the vows in wet socks."
     },
     {
       "target": "prop:black_umbrella",
-      "text": "Joseph's only umbrella. He gave it to Rosa on the steps and stood in the rain himself."
+      "text": "Joseph's only umbrella. He gave it to Rosa on the steps and stood in the rain himself. She kept it, and it still hangs by her door."
     }
   ]
 }

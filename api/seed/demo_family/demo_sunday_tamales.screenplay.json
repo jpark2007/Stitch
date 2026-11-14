@@ -1,24 +1,29 @@
 {
   "memoryId": "demo_sunday_tamales",
   "cast": ["mom", "grandma_carmen", "grandpa_luis"],
-  "props": ["tamale_pot", "lumpy_tamale", "kitchen_table", "kitchen_chair", "luis_straw_hat"],
+  "props": ["tamale_pot", "lumpy_tamale", "kitchen_table", "kitchen_chair", "kitchen_stool", "luis_straw_hat"],
   "shots": [
     {
       "id": "s1",
       "set": "carmen_kitchen_1970",
-      "marks": {"by_chair": [0.62, 0.0], "at_table": [0.45, 0.0]},
+      "marks": {"at_table": [0.45, 0.0]},
       "start": {
         "grandma_carmen": {"at": "by_stove", "holding": "tamale_pot", "facing": "right"},
-        "mom": {"at": "table_right", "holding": "lumpy_tamale", "facing": "right"}
+        "mom": {"at": "table_right", "holding": "lumpy_tamale", "facing": "left"}
       },
-      "propStart": {"kitchen_table": {"at": "table_spot"}, "kitchen_chair": {"at": "chair_spot"}},
+      "propStart": {
+        "kitchen_table": {"at": "table_spot"},
+        "kitchen_chair": {"at": "chair_spot"},
+        "kitchen_stool": {"at": "stool_spot"}
+      },
       "camera": [
         {"t": 0, "move": "wide"},
-        {"t": 6.4, "move": "close_up", "target": "lumpy_tamale", "dur": 1.2},
-        {"t": 10.5, "move": "pull_back", "dur": 1.8}
+        {"t": 1.0, "move": "pan_to", "target": "tamale_pot", "dur": 1.5},
+        {"t": 5.0, "move": "close_up", "target": "lumpy_tamale", "dur": 1.2},
+        {"t": 8.2, "move": "dolly_to", "target": "grandpa_luis", "dur": 1.5}
       ],
       "actions": [
-        {"t": 0, "do": "steam", "at": "tamale_pot", "dur": 4},
+        {"t": 0, "do": "steam", "at": "tamale_pot", "dur": 5},
         {"t": 0.3, "who": "grandma_carmen", "do": "walk_to", "to": "at_table"},
         {
           "t": 2.4,
@@ -28,20 +33,10 @@
           "on": "kitchen_table",
           "id": "pot_down"
         },
-        {"t": 0, "who": "grandpa_luis", "do": "enter", "from": "offstage_right", "to": "back_door"},
-        {"t": 3.0, "who": "grandpa_luis", "do": "sit_on", "what": "kitchen_chair", "id": "sit"},
-        {"t": 5.0, "who": "mom", "do": "walk_to", "to": "by_chair"},
-        {
-          "t": 7.0,
-          "who": "mom",
-          "do": "hand_to",
-          "what": "lumpy_tamale",
-          "to": "grandpa_luis",
-          "id": "tamale"
-        },
-        {"t": 9.2, "who": "grandpa_luis", "do": "stand_up"},
-        {"t": 10.0, "who": "grandpa_luis", "do": "hug", "target": "mom", "id": "hug"},
-        {"t": 10.2, "who": "grandma_carmen", "do": "lean_toward", "target": "mom", "dur": 1.2}
+        {"t": 5.2, "who": "mom", "do": "hold", "what": "lumpy_tamale", "id": "masa"},
+        {"t": 6.4, "who": "grandma_carmen", "do": "lean_toward", "target": "mom", "dur": 1.2},
+        {"t": 7.4, "who": "grandpa_luis", "do": "enter", "from": "offstage_right", "to": "back_door", "id": "luis_in"},
+        {"t": 9.8, "who": "grandpa_luis", "do": "sit_on", "what": "kitchen_chair", "id": "sit"}
       ],
       "narration": [
         {
@@ -51,9 +46,50 @@
           "cue": "pot_down",
           "cueWord": "husks"
         },
-        {"t": 3.8, "text": "I was allowed to spread the masa, badly.", "source": "telling:mom:s2"},
         {
-          "t": 6.0,
+          "t": 4.6,
+          "text": "I was allowed to spread the masa, badly.",
+          "source": "telling:mom:s2",
+          "cue": "masa",
+          "cueWord": "masa"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Sunday at Carmen's: steam on the windows, masa on every hand, and one very lumpy tamale."
+    },
+    {
+      "id": "s2",
+      "set": "carmen_kitchen_1970",
+      "marks": {"by_chair": [0.64, 0.0]},
+      "start": {
+        "grandpa_luis": {"at": "chair_spot", "in": "kitchen_chair.seat", "facing": "left"},
+        "mom": {"at": "by_chair", "holding": "lumpy_tamale", "facing": "right"},
+        "grandma_carmen": {"at": "by_stove", "facing": "right"}
+      },
+      "propStart": {},
+      "camera": [
+        {"t": 0, "move": "wide"},
+        {"t": 1.4, "move": "close_up", "target": "grandpa_luis", "dur": 1.2},
+        {"t": 6.0, "move": "pull_back", "dur": 1.8}
+      ],
+      "actions": [
+        {"t": 0, "do": "steam", "at": "tamale_pot", "dur": 6},
+        {
+          "t": 1.4,
+          "who": "mom",
+          "do": "hand_to",
+          "what": "lumpy_tamale",
+          "to": "grandpa_luis",
+          "id": "tamale"
+        },
+        {"t": 3.0, "who": "grandpa_luis", "do": "hold", "what": "lumpy_tamale", "id": "best"},
+        {"t": 3.6, "who": "mom", "do": "sit_on", "what": "kitchen_stool", "id": "ana_sits"},
+        {"t": 4.6, "who": "grandpa_luis", "do": "pose", "pose": "arms_raised", "dur": 1.4, "id": "cheer"},
+        {"t": 5.0, "who": "grandma_carmen", "do": "lean_toward", "target": "grandpa_luis", "dur": 1.4}
+      ],
+      "narration": [
+        {
+          "t": 0.4,
           "text": "My father pretended every lumpy one was the best he had ever eaten.",
           "source": "telling:mom:s3",
           "cue": "tamale",
@@ -61,7 +97,7 @@
         }
       ],
       "transition": "fold",
-      "pageText": "Sunday at Carmen's: steam on the windows, masa on every hand, and one very lumpy tamale for Luis."
+      "pageText": "Luis always ate Ana's lumpy tamale first, and called it the best one he'd ever had."
     }
   ],
   "interactions": [
@@ -73,6 +109,20 @@
       "page": "stage",
       "at": [0.2, 0.78],
       "drives": {"type": "prop_part", "prop": "tamale_pot", "part": "lid", "channel": "rot", "range": [0, 0.8]}
+    },
+    {
+      "id": "best_tab",
+      "kind": "pull_tab",
+      "label": "Pull to give Luis the lumpy one",
+      "shot": "s2",
+      "page": "story",
+      "at": [0.7, 0.8],
+      "drives": {
+        "type": "scrub",
+        "from": 1.4,
+        "to": 6.0,
+        "targets": ["prop:lumpy_tamale", "puppet:mom", "puppet:grandpa_luis"]
+      }
     }
   ],
   "explanations": [
@@ -86,7 +136,7 @@
     },
     {
       "target": "puppet:grandpa_luis",
-      "text": "Luis came in from the garden every Sunday at noon, still in his straw hat."
+      "text": "Luis came in from the garden every Sunday at noon, still in his straw hat, and always ate Ana's tamale first."
     },
     {
       "target": "prop:tamale_pot",
@@ -94,10 +144,17 @@
     },
     {
       "target": "prop:lumpy_tamale",
-      "text": "Ana's tamale, more masa than husk. Luis ate it first and called it the best of the batch."
+      "text": "Ana's tamale, more masa than husk. Luis held it up like a prize and called it the best of the batch."
     },
     {"target": "prop:kitchen_table", "text": "The kitchen table where every tamale in the family was folded."},
     {"target": "prop:kitchen_chair", "text": "Luis's chair. Nobody else sat in it on Sundays."},
-    {"target": "prop:luis_straw_hat", "text": "Luis's straw hat, his signature. He wore it indoors and out."}
+    {
+      "target": "prop:kitchen_stool",
+      "text": "Ana's painted stool, the only seat she could climb onto by herself. It stood next to her father's chair."
+    },
+    {
+      "target": "prop:luis_straw_hat",
+      "text": "Luis's straw hat, his signature. He wore it in the garden, at the table, and in every photo."
+    }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "memoryId": "demo_green_sedan_trip",
   "cast": ["dad", "grandpa_joseph", "grandma_rosa"],
-  "props": ["green_sedan", "peaches", "fruit_crate"],
+  "props": ["green_sedan", "peaches", "fruit_crate", "road_map"],
   "shots": [
     {
       "id": "s1",
@@ -10,10 +10,14 @@
       "start": {
         "grandpa_joseph": {"at": "front_walk", "facing": "right"},
         "grandma_rosa": {"at": "porch", "facing": "right"},
-        "dad": {"at": "porch", "facing": "right"}
+        "dad": {"at": "porch", "holding": "road_map", "facing": "right"}
       },
       "propStart": {"green_sedan": {"at": "car_spot"}},
-      "camera": [{"t": 0, "move": "wide"}, {"t": 8.2, "move": "pan_to", "target": "green_sedan", "dur": 2}],
+      "camera": [
+        {"t": 0, "move": "wide"},
+        {"t": 5.4, "move": "close_up", "target": "road_map", "dur": 1.2},
+        {"t": 8.2, "move": "pan_to", "target": "green_sedan", "dur": 2}
+      ],
       "actions": [
         {
           "t": 0,
@@ -174,7 +178,7 @@
     }
   ],
   "explanations": [
-    {"target": "puppet:dad", "text": "David was ten. He held the road map upside down for most of the trip."},
+    {"target": "puppet:dad", "text": "David was ten, in the back seat, and in charge of the map. He ate more peaches than anyone."},
     {
       "target": "puppet:grandpa_joseph",
       "text": "Joseph drove every mile himself. Nobody else was allowed behind the wheel of the green sedan."
@@ -187,6 +191,10 @@
     {
       "target": "prop:peaches",
       "text": "A paper bag of peaches from the stand. David ate most of them before the tire was fixed."
+    },
+    {
+      "target": "prop:road_map",
+      "text": "The road map David was put in charge of. He held it upside down from the driveway to the peach stand."
     },
     {
       "target": "prop:fruit_crate",

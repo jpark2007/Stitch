@@ -90,6 +90,21 @@
     "states": {}
   },
   {
+    "id": "kitchen_stool",
+    "name": "Ana's stool",
+    "description": "a short painted wooden stool, the only seat at the table a six-year-old could climb onto",
+    "source": "generated",
+    "size": "furniture",
+    "art": {"body": null},
+    "color": "#5f8fa8",
+    "aspect": 0.8,
+    "anchor": [0.5, 1.0],
+    "grip": null,
+    "sockets": {"seat": [0.5, 0.55]},
+    "parts": {},
+    "states": {}
+  },
+  {
     "id": "luis_straw_hat",
     "name": "Luis's straw hat",
     "description": "a wide-brimmed straw hat with a dark band",
@@ -138,6 +153,21 @@
     "states": {}
   },
   {
+    "id": "road_map",
+    "name": "the road map",
+    "description": "a folded paper road map of the coast, soft at the creases",
+    "source": "generated",
+    "size": "hand",
+    "art": {"body": null},
+    "color": "#e8dcb0",
+    "aspect": 1.4,
+    "anchor": [0.5, 1.0],
+    "grip": [0.5, 0.5],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
     "id": "fruit_crate",
     "name": "a fruit crate",
     "description": "an upturned wooden peach crate, stencilled with the farm's name",
@@ -155,20 +185,20 @@
   {
     "id": "red_bike",
     "name": "Sam's red bike",
-    "description": "a red bicycle with a silver bell, two sizes too big",
+    "description": "a red bicycle with a silver bell, two sizes too big; rigged as a vehicle so its rider can ride it (the seat is the driver socket) and its wheels spin",
     "source": "generated",
-    "size": "furniture",
-    "art": {"body": null, "wheel": null},
+    "size": "vehicle",
+    "art": {"body": null, "ringing": null, "wheel": null},
     "color": "#c8352e",
-    "aspect": 1.7,
+    "aspect": 1.25,
     "anchor": [0.5, 1.0],
     "grip": null,
-    "sockets": {"seat": [0.42, 0.3]},
+    "sockets": {"driver": [0.4, 0.64]},
     "parts": {
-      "wheel_back": {"art": "wheel", "at": [0.2, 0.75], "spin": true},
-      "wheel_front": {"art": "wheel", "at": [0.8, 0.75], "spin": true}
+      "wheel_back": {"art": "wheel", "at": [0.2, 0.85], "spin": true},
+      "wheel_front": {"art": "wheel", "at": [0.8, 0.85], "spin": true}
     },
-    "states": {"quiet": {}, "ringing": {}}
+    "states": {"quiet": {}, "ringing": {"body": "ringing"}}
   },
   {
     "id": "sam_cap",
@@ -246,6 +276,36 @@
     "states": {}
   },
   {
+    "id": "rosa_hat",
+    "name": "Rosa's hat",
+    "description": "a pale blue straw hat with a white silk flower",
+    "source": "generated",
+    "size": "hand",
+    "art": {"body": null},
+    "color": "#7fa6c9",
+    "aspect": 1.7,
+    "anchor": [0.5, 1.0],
+    "grip": [0.5, 0.6],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "carmen_hat",
+    "name": "Carmen's hat",
+    "description": "a pale blue straw hat with a white silk flower, exactly like Rosa's",
+    "source": "generated",
+    "size": "hand",
+    "art": {"body": null},
+    "color": "#7fa6c9",
+    "aspect": 1.7,
+    "anchor": [0.5, 1.0],
+    "grip": [0.5, 0.6],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
     "id": "ring_box",
     "name": "the ring box",
     "description": "a small navy velvet box with two gold rings",
@@ -259,6 +319,21 @@
     "sockets": {},
     "parts": {},
     "states": {"closed": {}, "open": {"body": "open"}}
+  },
+  {
+    "id": "boutonniere",
+    "name": "Sam's boutonniere",
+    "description": "a single white apple blossom and a sprig of rosemary, pinned with a pearl pin",
+    "source": "generated",
+    "size": "tiny",
+    "art": {"body": null},
+    "color": "#f4f1e6",
+    "aspect": 0.8,
+    "anchor": [0.5, 1.0],
+    "grip": [0.5, 0.7],
+    "sockets": {},
+    "parts": {},
+    "states": {}
   },
   {
     "id": "garden_bench",

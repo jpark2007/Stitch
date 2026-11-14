@@ -1,15 +1,15 @@
 {
   "memoryId": "demo_lily_graduation",
   "cast": ["lily", "mom", "dad", "sam", "grandma_rosa", "grandma_carmen"],
-  "props": ["diploma", "lectern", "folding_chair_rosa", "folding_chair_carmen"],
+  "props": ["diploma", "lectern", "folding_chair_rosa", "folding_chair_carmen", "rosa_hat", "carmen_hat"],
   "shots": [
     {
       "id": "s1",
       "set": "school_hall_2015",
       "marks": {},
       "start": {
-        "grandma_rosa": {"at": "row_left", "in": "folding_chair_rosa.seat", "facing": "right"},
-        "grandma_carmen": {"at": "row_right", "in": "folding_chair_carmen.seat", "facing": "right"},
+        "grandma_rosa": {"at": "row_left", "in": "folding_chair_rosa.seat", "holding": "rosa_hat", "facing": "right"},
+        "grandma_carmen": {"at": "row_right", "in": "folding_chair_carmen.seat", "holding": "carmen_hat", "facing": "right"},
         "lily": {"at": "aisle", "facing": "right"}
       },
       "propStart": {
@@ -20,13 +20,21 @@
       },
       "camera": [
         {"t": 0, "move": "wide"},
+        {"t": 0.6, "move": "dolly_to", "target": "grandma_rosa", "dur": 1.2},
+        {"t": 4.2, "move": "pan_to", "target": "lily", "dur": 1.2},
         {"t": 6.2, "move": "close_up", "target": "lily", "dur": 1.2},
-        {"t": 8.6, "move": "pull_back", "dur": 1.5}
+        {"t": 8.0, "move": "close_up", "target": "grandma_rosa", "dur": 1.0},
+        {"t": 10.4, "move": "pull_back", "dur": 1.5}
       ],
       "actions": [
+        {"t": 0.3, "who": "grandma_rosa", "do": "put_on", "what": "rosa_hat", "id": "hats"},
+        {"t": 0.3, "who": "grandma_carmen", "do": "put_on", "what": "carmen_hat"},
+        {"t": 2.4, "who": "grandma_carmen", "do": "turn_to", "target": "grandma_rosa"},
         {"t": 0.5, "who": "lily", "do": "walk_to", "to": "stage_steps"},
         {"t": 6.9, "who": "lily", "do": "pose", "pose": "bow_head", "dur": 1.2, "id": "bow"},
-        {"t": 7.6, "who": "grandma_rosa", "do": "wave", "target": "lily", "dur": 1.6, "id": "cheer"},
+        {"t": 7.6, "who": "grandma_rosa", "do": "stand_up", "id": "cheer"},
+        {"t": 8.1, "who": "grandma_rosa", "do": "pose", "pose": "arms_raised", "dur": 1.6, "id": "clap"},
+        {"t": 10.4, "who": "grandma_rosa", "do": "sit_on", "what": "folding_chair_rosa"},
         {"t": 8.0, "who": "grandma_carmen", "do": "lean_toward", "target": "grandma_rosa", "dur": 1.2},
         {"t": 8.6, "who": "lily", "do": "walk_to", "to": "stage_edge"},
         {"t": 9.6, "who": "lily", "do": "walk_to", "to": "lectern_front"},
@@ -37,7 +45,9 @@
         {
           "t": 0,
           "text": "Both grandmothers came and sat in the front row in matching hats, which was not planned.",
-          "source": "telling:mom:s1"
+          "source": "telling:mom:s1",
+          "cue": "hats",
+          "cueWord": "grandmothers"
         },
         {
           "t": 4.2,
@@ -47,15 +57,15 @@
           "cueWord": "bow"
         },
         {
-          "t": 7.4,
+          "t": 7.9,
           "text": "Rosa clapped louder than anyone in the hall.",
           "source": "telling:mom:s3",
-          "cue": "cheer",
+          "cue": "clap",
           "cueWord": "clapped"
         }
       ],
       "transition": "fold",
-      "pageText": "Class of 2015. Lily caught her hem on the second step and turned the stumble into a bow."
+      "pageText": "Class of 2015. Two grandmothers in matching hats, and Lily turning a trip on the stairs into a bow."
     },
     {
       "id": "s2",
@@ -90,7 +100,7 @@
         }
       ],
       "transition": "fold",
-      "pageText": "On the lawn the diploma went straight to Mom, and Sam started the joke he still tells."
+      "pageText": "Outside, the diploma went straight to Mom. Sam started a joke he still tells every Thanksgiving."
     }
   ],
   "narrations": {
@@ -104,11 +114,9 @@
           "cueWord": "caught"
         },
         {
-          "t": 8.6,
+          "t": 9.4,
           "text": "I figured if I bowed nobody would know.",
-          "source": "telling:lily:s2",
-          "cue": "diploma",
-          "cueWord": "know"
+          "source": "telling:lily:s2"
         }
       ],
       "s2": [
@@ -131,6 +139,15 @@
       "page": "stage",
       "at": [0.52, 0.84],
       "drives": {"type": "scrub", "from": 6.9, "to": 8.1, "targets": ["puppet:lily"]}
+    },
+    {
+      "id": "cheer_tab",
+      "kind": "pull_tab",
+      "label": "Pull to make Rosa cheer",
+      "shot": "s1",
+      "page": "story",
+      "at": [0.2, 0.8],
+      "drives": {"type": "scrub", "from": 7.6, "to": 10.0, "targets": ["puppet:grandma_rosa"]}
     },
     {
       "id": "diploma_tab",
@@ -167,6 +184,14 @@
       "target": "prop:folding_chair_rosa",
       "text": "Rosa's front-row seat, saved for her since seven that morning."
     },
-    {"target": "prop:folding_chair_carmen", "text": "Carmen's seat, right next to Rosa's, in the front row."}
+    {"target": "prop:folding_chair_carmen", "text": "Carmen's seat, right next to Rosa's, in the front row."},
+    {
+      "target": "prop:rosa_hat",
+      "text": "Rosa's pale blue hat with a white silk flower, bought specially for the day."
+    },
+    {
+      "target": "prop:carmen_hat",
+      "text": "Carmen's hat: the very same pale blue hat, from the very same shop. Nobody planned it, and nobody has ever confessed."
+    }
   ]
 }
