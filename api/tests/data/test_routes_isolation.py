@@ -71,8 +71,8 @@ def _app_routes(app: FastAPI) -> set[tuple[str, str]]:
     return found
 
 
-# Routes that are allowed to have no `{fid}`: the health check, the account routes,
-# starting a family, and the invite routes (the code itself is the secret). Anything else
+# Routes that are allowed to have no `{fid}`: the health check, the account routes
+# (GET /session included: it only ever describes the caller), starting a family, and the invite routes (the code itself is the secret). Anything else
 # needs a family check. The app must serve every one of these.
 UNSCOPED_REQUIRED: frozenset[tuple[str, str]] = frozenset(
     {
@@ -81,6 +81,7 @@ UNSCOPED_REQUIRED: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/auth/login"),
         ("POST", "/auth/logout"),
         ("GET", "/me"),
+        ("GET", "/session"),
         ("POST", "/families"),
         ("GET", "/invites/{code}"),
         ("POST", "/invites/{code}/join"),
