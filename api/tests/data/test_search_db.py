@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import uuid
 from pathlib import Path
@@ -307,6 +308,164 @@ def test_operation_failure_falls_back_to_keywords():
 def test_empty_vector_result_falls_back_to_keywords(seeded, monkeypatch):
     monkeypatch.setattr(search, "_vector_search", lambda *a, **k: [])
     assert search_memories(seeded, FAMILY_A, HYMN_QUERY, vector=[0.1])[0].memory_id == "sample_hymn_books"
+
+
+# ------------------------------------------------------------------ keyword + vector merge
+
+SKATEBOARD = "demo_skateboard"
+HYMN_QUESTION = "who dropped the hymn books?"
+UNRELATED = "zeppelin quasar xylophone"
+
+
+def _skate_embedder(text: str) -> list[float]:
+    """Anything about skating points one way, everything else the other (cosine 0)."""
+    return [1.0, 0.0] if "skat" in text.lower() or "kickflip" in text.lower() else [0.0, 1.0]
+
+
+def _atlas_score(a: list[float], b: list[float]) -> float:
+    """Atlas cosine vectorSearchScore: (1 + cos) / 2."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return (1 + (dot / norm if norm else 0.0)) / 2
+
+
+@pytest.fixture
+def atlas(monkeypatch):
+    """Stand-in for $vectorSearch: like Atlas it sees only the family's docs with an `embedding`.
+
+    Returns the list of result lists it handed back, one per call.
+    """
+    returned: list[list[dict]] = []
+
+    def fake(db, family_id, vector, limit):
+        docs = db[search.MEMORIES].find({"familyId": family_id, "embedding": {"$exists": True}})
+        out = [
+            {**{k: v for k, v in d.items() if k not in ("embedding", "screenplay", "timeline")},
+             "score": _atlas_score(vector, d["embedding"])}
+            for d in docs
+        ]
+        out.sort(key=lambda d: -d["score"])
+        returned.append(out[:limit])
+        return out[:limit]
+
+    monkeypatch.setattr(search, "_vector_search", fake)
+    return returned
+
+
+@pytest.fixture
+def demo(mdb):
+    """The seeded demo family (no embedder, so no vectors) plus one embedded skateboard story."""
+    from db import memories as memories_db
+    from seed.demo import DEMO_FAMILY_ID, seed_demo
+
+    seed_demo(mdb)
+    set_embedder(_skate_embedder)
+    memories_db.create_memory(
+        mdb, DEMO_FAMILY_ID, title="Sam's first skateboard", year=2015, participant_ids=["sam"],
+        telling=schemas.Telling(author_id="sam", question="What did you do that summer?",
+                                text="I learned a kickflip in the parking lot behind the school. "
+                                     "It took all summer."),
+        memory_id=SKATEBOARD,
+    )
+    embedded = [d["_id"] for d in mdb.memories.find({"embedding": {"$exists": True}})]
+    assert embedded == [SKATEBOARD]
+    return mdb, DEMO_FAMILY_ID
+
+
+def test_unembedded_keyword_match_beats_vector_only_hit(demo, atlas):
+    db, fid = demo
+    hits = search_memories(db, fid, HYMN_QUESTION)
+    # The stand-in did return the skateboard story, as Atlas would: its only embedded doc.
+    assert [d["_id"] for d in atlas[0]] == [SKATEBOARD]
+    assert atlas[0][0]["score"] < search.VECTOR_MIN_SCORE
+    ids = [h.memory_id for h in hits]
+    assert ids[0] == "sample_hymn_books"
+    assert SKATEBOARD not in ids
+
+    quotes = ask_quotes(db, fid, HYMN_QUESTION)
+    assert quotes[0].memory_id == "sample_hymn_books"
+    assert quotes[0].text == "And then she dropped every single hymn book."
+    assert all(q.memory_id != SKATEBOARD for q in quotes)
+
+
+def test_unrelated_question_gets_no_story(demo, atlas):
+    db, fid = demo
+    assert search._keyword_search(db, fid, UNRELATED) == []
+    quotes = ask_quotes(db, fid, UNRELATED)
+    assert atlas and atlas[-1], "the nearest neighbour still came back from vector search"
+    assert all(d["score"] < search.VECTOR_MIN_SCORE for d in atlas[-1])
+    assert quotes == []
+    assert compose_answer(UNRELATED, quotes) == NO_STORY
+
+
+def test_semantic_vector_hit_is_kept_after_keyword_matches(demo, atlas):
+    db, fid = demo
+    query = "who went skating near the church?"  # no word in common with the skateboard story
+    keyword_ids = [str(d["_id"]) for d, _ in search._keyword_search(db, fid, query)]
+    assert keyword_ids and SKATEBOARD not in keyword_ids
+    hits = search_memories(db, fid, query, limit=len(keyword_ids) + 1)
+    assert [h.memory_id for h in hits] == [*keyword_ids, SKATEBOARD]
+    assert hits[-1].score == pytest.approx(1.0)
+    # Truncation keeps the keyword matches first.
+    assert [h.memory_id for h in search_memories(db, fid, query, limit=1)] == keyword_ids[:1]
+
+
+def test_doc_in_both_paths_appears_once_with_keyword_score(seeded, monkeypatch):
+    vector_docs = [
+        {**d, "score": score}
+        for d, score in [(hymn_doc(), 0.95), (other_docs()[1], 0.85), (other_docs()[0], 0.7)]
+    ]
+    monkeypatch.setattr(search, "_vector_search", lambda *a, **k: [dict(d) for d in vector_docs])
+    keyword = {str(d["_id"]): s for d, s in search._keyword_search(seeded, FAMILY_A, HYMN_QUERY)}
+    assert set(keyword) == {"sample_hymn_books", "church_picnic", "first_trumpet"}
+
+    hits = search_memories(seeded, FAMILY_A, HYMN_QUERY, vector=[0.1], limit=10)
+    ids = [h.memory_id for h in hits]
+    # Keyword matches by keyword score, then the vector-only sedan (0.85 >= floor).
+    assert ids == ["sample_hymn_books", "church_picnic", "first_trumpet", "green_sedan"]
+    assert len(ids) == len(set(ids))
+    assert hits[0].score == pytest.approx(keyword["sample_hymn_books"])
+    assert hits[1].score == pytest.approx(keyword["church_picnic"])  # 0.7 vector, still kept
+    assert hits[3].score == pytest.approx(0.85)
+
+
+def test_keyword_ties_break_on_vector_rank(mdb, monkeypatch):
+    for year, mid in [(2001, "late"), (1950, "early"), (1980, "middle")]:
+        mdb.memories.insert_one({
+            "_id": mid, "familyId": FAMILY_A, "title": "Snow day", "year": year,
+            "tellings": [{"authorId": "p", "text": "It snowed."}],
+        })
+    late = {**mdb.memories.find_one({"_id": "late"}), "score": 0.5}
+    monkeypatch.setattr(search, "_vector_search", lambda *a, **k: [late])
+    # A vector hit wins a keyword tie even below the floor, which only gates vector-only hits.
+    assert [h.memory_id for h in search_memories(mdb, FAMILY_A, "snow", vector=[0.1])] == [
+        "late", "early", "middle",
+    ]
+
+
+def test_vector_floor_is_inclusive(mdb, monkeypatch):
+    docs = [
+        {"_id": "at", "familyId": FAMILY_A, "title": "A", "year": 2000, "score": 0.9, "tellings": []},
+        {"_id": "below", "familyId": FAMILY_A, "title": "B", "year": 1900, "score": 0.89, "tellings": []},
+        {"_id": "above", "familyId": FAMILY_A, "title": "C", "year": 2010, "score": 0.95, "tellings": []},
+    ]
+    monkeypatch.setattr(search, "VECTOR_MIN_SCORE", 0.9)
+    monkeypatch.setattr(search, "_vector_search", lambda *a, **k: [dict(d) for d in docs])
+    assert [h.memory_id for h in search_memories(mdb, FAMILY_A, UNRELATED, vector=[0.1])] == [
+        "above", "at",
+    ]
+
+
+def test_vector_min_score_env(monkeypatch):
+    name = "STITCH_VECTOR_MIN_SCORE"
+    if name not in os.environ:
+        assert search.VECTOR_MIN_SCORE == 0.8
+    monkeypatch.delenv(name, raising=False)
+    assert search._env_float(name, 0.8) == 0.8
+    for raw, expected in [("0.65", 0.65), (" 0.9 ", 0.9), ("", 0.8), ("abc", 0.8), ("nan", 0.8),
+                          ("inf", 0.8)]:
+        monkeypatch.setenv(name, raw)
+        assert search._env_float(name, 0.8) == expected, raw
 
 
 # ------------------------------------------------------------------ quotes and answers
