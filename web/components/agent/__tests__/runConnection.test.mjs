@@ -927,3 +927,63 @@ test("saved answers for one run never close another run's pause", async () => {
   assert.equal(r.state.phase, "waiting");
   assert.equal(r.state.pending?.kind, "answer");
 });
+
+// ---------------------------------------------------------------------------
+// Regression: a run that fails with its own error cannot be recovered by
+// reconnecting. Every backend replays the whole run on a new connection, so
+// Retry (useAgentRun.retry: book.folded = 0, a reset, then follow again) only
+// brings the same error back. The state says where the error came from, so
+// the page can offer "Tell it again" instead.
+
+test("regression: retrying a run that ended with its own error replays the same error", async () => {
+  let connections = 0;
+  const stream = (signal) => {
+    connections += 1;
+    return (async function* () {
+      for (const m of [PLAN, ERROR]) {
+        if (signal.aborted) return;
+        await Promise.resolve();
+        yield m;
+      }
+    })();
+  };
+  const book = newRunBook();
+  let state = initialRunState;
+  const dispatch = (a) => {
+    state = runReducer(state, a);
+  };
+  const opts = {
+    stream,
+    book,
+    dispatch,
+    signal: new AbortController().signal,
+    replayOnReconnect: true,
+    maxRetries: 5,
+    retryDelayMs: defaultRetryDelay,
+    sleep: async () => {},
+    now: () => 0,
+  };
+
+  await followRun(opts);
+  assert.equal(connections, 1);
+  assert.equal(state.phase, "error");
+  assert.equal(state.errorFrom, "run");
+  assert.equal(isFinished(state), true);
+
+  // What useAgentRun.retry does with replay on: start again from a clean feed.
+  book.folded = 0;
+  dispatch({ type: "reset" });
+  assert.equal(state.errorFrom, null);
+  await followRun(opts);
+  assert.equal(connections, 2);
+  assert.equal(state.phase, "error", "reconnecting cannot recover");
+  assert.equal(state.errorFrom, "run");
+  assert.equal(state.error, "The studio stopped.");
+});
+
+test("a connection that never opens ends with a connection error", async () => {
+  const r = await follow([["throw"]], { maxRetries: 0 });
+  assert.equal(r.state.phase, "error");
+  assert.equal(r.state.errorFrom, "connection");
+  assert.equal(r.calls.length, 1);
+});

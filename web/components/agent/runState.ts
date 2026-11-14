@@ -81,6 +81,13 @@ export interface RunState {
   memoryId: string | null;
   version: number | null;
   error: string | null;
+  /**
+   * Where `error` came from: "run" for the run's own `error` event (the run
+   * itself failed, and replaying it brings the same error back), "connection"
+   * when the page gave up reconnecting (reconnecting may still work). null
+   * whenever `error` is.
+   */
+  errorFrom: "run" | "connection" | null;
   /** Last sequence number handed to a log entry */
   seq: number;
 }
@@ -96,6 +103,7 @@ export const initialRunState: RunState = {
   memoryId: null,
   version: null,
   error: null,
+  errorFrom: null,
   seq: 0,
 };
 
@@ -120,12 +128,13 @@ function withEntry(state: RunState, body: EntryBody): RunState {
 
 /**
  * Phase and error after an informational event: wakes from connecting or
- * error, otherwise unchanged. Waking from error clears the stale message.
+ * error, otherwise unchanged. Waking from error clears the stale message and
+ * where it came from.
  */
-function wake(state: RunState): Pick<RunState, "phase" | "error"> {
-  if (state.phase === "connecting") return { phase: "running", error: state.error };
-  if (state.phase === "error") return { phase: "running", error: null };
-  return { phase: state.phase, error: state.error };
+function wake(state: RunState): Pick<RunState, "phase" | "error" | "errorFrom"> {
+  if (state.phase === "connecting") return { phase: "running", error: state.error, errorFrom: state.errorFrom };
+  if (state.phase === "error") return { phase: "running", error: null, errorFrom: null };
+  return { phase: state.phase, error: state.error, errorFrom: state.errorFrom };
 }
 
 function promptOf(pending: PendingInput): string | null {
@@ -150,7 +159,7 @@ function pause(state: RunState, pending: PendingInput, body: EntryBody): RunStat
   const closed = closePause(state, null);
   const pauseSteps = closed.steps.filter((s) => s.status === "running").map((s) => s.key);
   return withEntry(
-    { ...closed, pending, pauseSteps, pauseSeq: closed.seq + 1, phase: "waiting", error: null },
+    { ...closed, pending, pauseSteps, pauseSeq: closed.seq + 1, phase: "waiting", error: null, errorFrom: null },
     body,
   );
 }
@@ -290,11 +299,12 @@ function applyEvent(state: RunState, message: RunEventMessage): RunState {
         pauseSteps: null,
         pauseSeq: null,
         error: null,
+        errorFrom: null,
       };
 
     case "error":
       return withEntry(
-        { ...state, phase: "error", error: message.data.message },
+        { ...state, phase: "error", error: message.data.message, errorFrom: "run" },
         { kind: "error", message: message.data.message },
       );
 
@@ -331,12 +341,12 @@ export function runReducer(state: RunState, action: RunAction): RunState {
       if (!state.pending || state.pending.kind !== action.kind) {
         return action.summary === null ? state : fillNeutralAnswer(state, action.kind, action.summary);
       }
-      return { ...closePause(state, action.summary), phase: "running", error: null };
+      return { ...closePause(state, action.summary), phase: "running", error: null, errorFrom: null };
     }
 
     case "connection_error":
       return withEntry(
-        { ...state, phase: "error", error: action.message },
+        { ...state, phase: "error", error: action.message, errorFrom: "connection" },
         { kind: "error", message: action.message },
       );
 
