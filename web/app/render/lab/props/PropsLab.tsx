@@ -40,31 +40,31 @@ const DEMOS: { id: DemoName; label: string; note: string; shot: Shot }[] = [
     id: "ground",
     label: "On the ground",
     note: "Every size class, art not drawn yet: placeholder cards in each prop's colour.",
-    shot: { position: [0, 0.95, 3.35], lookAt: [0, 0.5, 0.35], fov: 31 },
+    shot: { position: [0, 1.05, 4.5], lookAt: [0, 0.55, 0.4], fov: 30 },
   },
   {
     id: "drive",
     label: "Drive",
     note: "Wheel parts turn as the car rolls. The basket rests on the car's roof socket.",
-    shot: { position: [0, 0.62, 2.75], lookAt: [0, 0.38, 0.5], fov: 31 },
+    shot: { position: [0, 0.75, 4.1], lookAt: [0, 0.42, 0.5], fov: 30 },
   },
   {
     id: "states",
     label: "States",
     note: "One prop, two states, each its own art: closed and open.",
-    shot: { position: [0, 0.26, 1.18], lookAt: [0, 0.11, 0.5], fov: 28 },
+    shot: { position: [0, 0.3, 1.55], lookAt: [0, 0.1, 0.5], fov: 28 },
   },
   {
     id: "held",
     label: "Held",
     note: "Drag the hand. The suitcase hangs from its grip; drop it and it lands on its anchor.",
-    shot: { position: [0, 0.42, 1.95], lookAt: [0, 0.24, 0.5], fov: 30 },
+    shot: { position: [0, 0.48, 2.3], lookAt: [0, 0.26, 0.5], fov: 30 },
   },
   {
     id: "closeup",
     label: "Close-up",
     note: "The sample's hymn books and a ring, as placeholder cards.",
-    shot: { position: [0.02, 0.07, 0.78], lookAt: [0.01, 0.035, 0.5], fov: 22 },
+    shot: { position: [0.02, 0.085, 1.0], lookAt: [0.02, 0.04, 0.5], fov: 22 },
   },
 ];
 

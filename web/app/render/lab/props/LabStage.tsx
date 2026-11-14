@@ -36,12 +36,12 @@ export function Framing({ shot }: { shot: Shot }) {
 
 /** Faint pencil ticks along the acting plane at u = 0, 0.25 ... 1. */
 function Marks() {
-  const pencil = usePaperMaterial({ color: "#b9aa94", roughness: 1, grain: 0.2 });
+  const pencil = usePaperMaterial({ color: "#cbbb9f", roughness: 1, grain: 0.2 });
   return (
     <group position={[0, 0.0008, 0.5]}>
       {[-1, -0.5, 0, 0.5, 1].map((x) => (
         <mesh key={x} position={[x, 0, 0]} rotation-x={-Math.PI / 2} material={pencil}>
-          <planeGeometry args={[0.004, 0.05]} />
+          <planeGeometry args={[0.0025, 0.022]} />
         </mesh>
       ))}
     </group>
@@ -50,8 +50,9 @@ function Marks() {
 
 export function LabStage() {
   const wood = useWoodMaterial({ repeat: [2, 2] });
-  const floor = useCardBoxMaterials({ color: "#f3ead8", repeat: [3, 1.6] });
-  const page = useCardBoxMaterials({ color: "#efe5d1", repeat: [3, 2] });
+  // Fine grain at the props' scale: about 2.5 tiles per stage unit.
+  const floor = useCardBoxMaterials({ color: "#f3ead8", repeat: [8, 4], grain: 0.55 });
+  const page = useCardBoxMaterials({ color: "#efe5d1", repeat: [8, 5], grain: 0.5 });
 
   return (
     <>
