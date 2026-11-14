@@ -511,3 +511,27 @@ def test_make_manager_passes_the_store_and_its_runs_survive_a_restart() -> None:
     finally:
         first.shutdown()
         second.shutdown()
+
+
+# --------------------------------------------------------------------------- run usage
+
+
+def test_one_usage_registry_is_shared_by_art_studio_and_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both per-run caps count in one registry: the art service's images, the studio's model
+    calls (its ModelCallBudget) and the run manager's records all use `Services.usage`."""
+    from agent.guards import ModelCallBudget, RunUsage
+    from agent.tools.art import ArtService
+
+    monkeypatch.setenv("STITCH_MAX_MODEL_CALLS", "321")
+    usage = RunUsage()
+    art = ArtService(None, None, usage=usage)
+    svc = wiring.fake_services(model=ScriptedChatModel(responder=lambda m, n: AIMessage(content="ok")), art=art)
+    assert svc.usage is usage is svc.art.usage
+    manager = wiring.make_manager(svc)
+    try:
+        assert manager._usage is usage
+    finally:
+        manager.shutdown()
+    graph = wiring.build_run_graph(run_info(), svc)
+    (budget,) = [cb for cb in graph.config["callbacks"] if isinstance(cb, ModelCallBudget)]
+    assert budget.usage is usage and budget.run_id == run_info().run_id and budget.limit == 321

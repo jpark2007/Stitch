@@ -41,8 +41,6 @@ import json
 import logging
 import math
 import re
-import threading
-from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +48,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from langchain_core.tools import BaseTool, StructuredTool
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
+
+from agent.guards import USAGE_RUNS_KEPT, RunUsage
 
 log = logging.getLogger(__name__)
 
@@ -371,8 +371,8 @@ def layer_band_line(layer: LayerName, kept: float) -> str | None:
     )
 
 
-BUDGET_RUNS_KEPT = 1024
-"""How many runs' image counts ``ArtService`` remembers; the least recently used is forgotten first."""
+BUDGET_RUNS_KEPT = USAGE_RUNS_KEPT
+"""How many runs' image counts a default ``ArtService`` registry remembers (``RunUsage``)."""
 
 
 def budget_note(max_images: int, thing: str) -> str:
@@ -391,8 +391,14 @@ class ArtService:
     ``run_id`` counts against that run, failed calls included (they may still be billed). A call
     beyond the budget returns ``None`` without calling the model, so the caller's placeholder
     path runs, and the first such refusal in a run is logged. A call with no ``run_id`` is not
-    counted. The counts are thread-safe (tools run in parallel threads) and kept for the last
-    ``BUDGET_RUNS_KEPT`` runs only.
+    counted.
+
+    The counts live in ``usage`` (``agent.guards.RunUsage``; thread-safe, tools run in parallel
+    threads), by default a registry of this service's own. Production shares one registry
+    between the art service, the studio's model call budget and the run manager
+    (``agent.wiring.Services.usage``), which writes ``images_used`` into the run record and
+    seeds it back (``seed_images``) when it restores a run, so a restart never gives a run its
+    image budget again.
     """
 
     def __init__(
@@ -401,58 +407,46 @@ class ArtService:
         remover: BackgroundRemover | None,
         *,
         max_images_per_run: int | None = None,
+        usage: RunUsage | None = None,
     ) -> None:
         if max_images_per_run is not None and max_images_per_run < 0:
             raise ValueError("max_images_per_run must be >= 0 or None")
         self.image_model = image_model
         self.remover = remover
         self.max_images_per_run = max_images_per_run
-        # run id -> [images used, refusal logged]; least recently used first.
-        self._used: OrderedDict[str, list[Any]] = OrderedDict()
-        self._budget_lock = threading.Lock()
+        self.usage = usage if usage is not None else RunUsage(keep=BUDGET_RUNS_KEPT)
 
     @property
     def enabled(self) -> bool:
         return self.image_model is not None and self.remover is not None
 
-    def _entry(self, run_id: str) -> list[Any]:
-        """This run's [used, logged] counter (call with the budget lock held)."""
-        entry = self._used.get(run_id)
-        if entry is None:
-            entry = self._used[run_id] = [0, False]
-            while len(self._used) > BUDGET_RUNS_KEPT:
-                self._used.popitem(last=False)
-        else:
-            self._used.move_to_end(run_id)
-        return entry
+    def images_used(self, run_id: str) -> int:
+        """How many images ``run_id`` has generated (counted, failed calls included)."""
+        return self.usage.images_used(run_id)
+
+    def seed_images(self, run_id: str, used: int) -> None:
+        """Continue ``run_id`` from ``used`` images, as persisted before a restart (never lowers
+        the count)."""
+        self.usage.seed(run_id, images_used=used)
 
     def images_left(self, run_id: str) -> int | None:
         """How many more images ``run_id`` may generate; ``None`` when unlimited."""
         if self.max_images_per_run is None:
             return None
-        with self._budget_lock:
-            entry = self._used.get(run_id)
-            used = entry[0] if entry is not None else 0
-        return max(0, self.max_images_per_run - used)
+        return max(0, self.max_images_per_run - self.usage.images_used(run_id))
 
     def _take_image(self, run_id: str | None) -> bool:
         """Count one image generation for ``run_id``; ``False`` (and nothing counted) when its budget is spent."""
         cap = self.max_images_per_run
         if cap is None or run_id is None:
             return True
-        with self._budget_lock:
-            entry = self._entry(run_id)
-            if entry[0] < cap:
-                entry[0] += 1
-                return True
-            first_refusal = not entry[1]
-            entry[1] = True
+        taken, first_refusal = self.usage.take_image(run_id, cap)
         if first_refusal:
             log.warning(
                 "run %s has used its image budget (%d images); the rest of its art is placeholder art",
                 run_id, cap,
             )
-        return False
+        return taken
 
     def make_cutout(
         self,

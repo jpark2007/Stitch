@@ -27,6 +27,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
 from agent import studio
+from agent.guards import RunLimits, RunUsage
 from agent.repo import AgentRepo, InMemoryRepo
 from agent.run_info import RunInfo
 from agent.runs import RunManager
@@ -85,6 +86,17 @@ class Services:
     subagent_model: BaseChatModel | None = None
     labels: Mapping[str, str] = field(default_factory=dict)
     """What each service is, for logs: e.g. {'art': 'placeholder', 'tts': 'fake', 'renderer': 'diagram'}."""
+    usage: RunUsage | None = None
+    """Model calls and images used per run (`guards.RunUsage`): the one registry the studio's
+    model call budget, the art service's image budget and the run manager's run records share.
+    None (the default) takes the art service's own registry (`art.usage`), so both caps count
+    in one place without the caller wiring it."""
+
+    def __post_init__(self) -> None:
+        if self.usage is None:
+            object.__setattr__(self, "usage", self.art.usage)
+        elif self.art.usage is not self.usage:
+            raise ValueError("Services.usage must be the art service's registry (ArtService(..., usage=...))")
 
 
 # --------------------------------------------------------------------------- scene lookup
@@ -199,7 +211,12 @@ def build_run_tools(run: RunInfo, services: Services) -> dict[str, BaseTool]:
 
 
 def build_run_graph(run: RunInfo, services: Services) -> CompiledStateGraph:
-    """The studio for one run: its tools, the eight sub-agents, the ask/merge/props gates."""
+    """The studio for one run: its tools, the eight sub-agents, the ask/merge/props gates.
+
+    Every chat model call of the run, the studio's and every sub-agent's, counts in
+    `services.usage` under `run.run_id`, and the call past `RunLimits.max_model_calls` (env
+    STITCH_MAX_MODEL_CALLS, read as the graph is built) raises `guards.RunBudgetExceeded`,
+    which the run manager turns into the run's error event."""
     tools = build_run_tools(run, services)
     return studio.build_studio(
         family_id=run.family_id,
@@ -210,17 +227,23 @@ def build_run_graph(run: RunInfo, services: Services) -> CompiledStateGraph:
         checkpointer=services.checkpointer,
         store=services.store,
         system_prompt=STUDIO_PROMPT,
+        run_id=run.run_id,
+        usage=services.usage,
+        max_model_calls=RunLimits.from_env().max_model_calls,
     )
 
 
 def make_manager(services: Services, *, max_workers: int = 4) -> RunManager:
     """A RunManager that builds a fresh studio per run from `services` and keeps its run
-    records in `services.store`, so runs outlive the process when the store does."""
+    records in `services.store`, so runs outlive the process when the store does. The records
+    carry each run's model calls and images used (`services.usage`), so neither cap starts over
+    after a restart."""
     return RunManager(
         repo=services.repo,
         build_graph=lambda run: build_run_graph(run, services),
         max_workers=max_workers,
         store=services.store,
+        usage=services.usage,
     )
 
 

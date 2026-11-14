@@ -40,8 +40,13 @@ provider cannot hold a run past STITCH_RUN_TIMEOUT_S.
 
 Time and cost limits (agent.guards.RunLimits; a bad value warns and keeps the default):
 
+    STITCH_MAX_MODEL_CALLS     chat model calls per run, the studio's and every sub-agent's,
+                               across resumes and a restart (600, at least 100); past it the run
+                               ends with an error event
     STITCH_MAX_IMAGES_PER_RUN  image generations per run (24); 0: placeholder art only
-    STITCH_MAX_GRAPH_STEPS     graph steps per run (1000, at least 50; studio.thread_config)
+    STITCH_MAX_GRAPH_STEPS     steps per studio graph stream (1000, at least 50;
+                               studio.thread_config): not a per-run cap, each resume streams
+                               again, and sub-agents keep deepagents' own limit
     STITCH_MODEL_TIMEOUT_S     seconds per Claude request (120; studio.make_model)
     STITCH_MODEL_MAX_RETRIES   retries of a failed Claude request (2; studio.make_model)
     STITCH_RUN_TIMEOUT_S       seconds of running time per run (1200; enforced by the run
@@ -74,7 +79,7 @@ from langgraph.types import Checkpointer
 
 from agent import studio
 from agent.adapters import AlphaAwareRemover, AnthropicVision, ElevenLabsTTS, OpenAIImageModel
-from agent.guards import RunLimits
+from agent.guards import RunLimits, RunUsage, env_value
 from agent.mongo_repo import MongoRepo
 from agent.runs import RunManager
 from agent.tools.art import ArtService
@@ -125,8 +130,8 @@ def _warn_memory_persistence(reason: str) -> None:
 
 
 def _env(name: str) -> str | None:
-    value = os.environ.get(name)
-    return value.strip() if value and value.strip() else None
+    """`guards.env_value` on os.environ: stripped, or None when unset or blank."""
+    return env_value(None, name)
 
 
 def _fake_db() -> bool:
@@ -198,12 +203,15 @@ def production_services() -> Services:
 
     checkpointer, store, labels["persistence"] = _persistence()
 
+    # One registry for both per-run caps (model calls, images), kept in the run records.
+    usage = RunUsage()
     remover = AlphaAwareRemover()
     if _env("IMAGE_API_KEY"):
-        art = ArtService(OpenAIImageModel(), remover, max_images_per_run=limits.max_images_per_run)
+        art = ArtService(OpenAIImageModel(), remover, max_images_per_run=limits.max_images_per_run, usage=usage)
         labels["art"] = "real"
     else:
-        art = ArtService(None, remover)  # placeholder art; cut_out of uploaded photos still works
+        # placeholder art; cut_out of uploaded photos still works
+        art = ArtService(None, remover, usage=usage)
         labels["art"] = "placeholder"
 
     if _env("ELEVENLABS_API_KEY"):
@@ -251,6 +259,7 @@ def production_services() -> Services:
         compiler=compiler,
         subagent_model=subagent_model,
         labels=labels,
+        usage=usage,
     )
 
 

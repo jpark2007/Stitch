@@ -33,7 +33,7 @@ from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
-from agent.guards import RunLimits
+from agent.guards import ModelCallBudget, RunLimits, RunUsage, env_value
 
 if TYPE_CHECKING:
     from langgraph.checkpoint.mongodb import MongoDBSaver
@@ -63,10 +63,14 @@ Each SKILL.md needs YAML frontmatter with `name` (equal to its folder name) and
 """
 
 RECURSION_LIMIT = RunLimits.max_graph_steps
-"""Default graph steps per run (env STITCH_MAX_GRAPH_STEPS overrides it, see
-`agent.guards.RunLimits`). One model turn plus its tool calls is about 2 steps and
-sub-agents run inside the `task` tool, so 1000 allows several hundred studio
-turns: far beyond a normal run, low enough to stop a looping agent."""
+"""Default steps per studio graph invocation (env STITCH_MAX_GRAPH_STEPS overrides it, see
+`agent.guards.RunLimits`). One model turn plus its tool calls is about 2 steps, so 1000
+allows several hundred studio turns in one stream: far beyond a normal run, low enough to stop
+a looping studio. It is not a per-run cap: the run manager starts a new stream, with a fresh
+budget, on every resume, and a sub-agent runs inside the `task` tool under the recursion limit
+deepagents binds on it (9999), which wins over this one. The per-run caps are
+STITCH_MAX_MODEL_CALLS (`ModelCallBudget`, which counts sub-agent calls too) and
+STITCH_RUN_TIMEOUT_S."""
 
 _NAMESPACE_COMPONENT = re.compile(r"^[A-Za-z0-9\-_.@+:~]+$")
 """What deepagents' StoreBackend accepts in a namespace component."""
@@ -90,7 +94,8 @@ def make_model(model: str | None = None) -> BaseChatModel:
     from langchain_anthropic import ChatAnthropic
 
     limits = RunLimits.from_env()
-    model_id = model or os.environ.get("STITCH_MODEL") or DEFAULT_MODEL
+    # A blank or whitespace STITCH_MODEL means the default; a padded one is used stripped.
+    model_id = (model.strip() if model and model.strip() else None) or env_value(None, "STITCH_MODEL") or DEFAULT_MODEL
     return ChatAnthropic(
         model_name=model_id,
         max_tokens=16_000,
@@ -235,6 +240,9 @@ def build_studio(
     store: BaseStore,
     system_prompt: str,
     skills_dir: Path = SKILLS_DIR,
+    run_id: str | None = None,
+    usage: RunUsage | None = None,
+    max_model_calls: int | None = None,
 ) -> CompiledStateGraph:
     """The studio graph for one family: run it with `thread_config(run_id)`.
 
@@ -242,9 +250,16 @@ def build_studio(
     `True` or an InterruptOnConfig; the run pauses before those tools both in
     the studio and inside every sub-agent, and resumes with
     `Command(resume={"decisions": [...]})` on the same thread.
+
+    `run_id` with `usage`: every chat model call the graph makes, the studio's and every
+    sub-agent's, is counted for that run in `usage` by a `guards.ModelCallBudget` bound on the
+    graph's config, and the call past `max_model_calls` (None: no cap) raises
+    `guards.RunBudgetExceeded` instead of reaching the model. The count lives in `usage`, not
+    in the graph, so it carries across every stream of the run (each resume) and, seeded from
+    the run record, across a restart.
     """
     gates = dict(interrupt_on)
-    return create_deep_agent(
+    graph = create_deep_agent(
         model=model,
         tools=list(tools),
         system_prompt=system_prompt,
@@ -260,11 +275,18 @@ def build_studio(
         store=store,
         name="studio",
     )
+    if run_id is not None and usage is not None:
+        graph = graph.with_config({"callbacks": [ModelCallBudget(run_id, usage, max_model_calls)]})
+    return graph
 
 
 def thread_config(run_id: str) -> dict[str, Any]:
-    """Run config for one studio run: its thread (resume with the same one) and a step limit
-    (`RunLimits.max_graph_steps`, env STITCH_MAX_GRAPH_STEPS, default RECURSION_LIMIT)."""
+    """Run config for one studio stream: its thread (resume with the same one) and a step limit
+    (`RunLimits.max_graph_steps`, env STITCH_MAX_GRAPH_STEPS, default RECURSION_LIMIT).
+
+    The step limit bounds one `graph.stream` of the studio graph only: each resume streams
+    again with a fresh budget, and sub-agents keep deepagents' own limit (see RECURSION_LIMIT).
+    The per-run caps are STITCH_MAX_MODEL_CALLS and STITCH_RUN_TIMEOUT_S."""
     return {"configurable": {"thread_id": run_id}, "recursion_limit": RunLimits.from_env().max_graph_steps}
 
 
