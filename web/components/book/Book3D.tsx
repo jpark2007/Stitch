@@ -662,7 +662,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
-      ctl.dragEnd(ev.clientX, ev.clientY);
+      ctl.dragEnd(ev.clientX, ev.clientY, ev.type === "pointerup");
       setCursor("");
     };
     window.addEventListener("pointermove", move);

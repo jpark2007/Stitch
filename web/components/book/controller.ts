@@ -105,6 +105,8 @@ interface Drag {
   active: boolean;
   lastP: number;
   lastT: number;
+  /** Pointer at the last applied move. */
+  lastX: number;
   vel: number;
 }
 
@@ -409,6 +411,7 @@ export class BookController {
       active: false,
       lastP: z.dir > 0 ? 0 : 1,
       lastT: now(),
+      lastX: clientX,
       vel: 0,
     };
     return true;
@@ -436,11 +439,13 @@ export class BookController {
     d.vel = d.vel * 0.6 + ((p - d.lastP) / dt) * 0.4;
     d.lastP = p;
     d.lastT = t;
+    d.lastX = clientX;
     leaf.p = p;
     this.invalidate();
   }
 
-  dragEnd(clientX = 0, clientY = 0) {
+  /** `final` is false for a cancelled pointer, whose coordinates mean nothing. */
+  dragEnd(clientX = 0, clientY = 0, final = true) {
     const tap = this.tap;
     if (tap) {
       this.tap = null;
@@ -463,6 +468,13 @@ export class BookController {
     }
     const d = this.drag;
     if (!d) return;
+    if (d.active) {
+      // A held corner sends no moves, so its speed fades with the time since
+      // the last one: a pause before letting go is no flick.
+      d.vel *= Math.exp(-(now() - d.lastT) / 0.06);
+      // The release point counts too, when it isn't where the last move was.
+      if (final && clientX !== d.lastX) this.dragMove(clientX, clientY);
+    }
     this.drag = null;
     const leaf = this.rt.leaves[d.leaf];
     if (!d.active) {
