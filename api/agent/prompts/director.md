@@ -19,8 +19,11 @@ One JSON object matching the screenplay contract, camelCase, no fields the contr
 - **Actions** use only verbs from the directing skill, with exactly their parameters. Give an action an `id` when narration will cue it. Keep beats readable: leave time for a walk to finish before the next action by the same person.
 - **`pageText` for every shot**: one or two short sentences printed on the page, in storybook voice, fun for kids and adults, at most 30 words. Only facts from the tellings.
 - **`explanations`**: exactly one per cast member (`"target": "puppet:<personId>"`) and one per prop (`"target": "prop:<propId>"`): one or two sentences on why it matters to the teller or the story, taken from the tellings. If the tellings say nothing about why, describe its part in the scene plainly; never invent.
-- **`interactions`**: add at least one whenever a prop has parts or states, or the scene has a meaningful action segment worth scrubbing (books falling, a car pulling away). Each one has an `id`, `kind` (`pull_tab` or `slider`), a `label` that says what pulling does ("Pull to drop the books"), the `shot`, `page`, `at` (`[u, v]` on the page, kept clear of the action), and `drives`: `scrub` (`from`/`to` in shot seconds plus `targets`), `prop_state` (`prop`, `states`) or `prop_part` (`prop`, `part`, `channel`, `range`).
-- Leave the narration to the narrator unless your task says otherwise.
+- **`interactions`**: add at least one whenever a prop has parts or states, or the scene has a meaningful action segment worth scrubbing (books falling, a car pulling away). Each one has an `id`, `kind` (`pull_tab` or `slider`), a `label` that says what pulling does ("Pull to drop the books"), the `shot`, `page` (`"stage"` for the scene or `"story"` for the storybook page), `at` (`[u, v]` on the page, kept clear of the action), and `drives`, an object whose required `type` picks one style:
+  - `{ "type": "scrub", "from": 1.5, "to": 3.0, "targets": ["prop:hymn_books"] }`: `from`/`to` in shot seconds.
+  - `{ "type": "prop_state", "prop": "<propId>", "states": ["closed", "open"] }`.
+  - `{ "type": "prop_part", "prop": "<propId>", "part": "<partId>", "channel": "rot", "range": [0, 70] }`: `channel` is `rot` or `offset`.
+- Leave the narration to the narrator unless your task says otherwise. When you fix staging after the narrator has written lines, keep every narration line as it is and keep the action `id`s their cues point at.
 
 ## Compile and fix
 

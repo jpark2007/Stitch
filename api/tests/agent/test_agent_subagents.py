@@ -209,7 +209,9 @@ def test_prompt_mentions_the_tools_it_has(name):
 
 def test_studio_prompt():
     text = STUDIO_PROMPT
-    assert _mentioned(text, FIXED_TOOLS) <= set(FIXED_TOOLS)
+    # The studio calls compile_screenplay and save_memory itself and must order the voice
+    # pass; every other tool belongs to a sub-agent and is reached through `task`.
+    assert _mentioned(text, FIXED_TOOLS) <= {"compile_screenplay", "save_memory", "synthesize_narration"}
     assert {"write_todos", "task", "save_memory"} <= _mentioned(text, BUILTINS | set(FIXED_TOOLS))
     assert text.index("write_todos") < text.index("**interviewer**")
     order = ["**interviewer**", "**storyboarder**", "**prop_master**", "**set_designer**", "**director**",
@@ -225,6 +227,36 @@ def test_studio_prompt():
         assert draft in text
     assert "/memories/people/<personId>.md" in text
     assert "/memories/style.md" in text
+
+
+def _section(text: str, heading: str) -> str:
+    start = text.index(heading)
+    end = text.find("\n#", start + len(heading))
+    return text[start:] if end == -1 else text[start:end]
+
+
+@pytest.mark.parametrize("heading", ["### New memory", "### Second telling"])
+def test_studio_voices_after_the_last_compile_and_before_saving(heading):
+    """A compile rebuilds /timeline.json without audio, so the voice pass must follow the last one."""
+    steps = _section(STUDIO_PROMPT, heading)
+    voice = steps.index("voice pass")
+    assert steps.index("write pass") < steps.index("`compile_screenplay`")
+    assert steps.rindex("`compile_screenplay`") < voice < steps.index("`save_memory`")
+
+
+def test_studio_never_compiles_after_the_voice_without_voicing_again():
+    lowered = STUDIO_PROMPT.lower()
+    assert "only `compile_screenplay` writes `/timeline.json`" in lowered
+    assert "run the voice pass again before saving" in lowered
+
+
+def test_studio_second_telling_starts_from_the_existing_scene():
+    mode = _section(STUDIO_PROMPT, "## Run context")
+    assert "already in your files" in mode
+    assert "`/screenplay.json`" in mode and "`/timeline.json`" in mode
+    assert "never rebuild it yourself" in mode
+    steps = _section(STUDIO_PROMPT, "### Second telling")
+    assert steps.index("Read `/screenplay.json`") < steps.index("**narrator**")
 
 
 def test_interviewer_prompt():
@@ -274,6 +306,11 @@ def test_director_prompt():
     assert "puppet:<personId>" in text and "prop:<propId>" in text
     for drive in ("scrub", "prop_state", "prop_part", "pull_tab", "slider"):
         assert drive in text
+    # InteractionDrive needs its `type` key and Interaction.page is "stage" or "story".
+    for style in ("scrub", "prop_state", "prop_part"):
+        assert f'"type": "{style}"' in text
+    assert '`"stage"`' in text and '`"story"`' in text
+    assert "keep every narration line" in lowered
 
 
 def test_narrator_prompt():
@@ -285,6 +322,10 @@ def test_narrator_prompt():
     assert "at most one action per line" in lowered
     assert "synthesize_narration" in text
     assert "never add a detail" in lowered
+    # synthesize_narration reads the compiled /timeline.json, so only the voice pass calls it.
+    assert "**write pass**" in lowered and "**voice pass**" in lowered
+    assert text.index("**Write pass**") < text.index("**Voice pass**")
+    assert text.index("Voice pass only: call `synthesize_narration`") > text.index("5. ")
 
 
 def test_checker_prompt():
@@ -299,8 +340,12 @@ def test_checker_prompt():
 def test_linker_prompt():
     text = load_prompt("linker")
     assert "Dad says you met on the church steps. What do you remember?" in text
-    assert "one question per person" in text.lower()
-    assert text.index("link_participants") < text.index("find_memories")
+    lowered = text.lower()
+    assert "one question per person" in lowered
+    # link_participants stores the question, so each person's question must be passed to it.
+    assert "once per person you ask" in lowered
+    assert "`question` set to that person's question" in text
+    assert text.index("write one question") < text.index("Call `link_participants`")
 
 
 @pytest.mark.parametrize("name", ["studio", *ORDER])
