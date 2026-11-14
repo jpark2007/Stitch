@@ -16,6 +16,12 @@ the moment and home; B's narration track appears on the memory. Last, it looks a
 the finished flow leads (the scene link, the home page, B's book page, the way home from
 settings and /add) and records what is missing there for Ethan.
 
+Along the way A and B each leave /add open while the family moves on (4b, 5b). Coming
+back to the window (visibilitychange + focus, no reload) must show what changed: B under
+A's 'Who was there?' (6r) and the question A's story left B, which opens a second telling
+of that new moment when picked (7b). These checks record a 'pages' seam on failure and
+never stop the run.
+
 Every step lands in seams.json (see harness.SeamLog) with a screenshot. Exit code 1 when
 a step owned by the flow pages or the API failed, 0 otherwise (Ethan's seams are
 reported, not failed, unless --strict-ethan). It exits 0 with a SKIP line when
@@ -228,6 +234,9 @@ class DemoPath:
         self.scene_href = ""
         self.run_url = ""
         self.title = ""
+        # /add left open in a window before the family moved on (steps 4b and 5b).
+        self.a_add_open = False
+        self.b_add_open = False
 
     # ------------------------------------------------------------------ the runner
 
@@ -241,11 +250,14 @@ class DemoPath:
         pages: tuple[str, ...] = ("A",),
         needs: tuple[str, ...] = (),
         app_only: bool = False,
+        fatal: bool = True,
     ) -> None:
         """Run one step: record its seam, screenshot `pages`, then the browser problems it caused.
 
         With `app_only`, those browser problems leave out harness.expected_noise() (see
-        harness.app_problems); otherwise every problem PageWatch saw is recorded.
+        harness.app_problems); otherwise every problem PageWatch saw is recorded. A step
+        that is not `fatal` records its seam and never stops the run (a regression check
+        the later steps do not depend on).
         """
         missing = [n for n in needs if n not in self.done]
         if missing:
@@ -271,7 +283,7 @@ class DemoPath:
         if ok:
             self.done.add(key)
         self.record_browser_problems(name, marks, app_only=app_only)
-        if not ok and result_owner == "pages" and not self.keep_going:
+        if not ok and fatal and result_owner == "pages" and not self.keep_going:
             raise Abort(name)
 
     def page(self, label: str) -> Any:
@@ -371,6 +383,32 @@ class DemoPath:
         text.click()
         self.expect(box).to_be_checked()
 
+    @staticmethod
+    def refocus(page: Any) -> None:
+        """The person comes back to this window: bring it to the front, then fire what the
+        browser fires on return (visibilitychange while visible, and a window focus)."""
+        page.bring_to_front()
+        page.evaluate(
+            "() => { document.dispatchEvent(new Event('visibilitychange'));"
+            " window.dispatchEvent(new Event('focus')); }"
+        )
+
+    @staticmethod
+    def mark_page(page: Any, mark: str) -> None:
+        """Leave a mark on the page's window, gone after any reload (see marked())."""
+        page.evaluate("m => { window.__stitchE2eMark = m; }", mark)
+
+    @staticmethod
+    def marked(page: Any, mark: str) -> bool:
+        """Whether the window still has the mark: the page was not reloaded since mark_page()."""
+        return bool(page.evaluate("m => window.__stitchE2eMark === m", mark))
+
+    def on_add(self, page: Any) -> bool:
+        """Whether `page` is still on /add for this family (a new memory, no run)."""
+        parts = urlsplit(page.url)
+        query = parse_qs(parts.query)
+        return parts.path == "/add" and query.get("family") == [self.fid] and "run" not in query
+
     def api_json(self, ctx: Any, path: str) -> Any:
         res = ctx.request.get(f"{self.api}{path}")
         if not res.ok:
@@ -440,6 +478,17 @@ class DemoPath:
         expect(page.get_by_role("link", name="Back to family settings")).to_be_visible()
         return f"added {self.b_name} (married to {self.a_name}) at {page.url}"
 
+    def s4b_a_opens_add(self) -> str:
+        """A opens /add before B joins and leaves it open (step 6 comes back to it)."""
+        page = self.page_a
+        expect = self.expect
+        page.goto(f"{self.web}/add?family={self.fid}")
+        expect(page.get_by_role("heading", level=1, name="Add a memory")).to_be_visible()
+        expect(self.label(page, "Your story")).to_be_visible()
+        self.mark_page(page, "a-add")
+        self.a_add_open = True
+        return f"A's /add is open at {page.url}"
+
     def s5_join(self) -> str:
         page = self.page_b
         expect = self.expect
@@ -479,15 +528,58 @@ class DemoPath:
         self.pid_b = self.person_id(self.ctx_b)
         return f"B joined ({self.join_mode}) as person {self.pid_b}; '{label}' -> {page.url}"
 
+    def s5b_b_opens_add(self) -> str:
+        """B opens /add before A tells the story, and leaves it open (step 7b comes back to it)."""
+        page = self.page_b
+        expect = self.expect
+        page.goto(f"{self.web}/add?family={self.fid}")
+        expect(page.get_by_role("heading", level=1, name="Add a memory")).to_be_visible()
+        expect(self.label(page, "Your story")).to_be_visible()
+        expect(page.get_by_role("heading", name="Someone asked you")).to_have_count(0)
+        self.mark_page(page, "b-add")
+        self.b_add_open = True
+        return f"B's /add is open at {page.url}, nothing asked yet"
+
+    def a_refocus_add(self, page: Any, who: Any) -> bool:
+        """Step 6 on A's /add left open since step 4b: the window comes back and B should
+        appear under 'Who was there?' without a reload. Records its own seam; False sends
+        step 6 back to a fresh page.goto."""
+        name = "6r A's open /add gains B after the window comes back"
+        if not self.a_add_open:
+            return False  # 4b already recorded why
+        if not self.on_add(page):
+            self.seams.record(name, False, f"not run: A's page is at {page.url}, not the /add left open in 4b", "pages")
+            return False
+        try:
+            self.refocus(page)
+            chip = who.get_by_label(self.b_name, exact=True).filter(visible=True)
+            self.expect(chip).to_have_count(1, timeout=10_000)
+            if not self.marked(page, "a-add"):
+                raise AssertionError(f"A's page reloaded (the window mark from 4b is gone) at {page.url}")
+        except Exception as exc:  # noqa: BLE001 - recorded, then step 6 carries on from a goto
+            detail = (
+                f"A's /add, open since 4b ({self.join_mode}), did not list {self.b_name} under 'Who was there?' "
+                f"within 10 s of visibilitychange + focus, without a reload: {first_lines(str(exc), 3)}"
+            )
+            self.seams.record(name, False, detail, "pages")
+            shot(page, self.stack, "6r-A-refocus-failed")
+            return False
+        note = " (B was on the tree since step 4)" if self.join_mode == "claim" else ""
+        self.seams.record(name, True, f"{self.b_name} listed after refocus, no reload{note}", "pages")
+        return True
+
     def s6_add_story(self) -> str:
         page = self.page_a
         expect = self.expect
         self.pid_a = self.person_id(self.ctx_a)
-        page.goto(f"{self.web}/add?family={self.fid}")
+        who = page.get_by_role("group", name="Who was there?")
+        # A's /add has been open since before B joined: coming back to the window should
+        # be enough. Without it (or when it fails), open the page again.
+        if not self.a_refocus_add(page, who):
+            page.goto(f"{self.web}/add?family={self.fid}")
         expect(page.get_by_role("heading", level=1, name="Add a memory")).to_be_visible()
         self.label(page,"Your story").fill(STORY)
         self.label(page,"When was this?").fill(STORY_YEAR)
-        who = page.get_by_role("group", name="Who was there?")
         self.tick(who, self.b_name)
         self.label(page,re.compile(r"^Photos")).first.set_input_files(
             files=[{"name": "steps.png", "mimeType": "image/png", "buffer": tiny_png()}]
@@ -567,6 +659,68 @@ class DemoPath:
         if not mine:
             raise Seam("api", f"B ({self.pid_b}) has no open question for {self.memory_id}: {questions}")
         return str(mine[0]["text"])
+
+    def s7b_b_refocus(self) -> str:
+        """B comes back to the /add left open in 5b: the question A's story left them shows up
+        ('Someone asked you') without a reload, and what B had typed stays. Runs before 8a,
+        whose page.goto would replace that window's page."""
+        page = self.page_b
+        expect = self.expect
+        qtext = self.open_question()
+        if not (self.b_add_open and self.on_add(page)):
+            raise Seam("pages", f"B's page is at {page.url}, not the /add left open in 5b")
+        heading = page.get_by_role("heading", name="Someone asked you")
+        before = heading.count()
+        # Something typed before coming back must still be there after the reload under it.
+        story = self.label(page, "Your story")
+        typed = "Typed before the window came back."
+        story.fill(typed)
+        try:
+            self.refocus(page)
+            try:
+                expect(heading).to_be_visible(timeout=10_000)
+            except AssertionError as exc:
+                raise Seam(
+                    "pages",
+                    "B's /add, open since 5b, did not show 'Someone asked you' within 10 s of the window "
+                    f"coming back (visibilitychange + focus) without a reload; GET questions has {qtext!r}",
+                ) from exc
+            expect(page.get_by_role("button", name=re.compile(re.escape(qtext)))).to_be_visible()
+            if not self.marked(page, "b-add"):
+                raise Seam("pages", f"B's /add reloaded to show the question (the 5b window mark is gone) at {page.url}")
+            expect(story).to_have_value(typed)
+            shot(page, self.stack, "7b-B-question-after-refocus")
+            # The question is about a moment made after this page opened: picking it opens a
+            # second telling of that moment (not "couldn't find the moment"). Then let it go
+            # again, so the draft kept for this tab has no pick in it for step 8.
+            note = page.get_by_role("button", name=re.compile(re.escape(qtext)))
+            note.click()
+            expect(note).to_have_attribute("aria-pressed", "true")
+            expect(page.get_by_role("heading", level=1, name="Add your telling")).to_be_visible()
+            if self.text(page, re.compile(r"couldn.t find the moment")).count():
+                raise Seam("pages", "picking the question says it couldn't find the moment made after /add opened")
+            banner = self.text(page, re.compile(r"adding your version of"))
+            if not (self.title in note.inner_text() or self.title in banner_text(banner)):
+                raise Seam(
+                    "pages",
+                    f"the picked question's second telling does not name '{self.title}' "
+                    f"(note {note.inner_text()!r}, header {banner_text(banner)!r})",
+                )
+            shot(page, self.stack, "7b-B-picked-after-refocus")
+            note.click()
+            expect(note).to_have_attribute("aria-pressed", "false")
+            expect(page.get_by_role("heading", level=1, name="Add a memory")).to_be_visible()
+        finally:
+            # Leave the form empty again, as later steps expect (the typed draft is kept per tab).
+            try:
+                story.fill("", timeout=5_000)
+            except Exception as exc:  # noqa: BLE001 - the step's own failure is what matters
+                print(f"  (could not empty B's story again: {first_lines(str(exc), 1)})", flush=True)
+        seen = "already there before the refocus" if before else "appeared after the refocus"
+        return (
+            f"'Someone asked you' with {qtext!r} {seen}; no reload; the typed story stayed; "
+            f"picking it opened the second telling of '{self.title}'"
+        )
 
     def s8a_by_moment_id(self) -> str:
         """/add?memoryId= opens the second telling straight away, with the moment's own question."""
@@ -750,10 +904,22 @@ class DemoPath:
                 join_needs: tuple[str, ...] = ("3", "4")
             else:
                 join_needs = ("3",)
+            # Regression checks for /add loading again when its window comes back: A and B
+            # each leave /add open while the family moves on (4b, 5b; checked in 6 and 7b).
+            # They record a seam on failure and never stop the run.
+            self.step("4b", "4b A opens /add before B joins", self.s4b_a_opens_add, needs=("2",), fatal=False)
             self.step("5", f"5 B signs up and joins ({self.join_mode})", self.s5_join, pages=("B",), needs=join_needs)
+            self.step(
+                "5b", "5b B opens /add before the story (nothing asked yet)", self.s5b_b_opens_add,
+                pages=("B",), needs=("5",), fatal=False,
+            )
             self.step("6", "6 A adds a story (follow-up, props, scene)", self.s6_add_story, needs=("5",))
             self.step("6b", "6b A watches the scene", self.s6b_watch_scene, needs=("6",), app_only=True)
             self.step("7", "7 the memory is in A's and B's books", self.s7_books, owner="api", pages=(), needs=("6",))
+            self.step(
+                "7b", "7b B's open /add shows the question after the window comes back", self.s7b_b_refocus,
+                pages=("B",), needs=("7", "5b"), fatal=False,
+            )
             self.step(
                 "8a", "8a B opens /add?memoryId= (second telling by moment)", self.s8a_by_moment_id,
                 pages=("B",), needs=("7",),
