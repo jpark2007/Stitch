@@ -361,7 +361,11 @@ def test_people_without_an_item_get_no_item_keys():
                  "actions": [{"t": 0, "who": "ann", "do": "walk_to", "to": "mid"}]}, cast=("ann", "ben"))
     res = run_worn(data)
     assert res.ok, messages(res)
-    assert not any(tr.target.startswith("prop:") for tr in res.timeline.tracks)
+    # nobody wears anything: the listed props, never used, only wait offstage on the ground
+    # (compiler._park_until_placed), never on a head
+    for what in ("cup", "bag", "cap"):
+        assert track(res, f"prop:{what}", "parent") == [(0.0, "ground")]
+        assert track(res, f"prop:{what}", "position") == [(0.0, OFFSTAGE_LEFT)]
     # and the cap is not worn when the screenplay does not list it
     unlisted = run_worn(worn({"id": "s1", "set": "porch", "start": {"cara": {"at": "door"}}}, props=("cup",)))
     assert unlisted.ok, messages(unlisted)
