@@ -45,6 +45,27 @@ so the model can fix its arguments and call the tool again; the run stays runnin
 no event is sent. After MAX_MALFORMED_PAUSES such rejections in one run, the next one
 ends the run with a short, family-safe error. The count is kept in the run record.
 
+The time limit (STITCH_RUN_TIMEOUT_S, `RunLimits.run_timeout_s`; `RunManager(...,
+run_timeout_s=...)` overrides it). Only time the run spends in status 'running' while a
+worker is driving it counts: time waiting on the teller (question, props review, merge)
+does not, nor time queued for a free worker, nor time the API process was down. The run
+keeps `elapsed_s` (time already used; in the record) plus the clock reading taken when its
+current driving stretch began; the stretch is added into `elapsed_s` whenever the record
+is marked changed (`persist`, so every status change, event and end) and when a worker
+lets the run go. The limit is checked on every stream chunk (`_translate`), before a
+queued answer or a malformed-pause rejection resumes the thread (`_settle`), and before a
+run cut short by a restart is driven again (`_redrive`). Past it, the run ends with one
+error event (RUN_TIMEOUT_ERROR) and one warning log line (run id, seconds used, limit).
+The limit travels in the record, so a restarted process keeps it. Starting the story again
+starts a new run with a fresh budget.
+
+A blocking model or tool call cannot be interrupted mid-call, so the limit is checked when
+that call returns: a run overshoots it by at most one model request with its retries
+(STITCH_MODEL_TIMEOUT_S x (STITCH_MODEL_MAX_RETRIES + 1)) or one tool call (an image
+generation, a compile, a narration), whichever was in flight. A stream chunk writes the
+record once ELAPSED_RECORD_INTERVAL_S of running time is not in it yet, so when the process
+dies at most that much (plus the call in flight) goes uncounted after the restart.
+
 Interrupts are shown one at a time. `AnswerRequest` carries no interrupt id, so when
 one step pauses on several gated calls at once (two sub-agents in parallel), the first
 one is shown and answered; it is resumed with `Command(resume={id: payload})` (langgraph
@@ -90,6 +111,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import threading
 import time
 import uuid
@@ -107,6 +129,7 @@ from pydantic import BaseModel, ValidationError
 
 import schemas
 from agent import studio
+from agent.guards import RunLimits
 from agent.repo import AgentRepo
 from agent.run_info import RunInfo
 from agent.tools.ask import answer_to_resume, interrupt_to_event, reject_to_resume
@@ -129,6 +152,11 @@ MAX_MALFORMED_PAUSES = 3
 """How many pauses the web cannot show are handed back to the model in one run; the next one ends it."""
 MALFORMED_PAUSE_ERROR = "the studio could not put together a question for you; please try again"
 """The error the family sees when the studio keeps pausing on arguments the web cannot show."""
+RUN_TIMEOUT_ERROR = "the studio took too long on this story (over {minutes} minutes); please try again"
+"""The error the family sees when a run passes its time limit; `minutes` is the limit, rounded up."""
+ELAPSED_RECORD_INTERVAL_S = 30.0
+"""Running time after which a stream chunk writes the record even with no new event, so a
+restart loses at most this much of the time used (plus the call in flight)."""
 FINISHED_RUN_TTL_SECONDS = 3600.0
 """How long a finished run stays replayable before the manager forgets it."""
 
@@ -207,6 +235,21 @@ def _resume_command(pending: Interrupt, payload: Any, pending_count: int) -> Com
     return Command(resume={pending.id: payload}) if pending_count > 1 else Command(resume=payload)
 
 
+def run_timeout_message(limit_s: float) -> str:
+    """RUN_TIMEOUT_ERROR for a run whose limit is `limit_s` seconds (minutes rounded up, at least 1)."""
+    return RUN_TIMEOUT_ERROR.format(minutes=max(1, math.ceil(limit_s / 60)))
+
+
+def _seconds(value: Any, *, positive: bool) -> float | None:
+    """`value` as a finite number of seconds (> 0 when `positive`, else >= 0), or None."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds < 0 or (positive and seconds == 0):
+        return None
+    return seconds
+
+
 def run_namespace(family_id: str) -> tuple[str, str]:
     """Where a family's run records live in the store."""
     return (RUNS_NAMESPACE, family_id)
@@ -266,6 +309,20 @@ class _Run:
     logged_interrupt: str | None = None
     # Pauses the web could not show that were rejected back to the model (MAX_MALFORMED_PAUSES).
     malformed_pauses: int = 0
+    # ---- the time limit (see "The time limit" in the module docstring); all under cond
+    # Seconds of running time this run may use (kept in the record).
+    run_timeout_s: float = RunLimits.run_timeout_s
+    # Seconds of running time already used, up to `stretch_started` (kept in the record).
+    elapsed_s: float = 0.0
+    # Reads the time for the limit (RunManager's clock; time.monotonic in production).
+    clock: Callable[[], float] = time.monotonic
+    # The clock reading when the current driving stretch began; None while not counting.
+    stretch_started: float | None = None
+    # How many worker threads are in _drive / _redrive for this run (an answer can start the
+    # next one just before the last one lets go, so this counts rather than flags).
+    workers: int = 0
+    # elapsed_s as of the last persist (what the next record will hold, at least).
+    persisted_elapsed_s: float = 0.0
     # ---- record writes (see "Writing the run record" in the module docstring)
     # Serializes the store writes of this run. Never taken on the event loop, never with cond held.
     write_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -296,6 +353,24 @@ class _Run:
     def saved(self) -> bool:
         """Every change so far is in the store (or there is no store). Read with cond held."""
         return not self.dirty and self.stored_version >= self.version
+
+    @property
+    def counting(self) -> bool:
+        """Running time is being used: status running and a worker is driving it. Read with cond held."""
+        return self.status == "running" and self.workers > 0
+
+    def tick(self) -> None:
+        """Add the current driving stretch into `elapsed_s`, then open a new stretch if the run
+        is still counting, or close it. Call with cond held, at every change of `counting`."""
+        now = self.clock()
+        if self.stretch_started is not None:
+            self.elapsed_s += max(0.0, now - self.stretch_started)
+        self.stretch_started = now if self.counting else None
+
+    def over_time(self) -> bool:
+        """The run has used more running time than its limit. Call with cond held."""
+        self.tick()
+        return self.elapsed_s > self.run_timeout_s
 
     # Every mutation below happens with `cond` held. None of them does I/O: a change that
     # the record must keep marks the run dirty (`persist`), and whoever made it calls
@@ -351,6 +426,8 @@ class _Run:
             "pending_interrupt_id": self.pending.id if self.pending is not None else None,
             "answered": self._answered_record(),
             "malformed_pauses": self.malformed_pauses,
+            "elapsed_s": self.elapsed_s,
+            "run_timeout_s": self.run_timeout_s,
             "tasks": [[call_id, name] for call_id, name in self.tasks.items()],
             "ended_tasks": sorted(self.ended_tasks),
             "events": [list(pair) for pair in self.event_json],
@@ -370,7 +447,10 @@ class _Run:
     def persist(self) -> None:
         """Mark the run as changed, so the next `flush` writes its record. Call with cond held.
 
-        Without a store nothing is written: every event is published at once."""
+        Without a store nothing is written: every event is published at once. Either way
+        the running time so far is added into `elapsed_s` (every status change comes here)."""
+        self.tick()
+        self.persisted_elapsed_s = self.elapsed_s
         if self.store is None:
             self.published = len(self.events)
             return
@@ -444,12 +524,23 @@ class RunManager:
         build_graph: GraphFactory,
         max_workers: int = 4,
         store: BaseStore | None = None,
+        run_timeout_s: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """`store`: where run records are kept so runs survive a restart (module docstring).
-        None keeps runs in this process only."""
+        None keeps runs in this process only.
+
+        `run_timeout_s`: seconds of running time one run may use ("The time limit" in the
+        module docstring). None reads STITCH_RUN_TIMEOUT_S (`RunLimits.from_env`) as each
+        run starts. Each run keeps its limit in its record. `clock`: what the limit is
+        measured with (monotonic seconds; tests pass a fake one)."""
+        if run_timeout_s is not None and _seconds(run_timeout_s, positive=True) is None:
+            raise ValueError(f"run_timeout_s must be a number of seconds > 0, not {run_timeout_s!r}")
         self._repo = repo
         self._build_graph = build_graph
         self._store = store
+        self._run_timeout_s = None if run_timeout_s is None else float(run_timeout_s)
+        self._clock = clock
         self._runs: dict[str, _Run] = {}
         self._lock = threading.Lock()
         # Serializes loading runs from the store, so one run id is never restored twice.
@@ -483,7 +574,8 @@ class RunManager:
         )
         graph_input = self._initial_input(info)  # ValueError / MemoryNotFound: nothing started
 
-        run = _Run(info=info, config=studio.thread_config(run_id), driving=True, store=self._store)
+        run = _Run(info=info, config=studio.thread_config(run_id), driving=True, store=self._store,
+                   run_timeout_s=self._run_limit(), clock=self._clock)
         with run.changing():
             run.persist()
         with self._lock:
@@ -619,6 +711,37 @@ class RunManager:
 
     # ------------------------------------------------------------------ internals
 
+    def _run_limit(self) -> float:
+        """The time limit a run takes when it starts (or when its record has none)."""
+        if self._run_timeout_s is not None:
+            return self._run_timeout_s
+        return RunLimits.from_env().run_timeout_s
+
+    def _end_if_over_time(self, run: _Run) -> bool:
+        """End the run with RUN_TIMEOUT_ERROR if it has used more running time than its
+        limit, and say so (True). Call with cond held (inside `changing`)."""
+        if run.terminal or not run.over_time():
+            return False
+        logger.warning("run %s: over its time limit (%.1fs of running time, limit %.0fs); ending it",
+                       run.info.run_id, run.elapsed_s, run.run_timeout_s)
+        run.driving = False
+        run.append("error", schemas.ErrorEvent(message=run_timeout_message(run.run_timeout_s)))
+        return True
+
+    @contextmanager
+    def _on_worker(self, run: _Run) -> Iterator[None]:
+        """Mark the run as driven by this worker thread, so its running time counts."""
+        with run.cond:
+            run.workers += 1
+            run.tick()
+        try:
+            yield
+        finally:
+            # In memory only: the next persist writes it (a dying process writes nothing).
+            with run.cond:
+                run.workers -= 1
+                run.tick()
+
     def _initial_input(self, info: RunInfo) -> dict[str, Any]:
         """The studio's first input for a run: the run context message, plus the memory's
         screenplay and timeline as draft files for a second telling.
@@ -709,6 +832,15 @@ class RunManager:
                 else:
                     answered = None
                 malformed_pauses = int(record.get("malformed_pauses") or 0)
+                # Records from before the time limit have neither: nothing used, today's limit.
+                elapsed_s = _seconds(record.get("elapsed_s", 0.0), positive=False)
+                if elapsed_s is None:
+                    logger.warning("run %s: unreadable elapsed_s %r in the run record; counting from 0",
+                                   run_id, record.get("elapsed_s"))
+                    elapsed_s = 0.0
+                run_timeout_s = _seconds(record.get("run_timeout_s"), positive=True)
+                if run_timeout_s is None:
+                    run_timeout_s = self._run_limit()
             except (KeyError, TypeError, ValueError) as exc:  # pydantic ValidationError is a ValueError
                 logger.error("run %s: unreadable run record: %s", run_id, exc)
                 return None
@@ -716,7 +848,10 @@ class RunManager:
                 logger.error("run %s: the record under family %s names another run", run_id, family_id)
                 return None
 
-            run = _Run(info=info, config=studio.thread_config(run_id), store=self._store, events=events)
+            # The clock starts again in this process: time while the API was down is not counted.
+            run = _Run(info=info, config=studio.thread_config(run_id), store=self._store, events=events,
+                       run_timeout_s=run_timeout_s, elapsed_s=elapsed_s, persisted_elapsed_s=elapsed_s,
+                       clock=self._clock)
             run.memory_id = record.get("memory_id")
             run.tasks = {str(call_id): str(name) for call_id, name in record.get("tasks") or ()}
             run.ended_tasks = {str(call_id) for call_id in record.get("ended_tasks") or ()}
@@ -786,8 +921,16 @@ class RunManager:
 
         No checkpoint yet: start it again from its first input. Its accepted answer still
         pending on the thread: resume with that answer. Otherwise stream input None on the
-        same thread, which reruns the step that was cut short. Never raises.
+        same thread, which reruns the step that was cut short. A run already past its time
+        limit is not driven: it ends with RUN_TIMEOUT_ERROR. Never raises.
         """
+        with self._on_worker(run):
+            with run.changing():
+                if self._end_if_over_time(run):
+                    return
+            self._redrive_on(run)
+
+    def _redrive_on(self, run: _Run) -> None:
         run_id = run.info.run_id
         logger.warning("run %s: was running when the API stopped; resuming it from its last checkpoint", run_id)
         try:
@@ -813,7 +956,7 @@ class RunManager:
                 run.driving = False
                 run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
             return
-        self._drive(run, graph_input, from_checkpoint=graph_input is None)
+        self._drive_on(run, graph_input, from_checkpoint=graph_input is None)
 
     # ------------------------------------------------------------------ driving
 
@@ -822,6 +965,11 @@ class RunManager:
         answer queued meanwhile, until the run waits or ends. Never raises.
 
         `from_checkpoint`: stream once with input None (continue the thread where it stopped)."""
+        with self._on_worker(run):
+            self._drive_on(run, graph_input, from_checkpoint=from_checkpoint)
+
+    def _drive_on(self, run: _Run, graph_input: Any, *, from_checkpoint: bool = False) -> None:
+        """`_drive` on a worker already marked (`_on_worker`)."""
         run_id = run.info.run_id
         try:
             with run.cond:
@@ -845,11 +993,14 @@ class RunManager:
                 run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
 
     def _translate(self, run: _Run, chunk: Any) -> bool:
-        """Turn one stream chunk into events. Returns False once the run has ended."""
+        """Turn one stream chunk into events. Returns False once the run has ended (or has
+        just ended past its time limit; the chunk is then dropped)."""
         namespace, mode, data = chunk
         with run.changing():
-            if run.terminal:
+            if run.terminal or self._end_if_over_time(run):
                 return False
+            if run.elapsed_s - run.persisted_elapsed_s >= ELAPSED_RECORD_INTERVAL_S:
+                run.persist()  # keep the time used in the record through a quiet stretch
             if mode == "custom":
                 self._custom(run, data)
             elif mode == "updates" and isinstance(data, dict):
@@ -985,6 +1136,8 @@ class RunManager:
                 pending, payload = run.queued
                 run.queued = None
                 if pending.id in ids:
+                    if self._end_if_over_time(run):
+                        return None
                     run.pending_count = 0
                     # Interrupts still pending after this resume surface again with the same id.
                     run.seen_interrupts.clear()
@@ -1004,6 +1157,8 @@ class RunManager:
                         # Not showable: rejected back to the model; resume with that now.
                         pending, payload = run.queued
                         run.queued = None
+                        if self._end_if_over_time(run):
+                            return None
                         run.driving = True
                         run.pending_count = 0
                         run.seen_interrupts.clear()
@@ -1118,10 +1273,12 @@ __all__ = [
     "RunNotFound",
     "RunNotWaiting",
     "RUNS_NAMESPACE",
+    "RUN_TIMEOUT_ERROR",
     "answer_run",
     "configure",
     "get_manager",
     "run_namespace",
+    "run_timeout_message",
     "start_run",
     "stream_run",
 ]
