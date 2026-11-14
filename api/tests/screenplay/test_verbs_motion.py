@@ -13,7 +13,11 @@ from screenplay.ik import Body
 from screenplay.schema import Action, Shot
 from screenplay.state import BUILTIN_MARKS, OFFSTAGE_LEFT, OFFSTAGE_RIGHT, StateError, World
 from screenplay.tracks import TrackSet
+from screenplay.compiler import HANDLER_PROBLEMS
+from screenplay.compiler import HANDLERS as COMPILER_HANDLERS
+from screenplay.compiler import compile as compile_screenplay
 from screenplay.verbs_motion import HANDLERS, apply_exit, apply_follow, apply_turn_to, stand_up_first
+from verb_cases import cases_for
 
 ACTION_START = 1.2
 WALK = motion.SPEEDS["walk"]
@@ -21,8 +25,9 @@ WALK = motion.SPEEDS["walk"]
 
 # ------------------------------------------------------------------ fixtures
 
-def person(pid: str, build: str = "average") -> schemas.Person:
-    return schemas.Person(id=pid, family_id="f", name=pid.title(), character={"color": "#123456", "build": build})
+def person(pid: str, build: str = "average", notes: str | None = None) -> schemas.Person:
+    return schemas.Person(
+        id=pid, family_id="f", name=pid.title(), character={"color": "#123456", "build": build, "notes": notes})
 
 
 def prop(pid: str, size: str = "hand", sockets=None) -> schemas.Prop:
@@ -44,9 +49,8 @@ def act(**kw) -> Action:
     return Action.model_validate(kw)
 
 
-@pytest.fixture
-def world() -> World:
-    w = World(PEOPLE, PROPS)
+def build_world(people: list[schemas.Person] = PEOPLE) -> World:
+    w = World(people, PROPS)
     w.begin_shot(
         Shot.model_validate({
             "id": "s1", "set": "church",
@@ -60,6 +64,11 @@ def world() -> World:
         MARKS, same_set_as_previous=False,
     )
     return w
+
+
+@pytest.fixture
+def world() -> World:
+    return build_world()
 
 
 @pytest.fixture
@@ -470,3 +479,113 @@ def test_success_mutates_world_and_tracks_together(world, tracks):
     root_end = keys_of(tracks, "puppet:dad", "root.position")[-1]
     assert root_end[0] == pytest.approx(end, abs=1e-3)
     assert tuple(root_end[1]) == pytest.approx(world.people["dad"].pos)
+
+
+# ------------------------------------------------------------ walking speed
+
+CANE = "walks with a cane"
+
+
+def cane_world(who: str) -> World:
+    """The fixture's stage, with ``who``'s character sheet noting a cane (speed 0.6)."""
+    people = [person(p.id, p.character.build, CANE if p.id == who else None) for p in PEOPLE]
+    w = build_world(people)
+    assert w.people[who].speed_scale == pytest.approx(0.6)
+    assert all(p.speed_scale == 1.0 for pid, p in w.people.items() if pid != who)
+    return w
+
+
+def test_exit_with_a_cane_takes_one_over_point_six_as_long(world, tracks):
+    plain = run(apply_exit, world, tracks, 2.0, do="exit", who="dad")
+    slow_world, slow_tracks = cane_world("dad"), TrackSet()
+    slow = run(apply_exit, slow_world, slow_tracks, 2.0, do="exit", who="dad")
+    assert plain == pytest.approx(2.0 + 0.7 / WALK)
+    assert (slow - 2.0) == pytest.approx((plain - 2.0) / 0.6, abs=1e-3)
+    # same path, same place, same facing: only the timing stretches
+    assert slow_world.people["dad"].pos == world.people["dad"].pos == OFFSTAGE_LEFT
+    assert keys_of(slow_tracks, "puppet:dad", "root.position") == [
+        [2.0, [-0.6, 0.0, 0.5]], [pytest.approx(slow, abs=1e-3), [-1.3, 0.0, 0.5]]]
+    assert keys_of(slow_tracks, "puppet:dad", "root.facing") == [[2.0, -1.0]]
+
+
+def test_exit_with_a_cane_stands_up_at_the_usual_pace(tracks):
+    w = cane_world("dad")
+    tracks.extend(kneel_keys(Body(id="dad", ground=(-0.6, 0.0), facing=1, build="tall"), 1.2, {}))
+    w.kneel("dad")
+    end = run(apply_exit, w, tracks, 2.0, do="exit", who="dad")
+    t_go = 2.0 + POSE_SECONDS  # standing up is not slowed
+    assert tracks.value_at("puppet:dad", "root.position", t_go) == pytest.approx([-0.6, 0.0, 0.5])
+    assert end == pytest.approx(t_go + 0.7 / (WALK * 0.6))
+
+
+def _stationary_leader_setup(w: World, tracks: TrackSet) -> float:
+    """dad shuffles 0.1 right and stops at 2.29, while kneeling kid (at x 0.9) stands up until 2.4.
+
+    By the time kid sets off, dad stands still: kid walks up to 0.2 short of him (x -0.3)."""
+    keys, arrive, _ = motion.locomotion_keys("dad", "tall", 2.0, MARKS["steps_left"], (-0.5, 0.0, 0.5), 1)
+    tracks.extend(keys)
+    w.move("dad", (-0.5, 0.0, 0.5))
+    w.move("kid", (0.9, 0.0, 0.5))
+    tracks.extend(kneel_keys(Body(id="kid", ground=(0.9, 0.0), facing=-1, build="small"), 1.2, {}))
+    w.kneel("kid")
+    return arrive
+
+
+def test_follow_a_stationary_leader_with_a_cane_takes_one_over_point_six_as_long(world, tracks):
+    arrive = _stationary_leader_setup(world, tracks)
+    t_go = 2.0 + POSE_SECONDS
+    assert arrive < t_go  # dad is standing still before kid is on its feet
+    plain = run(apply_follow, world, tracks, 2.0, do="follow", who="kid", target="dad")
+    slow_world, slow_tracks = cane_world("kid"), TrackSet()
+    _stationary_leader_setup(slow_world, slow_tracks)
+    slow = run(apply_follow, slow_world, slow_tracks, 2.0, do="follow", who="kid", target="dad")
+    assert plain == pytest.approx(t_go + 1.2 / WALK)
+    assert (slow - t_go) == pytest.approx((plain - t_go) / 0.6, abs=1e-3)
+    assert world.people["kid"].pos == pytest.approx((-0.3, 0.0, 0.5))
+    assert slow_world.people["kid"].pos == pytest.approx((-0.3, 0.0, 0.5))
+    assert slow_tracks.value_at("puppet:kid", "root.position", t_go) == pytest.approx([0.9, 0.0, 0.5])
+
+
+def test_follow_with_a_cane_walks_at_its_own_pace_behind_a_moving_leader(tracks):
+    # dad hops 0.2 right in 0.1 s at t=2, so neither follower is held back by him: each walks
+    # at its natural pace from 2.5 (dad set off + lag), the cane walker 1 / 0.6 as long.
+    def hop(w: World, ts: TrackSet) -> None:
+        ts.extend([("puppet:dad", "root.position", 2.0, [-0.6, 0.0, 0.5]),
+                   ("puppet:dad", "root.position", 2.1, [-0.4, 0.0, 0.5])])
+        w.move("dad", (-0.4, 0.0, 0.5))
+
+    plain_world, slow_world, slow_tracks = build_world(), cane_world("kid"), TrackSet()
+    hop(plain_world, tracks)
+    hop(slow_world, slow_tracks)
+    plain = run(apply_follow, plain_world, tracks, 2.0, do="follow", who="kid", target="dad")
+    slow = run(apply_follow, slow_world, slow_tracks, 2.0, do="follow", who="kid", target="dad")
+    set_off = 2.0 + 0.5
+    assert plain == pytest.approx(set_off + 0.7 / WALK)
+    assert (slow - set_off) == pytest.approx((plain - set_off) / 0.6, abs=1e-3)
+    assert slow >= 2.1 + 0.5  # never before the leader's arrival + lag
+    assert slow_world.people["kid"].pos == pytest.approx((-0.6, 0.0, 0.5))
+
+
+# ------------------------------------------------------- the verb case catalogue
+
+MOTION_CASES = [c for verb in ("exit", "turn_to", "follow") for c in cases_for(verb)]
+
+
+def test_the_catalogue_covers_every_verb_this_module_owns():
+    assert {c.verb for c in MOTION_CASES} == set(HANDLERS)
+    assert HANDLER_PROBLEMS == []
+    for verb, fn in HANDLERS.items():
+        assert COMPILER_HANDLERS[verb] is fn
+
+
+@pytest.mark.parametrize("case", MOTION_CASES, ids=[c.name for c in MOTION_CASES])
+def test_catalogue_cases_compile(case):
+    res = compile_screenplay(
+        case.screenplay, sets=case.scene.sets, props=case.scene.props, people=case.scene.people)
+    if case.ok:
+        assert res.ok, [e.message for e in res.errors]
+        assert res.timeline is not None
+    else:
+        assert not res.ok and res.errors
+        assert res.errors[0].code == case.code
+        assert res.errors[0].message == case.message
