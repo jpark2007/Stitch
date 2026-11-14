@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 
 import {
   CARRY_KEY,
+  DRAFT_KEY,
   DRAFT_KEY_PREFIX,
   RUN_GONE_MESSAGE,
   TELLING_KEY_PREFIX,
@@ -14,7 +15,13 @@ import {
   carriedPhotosNote,
   carryInto,
   clearCarry,
+  clearTypedDraft,
+  draftForForm,
   preselectAdded,
+  questionIdFromQuery,
+  readTypedDraft,
+  saveTypedDraft,
+  withQuestionId,
   withoutAdded,
   draftFromSent,
   familyChoice,
@@ -998,5 +1005,237 @@ describe("the extended carry", () => {
     assert.equal(c.questionId, "q_kitchen");
     assert.ok(carriedPhotosNote(c.photoCount));
     assert.equal(withoutAdded("?family=f&added=aunt_rosa"), "/add?family=f");
+  });
+});
+
+// ---- the picked question in the URL -------------------------------------------------
+
+describe("questionIdFromQuery / withQuestionId", () => {
+  test("reads ?questionId=, null when missing or empty", () => {
+    assert.equal(questionIdFromQuery("?family=f&questionId=q1"), "q1");
+    assert.equal(questionIdFromQuery(new URLSearchParams("questionId=q%202")), "q 2");
+    assert.equal(questionIdFromQuery("?questionId="), null);
+    assert.equal(questionIdFromQuery("?family=f"), null);
+    assert.equal(questionIdFromQuery(""), null);
+    assert.equal(questionIdFromQuery(null), null);
+  });
+
+  test("sets the question, keeping family, memoryId and the rest in place", () => {
+    assert.equal(withQuestionId("?family=f", "q1"), "/add?family=f&questionId=q1");
+    assert.equal(withQuestionId("?family=f&memoryId=m", "q1"), "/add?family=f&memoryId=m&questionId=q1");
+    assert.equal(withQuestionId("", "q1"), "/add?questionId=q1");
+    assert.equal(withQuestionId(null, "q1"), "/add?questionId=q1");
+  });
+
+  test("replaces an earlier pick instead of adding a second one", () => {
+    const out = withQuestionId("?family=f&questionId=old", "new");
+    assert.equal(out, "/add?family=f&questionId=new");
+    assert.equal(questionIdFromQuery(out.slice("/add".length)), "new");
+  });
+
+  test("null or empty drops it; nothing left is plain /add", () => {
+    assert.equal(withQuestionId("?family=f&questionId=q1", null), "/add?family=f");
+    assert.equal(withQuestionId("?questionId=q1&family=f", ""), "/add?family=f");
+    assert.equal(withQuestionId("?questionId=q1", null), "/add");
+    assert.equal(withQuestionId("", null), "/add");
+  });
+
+  test("odd ids are encoded and read back as they were", () => {
+    const id = "a&b=c#d e";
+    const out = withQuestionId(new URLSearchParams({ family: "f" }), id);
+    assert.equal(questionIdFromQuery(out.slice("/add".length)), id);
+    assert.equal(readAddQuery(out.slice("/add".length)).familyId, "f");
+  });
+});
+
+// ---- the draft kept for a reload ----------------------------------------------------
+
+describe("saveTypedDraft / readTypedDraft / clearTypedDraft", () => {
+  const draft = (over = {}) => ({
+    familyId: "f",
+    memoryId: null,
+    questionId: null,
+    text: "The red bike",
+    year: "1997",
+    participantIds: ["dad"],
+    question: "",
+    photoCount: 0,
+    ...over,
+  });
+
+  test("keeps a draft per family and reads it back whole", () => {
+    const st = fullStorage();
+    saveTypedDraft(st, draft());
+    saveTypedDraft(st, draft({ familyId: "g", text: "Other family", year: "", participantIds: [] }));
+    assert.deepEqual(readTypedDraft(st, "f"), draft());
+    assert.equal(readTypedDraft(st, "g").text, "Other family");
+    assert.equal(readTypedDraft(st, "h"), null);
+    assert.deepEqual(Object.keys(JSON.parse(st.getItem(DRAFT_KEY))).sort(), ["f", "g"]);
+  });
+
+  test("a newer save replaces the family's draft", () => {
+    const st = fullStorage();
+    saveTypedDraft(st, draft());
+    saveTypedDraft(st, draft({ text: "The red bike, and the bell", questionId: "q1", photoCount: 2 }));
+    assert.deepEqual(readTypedDraft(st, "f"), draft({ text: "The red bike, and the bell", questionId: "q1", photoCount: 2 }));
+  });
+
+  test("a second telling's draft keeps its moment and question", () => {
+    const st = fullStorage();
+    saveTypedDraft(st, draft({ memoryId: "m1", year: "", participantIds: [], text: "I remember it differently" }));
+    const got = readTypedDraft(st, "f");
+    assert.equal(got.memoryId, "m1");
+    assert.equal(got.text, "I remember it differently");
+  });
+
+  test("nothing typed drops the family's draft and leaves the others", () => {
+    const st = fullStorage();
+    saveTypedDraft(st, draft());
+    saveTypedDraft(st, draft({ familyId: "g" }));
+    saveTypedDraft(st, draft({ text: "  ", year: "", participantIds: [], questionId: "q1" }));
+    assert.equal(readTypedDraft(st, "f"), null);
+    assert.ok(readTypedDraft(st, "g"));
+    saveTypedDraft(st, draft({ familyId: "g", text: "", year: "", participantIds: [] }));
+    assert.equal(st.getItem(DRAFT_KEY), null, "the key goes once no family has a draft");
+  });
+
+  test("people, a typed question or photos alone are worth keeping", () => {
+    const st = fullStorage();
+    const blank = { text: "", year: "", participantIds: [] };
+    saveTypedDraft(st, draft({ ...blank, participantIds: ["ana"] }));
+    assert.deepEqual(readTypedDraft(st, "f").participantIds, ["ana"]);
+    saveTypedDraft(st, draft({ ...blank, question: "How did you meet?" }));
+    assert.equal(readTypedDraft(st, "f").question, "How did you meet?");
+    saveTypedDraft(st, draft({ ...blank, photoCount: 3 }));
+    assert.equal(readTypedDraft(st, "f").photoCount, 3);
+  });
+
+  test("clear drops one family's draft only, and sending clears it", () => {
+    const st = fullStorage();
+    saveTypedDraft(st, draft());
+    saveTypedDraft(st, draft({ familyId: "g" }));
+    clearTypedDraft(st, "f");
+    assert.equal(readTypedDraft(st, "f"), null);
+    assert.ok(readTypedDraft(st, "g"));
+    clearTypedDraft(st, "g");
+    assert.equal(st.getItem(DRAFT_KEY), null);
+    assert.doesNotThrow(() => clearTypedDraft(st, "nobody"));
+    assert.doesNotThrow(() => clearTypedDraft(null, "f"));
+  });
+
+  test("does not touch the carry or the per-run drafts", () => {
+    const st = fullStorage();
+    saveCarry(st, { familyId: "f", text: "carried", year: "" });
+    saveSentDraft(st, "run1", sentDraftFromSubmit({ text: "sent", year: 1990 }, 0));
+    saveTypedDraft(st, draft());
+    clearTypedDraft(st, "f");
+    assert.equal(readCarry(st, "f").text, "carried");
+    assert.equal(loadSentDraft(st, "run1").text, "sent");
+    assert.notEqual(DRAFT_KEY, CARRY_KEY);
+    assert.ok(!DRAFT_KEY.startsWith(DRAFT_KEY_PREFIX));
+  });
+
+  test("unreadable, wrong-shaped or foreign values read as nothing", () => {
+    const st = fullStorage();
+    st.setItem(DRAFT_KEY, "{not json");
+    assert.equal(readTypedDraft(st, "f"), null);
+    st.setItem(DRAFT_KEY, JSON.stringify(["f"]));
+    assert.equal(readTypedDraft(st, "f"), null);
+    st.setItem(DRAFT_KEY, JSON.stringify({ f: { text: 7 } }));
+    assert.equal(readTypedDraft(st, "f"), null);
+    st.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ f: { text: "t", year: "19x7", participantIds: ["a", 3, "a"], question: 5, photoCount: "2", memoryId: 9 } }),
+    );
+    assert.deepEqual(readTypedDraft(st, "f"), {
+      familyId: "f",
+      memoryId: null,
+      questionId: null,
+      text: "t",
+      year: "",
+      participantIds: ["a"],
+      question: "",
+      photoCount: 0,
+    });
+    // A broken map is replaced by the next save rather than blocking it.
+    st.setItem(DRAFT_KEY, "{not json");
+    saveTypedDraft(st, draft());
+    assert.deepEqual(readTypedDraft(st, "f"), draft());
+    assert.equal(readTypedDraft(st, ""), null);
+  });
+
+  test("storage that throws, or none, never throws out", () => {
+    const bad = {
+      getItem() {
+        throw new Error("blocked");
+      },
+      setItem() {
+        throw new Error("blocked");
+      },
+      removeItem() {
+        throw new Error("blocked");
+      },
+    };
+    assert.doesNotThrow(() => saveTypedDraft(bad, draft()));
+    assert.equal(readTypedDraft(bad, "f"), null);
+    assert.doesNotThrow(() => clearTypedDraft(bad, "f"));
+    assert.doesNotThrow(() => saveTypedDraft(null, draft()));
+    assert.equal(readTypedDraft(null, "f"), null);
+  });
+});
+
+describe("draftForForm", () => {
+  const kept = (over = {}) => ({
+    familyId: "f",
+    memoryId: null,
+    questionId: null,
+    text: "t",
+    year: "",
+    participantIds: [],
+    question: "",
+    photoCount: 0,
+    ...over,
+  });
+
+  test("a new memory's draft opens on the plain form", () => {
+    const d = kept();
+    assert.equal(draftForForm(d, { memoryId: null, questionId: null }), d);
+  });
+
+  test("a draft with a picked question opens with the same question, or with none in the URL", () => {
+    const d = kept({ questionId: "q1" });
+    assert.equal(draftForForm(d, { memoryId: null, questionId: "q1" }), d);
+    assert.equal(draftForForm(d, { memoryId: null, questionId: null }), d);
+    assert.equal(draftForForm(d, { memoryId: null, questionId: "q2" }), null);
+    assert.equal(draftForForm(kept(), { memoryId: null, questionId: "q2" }), null);
+  });
+
+  test("a second telling's draft opens only on that moment", () => {
+    const d = kept({ memoryId: "m1" });
+    assert.equal(draftForForm(d, { memoryId: "m1", questionId: null }), d);
+    assert.equal(draftForForm(d, { memoryId: "m2", questionId: null }), null);
+    assert.equal(draftForForm(d, { memoryId: null, questionId: null }), null);
+    assert.equal(draftForForm(kept(), { memoryId: "m1", questionId: null }), null);
+  });
+
+  test("no draft is no draft", () => {
+    assert.equal(draftForForm(null, { memoryId: null, questionId: null }), null);
+  });
+
+  test("a reload, end to end: the pick in the URL and the draft give the form back", () => {
+    const st = fullStorage();
+    // On /add?family=f, the person picks q_wedding (about moment m1) and types.
+    const url = withQuestionId("?family=f", "q_wedding");
+    saveTypedDraft(st, kept({ questionId: "q_wedding", text: "His flower fell off" }));
+    // Reload: the same URL, the same tab.
+    const search = url.slice("/add".length);
+    const q = readAddQuery(search);
+    const d = draftForForm(readTypedDraft(st, q.familyId), { memoryId: q.memoryId, questionId: questionIdFromQuery(search) });
+    assert.equal(d.text, "His flower fell off");
+    assert.equal(d.questionId, "q_wedding");
+    // Sent: the draft is gone and the run URL carries no question.
+    clearTypedDraft(st, "f");
+    assert.equal(readTypedDraft(st, "f"), null);
+    assert.equal(questionIdFromQuery(runHref({ familyId: "f", runId: "r" }).slice("/add".length)), null);
   });
 });
