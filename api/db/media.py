@@ -34,6 +34,7 @@ MAX_BYTES = 20 * 1024 * 1024
 
 BUCKET = "media"
 FILES = f"{BUCKET}.files"
+CHUNKS = f"{BUCKET}.chunks"
 INLINE = f"{BUCKET}.inline"
 REF_PREFIX = "media/"
 
@@ -191,3 +192,21 @@ def delete_media(db: Database, family_id: str, media_id: str) -> bool:
     except NoFile:
         return False
     return True
+
+
+def delete_family_media(db: Database, family_id: str) -> int:
+    """Delete every file of one family, in both backends. Returns how many files went.
+
+    Covers the inline store (mongomock) and the GridFS bucket (files and their chunks),
+    each filtered by `metadata.familyId`, so a database written by either backend is
+    cleaned. ValueError on a blank family_id, which would otherwise match nothing useful.
+    """
+    if not isinstance(family_id, str) or not family_id.strip():
+        raise ValueError("family_id is required")
+    owned = {"metadata.familyId": family_id}
+    deleted = db[INLINE].delete_many(owned).deleted_count
+    file_ids = [doc["_id"] for doc in db[FILES].find(owned, {"_id": 1})]
+    if file_ids:
+        db[CHUNKS].delete_many({"files_id": {"$in": file_ids}})
+        deleted += db[FILES].delete_many({"_id": {"$in": file_ids}, **owned}).deleted_count
+    return deleted

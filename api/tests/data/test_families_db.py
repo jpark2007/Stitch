@@ -6,10 +6,18 @@ import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from pathlib import Path
+
 import pytest
+from bson import ObjectId
 
 import schemas
 from db import families as fam
+from db import media as media_db
+from db import memories as memories_db
+from db import people as people_db
+from db import props as props_db
+from db import users as users_db
 
 mongomock = pytest.importorskip("mongomock")
 
@@ -352,3 +360,132 @@ def test_real_db_invite_flow(real_db):
     assert fam.remove_member(real_db, f.id, "u_admin")
     with pytest.raises(fam.LastAdmin):
         fam.remove_member(real_db, f.id, "u2")
+
+
+# ------------------------------------------------------------------------ purge, delete users
+
+SAMPLE = schemas.MemoryResponse.model_validate_json(
+    (Path(__file__).resolve().parents[3] / "web/public/samples/hymn_books.memory.json").read_text()
+)
+PURGED = ("people", "memories", "questions", "props", "sets")
+
+
+def _fill_family(db, fid: str, admin: str) -> list[str]:
+    """A family with one of everything it can own. Returns its media ids."""
+    fam.create_family(db, name=f"Family {fid}", creator_user_id=admin, family_id=fid, now=T0)
+    person = people_db.create_person(db, fid, schemas.NewPerson(name="Grandma"), added_by=admin)
+    memory = memories_db.create_memory(db, fid, title="Hymn books", year=1988, participant_ids=[person.id])
+    memories_db.create_question(db, fid, person_id=person.id, text="What did you sing?", memory_id=memory.id)
+    props_db.insert_prop(db, fid, SAMPLE.props[0], prop_id=f"{fid}_prop")
+    props_db.insert_set(db, fid, SAMPLE.sets[0], set_id=f"{fid}_set")
+    return [
+        media_db.put_media(db, fid, b"photo " + fid.encode(), content_type="image/png"),
+        media_db.put_media(db, fid, b"audio " + fid.encode(), content_type="audio/mpeg", kind="audio"),
+    ]
+
+
+def _family_docs(db, fid: str) -> dict[str, list]:
+    return {
+        "families": list(db.families.find({"_id": fid})),
+        **{c: list(db[c].find({"familyId": fid}).sort("_id", 1)) for c in PURGED},
+        "media": list(db[media_db.INLINE].find({"metadata.familyId": fid}).sort("_id", 1)),
+        "files": list(db[media_db.FILES].find({"metadata.familyId": fid}).sort("_id", 1)),
+    }
+
+
+def _gridfs_file(db, fid: str) -> ObjectId:
+    """A file as a real GridFS bucket stores it (mongomock uses the inline store instead)."""
+    oid = ObjectId()
+    db[media_db.FILES].insert_one({"_id": oid, "length": 3, "chunkSize": 261120, "filename": "x.png",
+                                   "metadata": {"familyId": fid, "kind": "photo", "contentType": "image/png"}})
+    db[media_db.CHUNKS].insert_one({"_id": ObjectId(), "files_id": oid, "n": 0, "data": b"abc"})
+    return oid
+
+
+def test_purge_family_removes_only_that_family(mdb):
+    a_media = _fill_family(mdb, "fam_a", "u_a")
+    b_media = _fill_family(mdb, "fam_b", "u_b")
+    a_file, b_file = _gridfs_file(mdb, "fam_a"), _gridfs_file(mdb, "fam_b")
+    assert all(_family_docs(mdb, "fam_a").values())
+    b_before = _family_docs(mdb, "fam_b")
+    b_chunks = list(mdb[media_db.CHUNKS].find({"files_id": b_file}))
+    users_before = list(mdb.users.find())
+
+    assert fam.purge_family(mdb, "fam_a") is None
+
+    assert _family_docs(mdb, "fam_a") == {k: [] for k in b_before}
+    assert mdb[media_db.CHUNKS].count_documents({"files_id": a_file}) == 0
+    assert all(media_db.get_media(mdb, "fam_a", mid) is None for mid in a_media)
+    assert fam.get_family(mdb, "fam_a") is None
+
+    assert _family_docs(mdb, "fam_b") == b_before
+    assert list(mdb[media_db.CHUNKS].find({"files_id": b_file})) == b_chunks
+    assert [media_db.get_media(mdb, "fam_b", mid).data for mid in b_media] == [b"photo fam_b", b"audio fam_b"]
+    assert list(mdb.users.find()) == users_before  # accounts are not family data
+
+    fam.purge_family(mdb, "fam_a")  # purging again is a no-op
+    assert _family_docs(mdb, "fam_b") == b_before
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None, 0])
+def test_purge_family_refuses_a_blank_id(mdb, blank):
+    _fill_family(mdb, "fam_a", "u_a")
+    before = _family_docs(mdb, "fam_a")
+    with pytest.raises(ValueError):
+        fam.purge_family(mdb, blank)
+    with pytest.raises(ValueError):
+        media_db.delete_family_media(mdb, blank)
+    assert _family_docs(mdb, "fam_a") == before
+
+
+def test_delete_family_media_counts_both_stores(mdb):
+    _fill_family(mdb, "fam_a", "u_a")
+    _gridfs_file(mdb, "fam_a")
+    keep = media_db.put_media(mdb, "fam_b", b"keep", content_type="image/png")
+    assert media_db.delete_family_media(mdb, "fam_a") == 3
+    assert media_db.delete_family_media(mdb, "fam_a") == 0
+    assert mdb[media_db.CHUNKS].count_documents({}) == 0
+    assert media_db.get_media(mdb, "fam_b", keep).data == b"keep"
+
+
+def _users(db) -> None:
+    for uid, email in (("u1", "david@demo.stitch"), ("u2", "ana@demo.stitch"), ("u3", "olivia@example.com")):
+        users_db.create_user(db, email=email, password_hash="x", name=uid, user_id=uid)
+
+
+def _user_ids(db) -> list[str]:
+    return sorted(d["_id"] for d in db.users.find({}, {"_id": 1}))
+
+
+def test_delete_users_with_empty_lists_deletes_nothing(mdb):
+    _users(mdb)
+    assert users_db.delete_users(mdb, emails=[], user_ids=[]) == 0
+    assert users_db.delete_users(mdb, emails=["not-an-email", "  "], user_ids=["", "   "]) == 0
+    assert _user_ids(mdb) == ["u1", "u2", "u3"]
+
+
+def test_delete_users_by_normalized_email_or_id(mdb):
+    _users(mdb)
+    assert users_db.delete_users(mdb, emails=["  DAVID@Demo.Stitch "], user_ids=[]) == 1
+    assert _user_ids(mdb) == ["u2", "u3"]
+    assert users_db.delete_users(mdb, emails=[], user_ids=["u2", "nobody"]) == 1
+    assert _user_ids(mdb) == ["u3"]
+
+
+def test_delete_users_matches_email_or_id_once(mdb):
+    _users(mdb)
+    # u1 by email and by id, u2 by id only; a bad email in the list is ignored.
+    deleted = users_db.delete_users(mdb, emails=["david@demo.stitch", "bad"], user_ids=["u1", "u2"])
+    assert deleted == 2
+    assert _user_ids(mdb) == ["u3"]
+
+
+def test_real_db_purge_family_and_media(real_db):
+    a_media = _fill_family(real_db, "fam_a", "u_a")
+    b_media = _fill_family(real_db, "fam_b", "u_b")
+    assert real_db[media_db.FILES].count_documents({"metadata.familyId": "fam_a"}) == 2
+    fam.purge_family(real_db, "fam_a")
+    assert {k: v for k, v in _family_docs(real_db, "fam_a").items() if v} == {}
+    assert real_db[media_db.CHUNKS].count_documents({}) == 2  # fam_b's two one-chunk files
+    assert all(media_db.get_media(real_db, "fam_a", mid) is None for mid in a_media)
+    assert [media_db.get_media(real_db, "fam_b", mid).data for mid in b_media] == [b"photo fam_b", b"audio fam_b"]
