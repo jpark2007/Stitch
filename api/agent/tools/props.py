@@ -7,15 +7,17 @@ or change another family's props or media.
 
 - ``find_prop`` searches the family's saved props, then the built-in library.
 - ``generate_prop`` draws a new prop in the locked style, cuts it out, auto-rigs it
-  (anchor from the shape, grip hint snapped to the shape's edge), optionally draws
-  separate moving parts and state images, and saves it. With no art service, or when a
-  call fails, it saves a placeholder card (``art: null`` plus a ``color``) so the story can
-  always be staged.
+  (anchor from the shape, grip hint snapped to the shape's edge, sockets from the model or
+  the size class's defaults), optionally draws separate moving parts and state images, and
+  saves it. With no art service, or when a call fails, it saves a placeholder card
+  (``art: null`` plus a ``color``) so the story can always be staged.
 - ``confirm_props`` is the family's review. The studio gates it with
   ``ask.INTERRUPT_ON``, so the run pauses before it executes; runs.py turns that pause
   into the ``props_found`` event and the family's answer into an ``edit`` decision whose
   args carry ``edits`` (``ask.answer_to_resume``). The tool then applies those edits.
-  It emits no event itself.
+  It emits no event itself. A ``replace_photo`` on a prop this run did not generate
+  (reused from the family or the library) never touches it: older memories still use its
+  parts, states and art, so the new picture goes on a fork with a new id.
 
 Invalid input from the model (a size outside the vocabulary, part coordinates outside
 the image, a photo that is not one of this story's) comes back as an ``error: ...``
@@ -41,7 +43,14 @@ from pydantic import BaseModel, Field, ValidationError
 import schemas
 from agent.repo import AgentRepo
 from agent.run_info import RunInfo
-from agent.tools.art import ArtService, Cutout, build_art_prompt, placeholder_color, snap_grip
+from agent.tools.art import (
+    ALPHA_THRESHOLD,
+    ArtService,
+    Cutout,
+    build_art_prompt,
+    placeholder_color,
+    snap_grip,
+)
 from agent.tools.ask import CONFIRM_PROPS
 from agent.tools.family import era_for_year
 from screenplay.schema import VOCABULARY
@@ -54,7 +63,16 @@ ID_MAX_CHARS = 40
 NAME_MAX_CHARS = 80
 MAX_PARTS = 6
 MAX_STATES = 4
+MAX_SOCKETS = 6
 BODY = "body"
+PUPPET_SOCKETS = frozenset({"hand_l", "hand_r", "head"})
+"""The puppet's own sockets (shared/CONTRACTS.md, Puppet). A prop socket never shares a name with one."""
+DEFAULT_SOCKETS: dict[str, dict[str, list[float]]] = {
+    "vehicle": {"driver": [0.35, 0.55], "passenger": [0.65, 0.55]},
+    "furniture": {"seat": [0.5, 0.45]},
+}
+"""Sockets a generated prop gets when the model gives none: get_in/drive_to need a vehicle's
+'driver' socket and sit_on needs a seat, so a car or a chair always works on stage."""
 NO_MATCH = "no saved or library prop matches; generate one"
 
 _SNAKE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
@@ -115,6 +133,18 @@ class GeneratePropArgs(BaseModel):
     states: list[StateSpec] | None = Field(
         default=None, description="Visual states, only when the story changes them."
     )
+    sockets: dict[str, list[float]] | None = Field(
+        default=None,
+        description=(
+            "Named attachment points for a puppet or another prop, as [u, v] image fractions with "
+            "[0, 0] top-left. E.g. a car {\"driver\": [0.35, 0.55], \"passenger\": [0.65, 0.55]}, "
+            "a chair {\"seat\": [0.5, 0.5]}, a table {\"top\": [0.5, 0.1]}. get_in, drive_to and "
+            "ride_to need a vehicle with a 'driver' socket; sit_on needs a socket named 'seat' or "
+            "containing 'seat'; place_on onto a prop needs a free socket. Omit for the size's "
+            "defaults (vehicle: driver and passenger; furniture: seat; others: none); {} means none. "
+            f"Snake_case names, not 'body', 'hand_l', 'hand_r' or 'head'; at most {MAX_SOCKETS}."
+        ),
+    )
 
 
 class ConfirmPropsArgs(BaseModel):
@@ -169,6 +199,71 @@ def _round(values: Iterable[float]) -> list[float]:
 
 def _body_ref(prop: schemas.Prop) -> str | None:
     return prop.art.get(BODY)
+
+
+def _round_sockets(sockets: dict[str, list[float]]) -> dict[str, list[float]]:
+    return {name: _round(at) for name, at in sockets.items()}
+
+
+def resolve_sockets(raw: Any, size: str) -> tuple[dict[str, list[float]] | None, str | None]:
+    """The sockets to save for a generated prop: (sockets, None) or (None, error).
+
+    ``None`` gives the size class's defaults (``DEFAULT_SOCKETS``); an explicit ``{}`` means no
+    sockets, even for a vehicle.
+    """
+    if raw is None:
+        return {k: list(v) for k, v in DEFAULT_SOCKETS.get(size, {}).items()}, None
+    if not isinstance(raw, dict):
+        return None, "error: sockets must be an object of name: [u, v], or omitted"
+    if len(raw) > MAX_SOCKETS:
+        return None, f"error: at most {MAX_SOCKETS} sockets per prop"
+    out: dict[str, list[float]] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not _SNAKE.match(name):
+            return None, f"error: socket name {name!r} must be snake_case (a-z, 0-9, _)"
+        if name == BODY or name in PUPPET_SOCKETS:
+            return None, (
+                f"error: socket name {name!r} is taken; a prop socket cannot be 'body', 'hand_l', 'hand_r' or 'head'"
+            )
+        pair = _finite_pair(value)
+        if pair is None or not all(0.0 <= x <= 1.0 for x in pair):
+            return None, f"error: socket {name!r} needs [u, v] with both numbers between 0 and 1"
+        out[name] = [pair[0], pair[1]]
+    return out, None
+
+
+def _opaque_at(png: bytes, point: Sequence[float]) -> bool:
+    """True when ``point`` (image fractions) falls on a pixel of the shape."""
+    with Image.open(io.BytesIO(png)) as im:
+        alpha = im.convert("RGBA").getchannel("A")
+    w, h = alpha.size
+    x = min(w - 1, max(0, int(point[0] * w)))
+    y = min(h - 1, max(0, int(point[1] * h)))
+    return alpha.getpixel((x, y)) >= ALPHA_THRESHOLD
+
+
+def rerig_grip(old_grip: Sequence[float] | None, cutout: Cutout | None) -> list[float] | None:
+    """The grip on a new picture, from the old grip as a hint.
+
+    No old grip: None. No cutout (a raw photo with no alpha): the old grip, clamped. Otherwise
+    the hint snapped to the new shape's edge; should that ever miss the shape, the edge nearest
+    the anchor instead.
+    """
+    if old_grip is None:
+        return None
+    pair = _finite_pair(old_grip)
+    if pair is None:
+        return None
+    hint = [_clamp01(pair[0]), _clamp01(pair[1])]
+    if cutout is None:
+        return hint
+    try:
+        grip = snap_grip(cutout.png, hint)
+        if not _opaque_at(cutout.png, grip):
+            grip = snap_grip(cutout.png, cutout.anchor)
+    except ValueError:
+        return hint
+    return grip
 
 
 _STOPWORDS = frozenset(
@@ -242,6 +337,7 @@ def _summary(prop: schemas.Prop) -> dict[str, Any]:
         "grip": _round(prop.grip) if prop.grip is not None else None,
         "parts": list(prop.parts),
         "states": list(prop.states),
+        "sockets": _round_sockets(prop.sockets),
         "preview": _body_ref(prop),
     }
 
@@ -256,6 +352,9 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
     family_id = run.family_id
     allowed_photos = frozenset(run.photo_ids)
     id_lock = threading.Lock()
+    # Ids generate_prop saved in this run (guarded by id_lock). Only these may be changed in
+    # place by the review; any other prop belongs to older memories too and is forked instead.
+    generated_ids: set[str] = set()
 
     def put_png(png: bytes) -> str:
         return repo.put_media(family_id, png, "image/png", kind="cutout")
@@ -274,8 +373,9 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
     def find_prop(description: str) -> str:
         """Search this family's saved props, then the built-in library, for an object the
         story mentions. Returns a JSON list of matches (id, name, description, size,
-        source, aspect, grip, parts, states, and preview: the body's media id or null),
-        best first, or a note that nothing matches so you should generate one."""
+        source, aspect, grip, parts, states, sockets as {name: [u, v]}, and preview: the
+        body's media id or null), best first, or a note that nothing matches so you should
+        generate one. Only a prop with sockets can be sat on, got into or placed onto."""
         text = " ".join(str(description).split())
         if not text:
             return "error: describe the object to look for"
@@ -298,6 +398,7 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
         reference_photo_id: str | None,
         parts: Sequence[PartSpec | dict[str, Any]] | None,
         states: Sequence[StateSpec | dict[str, Any]] | None,
+        sockets: Any = None,
     ) -> str:
         name = " ".join(str(name).split())[:NAME_MAX_CHARS].strip()
         description = " ".join(str(description).split())
@@ -312,6 +413,11 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
             if pair is None:
                 return "error: grip must be two numbers [u, v] (image fractions, [0, 0] top-left) or omitted"
             hint = (_clamp01(pair[0]), _clamp01(pair[1]))
+
+        prop_sockets, socket_error = resolve_sockets(sockets, size)
+        if socket_error is not None:
+            return socket_error
+        assert prop_sockets is not None
 
         part_specs: list[PartSpec] = []
         for raw in parts or []:
@@ -414,11 +520,13 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
             grip=grip_point,
             parts=prop_parts,
             states=prop_states,
+            sockets=prop_sockets,
         )
         # The model may generate several props in parallel (tool calls run on threads):
         # pick the id and save under one lock so two props with the same name never share an id.
         with id_lock:
             saved = repo.save_prop(family_id, schemas.Prop(id=unique_id(name), **fields))
+            generated_ids.add(saved.id)
         return json.dumps(
             {
                 "id": saved.id,
@@ -431,6 +539,7 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
                 "grip": _round(saved.grip) if saved.grip is not None else None,
                 "parts": list(saved.parts),
                 "states": list(saved.states),
+                "sockets": _round_sockets(saved.sockets),
             }
         )
 
@@ -442,14 +551,18 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
         reference_photo_id: str | None = None,
         parts: list[PartSpec] | None = None,
         states: list[StateSpec] | None = None,
+        sockets: dict[str, list[float]] | None = None,
     ) -> str:
         """Draw a new paper prop in the house style, cut it out, rig it and save it to the
         family. Use only when find_prop has no match. Returns JSON with the prop id, its
         preview media id (null for a placeholder card), aspect, anchor, the snapped grip,
-        and the part and state names to use in the screenplay. "art" is "placeholder" when
-        no image could be made: the prop still works on stage as a colored card."""
+        the part and state names, and its sockets ({name: [u, v]}, the seats and spots
+        get_in, sit_on and place_on use) for the screenplay. Omitted sockets take the size
+        class's defaults (a vehicle gets driver and passenger, furniture a seat). "art" is
+        "placeholder" when no image could be made: the prop still works on stage as a
+        colored card."""
         try:
-            return _generate(name, description, size, grip, reference_photo_id, parts, states)
+            return _generate(name, description, size, grip, reference_photo_id, parts, states, sockets)
         except Exception as exc:  # noqa: BLE001 - a failed prop must not end the run
             log.warning("generate_prop failed: %s: %s", type(exc).__name__, exc)
             return f"error: could not make the prop ({type(exc).__name__}); try again or simplify it"
@@ -481,6 +594,8 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
             if size_px is None:
                 return None, f"{prop.id}: photo {photo_id!r} could not be read; kept the current art"
             body, aspect, anchor = ref, size_px[0] / size_px[1], [0.5, 1.0]
+        # Parts and states were drawn for the old picture, so they go; the grip is moved
+        # onto the new shape. Sockets stay: they are where people sit, not the picture.
         updated = _validated(
             prop,
             family_id=family_id,
@@ -488,6 +603,7 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
             art={BODY: body},
             aspect=aspect,
             anchor=anchor,
+            grip=rerig_grip(prop.grip, cutout),
             parts={},
             states={},
         )
@@ -529,11 +645,14 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
             if any(e.action == "remove" for e in chip_edits):
                 removed.append(chip.id)
                 continue
-            prop = repo.get_prop(family_id, chip.id)
-            if prop is None:
+            original = repo.get_prop(family_id, chip.id)
+            if original is None:
                 problems.append(f"{chip.id}: no saved prop with this id; generate it or leave it out")
                 continue
+            prop = original
             renamed = photo = False
+            dropped_parts: list[str] = []
+            dropped_states: list[str] = []
             for edit in chip_edits:
                 if edit.action == "rename":
                     new_name = " ".join((edit.name or "").split())[:NAME_MAX_CHARS].strip()
@@ -551,12 +670,32 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
                         problems.append(problem)
                         continue
                     assert updated is not None
+                    dropped_parts += [p for p in prop.parts if p not in dropped_parts]
+                    dropped_states += [s for s in prop.states if s not in dropped_states]
                     prop = updated
                     photo = True
-            if renamed or photo:
+            forked = False
+            if photo:
+                # Only a prop this run generated changes in place. Anything else (a family
+                # prop, a library prop) is in older memories with its own parts, states and
+                # art: leave it as it is and save the new picture as a fork, rename included.
+                with id_lock:
+                    forked = original.id not in generated_ids
+                    if forked:
+                        prop = _validated(prop, id=unique_id(prop.name))
+                    prop = repo.save_prop(family_id, prop)
+                    generated_ids.add(prop.id)
+            elif renamed:
                 prop = repo.save_prop(family_id, prop)
             status = "photo" if photo else "renamed" if renamed else "kept"
-            lines.append(f"{prop.id} | {prop.name} | size={prop.size} | {status}")
+            line = f"{prop.id} | {prop.name} | size={prop.size} | {status}"
+            if forked:
+                line += f" (replaces {original.id}; use the new id)"
+            dropped = [f"{label}: {', '.join(names)}"
+                       for label, names in (("parts", dropped_parts), ("states", dropped_states)) if names]
+            if photo and dropped:
+                line += f" (dropped {'; '.join(dropped)})"
+            lines.append(line)
 
         lines.append(f"removed: {', '.join(removed) if removed else 'none'}")
         lines.extend(f"problem: {p}" for p in problems)
@@ -569,7 +708,10 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
         """Show every prop of the scene to the family for review, once, with all props
         together. The run pauses until they answer. The result has one line per kept prop
         "<propId> | <name> | size=<size> | kept|renamed|photo", then "removed: <ids>"
-        (removed props leave the scene), then any problems. Use the names and ids it returns."""
+        (removed props leave the scene), then any problems. After a photo replacement the
+        returned id may differ from the reviewed one ("(replaces <oldId>; use the new id)"),
+        and the line lists the parts and states the new picture dropped. Use the names and
+        ids it returns."""
         try:
             return _confirm(props, edits)
         except Exception as exc:  # noqa: BLE001 - the review must not end the run
@@ -584,7 +726,10 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
 
 
 __all__ = [
+    "DEFAULT_SOCKETS",
+    "MAX_SOCKETS",
     "NO_MATCH",
+    "PUPPET_SOCKETS",
     "SIZES",
     "ConfirmPropsArgs",
     "FindPropArgs",
@@ -594,5 +739,7 @@ __all__ = [
     "era_label",
     "make_prop_tools",
     "prop_slug",
+    "rerig_grip",
+    "resolve_sockets",
     "search_props",
 ]
