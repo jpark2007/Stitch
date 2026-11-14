@@ -5,12 +5,17 @@ DESIGN.md asks the agent for more than a playable scene: storybook pageText on e
 one click-to-explain text per cast member and prop, pull tabs that drive real prop parts or
 states, and narration whose words are traceable to a telling.
 
+`review_cue_drift(screenplay)` warns when a default-telling cue moves its action more than
+CUE_DRIFT_SECONDS from where it was written in a shot with camera cues after t=0: the compiler
+moves cued actions onto their words but not the camera cues, which are then left framing a
+beat that has not happened yet.
+
 `review_timeline(screenplay, timeline)` checks the compiled timeline, i.e. what the stage will
 actually play: pull-tab scrub ranges that are empty or outside [0, duration], explanations
 whose puppet or prop has no track, pageText that is never on the page while its shot plays,
 and narration cues that land outside the timeline.
 
-`compile_screenplay` runs both after a successful compile and tells the director what is
+`compile_screenplay` runs all three after a successful compile and tells the director what is
 still missing. Warnings are advice, not compile errors: they never fail a compile and never
 use a compile round. Each warning is one line, `<where>: <problem>; <fix>`, e.g.::
 
@@ -26,9 +31,14 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 
 import schemas
+from screenplay import narration as screenplay_narration
 from screenplay.schema import Interaction, NarrationLine, Screenplay, Timeline, TimelineShot
 
 MAX_PAGE_TEXT_WORDS = 30
+
+CUE_DRIFT_SECONDS = 1.0
+"""How far (seconds) a default-telling cue may move its action before review_scene warns:
+the camera cues stay where they were written."""
 
 _SOURCE_FIX = 'set source to the telling sentence the words come from, like "telling:<authorId>:s2"'
 
@@ -207,6 +217,50 @@ def _review_narration(screenplay: Screenplay) -> list[str]:
     for author, shots in (screenplay.narrations or {}).items():
         for shot_id, lines in shots.items():
             out += _review_lines(f"narrations {author}, shot {shot_id}, line", lines)
+    return out
+
+
+def review_cue_drift(screenplay: Screenplay) -> list[str]:
+    """Warnings for default-telling cues that move their action far from where it was written,
+    one line each: '<where>: <problem>; <fix>'.
+
+    The compiler moves a cued action (and the uncued actions after it) onto the cue word, but
+    leaves the shot's camera cues at their written times, so a big move leaves the camera
+    framing a beat that has not happened yet. Only shots with a camera cue after t=0 can be
+    left behind. Bad cues are the compiler's errors, not warnings, so they are skipped here.
+    """
+    out = []
+    for shot in screenplay.shots:
+        if not any(cue.t > 0 for cue in shot.camera):
+            continue
+        try:
+            retimed = screenplay_narration.retime_actions(shot, 0.0)
+        except screenplay_narration.NarrationError:
+            continue
+        for i, line in enumerate(shot.narration, start=1):
+            if line.cue is None:
+                continue
+            try:
+                idx = screenplay_narration.cue_action_index(shot, line.cue)
+                word_at = screenplay_narration.cue_word_time(line, screenplay_narration.line_words(line, line.t))
+            except screenplay_narration.NarrationError:
+                continue
+            written, moved = shot.actions[idx].t, retimed[idx]
+            drift = moved - written
+            if abs(drift) <= CUE_DRIFT_SECONDS:
+                continue
+            offset = word_at - line.t  # the cue word's time from the line's start
+            start = round(written - offset, 2)
+            fix = (
+                f"start the line at t={_num(start)} so its cue word falls at t={_num(written)}"
+                if start >= 0
+                else "cue an earlier word (cueWord), or give the action a later t, so the cue word falls on it"
+            )
+            out.append(
+                f'shot {shot.id}, narration line {i}: cue "{line.cue}" moves its action '
+                f"{_num(round(abs(drift), 2))}s {'later' if drift > 0 else 'earlier'} than written "
+                f"(t={_num(written)} to t={_num(round(moved, 2))}), but the camera cues keep their times; {fix}"
+            )
     return out
 
 
