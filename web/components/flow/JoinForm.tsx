@@ -256,7 +256,7 @@ export function JoinForm(props: {
                       />
                       <span className="min-w-0 flex-1 break-words font-semibold text-ink">{p.name}</span>
                       {Number.isFinite(p.born) ? (
-                        <span className="shrink-0 text-sm text-ink-faint tabular-nums">born {p.born}</span>
+                        <span className="shrink-0 text-sm text-ink-soft tabular-nums">born {p.born}</span>
                       ) : null}
                     </ChoiceCard>
                   </li>

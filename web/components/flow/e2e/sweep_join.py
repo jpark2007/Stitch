@@ -11,6 +11,8 @@ unclaimed person, a person someone else claimed first (409, then the page looks 
 adding yourself with relationships (picking, the parent limit, none picked), validation
 errors, server errors (500 and a dropped connection), a dead link (unknown, revoked, expired;
 signed in and signed out) and the welcome, whose links must lead to / and /add?family=<fid>.
+Two neighbours too: a member's "Not you? Sign out" on the invite lands back on it signed out,
+and /families/new's "Were you invited?" field opens a pasted invite link and refuses garbage.
 
 Real mode starts `python -m seed.serve` (in-memory database) and makes its invites and
 people through the API as the demo admin, david@demo.stitch. Mock mode
@@ -540,6 +542,10 @@ class JoinSweep:
             self.step("signout", "'Not you? Sign out' comes back to the invitation", self.s_sign_out,
                       allow=Allow(statuses=(401,)), needs=("signin",))
             self.step("member", "already a member", self.s_already_member, needs=need)
+            self.step("member-signout", "already a member: 'Not you? Sign out' comes back to the invitation",
+                      self.s_member_sign_out, allow=Allow(statuses=(401,)), needs=need)
+            self.step("paste-invite", "start a family: a pasted invite link opens it; garbage is refused",
+                      self.s_paste_invite, allow=Allow(statuses=(401,)), needs=need)
             self.step("taken", "a person someone else just claimed (409, look again)", self.s_taken,
                       allow=Allow(statuses=(409,)), needs=need)
             self.step("rel", "add yourself: picking relationships, the parent limit", self.s_add_self_relationships,
@@ -891,6 +897,87 @@ class JoinSweep:
         self.snap(page, "already-member")
         self.member_page = page
         return f"'{page.get_by_role('heading', level=1).inner_text()}'; settings -> {settings.get_attribute('href')}"
+
+    def s_member_sign_out(self) -> str:
+        """A member opens the invite on a shared laptop; the next person signs them out here."""
+        expect = self.expect
+        email, password = REAL_ADMIN if self.real else MOCK_ADMIN
+        ctx, page = self.new_page("member-signout")
+        self.goto(page, f"/login?next={quote(f'/join/{self.code}', safe='')}")
+        self.ui_login(page, email, password)
+        expect(page).to_have_url(self.join_url_re())
+        expect(page.get_by_role("heading", level=1, name=re.compile("already in"))).to_be_visible()
+        expect(self.vis(page.get_by_text(re.compile(rf"Signed in as .*{re.escape(email)}")))).to_be_visible()
+        button = page.get_by_role("button", name="Not you? Sign out")
+        expect(button).to_be_visible()
+        self.snap(page, "already-member-sign-out")
+        button.click()
+        expect(page).to_have_url(self.join_url_re())
+        expect(page.get_by_role("heading", level=1, name=re.compile("invited to"))).to_be_visible()
+        expect(page.get_by_role("link", name="Create an account")).to_be_visible()
+        expect(page.get_by_role("link", name="I already have one")).to_be_visible()
+        hint = page.evaluate(SIGNED_IN_HINT_JS)
+        if hint is not None:
+            raise AssertionError(f"localStorage {SIGNED_IN_KEY!r} is still {hint!r} after signing out")
+        self.snap(page, "already-member-signed-out")
+        return f"signed in as {email}: 'Not you? Sign out' -> {page.url}, the signed-out invitation"
+
+    def s_paste_invite(self) -> str:
+        """/families/new: 'Were you invited?' opens a pasted link here; anything else is refused."""
+        expect = self.expect
+        error = "That doesn't look like an invite link."
+        ctx, page = self.new_page("paste-invite")
+        name = f"Pia Paste {self.tag}"
+        if self.real:
+            email = self.api_signup(ctx, name)
+            self.goto(page, "/families/new")
+        else:
+            self.goto(page, "/signup")
+            email = self.ui_signup(page, name)
+        expect(page).to_have_url(re.compile(r"/families/new$"))
+        expect(page.get_by_role("heading", level=1, name="Start your family")).to_be_visible()
+        expect(page.get_by_role("heading", level=2, name="Were you invited?")).to_be_visible()
+        expect(self.vis(page.get_by_text(re.compile(rf"Signed in as .*{re.escape(email)}")))).to_be_visible()
+        expect(page.get_by_role("button", name="Not you? Sign out")).to_be_visible()
+        field = self.vis(page.get_by_label("Paste your invite link"))
+        open_button = page.get_by_role("button", name="Open", exact=True)
+        self.snap(page, "new-family-invited")
+
+        # Empty, then garbage, then a link to some other page: each one is refused.
+        refused = []
+        for bad in ("", "this is not an invite", f"{self.web}/families/new"):
+            field.fill(bad)
+            open_button.click()
+            expect(self.vis(page.get_by_text(error, exact=True))).to_be_visible()
+            expect(field).to_have_attribute("aria-invalid", "true")
+            expect(field).to_be_focused()
+            expect(page).to_have_url(re.compile(r"/families/new$"))
+            refused.append(repr(bad))
+        self.snap(page, "new-family-invite-refused")
+        # Typing again clears the error.
+        field.fill("h")
+        expect(self.vis(page.get_by_text(error, exact=True))).to_have_count(0)
+
+        # A full link from another origin, with a trailing slash, query and hash: only its code is used.
+        link = f"https://stitch.example/join/{quote(self.code, safe='')}/?from=text#top"
+        field.fill(f"  {link}  ")
+        open_button.click()
+        expect(page).to_have_url(self.join_url_re())
+        expect(page.get_by_role("heading", level=1, name=re.compile("invited to"))).to_be_visible()
+        expect(page.get_by_role("button", name=re.compile(r"^Join"))).to_be_visible()
+        self.snap(page, "new-family-invite-opened")
+
+        # And "Not you? Sign out" on /families/new goes to /login, signed out.
+        self.goto(page, "/families/new")
+        expect(page.get_by_role("heading", level=1, name="Start your family")).to_be_visible()
+        page.get_by_role("button", name="Not you? Sign out").click()
+        expect(page).to_have_url(re.compile(r"/login$"))
+        expect(self.vis(page.get_by_label("Email"))).to_be_visible()
+        hint = page.evaluate(SIGNED_IN_HINT_JS)
+        if hint is not None:
+            raise AssertionError(f"localStorage {SIGNED_IN_KEY!r} is still {hint!r} after signing out")
+        return (f"refused {', '.join(refused)} with '{error}'; '{link}' opened /join/{self.code}; "
+                "'Not you? Sign out' -> /login")
 
     def s_taken(self) -> str:
         expect = self.expect
