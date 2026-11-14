@@ -6,7 +6,7 @@
  *   <Book3D spreads={book.spreads} cover={book.cover} renderStage={...} />
  *
  * The story page of a tradition prints, top to bottom: when it happens, in
- * hand ("Every Christmas Eve", whenLine), its title, its story, and taped in
+ * hand ("Christmas Eve, every year", dateLineOf), its title, its story, and taped in
  * below a snapshot of the people who keep it (their paper puppets and names,
  * captioned "since 1962" when it is known; with no print to caption, the
  * story closes on "Kept since 1962."), beside its first photo. The
@@ -101,6 +101,57 @@ export function whenLine(when: TraditionWhen | null | undefined): string {
     if (line.length <= WHEN_MAX) return line;
   }
   return plainWhen(when);
+}
+
+const WEEKDAYS = /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
+
+/** How often, said after the occasion: "every year". */
+const OFTEN: Record<TraditionWhen["kind"], string> = {
+  yearly: "every year",
+  seasonal: "every year",
+  monthly: "every month",
+  weekly: "every week",
+  occasional: "now and then",
+};
+
+/** How often, alone: "Once a year". */
+const PLAIN_OFTEN: Record<TraditionWhen["kind"], string> = {
+  yearly: "Once a year",
+  seasonal: "Once a season",
+  monthly: "Once a month",
+  weekly: "Once a week",
+  occasional: "Now and then",
+};
+
+/**
+ * When a tradition happens, the occasion first: "Christmas Eve, every
+ * year", "Sundays", "July, every year", "When everyone is home", "Once a
+ * month". The spread's dateLine: printed over the title, in Contents and
+ * under the navigation dots, which cut it to a few letters, so it opens on
+ * the words that tell one tradition from another rather than on "Every".
+ * Too long for one line (WHEN_MAX), the kind and month say it.
+ */
+export function dateLineOf(when: TraditionWhen | null | undefined): string {
+  const kind = when?.kind && when.kind in OFTEN ? when.kind : "occasional";
+  const label = (when?.label ?? "").replace(/\s+/g, " ").trim().replace(/[.!]+$/, "");
+  const every = /^(every|each)\s+/i;
+  if (label) {
+    let line: string;
+    // An occasional tradition's label is its own words ("Every other Friday" too).
+    if (kind === "occasional" || (!every.test(label) && PHRASE_START.test(label))) line = capitalize(label);
+    else {
+      const core = label.replace(every, "");
+      if (kind === "weekly" && WEEKDAYS.test(core)) line = `${capitalize(core.toLowerCase())}s`;
+      else line = `${capitalize(core)}, ${OFTEN[kind]}`;
+    }
+    if (line.length <= WHEN_MAX) return line;
+  }
+  const month = monthName(when?.month);
+  if (month && (kind === "yearly" || kind === "seasonal")) {
+    const name = kind === "yearly" ? month : capitalize(seasonOf(when?.month as number));
+    return `${name}, every year`;
+  }
+  return PLAIN_OFTEN[kind];
 }
 
 /** "since 1962", or null when the year it began is not known. */
@@ -236,15 +287,18 @@ export function storyText(tradition: Pick<Tradition, "description" | "title" | "
  * 770px measure, about 50 characters a line): with prints taped in below,
  * about nine lines, so the prints keep their size; alone, the page's height.
  * A title over one line takes about a line and a half of story with each
- * extra line (it is set at 64px, about 22 characters a line).
+ * extra line (it is set at 64px, about 22 characters a line), up to the
+ * three lines the book prints (pageArt cuts a longer one with "…").
  */
 export const STORY_MAX_WITH_PHOTOS = 440;
 export const STORY_MAX_ALONE = 750;
 const STORY_MIN = 160;
+/** The most lines of title the story page prints (pageArt.ts TITLE_MAX_LINES). */
+const TITLE_LINES = 3;
 
 /** How much of a story fits on the page beside its title, with or without prints. */
 export function storyBudget(title: string, withPhotos: boolean): number {
-  const extraTitleLines = Math.max(0, Math.ceil(title.trim().length / 22) - 1);
+  const extraTitleLines = Math.min(TITLE_LINES - 1, Math.max(0, Math.ceil(title.trim().length / 22) - 1));
   const max = withPhotos ? STORY_MAX_WITH_PHOTOS : STORY_MAX_ALONE;
   return Math.max(STORY_MIN, max - extraTitleLines * 75);
 }
@@ -305,8 +359,8 @@ export function traditionSpread(tradition: Tradition, keepers: readonly Traditio
     // a dateLine the year is printed nowhere: the year it began, else 0
     // ("undated", as the book reads it).
     year: since ? (tradition.startedYear as number) : 0,
-    // "Every Christmas Eve": printed over the title, in Contents and the dots.
-    dateLine: whenLine(tradition.when),
+    // "Christmas Eve, every year": over the title, in Contents and the dots.
+    dateLine: dateLineOf(tradition.when),
     // Cut to what the page holds: the printer has no overflow of its own.
     text: fitStory(story, budget) + closing,
     photos,

@@ -16,6 +16,7 @@ const { spreadDate }: typeof import("../book/types") = await import(paths[1]);
 const {
   WHEN_MAX,
   STORY_MAX_ALONE,
+  dateLineOf,
   STORY_MAX_WITH_PHOTOS,
   familyCore,
   fitStory,
@@ -100,6 +101,64 @@ describe("whenLine", () => {
     assert.equal(whenLine({ kind: "yearly", month: 13 }), "Every year");
     assert.equal(monthName(0), null);
     assert.equal(monthName(12), "December");
+  });
+});
+
+describe("dateLineOf", () => {
+  it("leads a yearly tradition with its occasion", () => {
+    assert.equal(dateLineOf({ kind: "yearly", label: "Christmas Eve", month: 12 }), "Christmas Eve, every year");
+    assert.equal(dateLineOf({ kind: "yearly", label: "Easter Sunday", month: 4 }), "Easter Sunday, every year");
+    assert.equal(dateLineOf({ kind: "yearly", label: "every July", month: 7 }), "July, every year");
+    assert.equal(dateLineOf({ kind: "yearly", label: "first Saturday in October", month: 10 }), "First Saturday in October");
+    assert.equal(dateLineOf({ kind: "yearly", label: "on the first snow" }), "On the first snow");
+    assert.equal(dateLineOf({ kind: "yearly", month: 7 }), "July, every year");
+    assert.equal(dateLineOf({ kind: "yearly" }), "Once a year");
+  });
+
+  it("says a season by name", () => {
+    assert.equal(dateLineOf({ kind: "seasonal", label: "summer", month: 7 }), "Summer, every year");
+    assert.equal(dateLineOf({ kind: "seasonal", label: "every autumn" }), "Autumn, every year");
+    assert.equal(dateLineOf({ kind: "seasonal", month: 1 }), "Winter, every year");
+    assert.equal(dateLineOf({ kind: "seasonal", month: null }), "Once a season");
+  });
+
+  it("says a monthly one", () => {
+    assert.equal(dateLineOf({ kind: "monthly", label: "Each full moon." }), "Full moon, every month");
+    assert.equal(dateLineOf({ kind: "monthly", label: "   " }), "Once a month");
+    assert.equal(dateLineOf({ kind: "monthly", month: 3 }), "Once a month");
+  });
+
+  it("says a weekly one by its day", () => {
+    assert.equal(dateLineOf({ kind: "weekly", label: "every Sunday" }), "Sundays");
+    assert.equal(dateLineOf({ kind: "weekly", label: "friday" }), "Fridays");
+    assert.equal(dateLineOf({ kind: "weekly", label: "game night" }), "Game night, every week");
+    assert.equal(dateLineOf({ kind: "weekly", label: null }), "Once a week");
+  });
+
+  it("keeps an occasional label as written", () => {
+    assert.equal(dateLineOf({ kind: "occasional", label: "when everyone is home" }), "When everyone is home");
+    assert.equal(dateLineOf({ kind: "occasional", label: "birthdays" }), "Birthdays");
+    assert.equal(dateLineOf({ kind: "occasional" }), "Now and then");
+    assert.equal(dateLineOf(null), "Now and then");
+  });
+
+  it("falls back to the kind and month when the label is too long", () => {
+    const label = "the Saturday after the first frost, if the creek is frozen";
+    assert.equal(dateLineOf({ kind: "yearly", label, month: 11 }), "November, every year");
+    assert.equal(dateLineOf({ kind: "weekly", label: "x".repeat(40) }), "Once a week");
+  });
+
+  it("never opens on \"Every\", so the dots tell the demo's traditions apart", () => {
+    const demo = [
+      { kind: "yearly", label: "Christmas Eve", month: 12 },
+      { kind: "weekly", label: "every Sunday" },
+      { kind: "yearly", label: "every July", month: 7 },
+      { kind: "occasional", label: "when everyone is home" },
+      { kind: "yearly", label: "Easter Sunday", month: 4 },
+    ] as const;
+    const lines = demo.map((w) => dateLineOf(w));
+    for (const line of lines) assert.ok(!/^every\b/i.test(line), line);
+    assert.equal(new Set(lines.map((l) => l.slice(0, 4))).size, lines.length);
   });
 });
 
@@ -190,11 +249,11 @@ describe("the spreads", () => {
     assert.equal(book.title, "The Rivera Book of Traditions");
     assert.deepEqual(book.spreads.map((s) => s.id), ["t1", "t2", "traditions:end"]);
     const first = book.spreads[0];
-    assert.equal(first.dateLine, "Every Christmas Eve");
+    assert.equal(first.dateLine, "Christmas Eve, every year");
     assert.equal(first.year, 1962);
-    assert.equal(spreadDate(first), "Every Christmas Eve", "contents and the dots show the when line");
+    assert.equal(spreadDate(first), "Christmas Eve, every year", "contents and the dots show the date line");
     const undated = book.spreads[1];
-    assert.equal(undated.dateLine, "Every Christmas Eve");
+    assert.equal(undated.dateLine, "Christmas Eve, every year");
     assert.equal(undated.year, 0, "no year it began: 0, which the book reads as undated");
     assert.deepEqual(first.stage, {});
     assert.deepEqual(first.photos, [{ id: "t1:keepers", src: "data:image/png;base64,t1-2", caption: "since 1962" }]);
@@ -268,6 +327,15 @@ describe("the story fits the page", () => {
     assert.equal(storyBudget("Tamales", false), STORY_MAX_ALONE);
     assert.ok(storyBudget("A very long title that wraps over several lines of the page", true) < STORY_MAX_WITH_PHOTOS);
     assert.ok(storyBudget("x".repeat(200), true) >= 160);
+  });
+
+  it("counts no more title lines than the book prints (three)", () => {
+    assert.equal(storyBudget("x".repeat(22), true), STORY_MAX_WITH_PHOTOS);
+    assert.equal(storyBudget("x".repeat(44), true), STORY_MAX_WITH_PHOTOS - 75);
+    assert.equal(storyBudget("x".repeat(66), true), STORY_MAX_WITH_PHOTOS - 150);
+    assert.equal(storyBudget("x".repeat(120), true), STORY_MAX_WITH_PHOTOS - 150);
+    assert.equal(storyBudget("x".repeat(200), true), STORY_MAX_WITH_PHOTOS - 150);
+    assert.equal(storyBudget("x".repeat(200), false), STORY_MAX_ALONE - 150);
   });
 
   it("prints a 5000-character description within the page's limit", () => {
