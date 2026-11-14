@@ -3,6 +3,7 @@
 ARCHITECTURE.md section 4 (Access control):
 - `current_user` decodes the session cookie (401 if absent, invalid, revoked by logout,
   or the user is gone).
+- `session_user_or_none` is the same check without the 401, for GET /session.
 - `family_member(fid)` checks membership. A non-member gets 404, never 403, so another
   family's ids are indistinguishable from ids that do not exist.
 - `family_admin` additionally requires the admin role (403 for a plain member, who
@@ -187,6 +188,20 @@ def _user_from_cookie(session: str | None, db: Database) -> schemas.User | None:
     if sessions_db.is_revoked(db, claims["jti"]):  # logged out
         return None
     return users_db.get_user(db, claims["sub"])
+
+
+def session_user_or_none(session: str | None, db: Database) -> schemas.User | None:
+    """The user behind a session cookie value, or None when nobody is signed in by it.
+
+    None for a missing, empty, malformed, tampered, expired or wrong-secret token, one
+    without a jti, a revoked (logged-out) session, or a user who no longer exists. It never
+    raises for a bad token. It does raise PyMongoError when the database cannot be read,
+    so a caller can tell "signed out" apart from "could not check" (GET /session answers
+    503 for the latter rather than reporting the user as signed out).
+
+    The database is read only when the token itself is valid.
+    """
+    return _user_from_cookie(session, db)
 
 
 def current_user(

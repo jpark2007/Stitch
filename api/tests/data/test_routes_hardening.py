@@ -440,9 +440,10 @@ def test_set_session_cookie_without_a_request_keeps_the_old_behaviour(monkeypatc
     assert "; secure" in response.headers["set-cookie"].lower()
 
 
-def test_auth_router_still_has_its_four_routes():
+def test_auth_router_still_has_its_five_routes():
     assert {(m, r.path) for r in auth_routes.router.routes for m in r.methods} == {
         ("POST", "/auth/signup"), ("POST", "/auth/login"), ("POST", "/auth/logout"), ("GET", "/me"),
+        ("GET", "/session"),
     }
 
 

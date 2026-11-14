@@ -34,6 +34,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.routing import iter_route_contexts
 from fastapi.testclient import TestClient
 
+import auth
 import main
 import schemas
 from db import client as db_client
@@ -216,6 +217,7 @@ def test_every_route_on_its_happy_path_leaks_no_secret(env):
     alice, bob, carol, anon = d.client(), d.client(), d.client(), d.client()
 
     assert d.call(anon, "GET", "/health", 200).json() == {"status": "ok"}
+    assert d.call(anon, "GET", "/session", 200).json() == {"user": None, "families": []}
 
     # Accounts.
     alice_user = _signup(d, alice, "alice")["user"]
@@ -232,6 +234,16 @@ def test_every_route_on_its_happy_path_leaks_no_secret(env):
     code = d.call(alice, "POST", "/families/{fid}/invites", 201, params=p).json()["code"]
     family = d.call(alice, "GET", "/families/{fid}", 200, params=p).json()
     assert [i["code"] for i in family["invites"]] == [code]
+
+    # The session probe, signed in with a family: GET /me's body, and neither the session
+    # token nor its id (jti) in it.
+    token = alice.cookies.get(auth.COOKIE_NAME)
+    jti = auth.decode_session_claims(token)["jti"]
+    signed_in = d.call(alice, "GET", "/session", 200)
+    assert signed_in.content == d.call(alice, "GET", "/me", 200).content
+    assert [f["id"] for f in signed_in.json()["families"]] == [fid]
+    assert token not in signed_in.text and jti not in signed_in.text
+    assert token not in str(signed_in.headers) and jti not in str(signed_in.headers)
 
     # People without accounts, then one edited.
     grandma = d.call(
@@ -348,6 +360,7 @@ def test_every_route_on_its_happy_path_leaks_no_secret(env):
     d.call(alice, "DELETE", "/families/{fid}/invites/{code}", 204, params={**p, "code": code})
     d.call(alice, "DELETE", "/families/{fid}/members/{user_id}", 204, params={**p, "user_id": bob_user["id"]})
     d.call(alice, "POST", "/auth/logout", 204)
+    assert d.call(alice, "GET", "/session", 200).json() == {"user": None, "families": []}
 
     # FastAPI's documentation routes: the OpenAPI schema must not describe a password hash.
     d.call(anon, "GET", "/openapi.json", 200)
