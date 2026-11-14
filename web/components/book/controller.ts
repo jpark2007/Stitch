@@ -31,6 +31,11 @@ export const BOARD_W = PAGE_W + COVER_OVERHANG;
 export const BOARD_D = PAGE_H + 2 * COVER_OVERHANG;
 /** Height of the front board's hinge pivot. */
 export const COVER_PIVOT_Y = COVER_T + (BLOCK_T + 2 * LEAF_REST_GAP) / 2;
+/**
+ * The pointer target reaches this far past the pages: mid-turn the camera
+ * eases back, so a second click on the same spot lands just off the page.
+ */
+export const HIT_MARGIN = 0.45;
 
 const TURN_DUR = 1.15;
 const FAST_TURN_DUR = 0.78;
@@ -115,6 +120,8 @@ export interface PagePoint {
   x: number;
   z: number;
 }
+
+const onPage = (pt: PagePoint) => Math.abs(pt.x) <= PAGE_W && Math.abs(pt.z) <= PAGE_H / 2;
 
 export class BookController {
   readonly rt: BookRuntime;
@@ -356,6 +363,11 @@ export class BookController {
     if (this.frozen || this.open < 1) return "";
     const z = this.zone(pt);
     const busy = this.busy();
+    // Off the page only counts mid-turn, to queue another turn.
+    if (!onPage(pt) && !(busy && z)) {
+      this.clearHover();
+      return "";
+    }
     if (z && this.peels && !busy) this.setHover(z.leaf, z.dir, z.corner);
     else this.clearHover();
     // Mid-turn the edge can't be held, only clicked to queue another turn.
@@ -397,7 +409,9 @@ export class BookController {
   pageDown(pt: PagePoint, clientX: number, clientY: number): boolean {
     if (this.frozen || this.open < 1 || this.drag || this.tap) return false;
     const z = this.zone(pt);
-    if (!z || this.busy()) {
+    const busy = this.busy();
+    if (!onPage(pt) && !(busy && z)) return false;
+    if (!z || busy) {
       // Mid-turn the leaf can't be grabbed; a press on its edge queues one more turn.
       this.tap = { side: pt.x < 0 ? -1 : 1, startX: clientX, startY: clientY, queued: z?.dir };
       return true;

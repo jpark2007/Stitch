@@ -50,7 +50,7 @@ import {
   type DeckledMaskOptions,
 } from "@/components/paper/materials";
 import { createBlockGeometry } from "./blockGeometry";
-import { BOARD_D, BOARD_W, BookController, COVER_PIVOT_Y, type BookStart, type BookView } from "./controller";
+import { BOARD_D, BOARD_W, BookController, COVER_PIVOT_Y, HIT_MARGIN, type BookStart, type BookView } from "./controller";
 import { Leaf, type LeafTextures } from "./Leaf";
 import { BLOCK_T, COVER_T, PAGE_H, PAGE_W } from "./leafShape";
 import { isMuted, setMuted, subscribeMuted, unlockAudio } from "./sound";
@@ -710,7 +710,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
         }}
         onPointerDown={onPageDown}
       >
-        <planeGeometry args={[2 * PAGE_W, PAGE_H]} />
+        <planeGeometry args={[2 * (PAGE_W + HIT_MARGIN), PAGE_H + 2 * HIT_MARGIN]} />
       </mesh>
       <mesh
         ref={closedHit}
