@@ -65,7 +65,7 @@ export function RenderView({ memoryId, time, open, effect }: RenderViewProps) {
         time={frozen}
         open={open ?? true}
         openAt={DEMO_OPEN_AT}
-        camera={demo ? demoCamera : stagePoses().reading}
+        camera={demo ? demoCamera : stagePoses().wide}
         overlay={<ReadyProbe />}
       >
         {demo && <DemoDiorama effect={effectKind} />}

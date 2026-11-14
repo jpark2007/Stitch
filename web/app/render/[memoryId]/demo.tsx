@@ -42,14 +42,14 @@ const poses = stagePoses();
 export const demoCamera: CameraPath = cameraPath([
   { at: 0, pose: poses.wide },
   { at: 2.6, pose: poses.wide },
-  { at: 8.6, pose: closeUp([0.22, 0.42, -0.45], { distance: 2.45, height: 0.62, yaw: -0.12, fov: 30 }), ease: easeInOutSine },
+  { at: 8.6, pose: closeUp([0.24, 0.5, -0.5], { distance: 3.05, height: 0.78, yaw: -0.16, fov: 30 }), ease: easeInOutSine },
 ]);
 
 const EFFECTS: Record<EffectKind, Omit<PaperEffectProps, "kind">> = {
   confetti: { origin: [0.25, 0.4, 0.05], spread: [0.75, 0.42], start: 4.6 },
-  steam: { origin: [0.62, 0.02, 0.95], start: 0 },
+  steam: { origin: [-0.08, 0.04, 0.32], start: 0 },
   rain: { origin: [0, 0, -0.1], start: 0 },
-  smoke: { origin: [-0.66, 0.84, -0.02], start: 0 },
+  smoke: { origin: [0.62, 0.46, -0.62], start: 0 },
 };
 
 export function DemoDiorama({ effect }: { effect?: EffectKind | null }) {
