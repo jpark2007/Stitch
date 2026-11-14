@@ -44,7 +44,7 @@ import {
 import { createCardEdgeMaterial, createPaperMaterial, getPaperTextures } from "@/components/paper/materials";
 import { markShadowsDirty, useStageTime } from "./clock";
 import type { Cutout } from "./cutout";
-import { clamp, followAt, linearAt, smootherstep, smoothstep, type LinearKeys } from "./timeline";
+import { clamp, followAt, linearAt, smootherstep, smoothstep, type LinearKeys, type Vec3 } from "./timeline";
 
 /* ------------------------------------------------------------------------ */
 /* Pop-up controller                                                         */
@@ -73,7 +73,7 @@ const DEFAULT_TIMING: PopUpTiming = {
   scrubStagger: 0.16,
 };
 
-interface PopUpValue {
+export interface PopUpValue {
   /**
    * Rise of a piece, 0 flat .. 1 upright (briefly above 1 on the pop).
    * `size` stretches the motion: ~sqrt(height), so tall cards move slower.
@@ -171,7 +171,8 @@ export function PopUp({ open = true, openAt = 0.4, closeAt = null, timing, child
     if (typeof open !== "boolean") {
       return {
         rise(order, count, time) {
-          const s = Math.min(scrubStagger, 0.8 / Math.max(1, count - 1));
+          // Overlap the pieces so mid-scrub shows a cascade, not one card at a time.
+          const s = Math.min(scrubStagger, 0.5 / Math.max(1, count - 1));
           const span = 1 - s * (count - 1);
           return smootherstep((readOpen(open, time) - order * s) / span);
         },
@@ -583,4 +584,69 @@ export function FloatingLayer({
       </group>
     </group>
   );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Anchors on pieces                                                         */
+/* ------------------------------------------------------------------------ */
+
+/** Where a SetPiece stands: the same placement props it was given. */
+export interface PiecePlacement {
+  height: number;
+  x?: number;
+  z?: number;
+  yaw?: number;
+  order?: number;
+  count?: number;
+  vfold?: number;
+  size?: number;
+  /** Extra offset, e.g. the top of a FloatingLayer it stands on (when risen). */
+  base?: Vec3;
+}
+
+/**
+ * The stage position of a point on a set piece's art at stage time `t`,
+ * following its hinge, and whether the piece is standing then. `u` runs
+ * across the art from its centre and `v` up from the fold, both in piece
+ * units (height 1). Write into `out`; returns the piece's rise.
+ */
+export function piecePoint(rise: PopUpValue["rise"], p: PiecePlacement, u: number, v: number, t: number, out: Vec3): number {
+  const { height, x = 0, z = 0, yaw = 0, order = 0, count = 1, vfold = 0 } = p;
+  const r = rise(order, count, t, p.size ?? Math.sqrt(Math.max(0.25, height)));
+  // On a V-fold panel, the panel swings back about the crease.
+  const pv = vfold > 0 ? Math.sign(u) * vfold : 0;
+  let lx = u * height * Math.cos(pv);
+  let ly = v * height;
+  let lz = -Math.abs(u) * height * Math.sin(Math.abs(pv)) * (vfold > 0 ? 1 : 0);
+  // Hinge: tipped towards the reader by `a` about the fold.
+  const a = Math.min(1, 1 - r) * (Math.PI / 2);
+  const y2 = ly * Math.cos(a) - lz * Math.sin(a);
+  const z2 = ly * Math.sin(a) + lz * Math.cos(a);
+  ly = y2;
+  lz = z2;
+  // Base yaw, then placement.
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  const wx = lx * c + lz * s;
+  const wz = -lx * s + lz * c;
+  lx = wx;
+  const b = p.base ?? [0, 0, 0];
+  out[0] = x + lx + b[0];
+  out[1] = ly + b[1];
+  out[2] = z + wz + b[2];
+  return r;
+}
+
+/**
+ * An effect emitter (see Effects) pinned to a point on a set piece: it follows
+ * the piece and only emits while the piece stands (rise >= `minRise`), so
+ * smoke never rises from a flat house and stops before the set folds.
+ */
+export function usePieceEmitter(p: PiecePlacement, u: number, v: number, minRise = 0.96) {
+  const { rise } = usePopUp();
+  const { height, x, z, yaw, order, count, vfold, size, base } = p;
+  return useMemo(() => {
+    const place: PiecePlacement = { height, x, z, yaw, order, count, vfold, size, base };
+    return (t: number, out: Vec3) => piecePoint(rise, place, u, v, t, out) >= minRise;
+  }, [rise, height, x, z, yaw, order, count, vfold, size, base, u, v, minRise]);
 }
