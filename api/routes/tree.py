@@ -43,6 +43,68 @@ def _dedupe(ids: Iterable[str | None]) -> list[str]:
     return list(dict.fromkeys(i for i in ids if i))
 
 
+def _ref_id(value: object, kind: str) -> str | None:
+    """The id in a track reference: 'prop:hat.brim' -> 'hat' for kind 'prop', else None."""
+    prefix = f"{kind}:"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        return None
+    return value[len(prefix):].split(".", 1)[0] or None
+
+
+def _before_dot(value: str | None) -> str | None:
+    """'<propId>.<socket>' -> '<propId>'."""
+    return value.split(".", 1)[0] if value else None
+
+
+def _scene_refs(memory: schemas.Memory) -> tuple[list[str], list[str], list[str]]:
+    """(person ids, prop ids, set ids) the memory's screenplay and timeline name, first-seen.
+
+    Only fields that always hold that kind of id are read (an action's `on`, `target` and
+    `at` can be marks, so they are not). The stored `propIds` and `setIds` normally list all
+    of these already; this keeps the stage whole when they lag behind the scene.
+    """
+    people: list[str | None] = []
+    props: list[str | None] = []
+    sets: list[str | None] = []
+    sp = memory.screenplay
+    if sp is not None:
+        people += sp.cast
+        people += (sp.narrations or {}).keys()
+        props += sp.props
+        for shot in sp.shots:
+            sets.append(shot.set)
+            people += shot.start.keys()
+            for start in shot.start.values():
+                props += [start.holding, _before_dot(start.in_)]
+            props += shot.prop_start.keys()
+            props += (_before_dot(ps.on) for ps in shot.prop_start.values())
+            for action in shot.actions:
+                people.append(action.who)
+                props.append(action.what)
+        for interaction in sp.interactions or []:
+            props.append(interaction.drives.prop)
+            for target in interaction.drives.targets or []:
+                props.append(_ref_id(target, "prop"))
+                people.append(_ref_id(target, "puppet"))
+        for explanation in sp.explanations or []:
+            props.append(_ref_id(explanation.target, "prop"))
+            people.append(_ref_id(explanation.target, "puppet"))
+    tl = memory.timeline
+    if tl is not None:
+        people += (tl.narrations or {}).keys()
+        people.append(tl.default_narrator)
+        sets += (shot.set for shot in tl.shots)
+        for track in tl.tracks:
+            props.append(_ref_id(track.target, "prop"))
+            people.append(_ref_id(track.target, "puppet"))
+            sets.append(_ref_id(track.target, "set"))
+            if track.channel == "parent":
+                for _t, value in track.keys:
+                    props.append(_ref_id(value, "prop"))
+                    people.append(_ref_id(value, "puppet"))
+    return _dedupe(people), _dedupe(props), _dedupe(sets)
+
+
 def _scene_bundle(
     db: Database,
     family_id: str,
@@ -52,23 +114,28 @@ def _scene_bundle(
 ) -> tuple[list[schemas.Prop], list[schemas.SetDef], list[schemas.Person]]:
     """Everything the stage needs to play these memories: their props, sets and people.
 
-    People are each memory's participants and tellers (then `extra_person_ids`, e.g. the
-    book owner). Props are each memory's `propIds`, then any signature item prop worn by
-    those people (`character.itemPropId`) so their puppets can be drawn. Ids are deduped in
-    first-seen order; unknown or other-family ids are skipped by the db layer. Props
-    include built-in library props.
+    People are each memory's participants and tellers, then anyone its screenplay or
+    timeline names (cast, narrators, puppets), then `extra_person_ids` (e.g. the book
+    owner). Props are each memory's `propIds`, then any prop its screenplay or timeline
+    names, then any signature item prop worn by those people (`character.itemPropId`) so
+    their puppets can be drawn. Sets are each memory's `setIds`, then any set a shot or set
+    track names. Ids are deduped in first-seen order; every lookup is scoped to
+    `family_id`, so unknown or other-family ids are skipped by the db layer. Props include
+    built-in library props.
     """
-    person_ids = _dedupe(
-        pid
-        for memory in memories
-        for pid in [*memory.participant_ids, *(t.author_id for t in memory.tellings)]
-    )
+    person_ids: list[str] = []
+    prop_ids: list[str] = []
+    set_ids: list[str] = []
+    for memory in memories:
+        scene_people, scene_props, scene_sets = _scene_refs(memory)
+        person_ids += [*memory.participant_ids, *(t.author_id for t in memory.tellings), *scene_people]
+        prop_ids += [*memory.prop_ids, *scene_props]
+        set_ids += [*memory.set_ids, *scene_sets]
     person_ids = _dedupe([*person_ids, *extra_person_ids])
     people = people_db.get_people(db, family_id, person_ids)
 
-    prop_ids = _dedupe(pid for memory in memories for pid in memory.prop_ids)
     prop_ids = _dedupe([*prop_ids, *(p.character.item_prop_id for p in people)])
-    set_ids = _dedupe(sid for memory in memories for sid in memory.set_ids)
+    set_ids = _dedupe(set_ids)
 
     props = props_db.get_props(db, family_id, prop_ids)
     sets = props_db.get_sets(db, family_id, set_ids)
