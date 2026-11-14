@@ -30,6 +30,17 @@ describe("frameWidths", () => {
     assert.equal(maxWidth, "min(calc(calc(100dvh - 17rem) * 1.4834), 300.3px)");
   });
 
+  it("keeps a new family's first tree (one person, a couple) near the demo scale", async () => {
+    // Every new family starts as its creator alone; check against the real layout.
+    const { DEFAULT_LAYOUT, layoutFamily }: typeof import("./layout") = await import("./layout.ts" as string);
+    for (const people of [[{ id: "a" }], [{ id: "a" }, { id: "b", spouseIds: ["a"] }]]) {
+      const W = layoutFamily(people, DEFAULT_LAYOUT).width;
+      const cap = Number.parseFloat(frameWidths(W, 200, { maxScale: 1.05 }).maxWidth!);
+      // A puppet then stands about 131px tall, not the 400px it once filled the page with.
+      assert.ok(cap < 320, `${people.length} people: the frame may grow to ${cap}px`);
+    }
+  });
+
   it("sets a floor from the smallest scale", () => {
     assert.equal(frameWidths(1000, 600, { minScale: 0.42 }).minWidth, "420.0px");
   });
