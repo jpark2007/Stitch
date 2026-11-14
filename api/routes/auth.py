@@ -6,17 +6,22 @@ password hash is read through users_db.get_login() and never leaves login().
 
 from __future__ import annotations
 
+import logging
 import secrets
 import threading
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from pymongo.database import Database
+from pymongo.errors import PyMongoError
 
 import auth
 import schemas
 from db import families as families_db
+from db import sessions as sessions_db
 from db import users as users_db
 from db.client import get_db
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["auth"])
 
@@ -101,8 +106,23 @@ def login(
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
 )
-def logout() -> Response:
-    """End the session. Needs no session, and always clears the cookie."""
+def logout(
+    session: str | None = Cookie(default=None, alias=auth.COOKIE_NAME),
+    db: Database = Depends(get_db),
+) -> Response:
+    """End the session. Needs no session, and always clears the cookie.
+
+    A valid session cookie is also revoked server-side, so a copy of it stops working.
+    Other sessions of the same user are untouched. An absent or invalid cookie revokes
+    nothing and is not an error.
+    """
+    claims = auth.decode_session_claims(session) if session else None
+    if claims is not None:
+        try:
+            sessions_db.revoke_session(db, claims["jti"], auth.session_expiry(claims))
+        except PyMongoError:
+            # Still clear the cookie; the browser's copy is gone even if the record is not.
+            log.exception("Could not record the revoked session")
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     auth.clear_session_cookie(response)
     return response

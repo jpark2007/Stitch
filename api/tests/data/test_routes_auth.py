@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pymongo.errors import PyMongoError
 
 import auth
 from db import client as db_client
 from db import families as families_db
+from db import sessions as sessions_db
 from routes import auth as auth_routes
 
 PASSWORD = "correct horse battery"
@@ -202,7 +206,109 @@ def test_logout_clears_cookie_then_me_is_401(tc):
     assert tc.get("/me").status_code == 401
 
 
-def test_logout_without_session_is_204(tc):
+def test_logout_without_session_is_204(tc, mdb):
+    resp = tc.post("/auth/logout")
+    assert resp.status_code == 204
+    assert "max-age=0" in _set_cookie_header(resp).lower()
+    assert mdb.revoked_sessions.count_documents({}) == 0
+
+
+def _fresh_client(tc: TestClient, token: str) -> TestClient:
+    """A second client on the same app (a different browser) carrying a copied cookie."""
+    other = TestClient(tc.app)
+    other.cookies.set(auth.COOKIE_NAME, token)
+    return other
+
+
+def test_logout_revokes_the_session_server_side(tc, mdb):
+    """Regression: a cookie captured before logout must not keep working after it."""
+    _signup(tc)
+    captured = tc.cookies.get(auth.COOKIE_NAME)
+    assert _fresh_client(tc, captured).get("/me").status_code == 200
+
+    assert tc.post("/auth/logout").status_code == 204
+
+    resp = _fresh_client(tc, captured).get("/me")
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Not signed in"}
+
+    claims = auth.decode_session_claims(captured)
+    record = mdb.revoked_sessions.find_one({"_id": claims["jti"]})
+    assert record is not None
+    assert int(record["expiresAt"].timestamp()) == claims["exp"]
+    assert set(record) == {"_id", "expiresAt"}  # no user data kept
+
+
+def test_logout_twice_with_the_same_cookie_is_idempotent(tc, mdb):
+    _signup(tc)
+    captured = tc.cookies.get(auth.COOKIE_NAME)
+    for _ in range(2):
+        assert _fresh_client(tc, captured).post("/auth/logout").status_code == 204
+    assert mdb.revoked_sessions.count_documents({}) == 1
+
+
+def test_login_after_logout_gives_a_new_working_session(tc):
+    _signup(tc)
+    old = tc.cookies.get(auth.COOKIE_NAME)
+    assert tc.post("/auth/logout").status_code == 204
+    assert tc.get("/me").status_code == 401
+
+    resp = tc.post("/auth/login", json={"email": "david@example.com", "password": PASSWORD})
+    assert resp.status_code == 200
+    new = tc.cookies.get(auth.COOKIE_NAME)
+    assert new and new != old
+    assert auth.decode_session_claims(new)["jti"] != auth.decode_session_claims(old)["jti"]
+    assert tc.get("/me").status_code == 200
+    assert _fresh_client(tc, old).get("/me").status_code == 401
+
+
+def test_logout_of_one_session_keeps_the_users_other_sessions(tc):
+    _signup(tc)  # session A on tc
+    session_a = tc.cookies.get(auth.COOKIE_NAME)
+    browser_b = TestClient(tc.app)
+    assert browser_b.post(
+        "/auth/login", json={"email": "david@example.com", "password": PASSWORD}
+    ).status_code == 200
+    session_b = browser_b.cookies.get(auth.COOKIE_NAME)
+    assert session_a != session_b
+
+    assert tc.post("/auth/logout").status_code == 204
+
+    assert _fresh_client(tc, session_a).get("/me").status_code == 401
+    assert browser_b.get("/me").status_code == 200
+    assert _fresh_client(tc, session_b).get("/me").json()["user"]["email"] == "david@example.com"
+
+
+@pytest.mark.parametrize("cookie", ["garbage", "a.b.c", "", "x" * 4000])
+def test_logout_with_an_invalid_cookie_is_204_and_revokes_nothing(tc, mdb, cookie):
+    tc.cookies.set(auth.COOKIE_NAME, cookie)
+    resp = tc.post("/auth/logout")
+    assert resp.status_code == 204
+    assert "max-age=0" in _set_cookie_header(resp).lower()
+    assert mdb.revoked_sessions.count_documents({}) == 0
+
+
+def test_logout_with_a_tampered_or_expired_cookie_revokes_nothing(tc, mdb):
+    user_id = _signup(tc).json()["user"]["id"]
+    token = tc.cookies.get(auth.COOKIE_NAME)
+    head, payload, sig = token.split(".")
+    tampered = f"{head}.{payload}.{sig[:-2]}{'AA' if not sig.endswith('AA') else 'BB'}"
+    expired = auth.create_session_token(
+        user_id, now=datetime.now(UTC) - timedelta(days=auth.SESSION_DAYS + 1)
+    )
+    for cookie in (tampered, expired):
+        assert _fresh_client(tc, cookie).post("/auth/logout").status_code == 204
+    assert mdb.revoked_sessions.count_documents({}) == 0
+    assert tc.get("/me").status_code == 200  # the real session is untouched
+
+
+def test_logout_still_clears_the_cookie_when_the_database_fails(tc, monkeypatch):
+    _signup(tc)
+
+    def broken(*_args, **_kwargs):
+        raise PyMongoError("down")
+
+    monkeypatch.setattr(sessions_db, "revoke_session", broken)
     resp = tc.post("/auth/logout")
     assert resp.status_code == 204
     assert "max-age=0" in _set_cookie_header(resp).lower()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
@@ -25,6 +27,7 @@ EXPECTED = {
     },
     "props": {"props_familyId_name": [("familyId", 1), ("name", 1)]},
     "sets": {"sets_familyId_name": [("familyId", 1), ("name", 1)]},
+    "revoked_sessions": {"revoked_sessions_expiresAt_ttl": [("expiresAt", 1)]},
 }
 
 
@@ -42,6 +45,9 @@ def _assert_all_indexes(db) -> None:
     invites = db.families.index_information()["families_invites_code_unique"]
     assert invites.get("unique") is True
     assert invites.get("partialFilterExpression") == {"invites.code": {"$exists": True}}
+    ttl = db.revoked_sessions.index_information()["revoked_sessions_expiresAt_ttl"]
+    assert ttl.get("expireAfterSeconds") == 0
+    assert not ttl.get("unique")
 
 
 def test_constants():
@@ -78,6 +84,23 @@ def test_ensure_indexes_idempotent_with_data(mdb):
 def test_ensure_indexes_surfaces_a_conflicting_spec(mdb):
     """An old index with our name but different options is not silently kept."""
     mdb.users.create_index([("email", 1)], name="users_email_unique")  # not unique
+    with pytest.raises(OperationFailure):
+        client.ensure_indexes(mdb)
+
+
+def test_revoked_sessions_ttl_index_is_idempotent(mdb):
+    client.ensure_indexes(mdb)
+    first = mdb.revoked_sessions.index_information()
+    assert first["revoked_sessions_expiresAt_ttl"]["expireAfterSeconds"] == 0
+    mdb.revoked_sessions.insert_one({"_id": "j1", "expiresAt": datetime.now(UTC) + timedelta(days=1)})
+    client.ensure_indexes(mdb)
+    assert mdb.revoked_sessions.index_information() == first
+    assert mdb.revoked_sessions.count_documents({}) == 1
+
+
+def test_ensure_indexes_surfaces_a_ttl_mismatch(mdb):
+    """An old index with our name but no TTL is not mistaken for the TTL index."""
+    mdb.revoked_sessions.create_index([("expiresAt", 1)], name="revoked_sessions_expiresAt_ttl")
     with pytest.raises(OperationFailure):
         client.ensure_indexes(mdb)
 
