@@ -16,6 +16,10 @@ Each handler follows the compiler's shared handler contract::
 - Geometry comes from the tracks: a puppet's root is its ``root.position`` value at ``t`` when
   that track exists, else ``world.people[id].pos``; its facing is ``world.people[id].facing``.
 
+``exit`` and ``follow`` walk at the puppet's own speed: the gait speed times
+``PuppetState.speed_scale`` (from the character sheet's notes, ``character.speed_scale``).
+Standing up first always takes ``body.POSE_SECONDS``, whatever the speed.
+
 A puppet kneeling or sitting on the floor (pose ``kneel`` / ``sit`` with no seat) gets up
 before it walks: ``body.stand_keys`` over ``body.POSE_SECONDS``, bringing the root from the
 lowered (rootOffset) position back to its standing spot, then the walk starts. Arms holding
@@ -145,7 +149,9 @@ def apply_exit(world: World, tracks: TrackSet, action: Action, t: float, action_
     p = world.people[who]
     skip = _skip_bones(world, who)
     keys, t_go, start = stand_up_first(world, tracks, who, t, skip)
-    walk, arrive, facing = motion.exit_keys(who, p.build, t_go, start, dest, p.facing, skip_bones=skip)
+    walk, arrive, facing = motion.exit_keys(
+        who, p.build, t_go, start, dest, p.facing, skip_bones=skip, speed_scale=p.speed_scale
+    )
     keys += walk
 
     world.exit(who, dest)
@@ -210,7 +216,9 @@ def apply_follow(world: World, tracks: TrackSet, action: Action, t: float, actio
             f"{action.dur:g} is shorter than that",
         )
     dur = None if action.dur is None else action.dur - (t_go - t)
-    walk, stop, facing = motion.follow_keys(who, p.build, t_go, start, p.facing, path, dur, skip_bones=skip)
+    walk, stop, facing = motion.follow_keys(
+        who, p.build, t_go, start, p.facing, path, dur, skip_bones=skip, speed_scale=p.speed_scale
+    )
     keys += walk
     final = last_values(walk).get((_puppet(who), _ROOT))  # None: the follower holds where it stands
     end = start if final is None else (float(final[0]), float(final[1]), float(final[2]))
