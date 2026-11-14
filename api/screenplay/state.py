@@ -216,15 +216,42 @@ class World:
             cur = parsed[1]
         return False
 
-    def _riders(self, what: str) -> list[str]:
-        """Puppets seated on `what` or on anything stacked on it."""
-        out: list[str] = []
+    def riders(self, what: str) -> list[tuple[str, str, str]]:
+        """(seat prop id, socket, person id) of every puppet seated on `what` or on any prop
+        stacked on it, directly or through other props.
+
+        Deterministic order: `what`'s own sockets first, then each prop resting on it in
+        ``_descendants`` order (depth first); within a prop, sockets in the order they were
+        taken (``occupants`` insertion order). Raises ``unknown_id`` for an unknown prop.
+        """
+        self._prop(what)
+        out: list[tuple[str, str, str]] = []
         for pid in (what, *self._descendants(what)):
-            for occ in self.props[pid].occupants.values():
+            for sock, occ in self.props[pid].occupants.items():
                 kind, _, oid = occ.partition(":")
                 if kind == "puppet":
-                    out.append(oid)
+                    out.append((pid, sock, oid))
         return out
+
+    def _riders(self, what: str) -> list[str]:
+        """Puppets seated on `what` or on anything stacked on it (``riders`` order)."""
+        return [who for _, _, who in self.riders(what)]
+
+    def supports(self, what: str) -> list[str]:
+        """The props `what` rests on, nearest first: its parent prop, that prop's parent prop,
+        and so on down to the one on the ground (or held). Empty for a prop on the ground or in
+        a hand. Raises ``unknown_id`` for an unknown prop; stops at a (corrupt) loop."""
+        self._prop(what)
+        out: list[str] = []
+        cur = what
+        while True:
+            parsed = parse_parent(self.props[cur].parent)
+            if parsed is None or parsed[0] != "prop" or parsed[1] not in self.props:
+                return out
+            cur = parsed[1]
+            if cur == what or cur in out:
+                return out
+            out.append(cur)
 
     def socket_world(self, what: str, socket: str) -> Vec3 | None:
         """World position of a prop's socket, or None if the prop is held / not placed."""
@@ -830,9 +857,11 @@ class World:
             raise StateError("not_driver", f"{who} is not in the driver's seat of {what}")
 
     def check_rider(self, who: str, what: str) -> None:
+        """`who` may ride_to in `what`: seated in it, or on a prop resting on it (directly or
+        through other props), and someone is in its driver's seat."""
         p = self._person(who)
         self._prop(what)
-        if p.seat is None or p.seat[0] != what:
+        if p.seat is None or (p.seat[0] != what and what not in self.supports(p.seat[0])):
             raise StateError("not_in_vehicle", f"{who} is not in {what}")
         if not self.props[what].occupants.get("driver", "").startswith("puppet:"):
             raise StateError("no_driver", f"nobody is driving {what}")
@@ -849,7 +878,7 @@ class World:
         delta = (pos[0] - old[0], pos[1] - old[1], pos[2] - old[2])
         st.pos = pos
         st.world_pos = pos
-        for oid in self._riders(what):
+        for _, _, oid in self.riders(what):
             q = self.people[oid]
             q.pos = (q.pos[0] + delta[0], q.pos[1] + delta[1], q.pos[2] + delta[2])
         self._refresh_world(what)
