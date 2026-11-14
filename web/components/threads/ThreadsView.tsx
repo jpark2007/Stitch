@@ -3,7 +3,8 @@
 /**
  * The Threads screen: the whole family as stitched thread along time.
  *
- * A single 2D canvas draws threads, knots and the year axis (renderer.ts);
+ * A single 2D canvas draws threads, knots and the year axis (renderer.ts),
+ * driven by the engine (engine.ts: camera, animation, input, hit-testing);
  * a thin DOM overlay carries the moment links and titles so they are
  * focusable, readable by screen readers and set in the real fonts.
  *
@@ -13,21 +14,11 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  clampCam,
-  initialCamera,
-  maxScale,
-  minScale,
-  parseZoom,
-  toT,
-  zoomAt,
-  type Bounds,
-  type Camera,
-} from "./camera";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { parseZoom } from "./camera";
+import { ThreadsEngine } from "./engine";
 import { buildModel, type ThreadMoment, type ThreadPerson } from "./model";
-import { drawFrame, makeLayout, type FrameGeometry, type Layout } from "./renderer";
-import { paperAt, placeTitles, TITLE_FONT_PX, type TitleBox } from "./titles";
+import { paperAt, TITLE_FONT_PX } from "./titles";
 
 export interface ThreadsViewProps {
   familyName: string;
@@ -40,44 +31,6 @@ export interface ThreadsViewProps {
 }
 
 const NOW = new Date().getFullYear();
-const KNOT_POP_MS = 460;
-
-interface Engine {
-  ctx: CanvasRenderingContext2D | null;
-  dpr: number;
-  layout: Layout;
-  bounds: Bounds;
-  cam: Camera;
-  /** Zoom animation target and the screen point it is anchored on. */
-  target: { s: number; ax: number; at: number } | null;
-  panTarget: number | null;
-  velocity: number;
-  dim: number[];
-  lift: number[];
-  swell: number[];
-  hoverKnot: number;
-  hoverStrand: number;
-  highlight: number;
-  revealStart: number;
-  reveal: number;
-  /** Per knot: when the intro needle reached it (ms), and its pop 0..1. */
-  popAt: number[];
-  pop: number[];
-  geom: FrameGeometry | null;
-  titles: TitleBox[];
-  /** Which placement each shown title used last frame. */
-  titleSpot: Map<number, number>;
-  titleW: number[];
-  fonts: { hand: string; sans: string; serif: string };
-  raf: number;
-  last: number;
-  ready: boolean;
-  pointers: Map<number, { x: number; y: number }>;
-  drag: { x: number; moved: boolean; lastX: number; lastT: number; pinch: number; startCx: number } | null;
-  /** Last tap (time, x, y), to catch a double tap. */
-  lastTap: { t: number; x: number; y: number } | null;
-  drawMs: number;
-}
 
 export default function ThreadsView(props: ThreadsViewProps) {
   const { people, moments, familyName } = props;
@@ -97,283 +50,18 @@ export default function ThreadsView(props: ThreadsViewProps) {
   const [interacted, setInteracted] = useState(false);
   const interact = useCallback(() => setInteracted(true), []);
 
-  const eng = useRef<Engine | null>(null);
-  const kick = useRef<() => void>(() => {});
-
-  /* ---------------- engine ---------------- */
-  useEffect(() => {
-    const canvas = canvasRef.current!;
-    const wrap = wrapRef.current!;
-    const n = model.strands.length;
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const css = getComputedStyle(document.documentElement);
-    const hand = css.getPropertyValue("--font-caveat").trim() || "cursive";
-    const sans = css.getPropertyValue("--font-nunito").trim() || "sans-serif";
-    const serif = css.getPropertyValue("--font-fraunces").trim() || "serif";
-
-    const e: Engine = {
-      ctx: canvas.getContext("2d"),
-      dpr: 1,
-      layout: makeLayout(1, 1, n),
-      bounds: { tMin: model.tMin, tMax: model.tMax, width: 1 },
-      cam: { cx: 0, s: 1 },
-      target: null,
-      panTarget: null,
-      velocity: 0,
-      dim: model.strands.map((_, i) => (initialHighlight >= 0 && i !== initialHighlight ? 1 : 0)),
-      lift: model.strands.map((_, i) => (i === initialHighlight ? 1 : 0)),
-      swell: model.knots.map(() => 0),
-      hoverKnot: -1,
-      hoverStrand: -1,
-      highlight: initialHighlight,
-      revealStart: performance.now(),
-      reveal: reduced ? model.tNow : model.tMin,
-      popAt: model.knots.map(() => (reduced ? -1e9 : NaN)),
-      pop: model.knots.map(() => (reduced ? 1 : 0)),
-      geom: null,
-      titles: [],
-      titleSpot: new Map(),
-      titleW: model.knots.map((k) => k.moment.title.length * 8.5),
-      fonts: { hand, sans, serif },
-      raf: 0,
-      last: performance.now(),
-      ready: false,
-      pointers: new Map(),
-      drag: null,
-      lastTap: null,
-      drawMs: 0,
-    };
-    if (reduced) e.revealStart = -1e9;
-    eng.current = e;
-
-    const measure = () => {
-      if (!e.ctx) return;
-      e.ctx.font = `500 ${TITLE_FONT_PX}px ${hand}`;
-      e.titleW = model.knots.map((k) => e.ctx!.measureText(k.moment.title).width + 6);
-    };
-
-    const resize = () => {
-      const rect = wrap.getBoundingClientRect();
-      const W = Math.max(1, rect.width);
-      const H = Math.max(1, rect.height);
-      e.dpr = Math.min(2, window.devicePixelRatio || 1);
-      canvas.width = Math.round(W * e.dpr);
-      canvas.height = Math.round(H * e.dpr);
-      canvas.style.width = `${W}px`;
-      canvas.style.height = `${H}px`;
-      e.layout = makeLayout(W, H, n);
-      const prevW = e.bounds.width;
-      e.bounds = { tMin: model.tMin, tMax: model.tMax, width: W };
-      if (!e.ready) {
-        const focus = props.focus ? Number(props.focus) : NaN;
-        // Open on the followed person's life, or on the whole family's.
-        const mine = model.knots.filter((k) => initialHighlight < 0 || k.people.some((p) => p.id === props.highlight));
-        e.cam = initialCamera(
-          parseZoom(props.zoom),
-          Number.isFinite(focus) ? focus + 0.5 : null,
-          e.bounds,
-          mine.map((k) => k.t),
-        );
-        e.ready = true;
-      } else {
-        // Keep the same span of years on screen when the window resizes.
-        e.cam = clampCam({ cx: e.cam.cx, s: e.cam.s * (W / prevW) }, e.bounds);
-      }
-      start();
-    };
-
-    const frame = (now: number) => {
-      e.raf = 0;
-      const dt = Math.min(0.05, (now - e.last) / 1000);
-      e.last = now;
-      let moving = false;
-
-      // Camera: eased zoom about an anchor, eased pan, inertia.
-      if (e.target) {
-        const k = 1 - Math.exp(-dt * 13);
-        const s = e.cam.s + (e.target.s - e.cam.s) * k;
-        const done = Math.abs(s - e.target.s) / e.target.s < 0.002;
-        const sNew = done ? e.target.s : s;
-        e.cam = clampCam({ s: sNew, cx: e.target.at - (e.target.ax - e.bounds.width / 2) / sNew }, e.bounds);
-        if (done) e.target = null;
-        else moving = true;
-      }
-      if (e.panTarget !== null) {
-        const k = 1 - Math.exp(-dt * 10);
-        const cx = e.cam.cx + (e.panTarget - e.cam.cx) * k;
-        const done = Math.abs(cx - e.panTarget) * e.cam.s < 0.3;
-        e.cam = clampCam({ s: e.cam.s, cx: done ? e.panTarget : cx }, e.bounds);
-        if (done) e.panTarget = null;
-        else moving = true;
-      }
-      if (!e.drag && Math.abs(e.velocity) > 0.02) {
-        const before = e.cam.cx;
-        e.cam = clampCam({ s: e.cam.s, cx: e.cam.cx - (e.velocity * dt) / e.cam.s }, e.bounds);
-        e.velocity *= Math.exp(-dt * 4.5);
-        if (e.cam.cx === before) e.velocity = 0;
-        moving = true;
-      } else if (!e.drag) e.velocity = 0;
-
-      // Highlight and hover easing.
-      const ease = 1 - Math.exp(-dt * 9);
-      for (let i = 0; i < n; i++) {
-        const lit = e.highlight < 0 || e.highlight === i;
-        const dT = lit ? 0 : 1;
-        const lT = e.highlight === i ? 1 : e.hoverStrand === i ? 0.5 : 0;
-        e.dim[i] += (dT - e.dim[i]) * ease;
-        e.lift[i] += (lT - e.lift[i]) * ease;
-        if (Math.abs(dT - e.dim[i]) > 0.004 || Math.abs(lT - e.lift[i]) > 0.004) moving = true;
-        else {
-          e.dim[i] = dT;
-          e.lift[i] = lT;
-        }
-      }
-      for (let i = 0; i < e.swell.length; i++) {
-        const sT = i === e.hoverKnot ? 1 : 0;
-        e.swell[i] += (sT - e.swell[i]) * (1 - Math.exp(-dt * 14));
-        if (Math.abs(sT - e.swell[i]) > 0.004) moving = true;
-        else e.swell[i] = sT;
-      }
-
-      // Intro: the threads are sewn left to right.
-      const introMs = 1900;
-      const p = Math.min(1, (now - e.revealStart) / introMs);
-      const eased = p < 1 ? 1 - Math.pow(1 - p, 2.2) : 1;
-      e.reveal = model.tMin + (model.tNow + 2 - model.tMin) * eased;
-      if (p < 1) moving = true;
-      // Each knot springs in as the needle reaches it.
-      for (let i = 0; i < e.pop.length; i++) {
-        if (e.pop[i] >= 1) continue;
-        if (Number.isNaN(e.popAt[i])) {
-          if (e.reveal < model.knots[i].t) continue;
-          e.popAt[i] = now;
-        }
-        e.pop[i] = Math.min(1, (now - e.popAt[i]) / KNOT_POP_MS);
-        moving = true;
-      }
-
-      const ctx = e.ctx;
-      if (ctx) {
-        const t0 = performance.now();
-        ctx.setTransform(e.dpr, 0, 0, e.dpr, 0, 0);
-        e.geom = drawFrame(ctx, model, {
-          cam: e.cam,
-          layout: e.layout,
-          dim: e.dim,
-          lift: e.lift,
-          hoverKnot: e.hoverKnot,
-          swell: e.swell,
-          reveal: e.reveal,
-          pop: e.pop,
-          fonts: e.fonts,
-        });
-        e.drawMs = performance.now() - t0;
-        placeOverlay(e);
-        // The zoom buttons rest at the zoom limits.
-        const sGoal = e.target ? e.target.s : e.cam.s;
-        const outOff = sGoal <= minScale(e.bounds) * 1.001;
-        const inOff = sGoal >= maxScale(e.bounds) * 0.999;
-        if (zoomOutRef.current && zoomOutRef.current.disabled !== outOff) zoomOutRef.current.disabled = outOff;
-        if (zoomInRef.current && zoomInRef.current.disabled !== inOff) zoomInRef.current.disabled = inOff;
-      }
-      if (moving) e.raf = requestAnimationFrame(frame);
-    };
-
-    const start = () => {
-      if (!e.raf) {
-        e.last = performance.now();
-        e.raf = requestAnimationFrame(frame);
-      }
-    };
-    kick.current = start;
-
-    const placeOverlay = (e: Engine) => {
-      const g = e.geom;
-      if (!g) return;
-      const { boxes, shown } = placeTitles(model, {
-        geom: g,
-        dim: e.dim,
-        highlight: e.highlight,
-        hoverKnot: e.hoverKnot,
-        s: e.cam.s,
-        width: e.layout.width,
-        widths: e.titleW,
-        spots: e.titleSpot,
-      });
-      e.titles = boxes;
-
-      for (let i = 0; i < model.knots.length; i++) {
-        const a = linkRefs.current[i];
-        const t = titleRefs.current[i];
-        const ring = ringRefs.current[i];
-        const h = g.knots[i];
-        if (!a || !t || !ring || !h) continue;
-        a.style.transform = `translate3d(${h.x.toFixed(1)}px, ${h.y.toFixed(1)}px, 0)`;
-        const hover = i === e.hoverKnot;
-        if ((a.dataset.hover === "1") !== hover) a.dataset.hover = hover ? "1" : "0";
-        // Off-screen links stay focusable (focus pans to them); only knots not
-        // yet sewn in by the intro are hidden.
-        a.style.visibility = e.reveal >= model.knots[i].t ? "visible" : "hidden";
-        const d = Math.round(h.r * 2 + 10);
-        if (ring.dataset.d !== String(d)) {
-          ring.dataset.d = String(d);
-          ring.style.width = ring.style.height = `${d}px`;
-          ring.style.margin = `${-d / 2}px 0 0 ${-d / 2}px`;
-        }
-        const pl = shown.get(i);
-        if (pl) {
-          const key = `${pl.dx.toFixed(0)},${pl.dy.toFixed(0)}`;
-          if (t.dataset.at !== key) {
-            t.dataset.at = key;
-            t.style.transform = `translate(${pl.dx.toFixed(1)}px, ${pl.dy.toFixed(1)}px)`;
-          }
-          const band = String(Math.round((h.y + pl.dy) / 12));
-          if (t.dataset.band !== band) {
-            t.dataset.band = band;
-            t.style.setProperty("--halo", paperAt((h.y + pl.dy + TITLE_FONT_PX * 0.6)));
-          }
-          const o = pl.alpha.toFixed(2);
-          if (t.style.opacity !== o) t.style.opacity = o;
-        } else if (t.style.opacity !== "0") {
-          t.style.opacity = "0";
-        }
-      }
-    };
-
-    measure();
-    const ro = new ResizeObserver(resize);
-    ro.observe(wrap);
-    resize();
-    document.fonts?.load(`500 ${TITLE_FONT_PX}px ${hand}`).then(() => {
-      measure();
-      start();
-    });
-    document.fonts?.ready.then(() => {
-      measure();
-      start();
-    });
-
-    if (process.env.NODE_ENV !== "production") {
-      (window as unknown as { __threads?: Engine }).__threads = e;
-    }
-
-    return () => {
-      ro.disconnect();
-      if (e.raf) cancelAnimationFrame(e.raf);
-      eng.current = null;
-    };
-    // The engine is built once per model; query params only seed it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model]);
+  // Query params only seed the view, so they are read once.
+  const [seed] = useState(() => {
+    const focus = props.focus ? Number(props.focus) : NaN;
+    return { zoom: parseZoom(props.zoom), focus: Number.isFinite(focus) ? focus + 0.5 : null, highlight: initialHighlight };
+  });
+  const eng = useRef<ThreadsEngine | null>(null);
 
   /* ---------------- highlight ---------------- */
   const setLit = useCallback(
     (i: number) => {
-      const e = eng.current;
-      if (!e) return;
-      e.highlight = i;
+      eng.current?.setHighlight(i);
       setHighlight(i);
-      kick.current();
       const url = new URL(window.location.href);
       if (i >= 0) url.searchParams.set("highlight", model.strands[i].person.id);
       else url.searchParams.delete("highlight");
@@ -382,285 +70,141 @@ export default function ThreadsView(props: ThreadsViewProps) {
     [model],
   );
 
-  /* ---------------- hit testing ---------------- */
-  const hitTest = useCallback(
-    (x: number, y: number): { kind: "knot"; i: number } | { kind: "strand"; i: number } | null => {
-      const e = eng.current;
-      const g = e?.geom;
-      if (!e || !g) return null;
-      for (const b of e.titles) {
-        if (x >= b.x0 - 4 && x <= b.x1 + 4 && y >= b.y0 - 4 && y <= b.y1 + 4) return { kind: "knot", i: b.knot };
+  /* ---------------- overlay ---------------- */
+  /** After each frame: move links and titles onto their knots, and rest the zoom buttons at the limits. */
+  const placeOverlay = useEffectEvent((e: ThreadsEngine) => {
+    const g = e.geom;
+    if (!g) return;
+    for (let i = 0; i < model.knots.length; i++) {
+      const a = linkRefs.current[i];
+      const t = titleRefs.current[i];
+      const ring = ringRefs.current[i];
+      const h = g.knots[i];
+      if (!a || !t || !ring || !h) continue;
+      a.style.transform = `translate3d(${h.x.toFixed(1)}px, ${h.y.toFixed(1)}px, 0)`;
+      const hover = i === e.hoverKnot;
+      if ((a.dataset.hover === "1") !== hover) a.dataset.hover = hover ? "1" : "0";
+      // Off-screen links stay focusable (focus pans to them); only knots not
+      // yet sewn in by the intro are hidden.
+      a.style.visibility = e.reveal >= model.knots[i].t ? "visible" : "hidden";
+      const d = Math.round(h.r * 2 + 10);
+      if (ring.dataset.d !== String(d)) {
+        ring.dataset.d = String(d);
+        ring.style.width = ring.style.height = `${d}px`;
+        ring.style.margin = `${-d / 2}px 0 0 ${-d / 2}px`;
       }
-      let best = -1;
-      let bestD = Infinity;
-      for (const k of g.knots) {
-        if (!k || !k.visible) continue;
-        const d = Math.hypot(k.x - x, k.y - y) - k.r;
-        if (d < bestD) {
-          bestD = d;
-          best = k.index;
+      const pl = e.titlePlacements.get(i);
+      if (pl) {
+        const key = `${pl.dx.toFixed(0)},${pl.dy.toFixed(0)}`;
+        if (t.dataset.at !== key) {
+          t.dataset.at = key;
+          t.style.transform = `translate(${pl.dx.toFixed(1)}px, ${pl.dy.toFixed(1)}px)`;
         }
-      }
-      if (best >= 0 && bestD < 9) return { kind: "knot", i: best };
-      let sBest = -1;
-      let sD = Infinity;
-      for (let i = 0; i < g.strands.length; i++) {
-        const pts = g.strands[i];
-        const n = g.strandLens[i];
-        // Prefer lit threads when several pass close by.
-        const bias = e.dim[i] * 4;
-        for (let k = 0; k < n; k++) {
-          const dx = pts[k * 2] - x;
-          if (dx < -14 || dx > 14) continue;
-          const d = Math.hypot(dx, pts[k * 2 + 1] - y) + bias;
-          if (d < sD) {
-            sD = d;
-            sBest = i;
-          }
+        const band = String(Math.round((h.y + pl.dy) / 12));
+        if (t.dataset.band !== band) {
+          t.dataset.band = band;
+          t.style.setProperty("--halo", paperAt(h.y + pl.dy + TITLE_FONT_PX * 0.6));
         }
+        const o = pl.alpha.toFixed(2);
+        if (t.style.opacity !== o) t.style.opacity = o;
+      } else if (t.style.opacity !== "0") {
+        t.style.opacity = "0";
       }
-      if (sBest >= 0 && sD < 12) return { kind: "strand", i: sBest };
-      return null;
-    },
-    [],
-  );
+    }
+    const outOff = !e.canZoomOut;
+    const inOff = !e.canZoomIn;
+    if (zoomOutRef.current && zoomOutRef.current.disabled !== outOff) zoomOutRef.current.disabled = outOff;
+    if (zoomInRef.current && zoomInRef.current.disabled !== inOff) zoomInRef.current.disabled = inOff;
+  });
 
-  /* ---------------- input ---------------- */
+  /* ---------------- input handlers ---------------- */
   const prefetched = useRef(new Set<number>());
-  const prefetchMoment = useCallback(
-    (i: number) => {
-      if (prefetched.current.has(i)) return;
-      prefetched.current.add(i);
-      router.prefetch(`/memories/${model.knots[i].moment.id}`);
-    },
-    [model, router],
-  );
+  /** Warm a moment's page while the pointer rests on its knot. */
+  const prefetchMoment = useEffectEvent((i: number) => {
+    if (prefetched.current.has(i)) return;
+    prefetched.current.add(i);
+    router.prefetch(`/memories/${model.knots[i].moment.id}`);
+  });
+  const openMoment = useEffectEvent((i: number) => router.push(`/memories/${model.knots[i].moment.id}`));
+  const follow = useEffectEvent((i: number) => setLit(i));
+  const firstTouch = useEffectEvent(() => interact());
 
+  /* ---------------- engine ---------------- */
   useEffect(() => {
     const canvas = canvasRef.current!;
-    const local = (ev: { clientX: number; clientY: number }) => {
-      const r = canvas.getBoundingClientRect();
-      return { x: ev.clientX - r.left, y: ev.clientY - r.top };
-    };
+    const wrap = wrapRef.current!;
+    const css = getComputedStyle(document.documentElement);
+    const hand = css.getPropertyValue("--font-caveat").trim() || "cursive";
+    const e = new ThreadsEngine({
+      canvas,
+      model,
+      fonts: {
+        hand,
+        sans: css.getPropertyValue("--font-nunito").trim() || "sans-serif",
+        serif: css.getPropertyValue("--font-fraunces").trim() || "serif",
+      },
+      reduced: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      zoom: seed.zoom,
+      focus: seed.focus,
+      highlight: seed.highlight,
+      onFrame: (en) => placeOverlay(en),
+    });
+    eng.current = e;
 
-    const zoomBy = (factor: number, ax: number) => {
-      const e = eng.current;
-      if (!e) return;
-      e.panTarget = null;
-      e.velocity = 0;
-      const base = e.target ? e.target.s : e.cam.s;
-      const at = e.target && Math.abs(e.target.ax - ax) < 2 ? e.target.at : toT(ax, e.cam, e.bounds.width);
-      const s = Math.min(maxScale(e.bounds), Math.max(minScale(e.bounds), base * factor));
-      e.target = { s, ax, at };
-      kick.current();
+    const resize = () => {
+      const r = wrap.getBoundingClientRect();
+      e.resize(r.width, r.height, window.devicePixelRatio);
     };
-
-    const onWheel = (ev: WheelEvent) => {
-      ev.preventDefault();
-      interact();
-      const e = eng.current;
-      if (!e) return;
-      const { x } = local(ev);
-      const unit = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? 400 : 1;
-      const dx = ev.deltaX * unit;
-      const dy = ev.deltaY * unit;
-      if (ev.ctrlKey) {
-        zoomBy(Math.exp(-dy * 0.012), x);
-      } else if (Math.abs(dx) > Math.abs(dy) || ev.shiftKey) {
-        e.target = null;
-        e.panTarget = null;
-        const d = Math.abs(dx) > Math.abs(dy) ? dx : dy;
-        e.cam = clampCam({ s: e.cam.s, cx: e.cam.cx + d / e.cam.s }, e.bounds);
-        kick.current();
-      } else {
-        zoomBy(Math.exp(-Math.max(-120, Math.min(120, dy)) * 0.0028), x);
-      }
+    const ro = new ResizeObserver(resize);
+    ro.observe(wrap);
+    resize();
+    const remeasure = () => {
+      e.measureTitles();
+      e.kick();
     };
+    document.fonts?.load(`500 ${TITLE_FONT_PX}px ${hand}`).then(remeasure);
+    document.fonts?.ready.then(remeasure);
 
-    const onDown = (ev: PointerEvent) => {
-      const e = eng.current;
-      if (!e) return;
-      canvas.setPointerCapture(ev.pointerId);
-      interact();
-      const p = local(ev);
-      e.pointers.set(ev.pointerId, p);
-      e.target = null;
-      e.panTarget = null;
-      e.velocity = 0;
-      if (e.pointers.size === 1) {
-        e.drag = { x: p.x, moved: false, lastX: p.x, lastT: performance.now(), pinch: 0, startCx: e.cam.cx };
-      } else if (e.pointers.size === 2 && e.drag) {
-        const [a, b] = [...e.pointers.values()];
-        e.drag.pinch = Math.abs(a.x - b.x) || 1;
-        e.drag.moved = true;
-        e.drag.lastX = (a.x + b.x) / 2;
-      }
-    };
+    const unbind = e.bindInput({
+      open: (i) => openMoment(i),
+      follow: (i) => follow(i),
+      hoverKnot: (i) => prefetchMoment(i),
+      interact: () => firstTouch(),
+    });
 
-    const onMove = (ev: PointerEvent) => {
-      const e = eng.current;
-      if (!e) return;
-      const p = local(ev);
-      if (!e.drag || !e.pointers.has(ev.pointerId)) {
-        // Hover.
-        const hit = hitTest(p.x, p.y);
-        const hk = hit?.kind === "knot" ? hit.i : -1;
-        const hs = hit?.kind === "strand" ? hit.i : -1;
-        if (hk !== e.hoverKnot || hs !== e.hoverStrand) {
-          // Warm the moment's page while the pointer rests on its knot.
-          if (hk >= 0 && hk !== e.hoverKnot) prefetchMoment(hk);
-          e.hoverKnot = hk;
-          e.hoverStrand = hs;
-          canvas.style.cursor = hit ? "pointer" : "grab";
-          kick.current();
-        }
-        return;
-      }
-      e.pointers.set(ev.pointerId, p);
-      const now = performance.now();
-      if (e.pointers.size >= 2) {
-        const [a, b] = [...e.pointers.values()];
-        const mid = (a.x + b.x) / 2;
-        const dist = Math.abs(a.x - b.x) || 1;
-        const factor = dist / e.drag.pinch;
-        // Pan with the midpoint, zoom about it.
-        e.cam = clampCam({ s: e.cam.s, cx: e.cam.cx - (mid - e.drag.lastX) / e.cam.s }, e.bounds);
-        e.cam = zoomAt(e.cam, factor, mid, e.bounds);
-        e.drag.pinch = dist;
-        e.drag.lastX = mid;
-        kick.current();
-        return;
-      }
-      const dx = p.x - e.drag.lastX;
-      if (!e.drag.moved && Math.abs(p.x - e.drag.x) < 5) return;
-      if (!e.drag.moved) {
-        e.drag.moved = true;
-        canvas.style.cursor = "grabbing";
-        e.hoverKnot = -1;
-        e.hoverStrand = -1;
-      }
-      const dtMs = Math.max(1, now - e.drag.lastT);
-      // px/s, smoothed.
-      e.velocity = e.velocity * 0.6 + ((dx / dtMs) * 1000) * 0.4;
-      e.cam = clampCam({ s: e.cam.s, cx: e.cam.cx - dx / e.cam.s }, e.bounds);
-      e.drag.lastX = p.x;
-      e.drag.lastT = now;
-      kick.current();
-    };
+    if (process.env.NODE_ENV !== "production") {
+      (window as unknown as { __threads?: ThreadsEngine }).__threads = e;
+    }
 
-    const onUp = (ev: PointerEvent) => {
-      const e = eng.current;
-      if (!e) return;
-      e.pointers.delete(ev.pointerId);
-      const d = e.drag;
-      if (e.pointers.size === 1 && d) {
-        const [rest] = [...e.pointers.values()];
-        d.lastX = rest.x;
-        d.lastT = performance.now();
-        return;
-      }
-      if (e.pointers.size > 0) return;
-      e.drag = null;
-      canvas.style.cursor = "grab";
-      if (d && !d.moved) {
-        e.velocity = 0;
-        const p = local(ev);
-        // A second tap close by and soon after: zoom in about it.
-        const now = performance.now();
-        const lt = e.lastTap;
-        if (lt && now - lt.t < 320 && Math.hypot(p.x - lt.x, p.y - lt.y) < 24) {
-          e.lastTap = null;
-          zoomBy(2.2, p.x);
-          return;
-        }
-        e.lastTap = { t: now, x: p.x, y: p.y };
-        const hit = hitTest(p.x, p.y);
-        if (hit?.kind === "knot") {
-          router.push(`/memories/${model.knots[hit.i].moment.id}`);
-        } else if (hit?.kind === "strand") {
-          setLit(e.highlight === hit.i ? -1 : hit.i);
-        } else if (e.highlight >= 0) {
-          setLit(-1);
-        }
-      } else if (performance.now() - (d?.lastT ?? 0) > 80) {
-        e.velocity = 0; // held still before letting go: no fling
-      }
-      kick.current();
-    };
-
-    const onLeave = () => {
-      const e = eng.current;
-      if (!e || e.drag) return;
-      e.hoverKnot = -1;
-      e.hoverStrand = -1;
-      kick.current();
-    };
-
-    canvas.addEventListener("wheel", onWheel, { passive: false });
-    canvas.addEventListener("pointerdown", onDown);
-    canvas.addEventListener("pointermove", onMove);
-    canvas.addEventListener("pointerup", onUp);
-    canvas.addEventListener("pointercancel", onUp);
-    canvas.addEventListener("pointerleave", onLeave);
     return () => {
-      canvas.removeEventListener("wheel", onWheel);
-      canvas.removeEventListener("pointerdown", onDown);
-      canvas.removeEventListener("pointermove", onMove);
-      canvas.removeEventListener("pointerup", onUp);
-      canvas.removeEventListener("pointercancel", onUp);
-      canvas.removeEventListener("pointerleave", onLeave);
+      unbind();
+      ro.disconnect();
+      e.destroy();
+      eng.current = null;
     };
-  }, [hitTest, interact, model, prefetchMoment, router, setLit]);
+  }, [model, seed]);
 
   /* ---------------- buttons & keys ---------------- */
-  const zoomButton = useCallback((dir: 1 | -1) => {
-    const e = eng.current;
-    if (!e) return;
-    e.panTarget = null;
-    const W = e.bounds.width;
-    const base = e.target ? e.target.s : e.cam.s;
-    const s = Math.min(maxScale(e.bounds), Math.max(minScale(e.bounds), base * (dir > 0 ? 2 : 0.5)));
-    const at = e.target ? e.target.at : e.cam.cx;
-    e.target = { s, ax: W / 2, at };
-    kick.current();
-  }, []);
+  const zoomButton = useCallback((dir: 1 | -1) => eng.current?.zoomStep(dir), []);
 
   /** Keyboard focus on a moment: bring its knot into view and show its title. */
-  const focusKnot = useCallback(
-    (i: number) => {
-      const e = eng.current;
-      if (!e) return;
-      e.hoverKnot = i;
-      kick.current();
-      const h = e.geom?.knots[i];
-      if (!h) return;
-      const W = e.bounds.width;
-      if (h.x < W * 0.15 || h.x > W * 0.85) e.panTarget = model.knots[i].t;
-      kick.current();
-    },
-    [model],
-  );
+  const focusKnot = useCallback((i: number) => eng.current?.focusKnot(i), []);
 
   const onKey = useCallback(
     (ev: React.KeyboardEvent) => {
       const e = eng.current;
       if (!e) return;
-      const span = e.bounds.width / e.cam.s;
-      if (ev.key === "+" || ev.key === "=") zoomButton(1);
-      else if (ev.key === "-" || ev.key === "_") zoomButton(-1);
-      else if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") {
-        const dir = ev.key === "ArrowLeft" ? -1 : 1;
-        e.panTarget = (e.panTarget ?? e.cam.cx) + dir * span * 0.25;
-        kick.current();
-      } else if (ev.key === "0") {
-        e.target = { s: minScale(e.bounds), ax: e.bounds.width / 2, at: (model.tMin + model.tMax) / 2 };
-        kick.current();
-      } else if (ev.key === "Escape") setLit(-1);
+      if (ev.key === "+" || ev.key === "=") e.zoomStep(1);
+      else if (ev.key === "-" || ev.key === "_") e.zoomStep(-1);
+      else if (ev.key === "ArrowLeft") e.panBySpan(-0.25);
+      else if (ev.key === "ArrowRight") e.panBySpan(0.25);
+      else if (ev.key === "0") e.zoomOutAll();
+      else if (ev.key === "Escape") setLit(-1);
       else return;
       ev.preventDefault();
       interact();
     },
-    [interact, model, setLit, zoomButton],
+    [interact, setLit],
   );
 
   const followed = highlight >= 0 ? model.strands[highlight] : null;
