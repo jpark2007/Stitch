@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import schemas
-from db import conversations, memories
+from db import conversations, media, memories
 
 
 def _worker_only() -> None:
@@ -121,6 +121,7 @@ class ConversationService:
         if not draft.get("text", "").strip() or draft.get("year") is None:
             raise ValueError("Collect the story and year before submitting")
         question = self._question(draft["questionId"]) if draft.get("questionId") else None
+        photo_ids = self._validate_photos(draft.get("photoIds", []))
         fields = schemas.SubmitMemoryFields(text=draft["text"], year=draft["year"],
                                             title=draft.get("title"),
                                             question=question.text if question else None,
@@ -131,7 +132,8 @@ class ConversationService:
             # Recheck STOP after acquiring the durable reservation, before side effects.
             self._state()
             c = self.context
-            run_id = self.runs.start_run(c.family_id, c.principal, c.person_id, fields, [])
+            self._validate_photos(photo_ids)
+            run_id = self.runs.start_run(c.family_id, c.principal, c.person_id, fields, photo_ids)
             if not isinstance(run_id, str) or not run_id:
                 raise RuntimeError("Studio did not return a run identifier")
             self._update(reserved, {"status": "submitted", "runId": run_id})
@@ -143,6 +145,30 @@ class ConversationService:
                 pass  # The durable 'submitting' reservation remains fail-closed.
             raise RuntimeError("Submission outcome uncertain; operator reconciliation required") from None
         return {"runId": run_id, "duplicate": False}
+
+    def _validate_photos(self, photo_ids: list[str]) -> list[str]:
+        if not isinstance(photo_ids, list) or len(photo_ids) > 10:
+            raise ValueError("Attach at most 10 photos")
+        normalized = []
+        for ref in photo_ids:
+            photo_id = media.parse_media_ref(ref)
+            found = media.get_media(self.db, self.context.family_id, photo_id) if photo_id else None
+            if found is None or found.kind != "photo":
+                raise ValueError("Photo is not available in this family")
+            if photo_id not in normalized:
+                normalized.append(photo_id)
+        return normalized
+
+    def attach_photos(self, photo_ids: list[str]) -> dict:
+        """Trusted worker method, deliberately absent from the model's tool set."""
+        row = self._state()
+        new_ids = self._validate_photos(photo_ids)
+        draft = dict(row["draft"])
+        combined = list(dict.fromkeys([*draft.get("photoIds", []), *new_ids]))
+        draft["photoIds"] = self._validate_photos(combined)
+        self._state()
+        self._update(row, {"draft": draft}, status="draft")
+        return {"photoCount": len(combined)}
 
     async def relay_run_events(self, *, timeout: float = 1.0, max_events: int = 50) -> list[dict]:
         if not 0 < timeout <= 10 or not 1 <= max_events <= 100:
