@@ -69,9 +69,30 @@ def save_scene(
     the family, props and sets from the screenplay, era from the year, version 1.
 
     Second telling (run.fields.memory_id set): the existing action (screenplay shots and
-    timeline tracks) is kept untouched. The new Telling is appended and the draft's
-    narration for the teller is added as screenplay.narrations[author] and
-    timeline.narrations[author]; version goes up by one.
+    timeline tracks) is kept untouched. The teller's Telling is appended, or replaces
+    their own earlier telling in place; the draft's narration for the teller becomes
+    screenplay.narrations[author] and timeline.narrations[author]; the duration grows
+    when the new narration outlasts the action; version goes up by one.
+    """
+    memory, _ = save_scene_with_report(
+        repo, run, title=title, participant_ids=participant_ids, screenplay=screenplay, timeline=timeline
+    )
+    return memory
+
+
+def save_scene_with_report(
+    repo: AgentRepo,
+    run: RunInfo,
+    *,
+    title: str,
+    participant_ids: list[str],
+    screenplay: Screenplay,
+    timeline: Timeline,
+) -> tuple[Memory, list[str]]:
+    """`save_scene`, also returning the draft narration shot ids that were dropped.
+
+    Only a second telling drops anything: narration the draft wrote for a shot id that
+    is not in the existing screenplay has no action to play over.
     """
     family_id = run.family_id
     fields = run.fields
@@ -83,8 +104,9 @@ def save_scene(
         created_at=datetime.now(UTC),
     )
 
+    ignored: list[str] = []
     if run.is_second_telling:
-        memory = _add_telling(repo, run, telling, screenplay=screenplay, timeline=timeline)
+        memory, ignored = _add_telling(repo, run, telling, screenplay=screenplay, timeline=timeline)
     else:
         memory_id = repo.new_id(family_id, "memory")
         candidates = _dedup([run.author_id, *participant_ids, *fields.participant_ids, *screenplay.cast])
@@ -105,7 +127,10 @@ def save_scene(
 
     # Round-trip through validation so a bad draft never reaches the database.
     memory = Memory.model_validate(memory.model_dump(mode="json", by_alias=True))
-    return repo.save_memory(family_id, memory)
+    return repo.save_memory(family_id, memory), ignored
+
+
+DURATION_EPSILON = 1e-6
 
 
 def _add_telling(
@@ -115,7 +140,7 @@ def _add_telling(
     *,
     screenplay: Screenplay,
     timeline: Timeline,
-) -> Memory:
+) -> tuple[Memory, list[str]]:
     family_id = run.family_id
     author = run.author_id
     existing = repo.get_memory(family_id, run.fields.memory_id or "")
@@ -128,12 +153,15 @@ def _add_telling(
     if draft_track is None:
         raise ValueError(f"the draft timeline has no narrations[{author!r}] for this telling")
 
+    # The teller's lines, keyed by shot. Only shots the saved action has can carry them.
     shot_ids = {shot.id for shot in existing.screenplay.shots}
-    lines_by_shot: dict[str, list[NarrationLine]]
+    drafted: dict[str, list[NarrationLine]]
     if screenplay.narrations and author in screenplay.narrations:
-        lines_by_shot = {sid: lines for sid, lines in screenplay.narrations[author].items() if sid in shot_ids}
+        drafted = dict(screenplay.narrations[author])
     else:
-        lines_by_shot = {shot.id: shot.narration for shot in screenplay.shots if shot.id in shot_ids}
+        drafted = {shot.id: shot.narration for shot in screenplay.shots}
+    lines_by_shot = {sid: lines for sid, lines in drafted.items() if sid in shot_ids}
+    ignored = _dedup([sid for sid, lines in drafted.items() if sid not in shot_ids and lines])
 
     new_screenplay = existing.screenplay.model_copy(deep=True)
     new_screenplay.narrations = {**(new_screenplay.narrations or {}), author: lines_by_shot}
@@ -145,15 +173,34 @@ def _add_telling(
         new_timeline.audio = draft_track.audio
         new_timeline.captions = [c.model_copy() for c in draft_track.captions]
 
-    return existing.model_copy(
+    # apply_narration grows the draft's duration when this telling outlasts the action.
+    # Grow the saved one to match (never shrink it: other tellings may be longer), and
+    # hold the closing shot on stage for the extra time.
+    old_duration = existing.timeline.duration
+    new_duration = max(old_duration, timeline.duration)
+    if new_duration > old_duration:
+        new_timeline.duration = new_duration
+        if new_timeline.shots and abs(new_timeline.shots[-1].end - old_duration) <= DURATION_EPSILON:
+            new_timeline.shots[-1].end = new_duration
+
+    # One telling per author: a retelling replaces the author's own, in place.
+    tellings = list(existing.tellings)
+    mine = next((i for i, t in enumerate(tellings) if t.author_id == author), None)
+    if mine is None:
+        tellings.append(telling)
+    else:
+        tellings[mine] = telling
+
+    memory = existing.model_copy(
         update={
-            "tellings": [*existing.tellings, telling],
+            "tellings": tellings,
             "participant_ids": _dedup([*existing.participant_ids, author]),
             "screenplay": new_screenplay,
             "timeline": new_timeline,
             "version": existing.version + 1,
         }
     )
+    return memory, ignored
 
 
 # ------------------------------------------------------------------------- tools
@@ -263,12 +310,15 @@ def make_family_tools(repo: AgentRepo, run: RunInfo) -> list[BaseTool]:
         if error:
             return error
         try:
-            memory = save_scene(
+            memory, ignored = save_scene_with_report(
                 repo, run, title=title, participant_ids=participant_ids, screenplay=screenplay, timeline=timeline
             )
         except (ValueError, ValidationError) as exc:
             return f"error: could not save: {exc}"
         _emit("scene_ready", schemas.SceneReadyEvent(memory_id=memory.id, version=memory.version))
-        return f"saved {memory.id} v{memory.version}"
+        result = f"saved {memory.id} v{memory.version}"
+        if ignored:
+            result += f"; ignored narration for unknown shot(s): {', '.join(ignored)}"
+        return result
 
     return [get_person, find_memories, link_participants, save_memory]

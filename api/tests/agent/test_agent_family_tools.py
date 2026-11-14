@@ -17,7 +17,7 @@ from agent.repo import SAMPLE_MEMORY_PATH, InMemoryRepo, load_sample_family
 from agent.run_info import RunInfo
 from agent.tools.family import era_for_year, make_family_tools, save_scene
 from schemas import Memory, MemoryResponse, SubmitMemoryFields
-from screenplay.schema import Screenplay, Timeline
+from screenplay.schema import Caption, NarrationLine, Screenplay, Timeline
 
 FAM = "fam_mao"
 OTHER = "fam_other"
@@ -186,6 +186,165 @@ def test_second_telling_requires_the_tellers_timeline_narration() -> None:
     with pytest.raises(ValueError, match="mom"):
         save_scene(repo, mom_run(existing.id), title="x", participant_ids=[], screenplay=draft_sp, timeline=draft_tl)
     assert repo.get_memory(FAM, existing.id) == existing
+
+
+def _existing_ten_second_memory(repo: InMemoryRepo) -> Memory:
+    """Dad's memory with a 10 s action whose last shot ends at 10, and dad's audio as the default."""
+    m = _existing_memory_without_mom(repo).model_copy(deep=True)
+    assert m.timeline is not None and m.timeline.narrations is not None
+    m.timeline.duration = 10.0
+    m.timeline.shots[-1].end = 10.0
+    m.timeline.audio = "media/dad_narration"
+    m.timeline.narrations["dad"].audio = "media/dad_narration"
+    return repo.save_memory(FAM, m)
+
+
+def _moms_draft_lasting(duration: float) -> tuple[Screenplay, Timeline]:
+    draft_sp, draft_tl = _moms_draft()
+    assert draft_tl.narrations is not None
+    draft_tl.duration = duration
+    draft_tl.narrations["mom"].audio = "media/mom_narration"
+    return draft_sp, draft_tl
+
+
+def test_a_longer_second_telling_grows_the_duration_and_holds_the_last_shot() -> None:
+    repo = make_repo()
+    existing = _existing_ten_second_memory(repo)
+    assert existing.timeline is not None
+    draft_sp, draft_tl = _moms_draft_lasting(14.5)  # mom's audio runs past the 10 s action
+
+    memory = save_scene(repo, mom_run(existing.id), title="x", participant_ids=[], screenplay=draft_sp,
+                        timeline=draft_tl)
+
+    tl = memory.timeline
+    assert tl is not None and tl.narrations is not None
+    assert tl.duration == 14.5
+    assert tl.shots[-1].end == 14.5
+    assert tl.shots[:-1] == existing.timeline.shots[:-1]
+    assert tl.shots[-1].model_copy(update={"end": 10.0}) == existing.timeline.shots[-1]
+    assert tl.tracks == existing.timeline.tracks
+    assert tl.effects == existing.timeline.effects
+    # The default narrator (dad) keeps his audio and captions.
+    assert tl.default_narrator == "dad"
+    assert tl.audio == existing.timeline.audio == "media/dad_narration"
+    assert tl.captions == existing.timeline.captions
+    assert tl.narrations["dad"] == existing.timeline.narrations["dad"]  # type: ignore[index]
+    assert tl.narrations["mom"].audio == "media/mom_narration"
+    assert repo.get_memory(FAM, existing.id) == memory
+
+
+def test_a_last_shot_that_ended_early_is_not_stretched() -> None:
+    repo = make_repo()
+    m = _existing_ten_second_memory(repo).model_copy(deep=True)
+    assert m.timeline is not None
+    m.timeline.shots[-1].end = 9.0  # a closing beat after the last shot
+    existing = repo.save_memory(FAM, m)
+    draft_sp, draft_tl = _moms_draft_lasting(14.5)
+    memory = save_scene(repo, mom_run(existing.id), title="x", participant_ids=[], screenplay=draft_sp,
+                        timeline=draft_tl)
+    assert memory.timeline is not None
+    assert memory.timeline.duration == 14.5
+    assert memory.timeline.shots[-1].end == 9.0
+
+
+def test_a_shorter_second_telling_keeps_the_existing_duration() -> None:
+    repo = make_repo()
+    existing = _existing_ten_second_memory(repo)
+    assert existing.timeline is not None
+    draft_sp, draft_tl = _moms_draft_lasting(6.25)
+
+    memory = save_scene(repo, mom_run(existing.id), title="x", participant_ids=[], screenplay=draft_sp,
+                        timeline=draft_tl)
+
+    assert memory.timeline is not None
+    assert memory.timeline.duration == existing.timeline.duration == 10.0
+    assert memory.timeline.shots == existing.timeline.shots
+    assert memory.timeline.tracks == existing.timeline.tracks
+
+
+def test_the_same_author_telling_twice_replaces_their_telling_in_place() -> None:
+    repo = make_repo()
+    existing = _existing_memory_without_mom(repo)
+    assert existing.timeline is not None
+
+    first_sp, first_tl = _moms_draft()
+    first = save_scene(repo, mom_run(existing.id), title="x", participant_ids=[], screenplay=first_sp,
+                       timeline=first_tl)
+    assert [t.author_id for t in first.tellings] == ["dad", "mom"]
+    assert first.version == existing.version + 1
+
+    # A third teller, so mom's telling is no longer the last one.
+    repo.add_person(FAM, schemas.Person(id="aunt", family_id=FAM, name="Aunt May",
+                                        character=schemas.CharacterSheet(color="#00aa00")))
+    aunt = RunInfo(run_id="run_3", family_id=FAM, user_id="user_aunt", author_id="aunt",
+                   fields=SubmitMemoryFields(text="I was across the street.", year=1988, memory_id=existing.id))
+    aunt_sp, aunt_tl = _moms_draft()
+    assert aunt_sp.narrations is not None and aunt_tl.narrations is not None
+    aunt_sp.narrations = {"aunt": aunt_sp.narrations["mom"]}
+    aunt_tl.narrations = {"aunt": aunt_tl.narrations["mom"].model_copy(update={"author_id": "aunt"})}
+    second = save_scene(repo, aunt, title="x", participant_ids=[], screenplay=aunt_sp, timeline=aunt_tl)
+    assert [t.author_id for t in second.tellings] == ["dad", "mom", "aunt"]
+    assert second.version == first.version + 1
+
+    # Mom tells it again, with new words and new narration.
+    retold_text = "Actually, it was raining, and the hymn books got wet."
+    new_line = NarrationLine(t=0.5, text="It was raining.")
+    retold_sp, retold_tl = _moms_draft()
+    assert retold_sp.narrations is not None and retold_tl.narrations is not None
+    retold_sp.narrations["mom"] = {"s1": [new_line]}
+    retold_tl.narrations["mom"].audio = "media/mom_take_two"
+    retold_tl.narrations["mom"].captions = [Caption(t=0.5, text="It was raining.")]
+    run = mom_run(existing.id)
+    run = RunInfo(run_id="run_4", family_id=run.family_id, user_id=run.user_id, author_id=run.author_id,
+                  fields=run.fields.model_copy(update={"text": retold_text}))
+    third = save_scene(repo, run, title="x", participant_ids=[], screenplay=retold_sp, timeline=retold_tl)
+
+    assert [t.author_id for t in third.tellings] == ["dad", "mom", "aunt"]
+    assert third.tellings[1].text == retold_text
+    assert third.tellings[0] == second.tellings[0] and third.tellings[2] == second.tellings[2]
+    assert third.version == second.version + 1 == existing.version + 3
+    assert third.screenplay is not None and third.screenplay.narrations is not None
+    assert third.screenplay.narrations["mom"] == {"s1": [new_line]}
+    assert third.screenplay.narrations["aunt"] == second.screenplay.narrations["aunt"]  # type: ignore[union-attr,index]
+    assert third.timeline is not None and third.timeline.narrations is not None
+    assert third.timeline.narrations["mom"].audio == "media/mom_take_two"
+    assert third.timeline.narrations["mom"].captions == [Caption(t=0.5, text="It was raining.")]
+    assert set(third.timeline.narrations) == {"dad", "mom", "aunt"}
+    assert third.timeline.tracks == existing.timeline.tracks
+    assert repo.get_memory(FAM, existing.id) == third
+
+
+def test_draft_narration_for_an_unknown_shot_is_dropped_and_reported() -> None:
+    repo = make_repo()
+    existing = _existing_memory_without_mom(repo)
+    draft_sp, draft_tl = _moms_draft()
+    assert draft_sp.narrations is not None
+    moms_lines = draft_sp.narrations["mom"]["s1"]
+    draft_sp.narrations["mom"] = {"s1": moms_lines, "s9": [NarrationLine(t=0, text="A shot that never was.")]}
+    files = {
+        "/screenplay.json": create_file_data(draft_sp.model_dump_json(by_alias=True)),
+        "/timeline.json": create_file_data(draft_tl.model_dump_json(by_alias=True)),
+    }
+
+    content, events = _run_save_memory(repo, mom_run(existing.id), files)
+
+    assert content == f"saved {existing.id} v2; ignored narration for unknown shot(s): s9"
+    assert events == [{"event": "scene_ready", "data": {"memoryId": existing.id, "version": 2}}]
+    saved = repo.get_memory(FAM, existing.id)
+    assert saved is not None and saved.screenplay is not None and saved.screenplay.narrations is not None
+    assert saved.screenplay.narrations["mom"] == {"s1": moms_lines}
+
+
+def test_second_telling_with_only_known_shots_reports_nothing_ignored() -> None:
+    repo = make_repo()
+    existing = _existing_memory_without_mom(repo)
+    draft_sp, draft_tl = _moms_draft()
+    files = {
+        "/screenplay.json": create_file_data(draft_sp.model_dump_json(by_alias=True)),
+        "/timeline.json": create_file_data(draft_tl.model_dump_json(by_alias=True)),
+    }
+    content, _ = _run_save_memory(repo, mom_run(existing.id), files)
+    assert content == f"saved {existing.id} v2"
 
 
 def test_second_telling_of_another_familys_memory_is_not_found() -> None:
