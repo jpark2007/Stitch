@@ -25,7 +25,8 @@ export interface MusicProbe {
   /** Main-thread ms to start an era cold vs prefetched (fresh offline cores). */
   startCost(era: EraId): ReturnType<typeof import("@/components/audio/offline").measureEraStart>;
   mount(on: boolean): void;
-  hub(): { context: AudioContextState | "none"; awake: boolean };
+  /** The real context's state beside the hub's own view of it: they must agree once settled. */
+  hub(): { context: AudioContextState | "none"; status: "none" | "running" | "suspended"; awake: boolean };
 }
 
 declare global {
@@ -56,7 +57,7 @@ export function useMusicProbe(on: boolean, music: RefObject<EraMusic | null>, se
         prefetch: (era) => music.current?.prefetch(era),
         startCost: (era) => offline.measureEraStart(era),
         mount: setMounted,
-        hub: () => ({ context: hub.musicContext()?.state ?? "none", awake: hub.musicAwake() }),
+        hub: () => ({ context: hub.musicContext()?.state ?? "none", status: hub.musicHubStatus(), awake: hub.musicAwake() }),
       };
     });
     return () => {
