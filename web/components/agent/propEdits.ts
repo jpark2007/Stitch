@@ -129,3 +129,24 @@ export function uploadErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message.trim() : "";
   return message || GENERIC_UPLOAD_ERROR;
 }
+
+/** A replacement photo while the family picks and uploads it (PropChips). */
+export interface PhotoDraft {
+  /** The uploaded media id; null until the upload succeeds (or after it failed). */
+  photoId: string | null;
+  fileName?: string;
+  /** An object URL of the picked file, shown while it uploads and once it is in. */
+  previewUrl?: string;
+}
+
+/**
+ * The photo draft once its upload failed: no preview and no photo id, so the
+ * card goes back to the prop's drawing and nothing looks as if the photo will
+ * be used. The file name stays, so the button reads "Choose another photo".
+ * `revoke` is the preview's object URL to release (null when there was none).
+ */
+export function dropFailedPhoto(draft: PhotoDraft | undefined): { draft: PhotoDraft; revoke: string | null } {
+  const next: PhotoDraft = { photoId: null };
+  if (draft?.fileName) next.fileName = draft.fileName;
+  return { draft: next, revoke: draft?.previewUrl ?? null };
+}

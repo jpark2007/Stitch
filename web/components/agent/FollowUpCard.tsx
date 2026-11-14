@@ -3,26 +3,44 @@
 // Answer the agent's follow-up question (AnswerRequest kind="answer").
 // Drawn as a note from the studio taped onto the feed: the question in
 // handwriting, then a plain labelled answer field and the flow kit's Button.
+// What is typed is kept in sessionStorage as a draft (answerDraft), so a
+// reload brings it back; it is cleared once the answer is accepted.
 import { useId, useRef, useState, type FormEvent } from "react";
 import { Button } from "@/components/flow/Button";
 import { Tape } from "@/components/paper/Tape";
 import type { QuestionEvent } from "@/lib/types";
+import {
+  clearAnswerDraft,
+  readAnswerDraft,
+  saveAnswerDraft,
+  sessionDraftStore,
+  type AnswerDraftTarget,
+  type DraftedAnswer,
+} from "./answerDraft";
 
 const GENERIC_ERROR = "That didn't send. Check your connection and try again.";
 
 export default function FollowUpCard(props: {
   question: QuestionEvent;
-  onAnswer: (text: string) => Promise<void>;
+  /** useAgentRun's answerQuestion; its `draft` tag names where the draft is kept. */
+  onAnswer: DraftedAnswer;
+  /** Where to keep the unsent text; defaults to `onAnswer.draft`. Without either, nothing is kept. */
+  draft?: AnswerDraftTarget;
   disabled?: boolean;
 }) {
   const { question, onAnswer, disabled = false } = props;
+  const draft = props.draft ?? onAnswer.draft ?? null;
   const uid = useId();
   const fieldId = `${uid}-answer`;
   const hintId = `${uid}-hint`;
   const fieldErrorId = `${uid}-field-error`;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const [text, setText] = useState("");
+  // The card mounts once per pause, after the stream showed it (never on the
+  // server), so the draft is read straight into the first state.
+  const [text, setText] = useState(() =>
+    draft ? readAnswerDraft(sessionDraftStore(), draft.runId, draft.pauseKey) : "",
+  );
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -46,6 +64,7 @@ export default function FollowUpCard(props: {
     try {
       await onAnswer(answer);
       setSentFor(question.text);
+      if (draft) clearAnswerDraft(sessionDraftStore(), draft.runId);
     } catch (err) {
       setSubmitError(err instanceof Error && err.message ? err.message : GENERIC_ERROR);
     } finally {
@@ -94,6 +113,7 @@ export default function FollowUpCard(props: {
           aria-describedby={describedBy}
           onChange={(e) => {
             setText(e.target.value);
+            if (draft) saveAnswerDraft(sessionDraftStore(), draft.runId, draft.pauseKey, e.target.value);
             if (fieldError && e.target.value.trim()) setFieldError(null);
           }}
           className={`mt-2 block min-h-11 w-full resize-y rounded-paper border bg-paper-light px-3 py-2.5 text-base leading-relaxed text-ink shadow-inset transition-[border-color] duration-150 ease-paper placeholder:text-ink-faint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60 ${

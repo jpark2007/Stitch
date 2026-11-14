@@ -17,6 +17,7 @@ import {
   isFinalEvent,
   isFinished,
   isNotWaiting,
+  NOT_WAITING_DETAIL,
   MAX_SAVED_ANSWERS,
   answersStorageKey,
   newRunBook,
@@ -321,15 +322,38 @@ function httpError(status, message) {
   return e;
 }
 
-test("sendAnswer: a 409 means already answered: it resolves and closes the pause quietly", async () => {
-  const raw = "run x is running, not waiting for an answer";
+/** The API client's ApiError: `detail` is the server's sentence, and `message` the same. */
+function apiError(status, detail) {
+  const e = httpError(status, detail);
+  e.detail = detail;
+  return e;
+}
+
+// The answer route's 409 details (api/routes/memories.py), and the mock backend's.
+const ANSWER_CONFLICT = "Run cannot take that answer";
+const OTHER_409_DETAILS = [
+  ANSWER_CONFLICT,
+  "That answer does not match what this run is waiting for",
+  "An answer needs text",
+  "A props review needs the props list",
+  "A merge answer needs approve",
+  // The API client's own sentence for a 409 without a detail.
+  "That conflicts with something that already exists.",
+];
+
+test("NOT_WAITING_DETAIL is the answer route's sentence", () => {
+  assert.equal(NOT_WAITING_DETAIL, "This run is not waiting for an answer");
+});
+
+test("sendAnswer: a 409 NOT_WAITING means already answered: it resolves and closes the pause quietly", async () => {
+  const raw = NOT_WAITING_DETAIL;
   let state = [PLAN, QUESTION].reduce((s, m) => runReducer(s, { type: "event", message: m }), initialRunState);
   assert.equal(state.phase, "waiting");
   const actions = [];
   const book = { folded: 2, highWater: 2, answers: [] };
   const sent = await sendAnswer({
     answer: async () => {
-      throw { status: 409, message: raw };
+      throw { status: 409, detail: raw };
     },
     body: answerBody("answer", "Grandpa"),
     pendingKind: "answer",
@@ -343,7 +367,7 @@ test("sendAnswer: a 409 means already answered: it resolves and closes the pause
   assert.deepEqual(actions, [{ type: "answered", kind: "answer", summary: null }]);
   assert.equal(state.pending, null);
   assert.equal(state.phase, "running");
-  assert.doesNotMatch(JSON.stringify(state.log), /not waiting|running, not/);
+  assert.doesNotMatch(JSON.stringify(state.log), /not waiting/);
   assert.doesNotMatch(JSON.stringify(actions), /not waiting/);
   // Recorded, so a replay closes the pause again at the same point.
   assert.deepEqual(book.answers, [{ after: 2, kind: "answer", summary: null }]);
@@ -351,7 +375,7 @@ test("sendAnswer: a 409 means already answered: it resolves and closes the pause
   // An ApiError-like instance works the same way.
   const again = await sendAnswer({
     answer: async () => {
-      throw httpError(409, raw);
+      throw apiError(409, raw);
     },
     body: answerBody("props", []),
     pendingKind: "props",
@@ -359,6 +383,62 @@ test("sendAnswer: a 409 means already answered: it resolves and closes the pause
     dispatch: () => assert.fail("nothing to dispatch for a swapped-out run"),
   });
   assert.equal(again, true);
+});
+
+test("sendAnswer: any other 409 keeps the card open with a calm message and records nothing", async () => {
+  for (const detail of OTHER_409_DETAILS) {
+    for (const kind of ["answer", "props", "merge"]) {
+      const body =
+        kind === "answer" ? answerBody("answer", "Grandpa") : kind === "props" ? answerBody("props", []) : answerBody("merge", true);
+      const first = kind === "answer" ? QUESTION : kind === "props" ? msg("props_found", { props: [] }) : msg("merge", { text: "Joe?", personId: "p1", candidateName: "Joe" });
+      let state = [PLAN, first].reduce((s, m) => runReducer(s, { type: "event", message: m }), initialRunState);
+      assert.equal(state.phase, "waiting");
+      const actions = [];
+      const book = { folded: 2, highWater: 2, answers: [] };
+      const thrown = apiError(409, detail);
+      await assert.rejects(
+        sendAnswer({
+          answer: async () => {
+            throw thrown;
+          },
+          body,
+          pendingKind: kind,
+          currentBook: () => book,
+          dispatch: (a) => {
+            actions.push(a);
+            state = runReducer(state, a);
+          },
+          onRecorded: () => assert.fail("a refused answer is not saved as answered"),
+        }),
+        (err) => {
+          assert.equal(err.message, answerErrorMessage(thrown, kind), `${kind}: ${detail}`);
+          assert.notEqual(err.message, detail, "never the server's wording");
+          assert.equal(err.status, 409);
+          assert.equal(err.cause, thrown);
+          return true;
+        },
+      );
+      assert.deepEqual(actions, [], `${kind}: ${detail}`);
+      assert.deepEqual(book.answers, []);
+      assert.equal(state.phase, "waiting", "the card stays open");
+      assert.equal(state.pending?.kind, kind);
+    }
+  }
+});
+
+test("answerErrorMessage: a 409 that is not NOT_WAITING is calm, and an empty answer asks for a few words", () => {
+  assert.equal(answerErrorMessage(apiError(409, ANSWER_CONFLICT), "answer"), "Stitch couldn’t take that answer. Please try again.");
+  assert.equal(answerErrorMessage(apiError(409, ANSWER_CONFLICT), "props"), "Stitch couldn’t take those changes. Please try again.");
+  assert.equal(answerErrorMessage(apiError(409, ANSWER_CONFLICT), "merge"), "Stitch couldn’t take that choice. Please try again.");
+  assert.equal(answerErrorMessage(apiError(409, "An answer needs text"), "answer"), "Write a few words first.");
+  // A plain object with only a message (no detail) is read the same way.
+  assert.equal(answerErrorMessage({ status: 409, message: "An answer needs text" }, "answer"), "Write a few words first.");
+  for (const detail of OTHER_409_DETAILS) {
+    for (const kind of ["answer", "props", "merge"]) {
+      const m = answerErrorMessage(apiError(409, detail), kind);
+      assert.match(m, /^(Stitch couldn’t take (that answer|those changes|that choice)\. Please try again\.|Write a few words first\.)$/, `${kind}: ${detail}`);
+    }
+  }
 });
 
 test("sendAnswer: other failures reject with answerErrorMessage, keeping the status", async () => {
@@ -418,10 +498,29 @@ test("answerFailure keeps the cause and the status", () => {
   assert.equal("status" in answerFailure(new Error("x"), "props"), false);
 });
 
-test("isNotWaiting duck-types status 409 only", () => {
-  assert.equal(isNotWaiting({ status: 409 }), true);
-  assert.equal(isNotWaiting(httpError(409, "x")), true);
-  for (const e of [null, undefined, "409", 409, { status: "409" }, { status: 503 }, new Error("409")]) {
+test("isNotWaiting: only a 409 whose detail says the run is not waiting", () => {
+  assert.equal(isNotWaiting(apiError(409, NOT_WAITING_DETAIL)), true);
+  assert.equal(isNotWaiting({ status: 409, detail: NOT_WAITING_DETAIL }), true);
+  assert.equal(isNotWaiting({ status: 409, message: NOT_WAITING_DETAIL }), true, "message when there is no detail");
+  // Older servers and the mock backend word it differently.
+  assert.equal(isNotWaiting(httpError(409, "run x is running, NOT WAITING for an answer")), true);
+  assert.equal(isNotWaiting(apiError(409, "The studio isn't waiting for that.")), true);
+  assert.equal(isNotWaiting(apiError(409, "The studio isn’t waiting for that.")), true);
+  // Any other 409 is the answer not fitting: the card stays.
+  for (const detail of OTHER_409_DETAILS) assert.equal(isNotWaiting(apiError(409, detail)), false, detail);
+  assert.equal(isNotWaiting({ status: 409 }), false, "a bare 409 says nothing about waiting");
+  assert.equal(isNotWaiting(httpError(409, "x")), false);
+  // The NOT_WAITING sentence on another status is not it either.
+  for (const e of [
+    null,
+    undefined,
+    "409",
+    409,
+    { status: "409", detail: NOT_WAITING_DETAIL },
+    apiError(503, NOT_WAITING_DETAIL),
+    apiError(422, NOT_WAITING_DETAIL),
+    new Error(NOT_WAITING_DETAIL),
+  ]) {
     assert.equal(isNotWaiting(e), false, String(e));
   }
 });
@@ -873,10 +972,23 @@ test("sendAnswer hands the book to onRecorded once the answer is recorded", asyn
     dispatch: () => {},
     onRecorded: (b) => saved.push(serializeAnswers(b.answers)),
   });
-  // A 409 is recorded (and saved) too; any other failure saves nothing.
+  // A 409 NOT_WAITING is recorded (and saved) too; any other failure,
+  // another 409 included, saves nothing.
+  await assert.rejects(
+    sendAnswer({
+      answer: async () => {
+        throw apiError(409, ANSWER_CONFLICT);
+      },
+      body: answerBody("merge", true),
+      pendingKind: "merge",
+      currentBook: () => book,
+      dispatch: () => {},
+      onRecorded: () => assert.fail("an ANSWER_CONFLICT is not saved as answered"),
+    }),
+  );
   await sendAnswer({
     answer: async () => {
-      throw httpError(409, "run x is running, not waiting for an answer");
+      throw apiError(409, NOT_WAITING_DETAIL);
     },
     body: answerBody("merge", true),
     pendingKind: "merge",
