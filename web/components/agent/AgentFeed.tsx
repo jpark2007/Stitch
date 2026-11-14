@@ -90,7 +90,10 @@ export default function AgentFeed(props: {
   const finished = state.phase === "done";
   const sceneReady = state.phase === "scene_ready" || (finished && state.memoryId !== null);
   const line = phaseLine(state);
-  const hasLog = visibleLog.length > 0 || hiddenCount > 0;
+  // A stitched rule sets the log off from what is above it, but only when it
+  // has lines to show: a lone "Show all steps" sits right under the plan.
+  const ruled = finished ? hiddenCount > 0 : state.todos.length > 0 && visibleLog.length > 0;
+  const logClass = ruled ? `mt-6 pt-5 ${STITCH_TOP}` : visibleLog.length > 0 || state.log.length === 0 ? "mt-6" : "mt-3";
 
   const openButton = sceneHref ? (
     <ButtonLink href={sceneHref} className="gap-1.5">
@@ -105,7 +108,7 @@ export default function AgentFeed(props: {
       aria-live="polite"
       aria-relevant="additions text"
       aria-label="What the studio is doing"
-      className={hasLog && (finished || state.todos.length > 0) ? `mt-6 pt-5 ${STITCH_TOP}` : "mt-6"}
+      className={logClass}
     >
       {state.phase === "connecting" && state.log.length === 0 && (
         <p className="font-hand text-xl leading-snug text-ink-soft">Threading the needle. This takes a moment.</p>

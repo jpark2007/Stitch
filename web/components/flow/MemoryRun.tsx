@@ -28,6 +28,9 @@ export interface MemoryRunTelling {
 
 const HEADINGS = "h1, h2, h3, h4, h5, h6";
 
+/** How long a pause must hold before its card shows (see settledKey). A replay lands well within it. */
+const CARD_SETTLE_MS = 250;
+
 /**
  * Focus `root`'s first heading (made focusable for script only), or `root`
  * itself when it has none. Never scrolls; the caller decides that.
@@ -69,7 +72,20 @@ export function MemoryRun(props: {
   }
 
   const card = pendingCard(state);
-  const shownKey = card ? cardKey : null;
+  const pauseKey = card ? cardKey : null;
+
+  // A reload replays the run from its first event, so a pause the family
+  // already answered streams in and is closed again by the events right
+  // behind it. The card waits for its pause to hold for a moment before it
+  // shows, so such a pause never flashes a card or moves focus. A pause shown
+  // once shows again at once (a reconnect replaying the same pause).
+  const [settledKey, setSettledKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (pauseKey === null) return;
+    const timer = setTimeout(() => setSettledKey(pauseKey), CARD_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [pauseKey]);
+  const shownKey = pauseKey !== null && pauseKey === settledKey ? pauseKey : null;
 
   const feedRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -99,7 +115,7 @@ export function MemoryRun(props: {
 
   const pending = state.phase === "waiting" ? state.pending : null;
   let cardNode = null;
-  if (card && pending) {
+  if (shownKey !== null && pending) {
     cardNode = (
       <div key={cardKey} ref={cardRef} className="scroll-mt-6">
         {pending.kind === "answer" ? (
