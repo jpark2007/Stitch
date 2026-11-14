@@ -21,6 +21,18 @@ import {
   type RoleChangeCopy,
 } from "./members";
 
+/**
+ * The kit's quiet button look for the row actions, sized to their text. The
+ * kit's Button reserves room for a busy spinner even when idle, which would
+ * open wide gaps between two quiet actions; these never show busy themselves
+ * (their confirm's button does).
+ */
+const ROW_ACTION =
+  "inline-flex min-h-11 items-center rounded-card border border-transparent bg-transparent px-3 py-2.5 " +
+  "font-sans text-base font-semibold leading-tight text-accent-deep underline-offset-[0.2em] select-none " +
+  "not-disabled:hover:underline not-disabled:hover:decoration-1 disabled:cursor-not-allowed disabled:opacity-60 " +
+  FOCUS_RING;
+
 function messageOf(err: unknown): string {
   if (err instanceof Error && err.message.trim()) return err.message;
   return "Something went wrong. Please try again.";
@@ -199,32 +211,38 @@ export function MemberList(props: {
                   {(role || row.removable) && !open ? (
                     <div className="-mr-3 flex shrink-0 flex-wrap items-center">
                       {role ? (
-                        <Button
+                        <button
                           ref={(el) => {
                             if (el) roleRefs.current.set(row.userId, el);
                             else roleRefs.current.delete(row.userId);
                           }}
-                          variant="quiet"
+                          type="button"
+                          className={ROW_ACTION}
                           disabled={busyId !== null}
                           onClick={() => openConfirm(row, "role")}
                         >
-                          {role.labelBefore}
-                          {role.labelHidden ? <span className="sr-only">{role.labelHidden}</span> : null}
-                          {role.labelAfter}
-                        </Button>
+                          <span>
+                            {role.labelBefore}
+                            {role.labelHidden ? <span className="sr-only">{role.labelHidden}</span> : null}
+                            {role.labelAfter}
+                          </span>
+                        </button>
                       ) : null}
                       {row.removable ? (
-                        <Button
+                        <button
                           ref={(el) => {
                             if (el) removeRefs.current.set(row.userId, el);
                             else removeRefs.current.delete(row.userId);
                           }}
-                          variant="quiet"
+                          type="button"
+                          className={ROW_ACTION}
                           disabled={busyId !== null}
                           onClick={() => openConfirm(row, "remove")}
                         >
-                          Remove<span className="sr-only"> {whoOf(row)}</span>
-                        </Button>
+                          <span>
+                            Remove<span className="sr-only"> {whoOf(row)}</span>
+                          </span>
+                        </button>
                       ) : null}
                     </div>
                   ) : null}

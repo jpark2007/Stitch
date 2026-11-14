@@ -185,7 +185,18 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
 
   const changeRole = useCallback(
     async (userId: string, role: Member["role"]) => {
-      const family = await api.setMemberRole(fid, userId, { role });
+      let family: Family;
+      try {
+        family = await api.setMemberRole(fid, userId, { role });
+      } catch (err) {
+        // The page was out of date (someone changed roles or left elsewhere):
+        // show the family as it is now, beside the row's message. A 403 means
+        // the viewer is no longer an admin, so the session needs asking too.
+        if (isApiError(err) && (err.status === 403 || err.status === 404 || err.status === 409)) {
+          await Promise.allSettled([reloadFamily(), err.status === 403 ? refresh() : undefined]);
+        }
+        throw err;
+      }
       const now = new Date();
       setLoad((prev) => (prev.kind === "ready" ? { ...prev, family, now } : prev));
       if (userId === me.user.id && role === "member") {
@@ -196,7 +207,7 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
         await refresh().catch(() => undefined);
       }
     },
-    [api, fid, me.user.id, refresh],
+    [api, fid, me.user.id, refresh, reloadFamily],
   );
 
   if (load.kind === "not-found") return <FamilyNotFound />;

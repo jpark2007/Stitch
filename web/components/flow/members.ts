@@ -101,8 +101,8 @@ export function roleChangeCopy(row: Pick<MemberRow, "name" | "personId" | "isYou
 
 /**
  * The message for a failed role change, in plain words. A 409 is the API's
- * LAST_ADMIN ("A family needs at least one admin"); anything else keeps the
- * error's own message.
+ * LAST_ADMIN ("A family needs at least one admin") and a 404 a member who has
+ * left; anything else keeps the error's own message.
  */
 export function roleChangeError(err: unknown, row: Pick<MemberRow, "name" | "personId" | "isYou">): string {
   const status = typeof err === "object" && err !== null ? (err as { status?: unknown }).status : undefined;
@@ -110,6 +110,9 @@ export function roleChangeError(err: unknown, row: Pick<MemberRow, "name" | "per
     return row.isYou
       ? "You’re the only admin, so you can’t step down yet. Make someone else an admin first."
       : `${whoIn(row, "This family member")} is the only admin left, and a family always needs one. Make someone else an admin first.`;
+  }
+  if (status === 404 && !row.isYou) {
+    return `${whoIn(row, "This family member")} isn’t in the family any more.`;
   }
   if (err instanceof Error && err.message.trim()) return err.message;
   return "Something went wrong. Please try again.";

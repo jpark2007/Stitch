@@ -366,6 +366,8 @@ test("roleChangeError: a 409 is the last-admin rule in plain words; others keep 
   const conflict = Object.assign(new Error("A family needs at least one admin"), { status: 409 });
   assert.match(roleChangeError(conflict, { name: "Rosa", personId: "p-rosa", isYou: true }), /only admin/);
   assert.match(roleChangeError(conflict, { name: "Luis", personId: "p-luis", isYou: false }), /^Luis is the only admin/);
+  const gone = Object.assign(new Error("Member not found"), { status: 404 });
+  assert.equal(roleChangeError(gone, { name: "Sam", personId: "p-sam", isYou: false }), "Sam isn’t in the family any more.");
   const other = Object.assign(new Error("Only a family admin can do that."), { status: 403 });
   assert.equal(roleChangeError(other, { name: "Ana", personId: "p-ana", isYou: false }), "Only a family admin can do that.");
   assert.equal(roleChangeError("boom", { name: "Ana", personId: "p-ana", isYou: false }), "Something went wrong. Please try again.");
