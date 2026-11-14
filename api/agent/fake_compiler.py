@@ -31,13 +31,14 @@ exist. It has two halves:
    (straight-line walks, fixed camera numbers, no IK keys). Actions are placed at their
    cue-retimed times. Validity and determinism matter here, not exact motion.
 
-Known gaps (the parity corpus in tests/agent/test_agent_real_compiler.py excludes these
-explicitly):
+Known gaps (the parity corpus in tests/agent/test_agent_real_compiler.py checks the fake
+against the real compiler and names the one it skips):
 
 - **Effects** (``confetti``, ``steam``, ``rain``, ``smoke``, ``time_of_day``): the fake
-  accepts them and emits `Timeline.effects`, as shared/CONTRACTS.md specifies. The merged real
-  compiler (#60 + #66 + #70) has `screenplay/effects.py` but no ``HANDLERS`` for it, so it
-  rejects every effect with ``unsupported_verb``. That is a compiler-side gap.
+  accepts them and emits `Timeline.effects`, as shared/CONTRACTS.md specifies. The real compiler
+  on main has `screenplay/effects.py` (``effect_for``), but ``compile()`` still emits
+  ``effects=[]`` and has no handler for an effect verb, so it rejects every effect with
+  ``unsupported_verb``. That is a compiler-side gap; the parity case skips only while it lasts.
 - **Positions are logical, not keyframed**: reach is measured from where a puppet's last move
   ended, so an action that only works or fails because of where a puppet is mid-walk (opening a
   prop someone carries while they are still walking, at the walk's own start time) or where a
@@ -53,15 +54,10 @@ explicitly):
   prop that is not on stage), not at the cue's own time.
 - Gesture facings (``wave``/``point_at``/``lean_toward`` turning toward a target) are
   approximated by the target's x.
-- **A prop listed in `props` but missing from the scene inputs, that nothing uses**, passes here;
-  the real compiler reports ``unknown_prop``. In the studio `scene_for` reports a missing prop
-  before any compiler runs, so this only shows when a compiler is called directly (some tool
-  tests use the fake as an accept-all with a smaller scene).
 - **Speed from notes** (`character.speed_scale`) is not applied: the real verb handlers do not
   apply it yet either.
-- **Wording**: messages are the real ones (same codes, same ``shot s1, t=5: ...`` heads), except
-  ``not_holding`` for a prop lying on the ground, which reads "nobody is holding it" where the
-  real compiler says "it is on the ground" (`LEGACY_REASONS`).
+- **Wording**: messages are the real ones (same codes, same ``shot s1, t=5: ...`` heads and
+  the same reasons, which come from `screenplay.state.World` and `screenplay.validate`).
 """
 
 from __future__ import annotations
@@ -128,10 +124,6 @@ SEAT_WALK_EPS, HUG_GAP, HUG_SLACK = 0.05, 0.18, 0.02  # verbs_body
 WALK_UP_THRESHOLD = 0.05  # verbs_vehicles: walk to the door first when further than this in x
 DRIVER_SOCKET = "driver"
 TARGET_MOVES = {move for move, spec in CAMERA_MOVES.items() if "target" in spec["required"]}
-
-# The one wording the fake keeps from before it used the real world model: the real compiler
-# says "it is on the ground" here, and tests/agent/test_agent_compile_tool.py pins this text.
-LEGACY_REASONS: dict[tuple[str, str], str] = {("not_holding", "it is on the ground"): "nobody is holding it"}
 
 # An -ing word for every verb, for "dad is still walking until t=3.2" (the real compiler's map).
 ACTIVITY: dict[str, str] = {
@@ -234,7 +226,7 @@ def check(screenplay: Screenplay, scene: SceneInputs) -> CheckResult:
     `World` and every action that cannot happen is reported, sorted by (shot, action) index.
     """
     sp = screenplay
-    static = [e for e in validate(sp, scene.sets, scene.props, scene.people) if not _unused_missing_prop(e, sp, scene)]
+    static = validate(sp, scene.sets, scene.props, scene.people)
     if static:
         return CheckResult(errors=static)
     if not sp.shots:
@@ -245,7 +237,7 @@ def check(screenplay: Screenplay, scene: SceneInputs) -> CheckResult:
         return CheckResult(errors=[_from_narration(e)])
 
     world = World([scene.people[c] for c in dict.fromkeys(sp.cast)],
-                  [scene.props[p] for p in dict.fromkeys(sp.props) if p in scene.props])
+                  [scene.props[p] for p in dict.fromkeys(sp.props)])
     found: list[tuple[tuple[int, int, int], CompileError]] = []
 
     def add(err: CompileError, si: int, ai: int = -1) -> None:
@@ -296,34 +288,6 @@ def check(screenplay: Screenplay, scene: SceneInputs) -> CheckResult:
     return out
 
 
-def _props_in_use(sp: Screenplay) -> set[str]:
-    """Every prop id the screenplay does something with (beyond listing it in `props`)."""
-    used: set[str] = set()
-    for shot in sp.shots:
-        for s in shot.start.values():
-            used.update(x.split(".")[0] for x in (s.holding, s.in_) if x)
-        for what, ps in shot.prop_start.items():
-            used.add(what)
-            if ps.on:
-                used.add(ps.on.split(".")[0])
-        for a in shot.actions:
-            used.update(x for x in (a.what, a.on, a.target, a.at) if x)
-        used.update(c.target for c in shot.camera if c.target)
-    for it in sp.interactions or []:
-        if it.drives.prop:
-            used.add(it.drives.prop)
-        used.update(t.partition(":")[2] for t in it.drives.targets or [] if t.startswith("prop:"))
-    return used
-
-
-def _unused_missing_prop(err: CompileError, sp: Screenplay, scene: SceneInputs) -> bool:
-    """A prop listed in `props` that the scene inputs lack and nothing uses (see the module
-    docstring): the real compiler reports it; the fake lets it pass."""
-    m = re.fullmatch(r'screenplay: prop "([^"]+)" is not a known prop; .*', err.message)
-    return (err.code == "unknown_prop" and m is not None and m.group(1) not in scene.props
-            and m.group(1) not in _props_in_use(sp))
-
-
 class _ShotSim:
     """One shot's actions on the World, in shot time (the real handlers' checks and durations)."""
 
@@ -350,7 +314,7 @@ class _ShotSim:
             if a.who is not None:
                 w.occupy(a.who, round(end, 6), ACTIVITY[a.do], at=w.now)
         except StateError as e:
-            return _error(e.code, LEGACY_REASONS.get((e.code, e.reason), e.reason), self.shot.id, a)
+            return _error(e.code, e.reason, self.shot.id, a)
         except ik.OutOfReach as e:
             return _out_of_reach(e, self.shot.id, a)
         except ValueError as e:
