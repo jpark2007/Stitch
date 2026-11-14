@@ -1,33 +1,52 @@
 // Buttons for the flow pages. One primary action per form; everything else is
-// secondary or quiet. Colours come from the global look's tokens (PR #27) with
-// literal fallbacks so the kit reads right before and after it lands.
+// secondary or quiet. Colours, radii and easing are the global look's theme
+// utilities (web/app/globals.css). Server-safe (no "use client"), so it also
+// holds the kit's one focus ring, which Field and the pickers import.
 import Link from "next/link";
 import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
 
 type Variant = "primary" | "secondary" | "quiet" | "danger";
 
-// Shared shape: at least 44px tall, nearly square corners, accent focus ring
-// (an outline, so it survives forced-colours mode).
-const BASE =
-  "relative inline-flex min-h-11 items-center justify-center rounded-[var(--radius-card,6px)] px-5 py-2.5 " +
-  "font-sans text-base font-semibold leading-tight no-underline select-none " +
-  "transition-[background-color,border-color,color,box-shadow] duration-150 motion-reduce:transition-none " +
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent,#b9573d)]";
+/**
+ * The kit's one keyboard focus ring: the same dashed accent "thread" outline
+ * as the global :focus-visible in globals.css, spelled out so it also wins
+ * over component styles. An outline, so it survives forced-colours mode.
+ */
+export const FOCUS_RING =
+  "focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-dashed focus-visible:outline-accent";
 
+/**
+ * The same ring on a wrapper (a chip <label> or drop area) whose real control
+ * is visually hidden inside it.
+ */
+export const FOCUS_RING_WITHIN =
+  "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-3 has-[:focus-visible]:outline-dashed has-[:focus-visible]:outline-accent";
+
+// Shared shape: at least 44px tall, nearly square corners, the kit focus ring.
+// Horizontal padding is per variant (below), so a quiet button stays compact.
+const BASE =
+  "relative inline-flex min-h-11 items-center justify-center rounded-card py-2.5 " +
+  "font-sans text-base font-semibold leading-tight no-underline select-none " +
+  "transition-[background-color,border-color,color,box-shadow] duration-150 ease-paper motion-reduce:transition-none " +
+  FOCUS_RING;
+
+// The error/danger red has no token in globals.css yet (see FormError).
 // Hover only when enabled (`not-disabled:` also matches links).
 const VARIANTS: Record<Variant, string> = {
   // accent-deep keeps paper-light text above 4.5:1; plain accent is just under.
   primary:
-    "border border-transparent bg-[var(--accent-deep,#8f3f2a)] text-[var(--paper-light,#fbf8f1)] " +
+    "border border-transparent bg-accent-deep px-5 text-paper-light " +
     "shadow-[0_1px_0_rgb(255_255_255/0.18)_inset,0_1px_2px_rgb(74_47_29/0.25)] " +
-    "not-disabled:hover:bg-[color-mix(in_oklab,var(--accent-deep,#8f3f2a)_86%,var(--ink,#2f2620))]",
+    // var(): a mix of two tokens has no theme utility.
+    "not-disabled:hover:bg-[color-mix(in_oklab,var(--accent-deep)_86%,var(--ink))]",
   secondary:
-    "border border-[var(--ink-faint,#8f8173)] bg-[var(--paper-light,#fbf8f1)] text-[var(--ink,#2f2620)] " +
-    "not-disabled:hover:border-[var(--ink-soft,#5c4e43)] not-disabled:hover:bg-[var(--paper,#f5eee1)]",
+    "border border-ink-faint bg-paper-light px-5 text-ink " +
+    "not-disabled:hover:border-ink-soft not-disabled:hover:bg-paper",
+  // px-3: callers pull it flush with a -ml-3 / -mr-3 so the text lines up.
   quiet:
-    "border border-transparent bg-transparent px-3 text-[var(--accent-deep,#8f3f2a)] underline-offset-[0.2em] " +
+    "border border-transparent bg-transparent px-3 text-accent-deep underline-offset-[0.2em] " +
     "not-disabled:hover:underline not-disabled:hover:decoration-1",
-  danger: "border border-[#9c3b2a] bg-transparent text-[#9c3b2a] not-disabled:hover:bg-[#f7e4dc]",
+  danger: "border border-[#9c3b2a] bg-transparent px-5 text-[#9c3b2a] not-disabled:hover:bg-[#f7e4dc]",
 };
 
 // Busy is "working", not "unavailable": it stays at full strength.
