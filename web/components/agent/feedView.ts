@@ -111,6 +111,15 @@ export function openLabel(subject: FeedSubject = "memory"): string {
   return subject === "telling" ? "Open the moment" : "Open your page";
 }
 
+/**
+ * The quiet link beside the way in, to the scene playing on the stage. The
+ * same words for a new memory and a second telling: the stage has a tab per
+ * teller, so the new version is one click away there.
+ */
+export function watchLabel(): string {
+  return "Watch the scene";
+}
+
 /** The log line for a pause, while it is still open in the log (the card is not showing). */
 export function pauseLine(entry: FeedEntry): string | null {
   switch (entry.kind) {

@@ -26,6 +26,7 @@ import {
   stepDetail,
   toggleLabel,
   visibleEntries,
+  watchLabel,
   type FeedSubject,
 } from "./feedView";
 import type { FeedEntry, FeedStep, RunPhase, RunState } from "./runState";
@@ -78,6 +79,11 @@ export default function AgentFeed(props: {
   state: RunState;
   mediaUrl: (mediaId: string) => string;
   sceneHref?: string;
+  /**
+   * The finished scene playing on the stage: one quiet link beside the way in,
+   * shown only once the run is done (and only with sceneHref).
+   */
+  watchHref?: string;
   /** Reconnects; offered only when the connection gave up (see errorRecovery). */
   onRetry?: () => void;
   /**
@@ -89,7 +95,7 @@ export default function AgentFeed(props: {
   subject?: FeedSubject;
   children?: ReactNode;
 }) {
-  const { state, mediaUrl, sceneHref, onRetry, startOver, subject = "memory", children } = props;
+  const { state, mediaUrl, sceneHref, watchHref, onRetry, startOver, subject = "memory", children } = props;
   const headingId = useId();
   const feedId = useId();
   const [showAll, setShowAll] = useState(false);
@@ -187,7 +193,18 @@ export default function AgentFeed(props: {
           // One heading, one sentence, the way in; the steps fold away below.
           <>
             <p className="mt-3 text-[1.0625rem] leading-relaxed text-pretty text-ink-soft">{finishedNote(state, subject)}</p>
-            {sceneReady && openButton && <div className="mt-5">{openButton}</div>}
+            {sceneReady && openButton && (
+              // One primary way in; watching the scene is the quiet second.
+              <div className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                {openButton}
+                {watchHref && (
+                  <ButtonLink variant="quiet" href={watchHref} className="gap-1.5">
+                    <PlayIcon className="size-3 shrink-0" />
+                    {watchLabel()}
+                  </ButtonLink>
+                )}
+              </div>
+            )}
             {log}
           </>
         ) : (
@@ -268,6 +285,15 @@ function StitchSpinner({ still = false }: { still?: boolean }) {
       aria-hidden="true"
       className={`inline-block size-3.5 shrink-0 rounded-full border-[1.5px] border-dashed border-accent bg-paper-light ${still ? "" : "motion-safe:animate-[spin_3.5s_linear_infinite]"}`}
     />
+  );
+}
+
+/** A small rounded play mark for the watch link. */
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 12 12" fill="currentColor" className={className}>
+      <path d="M3 1.9c0-.6.66-.97 1.17-.65l6.1 3.9c.47.3.47 1 0 1.3l-6.1 3.9A.77.77 0 0 1 3 9.7z" />
+    </svg>
   );
 }
 

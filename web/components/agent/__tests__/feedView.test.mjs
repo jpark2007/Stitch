@@ -22,6 +22,7 @@ import {
   stepDetail,
   toggleLabel,
   visibleEntries,
+  watchLabel,
 } from "../feedView.ts";
 import { answerSummary } from "../runConnection.ts";
 import { initialRunState, runReducer } from "../runState.ts";
@@ -151,6 +152,13 @@ test("workingHeading and openLabel follow what the run adds", () => {
   assert.equal(openLabel("telling"), "Open the moment");
   assert.equal(readyLine(), "Your page is ready");
   assert.equal(readyLine("telling"), "Your version is on the page");
+});
+
+test("watchLabel is one quiet line, the same for a memory and a telling", () => {
+  assert.equal(watchLabel(), "Watch the scene");
+  // Never the primary words, so the finished card has one clear way in.
+  assert.notEqual(watchLabel(), openLabel());
+  assert.notEqual(watchLabel(), openLabel("telling"));
 });
 
 test("answeredLine phrases each kind", () => {

@@ -42,6 +42,18 @@ export function sceneHrefFor(
   return s.memoryId && sceneHref ? sceneHref(s.memoryId) : undefined;
 }
 
+/**
+ * The quiet "watch the scene" link: only once the run is done and has named
+ * its memory, and only with a builder (none in mock mode, where the stage
+ * cannot load the moment).
+ */
+export function watchHrefFor(
+  s: Pick<RunState, "memoryId" | "phase">,
+  watchHref?: (memoryId: string) => string,
+): string | undefined {
+  return s.phase === "done" && s.memoryId && watchHref ? watchHref(s.memoryId) : undefined;
+}
+
 /** "Add another memory" shows only once the run is done, and only with somewhere to go. */
 export function addAnotherHrefFor(
   s: Pick<RunState, "phase">,

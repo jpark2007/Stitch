@@ -6,7 +6,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { initialRunState, runReducer } from "../../agent/runState.ts";
-import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor, tellAgainFor } from "../memoryRunState.ts";
+import {
+  addAnotherHrefFor,
+  pendingCard,
+  pendingKey,
+  sceneHrefFor,
+  tellAgainFor,
+  watchHrefFor,
+} from "../memoryRunState.ts";
 
 const ev = (event, data) => ({ type: "event", message: { event, data } });
 const answered = (kind, summary = "ok") => ({ type: "answered", kind, summary });
@@ -133,6 +140,33 @@ test("sceneHrefFor: only once the run has named its memory, and only with a buil
   assert.equal(sceneHrefFor(ready, href), "/memories/m_42");
   assert.equal(sceneHrefFor(ready, undefined), undefined);
   assert.equal(sceneHrefFor(run(ev("done", { memoryId: "m_7" })), href), "/memories/m_7");
+});
+
+test("watchHrefFor: only once done with a memory id, and only with a builder", () => {
+  const href = (id) => `/render/${id}?family=f1`;
+  for (const phase of PHASES) {
+    const expected = phase === "done" ? "/render/m_1?family=f1" : undefined;
+    assert.equal(watchHrefFor({ phase, memoryId: "m_1" }, href), expected, phase);
+    // Never without a memory id, whatever the phase.
+    assert.equal(watchHrefFor({ phase, memoryId: null }, href), undefined, phase);
+    assert.equal(watchHrefFor({ phase, memoryId: "" }, href), undefined, phase);
+    // Never without a builder (mock mode passes none).
+    assert.equal(watchHrefFor({ phase, memoryId: "m_1" }, undefined), undefined, phase);
+  }
+});
+
+test("watchHrefFor: follows the reducer through a run", () => {
+  const href = (id) => `/render/${id}`;
+  assert.equal(watchHrefFor(initialRunState, href), undefined);
+  assert.equal(watchHrefFor(run(QUESTION), href), undefined);
+  // The scene is ready but the run is still adding touches: not yet.
+  const ready = run(ev("scene_ready", { memoryId: "m_42", version: 1 }));
+  assert.equal(ready.memoryId, "m_42");
+  assert.equal(watchHrefFor(ready, href), undefined);
+  assert.equal(watchHrefFor(runReducer(ready, ev("done", { memoryId: "m_42" })), href), "/render/m_42");
+  assert.equal(watchHrefFor(run(ev("done", { memoryId: "m_7" })), href), "/render/m_7");
+  // A run that finished without naming a memory has nothing to watch.
+  assert.equal(watchHrefFor(run(ev("done", {})), href), undefined);
 });
 
 test("addAnotherHrefFor: only when done and given somewhere to go", () => {
