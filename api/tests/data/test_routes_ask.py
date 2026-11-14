@@ -122,7 +122,7 @@ def test_ask_quotes_the_matching_telling_with_the_authors_name(env):
     assert "Grandma Rose" in body["answer"]
     assert first["text"] in body["answer"]
     assert body["answer"] == (
-        f"The page is \"Hymn books at St. Mary's\" (1988). Grandma Rose remembers: '{first['text']}'"
+        f"The page is “Hymn books at St. Mary's” (1988). Grandma Rose remembers: ‘{first['text']}’"
     )
 
 
@@ -130,7 +130,7 @@ def test_ask_finds_the_other_memory(env):
     body = env["tc"].post(f"/families/{FAM_A}/ask", json={"query": "  the green sedan  "}).json()
     assert [q["memoryId"] for q in body["quotes"]] == ["m_sedan"]
     assert body["quotes"][0]["authorId"] == env["dad"].id
-    assert body["answer"].startswith('The page is "The green sedan" (1972). Dad remembers: ')
+    assert body["answer"].startswith("The page is “The green sedan” (1972). Dad remembers: ‘")
 
 
 def test_ask_with_no_match_returns_no_story(env):
