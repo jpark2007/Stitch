@@ -12,8 +12,8 @@ each viewport (harness.VIEWPORTS), it walks every state of /add:
 - loading: GET /me, then GET /families/{fid}/tree held (real) or slowed (mock); the
   loading sheet has the form's width, so nothing jumps sideways when the form arrives;
 - the empty form: every input labelled, tab order follows the visual order;
-- validation: an empty story, a year in the future and before 1850, a file that is not
-  a photo, seven photos (six kept, one over-cap line);
+- validation: an empty story, a year in the future and before the memory-year floor
+  (MEMORY_YEAR_MIN in memoryForm.ts, 1800 today), a file that is not a photo, seven photos (six kept, one over-cap line);
 - server errors on submit: 500, 503, 413 and a dropped connection: a friendly message
   (413 on the photos), focus on it, nothing typed lost, still on the form;
 - success: a double click sends one memory and the page moves to /add?run=; the draft
@@ -83,6 +83,7 @@ from urllib.parse import quote, urlsplit  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness import (  # noqa: E402
+    REPO_ROOT,
     VIEWPORTS,
     WEB_DIR,
     PageWatch,
@@ -129,11 +130,29 @@ MOCK_MOMENT = "sample_hymn_books"
 REAL_PLAIN_ASKED = "ana"
 MOCK_PLAIN_ASKED = "david"
 
+_MEMORY_YEAR_MIN_RE = re.compile(r"^export const MEMORY_YEAR_MIN = (\d+);", re.MULTILINE)
+
+
+def memory_year_min(repo_root: Path) -> int:
+    """The earliest year /add accepts: MEMORY_YEAR_MIN in web/components/flow/memoryForm.ts.
+
+    Read from the source so the sweep follows the form (which mirrors MIN_YEAR in
+    api/routes/memories.py) instead of a copy that can drift.
+    """
+    source = repo_root / "web" / "components" / "flow" / "memoryForm.ts"
+    match = _MEMORY_YEAR_MIN_RE.search(source.read_text(encoding="utf-8"))
+    if match is None:
+        raise RuntimeError(f"{source} has no 'export const MEMORY_YEAR_MIN = <year>;' line for the sweep to read.")
+    return int(match.group(1))
+
+
+MEMORY_YEAR_MIN = memory_year_min(REPO_ROOT)
+
 # Copy the page shows (memoryForm.ts, AddMemoryForm.tsx, validation.ts, photos.ts).
 STORY_EMPTY = "Tell the story in your own words."
 YEAR_EMPTY = "Enter a year."
 YEAR_FUTURE = "That year hasn't happened yet."
-YEAR_EARLY = "Pick a year from 1850 on."
+YEAR_EARLY = f"Pick a year from {MEMORY_YEAR_MIN} on."
 PHOTOS_TOO_BIG = "Those photos are too big to send together. Try fewer or smaller ones."
 NOT_A_PHOTO = "“notes.txt” isn't a photo we can use. Try a JPEG, PNG, WebP, HEIC or GIF."
 OVER_CAP = "“photo-7.png” wasn't added: a memory can hold up to 6 photos."
@@ -814,7 +833,7 @@ class AddSweep:
             self.expect(self.story(page)).to_have_value(STORY)
             return f"Enter submitted; 3000 and 1700 flagged; focus on {focused}; story kept"
 
-        self.check("validation: a bad year (the future, before 1850)", p, bad_years)
+        self.check(f"validation: a bad year (the future, before {MEMORY_YEAR_MIN})", p, bad_years)
 
         def wrong_type() -> str:
             self.photos(page).set_input_files(
