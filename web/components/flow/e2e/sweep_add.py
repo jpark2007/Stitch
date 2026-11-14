@@ -26,7 +26,24 @@ each viewport (harness.VIEWPORTS), it walks every state of /add:
 - /add?memoryId= opens the second telling straight away (with the person's open question
   about it), and a moment the person told before says so;
 - the add-relative round trip: the link goes to /families/{fid}/people/new?next=..., and
-  back on /add the new person is ticked and the draft is as it was.
+  back on /add the new person is ticked and the draft is as it was;
+- a picked note says so: a question not about a moment reads 'Answering this' once
+  pressed (its accessible name ends ', press again to let it go', the typed
+  '+ Answering a question?' toggle stays hidden), and pressing it again restores
+  'Answer this'; a moment's question reads 'Adding your version' once picked;
+- a run waiting on the person: a new memory pauses on the follow-up, the person leaves
+  through the '← Family tree' back link, opens /add again and finds one calm note
+  ('... is waiting for your answer.') above a usable form; its 'Go back to it' link
+  brings the follow-up card back. Then the run is finished (follow-up answered, props
+  kept) and /add shows no note any more.
+
+After both viewports (real mode: after the end-to-end check, since it adds David to a
+second family on the shared server), at each viewport:
+
+- a moment in another family: David in two families, the new one remembered, opens
+  /add?memoryId=<a demo moment> with no ?family=; the page finds the family that holds
+  it, opens the second telling there with the moment's title, names that family in the
+  family line, remembers it, and the switch link to the other family is its plain form.
 
 Real mode only, end to end: Ana answers her question about Sam's wedding from the prompt,
 the run finishes ("stitched in"), and over the API the memory has Ana's telling and her
@@ -107,6 +124,10 @@ MOCK_DAVID = "david@example.com"
 MOCK_ANA = "ana@example.com"
 # The sample moment both David and Ana are in; David told it, Ana is asked about it.
 MOCK_MOMENT = "sample_hymn_books"
+# Who has an open question that is not about a moment: Ana ("mom", the day Lily was born) in
+# the real seed, David ("dad", the day Maya was born) in the mock seed.
+REAL_PLAIN_ASKED = "ana"
+MOCK_PLAIN_ASKED = "david"
 
 # Copy the page shows (memoryForm.ts, AddMemoryForm.tsx, validation.ts, photos.ts).
 STORY_EMPTY = "Tell the story in your own words."
@@ -118,6 +139,11 @@ NOT_A_PHOTO = "“notes.txt” isn't a photo we can use. Try a JPEG, PNG, WebP, 
 OVER_CAP = "“photo-7.png” wasn't added: a memory can hold up to 6 photos."
 PHOTOS_LEFT_ONE = "Your photo didn’t come along"
 ALREADY_TOLD = "You’ve told this one before"
+# The calm note on /add about a run left waiting (addPage.ts openRunNotice).
+RUN_WAITING = "is waiting for your answer."
+RUN_STILL_MAKING = "is still being made."
+PICKED_SUFFIX = ", press again to let it go"
+WAIT_STORY = "The porch swing creaked every spring and we all took turns on it until the chain gave out."
 STORY = "Every Sunday we squeezed into the green car and Dad sang the whole way to church."
 YEAR = "1994"
 
@@ -638,6 +664,8 @@ class AddSweep:
             self.prompt_checks()
             self.memory_id_checks()
             self.add_relative_checks()
+            self.picked_label_checks()
+            self.waiting_run_checks()
         finally:
             self.close_all()
 
@@ -1095,6 +1123,7 @@ class AddSweep:
             self.story(page).fill("Before I picked.")
             note.click()
             self.expect(note).to_have_attribute("aria-pressed", "true")
+            self.expect(note).to_contain_text("Adding your version")
             self.expect(self.heading(page, "Add your telling")).to_be_visible()
             banner = page.get_by_text(re.compile(r"adding your version of")).filter(visible=True)
             self.expect(banner).to_contain_text(state["title"])
@@ -1215,6 +1244,192 @@ class AddSweep:
             return f"-> {expected} -> back at {self.path_of(page)}; '{new_name}' and '{first}' ticked; story and year kept"
 
         self.check("add-relative round trip: the new person ticked, the draft kept", p, run)
+
+    # ----- 11. a picked note says so
+
+    def picked_label_checks(self) -> None:
+        who = MOCK_PLAIN_ASKED if self.mock else REAL_PLAIN_ASKED
+        p = self.sign_in("picked-label", who=who, target="/add?family={fid}")
+        page = p.page
+
+        def run() -> str:
+            questions = self.api_call(p, "GET", f"/families/{quote(p.fid, safe='')}/questions")["questions"]
+            q = next((q for q in questions if not q.get("memoryId")), None)
+            if not q:
+                raise Seam("api" if not self.mock else "pages",
+                           f"{who} has no open question that is not about a moment: {questions}")
+            region = self.prompts(page)
+            note = region.get_by_role("button", name=re.compile(re.escape(q["text"])))
+            if not note.count():
+                more = region.get_by_role("button", name=re.compile(r"^More questions"))
+                if more.count():
+                    more.click()
+            self.expect(note).to_have_attribute("aria-pressed", "false")
+            self.expect(note).to_contain_text("Answer this")
+            self.expect(note).not_to_contain_text("Answering this")
+            self.expect(note).to_have_accessible_name(re.compile(r"Answer this\s*$"))
+            note.click()
+            self.expect(note).to_have_attribute("aria-pressed", "true")
+            self.expect(note).to_contain_text("Answering this")
+            # Chromium may put a space before the visually hidden part; speech is the same.
+            self.expect(note).to_have_accessible_name(re.compile(r"Answering this\s*,\s*press again to let it go\s*$"))
+            hidden = note.get_by_text(PICKED_SUFFIX, exact=True)
+            box = hidden.bounding_box()
+            if box is None or box["width"] > 1 or box["height"] > 1:
+                raise AssertionError(f"'{PICKED_SUFFIX}' is meant for screen readers only, but takes {box}")
+            toggle = page.get_by_role("button", name=re.compile(r"Answering a question\?"))
+            self.expect(toggle).to_have_count(0)
+            self.snap(p, "picked-label-answering")
+            note.click()
+            self.expect(note).to_have_attribute("aria-pressed", "false")
+            self.expect(note).to_contain_text("Answer this")
+            self.expect(note).not_to_contain_text("Answering this")
+            self.expect(note).to_have_accessible_name(re.compile(r"Answer this\s*$"))
+            return (f"'{q['text'][:40]}…': 'Answer this' -> 'Answering this' (+ hidden '{PICKED_SUFFIX}', "
+                    "no typed-question toggle) -> 'Answer this' again")
+
+        self.check("prompts: a picked note reads 'Answering this', and lets go back to 'Answer this'", p, run)
+
+    # ----- 12. a run waiting on the person
+
+    def waiting_run_checks(self) -> None:
+        p = self.sign_in("waiting-run", target="/add?family={fid}")
+        page = p.page
+        fid = quote(p.fid, safe="")
+        state: dict[str, str] = {}
+
+        def notice() -> Any:
+            return page.locator("main [role=status]").filter(has_text=re.compile(r"^Your memory")).filter(visible=True)
+
+        def leave_and_come_back() -> str:
+            story = f"{WAIT_STORY} ({self.run_tag}{self.view[0]})"
+            self.story(page).fill(story)
+            self.year(page).fill("1988")
+            self.save(page).click()
+            self.expect(page).to_have_url(re.compile(r"[?&]run="), timeout=EXPECT_MS)
+            run_id = query_of(page.url).get("run", "")
+            state["run"] = run_id
+            answer = page.get_by_role("textbox", name="Your answer")
+            self.expect(answer).to_be_visible(timeout=RUN_TIMEOUT_MS)
+            back = page.get_by_role("link", name="Family tree", exact=True).filter(visible=True).first
+            self.expect(back).to_be_visible()
+            self.expect(back).to_have_attribute("href", "/")
+            back.click()
+            self.expect(page).to_have_url(re.compile(rf"^{re.escape(self.web)}/?(\?.*)?$"))
+            page.goto(f"{self.web}/add?family={fid}")
+            self.wait_form(page)
+            note = notice()
+            self.expect(note).to_have_count(1)
+            self.expect(note).to_contain_text(RUN_WAITING)
+            self.expect(note).to_contain_text("‘The porch swing creaked every spring…’")
+            link = note.get_by_role("link", name="Go back to it")
+            self.expect(link).to_have_attribute("href", f"/add?family={fid}&run={quote(run_id, safe='')}")
+            # The note does not block the form.
+            self.expect(self.save(page)).to_be_enabled()
+            self.expect(self.story(page)).to_be_editable()
+            self.snap(p, "waiting-notice")
+            text = note.inner_text().strip()
+            link.click()
+            self.expect(page).to_have_url(re.compile(rf"[?&]run={re.escape(quote(run_id, safe=''))}(&|$)"))
+            self.expect(self.heading(page, "Your memory")).to_be_visible()
+            self.expect(page.get_by_role("textbox", name="Your answer")).to_be_visible(timeout=RUN_TIMEOUT_MS)
+            self.snap(p, "waiting-notice-back-to-follow-up")
+            return f"paused on the follow-up, left by '← Family tree'; /add says '{text}'; 'Go back to it' -> the follow-up"
+
+        if not self.check("open run: left waiting, /add says so and 'Go back to it' brings the follow-up back",
+                          p, leave_and_come_back, shoot=False):
+            return
+
+        def finish_then_gone() -> str:
+            follow_up = page.get_by_role("region", name="One quick question")
+            follow_up.get_by_label("Your answer").fill("Just the two of us and the dog.")
+            follow_up.get_by_role("button", name="Send answer").click()
+            review = page.get_by_role("region", name="The things in your story")
+            done = page.get_by_role("heading", name="Your memory is stitched in")
+            self.expect(review.or_(done).first).to_be_visible(timeout=RUN_TIMEOUT_MS)
+            reviewed = 0
+            if review.count() and review.is_visible():
+                # While the prop review is up the note would say it waits too: check it on /add.
+                groups = review.get_by_role("group", name=re.compile(r"^What to do with"))
+                for i in range(groups.count()):
+                    group = groups.nth(i)
+                    box = group.get_by_label("Keep", exact=True).filter(visible=True)
+                    if not box.is_checked():
+                        group.get_by_text("Keep", exact=True).filter(visible=True).click()
+                        self.expect(box).to_be_checked()
+                    reviewed += 1
+                review.get_by_role("button", name="Looks good, keep going").click()
+            self.expect(done).to_be_visible(timeout=RUN_TIMEOUT_MS)
+            page.goto(f"{self.web}/add?family={fid}")
+            self.wait_form(page)
+            page.wait_for_timeout(300)
+            self.expect(notice()).to_have_count(0)
+            return f"follow-up answered, {reviewed} prop(s) kept, stitched in; /add shows no note afterwards"
+
+        self.check("open run: once it is stitched in, /add has no note", p, finish_then_gone)
+
+
+# ----------------------------------------------------------------------------- a moment in another family
+
+
+def cross_family_checks(stack: Stack, browser: Any, seams: SeamLog) -> None:
+    """David in two families, the other one remembered, opens /add?memoryId= with no ?family=.
+
+    Run after every other check of the mode: against the shared offline API it leaves David
+    in a second family, which would change the pages the other checks expect.
+    """
+    for view in VIEWPORTS:
+        sweep = AddSweep(stack, browser, seams, view)
+        try:
+            _cross_family_check(sweep)
+        finally:
+            sweep.close_all()
+
+
+def _cross_family_check(sweep: AddSweep) -> None:
+    moment_id = MOCK_MOMENT if sweep.mock else REAL_ASKED_MOMENT
+    p = sweep.sign_in("cross-family", who="david", target=None)
+    page = p.page
+
+    def run() -> str:
+        home_fid = p.fid
+        me = sweep.api_call(p, "GET", "/me")
+        families = me.get("families") or []
+        home = next((f for f in families if f.get("id") == home_fid), None)
+        if home is None:
+            raise AssertionError(f"David's family {home_fid} is not in /me: {families}")
+        other = next((f for f in families if f.get("id") != home_fid), None)
+        if other is None:
+            made = sweep.api_call(p, "POST", "/families",
+                                  {"name": f"The Elsewheres {sweep.run_tag}", "person": {"name": "David"}})
+            other = made["family"]
+        moment = sweep.api_call(p, "GET", f"/families/{quote(home_fid, safe='')}/memories/"
+                                          f"{quote(moment_id, safe='')}")["memory"]
+        # The other family is the one remembered, so it is asked first (and 404s).
+        p.ctx.add_init_script(
+            "try { if (!sessionStorage.getItem('sweep.remembered')) {"
+            f" localStorage.setItem('stitch.familyId', {json.dumps(other['id'])});"
+            " sessionStorage.setItem('sweep.remembered', '1'); } } catch (e) {}"
+        )
+        page.goto(f"{sweep.web}/add?memoryId={quote(moment_id, safe='')}")
+        sweep.wait_form(page, "Add your telling")
+        banner = page.get_by_text(re.compile(r"adding your version of")).filter(visible=True)
+        sweep.expect(banner).to_contain_text(moment["title"])
+        line = page.get_by_text("Adding to").filter(visible=True).first
+        sweep.expect(line).to_contain_text(home["name"])
+        switch = page.get_by_role("navigation", name="Add to another family").get_by_role("link", name=other["name"])
+        sweep.expect(switch).to_have_attribute("href", f"/add?family={quote(other['id'], safe='')}")
+        sweep.expect(sweep.save(page, "Save my telling")).to_be_visible()
+        remembered = page.evaluate("() => { try { return localStorage.getItem('stitch.familyId'); } catch { return null; } }")
+        if remembered != home_fid:
+            raise AssertionError(f"the family holding the moment was not remembered: stitch.familyId={remembered!r}")
+        sweep.snap(p, "cross-family-second-telling")
+        return (f"remembered '{other['name']}', moment '{moment['title']}' found in '{home['name']}': "
+                f"second telling opened there, now remembered; switch link {switch.get_attribute('href')}")
+
+    # A 404 from the family asked first is how the lookup moves on.
+    sweep.check("a moment in the other family: /add?memoryId= finds it and opens the second telling", p, run,
+                allow=lambda problem: "status of 404" in problem and "/memories/" in problem)
 
 
 # ----------------------------------------------------------------------------- real mode, end to end
@@ -1376,6 +1591,7 @@ def main(argv: list[str] | None = None) -> int:
                             AddSweep(stack, browser, seams, view).run()
                         if not mock:
                             second_telling_end_to_end(stack, browser, seams)
+                        cross_family_checks(stack, browser, seams)
                     finally:
                         browser.close()
         except StackError as exc:
