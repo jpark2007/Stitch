@@ -1,0 +1,180 @@
+/*
+ * Overlay pieces of the threads screen: moment links, titles, zoom buttons.
+ * Plain global CSS (prefixed `threads-`): the turbopack CSS rule in
+ * next.config.ts turns CSS Modules into global CSS, so modules are not used.
+ * Font variables are the next/font ones (`--font-caveat`, `--font-nunito`);
+ * the Tailwind `--font-*` theme aliases are inlined and do not exist at runtime.
+ */
+
+.threads-moment {
+  color: var(--ink);
+  text-decoration: none;
+  will-change: transform;
+}
+
+.threads-moment:focus-visible {
+  outline: none;
+}
+
+/*
+ * A stitched ring marks the knot under the pointer (or keyboard focus), so it
+ * reads as something to open. Hidden otherwise.
+ */
+.threads-ring {
+  border-radius: 999px;
+  border: 1.5px dashed var(--accent);
+  opacity: 0;
+  transform: scale(0.8);
+  transition:
+    opacity 160ms var(--ease-paper),
+    transform 220ms var(--ease-paper);
+}
+
+.threads-moment[data-hover="1"] .threads-ring,
+.threads-moment:focus-visible .threads-ring {
+  opacity: 0.9;
+  transform: scale(1);
+}
+
+.threads-moment:focus-visible .threads-ring {
+  border-width: 2px;
+}
+
+.threads-moment:focus-visible .threads-title {
+  opacity: 1 !important;
+}
+
+.threads-title {
+  font-size: 20px; /* TITLE_FONT_PX in titles.ts */
+  font-family: var(--font-caveat), "Bradley Hand", cursive;
+  font-weight: 500;
+  line-height: 1.15;
+  color: var(--ink);
+  transition: opacity 220ms var(--ease-paper);
+  /* Its own layer, so the halo below can sit under the letters. */
+  isolation: isolate;
+}
+
+/*
+ * A solid paper halo under the letters (the same text, stroked wide in the
+ * paper colour at that height, set as --halo) hides any thread passing
+ * behind a title. It is a separate
+ * layer rather than paint-order on the title itself, so it can never be
+ * drawn over the letters.
+ */
+.threads-title::before {
+  content: attr(data-title);
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  color: var(--halo, var(--paper));
+  -webkit-text-stroke: 6px var(--halo, var(--paper));
+  text-shadow: 0 0 6px var(--halo, var(--paper));
+}
+
+.threads-zoom {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 999px;
+  background: var(--paper-light);
+  color: var(--ink-soft);
+  font-family: var(--font-nunito), ui-sans-serif, system-ui, sans-serif;
+  font-size: 1.25rem;
+  line-height: 1;
+  box-shadow: var(--shadow-paper);
+  cursor: pointer;
+  transition:
+    transform 160ms var(--ease-paper),
+    box-shadow 160ms var(--ease-paper),
+    color 160ms;
+}
+
+.threads-zoom:hover {
+  color: var(--ink);
+  box-shadow: var(--shadow-lift);
+  transform: translateY(-1px);
+}
+
+.threads-zoom:active {
+  transform: translateY(0);
+  box-shadow: var(--shadow-paper);
+}
+
+.threads-zoom:disabled {
+  opacity: 0.45;
+  cursor: default;
+  box-shadow: var(--shadow-paper);
+  transform: none;
+}
+
+/* A stitched ring inside the button, like a sewn-on patch. */
+.threads-zoom::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 999px;
+  border: 1px dashed var(--rule);
+  pointer-events: none;
+}
+
+/* The gesture hint: one handwritten line under the axis. */
+.threads-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 0.9rem;
+  transform: translateX(-50%);
+  margin: 0;
+  white-space: nowrap;
+  font-size: 1.15rem;
+  color: var(--ink-faint);
+  opacity: 0.9;
+  transition: opacity 700ms var(--ease-paper);
+  animation: threads-hint-in 900ms 1.6s var(--ease-paper) backwards;
+}
+
+@keyframes threads-hint-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.threads-hint-coarse {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .threads-hint-fine {
+    display: none;
+  }
+
+  .threads-hint-coarse {
+    display: inline;
+  }
+}
+
+/* Phones: beside the zoom buttons, which sit bottom right. */
+@media (max-width: 639px) {
+  .threads-title {
+    font-size: 17px; /* TITLE_FONT_PX_COMPACT */
+  }
+
+  .threads-hint {
+    left: var(--gutter);
+    bottom: 2.05rem;
+    transform: none;
+    font-size: 1.05rem;
+  }
+
+  .threads-hint-more {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .threads-hint {
+    animation: none;
+  }
+}
