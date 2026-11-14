@@ -663,12 +663,19 @@ export class BookController {
       if (phone && this.focusGoal === 0) this.focusGoal = -1;
     }
     const singleGoal = this.phone ? 1 : Math.abs(this.focusGoal);
+    // On a phone the camera travels with a turning leaf, over the spine.
+    let focusGoal: number = this.focusGoal;
+    if (this.phone) {
+      for (const leaf of rt.leaves) {
+        if (leaf.mode === "auto" || leaf.mode === "drag") focusGoal = Math.cos(Math.PI * clamp01(leaf.p));
+      }
+    }
     const ease = dt === 0 ? 1 : 1 - Math.exp(-dt * 4.5);
-    this.focusE += (this.focusGoal - this.focusE) * ease;
+    this.focusE += (focusGoal - this.focusE) * ease;
     this.single += (singleGoal - this.single) * ease;
-    if (Math.abs(this.focusGoal - this.focusE) > 1e-3 || Math.abs(singleGoal - this.single) > 1e-3) moving = true;
+    if (Math.abs(focusGoal - this.focusE) > 1e-3 || Math.abs(singleGoal - this.single) > 1e-3) moving = true;
     else {
-      this.focusE = this.focusGoal;
+      this.focusE = focusGoal;
       this.single = singleGoal;
     }
     // Parallax holds still while a page is held, so the drag maps cleanly.
@@ -753,8 +760,10 @@ export interface CameraPose {
 /** Camera: a 3/4 view of the closed book, a reading view when open. */
 export function frameCamera(pose: CameraPose, aspect: number, fov: number, pos: Vector3, target: Vector3) {
   const { open, lift } = pose;
-  // A standing leaf needs the whole spread in view.
-  const one = pose.single * (1 - lift);
+  // A standing leaf needs more of the spread in view. A portrait frame has
+  // the height for it already, so it widens only a little there (a phone
+  // pans across the spine with the leaf rather than zooming right out).
+  const one = pose.single * (1 - lift * (aspect < 1 ? 0.3 : 1));
   const tanV = Math.tan((fov * DEG) / 2);
   const tanH = tanV * aspect;
   const portrait = aspect < 1;
