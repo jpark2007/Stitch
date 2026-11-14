@@ -44,6 +44,14 @@ export interface UseTimelinePlayerOptions {
   resolveAudio?: ControllerOptions["resolveAudio"];
   /** Rig bones every puppet frame carries; default shared/rig/puppet.json */
   bones?: readonly string[];
+  /**
+   * Who advances the clock. "raf" (default): this hook, every animation
+   * frame. "manual": the host calls controller.tick() from its own loop,
+   * e.g. a <TimelineScene> in a frameloop="demand" Canvas (the book), which
+   * ticks in useFrame and keeps drawing only while the scene plays, so a
+   * paused scene costs nothing.
+   */
+  clock?: "raf" | "manual";
 }
 
 export interface TimelinePlayer {
@@ -63,6 +71,7 @@ export function useTimelinePlayer(timeline: Timeline, options: UseTimelinePlayer
     audio = true,
     resolveAudio,
     bones = PUPPET_BONES,
+    clock = "raf",
   } = options;
 
   // The controller is pure until its effects run (no DOM, no timers), so it is
@@ -91,19 +100,18 @@ export function useTimelinePlayer(timeline: Timeline, options: UseTimelinePlayer
     return () => controller.attachAudio(null);
   }, [controller, audio]);
 
-  // The animation loop.
+  // The animation loop (unless the host ticks), and a stop on unmount.
   useEffect(() => {
+    if (clock === "manual") return;
     let raf = 0;
     const loopFrame = (now: number) => {
       controller.tick(now);
       raf = requestAnimationFrame(loopFrame);
     };
     raf = requestAnimationFrame(loopFrame);
-    return () => {
-      cancelAnimationFrame(raf);
-      controller.pause();
-    };
-  }, [controller]);
+    return () => cancelAnimationFrame(raf);
+  }, [controller, clock]);
+  useEffect(() => () => controller.pause(), [controller]);
 
   useEffect(() => controller.setLoop(loop), [controller, loop]);
   useEffect(() => controller.setRate(rate), [controller, rate]);

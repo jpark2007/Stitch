@@ -23,20 +23,25 @@ import {
   BufferAttribute,
   BufferGeometry,
   CanvasTexture,
+  Color,
   Float32BufferAttribute,
   MeshStandardMaterial,
   Object3D,
   PlaneGeometry,
   SRGBColorSpace,
   Vector2,
+  type DirectionalLight,
   type Group,
+  type HemisphereLight,
   type Mesh,
+  type SpotLight,
 } from "three";
 import { useCardBoxMaterials, usePaperMaterial, useWoodMaterial } from "@/components/paper/usePaper";
 import { createCardEdgeMaterial, createPaperMaterial, getPaperTextures } from "@/components/paper/materials";
 import { markShadowsDirty, StageClock, StaticShadows, useStageTime } from "./clock";
 import { CameraRig, DEFAULT_STAGE_SIZE, stagePoses, type CameraPath, type CameraPose, type StageSize } from "./CameraRig";
 import { DepthOfField } from "./DepthOfField";
+import type { StageGrade } from "./play/grade";
 import { PopUp, readOpen, type OpenSource, type PopUpTiming } from "./SetPiece";
 import { rng, smootherstep } from "./timeline";
 
@@ -52,13 +57,49 @@ export const STAGE_COLORS = {
 /* Lights                                                                    */
 /* ------------------------------------------------------------------------ */
 
+/** The lamp's colours and intensities at "day" (the identity grade). */
+const LAMP = {
+  key: "#ffd6a0",
+  keyI: 3.3,
+  sky: "#fff0da",
+  ground: "#d6b68e",
+  hemiI: 0.66,
+  fillI: 0.5,
+  bounceI: 0.9,
+  rimI: 0.85,
+} as const;
+
 /** A reading lamp up and to the reader's left (a soft-edged warm pool, so
  *  the set glows and the book falls off into the room), a cool-neutral fill
  *  from the right, a warm rim from behind that makes cut card edges glow, and
  *  a sky/bounce hemisphere. The lamp is a spotlight so tall pieces throw
- *  crisp, readable silhouettes (the spire) onto the layers behind them. */
-export function StageLights({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize }) {
+ *  crisp, readable silhouettes (the spire) onto the layers behind them.
+ *
+ *  `grade` (time of day, ./play/grade) re-lights them every frame: a mutable
+ *  grade a timeline scene blends from its time_of_day effects. */
+export function StageLights({ size = DEFAULT_STAGE_SIZE, grade = null }: { size?: StageSize; grade?: StageGrade | null }) {
   const s = Math.max(size[0] / 2.4, size[1] / 3.2);
+  const hemi = useRef<HemisphereLight>(null);
+  const key = useRef<SpotLight>(null);
+  const fill = useRef<DirectionalLight>(null);
+  const bounce = useRef<DirectionalLight>(null);
+  const rim = useRef<DirectionalLight>(null);
+  const base = useMemo(() => ({ key: new Color(LAMP.key), sky: new Color(LAMP.sky), ground: new Color(LAMP.ground) }), []);
+  useFrame(() => {
+    if (!grade) return;
+    if (key.current) {
+      key.current.intensity = LAMP.keyI * grade.key;
+      key.current.color.copy(base.key).multiply(grade.keyTint);
+    }
+    if (hemi.current) {
+      hemi.current.intensity = LAMP.hemiI * grade.hemi;
+      hemi.current.color.copy(base.sky).multiply(grade.hemiTint);
+      hemi.current.groundColor.copy(base.ground).multiply(grade.hemiTint);
+    }
+    if (fill.current) fill.current.intensity = LAMP.fillI * grade.fill;
+    if (bounce.current) bounce.current.intensity = LAMP.bounceI * grade.fill;
+    if (rim.current) rim.current.intensity = LAMP.rimI * grade.rim;
+  });
   // Aim at the stage's own origin, so the lights still land on the set when
   // the stage is mounted inside a moved group (the book's right page).
   const target = useMemo(() => {
@@ -71,12 +112,13 @@ export function StageLights({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize })
       <primitive object={target} />
       {/* Ground colour = light bouncing off the page: it keeps card faces
           that tip towards the page (mid-fold) reading as paper, not black. */}
-      <hemisphereLight args={["#fff0da", "#d6b68e", 0.66]} />
+      <hemisphereLight ref={hemi} args={[LAMP.sky, LAMP.ground, LAMP.hemiI]} />
       <spotLight
+        ref={key}
         castShadow
         target={target}
-        color="#ffd6a0"
-        intensity={3.3}
+        color={LAMP.key}
+        intensity={LAMP.keyI}
         decay={0}
         angle={0.44}
         penumbra={0.8}
@@ -89,13 +131,13 @@ export function StageLights({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize })
         shadow-camera-near={3 * s}
         shadow-camera-far={14 * s}
       />
-      <directionalLight target={target} color="#ece6ee" intensity={0.5} position={[4.2, 2.2, 4.6]} />
+      <directionalLight ref={fill} target={target} color="#ece6ee" intensity={LAMP.fillI} position={[4.2, 2.2, 4.6]} />
       {/* Bounce up off the page towards the reader: lights only faces that
           look down (a card mid-fold, tipped towards the reader), which the
           lamp cannot reach. The page and table face away from it. */}
-      <directionalLight target={target} color="#f0d2a8" intensity={0.9} position={[0.4, -2.5, 3.2]} />
+      <directionalLight ref={bounce} target={target} color="#f0d2a8" intensity={LAMP.bounceI} position={[0.4, -2.5, 3.2]} />
       {/* Rim from behind: catches the top edges of the cards. */}
-      <directionalLight target={target} color="#ffc68e" intensity={0.85} position={[1.6, 3, -4.5]} />
+      <directionalLight ref={rim} target={target} color="#ffc68e" intensity={LAMP.rimI} position={[1.6, 3, -4.5]} />
     </>
   );
 }
@@ -417,6 +459,8 @@ export interface StageSceneProps {
   surface?: boolean;
   /** Add the stage's key/fill lights. Default true. */
   lights?: boolean;
+  /** Time-of-day grade for the lights (mutable, applied every frame), or null for plain day. */
+  grade?: StageGrade | null;
   children?: ReactNode;
 }
 
@@ -428,11 +472,12 @@ export function StageScene({
   size = DEFAULT_STAGE_SIZE,
   surface = true,
   lights = true,
+  grade = null,
   children,
 }: StageSceneProps) {
   return (
     <PopUp open={open} openAt={openAt} closeAt={closeAt} timing={timing}>
-      {lights && <StageLights size={size} />}
+      {lights && <StageLights size={size} grade={grade} />}
       {surface && <PageSurface size={size} />}
       {children}
     </PopUp>
@@ -442,8 +487,12 @@ export function StageScene({
 export interface StageProps extends Omit<StageSceneProps, "surface"> {
   /** Freeze stage time (seconds). Omit to play. */
   time?: number | null;
-  /** Camera pose or a path over stage time. Default: the reading view. */
-  camera?: CameraPose | CameraPath;
+  /**
+   * Camera pose or a path over stage time. Default: the reading view. `null`
+   * mounts no camera rig, for a child that drives the camera itself (the
+   * timeline stage's CameraBinding).
+   */
+  camera?: CameraPose | CameraPath | null;
   /** Drag to orbit a little, easing back on release. Default true. */
   orbit?: boolean;
   className?: string;
@@ -485,8 +534,9 @@ export function Stage({
     [scrub, open],
   );
   const closed = useMemo<OpenSource>(() => (scrub ? (t: number) => 1 - readOpen(open, t) / COVER_SPAN : 0), [scrub, open]);
-  const pose = camera ?? stagePoses(size).reading;
-  const initial = typeof pose === "function" ? pose(time ?? 0) : pose;
+  const pose = camera === undefined ? stagePoses(size).reading : camera;
+  const first = pose ?? stagePoses(size).reading;
+  const initial = typeof first === "function" ? first(time ?? 0) : first;
   // Render at up to 1.5x on retina screens and step down if frames run long:
   // paper reads fine at 1.25x, a dropped frame does not.
   const [dpr, setDpr] = useState(1.5);
@@ -510,7 +560,7 @@ export function Stage({
         <Table />
         <OpenBook size={size} closed={closed} />
         <StageScene {...scene} open={setOpen} size={size} surface={false} />
-        <CameraRig pose={pose} orbit={orbit} />
+        {pose && <CameraRig pose={pose} orbit={orbit} />}
         {dof && <DepthOfField />}
         {overlay}
       </StageClock>
