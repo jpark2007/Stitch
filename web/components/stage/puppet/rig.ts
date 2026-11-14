@@ -7,8 +7,8 @@ import puppetJson from "@shared/rig/puppet.json";
 import posesJson from "@shared/rig/poses.json";
 import vocabularyJson from "@shared/vocabulary.json";
 import type { CharacterSheet } from "@/lib/types";
-import { boneOrder, puppetScale, type RigDef } from "./kinematics";
-import { compileCycle, type CompiledCycle, type PoseLibrary } from "./poses";
+import { boneOrder, puppetScale, type RigDef, type Rotations } from "./kinematics";
+import { applyPose, compileCycle, sampleCycle, type CompiledCycle, type PoseLibrary } from "./poses";
 
 export const RIG = puppetJson as unknown as RigDef;
 export const POSES = posesJson as unknown as PoseLibrary;
@@ -29,6 +29,22 @@ export const SOCKETS = Object.keys(RIG.sockets) as SocketName[];
 /** Stage units per rig unit for a build (average 0.5, tall 0.55). */
 export function scaleForBuild(build: Build | null | undefined): number {
   return puppetScale(RIG, BUILDS[build ?? "average"] ?? 1);
+}
+
+/**
+ * Every bone's angle for a named pose into `out` (unlisted bones 0). Returns
+ * the pose's rootOffset y in rig units (sit and kneel lower the hip; the
+ * compiler bakes it into root.position, so only standalone callers need it).
+ */
+export function poseRotations(name: string, out: Rotations): number {
+  const pose = POSES.poses[name];
+  applyPose(pose, BONES, out);
+  return pose?.rootOffset?.[1] ?? 0;
+}
+
+/** A locomotion cycle's angles at `phase` (0..1, wraps) into `out`. */
+export function cycleRotations(name: "walk" | "run", phase: number, out: Rotations, smooth = true): Rotations {
+  return sampleCycle(getCycle(name), phase, out, smooth);
 }
 
 const cycles = new Map<string, CompiledCycle>();

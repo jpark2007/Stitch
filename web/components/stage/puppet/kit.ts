@@ -165,6 +165,7 @@ function buildPiece(p: Piece, seed: number, rough = 1): PieceKit {
 function getKit(): Kit {
   if (kit) return kit;
   if (typeof document === "undefined") throw new Error("puppet: the kit needs a browser");
+  const t0 = performance.now();
   const lengths: Record<string, number> = {};
   for (const [n, b] of Object.entries(RIG.bones)) lengths[n] = b.length;
   const pieces = bonePieces(lengths);
@@ -186,6 +187,7 @@ function getKit(): Kit {
     createCardEdgeMaterial({ color: "#a88a6c", darken: 0 }),
   ];
   kit = { bones, shoe, shoeMaterials, items: new Map(), pin, pinMaterial };
+  performance.measure("puppet:kit", { start: t0, end: performance.now() });
   return kit;
 }
 
@@ -219,6 +221,28 @@ export function getItemKit(kind: ItemKind): ItemPieceKit[] {
 export function getPin(): { geometry: SphereGeometry; material: MeshStandardMaterial } {
   const k = getKit();
   return { geometry: k.pin, material: k.pinMaterial };
+}
+
+/**
+ * Build the shared pieces (and the given item kinds) in an idle task, so the
+ * first <Puppet> mount does not pay for it (about 30 ms). Safe during SSR.
+ */
+export function preloadPuppetKit(items: readonly ItemKind[] = []): Promise<void> {
+  if (typeof document === "undefined") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      try {
+        getKit();
+        for (const k of items) getItemKit(k);
+        resolve();
+      } catch (e) {
+        reject(e);
+      }
+    };
+    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number };
+    if (w.requestIdleCallback) w.requestIdleCallback(run, { timeout: 300 });
+    else setTimeout(run, 0);
+  });
 }
 
 /** Free every shared puppet resource. Only for full teardown. */

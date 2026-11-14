@@ -24,6 +24,16 @@
  *   ref.current.socket("hand_r")                   // the live Object3D
  *   The socket getters re-apply the latest inputs first, so they are correct
  *   whatever order useFrame callbacks run in.
+ *
+ * Helpers (re-exported here)
+ *   poseRotations("bow_head", rot)       fill rot from shared/rig/poses.json
+ *   cycleRotations("walk", phase, rot)   sample the walk or run cycle
+ *   solveArmIK(rig, "arm_r", x, y, torso) contract two-bone IK (puppet/ik.ts)
+ *   preloadPuppetKit()                   build shared geometry in an idle task
+ *
+ * Resources: geometry and halo textures are shared by every puppet and cached
+ * for the page's life (like the paper textures); each puppet's materials are
+ * disposed when it unmounts.
  */
 
 import { useFrame } from "@react-three/fiber";
@@ -38,6 +48,9 @@ import { scaleForBuild, type SocketName } from "./puppet/rig";
 
 export type { Rotations } from "./puppet/kinematics";
 export type { SocketName } from "./puppet/rig";
+export { preloadPuppetKit } from "./puppet/kit";
+export { cycleRotations, poseRotations, scaleForBuild, POSE_NAMES } from "./puppet/rig";
+export { solveArmIK, solveTwoBoneIK } from "./puppet/ik";
 
 export type Vec3 = readonly [number, number, number] | [number, number, number];
 
@@ -78,6 +91,12 @@ export interface PuppetProps {
   driver?: RefObject<PuppetInputs | null>;
   /** Cast real shadows onto the set. Default true. */
   castShadow?: boolean;
+  /**
+   * Draw the procedural signature item from character.item. Default true.
+   * Pass false when the stage wears a real prop (character.itemPropId) in
+   * the head socket instead.
+   */
+  showItem?: boolean;
   ref?: Ref<PuppetHandle>;
 }
 
@@ -92,6 +111,7 @@ export function Puppet({
   rot = NO_ROT,
   driver,
   castShadow = true,
+  showItem = true,
   ref,
 }: PuppetProps) {
   const item = useMemo(() => pickItem(character.item), [character.item]);
@@ -106,13 +126,10 @@ export function Puppet({
   });
 
   useLayoutEffect(() => {
-    puppet.setItem(item.kind);
+    puppet.setItem(showItem ? item.kind : null);
     puppet.setMaterials(mats);
-  }, [puppet, item.kind, mats]);
-
-  useLayoutEffect(() => {
     puppet.setCastShadow(castShadow);
-  }, [puppet, castShadow, item.kind]);
+  }, [puppet, item.kind, showItem, mats, castShadow]);
 
   const { handle, apply } = useMemo(() => {
     /** Copy the latest inputs onto the object tree (no matrix update). */
