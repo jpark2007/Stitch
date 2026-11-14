@@ -63,6 +63,9 @@ _EPS = 1e-9
 _POS_TOL = 2e-3  # track values are rounded to 3 dp (tracks.DECIMALS)
 _ROT_TOL = 2e-3
 _ROOT = "root.position"
+# turn_to: a target within this of the puppet's x (the tracks' 3 dp rounding of the root, see
+# tracks.DECIMALS, is 5e-4) is straight above or below it: there is no side to face, so no turn.
+TURN_DEAD_ZONE = 1e-3
 # Every rig bone a stand-up returns to 0 (stand_up_first), tracked or not.
 _BONES: tuple[str, ...] = tuple(b for b in RIG["bones"] if b not in HANDS)
 
@@ -223,6 +226,8 @@ def apply_exit(world: World, tracks: TrackSet, action: Action, t: float, action_
 
 def apply_turn_to(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Face a person, prop or mark: one ``root.facing`` key when the facing changes, else none.
+    A target within TURN_DEAD_ZONE of the puppet's x (straight above or below it, such as a mark
+    on a riser over its head) has no side to face: the facing stays.
 
     Errors: ``self_target``, and locate's ``unknown_target``. Takes no time (returns t).
     """
@@ -233,7 +238,10 @@ def apply_turn_to(world: World, tracks: TrackSet, action: Action, t: float, acti
         raise StateError("self_target", self_target_reason("target", who))
     x = locate(action.target, t)[0]
     p = world.people[who]
-    keys, facing = motion.turn_keys(who, t, puppet_root(world, tracks, who, t)[0], x, p.facing)
+    here = puppet_root(world, tracks, who, t)[0]
+    if abs(x - here) <= TURN_DEAD_ZONE:  # straight above or below: keep the facing
+        x = here
+    keys, facing = motion.turn_keys(who, t, here, x, p.facing)
 
     world.set_facing(who, facing)
     tracks.extend(keys)
