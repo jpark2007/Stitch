@@ -26,7 +26,7 @@ function readFocus(v: string | undefined): -1 | 0 | 1 {
  * Reads ?state=closed|open, ?spread=<n>, ?turn=<0..1> (freeze mid-turn) and
  * ?focus=left|right (close-up on one page) for deterministic views, and the
  * test switches ?still=1 (no parallax, peels or hints) and ?debug=1
- * (`window.__book` is the controller).
+ * (`window.__book` is the controller; a probe card stands in each stage slot).
  */
 function readInitial(q: Search) {
   const state = one(q.state);

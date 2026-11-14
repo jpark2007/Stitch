@@ -117,6 +117,12 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
   return c;
 }
 
+/**
+ * The stage slot on the right page, in page pixels (x from the gutter edge,
+ * y from the head). StoryPage.tsx turns it into world units for the stage.
+ */
+export const STAGE_SLOT_PX = { x0: 134, x1: PAGE_PX_W - 96, y0: 104, y1: PAGE_PX_H - 132 } as const;
+
 /** Right page: an empty, clearly marked slot where the pop-up stage mounts. */
 export function drawStagePage(spread: BookSpread, page: number, fonts: PageFonts, seed: number) {
   const W = PAGE_PX_W;
@@ -125,10 +131,7 @@ export function drawStagePage(spread: BookSpread, page: number, fonts: PageFonts
   paper(ctx, W, H, { seed, gutter: "left" });
   drawGutterStitches(ctx, W, H, "left");
 
-  const x0 = 134;
-  const x1 = W - 96;
-  const y0 = 104;
-  const y1 = H - 132;
+  const { x0, x1, y0, y1 } = STAGE_SLOT_PX;
   // Pencil-dashed slot outline.
   ctx.save();
   ctx.strokeStyle = "rgba(92,78,67,0.3)";

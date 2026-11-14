@@ -6,7 +6,7 @@
  * visible thickness that dips into the gutter, and skinned paper leaves that
  * bend as they turn (Leaf.tsx). The logic lives in controller.ts.
  *
- *   <Book3D spreads={spreads} cover={cover} renderStage={({ spread, reveal }) => <Stage … />} />
+ *   <Book3D spreads={spreads} cover={cover} renderStage={({ spread, reveal, width, depth }) => <Stage … />} />
  *
  * Closed, the book sits on the table; a click opens it. Turn a page by
  * clicking or dragging its outer edge or corner, with the arrow keys, or with
@@ -54,7 +54,7 @@ import { BOARD_D, BOARD_W, BookController, COVER_PIVOT_Y, type BookStart, type B
 import { Leaf, type LeafTextures } from "./Leaf";
 import { BLOCK_T, COVER_T, PAGE_H, PAGE_W } from "./leafShape";
 import { isMuted, setMuted, subscribeMuted, unlockAudio } from "./sound";
-import { StageSlot, buildBookArt, useBookTextures, type BookArt, type StageSlotArgs } from "./StoryPage";
+import { STAGE_SLOT, SlotProbe, StageSlot, buildBookArt, useBookTextures, type BookArt, type StageSlotArgs } from "./StoryPage";
 import type { BookCover, BookSpread } from "./types";
 
 const LEAF_MASK: DeckledMaskOptions = { aspect: PAGE_W / PAGE_H, style: "deckled", amount: 0.7, seed: 11, resolution: 1024 };
@@ -79,7 +79,7 @@ export interface Book3DProps {
   renderStage?: (args: StageSlotArgs) => ReactNode;
   /** Screenshots and tests: no parallax, no hover peels, no hints. */
   still?: boolean;
-  /** Tests: expose the raw controller as `window.__book`. */
+  /** Tests: expose the raw controller as `window.__book`, and stand a probe card in empty stage slots. */
   debug?: boolean;
 }
 
@@ -206,7 +206,7 @@ export function Book3D({ spreads, cover, initial, renderStage, still = false, de
               start={start}
               onControls={onControls}
               onView={setView}
-              renderStage={renderStage}
+              renderStage={renderStage ?? (debug ? SlotProbe : undefined)}
               still={still}
               debug={debug}
             />
@@ -516,8 +516,10 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
   const mats = useBookMaterials(textures);
   const geo = useBookGeometry();
 
-  const [stageSpread, setStageSpread] = useState(start.opened && start.turn == null ? start.spread : 0);
-  const [ctl] = useState(() => new BookController(spreads.length, start, invalidate, onView, setStageSpread));
+  const [stages, setStages] = useState<number[]>(() =>
+    start.opened && start.turn == null ? [start.spread - 1] : [],
+  );
+  const [ctl] = useState(() => new BookController(spreads.length, start, invalidate, onView, setStages));
 
   const leafTextures = useMemo<LeafTextures[]>(() => {
     // Fine tiling: at coarser scales the grain's soft fields read as smudges.
@@ -642,8 +644,6 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
     window.addEventListener("pointercancel", up);
   };
 
-  const spreadIndex = stageSpread - 1;
-  const spread = spreadIndex >= 0 ? spreads[spreadIndex] : undefined;
 
   return (
     <group ref={book}>
@@ -710,12 +710,27 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
       </mesh>
 
       <group ref={stage}>
-        {renderStage && spread ? (
-          <StageSlot y={0}>{renderStage({ spread, index: spreadIndex, reveal: ctl.reveal })}</StageSlot>
-        ) : null}
+        {renderStage
+          ? stages.map((i) => (
+              <StageSlot key={spreads[i].id}>
+                <StageMount
+                  render={renderStage}
+                  args={{ spread: spreads[i], index: i, reveal: ctl.reveals[i], width: STAGE_SLOT.width, depth: STAGE_SLOT.depth }}
+                />
+              </StageSlot>
+            ))
+          : null}
       </group>
     </group>
   );
+}
+
+/**
+ * Each stage renders as its own component, so a `renderStage` that uses
+ * hooks keeps them per stage while stages mount and unmount mid-turn.
+ */
+function StageMount({ render, args }: { render: (args: StageSlotArgs) => ReactNode; args: StageSlotArgs }) {
+  return render(args);
 }
 
 export default Book3D;

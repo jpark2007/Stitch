@@ -6,16 +6,17 @@
  * Spread j (1-based) shows the verso of leaf j-1 on the left (the story page:
  * year, title, storybook text, tellers and taped-in photos) and the recto of
  * leaf j on the right (an empty, clearly marked stage slot where the pop-up
- * stage mounts). Leaf 0's recto is the title page, seen as the book opens.
+ * stage mounts; see StageSlotArgs). Leaf 0's recto is the title page, seen as the book opens.
  *
  * Pages are drawn to canvases (pageArt.ts) so the print bends with the paper.
  */
 
-import { useEffect, useMemo, type ReactNode } from "react";
-import { CanvasTexture, ClampToEdgeWrapping, RepeatWrapping, SRGBColorSpace } from "three";
+import { useFrame } from "@react-three/fiber";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { CanvasTexture, ClampToEdgeWrapping, RepeatWrapping, SRGBColorSpace, type Group } from "three";
 import { COVER_OVERHANG, PAGE_H, PAGE_W } from "./leafShape";
 import { drawContactShadow, drawCoverArt, drawEndpaper, drawPageEdges, drawSpineCloth } from "./coverArt";
-import { drawBlankPage, drawStagePage, drawStoryPage, drawTitlePage } from "./pageArt";
+import { drawBlankPage, drawStagePage, drawStoryPage, drawTitlePage, PAGE_PX_W, STAGE_SLOT_PX } from "./pageArt";
 import { loadPageFonts } from "./paperArt";
 import type { BookCover, BookSpread } from "./types";
 
@@ -110,26 +111,69 @@ export function useBookTextures(art: BookArt, maxAnisotropy = 8): BookTextures {
   return textures;
 }
 
+/** The stage slot in world units, relative to the right page (x from the spine, z from the page's centre line). */
+const PX = PAGE_W / PAGE_PX_W;
+export const STAGE_SLOT = {
+  width: (STAGE_SLOT_PX.x1 - STAGE_SLOT_PX.x0) * PX,
+  depth: (STAGE_SLOT_PX.y1 - STAGE_SLOT_PX.y0) * PX,
+  x: ((STAGE_SLOT_PX.x0 + STAGE_SLOT_PX.x1) / 2) * PX,
+  z: ((STAGE_SLOT_PX.y0 + STAGE_SLOT_PX.y1) / 2) * PX - PAGE_H / 2,
+} as const;
+
+/** What a spread's pop-up stage is given (close to v2's StageSlotState). */
 export interface StageSlotArgs {
   spread: BookSpread;
   /** 0-based spread index. */
   index: number;
   /**
-   * 0..1, read it in useFrame: rises to 1 once the spread lies open and still,
-   * falls to 0 as a turn starts (fold the pop-up down with it).
+   * 0..1, how far the pop-up should stand, as a live ref: read
+   * `reveal.current` in useFrame (it changes every frame without a
+   * re-render). It rises once this spread's stage page lies uncovered and
+   * still, and falls quickly as a leaf lifts off it or comes down over it.
+   * During a turn the outgoing spread's stage folds while the incoming one
+   * rises, so two stages can be mounted at once; fold flat at 0.
    */
   reveal: { readonly current: number };
+  /** Slot size in world units: x across the page, z down it (one page is PAGE_W × PAGE_H). */
+  width: number;
+  depth: number;
 }
 
 /**
- * The right page's stage slot. Children are placed in page space: origin at
- * the centre of the right page's surface, x across the page (PAGE_W wide), z
- * down the page (PAGE_H tall, +z toward the reader), y up off the paper.
+ * The right page's stage slot. Children are placed in slot space: origin at
+ * the centre of the marked slot on the right page's surface, x across the
+ * page (`STAGE_SLOT.width` wide), z down the page (`STAGE_SLOT.depth`, +z
+ * toward the reader), y up off the paper.
  */
-export function StageSlot({ y, children }: { y: number; children: ReactNode }) {
+export function StageSlot({ children }: { children: ReactNode }) {
   return (
-    <group position={[PAGE_W / 2, y, 0]} name="stage-slot">
+    <group position={[STAGE_SLOT.x, 0, STAGE_SLOT.z]} name="stage-slot">
       {children}
+    </group>
+  );
+}
+
+/**
+ * A stand-in pop-up for tests (?debug=1): a card hinged at the slot's centre
+ * line that stands with `reveal` and folds flat at 0, outlined to the slot.
+ */
+export function SlotProbe({ reveal, width, depth }: StageSlotArgs) {
+  const card = useRef<Group>(null);
+  useFrame(() => {
+    if (card.current) card.current.rotation.x = -(Math.PI / 2) * (1 - reveal.current);
+  });
+  return (
+    <group>
+      <mesh rotation-x={-Math.PI / 2} position-y={0.0008}>
+        <planeGeometry args={[width, depth]} />
+        <meshBasicMaterial color="#b9573d" transparent opacity={0.08} depthWrite={false} />
+      </mesh>
+      <group ref={card} rotation-x={-Math.PI / 2}>
+        <mesh position-y={depth * 0.17} castShadow>
+          <boxGeometry args={[width * 0.6, depth * 0.34, 0.006]} />
+          <meshStandardMaterial color="#efe3cc" roughness={0.9} />
+        </mesh>
+      </group>
     </group>
   );
 }

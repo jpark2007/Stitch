@@ -3,7 +3,7 @@
  * click and drag turns, block thickness, visibility, the cover, the spine
  * and the camera. Book3D owns one instance and calls `frame()` from useFrame
  * and the pointer handlers from r3f events. Nothing here re-renders React
- * except the rare `onView` / `onStage` callbacks.
+ * except the rare `onView` / `onStages` callbacks.
  */
 
 import { BufferAttribute, type BufferGeometry, type Group, type Mesh, type PerspectiveCamera, type Scene, Vector3 } from "three";
@@ -115,8 +115,12 @@ export interface PagePoint {
 export class BookController {
   readonly rt: BookRuntime;
   readonly n: number;
-  /** Rises to 1 once a spread is open and still; read by the stage. */
-  readonly reveal = { current: 0 };
+  /**
+   * Per spread (index 0-based): 0..1, how far its pop-up should stand. It
+   * rises once the spread's stage page lies uncovered and still, and falls
+   * as a leaf lifts off or comes down over it. Read `.current` in useFrame.
+   */
+  readonly reveals: { current: number }[];
 
   private open: number;
   private opening = false;
@@ -131,7 +135,8 @@ export class BookController {
   private frozen = false;
   private camKey = "";
   private viewKey = "";
-  private stageSpread: number;
+  /** 0-based spreads whose stage is mounted (rising, standing or folding). */
+  private stages: number[] = [];
   private camPos = new Vector3();
   private camTarget = new Vector3();
   /** Eased 0..1: how far a leaf stands up; the camera eases back for it. */
@@ -161,15 +166,18 @@ export class BookController {
     start: BookStart,
     private readonly invalidate: () => void,
     private readonly onView: (v: BookView) => void,
-    private readonly onStage: (spread: number) => void,
+    private readonly onStages: (indices: number[]) => void,
   ) {
     this.n = spreads;
     this.rt = createRuntime(spreads + 1, start.opened ? start.spread : 0);
     this.tmpAngles = new Float32Array(this.rt.restR.length);
     this.open = start.opened ? 1 : 0;
     this.pos = start.opened ? start.spread : 0;
-    this.stageSpread = start.opened && start.turn == null ? start.spread : 0;
-    this.reveal.current = this.stageSpread ? 1 : 0;
+    this.reveals = Array.from({ length: spreads }, () => ({ current: 0 }));
+    if (start.opened && start.turn == null) {
+      this.reveals[start.spread - 1].current = 1;
+      this.stages = [start.spread - 1];
+    }
     this.focusGoal = start.focus;
     this.focusE = start.focus;
     this.single = Math.abs(start.focus);
@@ -188,8 +196,9 @@ export class BookController {
     this.frozen = true;
   }
 
-  get initialStageSpread() {
-    return this.stageSpread;
+  /** 0-based spreads whose stage is mounted at the start. */
+  get initialStages() {
+    return this.stages;
   }
 
   /** Wire the camera and canvas used to map drags to the page. */
@@ -501,6 +510,8 @@ export class BookController {
     const { rt } = this;
     const { parts } = ctx;
     const t = now();
+    const dt = this.lastFrameT ? Math.min(0.05, t - this.lastFrameT) : 0;
+    this.lastFrameT = t;
     let moving = false;
     rt.frames++;
 
@@ -601,26 +612,36 @@ export class BookController {
     }
     if (parts.closedHit) parts.closedHit.visible = this.open < 1;
 
-    // Stage slot: up once the spread lies open and still.
-    const still = this.open >= 1 && !rt.leaves.some((l) => l.mode === "auto" || l.mode === "drag" || l.mode === "frozen");
-    const rv = this.reveal.current;
-    const target = still ? 1 : 0;
-    if (Math.abs(target - rv) > 1e-3) {
-      this.reveal.current = rv + (target - rv) * (still ? 0.06 : 0.25);
-      moving = true;
-    } else this.reveal.current = target;
+    // Stage slots. Spread j's stage stands on leaf j's recto (the right
+    // page) once the leaf before it has turned clear, and folds down the
+    // moment leaf j itself starts to lift. During a turn the outgoing stage
+    // folds while the incoming one rises, so both are mounted for a beat.
+    const coverUp = smoothstep(0.9, 1, this.open);
+    let mounted = "";
+    for (let j = 0; j < this.n; j++) {
+      const before = rt.leaves[j];
+      const page = rt.leaves[j + 1];
+      // A corner peel (hover) does not fold the stage; a real lift does.
+      const pageDown = page.mode === "hover" ? 1 : 1 - smoothstep(0.01, 0.06, page.p);
+      const goal = coverUp * smoothstep(0.62, 0.97, before.p) * pageDown;
+      const r = this.reveals[j];
+      if (Math.abs(goal - r.current) > 1e-3) {
+        // Rise gently, fold quickly (ahead of the lifting leaf).
+        const rate = goal > r.current ? 3.2 : 14;
+        r.current += (goal - r.current) * (dt === 0 || this.frozen ? 1 : 1 - Math.exp(-dt * rate));
+        moving = true;
+      } else r.current = goal;
+      if (goal > 0 || r.current > 1e-3) mounted += `${j},`;
+    }
+    if (mounted !== this.stages.join(",") + (this.stages.length ? "," : "")) {
+      this.stages = mounted ? mounted.slice(0, -1).split(",").map(Number) : [];
+      this.onStages(this.stages);
+    }
     // The slot sits on the right page's surface, swell included.
     if (parts.stage) parts.stage.position.y = rt.hinge + pageProfile(PAGE_W / 2, rt.depthR, rt.bow) + LEAF_REST_GAP;
-    const stage = still ? this.pos : this.reveal.current > 0 ? this.stageSpread : 0;
-    if (stage !== this.stageSpread) {
-      this.stageSpread = stage;
-      this.onStage(stage);
-    }
 
     // Camera. While a leaf stands up the camera eases back a little, so the
     // upright page never clips the top of the frame.
-    const dt = this.lastFrameT ? Math.min(0.05, t - this.lastFrameT) : 0;
-    this.lastFrameT = t;
     let liftGoal = 0;
     let liftFrozen = false;
     for (const leaf of rt.leaves) {
