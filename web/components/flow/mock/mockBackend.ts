@@ -23,6 +23,7 @@ import type {
   Memory,
   MemoryResponse,
   MomentSummary,
+  NarrationLine,
   Person,
   PersonSummary,
   PlanItem,
@@ -65,16 +66,23 @@ export const MOCK_STORAGE_KEY = "stitch.mock.v1";
 
 const INVITE_DAYS = 14;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MIN_MEMORY_YEAR = 1850;
-const MIN_BORN_YEAR = 1800;
+/** api/routes/memories.py MIN_YEAR; the latest year is next year (the server's clock + 1). */
+const MIN_MEMORY_YEAR = 1800;
 const SHORT_TELLING_WORDS = 25;
+/** api/routes/memories.py MAX_PHOTOS and MAX_PARTICIPANTS. */
+const MAX_PHOTOS = 10;
+const MAX_PARTICIPANTS = 100;
 /** Largest photo POST /families/{fid}/media takes (api/db/media.py MAX_BYTES). */
 export const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
-/** What POST /families/{fid}/media takes (api/routes/props.py ALLOWED_IMAGE_TYPES); anything else is a 415. */
-const UPLOAD_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic"];
+/** What POST /families/{fid}/media and photos take (api/routes ALLOWED_*_TYPES); anything else is a 415. */
+const UPLOAD_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
 
-export const FOLLOW_UP_QUESTION = "Where were you when it happened, and who else was there?";
-export const NOT_WAITING = "The studio isn't waiting for that.";
+/** api/seed/fake_runs.py FOLLOWUP_QUESTION, so both modes ask the same thing. */
+export const FOLLOW_UP_QUESTION = "Who else was there that day?";
+/** api/routes/memories.py NOT_WAITING: the run is not paused on a question or review. */
+export const NOT_WAITING = "This run is not waiting for an answer";
+/** api/routes/memories.py ANSWER_WRONG_KIND: paused, but on another kind of answer. */
+export const ANSWER_WRONG_KIND = "That answer does not match what this run is waiting for";
 
 // ---------------------------------------------------------------------------
 // State
@@ -213,12 +221,27 @@ function noContent(): Response {
   return new Response(null, { status: 204 });
 }
 
-const NOT_SIGNED_IN = "Please log in to continue.";
-const NO_FAMILY = "We couldn't find that family.";
-const ADMIN_ONLY = "Only a family admin can do that.";
-const NOT_A_MEMBER = "That person isn't a member of this family.";
+// The real API's error details, word for word (api/auth.py, api/routes/*.py), so
+// a page shows the same message in mock mode as against the API.
+const NOT_SIGNED_IN = "Not signed in";
+/** auth.family_member: a family the caller is not in is a 404, like one that doesn't exist. */
+const NO_FAMILY = "Not found";
+const ADMIN_ONLY = "Admins only";
+const NOT_A_MEMBER = "Member not found";
 /** 409 for removing or demoting a family's only admin (the API's LAST_ADMIN). */
-const LAST_ADMIN = "A family needs at least one admin.";
+const LAST_ADMIN = "A family needs at least one admin";
+const INVITE_NOT_FOUND = "Invite not found or expired";
+const PERSON_NOT_FOUND = "Person not found";
+const MEMORY_NOT_FOUND = "Memory not found";
+const RUN_NOT_FOUND = "Run not found";
+const NOT_RUN_OWNER = "Only the person who started this run can answer";
+const NO_PERSON = "Add or claim your person in this family first";
+const NO_SCENE = "This moment has no scene yet, so another telling cannot be added to it";
+const INVALID_LOGIN = "Invalid email or password";
+const EMAIL_TAKEN = "An account with this email already exists";
+const BLANK_PERSON_NAME = "A person needs a name";
+const JOIN_EXACTLY_ONE = "Send exactly one of personId (claim) or person (add yourself)";
+const ALREADY_HAS_PERSON = "this user already has a person in this family";
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -424,35 +447,48 @@ function optionalString(body: Json, key: string, loc: Loc, errors: FieldError[])
   return value;
 }
 
-function optionalYear(
-  body: Json,
-  key: string,
-  loc: Loc,
-  errors: FieldError[],
-  min: number,
-  max: number,
-): number | null {
+/**
+ * An `int | None` field as pydantic reads it (lax mode): an integer, or a
+ * string of digits. No range: the API takes any year for a person and checks
+ * only that the years fit together (died after born, born after a parent).
+ */
+function optionalYear(body: Json, key: string, loc: Loc, errors: FieldError[]): number | null {
   const value = body[key];
   if (value === undefined || value === null) return null;
-  if (typeof value !== "number" || !Number.isInteger(value)) {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value === "string" && /^\s*[-+]?\d+\s*$/.test(value)) return parseInt(value, 10);
+  if (typeof value === "string") {
+    errors.push({
+      loc: [...loc, key],
+      msg: "Input should be a valid integer, unable to parse string as an integer",
+      type: "int_parsing",
+    });
+  } else if (typeof value === "number") {
+    errors.push({
+      loc: [...loc, key],
+      msg: "Input should be a valid integer, got a number with a fractional part",
+      type: "int_from_float",
+    });
+  } else {
     errors.push({ loc: [...loc, key], msg: "Input should be a valid integer", type: "int_type" });
-    return null;
   }
-  if (value < min || value > max) {
-    errors.push({ loc: [...loc, key], msg: `Enter a year between ${min} and ${max}.`, type: "value_error" });
-    return null;
-  }
-  return value;
+  return null;
 }
 
+/** A `list[str]` field: kept as sent (the API dedupes spouses itself and rejects a duplicate parent). */
 function optionalIdList(body: Json, key: string, loc: Loc, errors: FieldError[]): string[] | null {
   const value = body[key];
   if (value === undefined || value === null) return null;
-  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+  if (!Array.isArray(value)) {
     errors.push({ loc: [...loc, key], msg: "Input should be a valid list", type: "list_type" });
     return null;
   }
-  return unique(value as string[]);
+  const bad = value.findIndex((v) => typeof v !== "string");
+  if (bad !== -1) {
+    errors.push({ loc: [...loc, key, bad], msg: "Input should be a valid string", type: "string_type" });
+    return null;
+  }
+  return [...(value as string[])];
 }
 
 function optionalCharacter(
@@ -482,12 +518,18 @@ function optionalCharacter(
     });
   }
   if (errors.length > before) return null;
-  const sheet: CharacterSheet = { color };
-  if (item !== null) sheet.item = item;
-  if (build !== undefined) sheet.build = build as CharacterSheet["build"];
-  if (itemPropId !== null) sheet.itemPropId = itemPropId;
-  if (notes !== null) sheet.notes = notes;
-  return sheet;
+  return fullSheet({ color, item, build: build as CharacterSheet["build"], itemPropId, notes });
+}
+
+/** A character sheet as the API sends it: every field present, `build` "average" by default. */
+function fullSheet(sheet: CharacterSheet): CharacterSheet {
+  return {
+    color: sheet.color,
+    item: sheet.item ?? null,
+    build: sheet.build ?? "average",
+    itemPropId: sheet.itemPropId ?? null,
+    notes: sheet.notes ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +585,61 @@ function jsonBody(body: unknown): Json {
 function abortError(signal: AbortSignal): unknown {
   if (signal.reason !== undefined) return signal.reason;
   return new DOMException("This operation was aborted", "AbortError");
+}
+
+// ---------------------------------------------------------------------------
+// Narration for another telling
+
+/** The telling's sentences, one narration line each (api/seed/fake_runs.py split_sentences). */
+export function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[.!?…])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+const WORD_GAP = 0.25;
+
+/**
+ * Give `authorId` their own narration track over the moment's shared action,
+ * so the book can play their version (Timeline.narrations, Screenplay.narrations):
+ * one line per sentence, spread evenly over the scene, words WORD_GAP apart.
+ * The default narrator's own retelling also becomes the default captions.
+ * Does nothing for a moment without a scene.
+ */
+export function addNarration(memory: Memory, authorId: string, text: string): void {
+  const timeline = memory.timeline;
+  const screenplay = memory.screenplay;
+  if (!timeline || !screenplay) return;
+  const sentences = splitSentences(text);
+  if (!sentences.length) return;
+  const duration = timeline.duration > 0 ? timeline.duration : 10;
+  const round = (n: number) => Math.round(n * 100) / 100;
+  const lines: NarrationLine[] = sentences.map((sentence, i) => {
+    const t = round((duration * i) / sentences.length + 0.5);
+    const words = sentence.split(/\s+/).filter(Boolean);
+    return {
+      t,
+      text: sentence,
+      source: `telling:${authorId}:s${i + 1}`,
+      words: words.map((word, w) => ({ t: round(t + w * WORD_GAP), word: word.replace(/^[^\p{L}\p{N}']+|[^\p{L}\p{N}']+$/gu, "") || word })),
+    };
+  });
+  const captions = lines.map((l) => ({ t: l.t, text: l.text }));
+  timeline.narrations = { ...(timeline.narrations ?? {}), [authorId]: { authorId, audio: null, captions, lines } };
+  if (timeline.defaultNarrator === authorId) timeline.captions = captions;
+
+  // The screenplay keeps the same lines per shot, in shot time.
+  const shots = timeline.shots?.length ? timeline.shots : null;
+  const byShot: Record<string, NarrationLine[]> = {};
+  for (const line of lines) {
+    const shot = shots ? ([...shots].reverse().find((s) => s.start <= line.t) ?? shots[0]) : null;
+    const shotId = shot?.id ?? screenplay.shots[0]?.id;
+    if (!shotId) continue;
+    const start = shot ? shot.actionStart : 0;
+    (byShot[shotId] ??= []).push({ t: round(Math.max(0, line.t - start)), text: line.text, source: line.source });
+  }
+  screenplay.narrations = { ...(screenplay.narrations ?? {}), [authorId]: byShot };
 }
 
 // ---------------------------------------------------------------------------
@@ -663,7 +760,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
         members: f.members.map((m) => ({ ...m, joinedAt: at })),
         invites: f.invites.map((i) => ({ revoked: false, ...i })),
       })),
-      people: clone(seed.people),
+      people: clone(seed.people).map((p) => (p.character ? { ...p, character: fullSheet(p.character) } : p)),
       memories: clone(seed.memories),
       questions: clone(seed.questions),
       props: clone(seed.props ?? []),
@@ -746,7 +843,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
   }
 
   function requireAuthor(s: MockState, m: Membership): Person {
-    if (!m.person) fail(409, "Add yourself to the family tree first.");
+    if (!m.person) fail(409, NO_PERSON);
     return m.person;
   }
 
@@ -829,10 +926,15 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     const color = PALETTE.find((c) => !colors.has(c.toLowerCase())) ?? PALETTE[people.length % PALETTE.length];
     const item =
       SIGNATURE_ITEMS.find((i) => !items.has(i)) ?? SIGNATURE_ITEMS[people.length % SIGNATURE_ITEMS.length];
-    return { color, item, build: "average" };
+    return fullSheet({ color, item, build: "average" });
   }
 
   // ----- people
+  //
+  // Two layers, as in the API: readPerson is the request model (schemas.NewPerson
+  // or PersonPatch, a 422 list for a wrong type or a missing name), and
+  // checkNewPerson / checkPatch are api/db/people.py's InvalidRelation checks,
+  // in its order, each a 400 with its exact message.
 
   interface PersonFields {
     name?: string;
@@ -843,60 +945,163 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     character?: CharacterSheet | null;
   }
 
-  /** Validate a NewPerson (partial = PersonPatch) and its relationships within the family. */
-  function readPerson(
-    s: MockState,
-    fid: string,
-    raw: Json,
-    loc: Loc,
-    errors: FieldError[],
-    opts2: { partial: boolean; selfId?: string },
-  ): PersonFields {
+  /** Read a NewPerson (partial = PersonPatch) body: types only, names trimmed. */
+  function readPerson(raw: Json, loc: Loc, errors: FieldError[], opts2: { partial: boolean }): PersonFields {
     const out: PersonFields = {};
-    const maxYear = now().getFullYear();
-    if (!opts2.partial || raw.name !== undefined) {
-      if (opts2.partial && raw.name === null) {
-        errors.push({ loc: [...loc, "name"], msg: "Input should be a valid string", type: "string_type" });
-      } else {
-        const name = requiredString(raw, "name", loc, errors, { min: 1, blankMsg: "Enter a name." });
-        out.name = name.trim();
-      }
+    if (!opts2.partial || (raw.name !== undefined && raw.name !== null)) {
+      out.name = requiredString(raw, "name", loc, errors).trim();
     }
-    if (raw.born !== undefined) out.born = optionalYear(raw, "born", loc, errors, MIN_BORN_YEAR, maxYear);
-    if (raw.died !== undefined) out.died = optionalYear(raw, "died", loc, errors, MIN_BORN_YEAR, maxYear);
+    if (raw.born !== undefined) out.born = optionalYear(raw, "born", loc, errors);
+    if (raw.died !== undefined) out.died = optionalYear(raw, "died", loc, errors);
     for (const key of ["parentIds", "spouseIds"] as const) {
-      if (raw[key] === undefined || (opts2.partial && raw[key] === null)) continue;
+      if (raw[key] === undefined) continue;
+      if (raw[key] === null) {
+        // NewPerson's lists can't be null; a patch's null means "leave as is".
+        if (!opts2.partial) errors.push({ loc: [...loc, key], msg: "Input should be a valid list", type: "list_type" });
+        continue;
+      }
       const ids = optionalIdList(raw, key, loc, errors);
-      if (ids === null) {
-        if (raw[key] === null) out[key] = [];
-        continue;
-      }
-      const missing = ids.filter((id) => id === opts2.selfId || !findPerson(s, fid, id));
-      if (missing.length) {
-        errors.push({
-          loc: [...loc, key],
-          msg:
-            missing.includes(opts2.selfId ?? "\u0000")
-              ? "Someone can't be their own relative."
-              : `These people aren't in this family: ${missing.join(", ")}.`,
-          type: "value_error",
-        });
-        continue;
-      }
-      if (key === "parentIds" && ids.length > 2) {
-        errors.push({ loc: [...loc, key], msg: "A person can have at most two parents.", type: "value_error" });
-        continue;
-      }
-      out[key] = ids;
+      if (ids !== null) out[key] = key === "spouseIds" ? unique(ids) : ids;
     }
     const character = optionalCharacter(raw, loc, errors);
-    if (character !== undefined) out.character = character;
-    const born = out.born ?? null;
-    const died = out.died ?? null;
-    if (born !== null && died !== null && died < born) {
-      errors.push({ loc: [...loc, "died"], msg: "Died must be the same as or after born.", type: "value_error" });
-    }
+    if (character) out.character = character;
     return out;
+  }
+
+  /** The route's name check (api/routes/families.py _clean_new_person): 400 for a blank name. */
+  function requireName(fields: PersonFields): void {
+    if (fields.name !== undefined && !fields.name) fail(400, BLANK_PERSON_NAME);
+  }
+
+  /** Everyone below `id` through parentIds (api/db/people.py _descendant_ids). */
+  function descendantIds(people: Person[], id: string): Set<string> {
+    const children = new Map<string, string[]>();
+    for (const p of people) {
+      for (const parent of p.parentIds ?? []) children.set(parent, [...(children.get(parent) ?? []), p.id]);
+    }
+    const seen = new Set<string>();
+    const queue = [id];
+    while (queue.length) {
+      for (const child of children.get(queue.shift() as string) ?? []) {
+        if (!seen.has(child)) {
+          seen.add(child);
+          queue.push(child);
+        }
+      }
+    }
+    return seen;
+  }
+
+  /** Everyone above `id` through parentIds, given each person's parents (_ancestor_ids). */
+  function ancestorIds(parentsOf: (id: string) => string[], id: string): Set<string> {
+    const seen = new Set<string>();
+    const queue = [id];
+    while (queue.length) {
+      for (const parent of parentsOf(queue.shift() as string)) {
+        if (!seen.has(parent)) {
+          seen.add(parent);
+          queue.push(parent);
+        }
+      }
+    }
+    seen.delete(id);
+    return seen;
+  }
+
+  /** api/db/people.py _validate_relations. */
+  function validateRelations(
+    s: MockState,
+    fid: string,
+    parentIds: string[] | undefined,
+    spouseIds: string[] | undefined,
+    selfId: string | null,
+  ): void {
+    if (parentIds) {
+      if (parentIds.length > 2) fail(400, "a person has at most 2 parents");
+      if (new Set(parentIds).size !== parentIds.length) fail(400, "duplicate parent id");
+    }
+    const named = [...(parentIds ?? []), ...(spouseIds ?? [])];
+    if (selfId !== null && named.includes(selfId)) fail(400, "a person cannot be their own parent or spouse");
+    if (parentIds && spouseIds && parentIds.some((id) => spouseIds.includes(id))) {
+      fail(400, "a person cannot be both a parent and a spouse");
+    }
+    const missing = unique(named.filter((id) => !findPerson(s, fid, id))).sort();
+    if (missing.length) {
+      fail(400, `unknown person id(s) in this family: [${missing.map((id) => `'${id}'`).join(", ")}]`);
+    }
+  }
+
+  /** check_lifespan, then _check_born_after_parents (unknown years pass). */
+  function checkYears(s: MockState, fid: string, born: number | null, died: number | null, parentIds: string[]): void {
+    if (born !== null && died !== null && died < born) fail(400, "a person cannot die before they were born");
+    if (born === null) return;
+    const parents = parentIds
+      .map((id) => findPerson(s, fid, id))
+      .filter((p): p is Person => p !== null && typeof p.born === "number")
+      .sort((a, b) => (a.born as number) - (b.born as number) || a.name.localeCompare(b.name));
+    for (const parent of parents) {
+      if (born < (parent.born as number)) {
+        fail(400, `a person cannot be born before their parent (${parent.name}, born ${parent.born})`);
+      }
+    }
+  }
+
+  /** api/db/people.py create_person's checks, in its order. */
+  function checkNewPerson(s: MockState, fid: string, fields: PersonFields): void {
+    const parentIds = fields.parentIds ?? [];
+    const spouseIds = fields.spouseIds ?? [];
+    validateRelations(s, fid, parentIds, spouseIds, null);
+    if (parentIds.length && spouseIds.length) {
+      // A spouse may not be a parent or anyone further up.
+      const parentsOf = (id: string) => findPerson(s, fid, id)?.parentIds ?? [];
+      const above = new Set(parentIds);
+      for (const parent of parentIds) for (const id of ancestorIds(parentsOf, parent)) above.add(id);
+      if (spouseIds.some((id) => above.has(id))) {
+        fail(400, "a person cannot be married to their own ancestor or descendant");
+      }
+    }
+    checkYears(s, fid, fields.born ?? null, fields.died ?? null, parentIds);
+  }
+
+  /** api/db/people.py update_person's checks against the resulting relations and years. */
+  function checkPatch(s: MockState, fid: string, person: Person, fields: PersonFields): void {
+    const parentsAfter = fields.parentIds ?? person.parentIds ?? [];
+    if (fields.parentIds !== undefined || fields.spouseIds !== undefined) {
+      validateRelations(s, fid, fields.parentIds, fields.spouseIds, person.id);
+      const spousesAfter = fields.spouseIds ?? person.spouseIds ?? [];
+      if (parentsAfter.some((id) => spousesAfter.includes(id))) {
+        fail(400, "a person cannot be both a parent and a spouse");
+      }
+      const people = familyPeople(s, fid);
+      const below = descendantIds(people, person.id);
+      if (fields.parentIds && fields.parentIds.some((id) => below.has(id))) {
+        fail(400, "a person cannot be their own ancestor");
+      }
+      const parentsOf = (id: string) =>
+        id === person.id ? parentsAfter : (findPerson(s, fid, id)?.parentIds ?? []);
+      const line = new Set([...below, ...ancestorIds(parentsOf, person.id)]);
+      if (spousesAfter.some((id) => line.has(id))) {
+        fail(400, "a person cannot be married to their own ancestor or descendant");
+      }
+    }
+    const bornAfter = fields.born !== undefined ? fields.born : (person.born ?? null);
+    if (fields.born !== undefined || fields.died !== undefined) {
+      const diedAfter = fields.died !== undefined ? fields.died : (person.died ?? null);
+      if (bornAfter !== null && diedAfter !== null && diedAfter < bornAfter) {
+        fail(400, "a person cannot die before they were born");
+      }
+    }
+    if (fields.born !== undefined || fields.parentIds !== undefined) checkYears(s, fid, bornAfter, null, parentsAfter);
+    if (fields.born !== undefined && bornAfter !== null) {
+      const children = familyPeople(s, fid)
+        .filter((p) => (p.parentIds ?? []).includes(person.id) && typeof p.born === "number")
+        .sort((a, b) => (a.born as number) - (b.born as number) || a.name.localeCompare(b.name));
+      for (const child of children) {
+        if ((child.born as number) < bornAfter) {
+          fail(400, `a person cannot be born after their child (${child.name}, born ${child.born})`);
+        }
+      }
+    }
   }
 
   /** Keep spouse links two-way after a person's spouse list changes. */
@@ -1104,7 +1309,11 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       const found = s.memories.find((m) => m.familyId === run.familyId && m.id === run.memoryId);
       if (!found) throw new Error("That moment is no longer in the family.");
       memory = found;
-      memory.tellings = [...(memory.tellings ?? []), telling];
+      // A teller's new telling replaces their old one in place (api/db/memories.py add_telling).
+      const tellings = memory.tellings ?? [];
+      memory.tellings = tellings.some((t) => t.authorId === run.authorId)
+        ? tellings.map((t) => (t.authorId === run.authorId ? telling : t))
+        : [...tellings, telling];
       memory.participantIds = unique([...(memory.participantIds ?? []), ...participants]);
       memory.version = (memory.version ?? 1) + 1;
       if (!memory.screenplay) {
@@ -1115,6 +1324,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
         memory.propIds = unique([...(memory.propIds ?? []), ...scene.propIds]);
       }
       memory.propIds = unique([...(memory.propIds ?? []), ...kept]);
+      addNarration(memory, run.authorId, run.text);
     } else {
       const id = newId("memory");
       const scene = cloneScene(id, participants);
@@ -1200,6 +1410,37 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       const author = findPerson(live(), run.familyId, run.authorId);
       const authorName = author?.name ?? "Someone";
       const second = Boolean(run.memoryId);
+
+      if (second) {
+        // As the scripted studio's second telling (api/seed/fake_runs.py): no
+        // follow-up and no prop review; the narrator writes this teller's lines
+        // over the moment's scene, then the telling is added.
+        const todos = ["Read the telling", "Write the narration", "Add it to the moment"];
+        const plan = (at: number): RunEvents["plan"] => ({
+          todos: todos.map((text, i) => ({
+            text,
+            status: i < at ? "completed" : i === at ? "in_progress" : "pending",
+          })),
+        });
+        await step("plan", plan(0));
+        await step("subagent_start", { name: "interviewer", task: "Read the new telling of this moment" });
+        await step("subagent_end", { name: "interviewer", summary: "The telling is ready to narrate." });
+        await step("plan", plan(1));
+        await step("subagent_start", { name: "narrator", task: "Write the new teller's narration over the scene" });
+        const lines = splitSentences(run.text).length;
+        await step("subagent_end", {
+          name: "narrator",
+          summary: `${lines} line${lines === 1 ? "" : "s"}, compiled without errors.`,
+        });
+        await step("plan", plan(2));
+        await sleep(stepDelayMs);
+        const memory = commitRun(live(), run);
+        save();
+        emit(run, "scene_ready", { memoryId: memory.id, version: memory.version ?? 1 });
+        await step("plan", plan(todos.length));
+        await step("done", { memoryId: memory.id });
+        return;
+      }
 
       await step("plan", planAt(0));
       await step("subagent_start", { name: "interviewer", task: "Read the telling and look for what's missing" });
@@ -1326,19 +1567,20 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
 
   // Accounts
 
+  // api/routes/auth.py: the request model first (a 422 list), then the email
+  // (stripped and lowercased; it needs an "@") and the name, each a 422 with
+  // one sentence, then a 409 for an email already in use.
   route("POST", "/auth/signup", (s, req) => {
     const body = jsonBody(req.body);
     const errors: FieldError[] = [];
-    const email = requiredString(body, "email", ["body"], errors).trim();
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      errors.push({ loc: ["body", "email"], msg: "Enter a valid email address.", type: "value_error" });
-    }
+    const rawEmail = requiredString(body, "email", ["body"], errors);
     const password = requiredString(body, "password", ["body"], errors, { min: 8 });
-    const name = requiredString(body, "name", ["body"], errors, { min: 1, blankMsg: "Enter your name." });
+    const name = requiredString(body, "name", ["body"], errors);
     check(errors);
-    if (s.users.some((u) => u.email.toLowerCase() === email.toLowerCase())) {
-      fail(409, "An account with that email already exists.");
-    }
+    const email = rawEmail.trim().toLowerCase();
+    if (!email || !email.includes("@")) fail(422, "Enter a valid email");
+    if (!name.trim()) fail(422, "Enter your name");
+    if (s.users.some((u) => u.email.toLowerCase() === email)) fail(409, EMAIL_TAKEN);
     const user: MockUser = {
       id: newId("user"),
       email,
@@ -1355,11 +1597,11 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
   route("POST", "/auth/login", (s, req) => {
     const body = jsonBody(req.body);
     const errors: FieldError[] = [];
-    const email = requiredString(body, "email", ["body"], errors).trim();
+    const email = requiredString(body, "email", ["body"], errors).trim().toLowerCase();
     const password = requiredString(body, "password", ["body"], errors);
     check(errors);
-    const user = s.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
-    if (!user || user.password !== password) fail(401, "That email and password don't match.");
+    const user = s.users.find((u) => u.email.toLowerCase() === email);
+    if (!user || user.password !== password) fail(401, INVALID_LOGIN);
     s.session = user.id;
     save();
     return json(200, meOf(s, user));
@@ -1375,11 +1617,12 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
 
   // Families
 
+  // api/routes/families.py create_family: every check before anything is written.
   route("POST", "/families", (s, req) => {
     const user = requireUser(s);
     const body = jsonBody(req.body);
     const errors: FieldError[] = [];
-    const name = requiredString(body, "name", ["body"], errors, { min: 1, blankMsg: "Give the family a name." });
+    const name = requiredString(body, "name", ["body"], errors);
     const fid = newId("family");
     let fields: PersonFields = {};
     if (body.person === undefined || body.person === null) {
@@ -1387,9 +1630,15 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     } else if (!isRecord(body.person)) {
       errors.push({ loc: ["body", "person"], msg: "Input should be a valid dictionary", type: "dict_type" });
     } else {
-      fields = readPerson(s, fid, body.person, ["body", "person"], errors, { partial: false });
+      fields = readPerson(body.person, ["body", "person"], errors, { partial: false });
     }
     check(errors);
+    if (!name.trim()) fail(400, "A family needs a name");
+    if (fields.parentIds?.length || fields.spouseIds?.length) {
+      fail(400, "The first person in a new family cannot have parents or spouses yet");
+    }
+    requireName(fields);
+    checkYears(s, fid, fields.born ?? null, fields.died ?? null, []);
     const family: MockFamily = {
       id: fid,
       name: name.trim(),
@@ -1420,10 +1669,11 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     return json(201, out);
   });
 
+  // Revoking a code this family has, even one already revoked or expired, is a 204.
   route("DELETE", "/families/{fid}/invites/{code}", (s, _req, [fid, code]) => {
     const { family } = requireAdmin(s, fid);
     const invite = family.invites.find((i) => i.code === code);
-    if (!invite) fail(404, "We couldn't find that invite.");
+    if (!invite) fail(404, INVITE_NOT_FOUND);
     invite.revoked = true;
     save();
     return noContent();
@@ -1431,7 +1681,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
 
   route("GET", "/invites/{code}", (s, _req, [code]) => {
     const found = findInvite(s, code);
-    if (!found) fail(404, "That invite link isn't valid any more.");
+    if (!found) fail(404, INVITE_NOT_FOUND);
     const out: InvitePreview = {
       familyId: found.family.id,
       familyName: found.family.name,
@@ -1442,46 +1692,56 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     return json(200, out);
   });
 
+  // api/routes/families.py join_family: the body (a 422 list, then exactly one
+  // of personId or person, a 422 sentence), the invite (404), then the claim or
+  // the new person. Someone already in the family may use a link again: claiming
+  // their own person is a no-op, anything else is a 409. A failed join leaves no
+  // membership behind.
   route("POST", "/invites/{code}/join", (s, req, [code]) => {
     const user = requireUser(s);
-    const found = findInvite(s, code);
-    if (!found) fail(404, "That invite link isn't valid any more.");
-    const { family } = found;
     const body = jsonBody(req.body);
     const errors: FieldError[] = [];
-    const hasId = body.personId !== undefined && body.personId !== null;
-    const hasPerson = body.person !== undefined && body.person !== null;
-    if (hasId === hasPerson) {
-      failFields([
-        { loc: ["body"], msg: "Value error, Give exactly one of personId or person", type: "value_error" },
-      ]);
-    }
     let fields: PersonFields | null = null;
     let personId: string | null = null;
-    if (hasId) {
-      if (typeof body.personId !== "string" || !body.personId) {
+    if (body.personId !== undefined && body.personId !== null) {
+      if (typeof body.personId !== "string") {
         errors.push({ loc: ["body", "personId"], msg: "Input should be a valid string", type: "string_type" });
       } else {
         personId = body.personId;
       }
-    } else if (!isRecord(body.person)) {
-      errors.push({ loc: ["body", "person"], msg: "Input should be a valid dictionary", type: "dict_type" });
-    } else {
-      fields = readPerson(s, family.id, body.person, ["body", "person"], errors, { partial: false });
+    }
+    if (body.person !== undefined && body.person !== null) {
+      if (!isRecord(body.person)) {
+        errors.push({ loc: ["body", "person"], msg: "Input should be a valid dictionary", type: "model_attributes_type" });
+      } else {
+        fields = readPerson(body.person, ["body", "person"], errors, { partial: false });
+      }
     }
     check(errors);
-    if (family.members.some((m) => m.userId === user.id)) fail(409, "You're already in this family.");
+    if ((personId === null) === (fields === null)) fail(422, JOIN_EXACTLY_ONE);
+    const found = findInvite(s, code);
+    if (!found) fail(404, INVITE_NOT_FOUND);
+    const { family } = found;
+    const mine = personOf(s, family.id, user.id);
+
     let person: Person;
-    if (personId) {
+    if (personId !== null) {
       const target = findPerson(s, family.id, personId);
-      if (!target) fail(404, "We couldn't find that person in this family.");
-      if (target.userId) fail(409, "Someone has already claimed that person.");
+      if (!target) fail(404, PERSON_NOT_FOUND);
+      if (target.userId && target.userId !== user.id) fail(409, "Someone has already claimed this person");
+      if (mine && mine.id !== target.id) fail(409, ALREADY_HAS_PERSON);
       target.userId = user.id;
       person = target;
     } else {
-      person = createPerson(s, family.id, fields ?? {}, user.id, user.id);
+      const add = fields as PersonFields;
+      requireName(add);
+      checkNewPerson(s, family.id, add);
+      if (mine) fail(409, "You already have a person in this family");
+      person = createPerson(s, family.id, add, user.id, user.id);
     }
-    family.members.push({ userId: user.id, role: "member", joinedAt: now().toISOString() });
+    if (!family.members.some((m) => m.userId === user.id)) {
+      family.members.push({ userId: user.id, role: "member", joinedAt: now().toISOString() });
+    }
     save();
     const out: JoinResponse = { family: summaryOf(s, family, user.id), person };
     return json(200, out);
@@ -1491,8 +1751,10 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     const { user } = requireMember(s, fid);
     const body = jsonBody(req.body);
     const errors: FieldError[] = [];
-    const fields = readPerson(s, fid, body, ["body"], errors, { partial: false });
+    const fields = readPerson(body, ["body"], errors, { partial: false });
     check(errors);
+    requireName(fields);
+    checkNewPerson(s, fid, fields);
     const person = createPerson(s, fid, fields, null, user.id);
     save();
     return json(201, person);
@@ -1500,19 +1762,14 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
 
   route("PATCH", "/families/{fid}/people/{id}", (s, req, [fid, id]) => {
     requireMember(s, fid);
-    const person = findPerson(s, fid, id);
-    if (!person) fail(404, "We couldn't find that person.");
     const body = jsonBody(req.body);
     const errors: FieldError[] = [];
-    const fields = readPerson(s, fid, body, ["body"], errors, { partial: true, selfId: id });
-    if (fields.died !== undefined || fields.born !== undefined) {
-      const born = fields.born !== undefined ? fields.born : person.born ?? null;
-      const died = fields.died !== undefined ? fields.died : person.died ?? null;
-      if (born !== null && died !== null && died < born && !errors.some((e) => e.loc.includes("died"))) {
-        errors.push({ loc: ["body", "died"], msg: "Died must be the same as or after born.", type: "value_error" });
-      }
-    }
+    const fields = readPerson(body, ["body"], errors, { partial: true });
     check(errors);
+    requireName(fields);
+    const person = findPerson(s, fid, id);
+    if (!person) fail(404, PERSON_NOT_FOUND);
+    checkPatch(s, fid, person, fields);
     const spousesBefore = [...(person.spouseIds ?? [])];
     if (fields.name !== undefined) person.name = fields.name;
     if (fields.born !== undefined) person.born = fields.born;
@@ -1578,7 +1835,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
   route("GET", "/families/{fid}/people/{id}/book", (s, _req, [fid, id]) => {
     requireMember(s, fid);
     const person = findPerson(s, fid, id);
-    if (!person) fail(404, "We couldn't find that person.");
+    if (!person) fail(404, "Not found");
     const memories = s.memories
       .filter(
         (m) =>
@@ -1593,7 +1850,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
   route("GET", "/families/{fid}/memories/{id}", (s, _req, [fid, id]) => {
     requireMember(s, fid);
     const memory = s.memories.find((m) => m.familyId === fid && m.id === id);
-    if (!memory) fail(404, "We couldn't find that memory.");
+    if (!memory) fail(404, "Not found");
     const out: MemoryResponse = { memory, ...memoryBundle(s, fid, [memory]) };
     return json(200, out);
   });
@@ -1645,17 +1902,18 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
 
   route("PATCH", "/families/{fid}/props/{id}", (s, req, [fid, id]) => {
     requireMember(s, fid);
-    const prop = s.props.find((p) => p.familyId === fid && p.id === id);
-    if (!prop) fail(404, "We couldn't find that prop.");
     const body = jsonBody(req.body);
     const errors: FieldError[] = [];
-    const name =
-      body.name === undefined || body.name === null
-        ? null
-        : requiredString(body, "name", ["body"], errors, { min: 1, blankMsg: "Give the prop a name." });
+    const rawName = optionalString(body, "name", ["body"], errors);
     const rawPhotoId = optionalString(body, "photoId", ["body"], errors);
-    const photoId = rawPhotoId ? bareId(rawPhotoId) : null;
     check(errors);
+    if (rawName === null && rawPhotoId === null) fail(422, "Nothing to change");
+    const name = rawName === null ? null : rawName.trim();
+    if (name !== null && !name) fail(422, "Name must not be blank");
+    if (name !== null && name.length > 200) fail(422, "Name must be at most 200 characters");
+    const prop = s.props.find((p) => p.familyId === fid && p.id === id);
+    if (!prop) fail(404, "Not found");
+    const photoId = rawPhotoId ? bareId(rawPhotoId) : null;
     // As api/routes/props.py patch_prop: 400 "Unknown photo" for a photo that is not
     // this family's, and the art keeps the "media/<id>" form whichever form was sent.
     if (photoId && media.get(photoId)?.familyId !== fid) fail(400, "Unknown photo");
@@ -1690,77 +1948,85 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       failFields([{ loc: ["body", "file"], msg: "Field required", type: "missing" }]);
     }
     const type = (file.type || "").split(";", 1)[0].trim().toLowerCase();
-    if (!UPLOAD_IMAGE_TYPES.includes(type)) fail(415, "Upload a JPEG, PNG, WebP, GIF or HEIC image");
+    if (!UPLOAD_IMAGE_TYPES.includes(type)) fail(415, "Upload a JPEG, PNG, WebP, GIF or HEIC/HEIF image");
     if (file.size > MAX_MEDIA_BYTES) fail(413, "Photos must be 20 MB or smaller");
     if (file.size === 0) fail(400, "The file is empty");
     return json(201, { id: storeMedia(fid, file) });
   });
 
+  // api/routes/memories.py submit_memory, step by step: the form (a 422 list),
+  // the fields (422 sentences), the author (409), the moment (404), the
+  // participants (400), the photos (422, 415, 413), then the studio: a second
+  // telling needs a moment with a scene (409). 202 with the run id.
   route("POST", "/families/{fid}/memories", (s, req, [fid]) => {
     const m = requireMember(s, fid);
-    const author = requireAuthor(s, m);
-    if (typeof FormData === "undefined" || !(req.body instanceof FormData)) {
-      failFields([{ loc: ["body"], msg: "Send the memory as multipart form data.", type: "value_error" }]);
-    }
-    const form = req.body;
+    const form = typeof FormData !== "undefined" && req.body instanceof FormData ? req.body : new FormData();
     const errors: FieldError[] = [];
+    // FastAPI reads an empty form value as a missing one.
     const field = (key: string): string | null => {
       const v = form.get(key);
-      return typeof v === "string" ? v : null;
+      return typeof v === "string" && v !== "" ? v : null;
     };
 
     const text = field("text");
     if (text === null) errors.push({ loc: ["body", "text"], msg: "Field required", type: "missing" });
-    else if (!text.trim()) errors.push({ loc: ["body", "text"], msg: "Tell the story in a few words first.", type: "value_error" });
-
-    const maxYear = now().getFullYear();
     const yearRaw = field("year");
     let year = 0;
-    if (yearRaw === null || !yearRaw.trim()) {
+    if (yearRaw === null) {
       errors.push({ loc: ["body", "year"], msg: "Field required", type: "missing" });
-    } else if (!/^-?\d+$/.test(yearRaw.trim())) {
+    } else if (!/^\s*[-+]?\d+\s*$/.test(yearRaw)) {
       errors.push({
         loc: ["body", "year"],
         msg: "Input should be a valid integer, unable to parse string as an integer",
         type: "int_parsing",
       });
     } else {
-      year = parseInt(yearRaw.trim(), 10);
-      if (year < MIN_MEMORY_YEAR || year > maxYear) {
-        errors.push({
-          loc: ["body", "year"],
-          msg: `Enter a year between ${MIN_MEMORY_YEAR} and ${maxYear}.`,
-          type: "value_error",
-        });
-      }
-    }
-
-    const participantIds = unique(
-      form
-        .getAll("participantIds")
-        .filter((v): v is string => typeof v === "string")
-        .map((v) => v.trim())
-        .filter(Boolean),
-    );
-    const unknown = participantIds.filter((id) => !findPerson(s, fid, id));
-    if (unknown.length) {
-      errors.push({
-        loc: ["body", "participantIds"],
-        msg: `These people aren't in this family: ${unknown.join(", ")}.`,
-        type: "value_error",
-      });
-    }
-
-    const photos = form.getAll("photos").filter((v): v is File => typeof v !== "string" && v.size > 0);
-    if (photos.some((p) => p.type && !p.type.startsWith("image/"))) {
-      errors.push({ loc: ["body", "photos"], msg: "Photos must be image files.", type: "value_error" });
+      year = parseInt(yearRaw, 10);
     }
     check(errors);
 
-    const memoryId = field("memoryId")?.trim() || null;
-    if (memoryId && !s.memories.some((x) => x.familyId === fid && x.id === memoryId)) {
-      fail(404, "We couldn't find that memory.");
+    const blankToNull = (v: string | null) => (v !== null && v.trim() ? v : null);
+    if (!(text as string).trim()) fail(422, "Write the memory before submitting it");
+    const question = blankToNull(field("question"));
+    const title = blankToNull(field("title"));
+    if ((text as string).length > 20_000) fail(422, "The memory must be at most 20,000 characters");
+    if (question && question.length > 1_000) fail(422, "The question must be at most 1,000 characters");
+    if (title && title.length > 200) fail(422, "The title must be at most 200 characters");
+    const participantIds = unique(form.getAll("participantIds").filter((v): v is string => typeof v === "string"));
+    if (participantIds.length > MAX_PARTICIPANTS) {
+      fail(422, `A memory can have at most ${MAX_PARTICIPANTS} people in it`);
     }
+    const maxYear = now().getUTCFullYear() + 1;
+    if (year < MIN_MEMORY_YEAR || year > maxYear) fail(422, `Year must be between ${MIN_MEMORY_YEAR} and ${maxYear}`);
+
+    const author = requireAuthor(s, m);
+    const memoryId = blankToNull(field("memoryId"));
+    const moment = memoryId ? s.memories.find((x) => x.familyId === fid && x.id === memoryId) : null;
+    if (memoryId && !moment) fail(404, MEMORY_NOT_FOUND);
+    if (participantIds.some((id) => !findPerson(s, fid, id))) {
+      fail(400, "Every participant must be a person in this family");
+    }
+
+    const photos: File[] = [];
+    for (const part of form.getAll("photos")) {
+      if (typeof part === "string") {
+        if (part) fail(422, "Photos must be uploaded as files");
+        continue;
+      }
+      if (!part.name && part.size === 0) continue;
+      photos.push(part as File);
+    }
+    if (photos.length > MAX_PHOTOS) fail(422, `Attach at most ${MAX_PHOTOS} photos`);
+    for (const photo of photos) {
+      const type = (photo.type || "").split(";", 1)[0].trim().toLowerCase();
+      if (!UPLOAD_IMAGE_TYPES.includes(type)) fail(415, "Photos must be JPEG, PNG, WebP, GIF or HEIC images");
+    }
+    for (const photo of photos) {
+      if (photo.size > MAX_MEDIA_BYTES) fail(413, "A photo is too large");
+      if (photo.size === 0) fail(422, "A photo is empty");
+    }
+    // The studio adds a telling only to a moment that has a scene (seed/fake_runs.py MemoryNotFound).
+    if (moment && (!moment.screenplay || !moment.timeline)) fail(409, NO_SCENE);
 
     const photoIds = photos.map((photo) => storeMedia(fid, photo));
 
@@ -1769,10 +2035,10 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       familyId: fid,
       userId: m.user.id,
       authorId: author.id,
-      text: (text ?? "").trim(),
+      text: (text as string).trim(),
       year,
-      question: field("question")?.trim() || null,
-      title: field("title")?.trim() || null,
+      question: question?.trim() || null,
+      title: title?.trim() || null,
       memoryId,
       participantIds: unique([author.id, ...participantIds]),
       photoIds,
@@ -1789,80 +2055,95 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     runs.set(run.id, run);
     void runScript(run, generation);
     const out: SubmitMemoryResponse = { runId: run.id, memoryId };
-    return json(201, out);
+    return json(202, out);
   });
 
-  function ownRun(s: MockState, fid: string, runId: string): MockRun {
-    const { user } = requireMember(s, fid);
+  /** A run of this family (api/routes/memories.py: any member may follow it; 404 otherwise). */
+  function familyRun(fid: string, runId: string): MockRun {
     const run = runs.get(runId);
-    if (!run || run.familyId !== fid || run.userId !== user.id) fail(404, "We couldn't find that run.");
+    if (!run || run.familyId !== fid) fail(404, RUN_NOT_FOUND);
     return run;
   }
 
   route("GET", "/families/{fid}/runs/{id}/stream", (s, req, [fid, id]) => {
-    const run = ownRun(s, fid, id);
-    return streamResponse(run, req.signal);
+    requireMember(s, fid);
+    return streamResponse(familyRun(fid, id), req.signal);
   });
 
+  // api/routes/memories.py answer_run_route: the body (a 422 list, then
+  // _check_answer's sentences), then the run (404), its owner (403), whether it
+  // is waiting (409 NOT_WAITING) and for this kind (409 ANSWER_WRONG_KIND). As
+  // in the scripted studio, edits for a prop not in the review are ignored.
   route("POST", "/families/{fid}/runs/{id}/answer", (s, req, [fid, id]) => {
-    const run = ownRun(s, fid, id);
+    const { user } = requireMember(s, fid);
     const body = jsonBody(req.body);
+    const errors: FieldError[] = [];
     const kind = body.kind;
     if (kind !== "answer" && kind !== "props" && kind !== "merge") {
-      failFields([
-        {
-          loc: ["body", "kind"],
-          msg: kind === undefined ? "Field required" : "Input should be 'answer', 'props' or 'merge'",
-          type: kind === undefined ? "missing" : "literal_error",
-        },
-      ]);
+      errors.push({
+        loc: ["body", "kind"],
+        msg: kind === undefined ? "Field required" : "Input should be 'answer', 'props' or 'merge'",
+        type: kind === undefined ? "missing" : "literal_error",
+      });
     }
-    if (run.finished || run.waiting !== kind || !run.resume) fail(409, NOT_WAITING);
-
-    if (kind === "answer") {
-      const text = typeof body.text === "string" ? body.text.trim() : "";
-      if (!text) failFields([{ loc: ["body", "text"], msg: "Write a short answer first.", type: "value_error" }]);
-      run.text = `${run.text}\n\n${text}`;
-    } else if (kind === "props") {
+    const text = optionalString(body, "text", ["body"], errors);
+    if (body.approve !== undefined && body.approve !== null && typeof body.approve !== "boolean") {
+      errors.push({ loc: ["body", "approve"], msg: "Input should be a valid boolean", type: "bool_type" });
+    }
+    let edits: PropEdit[] | null = null;
+    if (body.props !== undefined && body.props !== null) {
       if (!Array.isArray(body.props)) {
-        failFields([{ loc: ["body", "props"], msg: "Field required", type: "missing" }]);
-      }
-      const edits = body.props as unknown[];
-      const errors: FieldError[] = [];
-      const chipIds = new Set(run.chips.map((c) => c.id));
-      const valid: PropEdit[] = [];
-      edits.forEach((raw, i) => {
-        const loc: Loc = ["body", "props", i];
-        if (!isRecord(raw)) {
-          errors.push({ loc, msg: "Input should be a valid dictionary", type: "dict_type" });
-          return;
-        }
-        const edit = raw as unknown as PropEdit;
-        if (typeof edit.id !== "string" || !chipIds.has(edit.id)) {
-          errors.push({ loc: [...loc, "id"], msg: "That prop isn't in this review.", type: "value_error" });
-          return;
-        }
-        if (!["keep", "rename", "remove", "replace_photo"].includes(edit.action)) {
-          errors.push({
-            loc: [...loc, "action"],
-            msg: "Input should be 'keep', 'rename', 'remove' or 'replace_photo'",
-            type: "literal_error",
-          });
-          return;
-        }
-        if (edit.action === "rename" && (typeof edit.name !== "string" || !edit.name.trim())) {
-          errors.push({ loc: [...loc, "name"], msg: "Give the prop a name.", type: "value_error" });
-          return;
-        }
-        if (edit.action === "replace_photo") {
-          if (typeof edit.photoId !== "string" || media.get(bareId(edit.photoId))?.familyId !== fid) {
-            errors.push({ loc: [...loc, "photoId"], msg: "We couldn't find that photo.", type: "value_error" });
+        errors.push({ loc: ["body", "props"], msg: "Input should be a valid list", type: "list_type" });
+      } else {
+        edits = [];
+        body.props.forEach((raw: unknown, i: number) => {
+          const loc: Loc = ["body", "props", i];
+          if (!isRecord(raw)) {
+            errors.push({ loc, msg: "Input should be a valid dictionary", type: "model_attributes_type" });
             return;
           }
+          const before = errors.length;
+          requiredString(raw, "id", loc, errors);
+          if (!["keep", "rename", "remove", "replace_photo"].includes(raw.action as string)) {
+            errors.push({
+              loc: [...loc, "action"],
+              msg:
+                raw.action === undefined
+                  ? "Field required"
+                  : "Input should be 'keep', 'rename', 'remove' or 'replace_photo'",
+              type: raw.action === undefined ? "missing" : "literal_error",
+            });
+          }
+          optionalString(raw, "name", loc, errors);
+          optionalString(raw, "photoId", loc, errors);
+          if (errors.length === before) edits?.push(raw as unknown as PropEdit);
+        });
+      }
+    }
+    check(errors);
+    if (kind === "answer" && !text?.trim()) fail(422, "An answer needs text");
+    if (kind === "props" && edits === null) fail(422, "A props review needs the props list");
+    if (kind === "merge" && typeof body.approve !== "boolean") fail(422, "A merge answer needs approve");
+    if (text && text.length > 20_000) fail(422, "The answer must be at most 20,000 characters");
+    if (edits && edits.length > 100) fail(422, "A props review can list at most 100 props");
+
+    const run = familyRun(fid, id);
+    if (run.userId !== user.id) fail(403, NOT_RUN_OWNER);
+    if (run.finished || !run.waiting || !run.resume) fail(409, NOT_WAITING);
+    if (run.waiting !== kind) fail(409, ANSWER_WRONG_KIND);
+
+    if (kind === "answer") {
+      run.text = `${run.text}\n\n${(text as string).trim()}`;
+    } else if (kind === "props") {
+      const chipIds = new Set(run.chips.map((c) => c.id));
+      const valid = (edits ?? []).filter((edit) => {
+        if (!chipIds.has(edit.id)) return false;
+        if (edit.action === "rename") return typeof edit.name === "string" && edit.name.trim() !== "";
+        if (edit.action === "replace_photo") {
+          return typeof edit.photoId === "string" && media.get(bareId(edit.photoId))?.familyId === fid;
         }
-        valid.push(edit);
+        return true;
       });
-      check(errors);
       for (const edit of valid) {
         if (edit.action === "remove") {
           run.chips = run.chips.filter((c) => c.id !== edit.id);
@@ -1873,10 +2154,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
         }
       }
     } else {
-      if (typeof body.approve !== "boolean") {
-        failFields([{ loc: ["body", "approve"], msg: "Input should be a valid boolean", type: "bool_type" }]);
-      }
-      run.mergeApproved = body.approve;
+      run.mergeApproved = body.approve === true;
     }
 
     const resume = run.resume;
@@ -1888,8 +2166,11 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
 
   route("GET", "/families/{fid}/questions", (s, _req, [fid]) => {
     const { person } = requireMember(s, fid);
+    // Newest first, as api/db/memories.py open_questions (the list is in the order asked).
     const questions = person
-      ? s.questions.filter((q) => q.familyId === fid && q.personId === person.id && (q.status ?? "open") === "open")
+      ? s.questions
+          .filter((q) => q.familyId === fid && q.personId === person.id && (q.status ?? "open") === "open")
+          .reverse()
       : [];
     const out: QuestionsResponse = { questions };
     return json(200, out);

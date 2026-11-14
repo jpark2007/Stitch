@@ -8,6 +8,9 @@ import {
   FOLLOW_UP_QUESTION,
   MAX_MEDIA_BYTES,
   MOCK_STORAGE_KEY,
+  NOT_WAITING,
+  addNarration,
+  splitSentences,
 } from "../mock/mockBackend.ts";
 import { createApiClient, isApiError } from "../../../lib/api.ts";
 
@@ -329,9 +332,19 @@ test("signup, family, invite, join by claiming a person", async () => {
   assert.equal(tree.body.familyName, "The Maos");
   assert.equal(tree.body.people.find((p) => p.id === kid.body.id).userId, jun.user.id);
 
+  // As the API: opening the link again and claiming yourself is a no-op 200;
+  // adding a second person of your own is a 409.
+  const reclaim = await call(b, "POST", `/invites/${invite.body.code}/join`, { personId: kid.body.id });
+  assert.equal(reclaim.status, 200);
+  assert.equal(reclaim.body.person.id, kid.body.id);
   const again = await call(b, "POST", `/invites/${invite.body.code}/join`, { person: { name: "Jun again" } });
   assert.equal(again.status, 409);
-  assert.equal(again.body.detail, "You're already in this family.");
+  assert.equal(again.body.detail, "You already have a person in this family");
+  const other = await call(b, "POST", `/invites/${invite.body.code}/join`, { personId: fam.person.id });
+  assert.equal(other.status, 409);
+  assert.equal(other.body.detail, "Someone has already claimed this person");
+  const members = (await call(b, "GET", "/me")).body.families;
+  assert.equal(members.length, 1, "joining again adds no second membership");
 
   // The claimed person no longer shows in the preview.
   const preview2 = await call(b, "GET", `/invites/${invite.body.code}`);
@@ -346,11 +359,16 @@ test("joining by adding yourself with relationships", async () => {
   assert.equal(preview.body.familyName, "The Riveras");
   assert.deepEqual(preview.body.unclaimedPeople.map((p) => p.id).sort(), ["luis", "maya", "rosa", "sam"]);
 
+  // A bad relation is the API's 400 InvalidRelation, and a failed join leaves no membership.
   const unknownRel = await call(b, "POST", "/invites/riveras-demo/join", {
     person: { name: "Lena", parentIds: ["nobody"] },
   });
-  assert.equal(unknownRel.status, 422);
-  assert.deepEqual(unknownRel.body.detail[0].loc, ["body", "person", "parentIds"]);
+  assert.equal(unknownRel.status, 400);
+  assert.equal(unknownRel.body.detail, "unknown person id(s) in this family: ['nobody']");
+  assert.deepEqual((await call(b, "GET", "/me")).body.families, []);
+  const blank = await call(b, "POST", "/invites/riveras-demo/join", { person: { name: "  " } });
+  assert.equal(blank.status, 400);
+  assert.equal(blank.body.detail, "A person needs a name");
 
   const joined = await call(b, "POST", "/invites/riveras-demo/join", {
     person: { name: "Lena", born: 1990, spouseIds: ["sam"] },
@@ -369,7 +387,19 @@ test("signup and login errors", async () => {
 
   const dup = await call(b, "POST", "/auth/signup", { email: "MEI@example.com", password: "long-enough", name: "Mei" });
   assert.equal(dup.status, 409);
-  assert.equal(dup.body.detail, "An account with that email already exists.");
+  assert.equal(dup.body.detail, "An account with this email already exists");
+
+  // The API's own 422 sentences for a bad email or a blank name, and the email is stored lowercased.
+  const badEmail = await call(b, "POST", "/auth/signup", { email: "nope", password: "long-enough", name: "X" });
+  assert.equal(badEmail.status, 422);
+  assert.equal(badEmail.body.detail, "Enter a valid email");
+  const blankName = await call(b, "POST", "/auth/signup", { email: "y@example.com", password: "long-enough", name: " " });
+  assert.equal(blankName.status, 422);
+  assert.equal(blankName.body.detail, "Enter your name");
+  const upper = await call(b, "POST", "/auth/signup", { email: "  Zed@Example.COM ", password: "long-enough", name: "Zed" });
+  assert.equal(upper.status, 201);
+  assert.equal(upper.body.user.email, "zed@example.com");
+  await call(b, "POST", "/auth/logout");
 
   const short = await call(b, "POST", "/auth/signup", { email: "x@example.com", password: "short", name: "X" });
   assert.equal(short.status, 422);
@@ -396,7 +426,7 @@ test("signup and login errors", async () => {
 
   const wrong = await call(b, "POST", "/auth/login", { email: "mei@example.com", password: "nope-nope" });
   assert.equal(wrong.status, 401);
-  assert.equal(wrong.body.detail, "That email and password don't match.");
+  assert.equal(wrong.body.detail, "Invalid email or password");
 
   const demo = await login(b, "DAVID@example.com");
   assert.deepEqual(demo.families, [{ id: "sample_family", name: "The Riveras", role: "admin", personId: "dad" }]);
@@ -468,8 +498,8 @@ test("people edits and member removal follow the server rules", async () => {
   await login(b, "david@example.com");
 
   const bad = await call(b, "POST", "/families/sample_family/people", { name: "Tia", spouseIds: ["ghost"] });
-  assert.equal(bad.status, 422);
-  assert.deepEqual(bad.body.detail[0].loc, ["body", "spouseIds"]);
+  assert.equal(bad.status, 400);
+  assert.equal(bad.body.detail, "unknown person id(s) in this family: ['ghost']");
 
   const tia = await call(b, "POST", "/families/sample_family/people", {
     name: "Tia",
@@ -484,8 +514,11 @@ test("people edits and member removal follow the server rules", async () => {
   const patched = await call(b, "PATCH", `/families/sample_family/people/${tia.body.id}`, { spouseIds: ["luis"] });
   assert.equal(patched.status, 200);
   const self = await call(b, "PATCH", `/families/sample_family/people/${tia.body.id}`, { parentIds: [tia.body.id] });
-  assert.equal(self.status, 422);
-  assert.equal((await call(b, "PATCH", "/families/sample_family/people/ghost", { name: "x" })).status, 404);
+  assert.equal(self.status, 400);
+  assert.equal(self.body.detail, "a person cannot be their own parent or spouse");
+  const ghost = await call(b, "PATCH", "/families/sample_family/people/ghost", { name: "x" });
+  assert.equal(ghost.status, 404);
+  assert.equal(ghost.body.detail, "Person not found");
 
   // Last admin cannot remove themselves.
   const last = await call(b, "DELETE", "/families/sample_family/members/user_david");
@@ -510,7 +543,7 @@ test("PATCH members role: promote, demote, no-op, 403, 404, 409 and stepping dow
   for (const [uid, role] of [["user_david", "member"], ["user_ana", "admin"]]) {
     const r = await call(b, "PATCH", `${F}/members/${uid}`, { role });
     assert.equal(r.status, 403, uid);
-    assert.equal(r.body.detail, "Only a family admin can do that.");
+    assert.equal(r.body.detail, "Admins only");
   }
 
   await login(b, "david@example.com");
@@ -520,12 +553,13 @@ test("PATCH members role: promote, demote, no-op, 403, 404, 409 and stepping dow
   // The only admin can't step down: 409, nothing changes.
   const last = await call(b, "PATCH", `${F}/members/user_david`, { role: "member" });
   assert.equal(last.status, 409);
-  assert.equal(last.body.detail, "A family needs at least one admin.");
+  assert.equal(last.body.detail, "A family needs at least one admin");
   assert.deepEqual(roles(await get()), { user_david: "admin", user_ana: "member" });
 
   // Unknown member: 404. A bad or missing role: 422 on body.role.
   const ghost = await call(b, "PATCH", `${F}/members/user_ghost`, { role: "admin" });
   assert.equal(ghost.status, 404);
+  assert.equal(ghost.body.detail, "Member not found");
   const bad = await call(b, "PATCH", `${F}/members/user_ana`, { role: "owner" });
   assert.equal(bad.status, 422);
   assert.deepEqual(bad.body.detail[0].loc, ["body", "role"]);
@@ -586,7 +620,7 @@ test("the API client's setMemberRole works against the mock", async () => {
   } catch (e) {
     assert.ok(isApiError(e));
     assert.equal(e.status, 409);
-    assert.equal(e.detail, "A family needs at least one admin.");
+    assert.equal(e.detail, "A family needs at least one admin");
   }
 });
 
@@ -603,18 +637,29 @@ test("submitting a short memory runs the scripted studio with pauses", async () 
   const b = makeBackend();
   await login(b, "david@example.com");
 
-  // Validation.
+  // Validation, with api/routes/memories.py's statuses and sentences.
   const empty = await submit(b, "sample_family", { text: "  ", year: 2001 });
   assert.equal(empty.status, 422);
-  assert.deepEqual(empty.body.detail[0].loc, ["body", "text"]);
+  assert.equal(empty.body.detail, "Write the memory before submitting it");
+  const missing = await submit(b, "sample_family", { year: 2001 });
+  assert.equal(missing.status, 422);
+  assert.deepEqual(missing.body.detail[0].loc, ["body", "text"]);
   const badYear = await submit(b, "sample_family", { text: "hi", year: 1700 });
   assert.equal(badYear.status, 422);
-  assert.deepEqual(badYear.body.detail[0].loc, ["body", "year"]);
+  assert.equal(badYear.body.detail, `Year must be between 1800 and ${NOW.getUTCFullYear() + 1}`);
+  const nextYear = await submit(b, "sample_family", { text: "hi", year: NOW.getUTCFullYear() + 1 });
+  assert.equal(nextYear.status, 202, "next year is still allowed");
   const notInt = await submit(b, "sample_family", { text: "hi", year: "nineteen" });
+  assert.equal(notInt.status, 422);
   assert.deepEqual(notInt.body.detail[0].loc, ["body", "year"]);
   const stranger = await submit(b, "sample_family", { text: "hi", year: 2001, participantIds: ["ghost"] });
-  assert.equal(stranger.status, 422);
-  assert.deepEqual(stranger.body.detail[0].loc, ["body", "participantIds"]);
+  assert.equal(stranger.status, 400);
+  assert.equal(stranger.body.detail, "Every participant must be a person in this family");
+  const ghostMoment = await submit(b, "sample_family", { text: "hi", year: 2001, memoryId: "ghost" });
+  assert.equal(ghostMoment.status, 404);
+  assert.equal(ghostMoment.body.detail, "Memory not found");
+  const notPhoto = await submit(b, "sample_family", { text: "hi", year: 2001 }, [new Blob(["x"], { type: "text/plain" })]);
+  assert.equal(notPhoto.status, 415);
   const json = await call(b, "POST", "/families/sample_family/memories", { text: "hi", year: 2001 });
   assert.equal(json.status, 422);
 
@@ -625,7 +670,7 @@ test("submitting a short memory runs the scripted studio with pauses", async () 
     { text: "Sam learned to swim at the lake.", year: 2001, question: "A summer to remember", participantIds: ["sam"] },
     [photo],
   );
-  assert.equal(sub.status, 201);
+  assert.equal(sub.status, 202, "202 Accepted, as the API");
   assert.equal(sub.body.memoryId, null);
   const { runId } = sub.body;
 
@@ -648,11 +693,15 @@ test("submitting a short memory runs the scripted studio with pauses", async () 
   // Paused: wrong kinds are refused, an empty answer is invalid.
   const wrong = await answer(b, "sample_family", runId, { kind: "props", props: [] });
   assert.equal(wrong.status, 409);
-  assert.equal(wrong.body.detail, "The studio isn't waiting for that.");
-  assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: " " })).status, 422);
+  assert.equal(wrong.body.detail, "That answer does not match what this run is waiting for");
+  const blank = await answer(b, "sample_family", runId, { kind: "answer", text: " " });
+  assert.equal(blank.status, 422);
+  assert.equal(blank.body.detail, "An answer needs text");
   assert.equal((await answer(b, "sample_family", runId, { kind: "nope" })).status, 422);
   assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "At the lake, with Maya." })).status, 204);
-  assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "twice" })).status, 409);
+  const twice = await answer(b, "sample_family", runId, { kind: "answer", text: "twice" });
+  assert.equal(twice.status, 409);
+  assert.equal(twice.body.detail, NOT_WAITING);
 
   const second = await readUntil(events, "props_found");
   assert.ok(second.some((e) => e.event === "subagent_start" && e.data.name === "storyboarder"));
@@ -664,11 +713,17 @@ test("submitting a short memory runs the scripted studio with pauses", async () 
   assert.equal(fresh.reused, false);
 
   assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "x" })).status, 409);
-  const unknownChip = await answer(b, "sample_family", runId, { kind: "props", props: [{ id: "zzz", action: "keep" }] });
-  assert.equal(unknownChip.status, 422);
+  const noList = await answer(b, "sample_family", runId, { kind: "props" });
+  assert.equal(noList.status, 422);
+  assert.equal(noList.body.detail, "A props review needs the props list");
+  const badAction = await answer(b, "sample_family", runId, { kind: "props", props: [{ id: "hymn_books", action: "burn" }] });
+  assert.equal(badAction.status, 422);
+  assert.deepEqual(badAction.body.detail[0].loc, ["body", "props", 0, "action"]);
+  // As the scripted studio, an edit for a prop that isn't in the review is ignored.
   const reviewed = await answer(b, "sample_family", runId, {
     kind: "props",
     props: [
+      { id: "zzz", action: "keep" },
       { id: "hymn_books", action: "rename", name: "Blue hymnals" },
       { id: fresh.id, action: "remove" },
     ],
@@ -755,62 +810,109 @@ test("submitting a short memory runs the scripted studio with pauses", async () 
   assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "late" })).status, 409);
 });
 
-test("only the starter can stream or answer a run", async () => {
+test("any member can follow a run; only the starter can answer it", async () => {
   const b = makeBackend();
   await login(b, "david@example.com");
   const sub = await submit(b, "sample_family", { text: "short one", year: 2000 });
   await login(b, "ana@example.com");
+  // api/routes/memories.py streams any run of the family to a member.
   const stream = await b.fetch(`${BASE}/families/sample_family/runs/${sub.body.runId}/stream`);
-  assert.equal(stream.status, 404);
-  assert.equal((await answer(b, "sample_family", sub.body.runId, { kind: "answer", text: "hi" })).status, 404);
-  assert.equal((await call(b, "GET", "/families/sample_family/runs/nope/stream")).status, 404);
+  assert.equal(stream.status, 200);
+  await stream.body.cancel();
+  const other = await answer(b, "sample_family", sub.body.runId, { kind: "answer", text: "hi" });
+  assert.equal(other.status, 403);
+  assert.equal(other.body.detail, "Only the person who started this run can answer");
+  const nope = await call(b, "GET", "/families/sample_family/runs/nope/stream");
+  assert.equal(nope.status, 404);
+  assert.equal(nope.body.detail, "Run not found");
+  assert.equal((await answer(b, "sample_family", "nope", { kind: "answer", text: "hi" })).status, 404);
+  // Another family's run is a 404 too, even for its starter's family members.
+  await signup(b, "Mei", "mei@example.com");
+  const fam = await createFamily(b, "The Maos", { name: "Mei" });
+  assert.equal((await call(b, "GET", `/families/${fam.family.id}/runs/${sub.body.runId}/stream`)).status, 404);
 });
 
-test("a second telling appends to the moment and bumps its version", async () => {
+test("a second telling: no follow-up or review, the teller's narration track, the question closes", async () => {
   const b = makeBackend();
   await login(b, "ana@example.com");
   const missing = await submit(b, "sample_family", { text: LONG_TEXT, year: 1988, memoryId: "ghost" });
   assert.equal(missing.status, 404);
+  // A moment with no scene yet can't take another telling (the studio's 409 NO_SCENE).
+  const sceneless = await submit(b, "sample_family", { text: LONG_TEXT, year: 1993, memoryId: "first_house" });
+  assert.equal(sceneless.status, 409);
+  assert.equal(sceneless.body.detail, "This moment has no scene yet, so another telling cannot be added to it");
 
-  const before = (await call(b, "GET", "/families/sample_family/memories/first_house")).body.memory;
   const qs = await call(b, "GET", "/families/sample_family/questions");
   assert.deepEqual(
     qs.body.questions.map((q) => q.id),
     ["q_mom_hymn_books"],
   );
 
-  const sub = await submit(b, "sample_family", {
-    text: LONG_TEXT,
-    year: 1993,
-    question: "What do you remember?",
-    memoryId: "first_house",
-  });
-  assert.equal(sub.status, 201);
-  assert.equal(sub.body.memoryId, "first_house");
+  // David tells a new moment; Ana adds her version of it.
+  await login(b, "david@example.com");
+  const first = await submit(b, "sample_family", { text: LONG_TEXT, year: 2003, title: "The lake", participantIds: ["mom"] });
+  const firstEvents = await runToEnd(b, "sample_family", first.body.runId);
+  const memoryId = firstEvents.find((e) => e.event === "done").data.memoryId;
+  await login(b, "ana@example.com");
+  const asked = (await call(b, "GET", "/families/sample_family/questions")).body.questions;
+  assert.equal(asked[0].memoryId, memoryId, "newest question first");
+
+  const short = "I remember the rain. He laughed the whole way home!";
+  const sub = await submit(b, "sample_family", { text: short, year: 2003, question: asked[0].text, memoryId });
+  assert.equal(sub.status, 202);
+  assert.equal(sub.body.memoryId, memoryId);
   const events = await runToEnd(b, "sample_family", sub.body.runId);
-  assert.ok(!events.some((e) => e.event === "question"), "a long telling needs no follow-up");
+  const names = events.map((e) => e.event);
+  for (const pause of ["question", "props_found", "merge"]) assert.ok(!names.includes(pause), `no ${pause}`);
+  assert.equal(names.at(-1), "done");
   const ready = events.find((e) => e.event === "scene_ready").data;
-  assert.equal(ready.memoryId, "first_house");
-  assert.equal(ready.version, (before.version ?? 1) + 1);
+  assert.equal(ready.memoryId, memoryId);
+  assert.equal(ready.version, 2);
 
-  const after = (await call(b, "GET", "/families/sample_family/memories/first_house")).body.memory;
-  assert.equal(after.tellings.length, before.tellings.length + 1);
-  assert.equal(after.tellings.at(-1).authorId, "mom");
-  assert.equal(after.tellings.at(-1).text, LONG_TEXT);
-  assert.equal(after.version, (before.version ?? 1) + 1);
-  assert.equal(after.title, "Our first house");
+  const after = (await call(b, "GET", `/families/sample_family/memories/${memoryId}`)).body.memory;
+  assert.deepEqual(after.tellings.map((t) => t.authorId), ["dad", "mom"]);
+  assert.equal(after.tellings[1].text, short);
+  assert.equal(after.title, "The lake");
+  const track = after.timeline.narrations.mom;
+  assert.equal(track.authorId, "mom");
+  assert.deepEqual(track.lines.map((l) => l.text), ["I remember the rain.", "He laughed the whole way home!"]);
+  assert.deepEqual(track.captions.map((c) => c.text), ["I remember the rain.", "He laughed the whole way home!"]);
+  assert.ok(track.lines.every((l) => l.t >= 0 && l.t < after.timeline.duration));
+  const spLines = Object.values(after.screenplay.narrations.mom).flat();
+  assert.equal(spLines.length, 2);
   const threads = await call(b, "GET", "/families/sample_family/threads");
-  assert.equal(threads.body.moments.filter((x) => x.id === "first_house").length, 1);
-  assert.equal(threads.body.moments.length, 3, "no new moment");
+  assert.deepEqual(threads.body.moments.find((x) => x.id === memoryId).tellingAuthorIds, ["dad", "mom"]);
+  assert.ok(!(await call(b, "GET", "/families/sample_family/questions")).body.questions.some((q) => q.memoryId === memoryId));
 
-  // The hymn books question is answered by a telling of that memory.
+  // Telling the hymn books again replaces Ana's telling in place and answers her question.
   const sub2 = await submit(b, "sample_family", { text: LONG_TEXT, year: 1988, memoryId: "sample_hymn_books" });
   await runToEnd(b, "sample_family", sub2.body.runId);
-  const qs2 = await call(b, "GET", "/families/sample_family/questions");
-  assert.deepEqual(qs2.body.questions, []);
+  assert.deepEqual((await call(b, "GET", "/families/sample_family/questions")).body.questions, []);
   const hymn = (await call(b, "GET", "/families/sample_family/memories/sample_hymn_books")).body.memory;
   assert.equal(hymn.version, 2);
-  assert.equal(hymn.tellings.length, 3);
+  assert.deepEqual(hymn.tellings.map((t) => t.authorId), ["dad", "mom"]);
+  assert.equal(hymn.tellings[1].text, LONG_TEXT);
+  assert.equal(hymn.timeline.narrations.mom.lines[0].source, "telling:mom:s1");
+});
+
+test("addNarration and splitSentences", () => {
+  assert.deepEqual(splitSentences("One. Two!  Three?\nFour"), ["One.", "Two!", "Three?", "Four"]);
+  assert.deepEqual(splitSentences("   "), []);
+  const memory = JSON.parse(JSON.stringify(SAMPLE.memory));
+  addNarration(memory, "sam", "Hello there. Bye.");
+  const track = memory.timeline.narrations.sam;
+  assert.equal(track.lines.length, 2);
+  assert.deepEqual(track.lines[0].words.map((w) => w.word), ["Hello", "there"]);
+  assert.ok(track.lines[1].t > track.lines[0].t);
+  assert.ok(memory.timeline.narrations.dad, "other tracks stay");
+  assert.equal(memory.screenplay.narrations.sam.s1.length, 2);
+  // The default narrator's retelling also becomes the default captions.
+  addNarration(memory, "dad", "New words.");
+  assert.deepEqual(memory.timeline.captions.map((c) => c.text), ["New words."]);
+  // No scene: nothing happens.
+  const bare = { ...memory, timeline: null, screenplay: null };
+  addNarration(bare, "sam", "Hi.");
+  assert.equal(bare.timeline, null);
 });
 
 test("a story about an uncle pauses for a merge", async () => {
@@ -1081,20 +1183,19 @@ test("an uploaded photo works as a replace_photo edit in the props review", asyn
   const png = new File([new Uint8Array([137, 80, 78, 71, 5])], "hymnal.png", { type: "image/png" });
   const { body } = await upload(b, "sample_family", png);
   const sub = await submit(b, "sample_family", { text: "Sam learned to swim at the lake that summer.", year: 2001 });
-  assert.equal(sub.status, 201);
+  assert.equal(sub.status, 202);
   const { runId } = sub.body;
   const { events } = await openStream(b, "sample_family", runId);
   await readUntil(events, "question");
   assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "At the lake." })).status, 204);
   await readUntil(events, "props_found");
-  const unknown = await answer(b, "sample_family", runId, {
-    kind: "props",
-    props: [{ id: "hymn_books", action: "replace_photo", photoId: "nope" }],
-  });
-  assert.equal(unknown.status, 422, "a photo that is not this family's is refused");
+  // As the scripted studio: a photo that is not this family's is ignored, the right one is used.
   const ok = await answer(b, "sample_family", runId, {
     kind: "props",
-    props: [{ id: "hymn_books", action: "replace_photo", photoId: body.id }],
+    props: [
+      { id: "hymn_books", action: "replace_photo", photoId: "nope" },
+      { id: "hymn_books", action: "replace_photo", photoId: body.id },
+    ],
   });
   assert.equal(ok.status, 204, JSON.stringify(ok.body));
   for await (const msg of events) if (msg.event === "done" || msg.event === "error") break;
@@ -1114,12 +1215,12 @@ test("media upload rules: members only, images only, not empty, not too big", as
   await signup(b, "Mei", "mei@example.com");
   const outsider = await upload(b, "sample_family", png());
   assert.equal(outsider.status, 404);
-  assert.equal(outsider.body.detail, "We couldn't find that family.");
+  assert.equal(outsider.body.detail, "Not found");
 
   await login(b, "ana@example.com"); // a plain member may upload
   const text = await upload(b, "sample_family", new File(["hello"], "note.txt", { type: "text/plain" }));
   assert.equal(text.status, 415);
-  assert.equal(text.body.detail, "Upload a JPEG, PNG, WebP, GIF or HEIC image");
+  assert.equal(text.body.detail, "Upload a JPEG, PNG, WebP, GIF or HEIC/HEIF image");
   const untyped = await upload(b, "sample_family", new File(["hello"], "mystery"));
   assert.equal(untyped.status, 415);
 
@@ -1142,12 +1243,12 @@ test("media upload rules: members only, images only, not empty, not too big", as
   );
   assert.equal(atLimit.status, 201);
 
-  for (const type of ["image/jpeg", "image/webp", "image/gif", "image/heic", "IMAGE/PNG"]) {
+  // api/routes/props.py ALLOWED_IMAGE_TYPES, HEIF included.
+  for (const type of ["image/jpeg", "image/webp", "image/gif", "image/heic", "image/heif", "IMAGE/PNG"]) {
     const ok = await upload(b, "sample_family", new File([new Uint8Array([9])], "x", { type }));
     assert.equal(ok.status, 201, type);
   }
-  // The real API's ALLOWED_IMAGE_TYPES has no image/heif.
-  assert.equal((await upload(b, "sample_family", new File([new Uint8Array([9])], "x", { type: "image/heif" }))).status, 415);
+  assert.equal((await upload(b, "sample_family", new File([new Uint8Array([9])], "x", { type: "image/svg+xml" }))).status, 415);
 
   const wrongField = await upload(b, "sample_family", png(), "photo");
   assert.equal(wrongField.status, 422);
@@ -1172,7 +1273,7 @@ test("the API client's uploadMedia and getFamily work against the mock", async (
   } catch (e) {
     assert.ok(isApiError(e));
     assert.equal(e.status, 415);
-    assert.equal(e.detail, "Upload a JPEG, PNG, WebP, GIF or HEIC image");
+    assert.equal(e.detail, "Upload a JPEG, PNG, WebP, GIF or HEIC/HEIF image");
   }
 });
 
@@ -1187,4 +1288,217 @@ test("accepts Request and URL inputs", async () => {
   const res = await b.fetch(new URL(`${BASE}/me`));
   assert.equal(res.status, 200);
   assert.equal((await res.json()).user.name, "David");
+});
+
+// ---------------------------------------------------------------------------
+// Parity with the real API (api/routes/families.py, api/db/people.py,
+// api/routes/auth.py, api/routes/props.py): statuses, shapes and details
+// found different by a side-by-side run against `python -m seed.serve`.
+
+test("parity: error details are the API's own words", async () => {
+  const b = makeBackend();
+  const F = "/families/sample_family";
+  assert.equal((await call(b, "GET", "/me")).body.detail, "Not signed in");
+  assert.equal((await call(b, "POST", "/auth/login", { email: "nope", password: "whatever1" })).body.detail, "Invalid email or password");
+  await login(b, "david@example.com");
+  assert.equal((await call(b, "GET", "/families/nope")).body.detail, "Not found");
+  assert.equal((await call(b, "GET", "/families/nope/tree")).body.detail, "Not found");
+  assert.equal((await call(b, "GET", `${F}/memories/nope`)).body.detail, "Not found");
+  assert.equal((await call(b, "GET", `${F}/people/nope/book`)).body.detail, "Not found");
+  const revokeGhost = await call(b, "DELETE", `${F}/invites/nope`);
+  assert.equal(revokeGhost.status, 404);
+  assert.equal(revokeGhost.body.detail, "Invite not found or expired");
+  assert.equal((await call(b, "GET", "/invites/nope")).body.detail, "Invite not found or expired");
+  const removeGhost = await call(b, "DELETE", `${F}/members/user_ghost`);
+  assert.equal(removeGhost.status, 404);
+  assert.equal(removeGhost.body.detail, "Member not found");
+  const last = await call(b, "DELETE", `${F}/members/user_david`);
+  assert.equal(last.status, 409);
+  assert.equal(last.body.detail, "A family needs at least one admin");
+  await login(b, "ana@example.com");
+  for (const [method, path, body] of [
+    ["POST", `${F}/invites`],
+    ["DELETE", `${F}/invites/riveras-demo`],
+    ["DELETE", `${F}/members/user_david`],
+    ["PATCH", `${F}/members/user_david`, { role: "member" }],
+  ]) {
+    const r = await call(b, method, path, body);
+    assert.equal(r.status, 403, path);
+    assert.equal(r.body.detail, "Admins only", path);
+  }
+});
+
+test("parity: revoking an invite twice is a 204 both times", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const inv = await call(b, "POST", "/families/sample_family/invites");
+  assert.equal((await call(b, "DELETE", `/families/sample_family/invites/${inv.body.code}`)).status, 204);
+  assert.equal((await call(b, "DELETE", `/families/sample_family/invites/${inv.body.code}`)).status, 204);
+  const fam = await call(b, "GET", "/families/sample_family");
+  assert.equal(fam.body.invites.find((i) => i.code === inv.body.code).revoked, true);
+});
+
+test("parity: adding a person follows api/db/people.py (400 InvalidRelation, no year range)", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const P = "/families/sample_family/people";
+  const cases = [
+    [{ name: "  " }, "A person needs a name"],
+    [{ name: "X", born: 1990, died: 1980 }, "a person cannot die before they were born"],
+    [{ name: "X", parentIds: ["rosa", "luis", "dad"] }, "a person has at most 2 parents"],
+    [{ name: "X", parentIds: ["rosa", "rosa"] }, "duplicate parent id"],
+    [{ name: "X", parentIds: ["ghost", "zed"] }, "unknown person id(s) in this family: ['ghost', 'zed']"],
+    [{ name: "X", parentIds: ["dad"], spouseIds: ["dad"] }, "a person cannot be both a parent and a spouse"],
+    [{ name: "X", parentIds: ["dad"], spouseIds: ["rosa"] }, "a person cannot be married to their own ancestor or descendant"],
+    [{ name: "X", born: 1950, parentIds: ["dad"] }, "a person cannot be born before their parent (David, born 1962)"],
+  ];
+  for (const [body, detail] of cases) {
+    const r = await call(b, "POST", P, body);
+    assert.equal(r.status, 400, JSON.stringify(body));
+    assert.equal(r.body.detail, detail);
+  }
+  const missing = await call(b, "POST", P, {});
+  assert.equal(missing.status, 422);
+  assert.deepEqual(missing.body.detail[0].loc, ["body", "name"]);
+  const badYear = await call(b, "POST", P, { name: "Y", born: "soon" });
+  assert.equal(badYear.status, 422);
+  assert.equal(badYear.body.detail[0].type, "int_parsing");
+
+  // Any year at all: the API has no range for people.
+  for (const born of [1500, 2999]) assert.equal((await call(b, "POST", P, { name: `Born ${born}`, born })).status, 201);
+  // A numeric string is read as a year (pydantic's lax mode); spouses are deduped.
+  const ok = await call(b, "POST", P, { name: "  Inés ", born: "1912", spouseIds: ["luis", "luis"] });
+  assert.equal(ok.status, 201);
+  assert.equal(ok.body.name, "Inés");
+  assert.equal(ok.body.born, 1912);
+  assert.deepEqual(ok.body.spouseIds, ["luis"]);
+  // The character sheet comes back with every field, as the API sends it.
+  assert.deepEqual(Object.keys(ok.body.character).sort(), ["build", "color", "item", "itemPropId", "notes"]);
+  assert.equal(ok.body.character.itemPropId, null);
+  const tree = await call(b, "GET", "/families/sample_family/tree");
+  for (const p of tree.body.people) assert.ok("notes" in p.character && "itemPropId" in p.character, p.id);
+});
+
+test("parity: patching a person checks the resulting tree", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const P = "/families/sample_family/people";
+  const ines = (await call(b, "POST", P, { name: "Inés", born: 1910 })).body;
+  // Rosa (1938) gets Inés as a parent.
+  assert.equal((await call(b, "PATCH", `${P}/rosa`, { parentIds: [ines.id] })).status, 200);
+  const cases = [
+    [ines.id, { name: " " }, 400, "A person needs a name"],
+    [ines.id, { parentIds: ["maya"] }, 400, "a person cannot be their own ancestor"],
+    [ines.id, { born: 1950 }, 400, "a person cannot be born after their child (Rosa, born 1938)"],
+    [ines.id, { died: 1900 }, 400, "a person cannot die before they were born"],
+    [ines.id, { spouseIds: ["dad"] }, 400, "a person cannot be married to their own ancestor or descendant"],
+    ["maya", { parentIds: ["dad"], spouseIds: ["dad"] }, 400, "a person cannot be both a parent and a spouse"],
+    ["maya", { parentIds: ["maya"] }, 400, "a person cannot be their own parent or spouse"],
+    ["maya", { born: 1950 }, 400, "a person cannot be born before their parent (David, born 1962)"],
+    ["ghost", { name: "x" }, 404, "Person not found"],
+  ];
+  for (const [id, body, status, detail] of cases) {
+    const r = await call(b, "PATCH", `${P}/${id}`, body);
+    assert.equal(r.status, status, `${id} ${JSON.stringify(body)}`);
+    assert.equal(r.body.detail, detail);
+  }
+  // A null list or name in a patch means "leave it"; null years clear them.
+  const kept = await call(b, "PATCH", `${P}/${ines.id}`, { name: null, parentIds: null, born: null });
+  assert.equal(kept.status, 200);
+  assert.equal(kept.body.name, "Inés");
+  assert.equal(kept.body.born, null);
+});
+
+test("parity: starting a family checks before writing", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const cases = [
+    [{ name: " ", person: { name: "Me" } }, "A family needs a name"],
+    [{ name: "F", person: { name: "Me", parentIds: ["dad"] } }, "The first person in a new family cannot have parents or spouses yet"],
+    [{ name: "F", person: { name: " " } }, "A person needs a name"],
+    [{ name: "F", person: { name: "Me", born: 2000, died: 1990 } }, "a person cannot die before they were born"],
+  ];
+  for (const [body, detail] of cases) {
+    const r = await call(b, "POST", "/families", body);
+    assert.equal(r.status, 400, JSON.stringify(body));
+    assert.equal(r.body.detail, detail);
+  }
+  assert.equal((await call(b, "GET", "/me")).body.families.length, 1, "nothing was written");
+  const ok = await call(b, "POST", "/families", { name: "  Side  ", person: { name: " Me " } });
+  assert.equal(ok.status, 201);
+  assert.equal(ok.body.family.name, "Side");
+  assert.equal(ok.body.person.name, "Me");
+});
+
+test("parity: join checks the body, then the invite, then the person", async () => {
+  const b = makeBackend();
+  await signup(b, "Lena", "lena@example.com");
+  const J = "/invites/riveras-demo/join";
+  const neither = await call(b, "POST", J, {});
+  assert.equal(neither.status, 422);
+  assert.equal(neither.body.detail, "Send exactly one of personId (claim) or person (add yourself)");
+  const both = await call(b, "POST", J, { personId: "sam", person: { name: "x" } });
+  assert.equal(both.status, 422);
+  assert.equal(both.body.detail, "Send exactly one of personId (claim) or person (add yourself)");
+  // The body comes before the invite: a bad body on a dead link is still a 422.
+  assert.equal((await call(b, "POST", "/invites/nope/join", {})).status, 422);
+  const dead = await call(b, "POST", "/invites/nope/join", { personId: "sam" });
+  assert.equal(dead.status, 404);
+  assert.equal(dead.body.detail, "Invite not found or expired");
+  const ghost = await call(b, "POST", J, { personId: "ghost" });
+  assert.equal(ghost.status, 404);
+  assert.equal(ghost.body.detail, "Person not found");
+  const taken = await call(b, "POST", J, { personId: "dad" });
+  assert.equal(taken.status, 409);
+  assert.equal(taken.body.detail, "Someone has already claimed this person");
+  assert.deepEqual((await call(b, "GET", "/me")).body.families, [], "a failed join leaves no membership");
+  const ok = await call(b, "POST", J, { personId: "sam" });
+  assert.equal(ok.status, 200);
+  const other = await call(b, "POST", J, { personId: "maya" });
+  assert.equal(other.status, 409);
+  assert.equal(other.body.detail, "this user already has a person in this family");
+});
+
+test("parity: questions come newest first", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const sub = await submit(b, "sample_family", { text: LONG_TEXT, year: 2004, participantIds: ["mom"] });
+  await runToEnd(b, "sample_family", sub.body.runId);
+  await login(b, "ana@example.com");
+  const qs = (await call(b, "GET", "/families/sample_family/questions")).body.questions;
+  assert.equal(qs.length, 2);
+  assert.notEqual(qs[0].id, "q_mom_hymn_books", "the new question is first");
+  assert.equal(qs[1].id, "q_mom_hymn_books");
+});
+
+test("parity: prop patch statuses", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const P = "/families/sample_family/props";
+  const nothing = await call(b, "PATCH", `${P}/hymn_books`, {});
+  assert.equal(nothing.status, 422);
+  assert.equal(nothing.body.detail, "Nothing to change");
+  const blank = await call(b, "PATCH", `${P}/hymn_books`, { name: "  " });
+  assert.equal(blank.status, 422);
+  assert.equal(blank.body.detail, "Name must not be blank");
+  const ghost = await call(b, "PATCH", `${P}/ghost`, { name: "x" });
+  assert.equal(ghost.status, 404);
+  assert.equal(ghost.body.detail, "Not found");
+  const ok = await call(b, "PATCH", `${P}/hymn_books`, { name: " Hymnals " });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.name, "Hymnals");
+});
+
+test("parity: memory submit checks the author after the fields", async () => {
+  // Ana is a member whose person is unclaimed: the API's 409 NO_PERSON, after the fields are valid.
+  const seed = buildDemoSeed(SAMPLE, NOW);
+  seed.people.find((p) => p.id === "mom").userId = null;
+  const b = createMockBackend({ seed: () => seed, stepDelayMs: 0, now: () => NOW });
+  await login(b, "ana@example.com");
+  const blank = await submit(b, "sample_family", { text: " ", year: 2000 });
+  assert.equal(blank.status, 422);
+  const noPerson = await submit(b, "sample_family", { text: "hi", year: 2000 });
+  assert.equal(noPerson.status, 409);
+  assert.equal(noPerson.body.detail, "Add or claim your person in this family first");
+  assert.deepEqual((await call(b, "GET", "/families/sample_family/questions")).body.questions, []);
 });
