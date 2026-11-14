@@ -374,24 +374,40 @@ def set_embedding(db: Database, family_id: str, memory_id: str, vector: list[flo
 # ---------------------------------------------------------------------------- questions
 
 def create_question(
-    db: Database, family_id: str, *, person_id: str, text: str, memory_id: str | None = None
+    db: Database,
+    family_id: str,
+    *,
+    person_id: str,
+    text: str,
+    memory_id: str | None = None,
+    question_id: str | None = None,
+    now: datetime | None = None,
 ) -> schemas.Question:
-    """A pending prompt for a person. The person (and memory, if given) must be in this family."""
+    """A pending prompt for a person. The person (and memory, if given) must be in this family.
+
+    `question_id` and `now` fix the id and creation time (a seed that must write the same
+    data on every run); ValueError when that id is already taken.
+    """
     if not text or not text.strip():
         raise ValueError("question text is required")
+    if question_id is not None and (not isinstance(question_id, str) or not question_id.strip()):
+        raise ValueError("question_id must be a non-empty string")
     _require_people(db, family_id, [person_id])
     if memory_id is not None and db["memories"].count_documents({"_id": memory_id, "familyId": family_id}, limit=1) == 0:
         raise ValueError(f"unknown memory id in this family: {memory_id}")
     doc = {
-        "_id": _new_id(),
+        "_id": question_id or _new_id(),
         "familyId": family_id,
         "personId": person_id,
         "text": text,
         "memoryId": memory_id,
         "status": "open",
-        "createdAt": _now(),
+        "createdAt": _now(now),
     }
-    db["questions"].insert_one(doc)
+    try:
+        db["questions"].insert_one(doc)
+    except DuplicateKeyError as exc:
+        raise ValueError(f"question id already exists: {doc['_id']}") from exc
     question = _to_question(doc)
     assert question is not None
     return question
