@@ -7,7 +7,9 @@ rises, shot t=0 lands on WIDE unless a t=0 cue says otherwise, and every later c
 current pose at its start time and reaches the resolved pose after `dur` seconds (``cue_span``).
 
 A target beyond the stage edge is framed at CAMERA_X_LIMIT on its side. Aiming at a target that
-is offstage for the whole move is refused before this runs (compiler._camera: ``bad_camera``).
+is offstage for the whole move is refused before this runs (compiler._camera: ``bad_camera``);
+for that check a t=0 cue spans its stated ``dur`` (DEFAULT_MOVE_SECONDS without one) although
+its keys land on actionStart, so an opening shot on someone walking on is valid.
 """
 
 from __future__ import annotations

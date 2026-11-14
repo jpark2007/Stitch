@@ -707,12 +707,21 @@ def parked_position(prop: schemas.Prop | None) -> list[float]:
     further out. y is the floor and z is OFFSTAGE_LEFT's. ``prop`` None (or a size or aspect
     that gives no width) parks at OFFSTAGE_LEFT."""
     x = float(OFFSTAGE_LEFT[0])
-    if prop is not None:
-        a = float(prop.anchor[0]) if prop.anchor else 0.5
-        reach = max(a, 1.0 - a) * motion.SIZES.get(prop.size, 0.0) * float(prop.aspect)
-        if math.isfinite(reach) and reach > 0:
-            x = min(x, round(-effects.STAGE_EDGE - reach - PARK_MARGIN, 6))
+    reach = drawn_reach(prop)
+    if reach > 0:
+        x = min(x, round(-effects.STAGE_EDGE - reach - PARK_MARGIN, 6))
     return [x, 0.0, float(OFFSTAGE_LEFT[2])]
+
+
+def drawn_reach(prop: schemas.Prop | None) -> float:
+    """How far a prop's drawing can reach sideways from its anchor: ``max(a, 1 - a) * w`` with
+    ``w = sizes[prop.size] * prop.aspect`` and ``a = prop.anchor[0]`` (the stage may mirror the
+    art, so the longer side counts). 0 for None or a size or aspect that gives no width."""
+    if prop is None:
+        return 0.0
+    a = float(prop.anchor[0]) if prop.anchor else 0.5
+    reach = max(a, 1.0 - a) * motion.SIZES.get(prop.size, 0.0) * float(prop.aspect)
+    return reach if math.isfinite(reach) and reach > 0 else 0.0
 
 
 def _start_keys(
@@ -983,7 +992,8 @@ def compile(
             elif effect is not None:
                 shot_effects.append((ai, effect))
 
-        cam_errors, cam_pose = _camera(shot, shot_start, action_start, cam_pose, locate, tracks)
+        prop_reach = {what: drawn_reach(world.catalog.get(what)) for what in world.props if what not in world.people}
+        cam_errors, cam_pose = _camera(shot, shot_start, action_start, cam_pose, locate, tracks, prop_reach)
         for err in cam_errors:
             errors.add(err, si, len(shot.actions))
 
@@ -1159,12 +1169,14 @@ def _camera(
     prev: camera_mod.CameraPose | None,
     locate: Locate,
     tracks: TrackSet,
+    prop_reach: Mapping[str, float] | None = None,
 ) -> tuple[list[CompileError], camera_mod.CameraPose | None]:
     """The shot's camera keys (added to ``tracks``) and the pose it ends on.
 
     validate.py has checked the cues statically; what is left is a target that cannot be
     placed when the move lands (a prop that is not on stage), and one that is offstage for the
-    whole move (``_offstage_target``)."""
+    whole move (``_offstage_target``). ``prop_reach`` is each prop's ``drawn_reach``, so a wide
+    prop whose anchor is past the edge but whose drawing still shows on stage is not offstage."""
     errs: list[CompileError] = []
     for cue in shot.camera:
         if cue.move in camera_mod.TARGET_MOVES:
@@ -1178,7 +1190,13 @@ def _camera(
                 except StateError as e:
                     reason = e.reason
                 else:
-                    reason = _offstage_target(locate, cue.target, t0, t1, cue.t + (t1 - t0))
+                    # The offstage check spans the cue's stated duration even for a t=0 cue,
+                    # which the keys land on actionStart: an opening close-up on someone
+                    # walking on during it is framed at the edge they come in from.
+                    span = camera_mod.DEFAULT_MOVE_SECONDS if cue.dur is None else float(cue.dur)
+                    end = t0 + span if cue.t == 0 else t1
+                    reach = (prop_reach or {}).get(cue.target, 0.0)
+                    reason = _offstage_target(locate, cue.target, t0, end, cue.t + (end - t0), reach)
             if reason is not None:
                 errs.append(CompileError(
                     code="bad_camera",
@@ -1196,25 +1214,34 @@ def _camera(
     return errs, pose
 
 
-def _offstage_target(locate: Locate, target: str, t0: float, t1: float, shown_end: float) -> str | None:
+def _offstage_target(
+    locate: Locate, target: str, t0: float, t1: float, shown_end: float, reach: float = 0.0,
+) -> str | None:
     """Why a camera move from timeline time ``t0`` to ``t1`` cannot aim at ``target``, or None.
 
     A mark is fixed: one beyond the stage edge (the builtin offstage_left / offstage_right) is
-    refused. A person or prop is refused only when it is beyond the edge (``|x| > STAGE_EDGE``)
-    both when the move starts and when it lands; one that enters or leaves during the move is
-    framed at the edge on its side (camera.py). ``shown_end`` is the landing time as written in
-    the screenplay, for the message. A target that cannot be placed at ``t0`` (a prop placed
-    during the move) counts as offstage then."""
-    x1 = locate(target, t1)[0]
-    side = effects.offstage_side(x1)
-    if side is None:
+    refused. A person or prop is refused only when it is beyond the edge both when the move
+    starts and when it ends; one that enters or leaves during the move is framed at the edge on
+    its side (camera.py). "Beyond the edge" is ``|x| > STAGE_EDGE + reach``: ``reach`` is a
+    prop's ``drawn_reach`` (0 for a person), so a wide prop counts as on stage while any of its
+    drawing is. ``shown_end`` is the end time as written in the screenplay, for the message. A
+    target that cannot be placed at ``t0`` or ``t1`` (a prop placed or put away during the move)
+    counts as offstage then, on the side it is found at the other end."""
+    def side_at(t: float) -> tuple[bool, str | None]:
+        try:
+            return True, effects.offstage_side(locate(target, t)[0], reach)
+        except StateError:
+            return False, None
+
+    found1, side1 = side_at(t1)
+    if found1 and side1 is None:
         return None
     if effects.is_mark(locate, target):
-        return f"{target} is a mark offstage {side}; aim the camera at a mark on stage"
-    try:
-        x0: float | None = locate(target, t0)[0]
-    except StateError:
-        x0 = None
-    if x0 is not None and effects.offstage_side(x0) is None:
+        return f"{target} is a mark offstage {side1}; aim the camera at a mark on stage"
+    found0, side0 = side_at(t0)
+    if found0 and side0 is None:
+        return None
+    side = side1 or side0
+    if side is None:  # placed at neither end; the landing check reports that instead
         return None
     return f"{target} is offstage {side} at t={fmt_t(shown_end)}; aim the camera at someone on stage"

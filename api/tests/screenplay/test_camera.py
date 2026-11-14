@@ -286,11 +286,28 @@ def test_every_target_move_aimed_offstage_the_whole_move_is_refused(move):
     ]
 
 
-def test_an_opening_cue_on_someone_offstage_is_refused():
-    # a t=0 cue lands on actionStart, where kid still waits at offstage_left
-    res = _compile_yard([{"t": 0, "move": "close_up", "target": "kid"}], ENTER_AND_EXIT, ENTER_AND_EXIT_START)
+def test_an_opening_cue_on_someone_walking_on_is_framed_at_their_edge():
+    """A t=0 cue lands on actionStart, where kid still waits at offstage_left, but the offstage
+    check spans its stated dur (DEFAULT_MOVE_SECONDS without one): kid is on stage by then, so
+    the cue is valid and the camera waits at the edge kid comes in from."""
+    for cue in ({"t": 0, "move": "close_up", "target": "kid"}, {"t": 0, "move": "close_up", "target": "kid", "dur": 3}):
+        res = _compile_yard([cue], ENTER_AND_EXIT, ENTER_AND_EXIT_START)
+        assert res.ok, res.errors
+        pos = _camera_keys(res, "position")
+        assert pos[1] == (1.2, [-CAMERA_X_LIMIT, 0.3, 1.1])  # kid is at x=-1.3 when the action starts
+
+
+def test_an_opening_cue_on_someone_still_offstage_when_it_ends_is_refused():
+    # kid is still beyond the edge 0.5 s in; mom never comes on at all
+    res = _compile_yard([{"t": 0, "move": "close_up", "target": "kid", "dur": 0.5}], ENTER_AND_EXIT,
+                        ENTER_AND_EXIT_START)
     assert _bad_camera(res) == [
-        'shot s1, t=0: cannot close_up "kid"; kid is offstage left at t=0; aim the camera at someone on stage'
+        'shot s1, t=0: cannot close_up "kid"; kid is offstage left at t=0.5; aim the camera at someone on stage'
+    ]
+    res = _compile_yard([{"t": 0, "move": "close_up", "target": "mom"}],
+                        [{"t": 0, "who": "dad", "do": "wave"}], {"dad": {"at": "curb"}})
+    assert _bad_camera(res) == [
+        'shot s1, t=0: cannot close_up "mom"; mom is offstage left at t=1.5; aim the camera at someone on stage'
     ]
 
 
@@ -315,6 +332,22 @@ def test_a_close_up_on_a_prop_held_offstage_is_refused():
                         {"dad": {"at": "curb"}, "mom": {"at": "offstage_left", "holding": "hymn_books"}})
     assert _bad_camera(res) == [
         'shot s1, t=1: cannot close_up "hymn_books"; hymn_books is offstage left at t=2; '
+        "aim the camera at someone on stage"
+    ]
+
+
+def test_a_wide_prop_counts_as_on_stage_while_any_of_its_drawing_is():
+    """The camera judges a prop by its drawn width, like the sanity check and parking: the sedan
+    (vehicle, aspect 2.0, anchor x 0.5, reach 0.9) at offstage_left (x=-1.3) still shows from
+    x=-0.4, so aiming at it is fine; hymn_books at the same mark is wholly offstage."""
+    wave = [{"t": 0, "who": "dad", "do": "wave"}]
+    res = _compile_yard([{"t": 1, "move": "pan_to", "target": "sedan"}], wave, {"dad": {"at": "curb"}},
+                        {"sedan": {"at": "offstage_left"}})
+    assert res.ok, res.errors
+    res = _compile_yard([{"t": 1, "move": "pan_to", "target": "hymn_books"}], wave, {"dad": {"at": "curb"}},
+                        {"hymn_books": {"at": "offstage_left"}})
+    assert _bad_camera(res) == [
+        'shot s1, t=1: cannot pan_to "hymn_books"; hymn_books is offstage left at t=2.5; '
         "aim the camera at someone on stage"
     ]
 
