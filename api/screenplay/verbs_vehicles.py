@@ -26,9 +26,11 @@ from collections.abc import Callable, Iterable
 from screenplay import motion
 from screenplay.body import POSE_SECONDS, sit_keys, stand_keys
 from screenplay.ik import RIG, Body, scale
+from screenplay.locate import held_arm_bones
 from screenplay.schema import Action
 from screenplay.state import GROUND, StateError, World, fmt_t
 from screenplay.tracks import TrackSet
+from screenplay.verbs_core import _stand_up_keys
 
 Vec3 = tuple[float, float, float]
 Key = tuple[str, str, float, object]
@@ -158,7 +160,8 @@ def _seated(world: World, what: str) -> list[tuple[str, str]]:
 
 def apply_get_in(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                  locate: Locate) -> float:
-    """Walk up to the seat (if it is more than 0.05 away in x) and sit with the hips on it."""
+    """Get up first if kneeling or sitting on the floor, walk up to the seat (if it is more than
+    0.05 away in x), and sit with the hips on it. Arms holding props keep the hold pose."""
     who = _require(action, "who")
     what = _require(action, "what")
     _person(world, who)
@@ -171,20 +174,25 @@ def apply_get_in(world: World, tracks: TrackSet, action: Action, t: float, actio
     anchor = _anchor(world, tracks, what, t)
     off = motion.prop_socket_offset(world.catalog[what], socket)
     seat: Vec3 = (anchor[0] + off[0], anchor[1] + off[1], anchor[2] + off[2])
-    root = _root(world, tracks, who, t)
+    held = held_arm_bones(world, who)
 
-    keys: list[Key] = []
-    t_sit, facing, ground = t, p.facing, root
+    # Kneeling or sitting on the floor: stand up where it is first (as verbs_core._travel_keys).
+    keys, t_up = _stand_up_keys(world, tracks, who, t)
+    root = _vec3(p.pos) if keys else _root(world, tracks, who, t)
+
+    t_sit, facing, ground = t_up, p.facing, root
     if abs(seat[0] - root[0]) > WALK_UP_THRESHOLD or abs(seat[2] - root[2]) > _EPS:
         door: Vec3 = (seat[0], anchor[1], seat[2])
         walk, t_sit, facing = motion.locomotion_keys(
-            who, p.build, t, root, door, p.facing, speed_scale=p.speed_scale
+            who, p.build, t_up, root, door, p.facing,
+            skip_bones=sorted(held), speed_scale=p.speed_scale,
         )
         keys += walk
         if walk:
             ground = door
     body = Body(who, (ground[0], ground[1]), facing, p.build)
-    keys += sit_keys(body, t_sit, _bones(tracks, who, t_sit, keys), (seat[0], seat[1]), z=seat[2])
+    current = {b: v for b, v in _bones(tracks, who, t_sit, keys).items() if b not in held}
+    keys += sit_keys(body, t_sit, current, (seat[0], seat[1]), z=seat[2])
     ro = _sit_root_offset(p.build)
     sit_root: Vec3 = (seat[0] + ro[0], seat[1] + ro[1], seat[2])
 
@@ -198,7 +206,8 @@ def apply_get_in(world: World, tracks: TrackSet, action: Action, t: float, actio
 
 def apply_get_out(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                   locate: Locate) -> float:
-    """Stand up out of the seat onto the ground beside it, at the acting plane."""
+    """Stand up out of the seat onto the ground beside it, at the acting plane. Arms holding
+    props keep the hold pose."""
     who = _require(action, "who")
     what = _require(action, "what")
     _person(world, who)
@@ -214,7 +223,9 @@ def apply_get_out(world: World, tracks: TrackSet, action: Action, t: float, acti
     stand_at = (seat_x, anchor[1])
     root = _root(world, tracks, who, t)
     body = Body(who, (root[0], root[1]), p.facing, p.build)
-    keys = stand_keys(body, t, _bones(tracks, who, t), stand_at, z=ACTING_Z)
+    held = held_arm_bones(world, who)  # arms holding props keep the hold pose
+    current = {b: v for b, v in _bones(tracks, who, t).items() if b not in held}
+    keys = stand_keys(body, t, current, stand_at, z=ACTING_Z)
     # stand_keys starts the root at the acting plane; start it where the puppet really sits.
     keys = [(tg, ch, kt, [root[0], root[1], root[2]]) if ch == "root.position" and kt == t else (tg, ch, kt, v)
             for tg, ch, kt, v in keys]

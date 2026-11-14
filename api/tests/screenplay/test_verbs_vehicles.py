@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import math
 
 import pytest
 
 import schemas
-from screenplay import motion, verbs_vehicles
+from screenplay import motion, verbs_body, verbs_core, verbs_vehicles
+from screenplay.body import POSE_SECONDS, hold_pose
+from screenplay.compiler import compile as compile_screenplay
 from screenplay.ik import RIG, scale
 from screenplay.schema import Action, Shot
 from screenplay.state import StateError, World
 from screenplay.tracks import TrackSet
 from screenplay.verbs_vehicles import HANDLERS, WHEEL_RADIUS_FRACTION
+from verb_cases import SEDAN_CURB, _a, _at, _one, base_scene
 
 # ------------------------------------------------------------------ fixtures
 
@@ -562,3 +567,267 @@ def test_get_in_at_the_door_get_out_and_drive_do_not_depend_on_notes():
     assert results[0][0][:2] == [pytest.approx(0.4), pytest.approx(0.9)]  # no walk: already at the doors
     assert results[1] == results[0]
     assert results[2] == results[0]
+
+
+# ------------------------------------------- held arms keep the hold pose; floor puppets get up
+# get_in and get_out leave the arms that hold props in the hold pose (the walk cycle and the
+# sit / stand blends skip them, as verbs_core's walk and stand_up do), and get_in gets a puppet
+# kneeling or sitting on the floor onto its feet before it walks to the door.
+
+LAMP = schemas.Prop(id="lamp", name="Lamp", size="hand", art={"body": None}, grip=[0.5, 0.3])
+HOLD_UPPER, HOLD_LOWER = hold_pose("arm_r")
+ARM_R = ("arm_r.upper", "arm_r.lower")
+LEGS = ("leg_l.upper", "leg_l.lower", "leg_r.upper", "leg_r.lower")
+ANY_HANDLER = {**verbs_core.HANDLERS, **verbs_body.HANDLERS, **HANDLERS}
+
+
+def lamp_world(start: dict, prop_start: dict | None = None) -> World:
+    """make_world with a hand-sized lamp in the catalogue (start may say who holds it)."""
+    world = World(PEOPLE, [*PROPS, LAMP])
+    shot = Shot.model_validate({
+        "id": "s1", "set": "street", "start": start,
+        "prop_start": prop_start if prop_start is not None else {"car": {"at": "lot", "state": "parked"},
+                                                                 "chair": {"at": "chair_spot"}},
+    })
+    world.begin_shot(shot, MARKS, same_set_as_previous=False)
+    return world
+
+
+def run_any(world: World, tracks: TrackSet, t: float, **fields) -> float:
+    """run() for any core, body or vehicle verb."""
+    action = Action.model_validate({"t": t, **fields})
+    world.now = t
+    world.check_free(action.who)
+    end = ANY_HANDLER[action.do](world, tracks, action, t, 0.0, make_locate(world))
+    world.occupy(action.who, end, action.do, at=world.now)
+    return end
+
+
+def raw_keys(tracks: RecordingTracks, who: str, channel: str, after: float = -1.0) -> list[tuple[float, object]]:
+    return sorted((k[2], k[3]) for k in tracks.raw
+                  if k[0] == f"puppet:{who}" and k[1] == channel and k[2] >= after - 1e-9)
+
+
+def assert_holding_pose(tracks: TrackSet, who: str, times) -> None:
+    for t in times:
+        assert tracks.value_at(f"puppet:{who}", "arm_r.upper.rot", t) == pytest.approx(HOLD_UPPER, abs=1e-9), t
+        assert tracks.value_at(f"puppet:{who}", "arm_r.lower.rot", t) == pytest.approx(HOLD_LOWER, abs=1e-9), t
+
+
+def test_get_in_walking_to_the_door_keeps_a_held_arm_in_the_hold_pose():
+    tracks = RecordingTracks()
+    world = lamp_world({"dad": {"at": "church", "holding": "lamp"}})
+    run_any(world, tracks, 0.0, do="hold", who="dad", what="lamp")  # arm_r in the hold pose by 0.4
+    end = run(world, tracks, 1.0, do="get_in", who="dad", what="car")
+    walk = (0.5 - (-0.67)) / motion.SPEEDS["walk"]
+    assert end == pytest.approx(1.0 + walk + POSE_SECONDS)
+    # get_in keys no held arm bone at all: the walk cycle and the sit skip arm_r.
+    for bone in ARM_R:
+        assert raw_keys(tracks, "dad", f"{bone}.rot", after=1.0) == []
+    # The free arm still swings.
+    assert len(raw_keys(tracks, "dad", "arm_l.upper.rot", after=1.0)) > 4
+    # Sampled at every walk key (the cycle's quarter times) and at the end.
+    quarters = [kt for kt, _ in raw_keys(tracks, "dad", "leg_l.upper.rot", after=1.0)]
+    assert len(quarters) > 8
+    assert_holding_pose(tracks, "dad", [1.0, *quarters, end, end + 1.0])
+    # The lamp never leaves dad's right hand.
+    assert world.holder("lamp") == ("dad", "hand_r")
+    assert not [k for k in tracks.raw if k[0] == "prop:lamp"]
+    assert world.people["dad"].seat == ("car", "driver")
+
+
+def test_get_in_with_both_hands_full_keeps_both_held_arms():
+    tracks = RecordingTracks()
+    world = lamp_world({"dad": {"at": "church", "holding": "lamp"}},
+                       prop_start={"car": {"at": "lot"}, "suitcase": {"at": "church"}})
+    world.pick_up("dad", "suitcase")  # hand_l
+    end = run(world, tracks, 1.0, do="get_in", who="dad", what="car")
+    for bone in (*ARM_R, "arm_l.upper", "arm_l.lower"):
+        assert raw_keys(tracks, "dad", f"{bone}.rot") == []
+    assert raw_keys(tracks, "dad", "leg_l.upper.rot")[-1] == (pytest.approx(end), 1.5)
+
+
+def test_get_in_compiled_from_the_door_keeps_the_hold_pose_and_the_lamp_in_hand():
+    sc = base_scene()
+    sp = _one(_a(1, "get_in", who="dad", what="sedan"),
+              start={"dad": _at("door", holding="lamp")}, prop_start=SEDAN_CURB)
+    res = compile_screenplay(sp, sets=sc.sets, props=sc.props, people=sc.people)
+    assert res.ok, res.errors
+    tl = res.timeline
+    a0 = tl.shots[0].action_start
+    tracks = TrackSet()
+    tracks.extend((tr.target, tr.channel, kt, v) for tr in tl.tracks for kt, v in tr.keys)
+    legs = [kt for tr in tl.tracks if (tr.target, tr.channel) == ("puppet:dad", "leg_l.upper.rot")
+            for kt, _ in tr.keys if kt >= a0 + 1.0]
+    assert len(legs) > 8  # a real walk from the door to the curb
+    assert_holding_pose(tracks, "dad", [a0 + 1.0, *legs, tl.duration])
+    lamp_parent = [tr.keys for tr in tl.tracks if (tr.target, tr.channel) == ("prop:lamp", "parent")]
+    assert lamp_parent == [[(0.0, "puppet:dad.hand_r")]]
+
+
+def test_get_out_keeps_a_held_arm_in_the_hold_pose_like_stand_up_from_a_chair():
+    out_tracks = RecordingTracks()
+    world = lamp_world({"dad": {"at": "door_d", "holding": "lamp"}})
+    run_any(world, out_tracks, 0.0, do="hold", who="dad", what="lamp")
+    run(world, out_tracks, 0.4, do="get_in", who="dad", what="car")  # seated in car.driver by 0.8
+    end = run(world, out_tracks, 1.0, do="get_out", who="dad", what="car")
+    assert end == pytest.approx(1.0 + POSE_SECONDS)
+    for bone in ARM_R:
+        assert raw_keys(out_tracks, "dad", f"{bone}.rot", after=0.41) == []  # 0.4 ends the hold
+    assert_holding_pose(out_tracks, "dad", [1.0, 1.0 + POSE_SECONDS / 2, end, end + 1.0])
+    for bone in LEGS:  # the legs still stand up
+        assert out_tracks.value_at("puppet:dad", f"{bone}.rot", end) == pytest.approx(0.0)
+    assert world.holder("lamp") == ("dad", "hand_r")
+
+    # stand_up from a chair already keeps the hold pose; get_out now matches it bone for bone.
+    chair_tracks = RecordingTracks()
+    chair = lamp_world({"dad": {"at": "chair_spot", "holding": "lamp"}})
+    run_any(chair, chair_tracks, 0.0, do="hold", who="dad", what="lamp")
+    run_any(chair, chair_tracks, 0.4, do="sit_on", who="dad", what="chair")
+    chair_end = run_any(chair, chair_tracks, 1.0, do="stand_up", who="dad")
+    assert chair_end == pytest.approx(end)
+    assert_holding_pose(chair_tracks, "dad", [1.0, chair_end])
+    def rot_channels(tr):
+        return {k[1] for k in tr.raw if k[0] == "puppet:dad" and k[2] >= 1.0 and k[1].endswith(".rot")}
+    assert rot_channels(out_tracks) == rot_channels(chair_tracks) == {f"{b}.rot" for b in LEGS}
+
+
+def test_get_out_compiled_from_the_drivers_seat_keeps_the_hold_pose():
+    sc = base_scene()
+    sp = _one(_a(1, "get_out", who="dad", what="sedan"),
+              start={"dad": _at("curb", holding="lamp", **{"in": "sedan.driver"})}, prop_start=SEDAN_CURB)
+    res = compile_screenplay(sp, sets=sc.sets, props=sc.props, people=sc.people)
+    assert res.ok, res.errors
+    tl = res.timeline
+    t = tl.shots[0].action_start + 1.0
+    tracks = TrackSet()
+    tracks.extend((tr.target, tr.channel, kt, v) for tr in tl.tracks for kt, v in tr.keys)
+    assert_holding_pose(tracks, "dad", [t, t + POSE_SECONDS / 2, t + POSE_SECONDS, tl.duration])
+    for bone in LEGS:
+        assert tracks.value_at("puppet:dad", f"{bone}.rot", t + POSE_SECONDS) == pytest.approx(0.0)
+
+
+def test_get_in_from_kneeling_stands_up_first_then_walks():
+    tracks = RecordingTracks()
+    world = make_world()
+    run_any(world, tracks, 0.0, do="kneel", who="kid")
+    assert world.people["kid"].pose == "kneel"
+    end = run(world, tracks, 1.0, do="get_in", who="kid", what="car", socket="passenger")
+    t_up = 1.0 + POSE_SECONDS
+    walk = (0.8 - (-0.22)) / motion.SPEEDS["walk"]
+    assert end == pytest.approx(t_up + walk + POSE_SECONDS)  # later by the stand-up time
+    # The legs blend back to 0 from the kneel, by t_up, before the walk cycle starts.
+    for bone in LEGS:
+        keys = raw_keys(tracks, "kid", f"{bone}.rot", after=1.0)
+        assert keys[0][0] == pytest.approx(1.0)
+        at_up = [v for kt, v in keys if kt == pytest.approx(t_up)]
+        assert at_up and at_up[0] == pytest.approx(0.0)
+        assert not [kt for kt, _ in keys if 1.0 + 1e-9 < kt < t_up - 1e-9]
+    # The walk starts at t_up from the standing root, not at t from the kneeling one.
+    roots = raw_keys(tracks, "kid", "root.position", after=1.0)
+    assert roots[0][0] == pytest.approx(1.0) and roots[0][1][1] < 0  # still down on the knee
+    assert [list(v) for kt, v in roots if kt == pytest.approx(t_up)] == [[0.8, 0.0, 0.5]] * 2
+    for kt, v in roots:
+        if kt >= t_up - 1e-9:
+            assert v[1] >= -1e-9, (kt, v)
+    facing = [k for k in tracks.raw if k[1] == "root.facing" and k[2] >= 1.0]
+    assert [k[2] for k in facing] == [pytest.approx(t_up)]
+    path = motion.path_from_keys(tracks.raw, "puppet:kid", "root.position")
+    assert motion.position_at(path, t_up + walk) == pytest.approx((-0.22, 0.0, 0.5))
+    k = world.people["kid"]
+    assert (k.seat, k.pose) == (("car", "passenger"), "sit")
+
+
+def test_get_in_from_kneeling_at_the_door_stands_then_sits():
+    tracks = RecordingTracks()
+    world = make_world()
+    run_any(world, tracks, 0.0, do="kneel", who="dad")
+    end = run(world, tracks, 1.0, do="get_in", who="dad", what="car")
+    t_up = 1.0 + POSE_SECONDS
+    assert end == pytest.approx(t_up + POSE_SECONDS)
+    roots = raw_keys(tracks, "dad", "root.position", after=1.0)
+    assert [kt for kt, _ in roots] == pytest.approx([1.0, t_up, t_up, end])
+    assert list(roots[1][1]) == pytest.approx([-0.67, 0.0, 0.5])  # standing at the door
+    assert list(roots[2][1]) == pytest.approx([-0.67, 0.0, 0.5])  # the sit starts from there
+    assert roots[-1][1][1] + HIP["dad"] == pytest.approx(0.405)
+    for kt, v in roots[1:]:
+        assert v[1] >= -1e-9
+    for bone in LEGS:
+        assert tracks.value_at("puppet:dad", f"{bone}.rot", t_up) == pytest.approx(0.0, abs=1e-3)
+
+
+def test_get_in_compiled_after_a_kneel_stands_first():
+    sc = base_scene()
+    sp = _one(_a(0, "kneel", who="dad"), _a(1, "get_in", who="dad", what="sedan"),
+              start={"dad": _at("door")}, prop_start=SEDAN_CURB)
+    res = compile_screenplay(sp, sets=sc.sets, props=sc.props, people=sc.people)
+    assert res.ok, res.errors
+    tl = res.timeline
+    t_up = tl.shots[0].action_start + 1.0 + POSE_SECONDS
+    keys = {tr.channel: tr.keys for tr in tl.tracks if tr.target == "puppet:dad"}
+    for kt, v in keys["root.position"]:
+        if kt >= t_up - 1e-6:
+            assert v[1] >= -1e-9, (kt, v)
+    for bone in LEGS:
+        at_up = [v for kt, v in keys[f"{bone}.rot"] if abs(kt - t_up) < 1e-6]
+        assert at_up == [0.0]
+    walk_start = min(kt for kt, _ in keys["arm_r.upper.rot"])
+    assert walk_start == pytest.approx(t_up, abs=1e-6)
+
+
+def test_get_in_from_kneeling_while_holding_keeps_the_hold_pose_through_the_stand_and_walk():
+    tracks = RecordingTracks()
+    world = lamp_world({"kid": {"at": "porch", "holding": "lamp"}})
+    run_any(world, tracks, 0.0, do="hold", who="kid", what="lamp")
+    run_any(world, tracks, 0.4, do="kneel", who="kid")
+    end = run(world, tracks, 1.0, do="get_in", who="kid", what="car", socket="passenger")
+    for bone in ARM_R:
+        assert raw_keys(tracks, "kid", f"{bone}.rot", after=1.0) == []
+    quarters = [kt for kt, _ in raw_keys(tracks, "kid", "leg_l.upper.rot", after=1.0)]
+    assert_holding_pose(tracks, "kid", [1.0, *quarters, end])
+
+
+def test_get_in_from_sitting_on_the_floor_stands_up_first():
+    tracks = RecordingTracks()
+    world = make_world()
+    world.set_pose("kid", "sit")  # on the floor: no seat
+    assert world.people["kid"].seat is None
+    end = run(world, tracks, 1.0, do="get_in", who="kid", what="car", socket="passenger")
+    walk = (0.8 - (-0.22)) / motion.SPEEDS["walk"]
+    assert end == pytest.approx(1.0 + POSE_SECONDS + walk + POSE_SECONDS)
+    assert world.people["kid"].seat == ("car", "passenger")
+
+
+def test_get_in_from_kneeling_into_a_full_vehicle_is_atomic():
+    tracks = TrackSet()
+    world = seated_world(tracks, "dad", "mom")
+    run_any(world, tracks, 1.0, do="kneel", who="kid")
+    assert_atomic(world, tracks, "no_free_seat", "every seat in car is taken", do="get_in", who="kid", what="car")
+
+
+# ---------------------------------------------- standing, empty-handed: keys exactly as before
+# Digests of every raw key (rounded to 1e-9) captured on main before the held-arm / stand-up
+# change: the change must not touch the common case.
+
+def _digest(raw: list[tuple]) -> tuple[int, str]:
+    def r(v):
+        if isinstance(v, (list, tuple)):
+            return [round(float(c), 9) for c in v]
+        return round(v, 9) if isinstance(v, float) else v
+    canon = sorted((tg, ch, round(float(kt), 9), r(v)) for tg, ch, kt, v in raw)
+    return len(canon), hashlib.sha256(json.dumps(canon).encode()).hexdigest()
+
+
+def test_standing_empty_handed_get_in_and_get_out_keys_are_unchanged():
+    tracks = RecordingTracks()
+    world = make_world()
+    run(world, tracks, 0.0, do="get_in", who="kid", what="car", socket="passenger")  # walks to the door
+    assert _digest(tracks.raw) == (125, "8c9962b5e34611b79bc20e44f14135becbe03d963ceed983f531eb4c2bc9c442")
+
+    tracks = RecordingTracks()
+    world = make_world()
+    run(world, tracks, 0.0, do="get_in", who="dad", what="car")  # already at the door
+    n = len(tracks.raw)
+    assert _digest(tracks.raw) == (10, "510382d0c32a1e12cd37ab08361d3699db7e40f38be345714a59002039ca1ad1")
+    run(world, tracks, 1.0, do="get_out", who="dad", what="car")
+    assert _digest(tracks.raw[n:]) == (10, "2afb0cdf1ec939eb6c87874355f60fd2ec1e1fc22d703b1c232575a63df07e67")
