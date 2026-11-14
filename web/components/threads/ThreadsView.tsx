@@ -327,7 +327,9 @@ export default function ThreadsView(props: ThreadsViewProps) {
         const h = g.knots[i];
         if (!a || !t || !ring || !h) continue;
         a.style.transform = `translate3d(${h.x.toFixed(1)}px, ${h.y.toFixed(1)}px, 0)`;
-        a.style.visibility = h.visible ? "visible" : "hidden";
+        // Off-screen links stay focusable (focus pans to them); only knots not
+        // yet sewn in by the intro are hidden.
+        a.style.visibility = e.reveal >= model.knots[i].t ? "visible" : "hidden";
         const d = Math.round(h.r * 2 + 10);
         if (ring.dataset.d !== String(d)) {
           ring.dataset.d = String(d);
@@ -610,6 +612,22 @@ export default function ThreadsView(props: ThreadsViewProps) {
     kick.current();
   }, []);
 
+  /** Keyboard focus on a moment: bring its knot into view and show its title. */
+  const focusKnot = useCallback(
+    (i: number) => {
+      const e = eng.current;
+      if (!e) return;
+      e.hoverKnot = i;
+      kick.current();
+      const h = e.geom?.knots[i];
+      if (!h) return;
+      const W = e.bounds.width;
+      if (h.x < W * 0.15 || h.x > W * 0.85) e.panTarget = model.knots[i].t;
+      kick.current();
+    },
+    [model],
+  );
+
   const onKey = useCallback(
     (ev: React.KeyboardEvent) => {
       const e = eng.current;
@@ -635,7 +653,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
   const followedCount = followed ? followed.momentIds.length : 0;
 
   return (
-    <main className="fixed inset-0 overflow-hidden select-none">
+    <main className="fixed inset-0 overflow-clip select-none">
       <div
         ref={wrapRef}
         className="absolute inset-0 outline-none"
@@ -648,12 +666,14 @@ export default function ThreadsView(props: ThreadsViewProps) {
         <canvas ref={canvasRef} className="absolute inset-0 touch-none" style={{ cursor: "grab" }} aria-hidden />
 
         {/* Moment links + titles, positioned each frame over their knots. */}
-        <div className="pointer-events-none absolute inset-0" aria-label="Moments">
+        <div className="pointer-events-none absolute inset-0 overflow-clip" role="group" aria-label="Moments">
           {model.knots.map((k, i) => (
             <Link
               key={k.moment.id}
               href={`/memories/${k.moment.id}`}
               prefetch={false}
+              onFocus={() => focusKnot(i)}
+              onBlur={() => focusKnot(-1)}
               ref={(el) => {
                 linkRefs.current[i] = el;
               }}
@@ -685,9 +705,15 @@ export default function ThreadsView(props: ThreadsViewProps) {
       {/* Quiet header: where you are, and whose thread you are following. */}
       <header className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between px-[var(--gutter)] pt-6 sm:pt-8">
         <div className="pointer-events-auto">
-          <Link href="/" className="kicker no-underline hover:text-ink-soft">
-            Family threads
-          </Link>
+          <p className="kicker">
+            <Link href="/" className="text-ink-faint no-underline transition-colors hover:text-ink-soft">
+              Family tree
+            </Link>
+            <span aria-hidden className="mx-2 opacity-60">
+              /
+            </span>
+            <span className="text-ink-soft">Threads</span>
+          </p>
           <h1 className="mt-1 text-[1.6rem] leading-tight sm:text-[2rem]" style={{ fontVariationSettings: '"SOFT" 100, "WONK" 1' }}>
             {familyName}
           </h1>
