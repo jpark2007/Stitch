@@ -22,6 +22,15 @@ Message grammar (shared with the compiler's other steps)::
 Narration problems keep narration.py's own location format
 (``shot s1, dad's narration line 1: ...``).
 
+Reasons follow one style (errors.ERROR_CODES lists every code): lower case, no trailing
+period, lists as ``the <things> are a, b, c``, and the fix after a ``; `` where it is obvious.
+Three lists still read the older way because tests outside the compiler-error task pin them:
+``poses are a, b`` (unknown_pose) and ``known sets: a, b`` / ``known people: a, b`` /
+``known props: a, b``. They move to ``the poses are a, b`` (and so on) together with
+verbs_core's and compiler.py's unknown_pose wording, in one change.
+Here the name the screenplay wrote that is wrong is quoted (``"the_moon" is not a mark``);
+offending numbers are shown as written (``:g``), not rounded.
+
 When a shot's set is unknown its marks are unknown too, so mark checks for that shot are
 skipped (one unknown_set error instead of a cascade of unknown_mark errors).
 """
@@ -35,7 +44,7 @@ from dataclasses import dataclass
 
 import schemas
 from screenplay import narration
-from screenplay.errors import error_message
+from screenplay.errors import error_message, from_narration_error
 from screenplay.narration import NarrationError
 from screenplay.schema import (
     SHARED_DIR,
@@ -116,8 +125,7 @@ class _Site:
         )
 
 
-def _from_narration(e: NarrationError) -> CompileError:
-    return CompileError(code=e.code, message=e.message, shot=e.shot or None)
+_from_narration = from_narration_error
 
 
 # --------------------------------------------------------------------------- validator
@@ -155,6 +163,9 @@ class _Validator:
 
     def props_list(self) -> str:
         return f"the props are {_names(self.sp_props)}" if self.sp_props else "the screenplay lists no props"
+
+    def shots_list(self) -> str:
+        return f"the shots are {_names(self.shot_ids)}" if self.shot_ids else "the screenplay has no shots"
 
     @staticmethod
     def marks_list(marks: Mapping[str, object]) -> str:
@@ -299,7 +310,7 @@ class _Validator:
                         site,
                         "telling_unknown_shot",
                         f'{author}\'s telling has lines for shot "{shot_id}", which is not in the screenplay; '
-                        f"shots are: {_names(self.shot_ids)}",
+                        f"{self.shots_list()}",
                     )
 
     def explanations(self) -> None:
@@ -336,7 +347,7 @@ class _Validator:
                     site,
                     "interaction_unknown_shot",
                     f'{label} belongs to shot "{it.shot}", which is not in the screenplay; '
-                    f"shots are: {_names(self.shot_ids)}",
+                    f"{self.shots_list()}",
                 )
             else:
                 shot = self.sp.shots[self.shot_ids.index(it.shot)]
@@ -351,7 +362,7 @@ class _Validator:
                 self.scrub_target(site, label, target, shot)
             return
         if d.prop is None:
-            self.add(site, "missing_param", f'{label} drives {d.type} and needs "prop"')
+            self.add(site, "missing_param", f'{label} drives {d.type}, which requires prop; "prop" is missing')
             return
         if d.prop not in self.sp_props_set:
             self.add(
@@ -371,7 +382,8 @@ class _Validator:
                     )
         elif d.type == "prop_part":
             if d.part is None:
-                self.add(site, "missing_param", f'{label} drives prop_part and needs "part"')
+                reason = f'{label} drives prop_part, which requires prop, part; "part" is missing'
+                self.add(site, "missing_param", reason)
             elif pd is not None and d.part not in pd.parts:
                 parts = f"its parts are {_names(pd.parts)}" if pd.parts else "it has no moving parts"
                 self.add(
@@ -589,7 +601,7 @@ class _Validator:
                 self.add(site, "self_target", f'"on" is "{on}" itself')
             d = self.props.get(on)
             if d is not None and not d.sockets:
-                self.add(site, "invalid_value", f'"{on}" has no sockets to place things on')
+                self.add(site, "no_socket", f'"{on}" has no sockets to place on')
             return d, False
         if marks is None:
             return None, False

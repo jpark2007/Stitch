@@ -45,6 +45,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 from screenplay.layout import RISE
+from screenplay.state import fmt_t
 from screenplay.schema import (
     Caption,
     Interaction,
@@ -83,6 +84,11 @@ class NarrationError(Exception):
     ``author`` is the teller (None when not known at the raise site), ``shot`` the shot id
     and ``line_index`` the index of the offending line in that teller's lines for the shot
     (for interactions: the index in ``Screenplay.interactions``; -1 when not tied to a line).
+
+    The message is ``shot <id>, <author>'s narration line <i>: <reason>``, or ``shot <id>:
+    <reason>`` (``screenplay: <reason>`` without a shot) when the error is not tied to a line.
+    An interaction error (``interaction=True``) is placed on the interaction, not on a
+    narration line: ``shot <id>, interaction <i>: <reason>``.
     """
 
     def __init__(
@@ -93,18 +99,22 @@ class NarrationError(Exception):
         author: str | None = None,
         shot: str = "",
         line_index: int = -1,
+        interaction: bool = False,
     ) -> None:
         self.code = code
         self.reason = reason
         self.author = author
         self.shot = shot
         self.line_index = line_index
+        self.interaction = interaction
         super().__init__(self.message)
 
     @property
     def message(self) -> str:
         where = f"shot {self.shot}" if self.shot else "screenplay"
-        if self.line_index >= 0:
+        if self.line_index >= 0 and self.interaction:
+            where += f", interaction {self.line_index}"
+        elif self.line_index >= 0:
             who = f"{self.author}'s " if self.author else ""
             where += f", {who}narration line {self.line_index}"
         return f"{where}: {self.reason}"
@@ -178,7 +188,7 @@ def default_author(screenplay: Screenplay) -> str:
         return screenplay.cast[0]
     raise NarrationError(
         "no_narrator",
-        "cannot tell who narrates: no narration source names a teller and the cast is empty",
+        "nobody narrates: no narration source names a teller and the cast is empty; add someone to the cast",
     )
 
 
@@ -198,7 +208,9 @@ def cue_action_index(
         if a.do == cue:
             return i
     ids = [a.id for a in shot.actions if a.id]
-    known = f"; action ids in this shot: {', '.join(repr(i) for i in ids)}" if ids else ""
+    verbs = list(dict.fromkeys(a.do for a in shot.actions))
+    known = f"; the action ids in this shot are {', '.join(ids)}" if ids else ""
+    known += f"; its verbs are {', '.join(verbs)}" if verbs else "; this shot has no actions"
     raise NarrationError(
         "cue_unknown_action",
         f'cue "{cue}" matches no action id and no action verb in this shot{known}',
@@ -232,10 +244,10 @@ def cue_word_time(
     for w in words:
         if _norm(w.word) == target:
             return w.t
-    tokens = ", ".join(f'"{w.word}"' for w in words)
+    tokens = ", ".join(w.word for w in words)
     raise NarrationError(
         "cue_word_missing",
-        f'cueWord "{line.cue_word}" is not a word of "{line.text}"; its words are: {tokens}',
+        f'cueWord "{line.cue_word}" is not a word of "{line.text}"; its words are {tokens}',
         author=author,
         shot=shot,
         line_index=line_index,
@@ -270,7 +282,7 @@ def retime_actions(shot: Shot, action_start: float, *, author: str | None = None
             a = shot.actions[idx]
             raise NarrationError(
                 "cue_conflict",
-                f'action {idx} ({a.id or a.do}) is already cued by narration line {pinned[idx]}; '
+                f"action {idx} ({_action_name(shot, idx)}) is already cued by narration line {pinned[idx]}; "
                 f"an action can land on only one word",
                 author=author,
                 shot=shot.id,
@@ -282,7 +294,7 @@ def retime_actions(shot: Shot, action_start: float, *, author: str | None = None
         if new_t < 0:
             raise NarrationError(
                 "cue_before_start",
-                f'cue word of "{line.text}" is at shot t={new_t:g}, before the shot starts; '
+                f'cue word of "{line.text}" is at shot t={fmt_t(new_t)}, before the shot starts; '
                 f"start the line later",
                 author=author,
                 shot=shot.id,
@@ -306,9 +318,9 @@ def retime_actions(shot: Shot, action_start: float, *, author: str | None = None
             li, idx = moved_by[j]
             raise NarrationError(
                 "cue_before_start",
-                f"action {j} ({_action_name(shot, j)}) would start at shot t={_f2(t_new)}, before the shot "
+                f"action {j} ({_action_name(shot, j)}) would start at shot t={fmt_t(t_new)}, before the shot "
                 f"starts: it keeps its spacing after action {idx} ({_action_name(shot, idx)}), which this "
-                f"line moves to shot t={_f2(current[idx])}; give action {j} a later t or a cue of its own",
+                f"line moves to shot t={fmt_t(current[idx])}; give action {j} a later t or a cue of its own",
                 author=author,
                 shot=shot.id,
                 line_index=li,
@@ -378,7 +390,8 @@ def build_shot_narration(
                 if idx in cued_by:
                     raise NarrationError(
                         "cue_conflict",
-                        f"action {idx} is already cued by {author}'s narration line {cued_by[idx]}; "
+                        f"action {idx} ({_action_name(shot, idx)}) is already cued by {author}'s narration "
+                        f"line {cued_by[idx]}; "
                         f"an action can land on only one word per telling",
                         author=author,
                         shot=shot.id,
@@ -392,7 +405,7 @@ def build_shot_narration(
                     raise NarrationError(
                         "cue_before_start",
                         f'to land its cue word on the action, "{line.text}" would start at shot '
-                        f"t={_f2(start - action_start)}, before the shot starts; "
+                        f"t={fmt_t(start - action_start)}, before the shot starts; "
                         f"shorten the words before the cue word or move the action later",
                         author=author,
                         shot=shot.id,
@@ -549,9 +562,10 @@ def convert_interactions(
         if shot_id not in action_start_by_shot:
             raise NarrationError(
                 "interaction_unknown_shot",
-                f'interaction "{it.id}" belongs to shot "{shot_id}", which is not in the screenplay',
-                shot=shot_id,
+                f'interaction "{it.id}" belongs to shot "{shot_id}", which is not in the screenplay; '
+                f"the shots are {', '.join(action_start_by_shot)}",
                 line_index=i,
+                interaction=True,
             )
         base = action_start_by_shot[shot_id]
         t_from, t_to = it.drives.from_, it.drives.to
@@ -559,9 +573,10 @@ def convert_interactions(
         if t_to is None and shot_end is None:
             raise NarrationError(
                 "interaction_missing_to",
-                f'interaction "{it.id}" in shot "{shot_id}" needs to: the shot time its scrub ends',
+                f'interaction "{it.id}" needs "to", the shot time its scrub ends',
                 shot=shot_id,
                 line_index=i,
+                interaction=True,
             )
         timing = retimed_by_shot.get(shot_id) if retimed_by_shot is not None else None
         if timing is not None:
@@ -577,6 +592,7 @@ def convert_interactions(
                     f"once its actions move onto their cue words; widen the range or cue the actions in order",
                     shot=shot_id,
                     line_index=i,
+                    interaction=True,
                 )
         tl_from = _r(base + t_from) if t_from is not None else _r(base)
         if t_to is not None:
@@ -597,7 +613,7 @@ def convert_interactions(
                     f'interaction "{it.id}" would scrub from shot t=0.00, where shot "{shot_id}" starts, '
                     f'back to t={_f2(tl_to - base)}; give it a "from" before its "to"'
                 )
-            raise NarrationError("interaction_bad_range", reason, shot=shot_id, line_index=i)
+            raise NarrationError("interaction_bad_range", reason, shot=shot_id, line_index=i, interaction=True)
         drives = it.drives.model_copy(deep=True, update={"from_": tl_from, "to": tl_to})
         out.append(it.model_copy(deep=True, update={"drives": drives}))
     return out

@@ -141,10 +141,38 @@ def test_unknown_name(scene):
     loc = make_locate(world, tracks, MARKS, "s1")
     with pytest.raises(StateError) as e:
         loc("gran", 0)
-    assert (e.value.code, e.value.reason) == ("unknown_target", "gran is not a person, prop or mark in shot s1")
+    assert (e.value.code, e.value.reason) == (
+        "unknown_target",
+        "gran is not a person, prop or mark in this shot; the cast is dad, mom; the props are books, cup, table, "
+        "ghost; the marks are offstage_left, offstage_right, steps_top, steps_foot, porch",
+    )
     with pytest.raises(StateError) as e:
         loc.mark("dad")
     assert (e.value.code, e.value.reason) == ("unknown_mark", "dad is not a mark in shot s1")
+
+
+def test_a_prop_track_parented_to_itself_is_a_cycle(scene):
+    world, tracks = scene
+    tracks.add("prop:cup", "parent", 0.0, "prop:cup.top")
+    loc = make_locate(world, tracks, MARKS, "s1")
+    with pytest.raises(StateError) as e:
+        loc("cup", 1.0)
+    assert (e.value.code, e.value.reason) == ("cycle", "cup cannot rest on itself")
+
+
+def test_a_prop_track_on_a_missing_socket_lists_the_sockets(scene):
+    world, tracks = scene
+    tracks.add("prop:cup", "parent", 0.0, "prop:table.drawer")
+    loc = make_locate(world, tracks, MARKS, "s1")
+    with pytest.raises(StateError) as e:
+        loc("cup", 1.0)
+    assert (e.value.code, e.value.reason) == ("unknown_socket", "table has no socket drawer; its sockets are top")
+    tracks = TrackSet()
+    tracks.add("prop:books", "parent", 0.0, "prop:cup.top")
+    loc = make_locate(world, tracks, MARKS, "s1")
+    with pytest.raises(StateError) as e:
+        loc("books", 1.0)
+    assert (e.value.code, e.value.reason) == ("unknown_socket", "cup has no socket top; it has no sockets")
 
 
 def test_unplaced_prop_is_not_on_stage(scene):

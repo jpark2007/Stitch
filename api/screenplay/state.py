@@ -305,6 +305,16 @@ class World:
             raise StateError("not_holding", self._where(what, who))
         return h[1]
 
+    def _sockets_list(self, what: str) -> str:
+        """``its sockets are a, b`` (or ``it has no sockets``), for unknown_socket reasons."""
+        sockets = self.catalog[what].sockets
+        return f"its sockets are {', '.join(sockets)}" if sockets else "it has no sockets"
+
+    def _states_list(self, what: str) -> str:
+        """``its states are a, b`` (or ``it has no states``), for unknown_state reasons."""
+        states = self.catalog[what].states
+        return f"its states are {', '.join(states)}" if states else "it has no states"
+
     def _hands_full_reason(self, who: str) -> str:
         p = self.people[who]
         held = ", ".join(f"{s}: {p.holding[s]}" for s in HANDS if s in p.holding)
@@ -441,23 +451,37 @@ class World:
             if s.holding is not None:
                 self._prop(s.holding)
                 if s.holding in held_by:
-                    raise StateError("double_hold", f"{held_by[s.holding]} and {who} both start holding {s.holding}")
+                    raise StateError(
+                        "double_hold",
+                        f"{held_by[s.holding]} and {who} both start holding {s.holding}; give it to one of them",
+                    )
                 held_by[s.holding] = who
                 if s.holding in shot.prop_start:
-                    raise StateError("prop_conflict", f"{s.holding} is held by {who} and also placed in prop_start")
+                    raise StateError(
+                        "prop_conflict",
+                        f"{who} starts holding {s.holding}, and propStart also places it; "
+                        f"remove {s.holding} from propStart or from {who}'s holding",
+                    )
             if s.in_ is not None:
                 prop, _, sock = s.in_.partition(".")
                 self._prop(prop)
-                if not sock or sock not in self.catalog[prop].sockets:
-                    raise StateError("unknown_socket", f"{prop} has no socket {sock or '(none given)'}")
+                if not sock:
+                    raise StateError(
+                        "unknown_socket", f"{who} starts in {prop} with no socket; {self._sockets_list(prop)}"
+                    )
+                if sock not in self.catalog[prop].sockets:
+                    raise StateError("unknown_socket", f"{prop} has no socket {sock}; {self._sockets_list(prop)}")
                 if (prop, sock) in seats:
-                    raise StateError("socket_taken", f"{seats[(prop, sock)]} and {who} both start in {prop}.{sock}")
+                    raise StateError(
+                        "socket_taken",
+                        f"{seats[(prop, sock)]} and {who} both start in {prop}.{sock}; seat one elsewhere",
+                    )
                 seats[(prop, sock)] = who
         for what, ps in shot.prop_start.items():
             self._prop(what)
             states = self.catalog[what].states
             if ps.state is not None and states and ps.state not in states:
-                raise StateError("unknown_state", f"{what} has no state {ps.state}")
+                raise StateError("unknown_state", f"{what} has no state {ps.state}; {self._states_list(what)}")
 
         self.now = 0.0
         for p in self.people.values():
@@ -493,7 +517,7 @@ class World:
                 continue
             riders = self._riders(what)
             if riders:
-                raise StateError("occupied", f"{riders[0]} is sitting on {what}")
+                raise StateError("occupied", f"{riders[0]} is sitting on {what}; start {riders[0]} somewhere else")
             hand = self.free_hand(who)
             if hand is None:
                 raise StateError("hands_full", self._hands_full_reason(who))
@@ -548,13 +572,12 @@ class World:
             if ps.on is not None:
                 base, _, sock = ps.on.partition(".")
                 self._prop(base)
-                if base == what or base in set(self._descendants(what)):
-                    raise StateError("cycle", f"{what} cannot rest on {base}")
+                self._check_no_cycle(what, base)
                 if not sock:
                     free = [k for k in self.catalog[base].sockets
                             if self.props[base].occupants.get(k) in (None, f"prop:{what}")]
                     if not free:
-                        raise StateError("socket_taken", f"{base} has no free socket")
+                        raise StateError("socket_taken", f"every socket on {base} is taken")
                     sock = free[0]
                 self._check_socket_for_prop(base, sock, what)
                 self._attach_prop(what, base, sock)
@@ -568,6 +591,13 @@ class World:
                 base = ps.on.partition(".")[0]
                 if not self._placed(base):
                     raise StateError("not_on_stage", f"{base} is not on stage in shot {shot.id}; place it with propStart")
+
+    def _check_no_cycle(self, what: str, base: str) -> None:
+        """``cycle`` when ``what`` would rest on itself or on a prop that rests on it."""
+        if base == what:
+            raise StateError("cycle", f"{what} cannot rest on {base}")
+        if base in set(self._descendants(what)):
+            raise StateError("cycle", f"{what} cannot rest on {base}, which rests on {what}")
 
     def _check_socket_for_prop(self, base: str, socket: str, what: str) -> None:
         if socket not in self.catalog[base].sockets:
@@ -647,7 +677,7 @@ class World:
         self._check_takeable(who, what)
         if socket is not None:
             if socket not in HANDS:
-                raise StateError("bad_socket", f"{socket} is not a hand")
+                raise StateError("bad_socket", f"{socket} is not a hand; use hand_r or hand_l")
             if socket in p.holding:
                 raise StateError("hands_full", f"{who}'s {socket} is holding {p.holding[socket]}")
         else:
@@ -674,7 +704,7 @@ class World:
                     raise StateError("occupied", f"{oid} is sitting on {sub}, which rests on it")
         p = self.people[who]
         if p.seat is not None and self.is_vehicle(p.seat[0]):
-            raise StateError("seated_vehicle", f"{who} is seated in {p.seat[0]}")
+            raise StateError("seated_vehicle", f"{who} is seated in {p.seat[0]}; use get_out first")
 
     def hold(self, who: str, what: str) -> str:
         """Raise a prop already in hand into the hold pose. Returns its hand."""
@@ -697,7 +727,7 @@ class World:
         self._prop(what)
         self._person(to)
         if to == who:
-            raise StateError("self_hand_to", f"{who} cannot hand {what} to themselves")
+            raise StateError("self_hand_to", f'"to" is {who} themselves')
         self._require_in_hand(who, what)
         self._require_on_stage(who, to)
         hand = self.free_hand(to)
@@ -746,10 +776,9 @@ class World:
             return
         kind, base, sock = parsed
         if kind != "prop":
-            raise StateError("bad_parent", f"cannot place {what} on {parent}")
+            raise StateError("bad_parent", f"{parent} is not the ground or a prop socket")
         self._prop(base)
-        if base == what or base in set(self._descendants(what)):
-            raise StateError("cycle", f"{what} cannot rest on {base}")
+        self._check_no_cycle(what, base)
         self._check_socket_for_prop(base, sock, what)
         self._attach_prop(what, base, sock, pos)
 
