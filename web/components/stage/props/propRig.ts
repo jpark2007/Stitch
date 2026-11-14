@@ -49,6 +49,8 @@ export interface PropRigOptions {
 
 /** Key for "no art: draw the placeholder". Media ids are never empty. */
 const PLACEHOLDER = "";
+/** Multiplies the art for the card's edge: the same colours, in shade. */
+const EDGE_TINT = "#9a8874";
 
 interface Look {
   face: MeshStandardMaterial;
@@ -138,7 +140,9 @@ export class PropRig {
     face.castShadow = this.options.castShadow ?? true;
     face.receiveShadow = this.options.receiveShadow ?? false;
     const edge = new Mesh(this.geometry);
-    edge.position.set(0, -this.thickness * 0.55, -this.thickness);
+    // The card's cut edge: a darker copy just behind and a hair lower, so a
+    // card seen a little from above shows its thickness.
+    edge.position.set(0, -this.thickness * 0.3, -this.thickness);
     holder.add(edge, face);
     holder.name = part ? `part:${part}` : "body";
     face.name = `${this.prop.id}:${holder.name}`;
@@ -172,7 +176,7 @@ export class PropRig {
     const { width, height } = this.partSize(v.part, null);
     return {
       face: createCardMaterial({ map: art.map, alphaMap: art.alphaMap, width, height }),
-      edge: createCardMaterial({ map: art.map, alphaMap: art.alphaMap, width, height, tint: "#6f5d4c", grain: 0.4 }),
+      edge: createCardMaterial({ map: art.map, alphaMap: art.alphaMap, width, height, tint: EDGE_TINT, grain: 0.4 }),
       art: null,
       spec,
       url: null,
@@ -185,7 +189,7 @@ export class PropRig {
     const { width, height } = this.dims;
     return {
       face: createCardMaterial({ map: art.texture, alphaMap: art.alpha, width, height }),
-      edge: createCardMaterial({ map: art.texture, alphaMap: art.alpha, width, height, tint: "#6f5d4c", grain: 0.4 }),
+      edge: createCardMaterial({ map: art.texture, alphaMap: art.alpha, width, height, tint: EDGE_TINT, grain: 0.4 }),
       art,
       spec: null,
       url,

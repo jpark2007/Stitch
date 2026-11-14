@@ -124,9 +124,14 @@ interface Swatch {
 function swatch(color: string): Swatch {
   const base = safeColor(color);
   const mix = (to: Color, k: number) => "#" + base.clone().lerp(to, k).getHexString();
+  // Lighter in lightness only, so dark, saturated colours (navy, bottle
+  // green) stay themselves instead of greying toward cream.
+  const hsl = { h: 0, s: 0, l: 0 };
+  base.getHSL(hsl);
+  const lift = "#" + new Color().setHSL(hsl.h, hsl.s, Math.min(0.85, hsl.l + 0.09)).getHexString();
   return {
     base: "#" + base.getHexString(),
-    light: mix(CREAM, 0.22),
+    light: lift,
     lighter: mix(CREAM, 0.5),
     dark: mix(INK, 0.22),
     deep: mix(INK, 0.45),
@@ -234,8 +239,9 @@ interface Kit {
   rand: () => number;
   /** Cut a shape with the hand wobble. */
   cut: (pts: Pts, amp?: number) => Path2D;
-  /** Add a piece to the silhouette (alpha) and paint it as the bottom layer. */
-  base: (p: Path2D, fill: string) => void;
+  /** Add a piece to the silhouette (alpha) and paint it. With `lift`, it casts
+   *  a soft shadow on the pieces already there (a stacked book). */
+  base: (p: Path2D, fill: string, lift?: number) => void;
   /** Paint a layer glued on top: soft shadow under it, pale cut rim. */
   layer: (p: Path2D, fill: string, lift?: number) => void;
 }
@@ -253,6 +259,19 @@ function makeKit(color: CanvasRenderingContext2D, alpha: CanvasRenderingContext2
     color.stroke(p);
     color.restore();
   };
+  // A layer glued on top: its soft shadow stays inside the card's silhouette,
+  // so it never spills past the cut edge.
+  const glued = (p: Path2D, fill: string, lift: number) => {
+    color.save();
+    color.clip(silhouette);
+    color.shadowColor = "rgba(47, 30, 18, 0.32)";
+    color.shadowBlur = S * 0.012 * lift;
+    color.shadowOffsetX = S * 0.002 * lift;
+    color.shadowOffsetY = S * 0.006 * lift;
+    color.fillStyle = fill;
+    color.fill(p);
+    color.restore();
+  };
   return {
     W,
     H,
@@ -260,26 +279,19 @@ function makeKit(color: CanvasRenderingContext2D, alpha: CanvasRenderingContext2
     sw,
     rand,
     cut: (pts, a = amp) => path(wobble(pts, a, rand, Math.max(3, S / 80))),
-    base: (p, fill) => {
+    base: (p, fill, lift = 0) => {
       silhouette.addPath(p);
       alpha.fillStyle = "#fff";
       alpha.fill(p);
-      color.fillStyle = fill;
-      color.fill(p);
+      if (lift > 0) glued(p, fill, lift);
+      else {
+        color.fillStyle = fill;
+        color.fill(p);
+      }
       rim(p, Math.max(1.5, S * 0.008));
     },
     layer: (p, fill, lift = 1) => {
-      color.save();
-      // Layers stay inside the card's silhouette, so their shadows never
-      // spill past the cut edge.
-      color.clip(silhouette);
-      color.shadowColor = "rgba(47, 30, 18, 0.32)";
-      color.shadowBlur = S * 0.012 * lift;
-      color.shadowOffsetX = S * 0.002 * lift;
-      color.shadowOffsetY = S * 0.006 * lift;
-      color.fillStyle = fill;
-      color.fill(p);
-      color.restore();
+      glued(p, fill, lift);
       rim(p, Math.max(1.2, S * 0.006));
     },
   };
@@ -298,26 +310,23 @@ const paintTiny: Painter = ({ W, H, cut, base, layer, sw }) => {
   layer(cut(ellipse(cx - rx * 0.22, cy - ry * 0.26, rx * 0.26, ry * 0.18)), sw.lighter, 0.4);
 };
 
-/** A small stack of slabs: books, boxes, a parcel. */
+/** A small stack lying flat, spines out: books, boxes, a parcel. */
 const paintHand: Painter = ({ W, H, cut, base, layer, sw, rand }) => {
   const count = W / H >= 1.4 ? 2 : 3;
-  const gap = H * 0.012;
-  const slabH = (H - gap * (count - 1)) / count;
+  const slabH = H / count;
   const tones = [sw.base, sw.dark, sw.light];
   for (let i = 0; i < count; i++) {
-    // Bottom slab is the widest; each one above is shifted a little.
-    const y = H - (i + 1) * slabH - i * gap;
-    const w = W * (0.98 - i * 0.05 - rand() * 0.03);
-    const x = (W - w) / 2 + (rand() - 0.5) * W * 0.06;
-    const r = slabH * 0.12;
-    const tone = tones[(i + (count === 2 ? 1 : 0)) % tones.length];
-    const slab = cut(rrect(x, y, w, slabH, r));
-    base(slab, tone);
-    // The page block: a pale strip along the fore-edge, inset top and bottom.
-    const inset = slabH * 0.2;
-    layer(cut(rrect(x + w * 0.74, y + inset, w * 0.22, slabH - inset * 2, slabH * 0.06)), sw.core, 0.5);
-    // A spine band near the other end.
-    layer(cut(rrect(x + w * 0.1, y + slabH * 0.16, w * 0.06, slabH * 0.68, 1)), sw.deep, 0.35);
+    // Bottom slab is the widest; each one above sits a little askew and
+    // overlaps the one below, casting a soft shadow on it.
+    const y = H - (i + 1) * slabH + (i > 0 ? slabH * 0.04 : 0);
+    const h = slabH * (i > 0 ? 1.0 : 0.98);
+    const w = W * (0.97 - i * 0.06 - rand() * 0.03);
+    const x = (W - w) / 2 + (rand() - 0.5) * W * 0.07;
+    const r = h * 0.1;
+    base(cut(rrect(x, y, w, h, r)), tones[(i + (count === 2 ? 1 : 0)) % tones.length], i > 0 ? 0.6 : 0);
+    // Spine bands near each end, and a small title label between them.
+    for (const u of [0.1, 0.86]) layer(cut(rrect(x + w * u, y + h * 0.1, w * 0.035, h * 0.8, 1)), sw.lighter, 0.25);
+    layer(cut(rrect(x + w * 0.4, y + h * 0.34, w * 0.2, h * 0.32, h * 0.05)), sw.lighter, 0.35);
   }
 };
 
