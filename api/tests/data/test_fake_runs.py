@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import types
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -19,9 +20,10 @@ from db import media as media_db
 from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
+from screenplay.schema import Screenplay, Timeline
 from seed import fake_runs
-from seed.demo import DEMO_FAMILY_ID, DEMO_PERSON_IDS, seed_demo
-from seed.fake_runs import ScriptedRunManager, install_fake_runs, remap_ids, short_title
+from seed.demo import DEMO_FAMILY_ID, DEMO_PERSON_IDS, SAMPLE_PATH, seed_demo
+from seed.fake_runs import ScriptedRunManager, install_fake_runs, remap_ids, short_title, strip_person
 
 API_DIR = Path(__file__).resolve().parents[2]
 TIMEOUT = 10.0
@@ -289,7 +291,7 @@ def test_run_in_another_family_recasts_people_and_copies_the_prop_and_set(db, ma
     events = drive(manager, FAM_B, run_id, B_USER)
     assert_well_formed(events)
     chip = next(p for n, p in events if n == "props_found").props[0]
-    assert chip.id == f"hymn_books_{FAM_B}" and chip.reused is True
+    assert chip.id == f"hymn_books_{FAM_B}" and chip.reused is False  # the family had no copy yet
 
     memory = memories_db.get_memory(db, FAM_B, events[-1][1].memory_id)
     assert memory is not None
@@ -320,6 +322,8 @@ def test_run_in_another_family_recasts_people_and_copies_the_prop_and_set(db, ma
     run_2 = manager.start_run(FAM_B, B_USER, B_OTHER, fields(), [])
     events_2 = drive(manager, FAM_B, run_2, B_USER)
     assert_well_formed(events_2)
+    chip_2 = next(p for n, p in events_2 if n == "props_found").props[0]
+    assert chip_2.id == chip.id and chip_2.reused is True
     assert len(props_db.list_props(db, FAM_B)) == 1 and len(props_db.list_sets(db, FAM_B)) == 1
     memory_2 = memories_db.get_memory(db, FAM_B, events_2[-1][1].memory_id)
     assert memory_2 is not None
@@ -339,6 +343,257 @@ def test_family_of_one_casts_the_teller_alone(db, manager):
     assert memory.screenplay.cast == [SOLO_PERSON]
 
 
+def _strings(value: Any) -> list[str]:
+    """Every string in a JSON value, dict keys included."""
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in [k, *_strings(v)]]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return [value] if isinstance(value, str) else []
+
+
+def assert_clean_scene(memory: schemas.Memory) -> None:
+    """One track per target + channel, nobody hands to themselves, and the scene validates."""
+    sp, tl = memory.screenplay, memory.timeline
+    assert sp is not None and tl is not None
+    counts = Counter((t.target, t.channel) for t in tl.tracks)
+    assert not [k for k, n in counts.items() if n > 1], counts
+    for shot in sp.shots:
+        for action in shot.actions:
+            assert action.who is None or action.who not in (action.to, action.target), action
+    Screenplay.model_validate(sp.model_dump(mode="json", by_alias=True))
+    Timeline.model_validate(tl.model_dump(mode="json", by_alias=True))
+
+
+def test_family_made_by_post_families_gets_a_one_puppet_scene(mdb):
+    """Regression: a family of one used to merge the sample's two puppets into the teller."""
+    family = families_db.create_family(mdb, name="Just me", creator_user_id=SOLO_USER)
+    me = people_db.create_person(
+        mdb, family.id, schemas.NewPerson(name="Rosa", born=1961), added_by=SOLO_USER, user_id=SOLO_USER
+    )
+    mgr = ScriptedRunManager(step_seconds=0, db_getter=lambda: mdb)
+    try:
+        run_id = mgr.start_run(family.id, SOLO_USER, me.id, fields(), [])
+        assert mgr.wait(family.id, run_id, timeout=TIMEOUT) == "waiting"
+        mgr.answer_run(family.id, run_id, SOLO_USER, schemas.AnswerRequest(kind="answer", text="Only me."))
+        assert mgr.wait(family.id, run_id, timeout=TIMEOUT) == "waiting"
+        mgr.answer_run(family.id, run_id, SOLO_USER, schemas.AnswerRequest(kind="props", props=[]))
+        assert mgr.wait(family.id, run_id, timeout=TIMEOUT) == "done"
+        events = mgr.events(family.id, run_id)
+    finally:
+        mgr.shutdown()
+    assert_well_formed(events)
+    memory = memories_db.get_memory(mdb, family.id, events[-1][1].memory_id)
+    assert memory is not None and memory.screenplay is not None and memory.timeline is not None
+    assert_clean_scene(memory)
+    dumped = _strings(memory.screenplay.model_dump(by_alias=True)) + _strings(
+        memory.timeline.model_dump(by_alias=True)
+    )
+    assert not [s for s in dumped if "puppet:dad" in s or "telling:dad" in s]
+    assert memory.screenplay.cast == [me.id]
+    assert memory.participant_ids == [me.id]
+    assert memory.timeline.default_narrator == me.id
+    assert scene_person_ids(memory) == {me.id}
+    # The teller's own narration plays, and the books stay where they fell.
+    assert [line.source for line in memory.screenplay.shots[0].narration] == [
+        f"telling:{me.id}:s1", f"telling:{me.id}:s2", f"telling:{me.id}:s3"
+    ]
+    assert memory.timeline.captions == memory.timeline.narrations[me.id].captions
+    parent = next(t for t in memory.timeline.tracks if t.target.startswith("prop:") and t.channel == "parent")
+    assert parent.keys[-1][1] == "ground"
+    assert memories_db.open_questions(mdb, family.id, me.id) == []
+
+
+def test_two_person_family_keeps_both_puppets(db, manager):
+    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(participant_ids=[B_OTHER]), [])
+    events = drive(manager, FAM_B, run_id, B_USER)
+    assert_well_formed(events)
+    memory = memories_db.get_memory(db, FAM_B, events[-1][1].memory_id)
+    assert memory is not None
+    assert_clean_scene(memory)
+    assert set(memory.screenplay.cast) == {B_TELLER, B_OTHER}
+    targets = {t.target for t in memory.timeline.tracks}
+    assert {f"puppet:{B_TELLER}", f"puppet:{B_OTHER}"} <= targets
+    assert memory.timeline.default_narrator == B_OTHER  # the sample's default telling, recast
+    hand = [a for a in memory.screenplay.shots[0].actions if a.do == "hand_to"]
+    assert [(a.who, a.to) for a in hand] == [(B_OTHER, B_TELLER)]
+
+
+# ------------------------------------------------------------------------------ strip_person
+
+
+def _raw_sample() -> tuple[dict, dict]:
+    raw = json.loads(SAMPLE_PATH.read_text())
+    return raw["memory"]["screenplay"], raw["memory"]["timeline"]
+
+
+def test_strip_person_on_the_raw_sample():
+    screenplay, timeline = _raw_sample()
+    before = json.dumps([screenplay, timeline], sort_keys=True)
+    sp, tl = strip_person(screenplay, timeline, "dad", keep_narrator="mom")
+    assert json.dumps([screenplay, timeline], sort_keys=True) == before  # pure: inputs untouched
+
+    assert not [t for t in tl["tracks"] if t["target"] == "puppet:dad"]
+    parent = next(t for t in tl["tracks"] if t["target"] == "prop:hymn_books" and t["channel"] == "parent")
+    assert not [v for _, v in parent["keys"] if isinstance(v, str) and v.startswith("puppet:dad")]
+    assert parent["keys"][-1][1] == "ground"
+    # Every channel of the prop is cut at the same time, so the books stay on the ground.
+    cut = next(t for t, v in _raw_parent_keys() if isinstance(v, str) and v.startswith("puppet:dad"))
+    for track in tl["tracks"]:
+        if track["target"] == "prop:hymn_books":
+            assert track["keys"] and all(t < cut for t, _ in track["keys"])
+    assert "dad" not in sp["cast"] and sp["cast"] == ["mom"]
+    shot = sp["shots"][0]
+    assert "dad" not in shot["start"]
+    assert not [a for a in shot["actions"] if a.get("who") == "dad"]
+    assert not [a for a in shot["actions"] if "dad" in (a.get("to"), a.get("target"), a.get("at"), a.get("on"))]
+    assert "dad" not in (sp.get("narrations") or {})
+    assert "dad" not in tl["narrations"]
+
+    # The default telling is now mom's, with cues only on actions that still exist.
+    mom_lines = screenplay["narrations"]["mom"]["s1"]
+    assert [line["text"] for line in shot["narration"]] == [line["text"] for line in mom_lines]
+    action_cues = {a.get("id") for a in shot["actions"]} | {a["do"] for a in shot["actions"]}
+    assert all(line.get("cue") is None or line["cue"] in action_cues for line in shot["narration"])
+    assert {line.get("cue") for line in shot["narration"]} == {None, "drop"}
+    assert all(line.get("cue") in (None, "drop") for line in tl["narrations"]["mom"]["lines"])
+    assert tl["defaultNarrator"] == "mom"
+    assert tl["captions"] == timeline["narrations"]["mom"]["captions"]
+
+    assert not [e for e in sp["explanations"] + tl["explanations"] if e["target"] == "puppet:dad"]
+    for item in sp["interactions"] + tl["interactions"]:
+        assert "puppet:dad" not in item["drives"].get("targets", [])
+    assert not [s for s in _strings([sp, tl]) if "puppet:dad" in s or "telling:dad" in s]
+    Screenplay.model_validate(sp)
+    Timeline.model_validate(tl)
+
+
+def _raw_parent_keys() -> list:
+    _, timeline = _raw_sample()
+    return next(
+        t["keys"] for t in timeline["tracks"] if t["target"] == "prop:hymn_books" and t["channel"] == "parent"
+    )
+
+
+def test_strip_person_drops_interaction_targets_and_empty_interactions():
+    sp = {
+        "cast": ["a", "b"],
+        "shots": [],
+        "interactions": [
+            {"id": "both", "drives": {"type": "scrub", "targets": ["puppet:a", "puppet:b"]}},
+            {"id": "only_b", "drives": {"type": "scrub", "targets": ["puppet:b.hand_r"]}},
+            {"id": "all", "drives": {"type": "scrub"}},
+        ],
+        "explanations": [{"target": "puppet:a", "text": "A"}, {"target": "puppet:b", "text": "B"}],
+    }
+    tl = {"tracks": [], "interactions": sp["interactions"], "explanations": sp["explanations"]}
+    sp2, tl2 = strip_person(sp, tl, "b", keep_narrator="a")
+    for out in (sp2, tl2):
+        assert [(i["id"], i["drives"].get("targets")) for i in out["interactions"]] == [
+            ("both", ["puppet:a"]), ("all", None)
+        ]
+        assert out["explanations"] == [{"target": "puppet:a", "text": "A"}]
+    assert sp2["cast"] == ["a"]
+
+
+def test_strip_person_keeps_a_default_narrator_who_stays():
+    sp, tl = _raw_sample()
+    tl = {**tl, "defaultNarrator": "mom", "captions": [{"t": 0, "text": "mine"}]}
+    _, out = strip_person(sp, tl, "dad", keep_narrator="mom")
+    assert out["defaultNarrator"] == "mom" and out["captions"] == [{"t": 0, "text": "mine"}]
+
+
+# ------------------------------------------------------------------------------ prop chips
+
+
+def test_reused_is_true_only_when_the_family_already_had_the_prop(db, manager):
+    run_1 = manager.start_run(SOLO, SOLO_USER, SOLO_PERSON, fields(), [])
+    events_1 = drive(manager, SOLO, run_1, SOLO_USER)
+    chip_1 = next(p for n, p in events_1 if n == "props_found").props[0]
+    assert chip_1.reused is False
+    end_1 = next(p for n, p in events_1 if n == "subagent_end" and p.name == "prop_master")
+    assert end_1.summary == f"Saved the {chip_1.name}."
+
+    run_2 = manager.start_run(SOLO, SOLO_USER, SOLO_PERSON, fields(), [])
+    events_2 = drive(manager, SOLO, run_2, SOLO_USER)
+    chip_2 = next(p for n, p in events_2 if n == "props_found").props[0]
+    assert chip_2.id == chip_1.id and chip_2.reused is True
+    end_2 = next(p for n, p in events_2 if n == "subagent_end" and p.name == "prop_master")
+    assert end_2.summary == f"Reused the {chip_2.name}."
+
+
+# ------------------------------------------------------------------------------ linker
+
+
+def _questions(db, family_id: str, person_id: str) -> list[schemas.Question]:
+    return memories_db.open_questions(db, family_id, person_id)
+
+
+def test_linker_asks_each_named_participant_once(db, manager):
+    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(participant_ids=[B_OTHER]), [])
+    events = drive(manager, FAM_B, run_id, B_USER)
+    assert_well_formed(events)
+    memory = memories_db.get_memory(db, FAM_B, events[-1][1].memory_id)
+    assert memory is not None
+
+    [question] = _questions(db, FAM_B, B_OTHER)
+    assert question.memory_id == memory.id and question.status == "open"
+    assert "Bea" in question.text and memory.title in question.text
+    assert question.text == f'Bea told the story of "{memory.title}". What do you remember?'
+    assert _questions(db, FAM_B, B_TELLER) == []  # the teller is never asked
+    assert _questions(db, FAM_B, B_THIRD) == []
+
+    # The plan shows the step, in order, and ends all completed.
+    plans = [p for n, p in events if n == "plan"]
+    assert plans[0].todos[-1].text == fake_runs.ASK_OTHERS
+    asking = [p for p in plans if any(t.text == fake_runs.ASK_OTHERS and t.status == "in_progress" for t in p.todos)]
+    assert len(asking) == 1
+    assert all(t.status == "completed" for t in asking[0].todos[:-1])
+    assert all(t.status == "completed" for t in plans[-1].todos)
+    seq = names(events)
+    assert seq.index("scene_ready") > max(i for i, (n, p) in enumerate(events) if p in asking)
+
+    # Running the linker again does not duplicate the open question.
+    assert fake_runs.ask_participants(db, FAM_B, memory, B_TELLER, [B_OTHER, B_TELLER]) == []
+    assert len(_questions(db, FAM_B, B_OTHER)) == 1
+
+
+def test_linker_creates_nothing_without_participants(db, manager):
+    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(participant_ids=[B_TELLER]), [])
+    events = drive(manager, FAM_B, run_id, B_USER)
+    assert_well_formed(events)
+    memory = memories_db.get_memory(db, FAM_B, events[-1][1].memory_id)
+    assert memory is not None
+    # B_OTHER was recast as the sample's second puppet, but was not named, so is not asked.
+    assert B_OTHER in memory.participant_ids
+    assert db["questions"].count_documents({"familyId": FAM_B}) == 0
+    assert fake_runs.ASK_OTHERS not in {t.text for n, p in events if n == "plan" for t in p.todos}
+
+
+def test_linker_failure_never_fails_the_run(db, manager, monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("questions collection is down")
+
+    monkeypatch.setattr(memories_db, "create_question", boom)
+    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(participant_ids=[B_OTHER, B_THIRD]), [])
+    events = drive(manager, FAM_B, run_id, B_USER)
+    assert_well_formed(events)
+    assert events[-1][0] == "done" and "scene_ready" in names(events)
+    assert db["questions"].count_documents({"familyId": FAM_B}) == 0
+
+
+def test_linker_asks_several_participants(db, manager):
+    run_id = manager.start_run(
+        FAM_B, B_USER, B_TELLER, fields(participant_ids=[B_THIRD, B_TELLER, B_OTHER, B_THIRD]), []
+    )
+    events = drive(manager, FAM_B, run_id, B_USER)
+    memory_id = events[-1][1].memory_id
+    for pid in (B_OTHER, B_THIRD):
+        [question] = _questions(db, FAM_B, pid)
+        assert question.memory_id == memory_id
+    assert _questions(db, FAM_B, B_TELLER) == []
+
+
 # ------------------------------------------------------------------------------ prop review
 
 
@@ -356,18 +611,46 @@ def test_rename_edit_renames_the_saved_prop(db, manager):
     assert props_db.get_prop(db, DEMO_FAMILY_ID, "hymn_books").name == "hymn books"
 
 
-def test_replace_photo_edit_uses_a_photo_of_this_family(db, manager):
-    photo = media_db.put_media(db, FAM_B, b"\x89PNG real", content_type="image/png", kind="photo")
-    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(), [])
-    events = drive(
-        manager, FAM_B, run_id, B_USER,
-        review=lambda pid: schemas.AnswerRequest(
-            kind="props", props=[schemas.PropEdit(id=pid, action="replace_photo", photo_id=photo)]
-        ),
+def _replace_photo(photo_id: str):
+    return lambda pid: schemas.AnswerRequest(
+        kind="props", props=[schemas.PropEdit(id=pid, action="replace_photo", photo_id=photo_id)]
     )
+
+
+@pytest.mark.parametrize("as_ref", [False, True], ids=["bare-id", "media-ref"])
+def test_replace_photo_edit_uses_a_photo_of_this_family(db, manager, as_ref):
+    photo = media_db.put_media(db, FAM_B, b"\x89PNG real", content_type="image/png", kind="photo")
+    assert media_db.parse_media_ref(photo) == photo  # put_media hands back the bare id
+    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(), [])
+    sent = media_db.media_ref(photo) if as_ref else photo
+    events = drive(manager, FAM_B, run_id, B_USER, review=_replace_photo(sent))
     assert_well_formed(events)
     [prop] = props_db.list_props(db, FAM_B)
-    assert prop.art == {"body": photo} and prop.source == "photo"
+    # The same shape as PATCH /families/{fid}/props/{id} and the schemas.Prop.art example.
+    assert props_db.get_prop(db, FAM_B, prop.id).art == {"body": f"media/{photo}"}
+    assert prop.source == "photo"
+
+
+@pytest.mark.parametrize(
+    "photo_id",
+    ["64f000000000000000000099", "media/64f000000000000000000099", "not-an-id", "media/"],
+)
+def test_replace_photo_with_an_unknown_photo_leaves_the_art(db, manager, photo_id):
+    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(), [])
+    events = drive(manager, FAM_B, run_id, B_USER, review=_replace_photo(photo_id))
+    assert_well_formed(events)
+    assert events[-1][0] == "done"
+    [prop] = props_db.list_props(db, FAM_B)
+    sample_prop = props_db.get_prop(db, DEMO_FAMILY_ID, "hymn_books")
+    assert prop.art == sample_prop.art and prop.source == sample_prop.source
+
+
+def test_replace_photo_with_another_familys_photo_leaves_the_art(db, manager):
+    theirs = media_db.put_media(db, DEMO_FAMILY_ID, b"\x89PNG demo", content_type="image/png", kind="photo")
+    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(), [])
+    drive(manager, FAM_B, run_id, B_USER, review=_replace_photo(theirs))
+    [prop] = props_db.list_props(db, FAM_B)
+    assert prop.art == props_db.get_prop(db, DEMO_FAMILY_ID, "hymn_books").art
 
 
 def test_remove_edit_leaves_the_prop_out(db, manager):
