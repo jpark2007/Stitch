@@ -92,6 +92,10 @@ export class ThreadsEngine {
   geom: FrameGeometry | null = null;
   titles: TitleBox[] = [];
   titlePlacements = new Map<number, TitlePlacement>();
+  /** Per strand: 1 when its name was written last frame. */
+  readonly nameShown: Uint8Array;
+  /** Per strand: the year under its name's left edge last frame (NaN when not written). */
+  readonly nameAt: Float64Array;
   /** Last frame's draw time (ms), for profiling. */
   drawMs = 0;
 
@@ -131,6 +135,8 @@ export class ThreadsEngine {
     this.highlight = o.highlight;
     this.dim = model.strands.map((_, i) => (o.highlight >= 0 && i !== o.highlight ? 1 : 0));
     this.lift = model.strands.map((_, i) => (i === o.highlight ? 1 : 0));
+    this.nameShown = new Uint8Array(n);
+    this.nameAt = new Float64Array(n).fill(NaN);
     this.swell = model.knots.map(() => 0);
     this.revealStart = o.reduced ? -1e9 : performance.now();
     this.reveal = o.reduced ? model.tNow : model.tMin;
@@ -319,6 +325,9 @@ export class ThreadsEngine {
         reveal: this.reveal,
         pop: this.pop,
         fonts: this.fonts,
+        highlight: this.highlight,
+        nameShown: this.nameShown,
+        nameAt: this.nameAt,
       });
       this.drawMs = performance.now() - t0;
       const { boxes, shown } = placeTitles(this.model, {

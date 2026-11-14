@@ -17,6 +17,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from "react";
 import { parseZoom } from "./camera";
 import { ThreadsEngine } from "./engine";
+import { momentHref as momentLink, personHref as personLink, treeHref } from "./links";
 import { MenuDisclosure } from "./MenuDisclosure";
 import { buildModel, type ThreadMoment, type ThreadPerson } from "./model";
 import { paperAt, TITLE_FONT_PX, TITLE_FONT_PX_COMPACT } from "./titles";
@@ -31,6 +32,11 @@ export interface ThreadsViewProps {
    * for the local demo family.
    */
   familyId?: string;
+  /**
+   * The local demo family: moment and book links carry ?demo=1, and the
+   * "Family tree" crumb opens the demo tree (see links.ts).
+   */
+  demo?: boolean;
   /** The user's families, for the switcher under the title (shown for two or more). */
   families?: { id: string; name: string }[];
   onSwitchFamily?: (id: string) => void;
@@ -44,16 +50,14 @@ export interface ThreadsViewProps {
 
 const NOW = new Date().getFullYear();
 
-const enc = encodeURIComponent;
-
 const TITLE_CLASS = "mt-1 text-[1.6rem] leading-tight sm:text-[2rem]";
 const TITLE_STYLE = { fontVariationSettings: '"SOFT" 100, "WONK" 1' } as const;
 
 export default function ThreadsView(props: ThreadsViewProps) {
   const { people, moments, familyName, familyId, families, onSwitchFamily, note } = props;
-  const familyQuery = familyId ? `?family=${enc(familyId)}` : "";
-  const momentHref = (id: string) => `/memories/${enc(id)}${familyQuery}`;
-  const personHref = (id: string) => `/people/${enc(id)}${familyQuery}`;
+  const scope = { familyId, demo: props.demo };
+  const momentHref = (id: string) => momentLink(id, scope);
+  const personHref = (id: string) => personLink(id, scope);
   const router = useRouter();
   const model = useMemo(() => buildModel(people, moments, NOW), [people, moments]);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -287,7 +291,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
       <header className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between px-[var(--gutter)] pt-6 sm:pt-8">
         <div className="pointer-events-auto min-w-0 max-w-full sm:max-w-[min(44rem,calc(100%-7rem))]">
           <p className="kicker">
-            <Link href="/" className="text-ink-faint no-underline transition-colors hover:text-ink-soft">
+            <Link href={treeHref(scope)} className="text-ink-faint no-underline transition-colors hover:text-ink-soft">
               Family tree
             </Link>
             <span aria-hidden className="mx-2 opacity-60">

@@ -8,8 +8,10 @@
  *  - close: + sheen, loose fibres, moment titles (placed by the UI)
  */
 
-import { toX, type Camera } from "./camera";
+import { toT, toX, type Camera } from "./camera";
 import { relax, strandAt, type Knot, type Shape, type Strand, type ThreadsModel } from "./model";
+import { NAME_GUTTER, NAME_MIN_PX, placeNames, type NameBox, type NameRequest, type NameSpot } from "./names";
+import { paperAt } from "./titles";
 import { drawCrossStitch, drawFrenchKnot, drawHoles, drawTiedKnot, drawYarn, hashSeed, yarnInk, type Polyline } from "./yarn";
 
 export interface Layout {
@@ -51,6 +53,16 @@ export interface FrameState {
   /** Per knot 0..1: how far it has popped in since the needle reached it. */
   pop: number[];
   fonts: { hand: string; sans: string; serif: string };
+  /** Followed strand, or -1: its name is always written. */
+  highlight?: number;
+  /** Per strand: 1 when its name was written last frame (names.ts keeps it, so names do not flicker). */
+  nameShown?: Uint8Array;
+  /**
+   * Per strand: the year under its name's left edge last frame, NaN when not
+   * written. Kept in years so a pan does not move it: the name holds its
+   * place on its thread instead of hopping between spots. Updated in place.
+   */
+  nameAt?: Float64Array;
 }
 
 export interface KnotHit {
@@ -67,7 +79,7 @@ export interface FrameGeometry {
   strandLens: number[];
   knots: KnotHit[];
   /** Name label boxes, so titles can avoid them. */
-  names: { x0: number; y0: number; x1: number; y1: number }[];
+  names: NameBox[];
   lod: number;
 }
 
@@ -470,106 +482,325 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
 
 /* ---------------- names ---------------- */
 
-/** Does any thread but `self` pass through the box? Samples are evenly spaced in x. */
+/**
+ * Does any thread but `self` pass through the box? Samples are evenly spaced
+ * in x; a steep stretch can step right over the box between two samples, so
+ * each segment is tested, not just its ends, cut to the box's sides: an
+ * untrimmed segment reaches up to a sample past the box, and whether it does
+ * changes as the view pans across the sample grid, so a name at the edge of
+ * a converging thread would blink on and off.
+ */
 function crossedBy(g: FrameGeometry, self: number, x0: number, x1: number, y0: number, y1: number): boolean {
-  for (let j = 0; j < g.strands.length; j++) {
+  return crossings(g, self, x0, x1, y0, y1, 1) > 0;
+}
+
+/** How many threads but `self` pass through the box (as crossedBy), counting up to `limit`. */
+function crossings(g: FrameGeometry, self: number, x0: number, x1: number, y0: number, y1: number, limit: number): number {
+  let count = 0;
+  for (let j = 0; j < g.strands.length && count < limit; j++) {
     if (j === self) continue;
     const pts = g.strands[j];
     const n = g.strandLens[j];
     if (!pts || n < 2) continue;
     const step = pts[2] - pts[0] || 1;
-    const k0 = Math.max(0, Math.floor((x0 - pts[0]) / step));
+    const k0 = Math.max(1, Math.floor((x0 - pts[0]) / step));
     const k1 = Math.min(n - 1, Math.ceil((x1 - pts[0]) / step));
     for (let k = k0; k <= k1; k++) {
-      const y = pts[k * 2 + 1];
-      if (y > y0 && y < y1) return true;
+      const xa = pts[k * 2 - 2];
+      const xb = pts[k * 2];
+      const sa = Math.max(x0, xa);
+      const sb = Math.min(x1, xb);
+      if (sa > sb) continue;
+      const ya = pts[k * 2 - 1];
+      const dy = (pts[k * 2 + 1] - ya) / (xb - xa || 1);
+      const p = ya + (sa - xa) * dy;
+      const y = ya + (sb - xa) * dy;
+      if (Math.min(y, p) < y1 && Math.max(y, p) > y0) {
+        count++;
+        break;
+      }
     }
   }
-  return false;
+  return count;
 }
+
+/** True when a name `w` wide at (x, baseline yb) keeps a few px clear of every knot in view. */
+function clearOfKnots(g: FrameGeometry, x: number, w: number, yb: number, size: number): boolean {
+  for (const h of g.knots) {
+    if (h && h.visible && h.x + h.r + 6 > x - 2 && h.x - h.r - 6 < x + w + 2 && h.y + h.r + 6 > yb - size && h.y - h.r - 6 < yb + 3) return false;
+  }
+  return true;
+}
+
+/**
+ * The highest point (least y) of a strand's polyline between x and x + w,
+ * its ends interpolated, so it does not jump as the view pans across the
+ * sample grid. Infinity where the strand does not reach.
+ */
+function highestOver(pts: Float32Array, n: number, x: number, w: number): number {
+  const step = pts[2] - pts[0] || 1;
+  const at = (px: number) => {
+    const f = (px - pts[0]) / step;
+    const k = Math.max(0, Math.min(n - 2, Math.floor(f)));
+    const t = Math.max(0, Math.min(1, f - k));
+    return pts[k * 2 + 1] + (pts[k * 2 + 3] - pts[k * 2 + 1]) * t;
+  };
+  if (n < 2) return Infinity;
+  let lo = Math.min(at(x), at(x + w));
+  const k1 = Math.min(n - 1, Math.floor((x + w - pts[0]) / step));
+  for (let k = Math.max(0, Math.ceil((x - pts[0]) / step)); k <= k1; k++) lo = Math.min(lo, pts[k * 2 + 1]);
+  return lo;
+}
+
+/**
+ * A thread that never settles in view: the left edge x (from x0 to x1) where
+ * a name `w` wide spans the flattest stretch of strand `self`, and the
+ * baseline `drop` off that stretch's highest point, with the name's box clear
+ * of knots. Null when there is no such stretch.
+ */
+function swingSpot(
+  g: FrameGeometry,
+  self: number,
+  w: number,
+  size: number,
+  x0: number,
+  x1: number,
+  drop: number,
+): { x: number; y: number } | null {
+  const pts = g.strands[self];
+  const n = g.strandLens[self];
+  if (x1 < x0) return null;
+  let bestX = NaN;
+  let bestY = 0;
+  let bestSpan = Infinity;
+  for (let k = 0; k < n; k++) {
+    const x = pts[k * 2];
+    if (x < x0) continue;
+    if (x > x1) break;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let j = k; j < n && pts[j * 2] <= x + w; j++) {
+      const y = pts[j * 2 + 1];
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+    }
+    if (!(hi - lo < bestSpan)) continue;
+    const yb = highestOver(pts, n, x, w) + drop;
+    if (!clearOfKnots(g, x, w, yb, size)) continue;
+    bestSpan = hi - lo;
+    bestX = x;
+    bestY = yb;
+  }
+  return Number.isFinite(bestX) ? { x: bestX, y: bestY } : null;
+}
+
+/** Name size (px) for this layout: big families pack the lanes closer, names follow (never below legible). */
+export function nameFontPx(layout: Layout): number {
+  const full = layout.width < 640 ? 19 : 21;
+  return layout.gap > 0 ? Math.round(Math.max(NAME_MIN_PX, Math.min(full, layout.gap * 0.6))) : full;
+}
+
+/**
+ * Lanes closer than this (px) leave no room for a name above its thread
+ * without crossing the thread above, so names are written on the thread
+ * itself instead, the yarn parted under the letters.
+ */
+export const INLINE_NAMES_GAP = 26;
+
+/** True when this layout writes names on their threads rather than above them. */
+export function namesInline(layout: Layout): boolean {
+  return layout.gap > 0 && layout.gap < INLINE_NAMES_GAP;
+}
+
+/** Spots offered per thread walking forward from its start: the first, then staggered further along. */
+const FORWARD_SPOTS = 3;
 
 /**
  * Each thread is signed with its person's name, written just above it
  * where it first settles on its own lane (past the knot it may be born
  * into). When that point scrolls off the left, the name rides the margin.
+ *
+ * Here each thread is offered a few clean spots (over a level stretch of
+ * its own thread, clear of knots and other threads); names.ts picks one per
+ * thread so no two names touch and all stay inside the gutter, dropping the
+ * least important when a crowded family has no room for everyone. In tight
+ * lanes (namesInline) the name is written on its thread instead of above.
  */
 function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: FrameState, geom: FrameGeometry, w0: number) {
   const { layout } = st;
   ctx.textBaseline = "alphabetic";
   ctx.textAlign = "left";
-  // Big families pack the lanes closer: names shrink with them (never below
-  // a readable size) so each still sits on its own thread.
-  const full = layout.width < 640 ? 19 : 21;
-  const size = layout.gap > 0 ? Math.round(Math.max(14, Math.min(full, layout.gap * 0.6))) : full;
+  const size = nameFontPx(layout);
   ctx.font = `600 ${size}px ${st.fonts.hand}`;
-  const margin = 16;
+  const inline = namesInline(layout);
+  // Baseline below the thread's y: above it, or on it with the x-height centred.
+  const drop = inline ? Math.round(size * 0.28) : -(w0 + 8);
+  const level = inline ? 2.5 : 6;
+  const margin = NAME_GUTTER;
+  const right = layout.width - margin;
+  const requests: NameRequest[] = [];
+  const labels: string[] = [];
   for (let i = 0; i < model.strands.length; i++) {
     const pts = geom.strands[i];
     const n = geom.strandLens[i];
     if (!pts || n < 2) continue;
     const strand = model.strands[i];
     const lanePx = layout.top + strand.lane * layout.gap;
-    // First sample where the whole name fits over a level stretch of the
-    // thread, clear of knots.
     const label = strand.person.label ?? strand.person.name;
+    labels[i] = label;
     const w = ctx.measureText(label).width;
     const startX = pts[0];
-    const right = layout.width - margin;
-    // Does a label starting at x sit over level thread, clear of knots?
-    const fits = (k: number, x: number) => {
-      if (x < margin || x + w > right) return false;
+    const endX = pts[(n - 1) * 2];
+    // Does a label starting at x sit over level thread (all of it over the
+    // thread, not past its end), clear of knots?
+    const settled = (k: number, x: number) => {
+      if (x < margin || x + w > right || x + w > endX) return false;
       if (Math.abs(pts[k * 2 + 1] - lanePx) > 2) return false;
       for (let j = k; j < n && pts[j * 2] < x + w; j += 4) {
-        if (Math.abs(pts[j * 2 + 1] - lanePx) > 6) return false;
+        if (Math.abs(pts[j * 2 + 1] - lanePx) > level) return false;
       }
-      if (
-        geom.knots.some(
-          (h) => h && h.visible && h.x + h.r + 8 > x && h.x - h.r - 8 < x + w + 6 && Math.abs(h.y - lanePx) < h.r + 22,
-        )
-      )
-        return false;
-      // Nor where another thread runs through the name.
-      const yb = lanePx - w0 - 8;
-      return !crossedBy(geom, i, x - 2, x + w + 2, yb - size, yb + 3);
+      return !geom.knots.some(
+        (h) => h && h.visible && h.x + h.r + 8 > x && h.x - h.r - 8 < x + w + 6 && Math.abs(h.y - lanePx) < h.r + 22,
+      );
     };
-    const lead = startX >= margin ? 6 : 0;
-    let x = -1;
-    let at = -1;
-    for (let k = 0; k < n && x < 0; k++) {
+    // How many other threads run through a name written at (x, baseline y).
+    const crossing = (x: number, yb: number) => crossings(geom, i, x - 2, x + w + 2, yb - size, yb + 3, 9);
+    // Settled, and no other thread runs through the name: a clean spot.
+    const fits = (k: number, x: number) => settled(k, x) && !crossedBy(geom, i, x - 2, x + w + 2, lanePx + drop - size, lanePx + drop + 3);
+    const spots: NameSpot[] = [];
+    // Settled spots another thread runs through, with how many: offered (as
+    // a `cost`, the paper halo keeping the name legible) only when the
+    // thread has no clean spot, so a small family never loses a name to a
+    // neighbour merely passing by.
+    let crossedFwd: NameSpot | null = null;
+    let crossedBack: NameSpot | null = null;
+    let crossedEnd: NameSpot | null = null;
+    const baseline = (k: number) => pts[k * 2 + 1] + drop;
+    // Where the name was last frame, moved with the pan, so names.ts can keep
+    // it there (or nudge it along) instead of hopping between spots.
+    const heldT = st.nameAt ? st.nameAt[i] : NaN;
+    const held = Number.isFinite(heldT) ? toX(heldT, st.cam, layout.width) : NaN;
+    // Walking forward from the start: the first clean spot, then a couple
+    // more a name's width further on, for when a neighbour has the first.
+    // Clear of the knot the thread starts with (more when the yarn is parted under the name).
+    const lead = startX >= margin ? (inline ? 14 : 6) : 0;
+    let from = -Infinity;
+    for (let k = 0; k < n && spots.length < FORWARD_SPOTS; k++) {
       const px = Math.max(margin, pts[k * 2] + lead);
-      if (pts[k * 2] + w > right) break;
-      if (fits(k, px)) {
-        x = px;
-        at = k;
-      }
+      if (px + w > right) break;
+      if (px < from || !settled(k, px)) continue;
+      const c = crossing(px, baseline(k));
+      if (!c) {
+        spots.push({ x: px, y: baseline(k) });
+        from = px + w + 18;
+      } else crossedFwd ??= { x: px, y: baseline(k), cost: c };
     }
-    // Nowhere after the start (a late thread near the right edge): sign the
-    // last level stretch instead, right-aligned.
-    for (let k = n - 1; k >= 0 && x < 0; k -= 2) {
+    // Late in the view (a late thread near the right edge): sign the last
+    // level stretch too, right-aligned.
+    for (let k = n - 1; k >= 0; k -= 2) {
       const px = Math.min(pts[k * 2], right) - w;
       let k0 = k;
       while (k0 > 0 && pts[k0 * 2] > px) k0--;
-      if (pts[k0 * 2] < startX) break;
-      if (fits(k0, px)) {
-        x = px;
-        at = k0;
+      // It may reach back over where the thread begins (not on a parted
+      // thread, though), but not wholly before it, nor back over the spots
+      // found above.
+      if (px < (inline ? startX + lead : startX + 12 - w) || px < from - w - 18) break;
+      if (!settled(k0, px)) continue;
+      const c = crossing(px, baseline(k0));
+      if (!c) {
+        spots.push({ x: px, y: baseline(k0) });
+        break;
       }
+      crossedBack ??= { x: px, y: baseline(k0), cost: c };
     }
-    // Still nowhere (a thread still swinging as it ends): sign its end.
-    if (x < 0) {
-      const ex = pts[(n - 1) * 2];
-      if (ex < right - 4 && ex - w > margin) {
-        x = ex - w;
-        at = n - 1;
-      }
+    // Written on the thread, a name can also lead in to it: just before the
+    // knot it starts with (a thread born late in the view, near the edge).
+    if (inline && startX >= margin) {
+      // Far enough out that the parted-yarn band stops short of the knot.
+      const lx = startX - 13 - w;
+      const ly = pts[1] + drop;
+      if (lx >= margin && !crossedBy(geom, i, lx - 6, startX - 6, ly - size, ly + 3)) spots.push({ x: lx, y: ly });
     }
-    if (x < 0) continue;
-    const y = pts[at * 2 + 1] - w0 - 8;
-    const riding = startX < margin;
-    geom.names.push({ x0: x, y0: y - size, x1: x + w, y1: y + 4 });
+    // Nowhere clean (a thread still swinging as it ends): sign its end, clear of knots.
+    if (!spots.length && endX <= right && endX - w >= margin && clearOfKnots(geom, endX - w, w, baseline(n - 1), size)) {
+      const ey = baseline(n - 1);
+      const c = crossing(endX - w, ey);
+      if (!c) spots.push({ x: endX - w, y: ey });
+      else crossedEnd = { x: endX - w, y: ey, cost: c };
+    }
+    // Still nowhere clean: the crossed spots, fewest threads through the name first.
+    if (!spots.length) {
+      for (const sp of [crossedFwd, crossedBack, crossedEnd]) if (sp) spots.push(sp);
+      spots.sort((a, b) => (a.cost ?? 0) - (b.cost ?? 0));
+    }
+    // Nowhere settled at all (a thread swinging the whole way across the
+    // view): over its flattest stretch inside the gutter, the name written
+    // just above the stretch's highest point, so its own thread stays clear
+    // of the letters. Not in tight lanes, where it would float into the next.
+    if (!spots.length && !inline) {
+      const sp = swingSpot(geom, i, w, size, Math.max(margin, startX + lead), Math.min(right, endX) - w, drop);
+      if (sp) spots.push({ x: sp.x, y: sp.y, cost: 10 + crossing(sp.x, sp.y) });
+    }
+    const pinned = i === st.highlight;
+    if (pinned) {
+      // The followed name is always written: failing a clean spot, where its
+      // thread first shows inside the gutter.
+      let k = 0;
+      while (k < n - 1 && pts[k * 2] < margin) k++;
+      spots.push({ x: Math.max(margin, pts[k * 2] + lead), y: baseline(k), forced: true });
+    }
+    // A clean spot at any x on the thread, past the knot it starts with, as the forward spots are.
+    const step = pts[2] - pts[0] || 1;
+    const fit = Number.isFinite(held)
+      ? (x: number) => {
+          if (x < startX + lead) return NaN;
+          const k = Math.min(n - 1, Math.floor((x - startX) / step));
+          return fits(k, x) ? baseline(k) : NaN;
+        }
+      : undefined;
+    // With only spots that have a cost: the same, other threads allowed
+    // through the name, and (as for swingSpot) over a stretch still swinging,
+    // just above its highest point, so such a name holds its place too.
+    const fitCrossed =
+      Number.isFinite(held) && spots[0]?.cost
+        ? (x: number) => {
+            if (x < startX + lead || x + w > endX) return NaN;
+            const k = Math.min(n - 1, Math.floor((x - startX) / step));
+            if (settled(k, x)) return baseline(k);
+            if (inline) return NaN;
+            const yb = highestOver(pts, n, x, w) + drop;
+            return clearOfKnots(geom, x, w, yb, size) ? yb : NaN;
+          }
+        : undefined;
+    if (!spots.length && !fit) continue;
+    // Lit threads first, then the hovered one, then whoever is in the most moments.
+    const rank = (st.dim[i] < 0.5 ? 1000 : 0) + st.lift[i] * 200 + strand.momentIds.length;
+    requests.push({ strand: i, width: w, spots, rank, pinned, held, fit, fitCrossed });
+  }
+
+  const placed = placeNames(requests, { width: layout.width, size, shown: st.nameShown });
+  if (st.nameAt) {
+    st.nameAt.fill(NaN);
+    for (const p of placed) st.nameAt[p.strand] = toT(p.x, st.cam, layout.width);
+  }
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 4;
+  for (const p of placed) {
+    const i = p.strand;
+    const riding = (geom.strands[i]?.[0] ?? 0) < margin;
+    geom.names.push(p);
     ctx.globalAlpha = riding ? 0.85 : 1;
-    ctx.fillStyle = yarnInk(strand.person.color, st.dim[i]).label;
-    ctx.fillText(label, x, y);
+    const paper = paperAt(p.y - size * 0.35);
+    if (inline) {
+      // Part the yarn under the name, as if it were written in a gap of the stitching.
+      ctx.fillStyle = paper;
+      ctx.fillRect(p.x0 - 5, p.y - drop - 4.5, p.x1 - p.x0 + 10, 9);
+    }
+    // A paper halo, so a forced name (or a thread passing close) stays legible.
+    ctx.strokeStyle = paper;
+    ctx.strokeText(labels[i], p.x, p.y);
+    ctx.fillStyle = yarnInk(model.strands[i].person.color, st.dim[i]).label;
+    ctx.fillText(labels[i], p.x, p.y);
   }
   ctx.globalAlpha = 1;
 }
