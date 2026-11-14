@@ -1,6 +1,7 @@
 # Channels inbox foundation
 
-This package authenticates text and photo messages and stores durable receipts.
+This package provides contact settings, recipient-proven enrollment, and
+authenticated text/photo/voice intake with durable receipts.
 An opt-in manual worker connects them to the conversation/studio and signed replies.
 Its manual prompt scheduler is separately opt-in; it makes no calls. The
 companion terminal bridge can exercise the transport without
@@ -8,17 +9,38 @@ Photon credentials. No `.env` is loaded by this package and imports start no wor
 
 ## Integration hooks (API owner)
 
-- Mount `channels.routes.router` only behind `STITCH_CHANNELS=1`. The router also
-  checks that exact flag on every request, even if accidentally mounted.
+- Mount all three exported routers only behind `STITCH_CHANNELS=1`; each also
+  checks that exact flag on requests, even if accidentally mounted:
+  - `channels.routes.router`: signed `POST /internal/channels/{inbound,authorize,inbound-photo,inbound-voice,tick}`.
+  - `channels.enrollment.router`: signed `POST /internal/channels/enroll`.
+  - `channels.settings.router`: session-cookie/family-member authenticated
+    `/families/{fid}/channels` contact reads, enrollment creation, preference
+    updates and stop operations. Person/admin authorization applies on each
+    operation; see [the exact settings routes and enrollment contract](SETTINGS.md).
+- Internal routes require exact-body HMAC authentication and a replay nonce, not
+  a browser session. Set `CHANNELS_SHARED_SECRET` to a random secret of at least
+  32 UTF-8 bytes with no leading/trailing whitespace, shared only with the bridge.
+  Worker ticks additionally require `STITCH_CHANNELS_WORKER=1` and production
+  `CHANNELS_CONVERSATION_MODE=real`; proactive scheduling separately requires
+  `STITCH_CHANNELS_SCHEDULER=1`. Voice intake requires the transcription
+  configuration described below. These features default off.
+- In the main body-limit middleware, permit at most 27,978,412 raw bytes only for
+  the exact `/internal/channels/inbound-photo` and
+  `/internal/channels/inbound-voice` paths. Keep existing limits elsewhere; the
+  signed handlers independently cap all other internal bodies at 16,384 bytes.
+  Each attachment decodes to at most 20 MiB. Do not widen an entire path prefix.
 - Call `channels.ensure_channel_indexes(db)` during enabled startup, off the event
-  loop. It creates contact lookup/uniqueness indexes and message lookup/TTL indexes.
-- Add `contacts` and `channelMessages` to family deletion along with the planned
-  `conversations` and `notifications`. Message records contain `familyId`; auth
-  nonce records contain no family/message content and expire after their validity
-  window. Their uniqueness is enforced by Mongo's built-in `_id` index.
-- Set `CHANNELS_SHARED_SECRET` to a random secret of at least 32 UTF-8 bytes, shared
-  only with the bridge. This router needs Jonah's independent authentication review
-  before merging. No main/router/auth/schema hooks are changed in this branch.
+  loop. It creates contact lookup/uniqueness, enrollment-rate TTL, message
+  lookup/auth TTL, global question-bank and notification uniqueness indexes.
+- Family deletion must remove `contacts`, `channelMessages`, `conversations` and
+  `notifications` by `familyId`, alongside existing family media cleanup. Auth
+  nonce rows in `channelMessages` and opaque enrollment-rate rows in
+  `channelEnrollmentLimits` contain no family content and expire by TTL; do not
+  delete other families' replay/rate guards. The global neutral `questionBank`
+  contains no family data and must not be purged by family.
+
+These are API-owner integration requirements; this package does not mount itself
+or change `main.py`. Jonah owns mounting, middleware, startup and purge hooks.
 
 ## Protocol
 
@@ -55,11 +77,15 @@ and returns `{"processed":0,"scheduler":"inactive"}` unless the worker below is 
 
 ## Contact boundary
 
-Only trusted, pre-provisioned contacts work in this slice. A contact has `_id`,
+Contacts must complete recipient-proven enrollment (or trusted terminal demo
+provisioning). A contact has `_id`,
 `familyId`, `personId`, `handle` matching `senderId`, `channel` matching the provider,
 `status: "active"`, and non-null `verifiedAt`/`optInAt`. Its person must exist in that
-same family. Do not use production phone numbers as test fixtures. Enrollment,
-verification codes and pending opt-in invitations are later work, not bypasses here.
+same family. Settings create a pending contact and a short-lived code without
+sending an invitation. The recipient sends `LINK <code>` from a verified direct
+iMessage space to prove their handle and opt in; creating settings alone never
+activates contact consent. See [SETTINGS.md](SETTINGS.md). Do not use production
+phone numbers as test fixtures.
 
 Handle discovery must cross families before a family can be selected; no family
 data is returned to the bridge. Unknown handles return 404, ambiguous mappings 409,
@@ -91,8 +117,9 @@ URLs and multipart are unsupported. `messageId` is the SDK's normalized per-cont
 child Message.id, not the shared parent GUID for grouped attachments. Reusing a
 message ID for different attachment IDs, text, bytes, or metadata returns 409.
 
-Canonical base64 decodes to at most 20 MiB. Only the exact photo path permits a
-27,978,412-byte body; other signed paths retain 16,384 bytes. The main application's
+Canonical base64 decodes to at most 20 MiB. The exact photo and voice paths permit a
+27,978,412-byte body; other signed paths retain
+16,384 bytes. The main application's
 body-limit middleware must also allow that exact path (API-owner hook). Pillow
 verifies and fully decodes JPEG/PNG/WebP/GIF, capped at 40 million cumulative pixels
 and 200 frames. HEIC/HEIF requires the optional real `pillow-heif` decoder; absent
