@@ -16,6 +16,24 @@ export const MAX_PROP_NAME = 60;
  */
 export const REUSED_PROP_LABEL = "used before";
 
+/**
+ * The visible chip for one Keep / Rename / Remove / Use a photo choice. It sits
+ * right after its `peer sr-only` radio. The chosen chip is ink with paper-light
+ * text. The hover darkening applies only while the chip is NOT chosen: a plain
+ * `hover:text-ink` has the same specificity as `peer-checked:text-paper-light`
+ * and comes later in the CSS, so the chosen label would turn ink on ink under
+ * the pointer (and stay that way on touch screens, where hover sticks after a
+ * tap). Tailwind v4 already limits `hover:` to hover-capable pointers.
+ */
+export const PROP_OPTION_CHIP_CLASS = [
+  "inline-flex min-h-8 items-center rounded-card border border-ink-faint bg-paper-light px-3",
+  "text-sm leading-none text-ink-soft transition-colors duration-150 ease-paper",
+  "peer-not-checked:hover:border-ink-soft peer-not-checked:hover:text-ink",
+  "peer-checked:border-ink peer-checked:bg-ink peer-checked:text-paper-light",
+  "peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent",
+  "peer-disabled:cursor-not-allowed peer-disabled:opacity-60",
+].join(" ");
+
 /** A plain size word for every known PropChip size. */
 export const PROP_SIZE_LABELS: Readonly<Record<PropChip["size"], string>> = {
   tiny: "Tiny",

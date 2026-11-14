@@ -8,6 +8,7 @@ import { Button } from "@/components/flow/Button";
 import { Photo } from "@/components/paper/Photo";
 import type { PropChip, PropEdit } from "@/lib/types";
 import {
+  PROP_OPTION_CHIP_CLASS,
   REUSED_PROP_LABEL,
   propSizeLabel,
   toPropEdits,
@@ -354,9 +355,7 @@ function ChipCard(p: {
                     onChange={() => p.onAction(o.value)}
                     className="peer sr-only"
                   />
-                  <span className="inline-flex min-h-8 items-center rounded-card border border-ink-faint bg-paper-light px-3 text-sm leading-none text-ink-soft transition-colors duration-150 ease-paper hover:border-ink-soft hover:text-ink peer-checked:border-ink peer-checked:bg-ink peer-checked:text-paper-light peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent peer-disabled:cursor-not-allowed peer-disabled:opacity-60">
-                    {o.label}
-                  </span>
+                  <span className={PROP_OPTION_CHIP_CLASS}>{o.label}</span>
                 </label>
               ))}
             </div>

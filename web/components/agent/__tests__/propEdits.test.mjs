@@ -8,6 +8,7 @@ import {
   propSizeLabel,
   PROP_SIZE_LABELS,
   REUSED_PROP_LABEL,
+  PROP_OPTION_CHIP_CLASS,
 } from "../propEdits.ts";
 
 const chips = [
@@ -166,4 +167,104 @@ test("unknown sizes are humanized, never shown raw", () => {
 test("the reused pill says the prop is already the family's, not 'saved'", () => {
   assert.equal(REUSED_PROP_LABEL, "used before");
   assert.notEqual(REUSED_PROP_LABEL.toLowerCase(), "saved");
+});
+
+// ---- Option chip colours: the chosen chip stays readable under the pointer ----
+
+// Colour-only utilities that hover and peer-checked could fight over.
+const SIZE_SUFFIX = /^(xs|sm|base|lg|xl|\d+xl|\[.*\])$/;
+const WIDTH_SUFFIX = /^(\d+|x|y|t|r|b|l|s|e|x-\d+|y-\d+|[trblse]-\d+|solid|dashed|dotted|double|none|hidden)$/;
+function colourProp(utility) {
+  const m = /^(text|border|bg)-(.+)$/.exec(utility);
+  if (!m) return null;
+  const [, prop, value] = m;
+  if (prop === "text" && SIZE_SUFFIX.test(value)) return null;
+  if (prop === "border" && WIDTH_SUFFIX.test(value)) return null;
+  return { prop, value };
+}
+// Split "a:b-[:x]:c" on the colons outside square brackets.
+function splitVariants(token) {
+  const parts = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of token) {
+    if (ch === "[") depth++;
+    else if (ch === "]") depth--;
+    if (ch === ":" && depth === 0) {
+      parts.push(cur);
+      cur = "";
+    } else cur += ch;
+  }
+  parts.push(cur);
+  return parts;
+}
+const UNCHECKED_QUALIFIERS = new Set(["peer-not-checked", "peer-[:not(:checked)]"]);
+
+/**
+ * Hover colour utilities that would win over the chosen (peer-checked) colour
+ * of the same property: a `hover:` colour that is neither limited to the
+ * unchecked state nor matched by `peer-checked:hover:<prop>-<checked value>`.
+ */
+function hoverCheckedConflicts(className) {
+  const tokens = className.split(/\s+/).filter(Boolean);
+  const parsed = tokens.map((t) => {
+    const parts = splitVariants(t);
+    return { token: t, variants: parts.slice(0, -1), colour: colourProp(parts[parts.length - 1]) };
+  });
+  const checked = parsed.filter(
+    (p) => p.colour && p.variants.length === 1 && p.variants[0] === "peer-checked",
+  );
+  const conflicts = [];
+  for (const p of parsed) {
+    if (!p.colour || !p.variants.includes("hover")) continue;
+    if (p.variants.includes("peer-checked")) continue; // this is the chosen-state override
+    if (p.variants.some((v) => UNCHECKED_QUALIFIERS.has(v))) continue;
+    for (const c of checked.filter((c) => c.colour.prop === p.colour.prop)) {
+      const override = `peer-checked:hover:${c.colour.prop}-${c.colour.value}`;
+      if (!tokens.includes(override)) conflicts.push(`${p.token} vs ${c.token}`);
+    }
+  }
+  return conflicts;
+}
+
+// The chip class before the fix: hover:text-ink beat peer-checked:text-paper-light.
+const OLD_CHIP_CLASS =
+  "inline-flex min-h-8 items-center rounded-card border border-ink-faint bg-paper-light px-3 text-sm leading-none text-ink-soft transition-colors duration-150 ease-paper hover:border-ink-soft hover:text-ink peer-checked:border-ink peer-checked:bg-ink peer-checked:text-paper-light peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent peer-disabled:cursor-not-allowed peer-disabled:opacity-60";
+
+test("the conflict check catches the old chip class (ink text on ink when hovered)", () => {
+  const conflicts = hoverCheckedConflicts(OLD_CHIP_CLASS);
+  assert.ok(conflicts.includes("hover:text-ink vs peer-checked:text-paper-light"), conflicts.join("; "));
+  assert.ok(conflicts.includes("hover:border-ink-soft vs peer-checked:border-ink"), conflicts.join("; "));
+  // Either fix shape is accepted.
+  assert.deepEqual(
+    hoverCheckedConflicts(
+      `${OLD_CHIP_CLASS} peer-checked:hover:text-paper-light peer-checked:hover:border-ink`,
+    ),
+    [],
+  );
+  assert.deepEqual(
+    hoverCheckedConflicts("text-ink-soft peer-[:not(:checked)]:hover:text-ink peer-checked:text-paper-light"),
+    [],
+  );
+});
+
+test("a chosen option chip keeps paper-light text on ink, hovered or not", () => {
+  assert.deepEqual(hoverCheckedConflicts(PROP_OPTION_CHIP_CLASS), []);
+  const tokens = PROP_OPTION_CHIP_CLASS.split(/\s+/);
+  for (const t of ["peer-checked:bg-ink", "peer-checked:border-ink", "peer-checked:text-paper-light"]) {
+    assert.ok(tokens.includes(t), `missing ${t}`);
+  }
+  // Unchosen chips still darken on hover.
+  assert.ok(tokens.some((t) => t.endsWith("hover:text-ink") && !t.startsWith("peer-checked")));
+  assert.ok(tokens.some((t) => t.endsWith("hover:border-ink-soft") && !t.startsWith("peer-checked")));
+  // Focus ring and disabled look are untouched.
+  for (const t of [
+    "peer-focus-visible:outline-2",
+    "peer-focus-visible:outline-offset-2",
+    "peer-focus-visible:outline-accent",
+    "peer-disabled:cursor-not-allowed",
+    "peer-disabled:opacity-60",
+  ]) {
+    assert.ok(tokens.includes(t), `missing ${t}`);
+  }
 });
