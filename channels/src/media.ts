@@ -29,44 +29,52 @@ export async function downloadMedia(source: MediaSource, types: ReadonlySet<stri
     }
     return stream;
   });
-  try {
-    const stream = await Promise.race([opening, deadline]);
-    reader = stream.getReader();
-    const chunks: Uint8Array[] = [];
-    let block = Buffer.allocUnsafe(Math.min(65_536, maxBytes));
-    let used = 0;
-    let size = 0;
-    for (;;) {
-      if (performance.now() >= expires) throw timeoutError();
-      const part = await Promise.race([reader.read(), deadline]);
-      if (performance.now() >= expires) throw timeoutError();
-      if (part.done) break;
-      if (!(part.value instanceof Uint8Array)) throw new ProtocolError(502, `${label} stream failed`);
-      size += part.value.byteLength;
-      if (size > maxBytes) throw new ProtocolError(413, `${label} exceeds 20 MiB`);
-      // Pack tiny SDK chunks into bounded blocks, avoiding millions of retained
-      // objects. Copy now because producers may reuse their buffer on next read.
-      for (let offset = 0; offset < part.value.byteLength;) {
-        const length = Math.min(block.length - used, part.value.byteLength - offset);
-        block.set(part.value.subarray(offset, offset + length), used);
-        used += length;
-        offset += length;
-        if (used === block.length) {
-          chunks.push(block);
-          block = Buffer.allocUnsafe(Math.min(65_536, maxBytes));
-          used = 0;
+  const consume = async (): Promise<Buffer> => {
+    try {
+      const stream = await opening;
+      reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+      let block = Buffer.allocUnsafe(Math.min(65_536, maxBytes));
+      let used = 0;
+      let size = 0;
+      for (;;) {
+        if (performance.now() >= expires) throw timeoutError();
+        const part = await reader.read();
+        if (performance.now() >= expires) throw timeoutError();
+        if (part.done) break;
+        if (!(part.value instanceof Uint8Array)) throw new ProtocolError(502, `${label} stream failed`);
+        size += part.value.byteLength;
+        if (size > maxBytes) throw new ProtocolError(413, `${label} exceeds 20 MiB`);
+        // Pack tiny SDK chunks into bounded blocks, avoiding millions of retained
+        // objects. Copy now because producers may reuse their buffer on next read.
+        for (let offset = 0; offset < part.value.byteLength;) {
+          const length = Math.min(block.length - used, part.value.byteLength - offset);
+          block.set(part.value.subarray(offset, offset + length), used);
+          used += length;
+          offset += length;
+          if (used === block.length) {
+            chunks.push(block);
+            block = Buffer.allocUnsafe(Math.min(65_536, maxBytes));
+            used = 0;
+          }
         }
       }
+      if (!size) throw new ProtocolError(422, `${label} is empty`);
+      if (used) chunks.push(block.subarray(0, used));
+      return Buffer.concat(chunks, size);
+    } catch (error) {
+      void reader?.cancel().catch(() => {});
+      if (error instanceof ProtocolError) throw error;
+      throw new ProtocolError(502, `${label} stream failed`);
+    } finally {
+      try { reader?.releaseLock(); } catch { /* Cancellation may still be settling. */ }
     }
-    if (!size) throw new ProtocolError(422, `${label} is empty`);
-    if (used) chunks.push(block.subarray(0, used));
-    return Buffer.concat(chunks, size);
-  } catch (error) {
-    void reader?.cancel().catch(() => {});
-    if (error instanceof ProtocolError) throw error;
-    throw new ProtocolError(502, `${label} stream failed`);
+  };
+  // Exactly one deadline subscriber. Racing each chunk retains a reaction on
+  // the still-pending deadline for every read, even after that read finishes.
+  try {
+    return await Promise.race([consume(), deadline]);
   } finally {
     clearTimeout(timer!);
-    try { reader?.releaseLock(); } catch { /* Cancellation may still be settling. */ }
   }
 }
