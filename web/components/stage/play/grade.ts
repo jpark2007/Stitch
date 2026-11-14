@@ -49,7 +49,7 @@ const GRADES: Readonly<Record<string, GradeDef>> = {
   day: def(1, "#ffffff", 1, 1, 1, "#ffffff"),
   dawn: def(0.84, "#ffdcd0", 0.9, 1.15, 0.9, "#f4dcd6"),
   dusk: def(0.74, "#ffb487", 0.72, 1.35, 0.8, "#e7bfa4"),
-  night: def(0.42, "#a9bcff", 0.45, 0.55, 0.52, "#8c9cc8"),
+  night: def(0.5, "#9fb4ff", 0.42, 0.6, 0.55, "#7f95d6"),
 };
 
 /** A fresh identity grade (day). */

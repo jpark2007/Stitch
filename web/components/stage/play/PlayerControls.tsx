@@ -188,7 +188,8 @@ export function PlayerControls({ controller, className = "", muted = false, onMu
         lastText = text;
       }
       if (track.current && text !== lastAria) {
-        track.current.setAttribute("aria-valuenow", controller.time.toFixed(1));
+        // Same text React renders (a number to one decimal), so the two never disagree.
+        track.current.setAttribute("aria-valuenow", String(Number(controller.time.toFixed(1))));
         track.current.setAttribute("aria-valuetext", fmt(controller.time));
         lastAria = text;
       }

@@ -351,7 +351,7 @@ function Player({
       {fps && (
         <span
           id={FPS_READOUT}
-          className="pointer-events-none absolute bottom-3 left-3 font-sans text-xs tabular-nums text-[#f4ecdd]/60"
+          className="pointer-events-none absolute bottom-3 right-4 font-sans text-xs tabular-nums text-[#f4ecdd]/60"
         />
       )}
     </motion.div>
