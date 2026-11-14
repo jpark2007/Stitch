@@ -29,8 +29,9 @@ the studio parses from the task ToolMessage.
 
 If a tool the script wants is not bound for that call, the role skips that step (for
 example the checker without `render_frames` / `inspect_frames`). The narrator's voice pass
-calls `synthesize_narration` once more when it answers `Error...` (a TTS or media store
-failure), as the narrator prompt says.
+calls `synthesize_narration` once more when it answers `Error...` (a media store failure),
+as the narrator prompt says; a `warning:` (the speech service failed and the teller was
+narrated silently) is a success and is not retried.
 """
 
 from __future__ import annotations
@@ -907,7 +908,8 @@ def _narrator(s: _Script, ctx: dict[str, Any], _story: FakeStory) -> None:
     if ctx.get("pass") == "voice":
         result = s.one("synthesize_narration", {})
         if result is not None and result.startswith("Error"):
-            # The TTS or the media store may fail once (an HTTP 503); voice once more.
+            # The media store may fail once; voice once more. A TTS failure is not an
+            # Error: the tool narrates silently and says so in a warning line.
             result = s.one("synthesize_narration", {})
         ok = result is not None and not result.startswith("Error")
         s.finish(_report(f"voice pass for {teller}: {'ok' if ok else 'failed'}\n{result or ''}",
