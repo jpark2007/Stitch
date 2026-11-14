@@ -42,7 +42,7 @@ function currentPath(): string {
 /** The page shell with a quiet loading sheet, so nothing jumps when the form arrives. */
 export function NewTraditionLoading(props: { familyId: string | null }) {
   return (
-    <FlowPage title={TITLE} back={backTo(props.familyId)} width="wide">
+    <FlowPage title={TITLE} back={backTo(props.familyId)} width="wide" heading="quiet">
       <LoadingSheet label="Opening your family’s pages…" />
     </FlowPage>
   );
@@ -140,7 +140,7 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
     // SessionGate's requireFamily sends people without a family away; this
     // is only reached if that changes under us.
     return (
-      <FlowPage title={TITLE} width="wide">
+      <FlowPage title={TITLE} width="wide" heading="quiet">
         <PaperCard className="flex flex-col items-start gap-4">
           <p className="text-[1.0625rem] leading-relaxed text-ink">
             Traditions live in a family. Start one first, then come back to add yours.
@@ -156,7 +156,7 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
 
   if (status.kind === "loading") {
     return (
-      <FlowPage title={TITLE} lede={lede} back={back} width="wide">
+      <FlowPage title={TITLE} lede={lede} back={back} width="wide" heading="quiet">
         <LoadingSheet label="Opening your family’s pages…" />
       </FlowPage>
     );
@@ -164,7 +164,7 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
 
   if (status.kind === "error") {
     return (
-      <FlowPage title={TITLE} lede={lede} back={back} width="wide">
+      <FlowPage title={TITLE} lede={lede} back={back} width="wide" heading="quiet">
         <PaperCard className="flex flex-col gap-5">
           <FormError message={status.message} />
           <div>
@@ -176,7 +176,7 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
   }
 
   return (
-    <FlowPage title={TITLE} lede={lede} back={back} width="wide">
+    <FlowPage title={TITLE} lede={lede} back={back} width="wide" heading="quiet">
       <AddTraditionForm
         key={fid}
         people={status.people}

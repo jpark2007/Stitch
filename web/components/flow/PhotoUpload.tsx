@@ -51,11 +51,18 @@ export function PhotoUpload(props: {
    * "row": the label in a left column beside the action (the add-a-memory
    * details), rather than above it. Default "stacked".
    */
-  layout?: "stacked" | "row";
+  layout?: "stacked" | "row" | "bare";
   /** Most photos this field takes. Defaults to MAX_PHOTOS (a memory's six). */
   max?: number;
   /** What the photos belong to, for the over-the-cap note. Defaults to "memory". */
   holder?: string;
+  /**
+   * "plain": the thumbnails as small plain squares in an even five-across
+   * grid, their file names for assistive tech only, and quiet remove marks.
+   * Default "captioned". With layout "bare" the label is for assistive tech
+   * only and the caller draws the visible one.
+   */
+  appearance?: "captioned" | "plain";
 }) {
   const {
     label,
@@ -68,7 +75,9 @@ export function PhotoUpload(props: {
     layout = "stacked",
     max = MAX_PHOTOS,
     holder,
+    appearance = "captioned",
   } = props;
+  const plain = appearance === "plain";
   const uid = useId();
   const inputId = `${uid}-input`;
   const labelId = `${uid}-label`;
@@ -151,7 +160,9 @@ export function PhotoUpload(props: {
   const keys = fileKeys(files);
   const invalid = !!error || problems.length > 0;
 
-  const row = layout === "row";
+  const bare = layout === "bare";
+  // Bare lays out like a row's value column: the caller draws the label.
+  const row = layout === "row" || bare;
   // "2 of 6" once there are photos; before that only assistive tech hears it
   // (the action says "up to 6").
   const count = (
@@ -165,7 +176,7 @@ export function PhotoUpload(props: {
     </span>
   );
   const labelEl = (
-    <span id={labelId} className={row ? FIELD_ROW_LABEL_CLASS : FIELD_LABEL_CLASS}>
+    <span id={labelId} className={bare ? "sr-only" : row ? FIELD_ROW_LABEL_CLASS : FIELD_LABEL_CLASS}>
       {label}
     </span>
   );
@@ -185,11 +196,20 @@ export function PhotoUpload(props: {
       <label
         htmlFor={inputId}
         className={[
-          "relative -ml-1 inline-flex min-h-11 items-center gap-2 rounded-paper px-1 text-[0.9375rem] font-semibold transition-colors duration-150 ease-paper motion-reduce:transition-none",
+          plain
+            ? // Plain: a typeset text action in ink with a thin rule under it (the accent is kept for what is chosen).
+              "relative -ml-1 inline-flex min-h-11 items-center gap-2 rounded-paper px-1 font-serif text-[0.9375rem] transition-colors duration-150 ease-paper motion-reduce:transition-none"
+            : "relative -ml-1 inline-flex min-h-11 items-center gap-2 rounded-paper px-1 text-[0.9375rem] font-semibold transition-colors duration-150 ease-paper motion-reduce:transition-none",
           FOCUS_RING_WITHIN,
           disabled || full ? "cursor-not-allowed" : "cursor-pointer",
           disabled ? "opacity-60" : "",
-          invalid ? "text-[#9c3b2a]" : full ? "text-ink-soft" : "text-accent-deep hover:underline hover:decoration-1 hover:underline-offset-[0.2em]",
+          invalid
+            ? "text-[#9c3b2a]"
+            : full
+              ? "text-ink-soft"
+              : plain
+                ? "text-ink underline decoration-ink-soft/50 decoration-1 underline-offset-[0.3em] hover:decoration-ink"
+                : "text-accent-deep hover:underline hover:decoration-1 hover:underline-offset-[0.2em]",
         ].join(" ")}
       >
         <input
@@ -241,12 +261,17 @@ export function PhotoUpload(props: {
       {files.length > 0 ? (
         <ul
           aria-label="Photos added"
-          className="mt-3 flex list-none flex-wrap gap-x-4 gap-y-4 p-0 pt-2"
+          className={
+            plain
+              ? "mt-1 mb-2 grid w-full max-w-[25rem] list-none grid-cols-5 gap-2 p-0"
+              : "mt-3 flex list-none flex-wrap gap-x-4 gap-y-4 p-0 pt-2"
+          }
         >
           {files.map((file, i) => (
             <li key={keys[i]}>
               <Thumb
                 file={file}
+                plain={plain}
                 disabled={disabled}
                 onRemove={() => remove(i)}
                 registerButton={(el) => {
@@ -269,6 +294,14 @@ export function PhotoUpload(props: {
   };
   const dropRing = dragging ? "rounded-card outline-2 outline-offset-4 outline-dashed outline-accent" : "";
 
+  if (bare) {
+    return (
+      <div {...dropProps} className={`min-w-0 ${dropRing}`}>
+        {labelEl}
+        {body}
+      </div>
+    );
+  }
   if (row) {
     return (
       <div {...dropProps} className={`${FIELD_ROW_CLASS} ${dropRing}`}>
@@ -287,11 +320,14 @@ export function PhotoUpload(props: {
 
 function Thumb({
   file,
+  plain = false,
   disabled,
   onRemove,
   registerButton,
 }: {
   file: File;
+  /** A small plain square: the name for assistive tech only, a quiet remove mark. */
+  plain?: boolean;
   disabled?: boolean;
   onRemove(): void;
   registerButton(el: HTMLButtonElement | null): void;
@@ -311,6 +347,48 @@ function Thumb({
       URL.revokeObjectURL(url);
     };
   }, [file]);
+
+  if (plain) {
+    return (
+      <figure className="relative m-0 w-full">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          ref={imgRef}
+          alt=""
+          onError={() => setUnreadable(true)}
+          className={`aspect-square w-full rounded-paper bg-paper-deep object-cover text-[0px] ${unreadable ? "hidden" : "block"}`}
+        />
+        {unreadable ? (
+          <span
+            aria-hidden="true"
+            className="flex aspect-square w-full items-center justify-center rounded-paper bg-paper-deep text-center text-[0.6875rem] font-semibold tracking-[0.12em] text-ink-soft"
+          >
+            {photoKind(file)}
+          </span>
+        ) : null}
+        {/* The name is for assistive tech: on the card the photo speaks for itself. */}
+        <figcaption className="sr-only">{file.name}</figcaption>
+        <button
+          ref={registerButton}
+          type="button"
+          onClick={onRemove}
+          disabled={disabled}
+          aria-label={`Remove ${file.name}`}
+          // A 44px target inside the square's top right; the mark itself is small.
+          className="group absolute top-0 right-0 flex h-11 w-11 items-start justify-end p-1 focus-visible:outline-none disabled:cursor-not-allowed"
+        >
+          <span
+            aria-hidden="true"
+            className="flex h-5 w-5 items-center justify-center rounded-paper bg-paper-light/90 text-ink-soft transition-colors duration-150 ease-paper group-hover:text-accent-deep group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-dashed group-focus-visible:outline-accent group-disabled:opacity-60 motion-reduce:transition-none"
+          >
+            <svg viewBox="0 0 12 12" className="h-2 w-2">
+              <path d="M2.5 2.5 9.5 9.5M9.5 2.5 2.5 9.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </span>
+        </button>
+      </figure>
+    );
+  }
 
   return (
     <figure className="relative m-0 w-20 sm:w-24">

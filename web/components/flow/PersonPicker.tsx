@@ -51,12 +51,33 @@ export function PersonPicker(props: {
    * "row": the legend shown in a left column beside the chips (the
    * add-a-memory details), rather than above them. Default "stacked".
    */
-  layout?: "stacked" | "row";
+  layout?: "stacked" | "row" | "bare";
   /** Shown after the chips, in the same column (a quiet "add someone" link). */
   footer?: ReactNode;
+  /**
+   * "plain": names set as type in an even grid (the tradition form's
+   * specimen card): the picked ones in full ink with an accent underline, the
+   * rest muted, no chip outlines. Default "chips". With layout "bare" the
+   * legend is for assistive tech only and the caller draws the visible label.
+   */
+  appearance?: "chips" | "plain";
 }) {
-  const { legend, people, value, onChange, hint, error, disabled, layout = "stacked", footer } = props;
-  const row = layout === "row";
+  const {
+    legend,
+    people,
+    value,
+    onChange,
+    hint,
+    error,
+    disabled,
+    layout = "stacked",
+    footer,
+    appearance = "chips",
+  } = props;
+  const bare = layout === "bare";
+  // Bare lays out like a row's value column: the caller draws the label.
+  const row = layout === "row" || bare;
+  const plain = appearance === "plain";
   const lockedIds = props.lockedIds ?? [];
   const uid = useId();
   const hintId = `${uid}-hint`;
@@ -126,13 +147,62 @@ export function PersonPicker(props: {
           No one else is in the family yet.
         </p>
       ) : (
-        <ul className={`${row && !hint && !searchable ? "" : "mt-2 "}flex list-none flex-wrap gap-2 p-0`}>
+        <ul
+          className={`${row && !hint && !searchable ? "" : "mt-2 "}${
+            plain
+              ? // Names as a line of words, each flush with the column edge;
+                // on a phone an even three-across grid, never a ragged wrap.
+                "-mx-1 grid list-none grid-cols-3 gap-x-2 p-0 sm:flex sm:flex-wrap"
+              : "flex list-none flex-wrap gap-2 p-0"
+          }`}
+        >
           {shown.map((person) => {
             const locked = lockedIds.includes(person.id);
             const checked = locked || value.includes(person.id);
             const inputId = `${uid}-${person.id}`;
             const showYear =
               duplicates.has(person.name.trim().toLowerCase()) && Number.isFinite(person.born);
+            if (plain) {
+              return (
+                <li key={person.id} className="min-w-0">
+                  <label
+                    htmlFor={inputId}
+                    className={[
+                      "group relative inline-flex max-w-full min-h-11 select-none items-center gap-2.5 rounded-paper px-1 font-serif text-[0.9375rem] leading-snug transition-colors duration-150 ease-paper motion-reduce:transition-none",
+                      FOCUS_RING_WITHIN,
+                      "has-[:disabled]:cursor-not-allowed",
+                      checked ? "text-ink" : "text-ink-soft hover:text-ink",
+                      disabled ? "opacity-60" : locked ? "" : "cursor-pointer",
+                    ].join(" ")}
+                  >
+                    <input
+                      id={inputId}
+                      type="checkbox"
+                      className="sr-only"
+                      checked={checked}
+                      disabled={locked || disabled}
+                      onChange={(e) => toggle(person.id, e.target.checked)}
+                    />
+                    <span
+                      aria-hidden="true"
+                      className={`h-2 w-2 shrink-0 rounded-full bg-ink-soft transition-opacity duration-150 ease-paper motion-reduce:transition-none ${checked ? "" : "opacity-45 group-hover:opacity-80"}`}
+                      style={person.color ? { backgroundColor: person.color } : undefined}
+                    />
+                    <span
+                      className={`min-w-0 break-words underline-offset-[0.32em] ${
+                        checked
+                          ? "underline decoration-accent-deep decoration-2"
+                          : "group-hover:underline group-hover:decoration-ink-soft/40 group-hover:decoration-1"
+                      }`}
+                    >
+                      {person.name}
+                      {showYear ? <span className="text-ink-soft"> ({person.born})</span> : null}
+                      {locked ? <span className="text-ink-soft"> (you)</span> : null}
+                    </span>
+                  </label>
+                </li>
+              );
+            }
             return (
               <li key={person.id}>
                 <label
@@ -191,6 +261,15 @@ export function PersonPicker(props: {
       {footer}
     </>
   );
+
+  if (bare) {
+    return (
+      <fieldset disabled={disabled} aria-describedby={describedBy || undefined} className="min-w-0">
+        <legend className="sr-only">{legend}</legend>
+        {body}
+      </fieldset>
+    );
+  }
 
   if (row) {
     // A rendered <legend> cannot sit in a grid cell, so the legend names the
