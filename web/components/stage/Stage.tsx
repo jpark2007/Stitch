@@ -48,7 +48,7 @@ export function StageLights({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize })
   return (
     <>
       <primitive object={target} />
-      <hemisphereLight args={["#fff2df", "#6b4a32", 0.7]} />
+      <hemisphereLight args={["#fff2df", "#b08866", 0.72]} />
       <directionalLight
         castShadow
         target={target}
