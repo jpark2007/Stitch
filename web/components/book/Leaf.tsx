@@ -124,7 +124,7 @@ function pageMaterial(map: Texture, alphaMap: Texture, t: LeafTextures) {
 export class LeafBody {
   readonly mesh: SkinnedMesh;
   private bones: Bone[] = [];
-  private springs = new LeafSprings(BONES);
+  private springs = new LeafSprings(BONES, SEG, PAGE_H);
   private target = new Float32Array(BONES);
   private twTarget = new Float32Array(BONES);
   private started = false;
