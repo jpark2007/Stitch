@@ -267,7 +267,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
       // Titles: only at close zoom (or for the followed person / hovered knot),
       // placed greedily above or below their knot without overlapping.
       const showAll = s >= 72;
-      const showLit = s >= 26;
+      const showLit = true;
       const candidates: number[] = [];
       for (let i = 0; i < model.knots.length; i++) {
         const h = g.knots[i];
@@ -291,11 +291,17 @@ export default function ThreadsView(props: ThreadsViewProps) {
       for (const i of candidates) {
         const h = g.knots[i];
         const w = e.titleW[i];
+        const up = -(h.r + 8 + hTxt);
+        const down = h.r + 8;
         const tries = [
-          { dy: -(h.r + 8 + hTxt), dx: -w / 2 },
-          { dy: h.r + 8, dx: -w / 2 },
-          { dy: -(h.r + 8 + hTxt), dx: -w * 0.15 },
-          { dy: h.r + 8, dx: -w * 0.85 },
+          { dy: up, dx: -w / 2 },
+          { dy: down, dx: -w / 2 },
+          { dy: up, dx: -w * 0.12 },
+          { dy: up, dx: -w * 0.88 },
+          { dy: down, dx: -w * 0.12 },
+          { dy: down, dx: -w * 0.88 },
+          { dy: up - hTxt * 0.9, dx: -w / 2 },
+          { dy: down + hTxt * 0.9, dx: -w / 2 },
         ];
         for (const tr of tries) {
           const box: TitleBox = { x0: h.x + tr.dx, y0: h.y + tr.dy, x1: h.x + tr.dx + w, y1: h.y + tr.dy + hTxt, knot: i };
@@ -304,7 +310,9 @@ export default function ThreadsView(props: ThreadsViewProps) {
           const hitsKnot = knotsBoxes.some(
             (k) => k.index !== i && k.x + k.r > box.x0 && k.x - k.r < box.x1 && k.y + k.r > box.y0 && k.y - k.r < box.y1,
           );
-          if (hitsTitle || hitsKnot) continue;
+          const hitsName = g.names.some((b) => b.x0 < box.x1 + 6 && box.x0 < b.x1 + 6 && b.y0 < box.y1 && box.y0 < b.y1);
+          const hitsHeader = box.y0 < (W < 640 ? 150 : 136) && box.x0 < 520;
+          if (hitsTitle || hitsKnot || hitsName || hitsHeader) continue;
           placed.push(box);
           shown.set(i, tr);
           break;
@@ -700,8 +708,8 @@ export default function ThreadsView(props: ThreadsViewProps) {
         </div>
       </header>
 
-      {/* Zoom: two small paper buttons. */}
-      <div className="absolute bottom-5 right-[var(--gutter)] flex gap-2 sm:bottom-6">
+      {/* Zoom: two small paper buttons (top right on wide screens, under the axis on phones). */}
+      <div className="absolute bottom-6 right-[var(--gutter)] flex gap-2 sm:bottom-auto sm:top-9">
         <button type="button" onClick={() => zoomButton(-1)} className="threads-zoom" aria-label="Zoom out towards decades">
           <span aria-hidden>&minus;</span>
         </button>
