@@ -384,6 +384,8 @@ export default function ThreadsView(props: ThreadsViewProps) {
         const h = g.knots[i];
         if (!a || !t || !ring || !h) continue;
         a.style.transform = `translate3d(${h.x.toFixed(1)}px, ${h.y.toFixed(1)}px, 0)`;
+        const hover = i === e.hoverKnot;
+        if ((a.dataset.hover === "1") !== hover) a.dataset.hover = hover ? "1" : "0";
         // Off-screen links stay focusable (focus pans to them); only knots not
         // yet sewn in by the intro are hidden.
         a.style.visibility = e.reveal >= model.knots[i].t ? "visible" : "hidden";
