@@ -72,7 +72,7 @@ interface Engine {
   /** Which placement each shown title used last frame. */
   titleSpot: Map<number, number>;
   titleW: number[];
-  fonts: { hand: string; sans: string };
+  fonts: { hand: string; sans: string; serif: string };
   raf: number;
   last: number;
   ready: boolean;
@@ -151,6 +151,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
     const css = getComputedStyle(document.documentElement);
     const hand = css.getPropertyValue("--font-caveat").trim() || "cursive";
     const sans = css.getPropertyValue("--font-nunito").trim() || "sans-serif";
+    const serif = css.getPropertyValue("--font-fraunces").trim() || "serif";
 
     const e: Engine = {
       ctx: canvas.getContext("2d"),
@@ -173,7 +174,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
       titles: [],
       titleSpot: new Map(),
       titleW: model.knots.map((k) => k.moment.title.length * 8.5),
-      fonts: { hand, sans },
+      fonts: { hand, sans, serif },
       raf: 0,
       last: performance.now(),
       ready: false,

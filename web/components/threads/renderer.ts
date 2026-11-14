@@ -48,7 +48,7 @@ export interface FrameState {
   swell: number[];
   /** Intro: threads are sewn up to this year. */
   reveal: number;
-  fonts: { hand: string; sans: string };
+  fonts: { hand: string; sans: string; serif: string };
 }
 
 export interface KnotHit {
@@ -326,7 +326,17 @@ function drawFibres(ctx: CanvasRenderingContext2D, runs: Polyline[], color: stri
 /* ---------------- axis ---------------- */
 
 const STEPS = [1, 2, 5, 10, 20, 50];
+/** Kraft twine for the axis: a running stitch, darker where it crosses. */
+const KRAFT = "rgba(168,135,98,0.9)";
+const KRAFT_DEEP = "rgba(128,96,64,0.95)";
+const KRAFT_SHADOW = "rgba(74,47,29,0.16)";
+const DASH = [5, 4];
 
+/**
+ * The year axis is sewn too: a kraft running stitch along the bottom, a
+ * small cross-stitch at every decade, short upright stitches at the other
+ * marked years, and old-style serif numerals under the decades.
+ */
 function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, tRight: number, model: ThreadsModel) {
   const { cam, layout } = st;
   const s = cam.s;
@@ -336,8 +346,9 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
   const y = layout.axisY;
   const lo = Math.max(Math.ceil(tLeft / minor) * minor, Math.ceil(model.tMin / minor) * minor);
   const hi = Math.min(tRight, model.tMax);
-  const xL = Math.max(0, toX(model.tMin, cam, W));
-  const xR = Math.min(W, toX(model.tMax, cam, W));
+  const x0 = toX(model.tMin, cam, W);
+  const xL = Math.max(-10, x0);
+  const xR = Math.min(W + 10, toX(model.tMax, cam, W));
 
   // Faint pencil guides at major years, behind everything.
   ctx.beginPath();
@@ -350,35 +361,73 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
   ctx.strokeStyle = "rgba(47,38,32,0.09)";
   ctx.lineWidth = 1;
   ctx.stroke();
-  ctx.setLineDash([]);
 
-  // Ticks.
-  ctx.beginPath();
-  for (let t = lo; t <= hi; t += minor) {
-    const x = Math.round(toX(t, cam, W)) + 0.5;
-    const isMajor = t % major === 0;
-    ctx.moveTo(x, y - (isMajor ? 8 : 4));
-    ctx.lineTo(x, y);
+  // The running stitch. Its dashes are pinned to the timeline (not the
+  // screen), so they travel with the threads when you pan.
+  ctx.setLineDash(DASH);
+  ctx.lineDashOffset = (xL - x0) % (DASH[0] + DASH[1]);
+  ctx.lineCap = "round";
+  for (const [dy, color, w] of [
+    [1.1, KRAFT_SHADOW, 1.9],
+    [0, KRAFT, 1.6],
+  ] as const) {
+    ctx.beginPath();
+    ctx.moveTo(xL, y + dy);
+    ctx.lineTo(xR, y + dy);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = w;
+    ctx.stroke();
   }
-  ctx.strokeStyle = "rgba(47,38,32,0.26)";
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // A stitched baseline.
-  ctx.beginPath();
-  ctx.moveTo(xL, y + 0.5);
-  ctx.lineTo(xR, y + 0.5);
-  ctx.setLineDash([6, 4]);
-  ctx.strokeStyle = "rgba(47,38,32,0.22)";
-  ctx.lineWidth = 1.2;
-  ctx.stroke();
   ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
 
-  // Labels. At single-year spacing the label sits in the middle of its year.
+  // Stitches at the marked years: an X at decades, an upright elsewhere.
+  // Year stitches fade in as there is room for them.
+  const yearInk = Math.min(1, Math.max(0, (minor * s - 18) / 12));
+  const cross = new Path2D();
+  const upright = new Path2D();
+  const faint = new Path2D();
+  const xa = W < 640 ? 3.2 : 3.6;
+  for (let t = lo; t <= hi; t += minor) {
+    const x = toX(t, cam, W);
+    if (t % 10 === 0) {
+      cross.moveTo(x - xa, y - xa);
+      cross.lineTo(x + xa, y + xa);
+      cross.moveTo(x - xa, y + xa);
+      cross.lineTo(x + xa, y - xa);
+    } else {
+      const path = t % major === 0 || t % 5 === 0 ? upright : faint;
+      const h = t % 5 === 0 ? 4.5 : 3;
+      path.moveTo(x, y - h);
+      path.lineTo(x, y + h);
+    }
+  }
+  ctx.translate(0.6, 1.1);
+  ctx.strokeStyle = KRAFT_SHADOW;
+  ctx.lineWidth = 2;
+  ctx.stroke(cross);
+  ctx.translate(-0.6, -1.1);
+  ctx.strokeStyle = KRAFT_DEEP;
+  ctx.lineWidth = 1.7;
+  ctx.stroke(cross);
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = KRAFT;
+  ctx.stroke(upright);
+  if (yearInk > 0) {
+    ctx.globalAlpha = yearInk;
+    ctx.stroke(faint);
+    ctx.globalAlpha = 1;
+  }
+  ctx.lineCap = "butt";
+
+  // Labels: decades in the storybook serif with old-style figures, other
+  // years small in the sans. At single-year spacing a label sits in the
+  // middle of its year.
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
-  const decadeFont = `700 12.5px ${st.fonts.sans}`;
-  const yearFont = `600 12px ${st.fonts.sans}`;
+  const compact = W < 640;
+  const decadeFont = `400 ${compact ? 13.5 : 14.5}px ${st.fonts.serif}`;
+  const yearFont = `600 ${compact ? 11 : 11.5}px ${st.fonts.sans}`;
   const mid = major === 1 && s > 70 ? 0.5 : 0;
   for (let t = Math.ceil(lo / major) * major - (mid ? 1 : 0); t <= hi; t += major) {
     if (t < model.tMin) continue;
@@ -387,7 +436,7 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
     ctx.font = isDecade ? decadeFont : yearFont;
     ctx.fillStyle = isDecade ? "rgba(92,78,67,0.95)" : "rgba(143,129,115,0.95)";
     const label = isDecade && major >= 10 ? `${t}s` : String(t);
-    ctx.fillText(label, x, y + 11);
+    ctx.fillText(label, x, y + (isDecade ? 10 : 12));
   }
 }
 
