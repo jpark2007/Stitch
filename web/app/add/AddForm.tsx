@@ -1,8 +1,11 @@
 "use client";
 
 // The form half of /add: loads the tree, the questions waiting for this person
-// and (for `?memoryId=`) the moment a second telling joins, then shows the
-// question notes above the memory form. Sending starts a run and hands it up.
+// and (for `?memoryId=`) the moment a second telling joins, then shows one
+// quiet question area (questionAreaFor) and the memory form with the story
+// near the top. A second telling shows only its moment and that moment's own
+// question, so nothing on the page can switch the moment it joins. Sending
+// starts a run and hands it up.
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -14,7 +17,7 @@ import { FormError } from "@/components/flow/FormError";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { QuestionPrompts } from "@/components/flow/QuestionPrompts";
 import { momentFromMemory, questionForMemory, saveTelling, tellingFromSubmit } from "@/components/flow/addPage";
-import { draftFromQuestion, type MemoryDraft } from "@/components/flow/memoryForm";
+import { draftFromQuestion, questionAreaFor, type MemoryDraft } from "@/components/flow/memoryForm";
 import type { MemoryRunTelling } from "@/components/flow/MemoryRun";
 import { hrefs } from "@/components/flow/session";
 import { isApiError, type StitchApi } from "@/lib/api";
@@ -174,10 +177,8 @@ function AddFormReady(props: {
   const { api, fid, selfPersonId, data, onStarted } = props;
   const { people, questions, base } = data;
 
+  // Only a new memory picks questions: a second telling shows none to pick.
   const [picked, setPicked] = useState<Picked | null>(null);
-  // For a second telling from ?memoryId=: the person let go of the question
-  // that came with the moment, and is telling it without one.
-  const [baseQuestionDropped, setBaseQuestionDropped] = useState(false);
   const [pickingId, setPickingId] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
   // The story and year typed so far, handed to the form a pick remounts.
@@ -188,14 +189,8 @@ function AddFormReady(props: {
   // Only the latest pick may land.
   const pickToken = useRef(0);
 
-  const baseQuestion = base.kind === "second" ? base.question : null;
-  // The question note shown pressed: the one picked here, else the one that
-  // came with the ?memoryId= moment (unless it was let go).
-  const currentId = picked
-    ? picked.question.id
-    : baseQuestion && !baseQuestionDropped
-      ? baseQuestion.id
-      : null;
+  // The question note shown pressed.
+  const currentId = picked ? picked.question.id : null;
 
   /** Reads what is in the form now, so a remount does not lose it. */
   const carryTyped = useCallback(() => {
@@ -218,17 +213,9 @@ function AddFormReady(props: {
       setPickingId(null);
       if (currentId === q.id) {
         // Pressing the pressed note lets it go: the form keeps the story and
-        // drops the question (a ?memoryId= moment stays the moment told).
+        // drops the question.
         carryTyped();
         setPicked(null);
-        setBaseQuestionDropped(true);
-        return;
-      }
-      if (baseQuestion?.id === q.id) {
-        // Back to the question the ?memoryId= moment came with.
-        carryTyped();
-        setPicked(null);
-        setBaseQuestionDropped(false);
         return;
       }
       const mid = q.memoryId ?? null;
@@ -237,8 +224,7 @@ function AddFormReady(props: {
         setPicked({ question: q, moment: null, note: null });
         return;
       }
-      const known =
-        base.kind === "second" && base.memoryId === mid ? base.moment : moments.current.get(mid);
+      const known = moments.current.get(mid);
       if (known !== undefined) {
         carryTyped();
         setPicked({ question: q, moment: known, note: known ? null : MISSING_QUESTION_MOMENT });
@@ -267,7 +253,7 @@ function AddFormReady(props: {
         },
       );
     },
-    [api, fid, base, baseQuestion, currentId, pickingId, carryTyped],
+    [api, fid, currentId, pickingId, carryTyped],
   );
 
   // What the form starts from: the picked question, else the moment from
@@ -283,13 +269,12 @@ function AddFormReady(props: {
     formKey = `q:${picked.question.id}`;
     note = picked.note;
   } else if (base.kind === "second") {
-    const question = baseQuestionDropped ? null : base.question;
     initial = draftFromQuestion(
-      { text: question?.text ?? "", memoryId: base.memoryId },
+      { text: base.question?.text ?? "", memoryId: base.memoryId },
       { year: base.moment.year, participantIds: base.moment.participantIds },
     );
     secondTellingOf = { title: base.moment.title, year: base.moment.year };
-    formKey = `m:${base.memoryId}:${question?.id ?? ""}`;
+    formKey = `m:${base.memoryId}:${base.question?.id ?? ""}`;
   } else {
     formKey = "new";
     note = base.note;
@@ -306,6 +291,14 @@ function AddFormReady(props: {
 
   const second = secondTellingOf !== null;
   const secondTitle = secondTellingOf?.title ?? null;
+  // One question area: the family's notes for a new memory, nothing to pick
+  // for a second telling (its own question rides along read-only).
+  const area = questionAreaFor({
+    mode: base.kind === "second" && !picked ? "second" : "new",
+    openQuestions: questions.length,
+    prefilledQuestion: (initial?.question ?? "").trim() !== "",
+  });
+  const askedQuestion = base.kind === "second" && !picked ? (base.question?.text ?? null) : null;
 
   const onSubmit = useCallback(
     async (fields: SubmitMemoryFields, photos: File[]) => {
@@ -338,14 +331,14 @@ function AddFormReady(props: {
             ) : null}
           </>
         ) : (
-          "Tell it the way you would at the table. The studio turns it into a scene for the family book."
+          "Tell it the way you would at the kitchen table. The studio turns it into a scene for the family book."
         )
       }
       back={BACK}
       width="wide"
     >
-      <div className="flex flex-col gap-10">
-        {questions.length > 0 ? (
+      <div className="flex flex-col gap-7">
+        {area.showFamilyQuestions ? (
           <div className="flex flex-col gap-3">
             <QuestionPrompts
               questions={questions}
@@ -369,6 +362,8 @@ function AddFormReady(props: {
             selfPersonId={selfPersonId}
             initial={initial}
             secondTellingOf={secondTellingOf}
+            askedQuestion={askedQuestion}
+            questionArea={area}
             disabled={pickingId !== null}
             submitLabel={second ? "Save my telling" : "Save this memory"}
             onSubmit={onSubmit}

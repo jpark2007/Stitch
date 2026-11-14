@@ -24,6 +24,7 @@ const {
   TEXT_MAX,
   draftFromQuestion,
   emptyDraft,
+  questionAreaFor,
   toSubmitFields,
   validateDraft,
 } = await import("../memoryForm.ts");
@@ -190,4 +191,54 @@ test("toSubmitFields: no memoryId key for a new moment", () => {
   assert.equal("memoryId" in fields, false);
   assert.deepEqual(fields.participantIds, [SELF]);
   assert.equal("memoryId" in toSubmitFields(draft({ memoryId: "  " })), false);
+});
+
+test("questionAreaFor: a second telling shows no family questions, starters or question field", () => {
+  for (const prefilledQuestion of [false, true]) {
+    for (const openQuestions of [0, 1, 3]) {
+      assert.deepEqual(questionAreaFor({ mode: "second", openQuestions, prefilledQuestion }), {
+        showFamilyQuestions: false,
+        showStarters: false,
+        showQuestionField: false,
+      });
+    }
+  }
+});
+
+test("questionAreaFor: a new memory with open questions shows them and hides the starters", () => {
+  assert.deepEqual(questionAreaFor({ mode: "new", openQuestions: 2, prefilledQuestion: false }), {
+    showFamilyQuestions: true,
+    showStarters: false,
+    showQuestionField: true,
+  });
+  assert.equal(questionAreaFor({ mode: "new", openQuestions: 1, prefilledQuestion: false }).showStarters, false);
+});
+
+test("questionAreaFor: a new memory with no open questions allows the starters in the question field", () => {
+  assert.deepEqual(questionAreaFor({ mode: "new", openQuestions: 0, prefilledQuestion: false }), {
+    showFamilyQuestions: false,
+    showStarters: true,
+    showQuestionField: true,
+  });
+});
+
+test("questionAreaFor: a picked question steps the typed field and starters aside", () => {
+  assert.deepEqual(questionAreaFor({ mode: "new", openQuestions: 2, prefilledQuestion: true }), {
+    showFamilyQuestions: true,
+    showStarters: false,
+    showQuestionField: false,
+  });
+  assert.deepEqual(questionAreaFor({ mode: "new", openQuestions: 0, prefilledQuestion: true }), {
+    showFamilyQuestions: false,
+    showStarters: false,
+    showQuestionField: false,
+  });
+});
+
+test("questionAreaFor: a bad count reads as no questions", () => {
+  for (const openQuestions of [NaN, -1, Infinity]) {
+    const area = questionAreaFor({ mode: "new", openQuestions, prefilledQuestion: false });
+    assert.equal(area.showFamilyQuestions, false, String(openQuestions));
+    assert.equal(area.showStarters, true, String(openQuestions));
+  }
 });

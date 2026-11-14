@@ -1,16 +1,18 @@
 "use client";
 
-// Questions family members asked this person, as small handwritten notes on
-// top of the add-a-memory page. Picking one fills the form (the page turns it
-// into a draft with draftFromQuestion). Three show at once; the rest wait
-// behind "Show N more" so the page never feels like an inbox.
+// Questions family members asked this person, as small handwritten notes
+// above the story on the add-a-memory page. Each note is one toggle button:
+// pressing it answers that question (the page turns it into a draft with
+// draftFromQuestion), pressing it again lets it go. Two show at once; the rest
+// wait behind "More questions" so the story stays on the first screen and the
+// page never feels like an inbox.
 import { useId, useState } from "react";
 import type { Question } from "@/lib/types";
-import { Button } from "./Button";
+import { Button, FOCUS_RING } from "./Button";
 
-const VISIBLE = 3;
-// A hand-placed tilt per note, small enough that the row still reads tidy.
-const TILTS = [-0.6, 0.45, -0.3, 0.55, -0.45];
+const VISIBLE = 2;
+// A hand-placed tilt per note, small enough that the list still reads tidy.
+const TILTS = [-0.4, 0.3, -0.25, 0.4, -0.3];
 
 export function QuestionPrompts(props: {
   questions: Question[];
@@ -26,55 +28,52 @@ export function QuestionPrompts(props: {
   if (questions.length === 0) return null;
 
   const pickedIndex = pickedId ? questions.findIndex((q) => q.id === pickedId) : -1;
-  // A picked question never hides behind "Show more".
+  // A picked question never hides behind "More questions".
   const open = expanded || pickedIndex >= VISIBLE;
   const shown = open ? questions : questions.slice(0, VISIBLE);
   const hidden = questions.length - VISIBLE;
 
   return (
     <section aria-labelledby={headingId} className="min-w-0">
-      <h2
-        id={headingId}
-        className="font-display text-[1.375rem] leading-tight tracking-[-0.01em] text-ink"
-      >
+      <h2 id={headingId} className="font-display text-[1.1875rem] leading-tight text-ink">
         Someone asked you
       </h2>
-      <p className="mt-1 text-[0.9375rem] text-ink-soft">
-        Pick one to answer, or tell any story you like below.
-      </p>
 
-      <ul id={listId} className="mt-4 list-none space-y-3 p-0">
+      <ul id={listId} className="mt-3 list-none space-y-2.5 p-0">
         {shown.map((q, i) => {
           const picked = q.id === pickedId;
           return (
-            <li
-              key={q.id}
-              style={{ transform: `rotate(${TILTS[i % TILTS.length]}deg)` }}
-              className={[
-                "relative flex flex-col gap-3 rounded-paper border bg-paper-light px-4 pt-4 pb-3.5 shadow-paper sm:flex-row sm:items-center sm:justify-between sm:gap-5 sm:px-5",
-                "transition-colors duration-150 ease-paper motion-reduce:transition-none",
-                picked ? "border-accent" : "border-rule",
-              ].join(" ")}
-            >
-              {/* A strip of tape holding the note to the page. */}
-              <span
-                aria-hidden="true"
-                className="absolute -top-2 left-6 h-3.5 w-11 -rotate-3 bg-[#e9dcbd]/80 mix-blend-multiply"
-              />
-              <p
-                className="min-w-0 font-hand text-[1.5rem] leading-[1.2] text-pretty break-words text-ink"
-              >
-                {q.text}
-              </p>
-              <Button
-                variant="secondary"
+            <li key={q.id} style={{ transform: `rotate(${TILTS[i % TILTS.length]}deg)` }}>
+              <button
+                type="button"
                 aria-pressed={picked}
                 onClick={() => onPick(q)}
-                className="shrink-0 self-start aria-pressed:border-accent-deep aria-pressed:bg-paper-deep sm:self-auto"
+                className={[
+                  "group relative flex min-h-11 w-full flex-col items-start gap-1 rounded-paper border bg-paper-light px-4 py-2.5 text-left shadow-paper",
+                  "sm:flex-row sm:items-center sm:justify-between sm:gap-5",
+                  "transition-colors duration-150 ease-paper motion-reduce:transition-none",
+                  FOCUS_RING,
+                  picked ? "border-accent bg-paper" : "border-rule hover:border-accent",
+                ].join(" ")}
               >
-                {picked ? <PickedMark /> : null}
-                Answer this
-              </Button>
+                {/* A strip of tape holding the note to the page. */}
+                <span
+                  aria-hidden="true"
+                  className="absolute -top-1.5 left-6 h-3 w-10 -rotate-3 bg-[#e9dcbd]/80 mix-blend-multiply"
+                />
+                <span className="min-w-0 font-hand text-[1.375rem] leading-[1.15] text-pretty break-words text-ink">
+                  {q.text}
+                </span>
+                <span
+                  className={[
+                    "inline-flex shrink-0 items-center gap-1.5 text-[0.9375rem] font-semibold text-accent-deep",
+                    picked ? "" : "underline-offset-[0.2em] group-hover:underline",
+                  ].join(" ")}
+                >
+                  {picked ? <PickedMark /> : null}
+                  Answer this
+                </span>
+              </button>
             </li>
           );
         })}
@@ -86,9 +85,9 @@ export function QuestionPrompts(props: {
           aria-expanded={open}
           aria-controls={listId}
           onClick={() => setExpanded((v) => !v)}
-          className="mt-3 -ml-3"
+          className="mt-1.5 -ml-3"
         >
-          {open ? "Show fewer" : `Show ${hidden} more`}
+          {open ? "Fewer questions" : `More questions (${hidden})`}
         </Button>
       ) : null}
     </section>
