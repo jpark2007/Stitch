@@ -103,6 +103,9 @@ HINT_SCRIPT = "try { localStorage.setItem('stitch.signedIn', '1'); } catch {}"
 ME_DELAY_MS = 4_000
 """Mock mode cannot hold the in-browser /me, so the signed-in check is slowed this much instead."""
 
+NO_PASSWORD_LEFT_JS = "() => [...document.querySelectorAll('input[type=password]')].every(el => !el.value)"
+"""True when no password field in the document, shown or hidden, holds any text."""
+
 BLANK_SHEET = "[role=status][aria-busy=true]"
 """The blank sheet the account pages show while they ask /me (AuthScreen's BlankSheet)."""
 
@@ -839,9 +842,14 @@ class AccountSweep:
         def home() -> str:
             self.submit_button(page, "Log in").click()
             self.expect(page).to_have_url(f"{self.web}/")
-            return f"{self.seed_email} -> {self.path_of(page)}"
+            # cacheComponents keeps the /login left behind mounted but hidden, DOM and all:
+            # once it has re-rendered, no password field anywhere in the document has text.
+            page.wait_for_function(NO_PASSWORD_LEFT_JS, timeout=EXPECT_MS)
+            kept = page.evaluate("() => document.querySelectorAll('input[type=password]').length")
+            where = f"the hidden /login's password field is empty ({kept} in the DOM)" if kept else "no /login kept"
+            return f"{self.seed_email} -> {self.path_of(page)}; {where}"
 
-        self.check("login: a seeded user goes home", who, home)
+        self.check("login: a seeded user goes home; the hidden /login keeps no password", who, home)
 
         # The same after a sign-out that left the signed-in hint behind (the join page's
         # "Not you? Sign out" does), so the page asks /me as React takes over. Someone
