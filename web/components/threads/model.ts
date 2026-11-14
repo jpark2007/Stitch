@@ -385,15 +385,29 @@ export function buildModel(people: ThreadPerson[], moments: ThreadMoment[], now:
 }
 
 /**
- * Re-solve birth points for the current zoom: a child's thread starts
- * exactly between its parents' threads as they are drawn right now.
+ * Re-solve birth points for the current zoom, against the parents' threads
+ * as they are drawn right now: a child's thread branches out of its
+ * parents' bundle when they are together that year, and otherwise out of
+ * the parent whose thread is nearest the child's own lane, so it always
+ * leaves from a real thread rather than from the paper between two.
  */
 export function relax(model: ThreadsModel, sh: Shape) {
+  // Parents closer than this (px) read as one bundle.
+  const together = sh.gap > 0 ? 14 / sh.gap : 0;
   for (const s of model.birthOrder) {
     const ps = s.start.parents;
     if (!ps) continue;
-    let y = 0;
-    for (const q of ps) y += strandY(q, s.start.t, sh);
-    s.start.y = y / ps.length;
+    let lo = Infinity;
+    let hi = -Infinity;
+    let sum = 0;
+    let nearest = 0;
+    for (const q of ps) {
+      const y = strandY(q, s.start.t, sh);
+      lo = Math.min(lo, y);
+      hi = Math.max(hi, y);
+      sum += y;
+      if (q === ps[0] || Math.abs(y - s.lane) < Math.abs(nearest - s.lane) - 1e-6) nearest = y;
+    }
+    s.start.y = hi - lo <= together ? sum / ps.length : nearest;
   }
 }
