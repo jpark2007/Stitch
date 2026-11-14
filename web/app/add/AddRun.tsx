@@ -12,7 +12,7 @@ import { FlowPage } from "@/components/flow/FlowPage";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { MemoryRun, type MemoryRunTelling } from "@/components/flow/MemoryRun";
 import { hrefs } from "@/components/flow/session";
-import type { StitchApi } from "@/lib/api";
+import { isMockMode, type StitchApi } from "@/lib/api";
 
 function prefersReducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -42,6 +42,15 @@ export function AddRun(props: {
   );
   const mediaUrl = useCallback((id: string) => api.mediaUrl(fid, id), [api, fid]);
   const onUploadPhoto = useCallback(async (f: File) => (await api.uploadMedia(fid, f)).id, [api, fid]);
+  // The finished run leads into the moment in this run's family (the family
+  // it was sent to, kept in the URL across a reattach): its book page, and
+  // the scene playing on the stage. The stage loads from the real API only,
+  // so a mock moment gets no watch link.
+  const sceneHref = useCallback((id: string) => hrefs.memory(id, fid), [fid]);
+  const watchHref = useMemo(
+    () => (isMockMode() ? undefined : (id: string) => hrefs.render(id, fid)),
+    [fid],
+  );
 
   // Just sent from the form below the fold: bring the top of the page into
   // view and move focus to the heading, so the swap is not silent.
@@ -94,7 +103,8 @@ export function AddRun(props: {
             telling={telling}
             mediaUrl={mediaUrl}
             onUploadPhoto={onUploadPhoto}
-            sceneHref={hrefs.memory}
+            sceneHref={sceneHref}
+            watchHref={watchHref}
             addAnotherHref={hrefs.add({ familyId: fid })}
             onTellAgain={onTellAgain}
           />

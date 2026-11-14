@@ -16,7 +16,7 @@ import type { PendingInput } from "@/components/agent/runState";
 import { errorRecovery } from "@/components/agent/feedView";
 
 import { Button, ButtonLink } from "./Button";
-import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor, tellAgainFor } from "./memoryRunState";
+import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor, tellAgainFor, watchHrefFor } from "./memoryRunState";
 import { hrefs } from "./session";
 import { TellingNote } from "./TellingNote";
 
@@ -57,7 +57,14 @@ export function MemoryRun(props: {
   runKey?: string;
   telling?: MemoryRunTelling | null;
   mediaUrl: (mediaId: string) => string;
+  /** The moment's book page, the finished run's way in. */
   sceneHref?: (memoryId: string) => string;
+  /**
+   * The moment's scene playing on the stage, a quiet link beside the way in
+   * once the run is done. Leave it out where the stage cannot load the moment
+   * (mock mode).
+   */
+  watchHref?: (memoryId: string) => string;
   onUploadPhoto?: (file: File) => Promise<string>;
   addAnotherHref?: string;
   /**
@@ -66,7 +73,8 @@ export function MemoryRun(props: {
    */
   onTellAgain?: () => void;
 }) {
-  const { source, options, runKey, telling, mediaUrl, sceneHref, onUploadPhoto, addAnotherHref, onTellAgain } = props;
+  const { source, options, runKey, telling, mediaUrl, sceneHref, watchHref, onUploadPhoto, addAnotherHref, onTellAgain } =
+    props;
   const runOptions = useMemo(() => (runKey ? { ...options, runKey } : options), [options, runKey]);
   const { state, answerQuestion, reviewProps, decideMerge, retry } = useAgentRun(source, runOptions);
 
@@ -156,6 +164,7 @@ export function MemoryRun(props: {
           onRetry={retry}
           startOver={startOver}
           sceneHref={sceneHrefFor(state, sceneHref)}
+          watchHref={watchHrefFor(state, watchHref)}
           // After a reload the telling is unknown (null): call it a memory.
           subject={telling?.secondTellingOf ? "telling" : "memory"}
         >

@@ -36,6 +36,12 @@ export const hrefs = {
   memory: (id: string, familyId?: string | null): string => `/memories/${enc(id)}${familyQuery(familyId)}`,
   /** A person's book; with a family id, `?family=` tells it which family to load. */
   person: (id: string, familyId?: string | null): string => `/people/${enc(id)}${familyQuery(familyId)}`,
+  /**
+   * A saved moment's pop-up scene, playing on the stage; with a family id,
+   * `?family=` tells the stage which family to load it from (the stage loads
+   * from the real API only, so a mock moment cannot play there).
+   */
+  render: (id: string, familyId?: string | null): string => `/render/${enc(id)}${familyQuery(familyId)}`,
 };
 
 /** A `?family=` suffix for a non-empty family id, or nothing. */
