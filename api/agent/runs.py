@@ -560,18 +560,37 @@ class RunManager:
 # --------------------------------------------------------------------------- module seam
 
 _manager: RunManager | None = None
+_manager_lock = threading.Lock()
 
 
 def configure(manager: RunManager | None) -> None:
-    """Install the process's RunManager (None removes it). The API does this at startup."""
+    """Install the process's RunManager (None removes it, and the next get_manager() builds one)."""
     global _manager  # noqa: PLW0603
     _manager = manager
 
 
 def get_manager() -> RunManager:
-    if _manager is None:
-        raise RuntimeError("agent runs are not configured: call agent.runs.configure(RunManager(...)) at startup")
-    return _manager
+    """The configured RunManager, or, when none is, the production one built on first use.
+
+    The production manager (`agent.production.production_manager()`) is built once under
+    a lock and installed with `configure`. If it cannot be built (no ANTHROPIC_API_KEY,
+    for example) this raises `RuntimeError('agent runs are not configured: <reason>')`,
+    which the routes answer with 503; nothing is cached, so a later call tries again.
+    """
+    manager = _manager
+    if manager is not None:
+        return manager
+    with _manager_lock:
+        if _manager is not None:
+            return _manager
+        try:
+            from agent.production import production_manager
+
+            manager = production_manager()
+        except Exception as exc:  # noqa: BLE001 - every reason becomes the one not-configured error
+            raise RuntimeError(f"agent runs are not configured: {exc}") from exc
+        configure(manager)
+        return manager
 
 
 def start_run(
