@@ -136,7 +136,7 @@ export class ThreadsEngine {
     this.reveal = o.reduced ? model.tNow : model.tMin;
     this.popAt = model.knots.map(() => (o.reduced ? -1e9 : NaN));
     this.pop = model.knots.map(() => (o.reduced ? 1 : 0));
-    this.titleW = model.knots.map((k) => k.moment.title.length * 8.5);
+    this.titleW = model.knots.map((k) => (k.moment.label ?? k.moment.title).length * 8.5);
     this.measureTitles();
   }
 
@@ -173,7 +173,7 @@ export class ThreadsEngine {
     const ctx = this.ctx;
     if (!ctx) return;
     ctx.font = `500 ${titleFontPx(this.layout.width)}px ${this.fonts.hand}`;
-    this.titleW = this.model.knots.map((k) => ctx.measureText(k.moment.title).width + 6);
+    this.titleW = this.model.knots.map((k) => ctx.measureText(k.moment.label ?? k.moment.title).width + 6);
   }
 
   /** Make sure a frame is coming. */
