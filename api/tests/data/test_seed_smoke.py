@@ -8,6 +8,7 @@ drives a real server. No MongoDB, no keys, no network.
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 from collections.abc import AsyncIterator, Iterator
 
@@ -111,6 +112,112 @@ def test_missing_photo_fails_before_submit(api: TestClient, tmp_path: pathlib.Pa
     assert not result.ok
     assert result.message.startswith("photo:")
     assert result.run_id is None
+
+
+# ------------------------------------------------------------------------------ second telling
+
+SAM = next(a for a in demo.DEMO_ACCOUNTS if a.person_id == "sam")
+SAM_MOMENT = "demo_lily_graduation"
+SECOND_TEXT = "I saw the whole thing from the third row. She caught her hem and bowed! I still tease her."
+
+
+def _sams_question() -> str:
+    return next(text for pid, text, mid in demo.DEMO_QUESTIONS if pid == SAM.person_id and mid == SAM_MOMENT)
+
+
+def test_second_telling_smoke_over_a_seeded_moment(api: TestClient) -> None:
+    """--memory-id: Sam adds his version of Lily's graduation, where he has an open question."""
+    question = _sams_question()
+    assert api.post("/auth/login", json={"email": SAM.email, "password": demo.DEMO_PASSWORD}).status_code == 200
+    before = schemas.Memory.model_validate(
+        api.get(f"/families/{demo.DEMO_FAMILY_ID}/memories/{SAM_MOMENT}").json()["memory"]
+    )
+    assert SAM.person_id not in {t.author_id for t in before.tellings}
+
+    result, lines = _run(api, _opts(email=SAM.email, memory_id=SAM_MOMENT, text=SECOND_TEXT, question=question))
+
+    assert result.ok, result.message
+    assert result.memory_id == SAM_MOMENT
+    assert result.events[-2:] == ["scene_ready", "done"]
+    assert "question" not in result.events and "props_found" not in result.events
+    log = "\n".join(lines)
+    assert f"moment {before.title!r} ({before.year}), version {before.version}" in log
+    assert f"version {before.version} -> {before.version + 1}" in log
+    assert result.message == f"memory {SAM_MOMENT} has sam's version and is in sam's book"
+
+    after = schemas.MemoryResponse.model_validate(
+        api.get(f"/families/{demo.DEMO_FAMILY_ID}/memories/{SAM_MOMENT}").json()
+    ).memory
+    [mine] = [t for t in after.tellings if t.author_id == SAM.person_id]
+    assert (mine.text, mine.question, len(mine.photo_ids)) == (SECOND_TEXT, question, 1)
+    assert after.version == before.version + 1
+    assert after.year == before.year  # the moment's own year was sent, not --year
+    assert after.timeline is not None and after.timeline.narrations is not None
+    track = after.timeline.narrations[SAM.person_id]
+    assert [line.text for line in track.lines] == [
+        "I saw the whole thing from the third row.", "She caught her hem and bowed!", "I still tease her."
+    ]
+    assert after.timeline.default_narrator == before.timeline.default_narrator  # type: ignore[union-attr]
+    open_now = api.get(f"/families/{demo.DEMO_FAMILY_ID}/questions").json()["questions"]
+    assert not [q for q in open_now if q["memoryId"] == SAM_MOMENT], "Sam's question is answered"
+
+
+def test_second_telling_of_an_unknown_moment_fails_before_submit(api: TestClient) -> None:
+    result, _ = _run(api, _opts(email=SAM.email, memory_id="no_such_moment"))
+    assert not result.ok
+    assert result.message.startswith("moment: GET memory no_such_moment: HTTP 404")
+    assert result.run_id is None and result.events == []
+
+
+def _scripted_run(monkeypatch: pytest.MonkeyPatch, *events: tuple[str, schemas.Model]) -> None:
+    """Replace the run manager's start and stream: no real run happens, these events are sent."""
+    manager = agent.runs.get_manager()
+
+    def start_run(*_args: object) -> str:
+        return "scripted-run"
+
+    def stream_run(family_id: str, run_id: str) -> AsyncIterator[tuple[str, schemas.Model]]:
+        async def gen() -> AsyncIterator[tuple[str, schemas.Model]]:
+            for event in events:
+                yield event
+
+        return gen()
+
+    monkeypatch.setattr(manager, "start_run", start_run)
+    monkeypatch.setattr(manager, "stream_run", stream_run)
+
+
+def test_second_telling_that_adds_no_track_fails(api: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run that says done but never added Sam's telling fails check 6, by name."""
+    _scripted_run(monkeypatch, ("done", schemas.DoneEvent(memory_id=SAM_MOMENT)))
+    result, _ = _run(api, _opts(email=SAM.email, memory_id=SAM_MOMENT))
+    assert not result.ok
+    assert result.message == f"memory: {SAM_MOMENT} has no telling by sam"
+
+
+def test_second_telling_done_on_another_memory_fails(api: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    other = demo.HYMN_MEMORY_ID
+    _scripted_run(monkeypatch, ("done", schemas.DoneEvent(memory_id=other)))
+    result, _ = _run(api, _opts(email=SAM.email, memory_id=SAM_MOMENT))
+    assert not result.ok
+    assert result.message == f"stream: done names memory {other}, not the moment {SAM_MOMENT}"
+
+
+def test_check_second_telling_needs_lines_and_a_new_version() -> None:
+    sample = demo.load_sample().memory
+    teller = sample.tellings[0].author_id
+    with pytest.raises(smoke._Fail, match="still at version"):
+        smoke._check_second_telling(sample, sample, teller)
+    bumped = sample.model_copy(update={"version": sample.version + 1}, deep=True)
+    smoke._check_second_telling(sample, bumped, teller)
+    silent = bumped.model_copy(deep=True)
+    assert silent.timeline is not None and silent.timeline.narrations is not None
+    silent.timeline.narrations[teller].lines = []
+    with pytest.raises(smoke._Fail, match="has no lines"):
+        smoke._check_second_telling(sample, silent, teller)
+    del silent.timeline.narrations[teller]
+    with pytest.raises(smoke._Fail, match="no narration track"):
+        smoke._check_second_telling(sample, silent, teller)
 
 
 # ------------------------------------------------------------------------------ failures
@@ -257,7 +364,15 @@ def test_main_default_options() -> None:
     assert opts.answer == "It was a warm evening and everyone was singing."
     assert opts.timeout == 900.0
     assert opts.photos == [] and opts.question is None
+    assert opts.memory_id is None
     assert demo.DEMO_PASSWORD not in smoke._parser().format_help()
+
+
+def test_main_memory_id_option() -> None:
+    opts = smoke._options(smoke._parser().parse_args(["--memory-id", "demo_lily_graduation"]))
+    assert opts.memory_id == "demo_lily_graduation"
+    assert "--memory-id" in smoke._parser().format_help()
+    assert [f.name for f in dataclasses.fields(SmokeOptions)][-1] == "memory_id"
 
 
 def test_main_ok_and_failed_summary(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

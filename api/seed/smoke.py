@@ -18,6 +18,9 @@ Then, in a second terminal (from api/):
 
     uv run python -m seed.smoke --base-url http://localhost:8000
 
+    # A second telling ("hear Sam's version"): Sam adds his telling to Lily's graduation.
+    uv run python -m seed.smoke --email sam@demo.stitch --memory-id demo_lily_graduation
+
 Options (all optional):
 
     --base-url URL      the API (default http://localhost:8000)
@@ -25,10 +28,13 @@ Options (all optional):
     --password P        its password (default: the demo password, seed.demo.DEMO_PASSWORD)
     --family FID        the family to add the memory to (default demo_family)
     --text T            the telling (default: a short road-trip memory)
-    --year N            the year of the moment (default 1991)
+    --year N            the year of the moment (default 1991; with --memory-id the
+                        moment's own year is sent instead)
     --question Q        the question the telling answers (default none)
     --photo PATH ...    photos to attach (default: one small generated PNG)
     --answer TEXT       the reply to the studio's follow-up question
+    --memory-id M       add a second telling to the existing moment M instead of making a
+                        new memory (the submit sends memoryId; see checks 3b, 6 and 7)
     --timeout SECONDS   give up after this long (default 900; a real run takes minutes)
     --quiet             print only the final summary line
 
@@ -40,8 +46,11 @@ What each check means, in order (the first one that fails is the summary's messa
 1. login        POST /auth/login with the email and password answers 200.
 2. membership   GET /me lists the family, so the account belongs to it.
 3. teller       the account has a person in that family; it tells the memory.
-4. submit       POST /families/{fid}/memories (multipart: text, year, question, photos)
-                answers 202 with a run id: the studio accepted the run.
+3b. moment      (--memory-id only) GET /families/{fid}/memories/{M} answers 200: the
+                moment exists in the family. Its version and year are noted.
+4. submit       POST /families/{fid}/memories (multipart: text, year, question, photos,
+                and memoryId with --memory-id) answers 202 with a run id: the studio
+                accepted the run.
 5. stream       GET /families/{fid}/runs/{runId}/stream sends events named as in
                 schemas.RUN_EVENTS whose data validates against those models, until
                 `done` or `error`. Each event is logged as it arrives.
@@ -53,13 +62,16 @@ What each check means, in order (the first one that fails is the summary's messa
                 Every answer must get 204. An `error` event, or no `done` before --timeout,
                 fails the smoke. If the connection drops, the stream is reopened (it
                 replays the run from its first event) and the events already seen are
-                skipped.
+                skipped. With --memory-id, `done.memoryId` must be M.
 6. memory       GET /families/{fid}/memories/{memoryId} has a screenplay and a timeline:
-                the scene was staged and saved.
-7. book         GET /families/{fid}/people/{tellerId}/book lists the new memory: it opens
-                in the teller's book.
+                the scene was staged and saved. With --memory-id, also: the memory has a
+                telling by the teller, `timeline.narrations[teller]` has at least one
+                line (their version can be heard), and the version went up.
+7. book         GET /families/{fid}/people/{tellerId}/book lists the memory: it opens in
+                the teller's book (a second telling makes the teller a participant).
 
-Each run adds one memory to the family. On a real MongoDB, `uv run --env-file ../.env
+Each run adds one memory to the family (with --memory-id: one telling to that moment,
+replacing the account's own earlier telling of it, if any). On a real MongoDB, `uv run --env-file ../.env
 python -m seed.demo --reset` rebuilds the demo family without them.
 
 Passwords and session cookies are never printed or logged. See also seed/README.md.
@@ -119,6 +131,8 @@ class SmokeOptions:
     photos: list[pathlib.Path]
     answer: str
     timeout: float
+    memory_id: str | None = None
+    """Add a second telling to this existing moment instead of making a new memory."""
 
 
 @dataclass
@@ -379,6 +393,20 @@ def _follow(
 # ------------------------------------------------------------------------------ the smoke
 
 
+def _check_second_telling(before: schemas.Memory, after: schemas.Memory, teller: str) -> None:
+    """Check 6 for --memory-id: the teller's telling and narration track are there, version up."""
+    mid = after.id
+    if not any(t.author_id == teller for t in after.tellings):
+        raise _Fail(f"memory: {mid} has no telling by {teller}")
+    track = (after.timeline.narrations or {}).get(teller) if after.timeline is not None else None
+    if track is None:
+        raise _Fail(f"memory: {mid} has no narration track for {teller} (timeline.narrations[{teller!r}])")
+    if not track.lines:
+        raise _Fail(f"memory: {teller}'s narration track on {mid} has no lines")
+    if after.version <= before.version:
+        raise _Fail(f"memory: {mid} is still at version {after.version} (was {before.version})")
+
+
 def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], None] = print) -> SmokeResult:
     """Drive add-a-memory end to end through `client` (base_url set; paths are relative).
 
@@ -422,11 +450,23 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
         teller = family.person_id
         say(f"family {family.name} ({fid}), teller {teller}")
 
+        # 3b. A second telling: the moment exists; note its version and year.
+        moment: schemas.Memory | None = None
+        if opts.memory_id is not None:
+            res = client.get(f"/families/{fid}/memories/{opts.memory_id}")
+            if res.status_code != 200:
+                raise _Fail(f"moment: GET memory {opts.memory_id}: {_detail(res)}")
+            moment = _parse(schemas.MemoryResponse, res, "moment").memory
+            say(f"moment {moment.title!r} ({moment.year}), version {moment.version}, "
+                f"{len(moment.tellings)} telling(s)")
+
         # 4. Submit.
         files = _photo_files(opts.photos)
-        form = {"text": opts.text, "year": str(opts.year)}
+        form = {"text": opts.text, "year": str(moment.year if moment is not None else opts.year)}
         if opts.question:
             form["question"] = opts.question
+        if moment is not None:
+            form["memoryId"] = moment.id
         res = client.post(f"/families/{fid}/memories", data=form, files=files)
         if res.status_code != 202:
             raise _Fail(f"submit: {_detail(res)}")
@@ -450,6 +490,8 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
         memory_id = run.memory_id
         assert memory_id is not None
         say(f"done in {time.monotonic() - started:.1f}s: memory {memory_id}")
+        if moment is not None and memory_id != moment.id:
+            raise _Fail(f"stream: done names memory {memory_id}, not the moment {moment.id}")
 
         # 6. The memory has its scene.
         res = client.get(f"/families/{fid}/memories/{memory_id}")
@@ -461,6 +503,11 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
         if found.memory.timeline is None:
             raise _Fail(f"memory: {memory_id} has no timeline")
         say(f"memory {found.memory.title!r} ({found.memory.year}) has its screenplay and timeline")
+        if moment is not None:
+            _check_second_telling(moment, found.memory, teller)
+            lines = len(found.memory.timeline.narrations[teller].lines)  # type: ignore[index]
+            say(f"{teller}'s telling is on it, narrated in {lines} line(s); "
+                f"version {moment.version} -> {found.memory.version}")
 
         # 7. It opens in the teller's book.
         res = client.get(f"/families/{fid}/people/{teller}/book")
@@ -481,6 +528,8 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
     except httpx.HTTPError as exc:
         return result(False, f"http: {type(exc).__name__}: {exc}")
 
+    if opts.memory_id is not None:
+        return result(True, f"memory {run.memory_id} has {teller}'s version and is in {teller}'s book")
     return result(True, f"memory {run.memory_id} is staged and in {teller}'s book")
 
 
@@ -516,6 +565,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--answer", default=DEFAULT_ANSWER, help="reply to the follow-up question")
     parser.add_argument(
+        "--memory-id", default=None, metavar="M",
+        help="add a second telling to the existing moment M instead of a new memory",
+    )
+    parser.add_argument(
         "--timeout", type=_positive, default=DEFAULT_TIMEOUT, help="seconds before giving up (default %(default)g)"
     )
     parser.add_argument("--quiet", action="store_true", help="print only the summary line")
@@ -534,6 +587,7 @@ def _options(args: argparse.Namespace) -> SmokeOptions:
         photos=list(args.photos),
         answer=args.answer,
         timeout=args.timeout,
+        memory_id=args.memory_id or None,
     )
 
 
