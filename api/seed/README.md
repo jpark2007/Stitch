@@ -62,7 +62,7 @@ curl -s -H 'Content-Type: application/json' \
 ```
 
 More curl calls are in [Smoke check](#smoke-check), and `uv run python -m seed.smoke`
-drives a whole "add a memory" run against it (see [Agent runs](#agent-runs-stitch_agent)).
+drives a whole "add a memory" run against it (see [The smoke checker](#the-smoke-checker-seedsmoke)).
 
 **Stop it** with Ctrl+C in its terminal.
 
@@ -115,31 +115,98 @@ The stage demo starts with a full tree and books. `seed/demo.py` creates the dem
   (Joseph's cane slows him down, Lily walks briskly). Luis's straw hat and Sam's cap are
   props (`itemPropId`), so they wear them on stage.
 - Seven moments from 1958 to 2019, every one with a **compiled scene** (screenplay and
-  timeline), so every book opens on playable pages:
-
-  | Year | Memory id | Participants | Tellings | Shots |
-  |---|---|---|---|---|
-  | 1958 | `demo_rosa_joseph_wedding` | Rosa, Joseph | Rosa, David | 1 |
-  | 1970 | `demo_sunday_tamales` | Carmen, Luis, Ana | Ana | 1 |
-  | 1972 | `demo_green_sedan_trip` (the family car) | Joseph, Rosa, David | David (with two photos), Rosa | 2, fold |
-  | 1988 | `sample_hymn_books` (the hymn-book sample) | David, Ana | David, Ana | 1 |
-  | 1997 | `demo_sams_first_bike` | David, Sam | David, Sam | 2, fold |
-  | 2015 | `demo_lily_graduation` | Lily, Ana, David, Sam, Rosa, Carmen | Ana, Lily | 2, fold |
-  | 2019 | `demo_sam_wedding_2019` | Sam, Lily, Ana, David | Sam, David | 2, fold |
-
-  Across them the scenes use walk, enter, run, hand_to, hug, sit_on, stand_up, kneel, wave,
-  point_at, lean_toward, pick_up, hold, place_on, set_state, get_in, get_out and drive_to
-  (with the green sedan), pose, the camera moves wide, dolly_to, pan_to, close_up and
-  pull_back, and the effects rain, steam, smoke, confetti and time_of_day (see
-  [Effects](#effects)). Every shot has `pageText`, every
-  moment has at least one pull tab and click-to-explain text for each puppet and prop, and
-  every teller of a moment has their own narration with cues.
+  timeline), so every book opens on playable pages. They are listed in
+  [The scenes](#the-scenes) below.
 - The props and sets those scenes use, all with placeholder art (`art` null, a `color`).
-- Open questions that ask a participant who has not told a moment yet for their version:
-  Sam and David about Lily's graduation, Ana and Lily about Sam's wedding, Carmen about
-  Sunday tamales, Rosa about the graduation. Each points at a moment with a scene, so
-  answering it adds a telling with either studio. Ana also has one general prompt (the day
-  Lily was born), which starts a new memory. Sam, Ana and David each have at least one.
+- Open questions that ask a participant who has not told a moment yet for their version,
+  and one general prompt. See [Demo accounts and their questions](#demo-accounts-and-their-questions).
+
+### The scenes
+
+One row per moment (`seed.demo.MOMENTS`), oldest first. The first teller is the default
+narrator; every other teller has their own narration track (`Timeline.narrations`), so a
+book can play each person's version over the same action. Every shot uses the `fold`
+transition (the page folds into the next shot) and has short `pageText`, and every puppet and prop on
+stage has a click-to-explain note. "Tab" is a pull tab and what it drives
+([CONTRACTS.md, Screenplay](../../shared/CONTRACTS.md#screenplay)).
+
+| Memory id | Year | Title | Tellers | Sets, in shot order | What to show |
+|---|---|---|---|---|---|
+| `demo_rosa_joseph_wedding` | 1958 | Rosa and Joseph's wedding | Rosa (`grandma_rosa`), David (`dad`) | `church_steps_1988`, then `st_marys_churchyard_1958` | `rain` and a grey dawn (`time_of_day` dawn) on the same church steps as the 1988 hymn books; Joseph enters and hands Rosa his umbrella (`hand_to`). Fold to the churchyard: the sun comes out (`time_of_day` day), the umbrella closes, `confetti` over Rosa, Joseph kneels over his soggy socks, Rosa points and hugs him. Tabs: open the umbrella (prop state), the socks (scrub), bring them together (scrub). |
+| `demo_sunday_tamales` | 1970 | Sunday tamales at Carmen's | Ana (`mom`) | `carmen_kitchen_1970`, then `carmen_kitchen_1970` | `steam` from the tamale pot in both shots; Carmen sets the pot on the table (`place_on` its `top` socket), Ana holds the lumpy tamale, Luis enters in his straw hat and sits on his chair (`sit_on` its `seat`). Fold to a second shot in the same kitchen: Ana hands Luis the lumpy one, sits on her stool, Luis cheers. Tabs: lift the pot lid (prop part `lid`), give Luis the lumpy one (scrub). Carmen has an open question. |
+| `demo_green_sedan_trip` | 1972 | The road trip in the green sedan | David (`dad`, with two photos), Rosa (`grandma_rosa`) | `mao_driveway_1972`, then `coast_road_1972` | The green sedan: Joseph, Rosa and David get in at its `driver`, `passenger` and `back_seat` sockets, exhaust `smoke`, and Joseph drives off (`drive_to`). Fold to the coast road, everyone still seated: the car pulls up with more `smoke`, all three get out, Joseph kneels at the flat tire, David sits on the fruit crate and Rosa hands him the peaches. Tabs: spin the front wheel (prop part `wheel_front`), drive to the peach stand (scrub). |
+| `sample_hymn_books` | 1988 | How I met your mother | David (`dad`), Ana (`mom`) | `church_steps_1988` | The reference sample (a copy of `web/public/samples/hymn_books.screenplay.json`), one shot: David enters, Ana drops the hymn books, David picks them up and hands them back, Ana bows her head. Tab: drop the books (scrub). |
+| `demo_sams_first_bike` | 1997 | Sam's first bike | David (`dad`), Sam (`sam`) | `maple_street_1997`, then `maple_corner_1997` | The red bike: Sam gets on at its `driver` socket and rides (`drive_to`) while Dad runs behind; the camera uses every move (`wide`, `close_up`, `dolly_to`, `pan_to`, `pull_back`). Fold to the corner, Sam still on the bike: Dad lets go, the bell rings (`set_state`), Dad follows, Sam gets off and waves, Dad hugs him. Tabs: push Sam off (scrub), ring the bell (prop state), spin the back wheel (prop part `wheel_back`). |
+| `demo_lily_graduation` | 2015 | Lily's graduation | Ana (`mom`), Lily (`lily`) | `school_hall_2015`, then `school_lawn_2015` | Six puppets. The grandmothers start seated on their folding chairs and put on matching hats (`put_on`); Lily trips on the stage steps into a bow; Rosa stands up to cheer and sits back down; Lily picks up her diploma at the lectern. Fold to the lawn: Lily hands Mom the diploma, a hug, `confetti`, Sam points (the Thanksgiving joke), Dad waves. Tabs: make Lily bow, make Rosa cheer, hand Mom the diploma (all scrub). Sam, David and Rosa have open questions. |
+| `demo_sam_wedding_2019` | 2019 | Sam's wedding in the orchard | Sam (`sam`), David (`dad`) | `wedding_garden_2019`, then `reception_tent_2019` | Ana and David start on the garden bench (its `left` and `right` sockets) and Ana leans toward David; Sam slumps, Lily walks up the aisle and hands him the ring box, which he opens (`set_state`). Fold to the reception tent at dusk (`time_of_day` dusk): Mom hugs Sam, his boutonniere drops, `confetti`, Dad waves, Lily picks the flower up and hands it back. Tabs: open the ring box (prop state), Mom's hug (scrub). Ana's open question here is "hear Mom's version" (below). |
+
+**Vocabulary the demo exercises.** Across the seven scenes: the actions `walk_to`,
+`run_to`, `enter`, `follow`, `turn_to`, `lean_toward`, `point_at`, `wave`, `hug`, `kneel`,
+`pose` (`bow_head`, `arms_raised`, `reach`, `slumped`), `sit_on`, `stand_up`, `get_in`,
+`get_out`, `drive_to`, `pick_up`, `hold`, `hand_to`, `drop`, `place_on`, `put_on` and
+`set_state`; all five effects, `confetti`, `steam`, `rain`, `smoke` and `time_of_day`
+(dawn, day, dusk); all five camera moves; the `fold` transition between every pair of
+shots; starting a shot seated (`start.in` on a chair, bench, bike or car socket); and pull tabs
+of all three drive types (`scrub`, `prop_state`, `prop_part`). Not exercised: the actions
+`exit`, `open`, `close` and `ride_to`, the `none` transition, and sliders. The vocabulary
+itself is `shared/vocabulary.json`.
+
+### Demo accounts and their questions
+
+Every account's password is **`stitch-demo`** (`seed.demo.DEMO_PASSWORD`). Questions are
+listed by `GET /families/demo_family/questions` for the signed-in person, and in the web
+app under "Someone asked you" on the add page (`/add`).
+
+| Email | Person | Open questions |
+|---|---|---|
+| `david@demo.stitch` | David (`dad`), admin | Lily's graduation (a second telling) |
+| `ana@demo.stitch` | Ana (`mom`), member | Sam's wedding (a second telling: **"hear Mom's version"**); the day Lily was born (a general prompt, starts a new memory) |
+| `sam@demo.stitch` | Sam (`sam`), member | Lily's graduation (a second telling) |
+
+Lily, Rosa and Carmen also have questions (Sam's wedding, Lily's graduation, Sunday
+tamales), but no account, so nobody can answer them in the demo. A question that points
+at a moment closes when that person's telling of it is saved.
+
+#### Hear Mom's version (offline)
+
+Ana's question, "Sam says you hugged him so hard at the wedding that his flower fell off.
+How do you remember that day?", points at `demo_sam_wedding_2019`, which Sam and David
+have told. Answering it adds Ana's telling and gives the scene a third narration track,
+`narrations.mom`, over the same action. With `python -m seed.serve` running:
+
+- **Web app**: sign in as `ana@demo.stitch`, open the add page (`/add`), press "Answer
+  this" on that note (the year and people come from the moment), write a few sentences
+  and send. The scripted run shows the interviewer and the narrator, then `done`; there is
+  no follow-up question and no prop review for a second telling.
+- **Smoke checker** (it checks that `timeline.narrations.mom` has lines and the version
+  went up), from `api/` in a second terminal:
+
+  ```sh
+  uv run python -m seed.smoke --email ana@demo.stitch --memory-id demo_sam_wedding_2019 \
+    --text "I hugged him so hard his flower fell off. Lily found it under the bench."
+  # ... mom's telling is on it, narrated in 2 line(s); version 1 -> 2   (on a fresh server)
+  # smoke OK: run ..., memory demo_sam_wedding_2019, 10 events (plan, subagent_start, ...)
+  ```
+
+- **curl**:
+
+  ```sh
+  J=/tmp/stitch-ana.txt; B=localhost:8000/families/demo_family
+  curl -s -c $J -H 'Content-Type: application/json' \
+    -d '{"email":"ana@demo.stitch","password":"stitch-demo"}' localhost:8000/auth/login
+  curl -s -b $J $B/questions                 # the wedding question, memoryId demo_sam_wedding_2019
+  RUN=$(curl -s -b $J -F 'text=I hugged him so hard his flower fell off. Lily found it under the bench.' \
+    -F year=2019 -F memoryId=demo_sam_wedding_2019 $B/memories \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["runId"])')   # 202 {"runId":...}
+  curl -s -N -b $J $B/runs/$RUN/stream       # plan, subagent_start/end, ..., scene_ready, done
+  curl -s -b $J $B/memories/demo_sam_wedding_2019 | python3 -c \
+    'import json,sys; t=json.load(sys.stdin)["memory"]["timeline"]; print(list(t["narrations"]))'
+  # ['sam', 'dad', 'mom']
+  ```
+
+The new track's lines carry cues and word timings in timeline time, and no audio (scripted
+runs make no speech). The same works for Sam or David on `demo_lily_graduation`. Each run
+changes the in-memory database; restart `seed.serve` to get the seeded state back.
 
 ## Edit the demo scenes
 
@@ -160,8 +227,11 @@ After an edit, recompile and check everything with
 
 ```sh
 cd api
-uv run pytest tests/data/test_seed_scenes.py tests/data/test_seed.py
+uv run pytest tests/data/test_seed_scenes.py tests/data/test_seed.py tests/data/test_seed_readme.py
 ```
+
+`test_seed_readme.py` checks that this README still names every moment, set, demo account
+and compiled effect, so update [The scenes](#the-scenes) when you add or change one.
 
 `seed_demo` compiles every screenplay with the real compiler
 (`screenplay.compiler.compile`) against these props and sets and the demo people
@@ -187,8 +257,8 @@ warnings), and checks the vocabulary coverage above.
 The effects (`confetti`, `steam`, `rain`, `smoke`, `time_of_day`) are compiled like every
 other action, through the compiler's effect path, and land in each stored
 `Timeline.effects`: rain on the 1958 wedding, steam over the tamales, exhaust smoke from
-the sedan, confetti at the graduation and at Sam's wedding, the sun coming out after the 1958 rain
-and dusk falling on the 2019 party.
+the sedan, confetti at the 1958 wedding, the graduation and Sam's wedding, a grey dawn
+that turns to day once the 1958 rain has passed, and dusk falling on the 2019 party.
 Nothing authored is ever left out of the stored screenplay. An effect that cannot be
 placed (say `at` names someone not on stage) fails the seed like any other `CompileError`.
 `test_seed_scenes.py` checks that every authored effect is in the stored timeline.
@@ -436,7 +506,31 @@ No agent step can stop the API from starting: if even the scripted runs cannot b
 installed, startup logs a warning and the run routes answer 503. On shutdown the API stops
 the run manager it installed (runs in flight end with an error event) and clears it.
 
-Smoke-test a running API end to end: `uv run python -m seed.smoke --base-url http://localhost:8000` (see seed/smoke.py).
+### The smoke checker (seed.smoke)
+
+`seed/smoke.py` drives "add a memory" over HTTP against a running API, exactly like the web
+app (cookie session, multipart submit, the run's event stream, answers), and checks each
+step: login, membership, teller, submit, stream (every event validates against
+`schemas.RUN_EVENTS`), the saved memory and the teller's book. Exit code 0 means every
+check passed, 1 that one failed (the summary line names it), 2 that the API is not
+reachable. The full list of checks and options is in the module docstring.
+
+With `uv run python -m seed.serve` running, from `api/` in a second terminal:
+
+```sh
+# A new memory, as David (the default account): question, prop review, the hymn-book scene.
+uv run python -m seed.smoke --base-url http://localhost:8000
+
+# A second telling: --memory-id adds the account's telling to an existing moment and also
+# checks that timeline.narrations[<teller>] has lines and the memory's version went up.
+uv run python -m seed.smoke --email ana@demo.stitch --memory-id demo_sam_wedding_2019
+uv run python -m seed.smoke --email sam@demo.stitch --memory-id demo_lily_graduation
+```
+
+With `--memory-id`, the moment's own year is sent and a check confirms the moment exists
+first. Telling the same moment again replaces that account's earlier telling and track.
+For the real model studio, start the API on a real MongoDB with the keys (below) and run
+the same commands; a real run takes minutes (`--timeout`, default 900 seconds).
 
 ## Run the API on a real MongoDB
 
@@ -500,3 +594,19 @@ MongoDB (the API still keeps run ids in the process, so a restart ends the runs 
 If the build fails, startup logs the reason and falls back to scripted runs.
 Without the key, or with `STITCH_AGENT=fake`, runs are scripted on the real database too;
 with `STITCH_AGENT=off`, adding a memory answers 503 even when the key is set.
+
+## What is not verified
+
+MongoDB, Docker and Atlas were not available where this demo was built and checked, so:
+
+- The offline demo (`python -m seed.serve`, `STITCH_FAKE_DB=1`) and the whole test suite
+  run on mongomock, an in-memory imitation of MongoDB, not on MongoDB itself.
+- Atlas Vector Search has never run: in demo mode there is no embedder, and "ask the
+  family" and prop and set matching use their keyword fallbacks. The vector indexes and
+  `$vectorSearch` queries are untested against a real Atlas cluster.
+- The real-MongoDB tests (`tests/data/test_real_mongo.py`) skip unless `MONGODB_URI_TEST`
+  points at a disposable database.
+- Nothing here was run in Docker.
+- The second-telling path above was checked over HTTP (`seed.smoke` and curl against
+  `seed.serve`); the web click path is read from the web app's code, not clicked through
+  in a browser.
