@@ -2,6 +2,10 @@
 
 Responses are built only from schemas.User, which has no password field. The stored
 password hash is read through users_db.get_login() and never leaves login().
+
+Signup caps the trimmed display name at MAX_DISPLAY_NAME_CHARS and the normalized email
+at MAX_EMAIL_CHARS (422 with a sentence naming the limit). Login has no caps of its own:
+any email it cannot find, long or not, is the same 401 after the same argon2 work.
 """
 
 from __future__ import annotations
@@ -28,6 +32,11 @@ router = APIRouter(tags=["auth"])
 INVALID_LOGIN = "Invalid email or password"
 HTTP_422 = 422  # starlette renamed the constant; the number is the contract
 
+# Signup limits, checked after trimming (schemas.SignupRequest itself is unbounded).
+# 254 is the longest address SMTP can deliver to (RFC 5321 path limit minus the brackets).
+MAX_DISPLAY_NAME_CHARS = 100
+MAX_EMAIL_CHARS = 254
+
 _dummy_hash: str | None = None
 _dummy_lock = threading.Lock()
 
@@ -44,6 +53,25 @@ def _dummy_password_hash() -> str:
             if _dummy_hash is None:
                 _dummy_hash = auth.hash_password(secrets.token_urlsafe(32))
     return _dummy_hash
+
+
+def warm_login_hash() -> None:
+    """Compute the dummy hash ahead of the first login (main.py calls this at startup).
+
+    Otherwise the first login with an unknown email in a process does two argon2 runs
+    (hash, then verify) where a wrong password does one, which tells the two apart.
+    """
+    _dummy_password_hash()
+
+
+def _valid_email_shape(email: str) -> bool:
+    """A normalized email with something on both sides of its last '@' and no whitespace.
+
+    users_db.normalize_email only asks for an '@', so "@", "ana@" and "a b@x.com" got
+    through as accounts nobody could ever be emailed at.
+    """
+    local, _, domain = email.rpartition("@")
+    return bool(local) and bool(domain) and not any(ch.isspace() for ch in email)
 
 
 def _me(db: Database, user: schemas.User) -> schemas.MeResponse:
@@ -66,9 +94,15 @@ def signup(
         email = users_db.normalize_email(body.email)
     except ValueError:
         raise HTTPException(HTTP_422, detail="Enter a valid email") from None
+    if len(email) > MAX_EMAIL_CHARS:
+        raise HTTPException(HTTP_422, detail=f"Email must be at most {MAX_EMAIL_CHARS} characters")
+    if not _valid_email_shape(email):
+        raise HTTPException(HTTP_422, detail="Enter a valid email")
     name = body.name.strip()
     if not name:
         raise HTTPException(HTTP_422, detail="Enter your name")
+    if len(name) > MAX_DISPLAY_NAME_CHARS:
+        raise HTTPException(HTTP_422, detail=f"Your name must be at most {MAX_DISPLAY_NAME_CHARS} characters")
     try:
         user = users_db.create_user(
             db,

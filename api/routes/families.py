@@ -9,9 +9,17 @@ Access rules:
 - Person ids are always looked up inside the path's family, so another family's person
   id is a 404 too.
 - `GET /invites/{code}` is public: the code itself is the secret.
+
+Size limits (route level; schemas.py is unbounded), checked after trimming: a family name
+MAX_FAMILY_NAME_CHARS, a person's name MAX_PERSON_NAME_CHARS, and a character sheet's
+free text (signature item, notes) MAX_PERSON_TEXT_CHARS. Over a limit is a 422 whose
+detail names the limit. A blank name stays the 400 it always was. A character color must
+be a hex code (#rgb or #rrggbb), since the stage paints the puppet with it.
 """
 
 from __future__ import annotations
+
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo.database import Database
@@ -28,6 +36,17 @@ router = APIRouter(tags=["families"])
 
 INVITE_NOT_FOUND = "Invite not found or expired"
 LAST_ADMIN = "A family needs at least one admin"
+PERSON_TAKEN = "Someone has already claimed this person"
+ALREADY_HAVE_PERSON = "You already have a person in this family"
+BAD_COLOR = "Color must be a hex code like #3f6fb5"
+
+MAX_FAMILY_NAME_CHARS = 100
+MAX_PERSON_NAME_CHARS = 100
+MAX_PERSON_TEXT_CHARS = 2_000
+
+_HEX_COLOR = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})")
+# Character sheet free text: field name and how a limit sentence names it.
+_CHARACTER_TEXT = (("item", "A signature item"), ("notes", "Notes"))
 
 
 # ------------------------------------------------------------------------------ helpers
@@ -45,22 +64,77 @@ def _conflict(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
 
-def _clean_new_person(new: schemas.NewPerson) -> schemas.NewPerson:
-    """The same person with a trimmed name. 400 if the name is blank."""
-    name = new.name.strip()
+def _unprocessable(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
+
+
+def _check_length(value: str, limit: int, what: str) -> None:
+    if len(value) > limit:
+        raise _unprocessable(f"{what} must be at most {limit:,} characters")
+
+
+def _clean_person_name(raw: str) -> str:
+    """The trimmed name. 400 if blank, 422 if over MAX_PERSON_NAME_CHARS."""
+    name = raw.strip()
     if not name:
         raise _bad_request("A person needs a name")
-    return new if name == new.name else new.model_copy(update={"name": name})
+    _check_length(name, MAX_PERSON_NAME_CHARS, "A name")
+    return name
+
+
+def _clean_character(character: schemas.CharacterSheet) -> schemas.CharacterSheet:
+    """The sheet with a trimmed hex color and trimmed free text (blank text becomes None).
+
+    422 for a color that is not a hex code, or free text over MAX_PERSON_TEXT_CHARS.
+    """
+    updates: dict[str, str | None] = {}
+    color = character.color.strip()
+    if not _HEX_COLOR.fullmatch(color):
+        raise _unprocessable(BAD_COLOR)
+    if color != character.color:
+        updates["color"] = color
+    for field, what in _CHARACTER_TEXT:
+        value = getattr(character, field)
+        if value is None:
+            continue
+        trimmed = value.strip()
+        _check_length(trimmed, MAX_PERSON_TEXT_CHARS, what)
+        if trimmed != value:
+            updates[field] = trimmed or None
+    return character.model_copy(update=updates) if updates else character
+
+
+def _clean_new_person(new: schemas.NewPerson) -> schemas.NewPerson:
+    """The same person with a trimmed name and a cleaned character sheet.
+
+    400 if the name is blank; 422 over a size limit or for a bad color.
+    """
+    updates: dict[str, object] = {}
+    name = _clean_person_name(new.name)
+    if name != new.name:
+        updates["name"] = name
+    if new.character is not None:
+        character = _clean_character(new.character)
+        if character is not new.character:
+            updates["character"] = character
+    return new.model_copy(update=updates) if updates else new
 
 
 def _clean_patch(patch: schemas.PersonPatch) -> schemas.PersonPatch:
-    """The same patch with a trimmed name. 400 if it sets a blank name."""
-    if patch.name is None:
-        return patch
-    name = patch.name.strip()
-    if not name:
-        raise _bad_request("A person needs a name")
-    return patch if name == patch.name else patch.model_copy(update={"name": name})
+    """The same patch with a trimmed name and a cleaned character sheet, where it sets them.
+
+    400 if it sets a blank name; 422 over a size limit or for a bad color.
+    """
+    updates: dict[str, object] = {}
+    if patch.name is not None:
+        name = _clean_person_name(patch.name)
+        if name != patch.name:
+            updates["name"] = name
+    if patch.character is not None:
+        character = _clean_character(patch.character)
+        if character is not patch.character:
+            updates["character"] = character
+    return patch.model_copy(update=updates) if updates else patch
 
 
 def _summary(db: Database, family: schemas.Family, user_id: str, person_id: str) -> schemas.FamilySummary:
@@ -97,6 +171,7 @@ def create_family(
     name = body.name.strip()
     if not name:
         raise _bad_request("A family needs a name")
+    _check_length(name, MAX_FAMILY_NAME_CHARS, "A family name")
     # The creator is the first node, so there is nobody yet to be related to. Checked
     # before anything is written, so a bad request never leaves an empty family behind.
     if body.person.parent_ids or body.person.spouse_ids:
@@ -205,7 +280,7 @@ def _join_by_claim(
     if target is None:
         raise _not_found("Person not found")
     if target.user_id is not None and target.user_id != user.id:
-        raise _conflict("Someone has already claimed this person")
+        raise _conflict(PERSON_TAKEN)
 
     was_member = families_db.get_member_role(db, family.id, user.id) is not None
     families_db.add_member(db, family.id, user.id, "member")
@@ -213,7 +288,10 @@ def _join_by_claim(
         person = people_db.claim_person(db, family.id, person_id, user.id)
     except AlreadyClaimed as exc:
         _undo_join(db, family.id, user.id, was_member)
-        raise _conflict(str(exc)) from exc
+        # A fixed sentence, never the db layer's text: which of the two it is depends on
+        # whether the caller holds another person here (for example from a concurrent join).
+        mine = people_db.get_person_for_user(db, family.id, user.id)
+        raise _conflict(ALREADY_HAVE_PERSON if mine is not None and mine.id != person_id else PERSON_TAKEN) from exc
     if person is None:  # removed between the lookup and the claim
         _undo_join(db, family.id, user.id, was_member)
         raise _not_found("Person not found")
@@ -232,7 +310,7 @@ def _join_by_adding(
         raise _bad_request(str(exc)) from exc
     except AlreadyClaimed as exc:
         _undo_join(db, family.id, user.id, was_member)
-        raise _conflict("You already have a person in this family") from exc
+        raise _conflict(ALREADY_HAVE_PERSON) from exc
     return schemas.JoinResponse(family=_summary(db, family, user.id, person.id), person=person)
 
 
