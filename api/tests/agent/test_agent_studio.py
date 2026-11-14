@@ -11,7 +11,7 @@ import os
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -518,3 +518,83 @@ def test_mongo_persistence_runs_and_resumes_a_studio() -> None:
         assert store.search(studio.memories_namespace("fam_mongo"))
     finally:
         saver.client.drop_database(db_name)
+
+
+# ------------------------------------------------------------------ mongo_persistence cleanup (offline)
+
+
+class FakeMongoClient:
+    """Stands in for pymongo.MongoClient: no network; records close()."""
+
+    made: ClassVar[list[FakeMongoClient]] = []
+
+    def __init__(self, uri: str, **kwargs: Any) -> None:
+        self.uri, self.kwargs, self.closed = uri, kwargs, 0
+        FakeMongoClient.made.append(self)
+
+    def __getitem__(self, name: str) -> dict[str, str]:
+        return {"agent_store": f"{name}.agent_store"}
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class FakeSaver:
+    def __init__(self, client: FakeMongoClient, **kwargs: Any) -> None:
+        self.client, self.kwargs = client, kwargs
+
+
+class FakeStore:
+    def __init__(self, *, collection: Any) -> None:
+        self.collection = collection
+
+
+@pytest.fixture
+def fake_mongo(monkeypatch: pytest.MonkeyPatch) -> list[FakeMongoClient]:
+    import pymongo
+    from langgraph.checkpoint import mongodb as checkpoint_mongodb
+    from langgraph.store import mongodb as store_mongodb
+
+    FakeMongoClient.made = []
+    monkeypatch.setattr(pymongo, "MongoClient", FakeMongoClient)
+    monkeypatch.setattr(checkpoint_mongodb, "MongoDBSaver", FakeSaver)
+    monkeypatch.setattr(store_mongodb, "MongoDBStore", FakeStore)
+    return FakeMongoClient.made
+
+
+def test_mongo_persistence_builds_both_on_one_client_and_keeps_it_open(fake_mongo: list[FakeMongoClient]) -> None:
+    saver, store = studio.mongo_persistence("mongodb://u:p@h/test", db_name="stitch_x")
+    assert len(fake_mongo) == 1 and fake_mongo[0].closed == 0
+    assert isinstance(saver, FakeSaver) and saver.client is fake_mongo[0]
+    assert saver.kwargs["db_name"] == "stitch_x"
+    assert isinstance(store, FakeStore) and store.collection == "stitch_x.agent_store"
+
+
+@pytest.mark.parametrize("broken", ["saver", "store"])
+def test_mongo_persistence_closes_its_client_when_the_saver_or_store_fails(
+    fake_mongo: list[FakeMongoClient], monkeypatch: pytest.MonkeyPatch, broken: str
+) -> None:
+    from langgraph.checkpoint import mongodb as checkpoint_mongodb
+    from langgraph.store import mongodb as store_mongodb
+
+    class Boom(Exception):
+        pass
+
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        raise Boom("index creation refused")
+
+    target = checkpoint_mongodb if broken == "saver" else store_mongodb
+    monkeypatch.setattr(target, "MongoDBSaver" if broken == "saver" else "MongoDBStore", fail)
+    with pytest.raises(Boom, match="index creation refused"):
+        studio.mongo_persistence("mongodb://u:p@h/test")
+    assert len(fake_mongo) == 1
+    assert fake_mongo[0].closed == 1  # its monitor threads do not outlive the failure
+
+
+def test_mongo_persistence_without_a_uri_makes_no_client(
+    fake_mongo: list[FakeMongoClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    with pytest.raises(RuntimeError, match="MONGODB_URI is not set"):
+        studio.mongo_persistence()
+    assert fake_mongo == []

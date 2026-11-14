@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import threading
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import quote
@@ -48,6 +49,23 @@ def asked_question_path(memory_id: str, person_id: str) -> str:
     return f"{ASKED_QUESTIONS_DIR}{quote(memory_id, safe='')}/{quote(person_id, safe='')}"
 
 TELLING_PREVIEW_CHARS = 200
+
+_MEMORY_LOCK_STRIPES = 64
+_memory_locks = tuple(threading.RLock() for _ in range(_MEMORY_LOCK_STRIPES))
+
+
+def memory_lock(family_id: str, memory_id: str) -> AbstractContextManager[bool]:
+    """The process-wide lock held for one read-modify-write of a saved memory.
+
+    Saving a scene onto a memory (a later save of the same run, a second telling) and
+    linking people to it each read the memory, change it and save the whole of it back.
+    Without one lock across runs, two of them on one memory interleave and the later
+    write puts back the copy it read, undoing the other (a telling's narration, a new
+    scene). Striped by (family, memory), so the set of locks never grows; nothing holds
+    two of them at once, so a shared stripe cannot deadlock. One API process, like the
+    id claims in agent/tools/claims.py.
+    """
+    return _memory_locks[hash((family_id, memory_id)) % _MEMORY_LOCK_STRIPES]
 
 
 def _emit(name: str, model: BaseModel) -> None:
@@ -169,7 +187,30 @@ def save_scene_with_report(
     Only a second telling drops anything: narration the draft wrote for a shot id that
     is not in the existing screenplay has no action to play over. Raises ValueError for
     a draft that must not be saved (unvoiced, stale, or missing the teller's lines).
+
+    A save onto an existing memory (`update_memory_id`, or a second telling) reads and
+    writes it under `memory_lock`, so concurrent writers of that memory never undo it.
     """
+    target = run.fields.memory_id if run.is_second_telling else update_memory_id
+    if target is None:
+        return _save_scene(repo, run, title=title, participant_ids=participant_ids, screenplay=screenplay,
+                           timeline=timeline, update_memory_id=update_memory_id)
+    with memory_lock(run.family_id, target):
+        return _save_scene(repo, run, title=title, participant_ids=participant_ids, screenplay=screenplay,
+                           timeline=timeline, update_memory_id=update_memory_id)
+
+
+def _save_scene(
+    repo: AgentRepo,
+    run: RunInfo,
+    *,
+    title: str,
+    participant_ids: list[str],
+    screenplay: Screenplay,
+    timeline: Timeline,
+    update_memory_id: str | None,
+) -> tuple[Memory, list[str]]:
+    """`save_scene_with_report` without the lock."""
     family_id = run.family_id
     fields = run.fields
     _require_voiced(timeline, run.author_id)
@@ -425,7 +466,9 @@ def make_family_tools(repo: AgentRepo, run: RunInfo) -> list[BaseTool]:
         # Who this run already asked, from the run's state files, so a repeated call (or a
         # second linker pass) never asks anyone twice about one memory.
         files = _state_files(runtime.state) if runtime is not None else {}
-        with link_lock:
+        # memory_lock: a save of this memory (this run's or another's) never lands between
+        # the read and the write below, where this write would undo it.
+        with link_lock, memory_lock(family_id, memory_id):
             memory = repo.get_memory(family_id, memory_id)
             if memory is None:
                 return f"not found: memory {memory_id!r}"

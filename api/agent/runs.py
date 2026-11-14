@@ -46,15 +46,18 @@ no event is sent. After MAX_MALFORMED_PAUSES such rejections in one run, the nex
 ends the run with a short, family-safe error. The count is kept in the run record.
 
 The time limit (STITCH_RUN_TIMEOUT_S, `RunLimits.run_timeout_s`; `RunManager(...,
-run_timeout_s=...)` overrides it). Only time the run spends in status 'running' while a
-worker is driving it counts: time waiting on the teller (question, props review, merge)
-does not, nor time queued for a free worker, nor time the API process was down. The run
+run_timeout_s=...)` overrides it). Only time a worker spends driving the run counts,
+including a sibling branch still working after the step's question went out: time waiting
+on the teller once the stream has closed (question, props review, merge) does not, nor
+time queued for a free worker, nor time the API process was down. The run
 keeps `elapsed_s` (time already used; in the record) plus the clock reading taken when its
 current driving stretch began; the stretch is added into `elapsed_s` whenever the record
 is marked changed (`persist`, so every status change, event and end) and when a worker
 lets the run go. The limit is checked on every stream chunk (`_translate`), before a
-queued answer or a malformed-pause rejection resumes the thread (`_settle`), and before a
-run cut short by a restart is driven again (`_redrive`). Past it, the run ends with one
+queued answer or a malformed-pause rejection resumes the thread and before the run settles
+into waiting for an answer (`_settle`), before an answer resumes it (`answer_run`, which
+covers a waiting run restored with its time already used), and before a run cut short by
+a restart is driven again (`_redrive`). Past it, the run ends with one
 error event (RUN_TIMEOUT_ERROR) and one warning log line (run id, seconds used, limit).
 The limit travels in the record, so a restarted process keeps it. Starting the story again
 starts a new run with a fresh budget.
@@ -154,6 +157,10 @@ MALFORMED_PAUSE_ERROR = "the studio could not put together a question for you; p
 """The error the family sees when the studio keeps pausing on arguments the web cannot show."""
 RUN_TIMEOUT_ERROR = "the studio took too long on this story (over {minutes} minutes); please try again"
 """The error the family sees when a run passes its time limit; `minutes` is the limit, rounded up."""
+RUN_ERROR = "the studio ran into a problem ({kind}); please try again"
+"""The error the family sees when building, driving or restoring a run raises; `kind` is the
+exception's class name. The exception's own text (which can carry a provider's response body,
+a URL or a connection string) goes to the log only (`run_error_message`)."""
 ELAPSED_RECORD_INTERVAL_S = 30.0
 """Running time after which a stream chunk writes the record even with no new event, so a
 restart loses at most this much of the time used (plus the call in flight)."""
@@ -238,6 +245,11 @@ def _resume_command(pending: Interrupt, payload: Any, pending_count: int) -> Com
 def run_timeout_message(limit_s: float) -> str:
     """RUN_TIMEOUT_ERROR for a run whose limit is `limit_s` seconds (minutes rounded up, at least 1)."""
     return RUN_TIMEOUT_ERROR.format(minutes=max(1, math.ceil(limit_s / 60)))
+
+
+def run_error_message(exc: BaseException) -> str:
+    """RUN_ERROR for `exc`: its class name only, never its text (log that with logger.exception)."""
+    return RUN_ERROR.format(kind=type(exc).__name__)
 
 
 def _seconds(value: Any, *, positive: bool) -> float | None:
@@ -356,8 +368,10 @@ class _Run:
 
     @property
     def counting(self) -> bool:
-        """Running time is being used: status running and a worker is driving it. Read with cond held."""
-        return self.status == "running" and self.workers > 0
+        """Running time is being used: a worker is driving the run and it has not ended. Read
+        with cond held. That includes a run already 'waiting' whose step is still streaming (a
+        sibling branch working while the question is up): only the teller's own time is free."""
+        return self.workers > 0 and not self.terminal
 
     def tick(self) -> None:
         """Add the current driving stretch into `elapsed_s`, then open a new stretch if the run
@@ -645,7 +659,8 @@ class RunManager:
 
         RunNotFound: unknown run or another family. NotRunOwner: not the user who
         started it. RunNotWaiting: not paused. ValueError: the answer does not fit the
-        pending question (wrong kind, empty text); the run stays paused.
+        pending question (wrong kind, empty text); the run stays paused. A run already past
+        its time limit is not resumed: it ends with RUN_TIMEOUT_ERROR and this returns.
 
         The run is waiting as soon as its question is out, even if a parallel branch of
         the same step is still working. Then the answer is queued on the run and the
@@ -660,6 +675,10 @@ class RunManager:
         with run.changing():
             if run.status != "waiting" or run.pending is None:
                 raise RunNotWaiting(f"run {run_id} is {run.status}, not waiting for an answer")
+            if self._end_if_over_time(run):
+                # Already past its limit (a restored record, say): the answer cannot be used,
+                # and the run's stream now says why it ended.
+                return
             pending = run.pending
             payload = answer_to_resume(pending.value, answer)  # ValueError propagates; still waiting
             run.status = "running"
@@ -890,7 +909,7 @@ class RunManager:
         except Exception as exc:  # noqa: BLE001 - the family sees why the run cannot go on
             logger.exception("run %s: could not restore its studio", run.info.run_id)
             with run.changing():
-                run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
+                run.append("error", schemas.ErrorEvent(message=run_error_message(exc)))
             return True
         with run.changing():
             run.graph = graph
@@ -954,7 +973,7 @@ class RunManager:
             logger.exception("run %s failed to resume", run_id)
             with run.changing():
                 run.driving = False
-                run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
+                run.append("error", schemas.ErrorEvent(message=run_error_message(exc)))
             return
         self._drive_on(run, graph_input, from_checkpoint=graph_input is None)
 
@@ -990,7 +1009,7 @@ class RunManager:
             logger.exception("run %s failed", run_id)
             with run.changing():
                 run.driving = False
-                run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
+                run.append("error", schemas.ErrorEvent(message=run_error_message(exc)))
 
     def _translate(self, run: _Run, chunk: Any) -> bool:
         """Turn one stream chunk into events. Returns False once the run has ended (or has
@@ -1165,6 +1184,10 @@ class RunManager:
                         return _resume_command(pending, payload, len(interrupts))
                 run.pending_count = len(interrupts)
                 run.status = "waiting"
+                if self._end_if_over_time(run):
+                    # The step ran out the clock as it closed: never wait on an answer that
+                    # could not be used.
+                    return None
                 run.persist()
                 run.notify()
                 return None
@@ -1177,8 +1200,10 @@ class RunManager:
                 (m for m in reversed(state.values.get("messages", [])) if isinstance(m, AIMessage)),
                 None,
             )
+            # The studio's own last words, capped; no dangling colon when it said nothing.
             said = _clip(_text_of(last), ERROR_TEXT_LIMIT) if last is not None else ""
-            run.append("error", schemas.ErrorEvent(message="the studio finished without saving a scene: " + said))
+            message = "the studio finished without saving a scene" + (f": {said}" if said else "")
+            run.append("error", schemas.ErrorEvent(message=message))
             return None
 
 
@@ -1273,10 +1298,12 @@ __all__ = [
     "RunNotFound",
     "RunNotWaiting",
     "RUNS_NAMESPACE",
+    "RUN_ERROR",
     "RUN_TIMEOUT_ERROR",
     "answer_run",
     "configure",
     "get_manager",
+    "run_error_message",
     "run_namespace",
     "run_timeout_message",
     "start_run",
