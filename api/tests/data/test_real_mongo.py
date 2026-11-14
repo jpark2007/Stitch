@@ -15,7 +15,12 @@ Covered:
 - db.media on real GridFS (media.files / media.chunks), including family scoping;
 - db.search keyword fallback when $vectorSearch fails with OperationFailure;
 - routes.auth / routes.tree / routes.families on a bare app: login, /me, tree, book,
-  media 200 and 206, and a cross-family media 404.
+  media 200 and 206, and a cross-family media 404;
+- db hardening (see test_db_hardening.py for the offline halves): a client left at
+  pymongo's default tz_aware=False, revoked-session dates as BSON dates for the TTL index,
+  a GridFS file with missing chunks, duplicate-key errors mapped to domain errors,
+  `$in: [None, id]` on a missing field, save_scene's update documents, and on Atlas only
+  the vector index definitions and a large-limit $vectorSearch.
 """
 
 from __future__ import annotations
@@ -23,10 +28,12 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from bson import ObjectId
 from fastapi import FastAPI
+from pymongo import MongoClient
 from fastapi.testclient import TestClient
 
 import auth
@@ -34,8 +41,11 @@ import schemas
 from db import client as db_client
 from db import families as families_db
 from db import media as media_db
+from db import memories as memories_db
 from db import people as people_db
+from db import props as props_db
 from db import search as search_db
+from db import sessions as sessions_db
 from db import users as users_db
 from routes import auth as auth_routes
 from routes import families as families_routes
@@ -431,3 +441,117 @@ def test_other_family_media_is_404_through_the_router(api):
     assert direct.status_code == 404
     assert client.get(f"/families/{OTHER_FAMILY}/tree").status_code == 404
     assert client.get(f"/families/{OTHER_FAMILY}").status_code == 404
+
+
+# ------------------------------------------------------------------------ 7. db hardening
+
+
+@pytest.fixture
+def naive_real_db(real_db):
+    """The same throwaway database through a client at pymongo's default tz_aware=False."""
+    client = MongoClient(os.environ["MONGODB_URI_TEST"], serverSelectionTimeoutMS=3000)
+    try:
+        yield client[real_db.name]
+    finally:
+        client.close()
+
+
+def test_invite_and_session_flows_with_a_naive_client(naive_real_db):
+    """Real servers hand back naive datetimes without tz_aware; nothing may compare them raw."""
+    db = naive_real_db
+    db_client.ensure_indexes(db)
+    families_db.create_family(db, name="Naive", creator_user_id="u1", family_id="fam_naive")
+    invite = families_db.create_invite(db, "fam_naive", "u1")
+    stored = db.families.find_one({"_id": "fam_naive"})["invites"][0]["expiresAt"]
+    assert stored.tzinfo is None
+    assert families_db.find_active_invite(db, invite.code) is not None
+    assert families_db.list_invites(db, "fam_naive")
+    assert families_db.add_member(db, "fam_naive", "u2")
+    assert [s.id for s in families_db.list_family_summaries(db, "u2")] == ["fam_naive"]
+
+    sessions_db.revoke_session(db, "jti-1", datetime.now(UTC) + timedelta(days=30))
+    assert sessions_db.is_revoked(db, "jti-1")
+
+
+def test_revoked_session_expiry_is_a_bson_date(real_db):
+    """The TTL index only expires documents whose field is a BSON date."""
+    db_client.ensure_indexes(real_db)
+    sessions_db.revoke_session(real_db, "jti-a", datetime.now(UTC) + timedelta(days=1))
+    sessions_db.revoke_session(real_db, "jti-n", (datetime.now(UTC) + timedelta(days=1)).replace(tzinfo=None))
+    assert real_db.revoked_sessions.count_documents({"expiresAt": {"$type": "date"}}) == 2
+
+
+def test_gridfs_file_with_missing_chunks_reads_as_none(real_db):
+    data = bytes(range(256)) * 2400
+    media_id = media_db.put_media(real_db, "fam_corrupt", data, content_type="image/png")
+    real_db[media_db.CHUNKS].delete_many({"files_id": ObjectId(media_id), "n": {"$gte": 1}})
+    assert media_db.get_media(real_db, "fam_corrupt", media_id) is None
+    assert media_db.image_aspect(real_db, "fam_corrupt", media_id) is None
+    assert media_db.delete_family_media(real_db, "fam_corrupt") == 1
+    assert real_db[media_db.CHUNKS].count_documents({"files_id": ObjectId(media_id)}) == 0
+
+
+def test_duplicate_keys_map_to_domain_errors_on_the_server(real_db):
+    db_client.ensure_indexes(real_db)
+    users_db.create_user(real_db, email="a@x.test", password_hash="h", name="A", user_id="u1")
+    with pytest.raises(users_db.EmailTaken):
+        users_db.create_user(real_db, email="A@x.test", password_hash="h", name="B")
+    with pytest.raises(ValueError, match="user id already exists"):
+        users_db.create_user(real_db, email="b@x.test", password_hash="h", name="B", user_id="u1")
+
+    families_db.create_family(real_db, name="One", creator_user_id="u1", family_id="f1")
+    with pytest.raises(ValueError, match="family id already exists"):
+        families_db.create_family(real_db, name="Two", creator_user_id="u1", family_id="f1")
+
+    people_db.create_person(real_db, "f1", schemas.NewPerson(name="Me"), added_by="u1", user_id="u1")
+    with pytest.raises(people_db.AlreadyClaimed):
+        people_db.create_person(real_db, "f1", schemas.NewPerson(name="Me again"), added_by="u1", user_id="u1")
+
+
+def test_in_null_matches_a_missing_memory_id_on_the_server(real_db):
+    person = people_db.create_person(real_db, "f1", schemas.NewPerson(name="Gran"), added_by="u")
+    real_db.questions.insert_one({"_id": "q_legacy", "familyId": "f1", "personId": person.id,
+                                  "text": "What did you sing?", "status": "open"})
+    memories_db.create_memory(
+        real_db, "f1", title="Hymns", year=1988, participant_ids=[person.id],
+        telling=schemas.Telling(author_id=person.id, question="What did you sing?", text="Hymns."),
+    )
+    assert real_db.questions.find_one({"_id": "q_legacy"})["status"] == "answered"
+
+
+def test_save_scene_update_documents_are_accepted_by_the_server(real_db):
+    person = people_db.create_person(real_db, "f1", schemas.NewPerson(name="Gran"), added_by="u")
+    memory = memories_db.create_memory(real_db, "f1", title="Hymns", year=1988, participant_ids=[person.id])
+    timeline = memories_db.Timeline(duration=1.0, tracks=[])
+    first = memories_db.save_scene(real_db, "f1", memory.id, screenplay=None, timeline=timeline,
+                                   prop_ids=["p"], set_ids=[], title="New")
+    assert first.version == 1 and first.title == "New"
+    second = memories_db.save_scene(real_db, "f1", memory.id, screenplay=None, timeline=timeline,
+                                    prop_ids=[], set_ids=[])
+    assert second.version == 2
+    cleared = memories_db.save_scene(real_db, "f1", memory.id, screenplay=None, timeline=None,
+                                     prop_ids=[], set_ids=[])
+    assert cleared.version == 3 and cleared.timeline is None
+    again = memories_db.add_telling(real_db, "f1", memory.id, schemas.Telling(author_id=person.id, text="One."))
+    edited = memories_db.add_telling(real_db, "f1", memory.id, schemas.Telling(author_id=person.id, text="Two."))
+    assert [t.text for t in again.tellings] == ["One."]
+    assert [t.text for t in edited.tellings] == ["Two."]
+
+
+def test_atlas_vector_indexes_declare_every_filter_field(real_db):
+    """Atlas only: the created indexes carry the familyId filter, and a big limit is accepted."""
+    if not _is_atlas():
+        pytest.skip("Atlas Vector Search needs an Atlas MONGODB_URI_TEST")
+    db_client.ensure_indexes(real_db)
+    db_client.ensure_search_indexes(real_db)
+    wanted = db_client._vector_definition()
+    for collection, name in db_client.VECTOR_INDEXES.items():
+        listed = {ix["name"]: ix for ix in real_db[collection].list_search_indexes()}
+        assert name in listed, (collection, name)
+        definition = listed[name].get("latestDefinition")
+        assert db_client.vector_definition_covers(definition, wanted), definition
+    # numCandidates is capped at 10,000: the stage is accepted (an index still building
+    # just returns nothing), so this must not raise.
+    vector = [0.1] * db_client.VECTOR_DIM
+    list(real_db.memories.aggregate(search_db.vector_pipeline("f1", vector, 5000)))
+    list(real_db.props.aggregate(props_db._vector_pipeline("props_vector", vector, "f1", 5000)))
