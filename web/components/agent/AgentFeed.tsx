@@ -46,6 +46,11 @@ const PHASE_LINE: Record<RunPhase, string> = {
   error: "Something went wrong.",
 };
 
+/** Frame time for alt text: at most one decimal place ("3.3", "4"). */
+function formatSeconds(t: number): string {
+  return Number.isFinite(t) ? String(Math.round(t * 10) / 10) : "?";
+}
+
 /** How many of the latest steps stay visible before the rest fold away. */
 const VISIBLE_STEPS = 4;
 
@@ -81,7 +86,6 @@ export default function AgentFeed(props: {
     <MotionConfig reducedMotion="user">
       <section
         aria-labelledby={headingId}
-        aria-busy={state.phase === "connecting" || state.phase === "running"}
         className="relative w-full max-w-xl rounded-[18px] border border-[#e6d9c0] bg-[#fbf6ec] px-6 py-7 text-[#3b2f27] shadow-[0_1px_0_#fffdf8_inset,0_10px_28px_-14px_rgba(59,47,39,0.35)] sm:px-8"
       >
         <header className="mb-6">
@@ -174,7 +178,8 @@ export default function AgentFeed(props: {
 
         {state.phase === "error" && (
           <div role="alert" className="mt-6 rounded-xl border border-[#9c3b2a]/25 bg-[#f7e4dc] px-5 py-4 text-[#6e2a1e]">
-            <p className="font-medium">{state.error ?? "The studio stopped unexpectedly."}</p>            {onRetry && (
+            <p className="font-medium">{state.error ?? "The studio stopped unexpectedly."}</p>
+            {onRetry && (
               <button
                 type="button"
                 onClick={onRetry}
@@ -338,7 +343,7 @@ function Entry({
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={mediaUrl(f.mediaId)}
-                    alt={`Checker frame at ${f.t}s`}
+                    alt={`Checker frame at ${formatSeconds(f.t)}s`}
                     width={112}
                     height={72}
                     loading="lazy"

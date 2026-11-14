@@ -1,4 +1,5 @@
-// Run with: cd web && node --test components/agent/__tests__/
+// Run with: cd web && node --test "components/agent/__tests__/*.test.mjs"
+// (Node 22+ treats each argument as a file or glob and does not walk a directory.)
 // Node strips the erasable TypeScript in runState.ts; no build step needed.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -275,4 +276,24 @@ test("the reducer never mutates its input", () => {
 test("unknown events are ignored", () => {
   const s = run(ev("plan", { todos: [] }));
   assert.equal(runReducer(s, ev("heartbeat", {})), s);
+});
+
+test("waking from an error clears the stale message", () => {
+  const s = run(ev("error", { message: "boom" }), ev("plan", { todos: [] }));
+  assert.equal(s.phase, "running");
+  assert.equal(s.error, null);
+  const t = run(ev("error", { message: "boom" }), ev("subagent_start", { name: "director" }));
+  assert.equal(t.phase, "running");
+  assert.equal(t.error, null);
+});
+
+test("answering after an error while waiting clears the error", () => {
+  const s = run(
+    ev("question", { text: "Who was there?" }),
+    ev("error", { message: "boom" }),
+    { type: "answered", kind: "answer", summary: "Grandma" },
+  );
+  assert.equal(s.phase, "running");
+  assert.equal(s.pending, null);
+  assert.equal(s.error, null);
 });

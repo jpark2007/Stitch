@@ -93,9 +93,14 @@ function withEntry(state: RunState, body: EntryBody): RunState {
   return { ...state, seq, log: [...state.log, { ...body, seq } as FeedEntry] };
 }
 
-/** Phase after an informational event: wakes from connecting or error, otherwise unchanged. */
-function activePhase(phase: RunPhase): RunPhase {
-  return phase === "connecting" || phase === "error" ? "running" : phase;
+/**
+ * Phase and error after an informational event: wakes from connecting or
+ * error, otherwise unchanged. Waking from error clears the stale message.
+ */
+function wake(state: RunState): Pick<RunState, "phase" | "error"> {
+  if (state.phase === "connecting") return { phase: "running", error: state.error };
+  if (state.phase === "error") return { phase: "running", error: null };
+  return { phase: state.phase, error: state.error };
 }
 
 function pause(state: RunState, pending: PendingInput, body: EntryBody): RunState {
@@ -107,7 +112,7 @@ function applyEvent(state: RunState, message: RunEventMessage): RunState {
     case "plan":
       return {
         ...state,
-        phase: activePhase(state.phase),
+        ...wake(state),
         todos: message.data.todos.map((t) => ({ ...t })),
       };
 
@@ -121,7 +126,7 @@ function applyEvent(state: RunState, message: RunEventMessage): RunState {
         status: "running",
       };
       return withEntry(
-        { ...state, phase: activePhase(state.phase), steps: [...state.steps, step] },
+        { ...state, ...wake(state), steps: [...state.steps, step] },
         { kind: "step", stepKey: key },
       );
     }
@@ -136,17 +141,17 @@ function applyEvent(state: RunState, message: RunEventMessage): RunState {
           break;
         }
       }
-      const phase = activePhase(state.phase);
+      const awake = wake(state);
       if (index >= 0) {
         const steps = state.steps.map((s, i) =>
           i === index ? { ...s, status: "done" as const, summary: summary ?? s.summary ?? null } : s,
         );
-        return { ...state, phase, steps };
+        return { ...state, ...awake, steps };
       }
       const key = `step-${state.seq + 1}`;
       const step: FeedStep = { key, name, task: null, summary: summary ?? null, status: "done" };
       return withEntry(
-        { ...state, phase, steps: [...state.steps, step] },
+        { ...state, ...awake, steps: [...state.steps, step] },
         { kind: "step", stepKey: key },
       );
     }
@@ -174,13 +179,13 @@ function applyEvent(state: RunState, message: RunEventMessage): RunState {
 
     case "compile_error":
       return withEntry(
-        { ...state, phase: activePhase(state.phase) },
+        { ...state, ...wake(state) },
         { kind: "compile_error", event: message.data },
       );
 
     case "frames":
       return withEntry(
-        { ...state, phase: activePhase(state.phase) },
+        { ...state, ...wake(state) },
         { kind: "frames", event: message.data },
       );
 
@@ -229,7 +234,7 @@ export function runReducer(state: RunState, action: RunAction): RunState {
     case "answered":
       if (!state.pending || state.pending.kind !== action.kind) return state;
       return withEntry(
-        { ...state, pending: null, phase: "running" },
+        { ...state, pending: null, phase: "running", error: null },
         { kind: "answered", summary: action.summary },
       );
 
