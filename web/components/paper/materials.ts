@@ -475,8 +475,8 @@ export function getPaperTextures(kind: PaperKind = "paper", repeat?: number | [n
 /* Wood table                                                                */
 /* ------------------------------------------------------------------------ */
 
-const WOOD_LIGHT = [150, 103, 68];
-const WOOD_DARK = [92, 58, 37];
+const WOOD_LIGHT = [132, 99, 74];
+const WOOD_DARK = [76, 54, 40];
 
 function buildWoodBase(): BaseSet {
   const w = 1024;
@@ -486,7 +486,7 @@ function buildWoodBase(): BaseSet {
   const plankH = h / planks;
 
   // Long streaks along x (grain), plus a slow warp for rings.
-  const streak = fbmField(w, h, 2, 96, 4, rand, 0.5);
+  const streak = fbmField(w, h, 3, 40, 4, rand, 0.5);
   const warp = fbmField(w, h, 2, 4, 3, rand, 0.5);
   const fine = fbmField(w, h, 8, 256, 2, rand, 0.5);
 
@@ -511,7 +511,7 @@ function buildWoodBase(): BaseSet {
       const s = streak[i];
       const ring = Math.sin((py * plankRing[p] + warp[i] * 6 + plankPhase[p]) * Math.PI);
       const ringLine = Math.pow(Math.abs(ring), 6); // thin darker late-wood lines
-      let t = 0.5 + (s - 0.5) * 1.0 + plankTone[p] - ringLine * 0.16 + (fine[i] - 0.5) * 0.2;
+      let t = 0.52 + (s - 0.5) * 0.7 + (warp[i] - 0.5) * 0.35 + plankTone[p] - ringLine * 0.12 + (fine[i] - 0.5) * 0.14;
       // Seams: long edges and one butt joint per plank.
       const jx = Math.abs(x - joint[p]);
       const jd = Math.min(jx, w - jx);

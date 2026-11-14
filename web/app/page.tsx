@@ -182,10 +182,10 @@ function Framing() {
   useEffect(() => {
     const { camera, invalidate } = get();
     if ("fov" in camera) {
-      camera.fov = portrait ? 42 : 30;
+      camera.fov = portrait ? 44 : 30;
       camera.updateProjectionMatrix();
     }
-    camera.lookAt(0.45, 0, 0.1);
+    camera.lookAt(0.45, 0, portrait ? 0.35 : 0.1);
     invalidate();
   }, [get, portrait]);
   return null;
@@ -207,11 +207,13 @@ function SwatchScene() {
       <directionalLight
         castShadow
         color="#ffd9aa"
-        intensity={2.6}
+        intensity={2.3}
         position={[-3.5, 6, 2.5]}
         shadow-mapSize={[2048, 2048]}
         shadow-bias={-0.0004}
         shadow-normalBias={0.02}
+        shadow-radius={3}
+        shadow-intensity={0.8}
         shadow-camera-left={-4}
         shadow-camera-right={4}
         shadow-camera-top={4}
