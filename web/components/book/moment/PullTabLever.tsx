@@ -270,6 +270,29 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     window.addEventListener("pointercancel", up);
   };
 
+  // Test hook, like the book's window.__stitchBook: where the grip is on
+  // screen (CSS px) and how far a full pull travels there.
+  useEffect(() => {
+    const w = window as Window & { __stitchPullTabs?: Record<string, () => { x: number; y: number; travel: number } | null> };
+    const tabs = (w.__stitchPullTabs ??= {});
+    const at = new Vector3();
+    const project = (x: number) => {
+      const g = root.current;
+      if (!g) return null;
+      at.set(x, 0, 0).applyMatrix4(g.matrixWorld).project(camera);
+      const r = gl.domElement.getBoundingClientRect();
+      return { x: r.left + ((at.x + 1) / 2) * r.width, y: r.top + ((1 - at.y) / 2) * r.height };
+    };
+    tabs[tab.id] = () => {
+      const a = project(geo.length - FOLD / 2);
+      const b = project(geo.length - FOLD / 2 + geo.travel);
+      return a && b ? { x: a.x, y: a.y, travel: Math.hypot(b.x - a.x, b.y - a.y) } : null;
+    };
+    return () => {
+      delete tabs[tab.id];
+    };
+  }, [tab.id, geo, camera, gl]);
+
   // A held lever let go when the stage unmounts (the page turned mid-pull).
   useEffect(
     () => () => {
