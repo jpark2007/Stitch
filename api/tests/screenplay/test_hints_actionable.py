@@ -4,6 +4,11 @@ code, message and errors.hint_for text, and the screenplay with that hint applie
 Each case is (the broken screenplay, its one error, its hint, the screenplay with the hint
 applied). The director agent reads the hint beside the message, so a hint whose fix does not
 compile is worse than none.
+
+A case whose hint is None is an errors.PENDING_SKILL_HINTS situation: its fix is a verb the
+directing skill's row for the code does not name yet, so hint_for gives no hint and the reason
+says the fix itself ("...; use stand_up first"). ``pending`` is the hint it gives with
+``pending=True``; the fixed screenplay applies that one, so it is checked to compile already.
 """
 
 from __future__ import annotations
@@ -48,8 +53,9 @@ class HintCase:
     broken: Screenplay
     code: str
     message: str
-    hint: str
+    hint: str | None
     fixed: Screenplay
+    pending: str | None = None
 
 
 TABLE = {"table": {"at": "table_spot"}}
@@ -64,9 +70,10 @@ CASES: list[HintCase] = [
         "out_of_reach",
         'shot s1, t=1: mom cannot pick_up "cap"; mom\'s arm_r cannot reach: target is 0.23 from the shoulder, '
         "reach is 0.17; mom is seated in chair.seat; use stand_up first",
-        "add a stand_up for mom before this pick_up",
+        None,
         _sp(_a(1, "stand_up", who="mom"), _a(1 + B.POSE_SECONDS, "pick_up", who="mom", what="cap"),
             start=SEATED_MOM, prop_start={**CHAIR, "cap": {"at": "bench_spot"}}),
+        "add a stand_up for mom before this pick_up",
     ),
     HintCase(
         "seated_place_on",
@@ -75,9 +82,10 @@ CASES: list[HintCase] = [
         "out_of_reach",
         'shot s1, t=1: mom cannot place_on "hymn_books"; mom\'s arm_r cannot reach: target is 0.20 from the '
         "shoulder, reach is 0.17; mom is seated in chair.seat; use stand_up first",
-        "add a stand_up for mom before this place_on",
+        None,
         _sp(_a(1, "stand_up", who="mom"), _a(1 + B.POSE_SECONDS, "place_on", who="mom", what="hymn_books", on="bench_spot"),
             start={"mom": {"at": "bench_spot", "in": "chair.seat", "holding": "hymn_books"}}, prop_start=CHAIR),
+        "add a stand_up for mom before this place_on",
     ),
     HintCase(
         "not_driver_passenger",
@@ -85,10 +93,11 @@ CASES: list[HintCase] = [
             start={"mom": {"at": "garage", "in": "sedan.passenger"}}, prop_start=GARAGE),
         "not_driver",
         'shot s1, t=1: mom cannot drive_to "sedan"; mom is in sedan.passenger, not sedan.driver',
-        "add a get_out for mom, then get_in sedan with socket driver, before this drive_to",
+        None,
         _sp(_a(1, "get_out", who="mom", what="sedan"), _a(3, "get_in", who="mom", what="sedan", socket="driver"),
             _a(6, "drive_to", who="mom", what="sedan", to="corner"), set="street",
             start={"mom": {"at": "garage", "in": "sedan.passenger"}}, prop_start=GARAGE),
+        "add a get_out for mom, then get_in sedan with socket driver, before this drive_to",
     ),
     HintCase(
         "not_driver_outside",
@@ -127,8 +136,9 @@ CASES: list[HintCase] = [
         _sp(_a(1, "exit", who="mom", to="door"), start={"mom": {"at": "curb"}}),
         "unknown_mark",  # not bad_exit: tests/agent/test_agent_skills.py pins it (validate.check_offstage)
         'shot s1, t=1: mom cannot exit; "to" must be offstage_left or offstage_right, not "door"',
-        "exit to offstage_left or offstage_right",
+        None,
         _sp(_a(1, "exit", who="mom", to="offstage_right"), start={"mom": {"at": "curb"}}),
+        "exit to offstage_left or offstage_right",
     ),
     HintCase(
         "enter_from_curb",
@@ -185,10 +195,11 @@ CASES: list[HintCase] = [
             start={"dad": {"at": "garage"}, "mom": {"at": "corner"}}, prop_start=GARAGE),
         "not_on_stage",
         'shot s1, t=9: mom cannot get_in "sedan"; sedan is offstage at x=1.3; drive_to a mark on stage first',
-        "add a drive_to of sedan to a mark on stage before this get_in",
+        None,
         _sp(_a(1, "get_in", who="dad", what="sedan"), _a(4, "drive_to", who="dad", what="sedan", to="offstage_right"),
             _a(9, "drive_to", who="dad", what="sedan", to="corner"), _a(16, "get_in", who="mom", what="sedan"),
             set="street", start={"dad": {"at": "garage"}, "mom": {"at": "corner"}}, prop_start=GARAGE),
+        "add a drive_to of sedan to a mark on stage before this get_in",
     ),
     HintCase(
         "chair_offstage",
@@ -284,3 +295,31 @@ def test_the_fixes_change_only_what_the_hint_says():
     """Each fixed screenplay differs from its broken one (a guard against a copy-paste case)."""
     for case in CASES:
         assert case.fixed != case.broken, case.name
+
+
+PENDING = [c for c in CASES if c.hint is None]
+
+
+@pytest.mark.parametrize("case", PENDING, ids=[c.name for c in PENDING])
+def test_a_pending_hint_is_given_on_request(case: HintCase):
+    """errors.PENDING_SKILL_HINTS: hint_for gives None until the directing skill's row names the
+    verb, and the pending hint with pending=True. The fixed screenplay above applies it."""
+    (err,) = _compile(case.broken).errors
+    assert case.pending is not None
+    assert hint_for(err, pending=True) == case.pending
+
+
+def test_every_pending_hint_has_a_case():
+    from screenplay.errors import PENDING_SKILL_HINTS
+
+    templates = {t for variants in PENDING_SKILL_HINTS.values() for _, t in variants}
+    covered = {t for t in templates for c in PENDING if _matches(t, c.pending)}
+    # the get_out from a vehicle seat is covered in test_errors
+    assert templates - covered == {"add a get_out for {who} before this {do}"}
+
+
+def _matches(template: str, text: str | None) -> bool:
+    import re
+
+    pattern = "^" + re.sub(r"\\\{\w+\\\}", r"\\S+", re.escape(template)) + "$"
+    return text is not None and re.match(pattern, text) is not None

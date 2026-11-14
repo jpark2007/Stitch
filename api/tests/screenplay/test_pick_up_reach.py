@@ -295,13 +295,15 @@ def test_a_seated_puppet_that_cannot_bend_down_to_the_cap_is_out_of_reach(holdin
     start = {"mom": {"at": "bench_spot", "in": "chair.seat", **({"holding": holding} if holding else {})}}
     res = compile_one([{"t": 1, "who": "mom", "do": "pick_up", "what": "cap"}], start, SEATED)
     assert errors(res) == [("out_of_reach", message)]
-    assert hint_for(res.errors[0]) == "add a stand_up for mom before this pick_up"
+    # not "walk mom closer": the reason names the fix (stand_up); errors.PENDING_SKILL_HINTS
+    assert hint_for(res.errors[0]) is None
+    assert hint_for(res.errors[0], pending=True) == "add a stand_up for mom before this pick_up"
 
 
 @pytest.mark.parametrize("holding", [None, "hymn_books"])
 def test_the_seated_hint_applied_picks_the_cap_up_off_the_floor(holding):
-    """errors.HINT_VARIANTS' fix for the seated miss works: stand_up, then the same pick_up once
-    the stand_up has ended (POSE_SECONDS later) reaches the cap at the chair's foot."""
+    """The fix the seated miss names works: stand_up, then the same pick_up once the stand_up
+    has ended (POSE_SECONDS later) reaches the cap at the chair's foot."""
     start = {"mom": {"at": "bench_spot", "in": "chair.seat", **({"holding": holding} if holding else {})}}
     res = compile_one([{"t": 1, "who": "mom", "do": "stand_up"},
                        {"t": 1 + B.POSE_SECONDS, "who": "mom", "do": "pick_up", "what": "cap"}], start, SEATED)

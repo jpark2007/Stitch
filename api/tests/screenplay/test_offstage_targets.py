@@ -57,7 +57,10 @@ def test_get_in_a_sedan_driven_offstage_names_the_sedan():
         "not_on_stage",
         'shot s1, t=9: mom cannot get_in "sedan"; sedan is offstage at x=1.3; drive_to a mark on stage first',
     )]
-    assert hint_for(res.errors[0]) == "add a drive_to of sedan to a mark on stage before this get_in"
+    # the reason names the fix; the hint waits for the directing skill's row
+    # (errors.PENDING_SKILL_HINTS)
+    assert hint_for(res.errors[0]) is None
+    assert hint_for(res.errors[0], pending=True) == "add a drive_to of sedan to a mark on stage before this get_in"
 
 
 def test_sit_on_a_chair_offstage_names_the_chair():
@@ -168,7 +171,8 @@ def test_a_prop_riding_on_a_sedan_offstage_names_the_sedan():
         'shot s1, t=1: dad cannot pick_up "suitcase"; suitcase is on sedan, offstage at x=1.3; '
         "drive_to a mark on stage first",
     )]
-    assert hint_for(res.errors[0]) == "add a drive_to of sedan to a mark on stage before this pick_up"
+    assert hint_for(res.errors[0]) is None  # errors.PENDING_SKILL_HINTS
+    assert hint_for(res.errors[0], pending=True) == "add a drive_to of sedan to a mark on stage before this pick_up"
 
 
 def test_books_on_a_table_offstage_name_the_table():

@@ -228,10 +228,12 @@ def test_codes_that_were_shadowed_now_reach_the_director(mutate, code, hint):
 def test_codes_kept_for_another_streams_pins():
     """tests/agent/test_agent_skills.py pins exit to a mark as unknown_mark and set_state to a
     missing state as invalid_value (the directing skill's error table lists them so). The codes
-    stay; the exit still gets the exit hint."""
+    stay; the exit gets no hint rather than unknown_mark's wrong one (add a mark): its reason
+    says what to write, and the exit hint waits for the skill's row (errors.PENDING_SKILL_HINTS)."""
     def exit_to_curb(data):
         data["shots"][0]["actions"].append({"t": 7.8, "who": "mom", "do": "exit", "to": "curb"})
 
     errors = _compile_sample(exit_to_curb)
     assert [e.code for e in errors] == ["unknown_mark"]
-    assert hint_for(errors[0]) == "exit to offstage_left or offstage_right"
+    assert hint_for(errors[0]) is None
+    assert hint_for(errors[0], pending=True) == "exit to offstage_left or offstage_right"
