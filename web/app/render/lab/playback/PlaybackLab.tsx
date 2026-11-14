@@ -89,7 +89,7 @@ export function PlaybackLab() {
         </div>
         <div className="flex min-w-0 flex-col gap-5">
           <Card title="From above" note="x across · z toward you">
-            <div className="aspect-[3/3.45] w-full">
+            <div className="aspect-[3/3.8] w-full">
               <TopView frame={frame} defs={DEFS} />
             </div>
           </Card>
@@ -270,10 +270,15 @@ function PullTab({ controller, interaction }: { controller: PlaybackController; 
 
   const valueAt = (e: ReactPointerEvent) => {
     const r = track.current!.getBoundingClientRect();
-    return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    const inset = 20; // half the knob
+    return Math.min(1, Math.max(0, (e.clientX - r.left - inset) / (r.width - 2 * inset)));
   };
-  const show = (v: number) => {
-    if (knob.current) knob.current.style.left = `${v * 100}%`;
+  // The knob is positioned imperatively: pointer moves should not re-render React.
+  const show = (v: number | null) => {
+    const k = knob.current;
+    if (!k) return;
+    k.style.left = `${(v ?? 0) * 100}%`;
+    k.toggleAttribute("data-held", v !== null);
   };
   const onDown = (e: ReactPointerEvent) => {
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -287,8 +292,9 @@ function PullTab({ controller, interaction }: { controller: PlaybackController; 
     show(v);
     controller.holdInteraction(interaction.id, v);
   };
+  // Like a real pull tab, it springs back when let go.
   const onUp = () => {
-    show(0);
+    show(null);
     controller.releaseInteraction(interaction.id);
   };
 
@@ -314,12 +320,15 @@ function PullTab({ controller, interaction }: { controller: PlaybackController; 
         aria-valuenow={controller.heldValue(interaction.id) ?? 0}
       >
         <div className="absolute inset-x-0 top-1/2 h-2 -translate-y-1/2 rounded-full bg-paper-deep shadow-inset" />
-        <div
-          ref={knob}
-          className="absolute top-1/2 h-7 w-10 -translate-x-1/2 -translate-y-1/2 rounded-[3px] bg-kraft shadow-lift"
-          style={{ left: "0%" }}
-        >
-          <span className="absolute inset-y-1.5 left-1/2 w-px -translate-x-1/2 bg-wood-dark/30" />
+        {/* The knob travels within the track: inset by half its width on each side. */}
+        <div className="pointer-events-none absolute inset-y-0 left-5 right-5">
+          <div
+            ref={knob}
+            className="absolute top-1/2 h-7 w-10 -translate-x-1/2 -translate-y-1/2 rounded-[3px] bg-kraft shadow-lift transition-[left] duration-200 ease-[var(--ease-paper)] data-[held]:transition-none"
+            style={{ left: "0%" }}
+          >
+            <span className="absolute inset-y-1.5 left-1/2 w-px -translate-x-1/2 bg-wood-dark/30" />
+          </div>
         </div>
       </div>
       <p className="mt-2 text-xs text-ink-faint">
@@ -390,7 +399,7 @@ function Transport({
         )}
       </button>
 
-      <div className="w-[7.5rem] shrink-0 font-mono text-sm tabular-nums text-ink-soft">
+      <div className="shrink-0 whitespace-nowrap font-mono text-sm tabular-nums text-ink-faint">
         <span className="text-lg text-ink">{fmt(frame.t)}</span> / {fmt(duration)} s
       </div>
 

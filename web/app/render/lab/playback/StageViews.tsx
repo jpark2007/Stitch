@@ -106,28 +106,26 @@ export function FrontView({ frame, defs }: { frame: PlaybackFrame; defs: SceneDe
     const headR = 0.11 * sc;
     const hx = head ? (head.x0 + head.x1) / 2 : p.position[0];
     const hy = head ? (head.y0 + head.y1) / 2 : p.position[1] + sc;
+    const limb = (name: string) => {
+      const b = poses.get(name);
+      if (!b) return null;
+      const w = name === "torso" ? 0.13 * sc : name.startsWith("hand") ? 0.055 * sc : 0.06 * sc;
+      return <line key={name} x1={b.x0} y1={-b.y0} x2={b.x1} y2={-b.y1} strokeWidth={w} />;
+    };
+    // Far-side limbs (the rig's _l bones) sit behind as one faded layer, so
+    // their overlapping joints do not darken.
+    const far = DRAW_ORDER.filter((n) => n.includes("_l"));
+    const near = DRAW_ORDER.filter((n) => !n.includes("_l") && n !== "head");
     items.push({
       z: p.position[2],
       node: (
         <g key={p.target}>
-          {DRAW_ORDER.map((name) => {
-            const b = poses.get(name);
-            if (!b || name === "head") return null;
-            const w = name === "torso" ? 0.16 * sc : name.startsWith("hand") ? 0.07 * sc : 0.075 * sc;
-            return (
-              <line
-                key={name}
-                x1={b.x0}
-                y1={-b.y0}
-                x2={b.x1}
-                y2={-b.y1}
-                stroke={color}
-                strokeWidth={w}
-                strokeLinecap="round"
-                opacity={name.includes("_l") ? 0.5 : 1}
-              />
-            );
-          })}
+          <g stroke={color} strokeLinecap="round" opacity={0.45}>
+            {far.map(limb)}
+          </g>
+          <g stroke={color} strokeLinecap="round">
+            {near.map(limb)}
+          </g>
           <circle cx={hx} cy={-hy} r={headR} fill={color} />
           {/* facing: a chevron beside the head */}
           <path
@@ -180,7 +178,8 @@ export function FrontView({ frame, defs }: { frame: PlaybackFrame; defs: SceneDe
               strokeWidth={0.005}
             />
           </g>
-          <Label x={cx} y={-(card.y + card.h) - 0.022} size={0.026} anchor="middle" tone="faint" mono>
+          {/* parent, under the card and away from the arm that holds it */}
+          <Label x={cx} y={-card.y + 0.04} size={0.026} anchor="middle" tone="faint" mono>
             {held ? prop.parent.raw.replace(/^puppet:/, "") : "ground"}
           </Label>
         </g>
@@ -227,6 +226,18 @@ export function FrontView({ frame, defs }: { frame: PlaybackFrame; defs: SceneDe
         return (
           <g key={name}>
             <line x1={x} x2={x} y1={-m[1]} y2={-m[1] + 0.022} stroke={INK_FAINT} strokeWidth={0.004} />
+            {m[1] > 0 ? (
+              // a raised standing surface (steps, a stage): where feet go before the set rises
+              <line
+                x1={x - 0.12}
+                x2={x + 0.12}
+                y1={-m[1]}
+                y2={-m[1]}
+                stroke={INK_FAINT}
+                strokeWidth={0.004}
+                strokeDasharray="0.014 0.01"
+              />
+            ) : null}
             <Label x={x} y={0.07} size={0.028} anchor="middle" tone="faint">
               {name.replace(/_/g, " ")}
             </Label>
@@ -246,7 +257,8 @@ export function FrontView({ frame, defs }: { frame: PlaybackFrame; defs: SceneDe
         <path d={`M ${L + c} ${B} H ${L} V ${B - c}`} />
         <path d={`M ${cam.lookAt[0] - 0.015} ${-cam.lookAt[1]} h 0.03 M ${cam.lookAt[0]} ${-cam.lookAt[1] - 0.015} v 0.03`} />
       </g>
-      <Label x={L + 0.004} y={T - 0.02} size={0.03} tone="accent">
+      {/* kept inside the view when the framing is wider than it (the fly-in) */}
+      <Label x={Math.max(L, FX0 + 0.03) + 0.004} y={Math.max(T - 0.02, -FY1 + 0.04)} size={0.03} tone="accent">
         camera · {cam.fov.toFixed(0)}°
       </Label>
     </svg>
@@ -259,7 +271,7 @@ const TX0 = -1.5;
 const TX1 = 1.5;
 const TZ0 = -0.2;
 const TZ1 = 3.6;
-const TOP_LABEL = 0.075;
+const TOP_LABEL = 0.1;
 
 export function TopView({ frame, defs }: { frame: PlaybackFrame; defs: SceneDefs }) {
   const cam = frame.camera;
