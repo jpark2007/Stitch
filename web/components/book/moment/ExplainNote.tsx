@@ -207,11 +207,11 @@ const CARD_T = 0.0055;
 const SUPER = 2.2;
 /** Stitches in the thread. */
 const STITCHES = 26;
-const THREAD_R = 0.0034;
-/** On-screen body type size the note is sized for (CSS px), and the smallest it may shrink to. */
-const READ_PX = 17;
-const READ_PX_PHONE = 15;
-const MIN_PX = 12.5;
+const THREAD_R = 0.0052;
+/** On-screen body type size the note is sized for (CSS px; the handwriting runs small), and the smallest it may shrink to. */
+const READ_PX = 21;
+const READ_PX_PHONE = 18;
+const MIN_PX = 14;
 /** The tallest a note may stand on the page, stage units (a puppet is 0.5). */
 const MAX_H = 0.95;
 /** Screen margins the note keeps clear of (the book's header, its bottom hints and buttons). */
@@ -444,17 +444,21 @@ class NoteRig {
     this.t0 = now - ms;
   }
 
-  /** Pose for this frame; true while anything still moves. `toStage` maps world to stage space. */
-  step(now: number, dt: number, lift: number, toStage: Matrix4, s: Scratch): boolean {
+  /**
+   * Pose for this frame; true while anything still moves. `toStage` maps
+   * world to stage space. `held` (ms into the rise) holds a rising note at
+   * that moment, for screenshots of the animation (the probe's hold).
+   */
+  step(now: number, dt: number, lift: number, toStage: Matrix4, s: Scratch, held: number | null = null): boolean {
     let moving = false;
-    const ms = now - this.t0;
+    const ms = held !== null && this.phase === "rise" ? held : now - this.t0;
     let up: number;
     let sew: number;
     if (this.phase === "rise") {
       up = noteRise(ms);
       sew = sewAt(ms, false);
-      if (ms >= RISE_MS) this.phase = "stand";
-      moving = true;
+      if (held === null && ms >= RISE_MS) this.phase = "stand";
+      moving = held === null;
     } else if (this.phase === "stand") {
       up = 1;
       sew = 1;
@@ -540,10 +544,10 @@ class NoteRig {
     this.thread.instanceMatrix.needsUpdate = true;
     this.knotB.visible = sew > 0;
     this.knotB.position.copy(B);
-    this.knotB.scale.setScalar(0.0075);
+    this.knotB.scale.setScalar(THREAD_R * 2.3);
     this.knotA.visible = sew >= 1;
     this.knotA.position.copy(A);
-    this.knotA.scale.setScalar(0.0062);
+    this.knotA.scale.setScalar(THREAD_R * 1.9);
   }
 
   dispose() {
@@ -632,14 +636,12 @@ class ExplainStage {
   private took: Event | null = null;
   private coarse = false;
   private lastT = 0;
+  /** The probe holds rising notes at this many ms into their rise (null: they run). */
+  private held: number | null = null;
   private readonly camKey = new Float64Array(34);
   private readonly objects = new Map<string, Object3D>();
-  private readonly shared: SharedGeometry = {
-    // A unit stitch (radius 1, length 1), scaled per stitch.
-    stitch: new CylinderGeometry(1, 1, 1, 6, 1, false),
-    knot: new SphereGeometry(1, 10, 8),
-    strut: new BoxGeometry(1, 1, 1),
-  };
+  /** Geometry every note shares, made with the first note and freed with the layer. */
+  private shared: SharedGeometry | null = null;
   private readonly s = {
     a: new Vector3(),
     b: new Vector3(),
@@ -695,7 +697,6 @@ class ExplainStage {
       const hit = pickCutout(rig.cardMesh, raycaster, [], this.s.hits);
       if (hit) intersects.push({ distance: hit.distance, point: hit.point.clone(), object: this.noteHit } as Intersection);
     };
-    session.setCan((t) => this.canOpen(t));
   }
 
   /* ---------- inputs ---------- */
@@ -800,11 +801,28 @@ class ExplainStage {
     this.took = e.nativeEvent;
   }
 
-  click(t: Target, e: ThreeEvent<MouseEvent>) {
-    e.stopPropagation();
-    if (e.delta > 12) return;
-    this.session.dispatch({ type: "target", target: t.item.target });
-    this.get().invalidate();
+  /**
+   * A press on a cutout: it opens (or closes, or swaps to) its note when the
+   * pointer comes up within a few px, wherever the cutout has walked to by
+   * then (the scene plays under the press).
+   */
+  press(t: Target, e: ThreeEvent<PointerEvent>) {
+    this.take(e);
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    const id = e.pointerId;
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    const target = t.item.target;
+    const up = (ev: PointerEvent) => {
+      if (ev.pointerId !== id) return;
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      if (ev.type !== "pointerup" || Math.hypot(ev.clientX - x0, ev.clientY - y0) > 12) return;
+      this.session.dispatch({ type: "target", target });
+      this.get().invalidate();
+    };
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   }
 
   pressNote(e: ThreeEvent<PointerEvent>) {
@@ -866,6 +884,9 @@ class ExplainStage {
     document.body.appendChild(region);
     this.liveRegion = region;
 
+    // The session asks this stage what may open (set here, not in the constructor: React may make one to throw away).
+    const can = (t: string) => this.canOpen(t);
+    this.session.setCan(can);
     const offSession = this.session.subscribe((open, prev) => this.onSession(open, prev));
     const offProbe = registerExplainProbe({
       targets: () => this.items.map((i) => this.where(i.target)).filter((p): p is ExplainPoint => p !== null),
@@ -880,6 +901,10 @@ class ExplainStage {
       },
       current: () => this.session.open,
       notes: () => this.noteBoxes(),
+      hold: (ms) => {
+        this.held = ms === null || !Number.isFinite(ms) ? null : Math.max(0, ms);
+        this.get().invalidate();
+      },
     });
 
     return () => {
@@ -887,6 +912,7 @@ class ExplainStage {
       window.removeEventListener("keydown", key, true);
       offSession();
       offProbe();
+      this.session.setCan(() => false);
       region.remove();
       this.liveRegion = null;
       for (const r of this.rigs) r.dispose();
@@ -897,14 +923,22 @@ class ExplainStage {
       }
       if (this.hover) setCursor("");
       this.hover = null;
+      const sh = this.shared;
+      this.shared = null;
+      sh?.stitch.dispose();
+      sh?.knot.dispose();
+      sh?.strut.dispose();
     };
   }
 
-  /** Free the shared geometry (the layer is gone for good). */
-  dispose() {
-    this.shared.stitch.dispose();
-    this.shared.knot.dispose();
-    this.shared.strut.dispose();
+  private sharedGeometry(): SharedGeometry {
+    this.shared ??= {
+      // A unit stitch (radius 1, length 1), scaled per stitch.
+      stitch: new CylinderGeometry(1, 1, 1, 6, 1, false),
+      knot: new SphereGeometry(1, 10, 8),
+      strut: new BoxGeometry(1, 1, 1),
+    };
+    return this.shared;
   }
 
   /* ---------- notes ---------- */
@@ -918,7 +952,7 @@ class ExplainStage {
       const root = this.runtime.root;
       const inputs = this.inputs;
       if (item && obj && root && this.layer && inputs && this.measureFn) {
-        const rig = new NoteRig(item, layoutNote(item.title, item.text, this.measureFn), inputs.fonts, this.shared);
+        const rig = new NoteRig(item, layoutNote(item.title, item.text, this.measureFn), inputs.fonts, this.sharedGeometry());
         // The thread's end on the cutout: its middle, two thirds up, on its front.
         cutoutBox(obj, rig.box);
         const t = this.targets.find((x) => x.item.target === open);
@@ -1094,7 +1128,7 @@ class ExplainStage {
         if (changed && r.live) this.place(r);
         let lift = 0;
         for (const t of this.targets) if (t.item.target === r.item.target) lift = t.lift;
-        if (r.step(now, dt, lift, this.s.toStage, this.s)) moving = true;
+        if (r.step(now, dt, lift, this.s.toStage, this.s, this.held)) moving = true;
         if (r.phase === "done") {
           r.dispose();
           this.rigs.splice(i, 1);
@@ -1123,7 +1157,6 @@ export function ExplainLayer({ session, fonts, reveal, caption = null, enabled }
   const { scene, cast, runtime } = useScene();
   const get = useThree((s) => s.get);
   const [stage] = useState(() => new ExplainStage(session, runtime, get));
-  useEffect(() => () => stage.dispose(), [stage]);
 
   const items = useMemo(
     () =>
@@ -1149,8 +1182,7 @@ export function ExplainLayer({ session, fonts, reveal, caption = null, enabled }
           onPointerOver={(e: ThreeEvent<PointerEvent>) => stage.over(t, e)}
           onPointerOut={() => stage.out(t)}
           onPointerMove={(e: ThreeEvent<PointerEvent>) => e.stopPropagation()}
-          onPointerDown={(e: ThreeEvent<PointerEvent>) => stage.take(e)}
-          onClick={(e: ThreeEvent<MouseEvent>) => stage.click(t, e)}
+          onPointerDown={(e: ThreeEvent<PointerEvent>) => stage.press(t, e)}
         />
       ))}
       <primitive

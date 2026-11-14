@@ -283,6 +283,8 @@ export interface PlaceInput {
   maxH: number;
   /** Where it stood before (stage x), to keep it from hopping as the camera eases; null for none. */
   prevX: number | null;
+  /** The gap (px) it likes between itself and the target, room for the thread to show. Default 28. */
+  gap?: number;
 }
 
 export interface Placement {
@@ -316,6 +318,7 @@ export function placeNote(p: PlaceInput, out: Placement): Placement {
   const tcx = (p.target.x0 + p.target.x1) / 2;
   const tcy = (p.target.y0 + p.target.y1) / 2;
   const vw = Math.max(1, p.view.x1 - p.view.x0);
+  const gap = p.gap ?? 28;
   const r = out.rect;
   // Screen px per stage unit of height, where the target stands.
   p.rectAt(p.targetX, 1, r);
@@ -355,9 +358,9 @@ export function placeNote(p: PlaceInput, out: Placement): Placement {
       const hide = overlap(r, p.target) / tArea;
       const cx = (r.x0 + r.x1) / 2;
       const cy = (r.y0 + r.y1) / 2;
-      // Close beside it, at about its height; off it above all.
+      // Close beside it (a thread's length away), at about its height; off it above all.
       const gapX = Math.max(0, Math.abs(cx - tcx) - (r.x1 - r.x0) / 2 - tw / 2);
-      const dist = (gapX + 0.35 * Math.abs(cy - tcy)) / vw;
+      const dist = (Math.abs(gapX - gap) + 0.35 * Math.abs(cy - tcy)) / vw;
       const hop = p.prevX === null ? 0 : Math.abs(x - p.prevX) * 0.4;
       const score = 6 * hide + 1.2 * avoidCost + dist + hop;
       if (score < bestScore) {

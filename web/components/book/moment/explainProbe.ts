@@ -7,6 +7,7 @@
  *   __stitchExplain.close()     close the open note
  *   __stitchExplain.current()   the open note's target, or null
  *   __stitchExplain.notes()     the notes standing or moving, with their card's screen box (CSS px) and phase
+ *   __stitchExplain.hold(ms)    hold rising notes `ms` into their rise, for stills of the animation (null lets them go)
  *
  * Capture scripts click the points `targets()` gives, so they exercise the
  * real hit-testing; open / close are for jumping straight to a state.
@@ -33,6 +34,7 @@ export interface ExplainProbe {
   close(): void;
   current(): string | null;
   notes(): ExplainNoteBox[];
+  hold(ms: number | null): void;
 }
 
 declare global {
