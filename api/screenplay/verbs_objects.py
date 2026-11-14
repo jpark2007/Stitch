@@ -17,18 +17,25 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from screenplay import ik
 from screenplay.body import (
+    POSE_SECONDS,
     REACH_SECONDS,
+    REST_ARM,
     PropGeom,
     grip_from_anchor,
+    kneel_keys,
     place_on_keys,
     put_on_keys,
+    stand_keys,
     state_keys,
 )
 from screenplay.ik import Body, arm_bones, solve_body_arm
+from screenplay.locate import body_at, bone_at, puppet_root
 from screenplay.schema import Action
-from screenplay.state import CLOSED, GROUND, OPEN, Z_ACTING, StateError, World, parse_parent
+from screenplay.state import CLOSED, GROUND, OPEN, SEATED_POSES, StateError, World, parse_parent
 from screenplay.tracks import TrackSet
+from screenplay.verbs_core import _crouch_solution, _kneeling_ground
 
 Vec3 = tuple[float, float, float]
 Locate = Callable[[str, float], Vec3]
@@ -46,17 +53,9 @@ __all__ = [
 
 # ---------------------------------------------------------------------- geometry
 
-def _root(world: World, tracks: TrackSet, who: str, t: float) -> Vec3:
-    v = tracks.value_at(f"puppet:{who}", "root.position", t)
-    if v is None:
-        return world.people[who].pos
-    return (float(v[0]), float(v[1]), float(v[2]) if len(v) > 2 else Z_ACTING)
-
-
 def _body(world: World, tracks: TrackSet, who: str, t: float) -> Body:
-    x, y, _z = _root(world, tracks, who, t)
-    p = world.people[who]
-    return Body(who, (x, y), p.facing, p.build)
+    """The puppet's ``ik.Body`` at ``t`` (locate.body_at: the one source of truth)."""
+    return body_at(world, tracks, who, t)
 
 
 def _rots_now(tracks: TrackSet, who: str, bones: tuple[str, ...], t: float) -> dict[str, float]:
@@ -172,7 +171,14 @@ def _surface_off_ground(world: World, on: str) -> StateError:
 def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Set a held prop down on a prop's socket (``on`` = prop id) or on a mark (``on`` = mark).
 
-    No auto-walk: OutOfReach when the destination grip point is beyond the arm.
+    A destination the standing arm reaches (or one at or above the shoulder) is a plain arm
+    reach (body.place_on_keys). One too low for a standing arm (a mark on the floor, a low
+    surface) is reached the way pick_up reaches a prop on the floor: bend forward, kneeling
+    first if a bend alone is not enough, let go, and come back up (``_crouch_place_on_keys``).
+    A puppet already sitting or kneeling only bends, and stays down.
+
+    No auto-walk: OutOfReach (with the closest miss) when the grip is beyond the arm even
+    crouching.
     """
     who, what, on = action.who, action.what, action.on
     hand = world.hold(who, what)  # in who's hand, who on stage
@@ -198,11 +204,71 @@ def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, act
 
     arm = _arm_of(hand)
     me = _body(world, tracks, who, t)
-    keys = place_on_keys(me, t, _arm_now(tracks, who, arm, t), _geom(world, what), dest, parent, arm)
+    geom = _geom(world, what)
+    grip = grip_from_anchor(geom, dest)
+    current = _arm_now(tracks, who, arm, t)
+    shoulder_y = ik.shoulder_world(arm, me.ground, me.facing, me.build)[1]
+    if ik.can_reach(arm, grip, me.ground, me.facing, me.build) or grip[1] >= shoulder_y:
+        keys = place_on_keys(me, t, current, geom, dest, parent, arm)
+        end = t + 2 * REACH_SECONDS
+    else:  # too low for a standing arm: bend down (kneeling if needed) to the grip
+        p = world.people[who]
+        on_floor = p.seat is not None or p.pose in SEATED_POSES
+        z = puppet_root(world, tracks, who, t)[2]
+        keys, end = _crouch_place_on_keys(
+            tracks, me, t, current, what, grip, arm, parent, pos, z, can_kneel=not on_floor
+        )
 
     world.place_on(who, what, parent, pos)
     tracks.extend(keys)
-    return t + 2 * REACH_SECONDS
+    return end
+
+
+def _crouch_place_on_keys(
+    tracks: TrackSet,
+    body: Body,
+    t: float,
+    current_arm: tuple[float, float],
+    what: str,
+    grip: tuple[float, float],
+    arm: str,
+    parent: str,
+    position: Vec3,
+    z: float,
+    *,
+    can_kneel: bool,
+) -> tuple[list[Key], float]:
+    """place_on of a low grip, mirroring verbs_core._crouch_pick_up_keys: bend (and kneel, if
+    needed) over POSE_SECONDS, reach the grip over REACH_SECONDS and let go (the prop's parent
+    and position keys), then come back up over POSE_SECONDS with the arm at rest. A puppet that
+    cannot kneel (already down) only bends, and its legs and root are left alone. Raises
+    ik.OutOfReach (closest miss) when even crouching cannot reach. Returns (keys, end)."""
+    kneel, bend, reach = _crouch_solution(body, arm, grip, can_kneel)
+    who = body.id
+    target = f"puppet:{who}"
+    t_down = t + POSE_SECONDS
+    t_release = t_down + REACH_SECONDS
+    t_up = t_release + POSE_SECONDS
+    upper, lower = arm_bones(arm)
+    torso = bone_at(tracks, who, "torso", t)
+    keys: list[Key] = [
+        (target, "torso.rot", t, torso), (target, "torso.rot", t_down, bend),
+        (target, "torso.rot", t_release, bend), (target, "torso.rot", t_up, torso),
+    ]
+    for bone, values in ((upper, (current_arm[0], reach[0], REST_ARM[0])),
+                         (lower, (current_arm[1], reach[1], REST_ARM[1]))):
+        keys += [(target, f"{bone}.rot", t, float(values[0])), (target, f"{bone}.rot", t_down, float(values[0])),
+                 (target, f"{bone}.rot", t_release, float(values[1])), (target, f"{bone}.rot", t_up, float(values[2]))]
+    if kneel:  # down over POSE_SECONDS, held kneeling while reaching, then up again
+        kneel_pose = ik.POSES["poses"]["kneel"]
+        legs = {b: bone_at(tracks, who, b, t) for b in kneel_pose if b.startswith("leg_")}
+        keys += kneel_keys(body, t, legs, z=z)
+        low = Body(who, _kneeling_ground(body), body.facing, body.build)
+        kneeling = {b: float(v) for b, v in kneel_pose.items() if b.startswith("leg_")}
+        keys += stand_keys(low, t_release, kneeling, body.ground, z=z)
+    keys += [(f"prop:{what}", "parent", t_release, parent),
+             (f"prop:{what}", "position", t_release, [float(c) for c in position])]
+    return keys, t_up
 
 
 # ------------------------------------------------------------------ open / close

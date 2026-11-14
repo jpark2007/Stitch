@@ -6,16 +6,21 @@ world and the tracks left untouched.
 """
 
 import inspect
+import json
 import math
+from pathlib import Path
 
 import pytest
 
 import schemas
-from screenplay.body import REACH_SECONDS, PropGeom, grip_from_anchor
-from screenplay.ik import Body, OutOfReach, body_socket
-from screenplay.schema import Action, Shot
+from screenplay.body import POSE_SECONDS, REACH_SECONDS, PropGeom, grip_from_anchor
+from screenplay.compiler import compile as compile_screenplay
+from screenplay.ik import POSES as RIG_POSES
+from screenplay.ik import RIG, Body, OutOfReach, body_socket, scale, socket_world
+from screenplay.motion import mark_position
+from screenplay.schema import Action, Screenplay, Shot
 from screenplay.state import StateError, World
-from screenplay.tracks import TrackSet
+from screenplay.tracks import TrackSet, evaluate
 from screenplay.verbs_objects import (
     DRESSED_ACTIVITY,
     HANDLERS,
@@ -27,6 +32,10 @@ from screenplay.verbs_objects import (
 )
 
 R = REACH_SECONDS
+P = POSE_SECONDS
+POSES = RIG_POSES["poses"]
+KNEEL_ROOT = POSES["kneel"]["rootOffset"]
+SAMPLES = Path(__file__).resolve().parents[3] / "web" / "public" / "samples"
 ACTION_START = 1.2
 T = 3.2  # timeline time of every action below: shot time 2.0
 HOLD = (0.3, 1.2)  # the hold pose's arm values
@@ -326,13 +335,221 @@ def test_place_on_a_carried_surface_or_itself():
             do="place_on", who="dad", what="shelf", on="shelf", socket="high")
 
 
+def test_place_on_a_mark_keys_are_unchanged():
+    """A grip the standing arm reaches keeps exactly the plain reach: no torso, legs or root keys."""
+    tracks = TrackSet()
+    w = make_world({"dad": {"at": "home", "holding": "hat"}})
+    end = run(apply_place_on, w, tracks, do="place_on", who="dad", what="hat", on="ledge")
+    assert end == pytest.approx(T + 2 * R)
+    assert sorted((tr.target, tr.channel, [list(k) for k in tr.keys]) for tr in tracks.tracks()) == sorted([
+        ("prop:hat", "parent", [[3.6, "ground"]]),
+        ("prop:hat", "position", [[3.6, [0.12, 0.35, 0.5]]]),
+        ("puppet:dad", "arm_r.lower.rot", [[3.2, 0.0], [3.6, 2.306], [4.0, 0.0]]),
+        ("puppet:dad", "arm_r.upper.rot", [[3.2, 0.0], [3.6, 0.04], [4.0, 0.0]]),
+    ])
+
+
 def test_place_on_out_of_reach():
     tracks = TrackSet()
     w = make_world({"dad": {"at": "home", "holding": "jar"}}, {"far_table": {"at": "far"}})
     err = out_of_reach(apply_place_on, w, tracks, do="place_on", who="dad", what="jar", on="far_table")
     assert err.who == "dad"
-    # a mark on the floor is below a standing puppet's reach too: no auto-walk, no auto-kneel
-    out_of_reach(apply_place_on, w, tracks, do="place_on", who="dad", what="jar", on="near")
+    # a floor mark across the stage stays out of reach even crouching: no auto-walk
+    err = out_of_reach(apply_place_on, w, tracks, do="place_on", who="dad", what="jar", on="far")
+    assert (err.who, err.arm) == ("dad", "arm_r")
+    assert err.distance > err.reach > 0
+
+
+# ------------------------------------------------- place_on a low target (crouch)
+
+def keys_of(tracks: TrackSet, who: str, channel: str) -> list:
+    for tr in tracks.tracks():
+        if (tr.target, tr.channel) == (f"puppet:{who}", channel):
+            return [tuple(k) for k in tr.keys]
+    return []
+
+
+def compiled_hand(tracks: TrackSet, w: World, who: str, socket: str, t: float) -> tuple[float, float]:
+    """A hand socket from every bone the tracks animate (torso and legs included) and the root track."""
+    root = tracks.value_at(f"puppet:{who}", "root.position", t) or w.people[who].pos
+    rots = {}
+    for tr in tracks.tracks():
+        if tr.target == f"puppet:{who}" and tr.channel.endswith(".rot"):
+            rots[tr.channel[:-4]] = tracks.value_at(tr.target, tr.channel, t)
+    p = w.people[who]
+    return socket_world(socket, rots, (root[0], root[1]), p.facing, p.build)
+
+
+def test_place_on_a_floor_mark_kneels_bends_and_stands_back_up():
+    tracks = TrackSet()
+    tracks.extend([("puppet:dad", "arm_r.upper.rot", 0.0, HOLD[0]), ("puppet:dad", "arm_r.lower.rot", 0.0, HOLD[1])])
+    w = make_world({"dad": {"at": "home", "holding": "hat", "facing": "right"}})
+    end = run(apply_place_on, w, tracks, do="place_on", who="dad", what="hat", on="near")
+    t_down, t_release, t_up = T + P, T + P + R, T + 2 * P + R
+    assert end == pytest.approx(t_up)
+    grip = grip_from_anchor(GEOM["hat"], MARKS["near"])
+    assert compiled_hand(tracks, w, "dad", "hand_r", t_release) == pytest.approx(grip, abs=1e-3)
+    assert at(tracks, "prop:hat", "parent", t_release) == "ground"
+    assert at(tracks, "prop:hat", "position", t_release) == r3(MARKS["near"])
+    torso = keys_of(tracks, "dad", "torso.rot")
+    assert [k[0] for k in torso] == [round(t, 3) for t in (T, t_down, t_release, t_up)]
+    assert torso[0][1] == 0.0 and torso[-1][1] == 0.0 and torso[1][1] == torso[2][1] < 0
+    # the arm holds still while the body goes down, reaches over REACH_SECONDS, then rests
+    assert arm_at(tracks, "dad", "arm_r", t_down) == pytest.approx(HOLD)
+    assert arm_at(tracks, "dad", "arm_r", t_up) == (0.0, 0.0)
+    # kneels on the way down and stands back up on the way out
+    low = [round(KNEEL_ROOT[0] * scale("tall"), 3), round(KNEEL_ROOT[1] * scale("tall"), 3), 0.5]
+    assert keys_of(tracks, "dad", "root.position") == [
+        (round(T, 3), [0.0, 0.0, 0.5]), (round(t_down, 3), low), (round(t_release, 3), low),
+        (round(t_up, 3), [0.0, 0.0, 0.5]),
+    ]
+    assert at(tracks, "puppet:dad", "leg_r.lower.rot", t_release) == pytest.approx(POSES["kneel"]["leg_r.lower"])
+    for bone in (b for b in POSES["kneel"] if b.startswith("leg_")):
+        assert at(tracks, "puppet:dad", f"{bone}.rot", t_up) == 0.0
+    assert w.props["hat"].parent == "ground" and w.props["hat"].world_pos == MARKS["near"]
+    assert w.people["dad"].holding == {} and w.people["dad"].pose == "stand"
+
+
+def test_place_on_a_low_prop_socket_crouches_and_parents_to_the_socket():
+    tracks = TrackSet()
+    w = make_world({"dad": {"at": "home", "holding": "jar"}}, {"cushion": {"at": "near"}})
+    end = run(apply_place_on, w, tracks, do="place_on", who="dad", what="jar", on="cushion")
+    t_release = T + P + R
+    assert end == pytest.approx(T + 2 * P + R)
+    dest = w.props["jar"].world_pos
+    assert dest is not None and dest[1] < 0.1  # a low surface
+    assert at(tracks, "prop:jar", "parent", t_release) == "prop:cushion.seat"
+    assert at(tracks, "prop:jar", "position", t_release) == [0.0, 0.0, 0.0]
+    assert compiled_hand(tracks, w, "dad", "hand_r", t_release) == pytest.approx(
+        grip_from_anchor(GEOM["jar"], dest), abs=1e-3)
+    assert w.props["cushion"].occupants == {"seat": "prop:jar"}
+
+
+def test_place_on_a_floor_mark_while_kneeling_only_bends_and_stays_down():
+    tracks = TrackSet()
+    low = [round(KNEEL_ROOT[0] * scale("tall"), 3), round(KNEEL_ROOT[1] * scale("tall"), 3), 0.5]
+    tracks.extend([("puppet:dad", "root.position", 0.0, low), ("puppet:dad", "torso.rot", 0.0, -0.1)])
+    w = make_world({"dad": {"at": "home", "holding": "hat", "pose": "kneel"}})
+    end = run(apply_place_on, w, tracks, do="place_on", who="dad", what="hat", on="near")
+    t_release = T + P + R
+    assert end == pytest.approx(T + 2 * P + R)
+    assert keys_of(tracks, "dad", "root.position") == [(0.0, low)]  # stays down
+    assert not any(tr.channel.startswith("leg_") for tr in tracks.tracks())
+    torso = keys_of(tracks, "dad", "torso.rot")
+    assert torso[1][1] < 0 and torso[-1] == (round(T + 2 * P + R, 3), -0.1)  # back to its value at t
+    grip = grip_from_anchor(GEOM["hat"], MARKS["near"])
+    assert compiled_hand(tracks, w, "dad", "hand_r", t_release) == pytest.approx(grip, abs=1e-3)
+    assert w.people["dad"].pose == "kneel"
+
+
+def test_place_on_a_floor_mark_while_seated_only_bends():
+    tracks = TrackSet()
+    w = make_world({"dad": {"at": "home", "in": "cushion.seat", "holding": "hat"}}, {"cushion": {"at": "home"}})
+    sx, sy, _ = w.socket_world("cushion", "seat")
+    seated = [round(sx, 3), round(sy - RIG["hipHeight"] * scale("tall"), 3), 0.5]  # body.sit_keys' root
+    tracks.add("puppet:dad", "root.position", 0.0, seated)
+    run(apply_place_on, w, tracks, do="place_on", who="dad", what="hat", on="near")
+    assert keys_of(tracks, "dad", "root.position") == [(0.0, seated)]  # no kneel: still seated
+    assert not any(tr.channel.startswith("leg_") for tr in tracks.tracks())
+    assert keys_of(tracks, "dad", "torso.rot")[1][1] < 0
+    grip = grip_from_anchor(GEOM["hat"], MARKS["near"])
+    assert compiled_hand(tracks, w, "dad", "hand_r", T + P + R) == pytest.approx(grip, abs=1e-3)
+    assert w.people["dad"].seat == ("cushion", "seat") and w.props["hat"].world_pos == MARKS["near"]
+
+
+def test_place_on_a_floor_mark_out_of_reach_even_crouching_is_atomic():
+    tracks = TrackSet()
+    w = make_world({"dad": {"at": "home", "holding": "hat"}})
+    err = out_of_reach(apply_place_on, w, tracks, do="place_on", who="dad", what="hat", on="far")
+    assert (err.who, err.arm) == ("dad", "arm_r") and err.distance > err.reach
+    assert w.holder("hat") == ("dad", "hand_r")
+
+
+# ------------------------------------- place_on a low target, through the compiler
+
+def _kitchen_compile(actions: list, start: dict | None = None):
+    memory = json.loads((SAMPLES / "hymn_books.memory.json").read_text())
+    sets = {"kitchen": schemas.SetDef(
+        id="kitchen", name="kitchen",
+        layers=[{"art": None, "depth": 0, "height": 1.0}, {"art": None, "depth": 1, "height": 0.4}],
+        marks={"stove": [0.3, 0.0], "door": [0.8, 0.0]},
+    )}
+    props = {p["id"]: schemas.Prop.model_validate(p) for p in memory["props"]}
+    people = {p["id"]: schemas.Person.model_validate(p) for p in memory["people"]}
+    sp = Screenplay.model_validate({
+        "memoryId": "m", "cast": ["dad"], "props": ["hymn_books"],
+        "shots": [{"id": "s1", "set": "kitchen",
+                   "start": start or {"dad": {"at": "stove", "holding": "hymn_books", "facing": "right"}},
+                   "actions": actions}],
+    })
+    return compile_screenplay(sp, sets=sets, props=props, people=people), props, people
+
+
+def _timeline_keys(res, target: str, channel: str) -> list:
+    for tr in res.timeline.tracks:
+        if (tr.target, tr.channel) == (target, channel):
+            return [tuple(k) for k in tr.keys]
+    return []
+
+
+def _compiled_hand(res, people, who: str, t: float) -> tuple[float, float]:
+    tl = res.timeline.tracks
+    root = evaluate(tl, f"puppet:{who}", "root.position", t)
+    facing = evaluate(tl, f"puppet:{who}", "root.facing", t)
+    rots = {tr.channel[:-4]: evaluate(tl, tr.target, tr.channel, t)
+            for tr in tl if tr.target == f"puppet:{who}" and tr.channel.endswith(".rot")}
+    assert "torso" in rots
+    return socket_world("hand_r", rots, (root[0], root[1]), int(facing), people[who].character.build)
+
+
+def test_compiled_place_on_the_stove_mark_crouches_and_stands_back_up():
+    """Regression: place_on a ground-level mark failed with out_of_reach (target 0.34 from the
+    shoulder, reach 0.19); pick_up from the same spot worked."""
+    res, props, people = _kitchen_compile([{"t": 2, "do": "place_on", "who": "dad", "what": "hymn_books", "on": "stove"}])
+    assert res.ok, [e.message for e in res.errors]
+    (t_release, parent), = [k for k in _timeline_keys(res, "prop:hymn_books", "parent") if k[1] == "ground"]
+    assert parent == "ground"
+    position = dict(_timeline_keys(res, "prop:hymn_books", "position"))[t_release]
+    stove = mark_position([0.3, 0.0])  # the kitchen's stove mark, in stage units
+    assert position == pytest.approx(list(stove), abs=1e-3)
+    grip = grip_from_anchor(PropGeom.from_prop(props["hymn_books"]), position)
+    assert _compiled_hand(res, people, "dad", t_release) == pytest.approx(grip, abs=1e-3)
+    torso = _timeline_keys(res, "puppet:dad", "torso.rot")
+    t0 = torso[0][0]
+    assert t_release == pytest.approx(t0 + P + R) and torso[-1] == (pytest.approx(t0 + 2 * P + R), 0.0)
+    roots = _timeline_keys(res, "puppet:dad", "root.position")
+    assert min(k[1][1] for k in roots) < 0  # it knelt on the way down
+    assert roots[-1][1] == pytest.approx(list(stove), abs=1e-3)  # and stands back up on the stove mark
+    for bone in (b for b in POSES["kneel"] if b.startswith("leg_")):
+        assert _timeline_keys(res, "puppet:dad", f"{bone}.rot")[-1][1] == 0.0
+
+
+def test_compiled_place_on_the_stove_mark_after_kneeling_only_bends():
+    res, props, people = _kitchen_compile([
+        {"t": 0, "do": "kneel", "who": "dad"},
+        {"t": 2, "do": "place_on", "who": "dad", "what": "hymn_books", "on": "stove"},
+    ])
+    assert res.ok, [e.message for e in res.errors]
+    (t_release, _), = [k for k in _timeline_keys(res, "prop:hymn_books", "parent") if k[1] == "ground"]
+    position = dict(_timeline_keys(res, "prop:hymn_books", "position"))[t_release]
+    grip = grip_from_anchor(PropGeom.from_prop(props["hymn_books"]), position)
+    assert _compiled_hand(res, people, "dad", t_release) == pytest.approx(grip, abs=1e-3)
+    roots = _timeline_keys(res, "puppet:dad", "root.position")
+    kneeling_y = roots[-1][1][1]
+    assert kneeling_y < 0  # still kneeling at the end: the last root key is the kneel's
+    assert all(k[0] < t_release - P - R + 1e-6 for k in roots)  # place_on added no root keys
+    torso = _timeline_keys(res, "puppet:dad", "torso.rot")
+    assert any(v < 0 for _, v in torso) and torso[-1][1] == 0.0
+    knee = _timeline_keys(res, "puppet:dad", "leg_r.lower.rot")
+    assert knee[-1][1] == pytest.approx(POSES["kneel"]["leg_r.lower"])
+
+
+def test_compiled_place_on_a_far_mark_is_a_precise_out_of_reach():
+    res, _, _ = _kitchen_compile([{"t": 2, "do": "place_on", "who": "dad", "what": "hymn_books", "on": "door"}])
+    assert not res.ok and res.timeline is None
+    (err,) = res.errors
+    assert (err.code, err.shot, err.who, err.do) == ("out_of_reach", "s1", "dad", "place_on")
+    assert err.message.startswith('shot s1, t=2: dad cannot place_on "hymn_books"; dad\'s arm_r cannot reach: ')
 
 
 # ------------------------------------------------------------------ open / close
