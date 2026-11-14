@@ -10,7 +10,7 @@ import { makeRunSource, RUN_OPTIONS } from "@/components/flow/client";
 import { RUN_GONE_MESSAGE, withRunGone } from "@/components/flow/addPage";
 import { FlowPage } from "@/components/flow/FlowPage";
 import { PaperCard } from "@/components/flow/PaperCard";
-import { MemoryRun, type MemoryRunTelling } from "@/components/flow/MemoryRun";
+import { MemoryRun, SCRIPT_FOCUS_QUIET, type MemoryRunTelling } from "@/components/flow/MemoryRun";
 import { hrefs } from "@/components/flow/session";
 import { isMockMode, type StitchApi } from "@/lib/api";
 
@@ -68,7 +68,7 @@ export function AddRun(props: {
   const second = Boolean(telling?.secondTellingOf);
 
   return (
-    <div ref={rootRef} className="contents">
+    <div ref={rootRef} className={`contents ${SCRIPT_FOCUS_QUIET}`}>
       <FlowPage
         title={second ? "Your telling" : "Your memory"}
         lede={lede}
