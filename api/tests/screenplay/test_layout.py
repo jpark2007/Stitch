@@ -112,3 +112,61 @@ def test_effect_rain_lasts_to_shot_end_and_explicit_dur_wins():
 def test_effect_unknown_kind_fails_validation():
     with pytest.raises(Exception):
         effect_entry("fireworks", 0.0, None, 1.0, None, 5.0)
+
+
+VOCAB = Path(__file__).resolve().parents[3] / "shared" / "vocabulary.json"
+
+
+@pytest.mark.parametrize("transition", json.loads(VOCAB.read_text())["transitions"])
+def test_every_vocabulary_transition_resolves(transition):
+    rise = as_tracks(rise_keys("s", 3, 2.0, transition))
+    assert set(rise) == {(f"set:s.layer{i}", "fold") for i in range(3)}
+    assert all(k[0][1] == 0.0 and k[-1][1] == 1.0 for k in rise.values())
+    keys, used = fold_keys("s", 3, 10.0, transition)
+    fold = as_tracks(keys)
+    assert all(k[0][1] == 1.0 and k[-1][1] == 0.0 for k in fold.values())
+    assert used >= 0
+    prev_end, start, action, _ = next_shot_timing(10.0, "s", 3, "t", transition)
+    assert prev_end == start and action == pytest.approx(start + RISE)
+
+
+def test_unknown_transition_error_names_it():
+    with pytest.raises(ValueError, match="'dissolve'"):
+        next_shot_timing(1.0, "a", 1, "b", "dissolve")
+
+
+def test_hymn_books_camera_and_fold_tracks_within_tolerance():
+    """Regression: camera + set-fold tracks this code makes for the hymn_books shot equal the golden ones."""
+    from screenplay.camera import shot_camera_keys
+    from screenplay.schema import CameraCue
+
+    timeline = json.loads((SAMPLES / "hymn_books.timeline.json").read_text())
+    screenplay = json.loads((SAMPLES / "hymn_books.screenplay.json").read_text())
+    memory = json.loads((SAMPLES / "hymn_books.memory.json").read_text())
+    shot = screenplay["shots"][0]
+    tshot = timeline["shots"][0]
+    set_ = next(s for s in memory["sets"] if s["id"] == shot["set"])
+    marks = {**set_["marks"], **shot["marks"]}
+
+    def target_at(name, t):  # mom stays on steps_top for the whole shot
+        assert name == "mom"
+        m = marks[shot["start"]["mom"]["at"]]
+        return (2 * m[0] - 1, m[1], 0.5)
+
+    keys = rise_keys(shot["set"], len(set_["layers"]), tshot["start"], shot["transition"])
+    cam, _ = shot_camera_keys(
+        [CameraCue.model_validate(c) for c in shot["camera"]], tshot["start"], tshot["actionStart"], None, target_at
+    )
+    got = as_tracks(keys + cam)
+    want = {
+        (t["target"], t["channel"]): t["keys"]
+        for t in timeline["tracks"]
+        if t["target"] == "camera" or t["target"].startswith("set:")
+    }
+    assert set(got) == set(want)
+    for k, wkeys in want.items():
+        gkeys = got[k]
+        assert len(gkeys) == len(wkeys), k
+        for (gt, gv), (wt, wv) in zip(gkeys, wkeys):
+            assert gt == pytest.approx(wt, abs=1e-3), k
+            assert gv == pytest.approx(wv, abs=1e-3), (k, gt)

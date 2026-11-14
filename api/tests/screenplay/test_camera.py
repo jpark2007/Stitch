@@ -8,6 +8,7 @@ import pytest
 from screenplay.camera import (
     CAMERA_X_LIMIT,
     DEFAULT_MOVE_SECONDS,
+    TARGET_MOVES,
     FLY_IN,
     WIDE,
     CameraPose,
@@ -170,3 +171,35 @@ def test_non_overlapping_cue_holds_previous_end():
     assert ch["position"][3] == (pytest.approx(3.2), list(pb.position))
     assert ch["position"][4] == (pytest.approx(6.2), list(pb.position))
     assert final == WIDE
+
+
+VOCAB = Path(__file__).resolve().parents[3] / "shared" / "vocabulary.json"
+
+
+def vocab_camera() -> dict:
+    return json.loads(VOCAB.read_text())["camera"]
+
+
+def test_target_moves_match_vocabulary():
+    required = {m for m, spec in vocab_camera().items() if "target" in spec["required"]}
+    assert required == set(TARGET_MOVES)
+
+
+@pytest.mark.parametrize("move", sorted(json.loads(VOCAB.read_text())["camera"]))
+def test_every_vocabulary_camera_move_resolves(move):
+    spec = vocab_camera()[move]
+    target = (0.3, 0.2, 0.5) if "target" in spec["required"] else None
+    pose = resolve_move(move, CUR, target)
+    assert isinstance(pose, CameraPose)
+    cue = CameraCue(t=2, move=move, target="mom" if target else None, dur=1.0)
+    keys, final = shot_camera_keys([cue], 0, 1.2, None, lambda n, t: (0.3, 0.2, 0.5))
+    assert final == resolve_move(move, WIDE, target)
+    times = [t for _, ch, t, _ in keys if ch == "position"]
+    assert times == sorted(times) and times[-1] == pytest.approx(4.2)
+
+
+def test_unknown_move_error_names_it():
+    with pytest.raises(ValueError, match="'spin'"):
+        resolve_move("spin", CUR, None)
+    with pytest.raises(ValueError, match="'zoom_in'"):
+        shot_camera_keys([CameraCue.model_construct(t=1, move="zoom_in", target=None, dur=None)], 0, 1.2, None, lambda n, t: (0, 0, 0.5))

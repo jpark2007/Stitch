@@ -20,6 +20,7 @@ DEFAULT_MOVE_SECONDS = 1.5
 CAMERA_X_LIMIT = 0.7
 CLOSE_UP_FOV = 28.0
 TARGET_MOVES = frozenset({"dolly_to", "pan_to", "close_up"})
+KNOWN_MOVES = TARGET_MOVES | {"wide", "pull_back"}
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,8 @@ def _pose(position: Sequence[float], look_at: Sequence[float], fov: float) -> Ca
 
 def resolve_move(move: str, current: CameraPose, target: Vec3 | None) -> CameraPose:
     """The pose a named move ends on. Raises ValueError for an unknown move or a missing target."""
+    if move not in KNOWN_MOVES:
+        raise ValueError(f"unknown camera move {move!r}; expected one of {sorted(KNOWN_MOVES)}")
     if move in TARGET_MOVES and target is None:
         raise ValueError(f"camera move {move!r} needs a target")
     cp, cl = current.position, current.look_at
@@ -52,7 +55,8 @@ def resolve_move(move: str, current: CameraPose, target: Vec3 | None) -> CameraP
         return WIDE
     if move == "pull_back":
         return _pose((cp[0] * 0.5, 0.75, 3.0), (cl[0] * 0.5, 0.35, 0.5), 35)
-    assert target is not None
+    if target is None:  # unreachable: every non-target move returned above
+        raise ValueError(f"camera move {move!r} needs a target")
     tx, ty, tz = target
     if move == "dolly_to":
         return _pose((tx, 0.6, 1.5), (tx, ty + 0.25, tz), current.fov)
