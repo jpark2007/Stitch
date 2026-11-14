@@ -35,7 +35,23 @@ def trusted_destination(contact, row, principal):
         and destination.get("handle") == contact.get("handle")
         and destination.get("provider") == contact.get("channel")
         and destination.get("personId") == contact.get("personId")
-        and destination.get("principal") == principal)
+        and destination.get("principal") == principal
+        and (contact.get("channel") != "imessage"
+             or destination.get("contactProof") == conversations.contact_proof(contact)))
+
+
+def cadence_due(contact, row, history, now):
+    """Re-evaluate current preferences at planning AND immediately before send."""
+    if not allowed_now(contact, now):
+        return False
+    timestamps = [x["sentAt"] for x in history if x.get("sentAt")] + [contact.get("optInAt")]
+    if row.get("lastInboundAt"):
+        timestamps.append(row["lastInboundAt"])
+    if any(not isinstance(value, datetime) for value in timestamps):
+        return False
+    last = max(value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc) for value in timestamps)
+    zone = ZoneInfo(contact["timezone"])
+    return (now.astimezone(zone).date() - last.astimezone(zone).date()).days >= contact["cadenceDays"]
 
 
 def plan(db, service, contact, row, now):
@@ -50,14 +66,7 @@ def plan(db, service, contact, row, now):
     history = question_bank.notifications(db, c.family_id, c.contact_id)
     if len(history) >= 1000 or any(item.get("active") for item in history) or state.get("modelCalls", 0) >= 32:
         return None
-    timestamps = [x["sentAt"] for x in history if x.get("sentAt")] + [contact["optInAt"]]
-    if row.get("lastInboundAt"):
-        timestamps.append(row["lastInboundAt"])
-    if any(not isinstance(value, datetime) for value in timestamps):
-        return None
-    last = max(value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc) for value in timestamps)
-    zone = ZoneInfo(contact["timezone"])
-    if (now.astimezone(zone).date() - last.astimezone(zone).date()).days < contact["cadenceDays"]:
+    if not cadence_due(contact, row, history, now):
         return None
     if state["status"] != "draft":
         if not service.can_start_new_story(row):

@@ -9,6 +9,14 @@ from pymongo import ReturnDocument
 from . import contacts, media
 
 
+def contact_proof(contact: dict) -> dict | None:
+    """Snapshot the immutable observed iMessage consent generation; terminal is unchanged."""
+    if contact.get("channel") != "imessage":
+        return None
+    return {key: contact.get(key) for key in
+            ("handle", "channel", "spaceId", "spaceKind", "verifiedAt", "optInAt")}
+
+
 def ensure_message_indexes(db) -> None:
     # Only authentication records have expireAt; story receipts never expire here.
     db.channelMessages.create_index("expireAt", expireAfterSeconds=0,
@@ -51,6 +59,8 @@ def save_inbound(db, contact: dict, message: dict, *, stopped: bool = False) -> 
         "contentHash": digest, "status": "stop_requested" if stopped else "received",
         "createdAt": datetime.now(timezone.utc),
     }
+    if contact.get("channel") == "imessage":
+        record["contactProof"] = contact_proof(contact)
     try:
         db.channelMessages.insert_one(record)
         return False
@@ -247,6 +257,8 @@ def _save_attachment_inbound(db, contact: dict, message: dict, data: bytes,
     if receipt_type == "voice":
         record["transcriptionStatus"] = "pending"
         record["audioMimeType"] = message["mimeType"]
+    if contact.get("channel") == "imessage":
+        record["contactProof"] = contact_proof(contact)
     duplicate = False
     try:
         db.channelMessages.insert_one(record)

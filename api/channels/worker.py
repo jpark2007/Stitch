@@ -91,7 +91,8 @@ class ChannelWorker:
             # Enrollment's signed direct-space proof is trusted routing metadata.
             # The bridge still refuses unknown/unregistered spaces after a restart.
             update({"destination": {"provider": identity["channel"], "spaceId": identity["spaceId"],
-                "handle": identity["handle"], "personId": identity["personId"], "principal": service.context.principal}})
+                "handle": identity["handle"], "personId": identity["personId"], "principal": service.context.principal,
+                **({"contactProof": dict(service.context.proof)} if service.context.proof else {})}})
 
         def route(receipt=None):
             current = check()
@@ -104,7 +105,8 @@ class ChannelWorker:
                     raise PermissionError("Receipt handle changed")
                 destination = {"provider": receipt["provider"], "spaceId": receipt["spaceId"],
                                "handle": current["handle"], "personId": current["personId"],
-                               "principal": service.context.principal}
+                               "principal": service.context.principal,
+                               **({"contactProof": dict(service.context.proof)} if service.context.proof else {})}
                 update({"destination": destination, "lastInboundAt": self.now()})
             destination = row.get("destination")
             if not destination or (destination["handle"], destination["provider"], destination["personId"],
@@ -113,6 +115,8 @@ class ChannelWorker:
                 raise PermissionError("Destination mapping changed")
             if current["channel"] == "imessage" and destination["spaceId"] != current["spaceId"]:
                 raise PermissionError("Destination is not the verified direct-message space")
+            if service.context.proof and destination.get("contactProof") != dict(service.context.proof):
+                raise PermissionError("Destination consent generation changed")
             return destination
 
         sent = 0
@@ -136,7 +140,8 @@ class ChannelWorker:
                     update({"outbox": row["outbox"]})
                 def prompt_allowed():
                     current = check()
-                    return (self.scheduler_enabled and scheduler.allowed_now(current, self.now())
+                    return (self.scheduler_enabled and scheduler.cadence_due(current, row,
+                        question_bank.notifications(self.db, family, contact_id), self.now())
                         and scheduler.trusted_destination(current, row, service.context.principal)
                         and not conversations.worker_receipts(self.db, family, contact_id))
                 if notification_id and not prompt_allowed():
@@ -244,6 +249,7 @@ class ChannelWorker:
                     or receipt["personId"] != service.context.person_id
                     or receipt.get("handle") != identity["handle"]
                     or receipt["provider"] != identity["channel"]
+                    or (service.context.proof and receipt.get("contactProof") != dict(service.context.proof))
                     or (identity["channel"] == "imessage" and receipt["spaceId"] != identity["spaceId"])):
                 raise PermissionError("Batch receipt identity changed")
         route(batch[0])
