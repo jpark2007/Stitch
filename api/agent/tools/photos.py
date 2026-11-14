@@ -1,21 +1,27 @@
 """describe_photo: what is in one of this run's photos, read by a vision model.
 
 The vision model sits behind `VisionModel` so the pipeline runs offline: tests use
-`FakeVision`, which describes size and dominant color deterministically with Pillow.
+`FakeVision`, which describes size and dominant color deterministically with Pillow. In
+production it is `agent.adapters.AnthropicVision` (Claude vision, bounded timeout and retries).
 
-TODO(next wave): AnthropicVision(VisionModel), a real adapter that sends the images as
-base64 image blocks plus PHOTO_PROMPT to the Claude model from env.
+A photo is extra detail, never required: when the vision model or the media store fails, or
+the model answers with nothing, describe_photo returns one `could not describe photo <id>:
+<reason>` line (the exception type only; its message goes to the server log) and the run
+goes on without that photo's description.
 """
 
 from __future__ import annotations
 
 import colorsys
 import io
+import logging
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from langchain_core.tools import BaseTool, StructuredTool
 from PIL import Image, UnidentifiedImageError
+
+log = logging.getLogger(__name__)
 
 PHOTO_PROMPT = """\
 Describe this family photo so it can be rebuilt as a cut-paper pop-up scene.
@@ -106,16 +112,24 @@ def make_photo_tools(
         era clues, and what people wear. Pass a photo id given in the task."""
         if photo_id not in allowed:
             return UNKNOWN_PHOTO
-        media = get_media(photo_id)
+        try:
+            media = get_media(photo_id)
+        except Exception as e:  # noqa: BLE001 - a failed media store must not end the run
+            log.warning("describe_photo could not read %s", photo_id, exc_info=True)
+            return f"could not describe photo {photo_id}: {type(e).__name__}"
         if media is None:
             return UNKNOWN_PHOTO
         data, content_type = media
         if content_type and not content_type.startswith("image/"):
             return f"photo {photo_id} is not an image ({content_type})"
         try:
-            return vision.describe([data], PHOTO_PROMPT)
-        except Exception as e:  # a failed vision call must not end the run
+            described = vision.describe([data], PHOTO_PROMPT)
+        except Exception as e:  # noqa: BLE001 - a failed vision call must not end the run
+            log.warning("describe_photo: the vision model failed on %s", photo_id, exc_info=True)
             return f"could not describe photo {photo_id}: {type(e).__name__}"
+        if not isinstance(described, str) or not described.strip():
+            return f"could not describe photo {photo_id}: the vision model returned no text"
+        return described
 
     return [StructuredTool.from_function(describe_photo, name="describe_photo")]
 

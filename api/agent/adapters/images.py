@@ -27,8 +27,22 @@ changes:
 (``closest_size``), so callers can tell the model which band of the canvas survives the crop
 (``agent.tools.art.ArtService.make_layer`` does this).
 
+Bounded, so a hung or failing provider cannot stall a run (the run itself is capped by
+``STITCH_RUN_TIMEOUT_S``):
+
+- Every request has a timeout: ``timeout`` seconds (default ``DEFAULT_TIMEOUT_S``, 120) to
+  write the request and between bytes of the response, and at most ``CONNECT_TIMEOUT_S``
+  (10) to connect.
+- A request that fails fast and is safe to repeat is retried at most ``max_retries`` times
+  (default ``DEFAULT_MAX_RETRIES``, 1): a connection that could not be made, or HTTP 408,
+  429, 500, 502, 503 or 504. Each retry waits ``RETRY_BACKOFF_S`` doubling per attempt, or the
+  response's numeric ``Retry-After``, never more than ``MAX_BACKOFF_S``. A read timeout is not
+  retried: the provider may still be drawing (and billing) that image, and waiting again would
+  double the worst case. So one ``generate`` takes at most about
+  ``(1 + max_retries) * (CONNECT_TIMEOUT_S + timeout) + max_retries * MAX_BACKOFF_S`` seconds.
+
 Errors raise ``RuntimeError`` with the HTTP status; the API key is never put in a message.
-Tests inject an ``httpx.MockTransport``.
+Tests inject an ``httpx.MockTransport`` (and a no-op ``sleep``).
 """
 
 from __future__ import annotations
@@ -37,7 +51,8 @@ import base64
 import io
 import math
 import os
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import httpx
@@ -50,6 +65,18 @@ DEFAULT_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-image-1"
 
 SUPPORTED_SIZES: tuple[tuple[int, int], ...] = ((1024, 1024), (1536, 1024), (1024, 1536))
+
+DEFAULT_TIMEOUT_S = 120.0
+"""Seconds to write a request and between bytes of the response (image models are slow)."""
+CONNECT_TIMEOUT_S = 10.0
+"""Seconds to open a connection."""
+DEFAULT_MAX_RETRIES = 1
+"""Retries of a request that failed fast (no connection, HTTP 408/429/5xx); never of a read timeout."""
+RETRY_BACKOFF_S = 0.5
+"""Wait before the first retry; doubles per attempt."""
+MAX_BACKOFF_S = 8.0
+"""Longest wait before one retry, whatever Retry-After asks."""
+RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
 _REFERENCE_TYPES = {"PNG": ("image/png", "png"), "JPEG": ("image/jpeg", "jpg"), "WEBP": ("image/webp", "webp")}
 _ERROR_DETAIL_CHARS = 200
@@ -122,6 +149,25 @@ def _to_png(data: bytes, size: tuple[int, int]) -> bytes:
     return buf.getvalue()
 
 
+def retryable_error(exc: httpx.HTTPError) -> bool:
+    """A transport failure worth one more try: the connection was never made (so nothing ran)."""
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+
+
+def backoff_s(attempt: int, response: httpx.Response | None) -> float:
+    """Seconds to wait before retry ``attempt + 1``: a numeric Retry-After, else exponential; capped."""
+    wait = RETRY_BACKOFF_S * (2**attempt)
+    if response is not None:
+        raw = response.headers.get("retry-after", "").strip()
+        try:
+            asked = float(raw)
+        except ValueError:
+            asked = None
+        if asked is not None and math.isfinite(asked) and asked >= 0:
+            wait = asked
+    return min(MAX_BACKOFF_S, wait)
+
+
 class OpenAIImageModel:
     """``art.ImageModel`` over an OpenAI-compatible images API (provider is configurable)."""
 
@@ -132,8 +178,14 @@ class OpenAIImageModel:
         base_url: str | None = None,
         model: str | None = None,
         transport: httpx.BaseTransport | None = None,
-        timeout: float = 120,
+        timeout: float = DEFAULT_TIMEOUT_S,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        if not (isinstance(timeout, (int, float)) and math.isfinite(timeout) and timeout > 0):
+            raise ValueError(f"timeout must be a number of seconds > 0, got {timeout!r}")
+        if not isinstance(max_retries, int) or max_retries < 0:
+            raise ValueError(f"max_retries must be a whole number >= 0, got {max_retries!r}")
         key = api_key or os.environ.get(API_KEY_ENV)
         if not key and transport is None:
             raise RuntimeError(f"{API_KEY_ENV} is not set; OpenAIImageModel needs it (or an injected transport)")
@@ -141,9 +193,11 @@ class OpenAIImageModel:
         self.base_url = (base_url or os.environ.get(URL_ENV) or DEFAULT_URL).rstrip("/")
         self.model = model or os.environ.get(MODEL_ENV) or DEFAULT_MODEL
         self._transport = transport
-        self._timeout = timeout
+        self.max_retries = max_retries
+        self._sleep = sleep
+        self.timeout = httpx.Timeout(float(timeout), connect=min(CONNECT_TIMEOUT_S, float(timeout)))
         headers = {"Authorization": f"Bearer {key}"} if key else {}
-        self._client = httpx.Client(base_url=self.base_url, headers=headers, timeout=timeout, transport=transport)
+        self._client = httpx.Client(base_url=self.base_url, headers=headers, timeout=self.timeout, transport=transport)
 
     def __repr__(self) -> str:  # never show the key
         return f"OpenAIImageModel(base_url={self.base_url!r}, model={self.model!r})"
@@ -182,15 +236,26 @@ class OpenAIImageModel:
         return text.replace(self._key, "[redacted]") if self._key else text
 
     def _post(self, path: str, **kwargs: Any) -> httpx.Response:
-        try:
-            response = self._client.post(path, **kwargs)
-        except httpx.HTTPError as exc:
-            raise RuntimeError(self._scrub(f"image API {path} request failed: {type(exc).__name__}")) from None
-        if response.status_code >= 400:
-            raise RuntimeError(
-                self._scrub(f"image API {path} returned HTTP {response.status_code}{self._detail(response)}")
-            )
-        return response
+        """POST with the bounded retry policy of the module docstring."""
+        attempt = 0
+        while True:
+            try:
+                response = self._client.post(path, **kwargs)
+            except httpx.HTTPError as exc:
+                if attempt < self.max_retries and retryable_error(exc):
+                    self._sleep(backoff_s(attempt, None))
+                    attempt += 1
+                    continue
+                raise RuntimeError(self._scrub(f"image API {path} request failed: {type(exc).__name__}")) from None
+            if response.status_code in RETRY_STATUSES and attempt < self.max_retries:
+                self._sleep(backoff_s(attempt, response))
+                attempt += 1
+                continue
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    self._scrub(f"image API {path} returned HTTP {response.status_code}{self._detail(response)}")
+                )
+            return response
 
     def _detail(self, response: httpx.Response) -> str:
         try:
@@ -218,7 +283,7 @@ class OpenAIImageModel:
             # Some compatible providers return a short-lived URL instead of base64. It is a
             # different host, so it is fetched without our Authorization header.
             try:
-                with httpx.Client(transport=self._transport, timeout=self._timeout) as plain:
+                with httpx.Client(transport=self._transport, timeout=self.timeout) as plain:
                     fetched = plain.get(url)
             except httpx.HTTPError:
                 fetched = None
@@ -230,10 +295,18 @@ class OpenAIImageModel:
 
 __all__ = [
     "ASPECT_TOLERANCE",
+    "CONNECT_TIMEOUT_S",
+    "DEFAULT_MAX_RETRIES",
     "DEFAULT_MODEL",
+    "DEFAULT_TIMEOUT_S",
     "DEFAULT_URL",
+    "MAX_BACKOFF_S",
+    "RETRY_BACKOFF_S",
+    "RETRY_STATUSES",
     "SUPPORTED_SIZES",
     "OpenAIImageModel",
+    "backoff_s",
     "closest_size",
     "fit_to_size",
+    "retryable_error",
 ]

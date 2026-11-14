@@ -16,17 +16,27 @@ Images are prepared with Pillow before they are sent:
 
 Env: ``ANTHROPIC_API_KEY`` (read by the SDK) and ``STITCH_VISION_MODEL`` (default
 ``agent.studio.DEFAULT_MODEL``). Tests inject a fake ``client`` with a ``messages.create``.
+
+Bounded like the studio model, so a hung vision call cannot stall a run: the SDK client is
+built with ``timeout`` seconds per request and ``max_retries`` retries (the SDK retries
+connection errors, timeouts and HTTP 408/409/429/5xx with backoff). Both default to the run
+limits for Claude requests, ``agent.guards.RunLimits.model_timeout_s`` and
+``model_max_retries`` (env ``STITCH_MODEL_TIMEOUT_S``, default 120, and
+``STITCH_MODEL_MAX_RETRIES``, default 2). An injected ``client`` keeps its own settings.
 """
 
 from __future__ import annotations
 
 import base64
 import io
+import math
 import os
 from collections.abc import Sequence
 from typing import Any
 
 from PIL import Image, ImageOps
+
+from agent.guards import RunLimits
 
 MAX_EDGE = 1568
 """Long edge (px) above which an image is downscaled before it is sent."""
@@ -105,7 +115,15 @@ def _text_of(response: Any) -> str:
 class AnthropicVision:
     """``photos.VisionModel`` over the Anthropic Messages API."""
 
-    def __init__(self, *, model: str | None = None, client: Any | None = None, max_tokens: int = 1500) -> None:
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        client: Any | None = None,
+        max_tokens: int = 1500,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+    ) -> None:
         if model is None:
             model = os.environ.get(MODEL_ENV)
         if not model:
@@ -114,12 +132,22 @@ class AnthropicVision:
             model = DEFAULT_MODEL
         self.model = model
         self.max_tokens = max_tokens
+        if timeout is None or max_retries is None:
+            limits = RunLimits.from_env()
+            timeout = limits.model_timeout_s if timeout is None else timeout
+            max_retries = limits.model_max_retries if max_retries is None else max_retries
+        if not (isinstance(timeout, (int, float)) and math.isfinite(timeout) and timeout > 0):
+            raise ValueError(f"timeout must be a number of seconds > 0, got {timeout!r}")
+        if not isinstance(max_retries, int) or max_retries < 0:
+            raise ValueError(f"max_retries must be a whole number >= 0, got {max_retries!r}")
+        self.timeout = float(timeout)
+        self.max_retries = max_retries
         if client is None:
             if not os.environ.get(API_KEY_ENV):
                 raise RuntimeError(f"{API_KEY_ENV} is not set; AnthropicVision needs it (or an injected client)")
             import anthropic
 
-            client = anthropic.Anthropic()
+            client = anthropic.Anthropic(timeout=self.timeout, max_retries=self.max_retries)
         self.client = client
 
     def describe(self, images: Sequence[bytes], prompt: str) -> str:

@@ -246,28 +246,22 @@ def make_set_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[BaseT
         Args:
             place: The place in plain words, e.g. "the church steps" or "Grandma's kitchen".
         """
-        found = _find_sets(repo, family_id, place, FIND_LIMIT)
+        try:
+            found = _find_sets(repo, family_id, place, FIND_LIMIT)
+        except Exception as exc:  # noqa: BLE001 - a failed search must not end the run
+            log.warning("find_set failed: %s: %s", type(exc).__name__, exc)
+            return f"error: could not search the family's places ({type(exc).__name__}); try again"
         if not found:
             return NO_MATCH
         return json.dumps([_set_brief(s) for s in found], ensure_ascii=False)
 
-    @tool(parse_docstring=True)
-    def generate_set_layer(
+    def _generate_layer(
         place: str,
         layer: LayerName,
         description: str,
-        marks: dict[str, list[float]] | None = None,
-        reference_photo_id: str | None = None,
+        marks: dict[str, list[float]] | None,
+        reference_photo_id: str | None,
     ) -> str:
-        """Generate one paper layer of a new place and save it to the place's set. Call once per layer (back, middle, front) with the same place; marks given on any call are merged into the set.
-
-        Args:
-            place: The place's name, the same on every call for one place, e.g. "St. Mary's church steps".
-            layer: "back" (far background, full height), "middle" (the main structure) or "front" (low foreground pieces).
-            description: What this layer shows, from the story and photos only, e.g. "brick church front with wide stone steps".
-            marks: Named places where people stand, name -> [u, h] or [u, h, d]. u is 0 (left) to 1 (right), h is the standing height (0 is the ground, at most 1.5), d is the optional depth 0 to 1. Names are snake_case, e.g. {"steps_top": [0.6, 0.3]}.
-            reference_photo_id: Optional id of one of this telling's photos to draw the layer from.
-        """
         if layer not in LAYER_DEPTH:
             return f"error: layer must be 'back', 'middle' or 'front', got {layer!r}; nothing was saved"
         if not place.strip():
@@ -345,6 +339,29 @@ def make_set_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[BaseT
             # The run's image budget is spent (not a failed call): say so, so the agent does not retry.
             result["note"] = budget_note(art.max_images_per_run or 0, f"the {layer} layer of {saved.name}")
         return json.dumps(result, ensure_ascii=False)
+
+    @tool(parse_docstring=True)
+    def generate_set_layer(
+        place: str,
+        layer: LayerName,
+        description: str,
+        marks: dict[str, list[float]] | None = None,
+        reference_photo_id: str | None = None,
+    ) -> str:
+        """Generate one paper layer of a new place and save it to the place's set. Call once per layer (back, middle, front) with the same place; marks given on any call are merged into the set.
+
+        Args:
+            place: The place's name, the same on every call for one place, e.g. "St. Mary's church steps".
+            layer: "back" (far background, full height), "middle" (the main structure) or "front" (low foreground pieces).
+            description: What this layer shows, from the story and photos only, e.g. "brick church front with wide stone steps".
+            marks: Named places where people stand, name -> [u, h] or [u, h, d]. u is 0 (left) to 1 (right), h is the standing height (0 is the ground, at most 1.5), d is the optional depth 0 to 1. Names are snake_case, e.g. {"steps_top": [0.6, 0.3]}.
+            reference_photo_id: Optional id of one of this telling's photos to draw the layer from.
+        """
+        try:
+            return _generate_layer(place, layer, description, marks, reference_photo_id)
+        except Exception as exc:  # noqa: BLE001 - e.g. the family store failing: a failed layer must not end the run
+            log.warning("generate_set_layer failed: %s: %s", type(exc).__name__, exc)
+            return f"error: could not save the {layer} layer ({type(exc).__name__}); try again"
 
     return [find_set, generate_set_layer]
 
