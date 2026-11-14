@@ -732,7 +732,11 @@ def test_start_run_inside_a_running_loop_returns_at_once(harnesses: list[Harness
 # ------------------------------------------------------------------ module seam
 
 
-def test_module_functions_delegate_to_the_configured_manager(harnesses: list[Harness]) -> None:
+def test_module_functions_delegate_to_the_configured_manager(
+    harnesses: list[Harness], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without a key, get_manager() cannot build the production manager (never a real one in tests).
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     runs.configure(None)
     with pytest.raises(RuntimeError, match="not configured"):
         runs.get_manager()
