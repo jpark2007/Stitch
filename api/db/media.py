@@ -26,7 +26,7 @@ from typing import Literal, get_args
 import gridfs
 from bson import ObjectId
 from bson.errors import InvalidId
-from gridfs.errors import CorruptGridFile, NoFile
+from gridfs.errors import CorruptGridFile, FileExists, NoFile
 from PIL import Image
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
@@ -177,7 +177,13 @@ def put_media(
         return str(oid)
 
     if fixed is not None:
-        _bucket(db).upload_from_stream_with_id(fixed, filename or "", data, metadata=metadata)
+        try:
+            _bucket(db).upload_from_stream_with_id(fixed, filename or "", data, metadata=metadata)
+        except (FileExists, DuplicateKeyError) as exc:
+            # Another writer took this id between the check above and the upload. Real
+            # GridFS reports that as FileExists (a GridFSError, not a DuplicateKeyError);
+            # raise what the inline store raises, so callers see one error either way.
+            raise ValueError(f"media id already exists: {fixed}") from exc
         return str(fixed)
     oid = _bucket(db).upload_from_stream(filename or "", data, metadata=metadata)
     return str(oid)
