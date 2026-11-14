@@ -27,9 +27,9 @@ from collections.abc import Callable, Mapping
 
 from screenplay import body as gen
 from screenplay import motion
-from screenplay.ik import RIG, Body, arm_bones, scale
+from screenplay.ik import RIG, Body, arm_bones
 from screenplay.schema import Action
-from screenplay.state import HANDS, SEATED_POSES, StateError, World
+from screenplay.state import HEAD, SEATED_POSES, StateError, World
 from screenplay.tracks import TrackSet
 
 Vec3 = tuple[float, float, float]
@@ -49,9 +49,20 @@ HUG_GAP = 0.18        # stage units between two hugging roots
 HUG_SLACK = 0.02      # no walk when already within HUG_GAP + HUG_SLACK
 
 __all__ = [
-    "BONES", "HANDLERS", "HUG_GAP", "HUG_SLACK", "Handler", "Locate", "SEAT_WALK_EPS",
-    "apply_hug", "apply_kneel", "apply_lean_toward", "apply_point_at", "apply_sit_on",
-    "apply_stand_up", "apply_wave",
+    "BONES",
+    "HANDLERS",
+    "HUG_GAP",
+    "HUG_SLACK",
+    "SEAT_WALK_EPS",
+    "Handler",
+    "Locate",
+    "apply_hug",
+    "apply_kneel",
+    "apply_lean_toward",
+    "apply_point_at",
+    "apply_sit_on",
+    "apply_stand_up",
+    "apply_wave",
 ]
 
 
@@ -66,6 +77,12 @@ def _who(world: World, action: Action) -> str:
     if who is None or who not in world.people:
         raise StateError("unknown_id", f"{who} is not in the cast")
     return who
+
+
+def _on_stage(world: World, who: str) -> None:
+    """Gestures and postures need the puppet on stage; ``enter`` brings it on (as verbs_core)."""
+    if not world.on_stage(who):
+        raise StateError("offstage", f"{who} is offstage; use enter first")
 
 
 def _require(action: Action, field: str) -> str:
@@ -164,6 +181,7 @@ def apply_wave(world: World, tracks: TrackSet, action: Action, t: float, action_
                locate: Locate) -> float:
     """wave(target?, dur=1.2): raise an arm and wave; turn first to face ``target`` if behind."""
     who = _who(world, action)
+    _on_stage(world, who)
     dur = _dur(action, WAVE_SECONDS)
     toward_x = None if action.target is None else locate(action.target, t)[0]
     me = _body(world, tracks, who, t)
@@ -177,6 +195,7 @@ def apply_point_at(world: World, tracks: TrackSet, action: Action, t: float, act
                    locate: Locate) -> float:
     """point_at(target, dur=1.0): aim the point pose at the target's stage position."""
     who = _who(world, action)
+    _on_stage(world, who)
     target = _require(action, "target")
     dur = _dur(action, POINT_SECONDS)
     at = locate(target, t)
@@ -191,6 +210,7 @@ def apply_lean_toward(world: World, tracks: TrackSet, action: Action, t: float, 
                       locate: Locate) -> float:
     """lean_toward(target, dur=1.0): face the target and lean the torso toward it."""
     who = _who(world, action)
+    _on_stage(world, who)
     target = _require(action, "target")
     dur = _dur(action, LEAN_SECONDS)
     x = locate(target, t)[0]
@@ -216,10 +236,15 @@ def apply_sit_on(world: World, tracks: TrackSet, action: Action, t: float, actio
     """sit_on(what, socket?): walk to the seat if needed, then sit with the hips on the socket."""
     who = _who(world, action)
     what = _require(action, "what")
-    if world.is_vehicle(what):
-        raise StateError("vehicle", f"{what} is a vehicle; use get_in")
-    socket = world.copy().sit_on(who, what, action.socket)  # validates; the world is untouched
+    # World.sit_on validates (unknown_id, vehicle_seat, already_seated, no_seat, unknown_socket,
+    # socket_taken) on a copy, so the real world is untouched until every check has passed.
+    socket = world.copy().sit_on(who, what, action.socket)
+    _on_stage(world, who)
     _not_standing(world, who)
+    holder = world.holder(what)
+    if holder is not None:
+        verb = "wearing" if holder[1] == HEAD else "holding"
+        raise StateError("held", f"{holder[0]} is {verb} it")
     seat = world.socket_world(what, socket)
     anchor = world.props[what].world_pos
     if seat is None or anchor is None:
@@ -274,6 +299,7 @@ def apply_kneel(world: World, tracks: TrackSet, action: Action, t: float, action
     who = _who(world, action)
     dur = None if action.dur is None else _dur(action, 0.0)
     world.copy().kneel(who)  # validates: seated
+    _on_stage(world, who)
     p = world.people[who]
     if p.pose == "kneel":
         raise StateError("already_kneeling", f"{who} is already kneeling")

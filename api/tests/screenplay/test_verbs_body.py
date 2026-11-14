@@ -163,7 +163,7 @@ def test_wave_uses_the_free_left_arm_when_the_right_hand_is_full(world):
 
 
 def test_wave_with_both_hands_full_uses_the_right_arm_and_keeps_the_prop(world):
-    begin(world, {"mom": {"at": "mid", "holding": "hymn_books"}})
+    begin(world, {"mom": {"at": "mid", "holding": "hymn_books"}}, {"hat": {"at": "mid"}})
     assert world.pick_up("mom", "hat") == "hand_l"
     tracks = TrackSet()
     tracks.add("puppet:mom", "arm_r.upper.rot", 0.0, 0.3)  # in the hold pose
@@ -298,13 +298,30 @@ def test_sit_on_errors(world):
     tracks = TrackSet()
     fails(world, tracks, "no_seat", "hymn_books has nowhere to sit", 3.0, "sit_on", who="dad", what="hymn_books")
     fails(world, tracks, "not_on_stage", "stool is not on stage", 3.0, "sit_on", who="dad", what="stool")
-    fails(world, tracks, "vehicle", "sedan is a vehicle; use get_in", 3.0, "sit_on", who="dad", what="sedan")
+    fails(world, tracks, "vehicle_seat", "sedan is a vehicle; use get_in", 3.0, "sit_on", who="dad", what="sedan")
     fails(world, tracks, "unknown_socket", "chair has no socket arm", 3.0, "sit_on", who="dad", what="chair", socket="arm")
     fails(world, tracks, "unknown_id", "piano is not a known prop", 3.0, "sit_on", who="dad", what="piano")
     fails(world, tracks, "not_standing", "kid is kneeling; stand_up first", 3.0, "sit_on", who="kid", what="chair")
     run(world, tracks, 3.0, "sit_on", who="mom", what="chair")
     fails(world, tracks, "socket_taken", "chair.seat is taken by mom", 4.0, "sit_on", who="dad", what="chair")
     fails(world, tracks, "already_seated", "mom is seated in chair.seat", 4.0, "sit_on", who="mom", what="chair")
+
+
+def test_sit_on_a_vehicle_is_the_worlds_vehicle_seat_error_and_no_local_check_is_left(world):
+    begin(world, {"dad": {"at": "left"}}, {"sedan": {"at": "right"}})
+    tracks = TrackSet()
+    fails(world, tracks, "vehicle_seat", "sedan is a vehicle; use get_in", 3.0, "sit_on", who="dad", what="sedan")
+    src = inspect.getsource(verbs_body)
+    assert "is_vehicle" not in src and '"vehicle"' not in src  # World.sit_on owns the check
+
+
+def test_sit_on_a_held_or_offstage_prop_or_from_offstage(world):
+    begin(world, {"dad": {"at": "left", "holding": "stool"}, "mom": {"at": "mid"}, "kid": {"at": "offstage_right"}},
+          {"chair": {"at": "chair_spot"}})
+    tracks = TrackSet()
+    fails(world, tracks, "held", "dad is holding it", 3.0, "sit_on", who="mom", what="stool")
+    fails(world, tracks, "held", "dad is holding it", 3.0, "sit_on", who="dad", what="stool")
+    fails(world, tracks, "offstage", "kid is offstage; use enter first", 3.0, "sit_on", who="kid", what="chair")
 
 
 # ------------------------------------------------------------------ stand_up
@@ -407,6 +424,16 @@ def test_kneel_errors(world):
     fails(world, tracks, "already_kneeling", "mom is already kneeling", 3.0, "kneel", who="mom")
     fails(world, tracks, "not_standing", "kid is sitting on the floor; stand_up first", 3.0, "kneel", who="kid")
     fails(world, tracks, "bad_dur", "dur must be a positive number of seconds, got 0.0", 3.0, "kneel", who="kid", dur=0)
+
+
+def test_gestures_and_kneel_refuse_an_offstage_puppet(world):
+    begin(world, {"mom": {"at": "mid"}})  # dad is not listed: he waits offstage
+    tracks = TrackSet()
+    for do, params in [("wave", {}), ("point_at", {"target": "mom"}), ("lean_toward", {"target": "mom"}),
+                       ("kneel", {})]:
+        fails(world, tracks, "offstage", "dad is offstage; use enter first", 3.0, do, who="dad", **params)
+    fails(world, tracks, "offstage", "dad is offstage", 3.0, "hug", who="dad", target="mom")
+    fails(world, tracks, "unknown_id", "ghost is not in the cast", 3.0, "wave", who="ghost")
 
 
 # ------------------------------------------------------------------ hug
