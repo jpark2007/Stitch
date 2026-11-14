@@ -187,7 +187,10 @@
       "target": "puppet:grandpa_joseph",
       "text": "Joseph drove every mile himself. Nobody else was allowed behind the wheel of the green sedan."
     },
-    {"target": "puppet:grandma_rosa", "text": "Rosa packed sandwiches nobody ate, because of the peaches."},
+    {
+      "target": "puppet:grandma_rosa",
+      "text": "Rosa rode up front and packed sandwiches nobody ate, because of the peaches. She is the one who remembers how sick David got."
+    },
     {
       "target": "prop:green_sedan",
       "text": "The family car, a green 1968 sedan. Joseph bought it secondhand and kept it until 1984."
