@@ -109,7 +109,7 @@ function ShotFeed({ shot, keep }: { shot: StageShot; keep: RefObject<Group | nul
 
 export function MomentStage({ controller, scene, spread, fonts, reveal, view, shot, size, freezeAt = null, onReady }: MomentStageProps) {
   const tellers: BookTeller[] = useMemo(() => spread.tellings ?? [], [spread]);
-  const gate = useRef({ ready: false, armed: true, awayPaused: false, endedAt: 0 });
+  const gate = useRef({ ready: false, armed: true, awayPaused: false, endedAt: 0, lastView: -1 });
   const [ready, setReady] = useState(false);
   const readyRef = useRef(onReady);
   useEffect(() => {
@@ -163,10 +163,14 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
       }
       return;
     }
+    const viewMoved = v !== g.lastView;
+    g.lastView = v;
     if (g.armed) {
       if (!g.ready || r < OPEN_TO_PLAY || v < VIEW_TO_PLAY) {
-        // Keep drawing while the page settles or the camera pans in.
-        if (g.ready && r >= OPEN_TO_PLAY) state.invalidate();
+        // Keep drawing while the page settles or the camera pans in (the
+        // book draws those frames too); never while the reader rests on
+        // the story page of a phone, where nothing moves.
+        if (g.ready && r >= OPEN_TO_PLAY && (r < 1 || viewMoved)) state.invalidate();
         return;
       }
       g.armed = false;
