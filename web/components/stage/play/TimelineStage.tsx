@@ -11,9 +11,10 @@
  * control updates around it never touch the 3D tree.
  */
 
-import { memo, type ReactNode } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 import type { PlaybackController } from "../playback";
 import { Stage } from "../Stage";
+import { createGrade } from "./grade";
 import { TimelineScene } from "./TimelineScene";
 import type { SceneData } from "./scene";
 
@@ -43,9 +44,11 @@ export const TimelineStage = memo(function TimelineStage({
   onReady,
   overlay,
 }: TimelineStageProps) {
+  // The timeline's time of day re-lights the lamp through this shared grade.
+  const grade = useMemo(() => createGrade(), []);
   return (
-    <Stage className={className} camera={null} dof={dof} overlay={overlay}>
-      <TimelineScene controller={controller} scene={scene} camera orbit={orbit} lift={lift} onReady={onReady} />
+    <Stage className={className} camera={null} dof={dof} overlay={overlay} grade={grade}>
+      <TimelineScene controller={controller} scene={scene} camera orbit={orbit} lift={lift} onReady={onReady} grade={grade} />
     </Stage>
   );
 });

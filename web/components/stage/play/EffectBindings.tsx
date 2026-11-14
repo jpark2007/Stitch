@@ -8,22 +8,34 @@
  *   (stage space) between t and t + dur. Particles are pure functions of
  *   stage time, which here is the player's scene time, so they pause, scrub
  *   and freeze with the scene.
- * - time_of_day: a soft tinted fill that blends between the frame's
- *   timeOfDayFrom and timeOfDay by timeOfDayMix (dawn and dusk warm the
- *   paper, night cools and dims it with a blue wash, day is neutral).
+ * - time_of_day: with the host's light `grade` (the standalone stage), the
+ *   frame's timeOfDayFrom -> timeOfDay blend by timeOfDayMix re-lights the
+ *   lamp (./grade: night dims and cools it, dusk warms it and keeps the rim).
+ *   A host without one (the book's own lights) gets a soft tinted fill
+ *   instead (dawn and dusk warm the paper, night adds a blue wash).
  */
 
 import { useFrame } from "@react-three/fiber";
 import { useMemo, useRef } from "react";
 import { Color, type HemisphereLight } from "three";
 import { PaperEffect, type EffectKind } from "../Effects";
-import { useScene } from "./SceneProvider";
+import { blendGrade, type StageGrade } from "./grade";
+import { PRIORITY, useScene } from "./SceneProvider";
 
 const PARTICLES: ReadonlySet<string> = new Set<EffectKind>(["confetti", "steam", "rain", "smoke"]);
 /** Effects with no duration run this long (seconds). */
 const DEFAULT_DUR = 3;
 
-export function EffectBindings() {
+export interface EffectBindingsProps {
+  /**
+   * The host lights' time-of-day grade (<StageLights grade>): blended here
+   * from the frame every frame, so time_of_day re-lights the lamp. Without
+   * one, time_of_day falls back to a soft tinted fill of its own.
+   */
+  grade?: StageGrade | null;
+}
+
+export function EffectBindings({ grade = null }: EffectBindingsProps) {
   const { scene } = useScene();
   const effects = useMemo(
     () =>
@@ -49,9 +61,18 @@ export function EffectBindings() {
           />
         );
       })}
-      {hasTimeOfDay && <TimeOfDayLight />}
+      {grade ? <GradeBinding grade={grade} /> : hasTimeOfDay && <TimeOfDayLight />}
     </>
   );
+}
+
+/** Blends the frame's time of day into the host's light grade (day when there is none). */
+function GradeBinding({ grade }: { grade: StageGrade }) {
+  const { frame } = useScene();
+  useFrame(() => {
+    blendGrade(grade, frame.timeOfDayFrom, frame.timeOfDay, frame.timeOfDayMix);
+  }, PRIORITY.pose);
+  return null;
 }
 
 /** Tint and strength of the fill light per time of day (parsed once). */

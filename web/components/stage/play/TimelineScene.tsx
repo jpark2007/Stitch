@@ -44,6 +44,7 @@ import type { PlaybackController } from "../playback";
 import type { OpenSource } from "../SetPiece";
 import { CameraBinding } from "./CameraBinding";
 import { EffectBindings } from "./EffectBindings";
+import type { StageGrade } from "./grade";
 import { SetLayers } from "./LayerBinding";
 import { PropBinding } from "./PropBinding";
 import { PuppetActor } from "./PuppetActor";
@@ -102,6 +103,12 @@ export interface TimelineSceneProps {
   reveal?: OpenSource;
   /** Called once the scene is fully drawn (all art in, shadows settled). */
   onReady?: () => void;
+  /**
+   * The host lights' time-of-day grade (createGrade(), applied by <StageLights
+   * grade>): time_of_day effects re-light the lamp through it. Without one
+   * they add a soft tinted fill.
+   */
+  grade?: StageGrade | null;
   /** Extra things in stage space (debug markers, probes). */
   children?: ReactNode;
 }
@@ -116,6 +123,7 @@ export function TimelineScene({
   tick = true,
   reveal,
   onReady,
+  grade = null,
   children,
 }: TimelineSceneProps) {
   const { scale, origin } = useMemo(() => stageLayout(size), [size]);
@@ -123,7 +131,7 @@ export function TimelineScene({
     <SceneProvider controller={controller} scene={scene} scale={scale} origin={origin} tick={tick} reveal={reveal} onReady={onReady}>
       <SetLayers />
       <Cast />
-      <EffectBindings />
+      <EffectBindings grade={grade} />
       {camera && <CameraBinding orbit={orbit} lift={lift} />}
       {children}
     </SceneProvider>
