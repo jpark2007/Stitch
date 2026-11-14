@@ -27,7 +27,7 @@ from screenplay import ik
 from screenplay.compiler import compile as compile_screenplay
 from screenplay.schema import VOCABULARY, CompileResult, Screenplay, Timeline
 from story_scenes import STORIES, story_scene
-from timeline_sanity import CHECKS, SIT, sanity_problems, value_at
+from timeline_sanity import CHECKS, SIT, prop_position_at, sanity_problems, value_at
 
 NAMES = sorted(STORIES)
 # The scene's props, for sanity_problems: check_props_on_set then judges a grounded prop by its
@@ -198,10 +198,11 @@ def test_birthday_candles_stay_lit_into_the_backyard():
 
 
 def _ground_x(tl: Timeline, prop: str, t: float) -> float | None:
-    """The prop's x at ``t`` when it is on the ground, else None."""
-    if value_at(keys(tl, f"prop:{prop}", "parent"), t) != "ground":
+    """The prop's x at ``t`` when it is on the ground, else None (position stepped at parent keys)."""
+    parent = keys(tl, f"prop:{prop}", "parent")
+    if value_at(parent, t) != "ground":
         return None
-    return value_at(keys(tl, f"prop:{prop}", "position"), t)[0]
+    return prop_position_at(keys(tl, f"prop:{prop}", "position"), parent, t)[0]
 
 
 def _mid(tl: Timeline, shot_id: str) -> float:
@@ -539,17 +540,13 @@ def test_a_prop_put_back_at_the_same_x_on_a_new_set_is_keyed_there():
     assert sanity_problems(result.timeline, props=PROPS) == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "compiler.py _start_keys (the start `holding` keys, which are appended as they are instead of going "
-    "through _hold_then): a prop left on the kitchen floor is parked offstage at the cut to the living "
-    "room (position [-1.3, 0, 0.5] at t=4), then held from the start of the backyard shot (position "
-    "[0, 0, 0] at t=7.9) with no hold key before it, so through the whole living-room shot it glides along "
-    "the ground from offstage to centre stage (x = -0.65 halfway). With a shot between the two that has no "
-    "key for it, sanity_problems flags it too ('props_on_set: ... prop:cup is on the ground at x=...'), "
-    "which the fuzz finds outside the default corpus (story seeds 559 and 672 of a 1000-story sweep). "
-    "The start holding keys should hold the old value up to the shot's start and step there."
-))
 def test_a_prop_held_in_a_later_shot_does_not_glide_in_from_offstage():
+    """Regression: a prop left on the kitchen floor is parked offstage at the cut to the living
+    room (position [-1.3, 0, 0.5] at t=4) and held from the backyard shot's start (parent
+    puppet:kid.hand_r and position [0, 0, 0] at t=7.9). The parent key at 7.9 makes that a step
+    (CONTRACTS.md 'never interpolate across a parent change'), so it stays parked through s2.
+    This was a strict xfail blaming compiler._start_keys; the glide was only the sampler
+    interpolating across the parent change, which the stage never does."""
     result = compile_story({"memoryId": "repro", "cast": ["kid"], "props": ["cup"], "shots": [
         _wave_shot("s1", "kitchen", {"kid": {"at": "by_table"}}, {"cup": {"at": "window"}}),
         _wave_shot("s2", "living_room", {"kid": {"at": "rug"}}, {}),
@@ -557,6 +554,54 @@ def test_a_prop_held_in_a_later_shot_does_not_glide_in_from_offstage():
     ]})
     assert result.ok, messages(result)
     tl = result.timeline
+    position, parent = keys(tl, "prop:cup", "position"), keys(tl, "prop:cup", "parent")
     s2 = tl.shots[1]
     for t in (s2.start + 0.1, (s2.start + s2.end) / 2, s2.end - 0.1):
-        assert value_at(keys(tl, "prop:cup", "position"), t)[0] <= -1.0, t  # offstage through s2
+        assert value_at(parent, t) == "ground", t
+        assert prop_position_at(position, parent, t)[0] <= -1.0, t  # offstage through s2
+    assert value_at(parent, tl.shots[2].start) == "puppet:kid.hand_r"
+    assert sanity_problems(tl, props=PROPS) == []
+
+
+def test_a_prop_parked_offstage_for_two_sets_then_held_is_not_on_stage():
+    """The props_on_set false positive (before parent-aware sampling: 'props_on_set: shot s3
+    (backyard) at t=7.9: prop:cup is on the ground at x=-0.658 but has no parent or position key
+    in this shot, nor in an earlier shot of this set'): left on the kitchen floor, the cup is parked offstage
+    through the living room and the backyard and only held from the park shot's start. Sampling
+    its position linearly from the park to the parent key put it on stage at the backyard's start."""
+    sets, _, _ = story_scene()
+    for set_id, mark in (("kitchen", "window"), ("living_room", "rug"), ("backyard", "lawn_left"),
+                         ("park", "bench")):
+        assert mark in sets[set_id].marks, (set_id, mark)
+    result = compile_story({"memoryId": "repro", "cast": ["kid"], "props": ["cup"], "shots": [
+        _wave_shot("s1", "kitchen", {"kid": {"at": "by_table"}}, {"cup": {"at": "window"}}),
+        _wave_shot("s2", "living_room", {"kid": {"at": "rug"}}, {}),
+        _wave_shot("s3", "backyard", {"kid": {"at": "lawn_left"}}, {}),
+        _wave_shot("s4", "park", {"kid": {"at": "bench", "holding": "cup"}}, {}),
+    ]})
+    assert result.ok, messages(result)
+    tl = result.timeline
+    assert [s.set for s in tl.shots] == ["kitchen", "living_room", "backyard", "park"]
+    assert value_at(keys(tl, "prop:cup", "parent"), tl.shots[3].start) == "puppet:kid.hand_r"
+    for shot in ("s2", "s3"):
+        assert _ground_x(tl, "cup", _mid(tl, shot)) <= -1.0, shot
+    assert sanity_problems(tl, props=PROPS) == []
+
+
+def test_prop_position_at_steps_at_a_parent_key():
+    parent = [(0.0, "ground"), (10.0, "puppet:kid.hand_r")]
+    position = [(0.0, [0.5, 0.0, 0.5]), (4.0, [0.5, 0.0, 0.5]), (4.0, [-1.3, 0.0, 0.5]), (10.0, [0.0, 0.0, 0.0])]
+    assert prop_position_at(position, parent, 7.0) == [-1.3, 0.0, 0.5]
+    assert prop_position_at(position, parent, 10.0) == [0.0, 0.0, 0.0]
+    assert prop_position_at(position, parent, 10.0, before=True) == [-1.3, 0.0, 0.5]
+    assert prop_position_at(position, parent, 2.0) == [0.5, 0.0, 0.5]
+    assert prop_position_at(position, parent, 4.0, before=True) == [0.5, 0.0, 0.5]
+    assert prop_position_at(position, parent, 4.0) == [-1.3, 0.0, 0.5]
+    assert prop_position_at(position, parent, 12.0) == [0.0, 0.0, 0.0]
+    # The same keys through value_at's keyword; without parent times it still interpolates.
+    assert value_at(position, 7.0, parent_times=[0.0, 10.0]) == [-1.3, 0.0, 0.5]
+    assert value_at(position, 7.0) == pytest.approx([-0.65, 0.0, 0.25])
+    # A parent key with no position key in the bracket does not matter; one at t0 does not step.
+    assert prop_position_at([(0.0, [0.0, 0.0, 0.5]), (2.0, [1.0, 0.0, 0.5])], [(0.0, "ground")], 1.0) == \
+        pytest.approx([0.5, 0.0, 0.5])
+    assert prop_position_at([], parent, 1.0) is None
