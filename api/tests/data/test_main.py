@@ -22,7 +22,7 @@ from pymongo.errors import ServerSelectionTimeoutError
 
 import main
 import routes
-from db import client
+from db import client, search
 from seed.demo import DEMO_FAMILY_ID, DEMO_PASSWORD, HYMN_MEMORY_ID
 
 API_DIR = Path(__file__).resolve().parents[2]
@@ -32,11 +32,14 @@ ADMIN_EMAIL = "david@demo.stitch"
 @pytest.fixture(autouse=True)
 def _clean_env_and_db(monkeypatch: pytest.MonkeyPatch):
     """No STITCH_* env leaks in, and the db override is always restored afterwards."""
-    for name in ("STITCH_FAKE_DB", "STITCH_CORS_ORIGINS", "STITCH_AGENT", "STITCH_FAKE_RUN_STEP", "ANTHROPIC_API_KEY"):
+    for name in ("STITCH_FAKE_DB", "STITCH_CORS_ORIGINS", "STITCH_AGENT", "STITCH_FAKE_RUN_STEP", "ANTHROPIC_API_KEY",
+                 "VOYAGE_API_KEY", "VOYAGE_MODEL", "STITCH_NO_DOTENV"):
         monkeypatch.delenv(name, raising=False)
     client.set_db(None)
+    search.set_embedder(None)
     yield
     client.set_db(None)
+    search.set_embedder(None)
     runs = sys.modules.get("agent.runs")
     if runs is not None:
         runs.configure(None)
@@ -308,6 +311,177 @@ def test_startup_survives_any_index_error(mdb, monkeypatch):
         assert c.get("/health").status_code == 200
 
 
+# ------------------------------------------------------------------------------- .env files
+
+
+def test_load_env_files_sets_unset_variables_only(tmp_path, monkeypatch):
+    first = tmp_path / "api.env"
+    first.write_text("FOO_STITCH_TEST=fromfile\nBAR_STITCH_TEST=first\n")
+    second = tmp_path / "root.env"
+    second.write_text("BAR_STITCH_TEST=second\nBAZ_STITCH_TEST=root\n")
+    missing = tmp_path / "missing.env"
+    for name in ("FOO_STITCH_TEST", "BAR_STITCH_TEST", "BAZ_STITCH_TEST"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert main.load_env_files([missing, first, second]) == [first, second]
+    assert os.environ["FOO_STITCH_TEST"] == "fromfile"
+    assert os.environ["BAR_STITCH_TEST"] == "first"  # the earlier file wins
+    assert os.environ["BAZ_STITCH_TEST"] == "root"
+    for name in ("FOO_STITCH_TEST", "BAR_STITCH_TEST", "BAZ_STITCH_TEST"):
+        monkeypatch.delenv(name)
+
+
+def test_load_env_files_never_overrides_the_environment(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("FOO_STITCH_TEST=fromfile\n")
+    monkeypatch.setenv("FOO_STITCH_TEST", "fromenv")
+    assert main.load_env_files([env_file]) == [env_file]
+    assert os.environ["FOO_STITCH_TEST"] == "fromenv"
+
+
+def test_load_env_files_skips_missing_files_and_directories(tmp_path):
+    assert main.load_env_files([tmp_path / "nope.env", tmp_path]) == []
+    assert main.load_env_files([]) == []
+
+
+def test_env_files_are_api_then_repo_root():
+    assert main.ENV_FILES == (API_DIR / ".env", API_DIR.parent / ".env")
+
+
+def test_dotenv_is_never_loaded_under_pytest(monkeypatch):
+    assert "pytest" in sys.modules
+    assert main.dotenv_enabled() is False
+    assert main.LOADED_ENV_FILES == []
+    monkeypatch.setenv("STITCH_NO_DOTENV", "0")
+    assert main.dotenv_enabled() is False
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, True), ("", True), ("0", True), ("1", False),
+                                               ("true", False), ("YES", False)])
+def test_dotenv_enabled_outside_pytest_honours_stitch_no_dotenv(monkeypatch, raw, expected):
+    monkeypatch.delitem(sys.modules, "pytest")  # restored by monkeypatch after the test
+    if raw is not None:
+        monkeypatch.setenv("STITCH_NO_DOTENV", raw)
+    assert main.dotenv_enabled() is expected
+
+
+def test_env_files_load_before_anything_reads_the_environment():
+    """db.client reads EMBEDDING_DIM and MONGODB_URI on import, so the .env load comes first."""
+    import ast
+
+    tree = ast.parse((API_DIR / "main.py").read_text())
+    load_line = next(
+        node.lineno for node in tree.body
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "LOADED_ENV_FILES"
+    )
+    project_imports = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        else:
+            continue
+        if any(n.split(".")[0] in {"db", "routes", "auth", "schemas", "seed", "agent"} for n in names):
+            project_imports.append(node.lineno)
+    assert project_imports, "main.py imports routes and db"
+    assert load_line < min(project_imports)
+
+
+def test_startup_logs_no_env_values(mdb, monkeypatch, caplog, tmp_path):
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(main, "LOADED_ENV_FILES", [env_file])
+    monkeypatch.setenv("VOYAGE_API_KEY", "pa-secret-value-never-logged")
+    client.set_db(mdb)
+    caplog.set_level(logging.INFO)
+    with TestClient(main.create_app()):
+        pass
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(str(env_file) in m and "Environment loaded" in m for m in messages), messages
+    assert not any("pa-secret-value-never-logged" in m for m in messages)
+
+
+# ------------------------------------------------------------------------------- embeddings
+
+
+def test_fake_db_mode_never_installs_an_embedder(monkeypatch, caplog):
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_AGENT", "off")
+    monkeypatch.setenv("VOYAGE_API_KEY", "pa-test-not-a-key")
+    caplog.set_level(logging.INFO)
+    with TestClient(main.create_app()) as c:
+        assert search._embedder is None
+        _login(c)
+        assert c.post(f"/families/{DEMO_FAMILY_ID}/ask", json={"query": "hymn books"}).status_code == 200
+    assert search._embedder is None
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("STITCH_FAKE_DB ignores VOYAGE_API_KEY" in m for m in messages), messages
+    assert not any("pa-test-not-a-key" in m for m in messages)
+
+
+def test_real_db_with_a_voyage_key_installs_the_embedder(mdb, monkeypatch, caplog):
+    def no_network(*_args, **_kwargs):
+        raise AssertionError("startup must not call the embeddings API")
+
+    monkeypatch.setattr("urllib.request.urlopen", no_network)
+    monkeypatch.setenv("STITCH_AGENT", "off")
+    monkeypatch.setenv("VOYAGE_API_KEY", "pa-test-not-a-key")
+    monkeypatch.setenv("VOYAGE_MODEL", "voyage-3.5-lite")
+    client.set_db(mdb)
+    caplog.set_level(logging.INFO)
+    try:
+        with TestClient(main.create_app()) as c:
+            assert c.get("/health").status_code == 200
+            installed = search._embedder
+            assert callable(installed)
+            assert installed.model == "voyage-3.5-lite"
+            assert installed.dimensions == client.VECTOR_DIM
+        # Shutdown puts back what was there before (nothing).
+        assert search._embedder is None
+    finally:
+        search.set_embedder(None)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("Vector search embeddings on" in m and "voyage-3.5-lite" in m for m in messages), messages
+    assert not any("pa-test-not-a-key" in m for m in messages)
+
+
+def test_real_db_without_a_voyage_key_has_no_embedder(mdb, monkeypatch, caplog):
+    monkeypatch.setenv("STITCH_AGENT", "off")
+    monkeypatch.setenv("VOYAGE_API_KEY", "   ")
+    client.set_db(mdb)
+    caplog.set_level(logging.INFO)
+    with TestClient(main.create_app()):
+        assert search._embedder is None
+    assert any("Vector search embeddings off" in r.getMessage() for r in caplog.records)
+
+
+def test_real_db_startup_survives_an_embedder_that_cannot_be_built(mdb, monkeypatch, caplog):
+    def broken():
+        raise RuntimeError("bad config")
+
+    monkeypatch.setattr(main, "embedder_from_env", broken)
+    monkeypatch.setenv("STITCH_AGENT", "off")
+    client.set_db(mdb)
+    caplog.set_level(logging.WARNING)
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+        assert search._embedder is None
+    assert any("could not be built" in r.getMessage() for r in caplog.records)
+
+
+def test_shutdown_restores_an_embedder_installed_before_startup(mdb, monkeypatch):
+    monkeypatch.setenv("STITCH_AGENT", "off")
+
+    def mine(text):
+        return [1.0]
+
+    search.set_embedder(mine)
+    client.set_db(mdb)
+    with TestClient(main.create_app()):
+        assert search._embedder is None  # no VOYAGE_API_KEY: startup turns embeddings off
+    assert search._embedder is mine
+
+
 # ------------------------------------------------------------------------------- no agent import
 
 _NO_AGENT_SCRIPT = textwrap.dedent(
@@ -373,6 +547,7 @@ def test_app_and_read_routes_never_import_agent():
     env.update({
         "STITCH_FAKE_DB": "1",
         "STITCH_AGENT": "off",
+        "STITCH_NO_DOTENV": "1",  # not under pytest here: never read a developer's api/.env
         "ANTHROPIC_API_KEY": "sk-ant-test-not-a-key",
         "JWT_SECRET": os.environ["JWT_SECRET"],
     })
