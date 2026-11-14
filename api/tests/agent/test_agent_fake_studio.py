@@ -266,8 +266,10 @@ def test_new_memory_run_end_to_end(harnesses: list[Harness]) -> None:
     run_id = h.start()
 
     # The prop review pauses the run.
+    # set_designer runs in parallel with prop_master, so its subagent_end may land after
+    # props_found; only require that props_found has arrived and the run is waiting.
     assert h.wait(run_id) == "waiting"
-    assert h.names(run_id)[-1] == "props_found"
+    assert "props_found" in h.names(run_id)
     assert h.manager.status(FAMILY, run_id) == "waiting"
     events = h.run_through(run_id, KEEP)
     names = [n for n, _ in events]
@@ -529,6 +531,25 @@ def test_second_telling_links_someone_new_to_the_moment(harnesses: list[Harness]
     memory = saved_memory(h, events)
     assert "gran" in memory.participant_ids and "dad" in memory.participant_ids
     assert [q.person_id for q in h.repo.list_questions(FAMILY)] == ["gran"]
+
+
+def test_second_telling_does_not_relink_a_participant_who_was_not_cast(harnesses: list[Harness]) -> None:
+    h = make(harnesses)
+    dad = h.repo.get_person(FAMILY, "dad")
+    assert dad is not None
+    h.repo.add_person(FAMILY, dad.model_copy(update={"id": "gran", "name": "Rosa"}))
+    first_run = h.start(participant_ids=["dad", "gran"])
+    original = saved_memory(h, h.run_through(first_run, KEEP))
+    assert original.screenplay is not None and original.screenplay.cast == ["mom", "dad"]
+    assert set(original.participant_ids) == {"mom", "dad", "gran"}
+    assert sorted(q.person_id for q in h.repo.list_questions(FAMILY)) == ["dad", "gran"]
+
+    second_run = h.start(person_id="dad", text=DAD_STORY, memory_id=original.id, participant_ids=["mom", "gran"])
+    events = h.run_through(second_run)
+    assert [n for n, _ in events][-1] == "done"
+    starts = [p.name for n, p in events if n == "subagent_start"]  # type: ignore[attr-defined]
+    assert starts == ["narrator", "checker", "narrator"]  # gran is already in the moment: no linker
+    assert sorted(q.person_id for q in h.repo.list_questions(FAMILY)) == ["dad", "gran"]
 
 
 # --------------------------------------------------------------------------- unit pieces

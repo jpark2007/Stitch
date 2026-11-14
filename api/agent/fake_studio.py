@@ -453,7 +453,19 @@ def _studio_second_telling(s: _Script, ctx: dict[str, Any], story: FakeStory) ->
         s.finish(f"{teller_name}'s telling could not be saved: {(saved or 'save_memory is not available').strip()}")
     memory_id = match.group(1)  # type: ignore[union-attr]
 
-    new = [p for p in dict.fromkeys(ctx.get("participantIds") or []) if p != teller and p not in cast]
+    # "New to the moment" means not yet in the saved memory's participants (which include
+    # people linked by an earlier run but never cast). The teller is a participant once
+    # saved, so find_memories(person_id=teller) lists the moment; fall back to the cast.
+    already = set(cast)
+    try:
+        briefs = json.loads(s.one("find_memories", {"person_id": teller}, todos=_todos(items, 4)) or "[]")
+    except ValueError:
+        briefs = []
+    for brief in briefs if isinstance(briefs, list) else []:
+        if isinstance(brief, dict) and brief.get("id") == memory_id:
+            already |= set(brief.get("participants") or [])
+            break
+    new = [p for p in dict.fromkeys(ctx.get("participantIds") or []) if p != teller and p not in already]
     if new:
         s.one(*_task("linker", f"Add memory {memory_id} to the books of the people new to it.",
                      {**base, "memoryId": memory_id, "place": story.place, "prop": story.prop,
