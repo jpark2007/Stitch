@@ -194,6 +194,32 @@ def _descendant_ids(docs: list[dict[str, Any]], person_id: str) -> set[str]:
     return seen
 
 
+def _ancestor_ids(docs: list[dict[str, Any]], person_id: str) -> set[str]:
+    """Everyone above person_id through parentIds, in the given docs (pure).
+
+    Parent ids with no doc in ``docs`` are still included; the walk stops there.
+    """
+    parents = {doc["_id"]: list(doc.get("parentIds") or []) for doc in docs}
+    seen: set[str] = set()
+    queue = deque([person_id])
+    while queue:
+        for parent in parents.get(queue.popleft(), []):
+            if parent not in seen:
+                seen.add(parent)
+                queue.append(parent)
+    seen.discard(person_id)  # only possible with a cycle in bad data
+    return seen
+
+
+def _lineage_docs(db: Database, family_id: str) -> list[dict[str, Any]]:
+    return list(db[COLLECTION].find({"familyId": family_id}, {"_id": 1, "parentIds": 1}))
+
+
+def _reject_spouse_in_lineage(spouse_ids: list[str], lineage: set[str]) -> None:
+    if lineage & set(spouse_ids):
+        raise InvalidRelation("a person cannot be married to their own ancestor or descendant")
+
+
 # ------------------------------------------------------------------------------ CRUD
 
 
@@ -218,6 +244,14 @@ def create_person(
     if person_id is not None and people.find_one({"_id": person_id}, {"_id": 1}) is not None:
         raise ValueError(f"person id already exists: {person_id}")
     _validate_relations(db, family_id, parent_ids, spouse_ids, self_id=person_id)
+    if parent_ids and spouse_ids:
+        # A new person has no descendants, but a spouse may still be a grandparent or
+        # further up: the ancestors are the parents plus each parent's ancestors.
+        docs = _lineage_docs(db, family_id)
+        ancestors = set(parent_ids)
+        for parent in parent_ids:
+            ancestors |= _ancestor_ids(docs, parent)
+        _reject_spouse_in_lineage(spouse_ids, ancestors)
     if user_id is not None and people.find_one({"familyId": family_id, "userId": user_id}, {"_id": 1}):
         raise AlreadyClaimed("this user already has a person in this family")
 
@@ -326,13 +360,21 @@ def update_person(
         spouses_after = new_spouses if new_spouses is not None else current.get("spouseIds") or []
         if set(parents_after) & set(spouses_after):
             raise InvalidRelation("a person cannot be both a parent and a spouse")
-    if new_parents is not None:
-        family_docs = list(people.find({"familyId": family_id}, {"_id": 1, "parentIds": 1}))
+        # One read of the family's parent links serves both lineage checks below.
+        family_docs = _lineage_docs(db, family_id)
         below = _descendant_ids(family_docs, person_id)
+    if new_parents is not None:
         if below & set(new_parents):
             raise InvalidRelation("a person cannot be their own ancestor")
         updates["parentIds"] = new_parents
     if new_spouses is not None:
+        # Ancestors as they will be after this patch, so a parent change in the same
+        # patch counts. Descendants do not depend on this person's own parentIds.
+        after_docs = [
+            {**doc, "parentIds": parents_after} if doc["_id"] == person_id else doc
+            for doc in family_docs
+        ]
+        _reject_spouse_in_lineage(new_spouses, below | _ancestor_ids(after_docs, person_id))
         updates["spouseIds"] = new_spouses
 
     if updates:
