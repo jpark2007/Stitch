@@ -1012,3 +1012,69 @@ def test_rerig_grip_without_a_grip_or_a_cutout() -> None:
     cutout = analyze_cutout(FakeBackgroundRemover().remove(l_shape_photo()))
     assert props_module.rerig_grip(None, cutout) is None
     assert props_module.rerig_grip([1.3, -0.2], None) == [1.0, 0.0]
+
+
+# ------------------------------------------------------------------ image budget
+
+
+def test_a_run_that_spent_its_image_budget_still_saves_a_placeholder_prop() -> None:
+    repo = PropRepo()
+    model = FakeImageModel()
+    art = ArtService(model, FakeBackgroundRemover(), max_images_per_run=1)
+    tool = tools_for(repo, art)["generate_prop"]
+    first = json.loads(tool.invoke({"name": "Hymn book", "description": "a black hymn book", "size": "hand"}))
+    assert first["art"] == "generated" and "note" not in first
+
+    out = tool.invoke({"name": "Lantern", "description": "a tin lantern", "size": "hand",
+                       "parts": [{"name": "handle", "description": "wire handle", "at": [0.5, 0.0]}],
+                       "states": [{"name": "lit", "description": "glowing"}]})
+    assert not out.startswith("error"), out
+    result = json.loads(out)
+    assert result["art"] == "placeholder" and result["preview"] is None
+    assert result["note"] == "image budget for this run is used up (1 image); Lantern uses placeholder art"
+    assert len(model.calls) == 1
+    prop = repo.get_prop(FAM, result["id"])
+    assert prop is not None
+    assert prop.art == {"body": None, "handle": None} and prop.states == {"lit": {}}
+    assert prop.color == placeholder_color("Lantern")
+
+
+def test_a_budget_spent_mid_prop_names_the_parts_left_without_art() -> None:
+    repo = PropRepo()
+    model = FakeImageModel()
+    tool = tools_for(repo, ArtService(model, FakeBackgroundRemover(), max_images_per_run=2))["generate_prop"]
+    result = json.loads(tool.invoke({
+        "name": "Suitcase", "description": "a brown suitcase", "size": "carried",
+        "parts": [{"name": "lid", "description": "the lid", "at": [0.5, 0.1]},
+                  {"name": "wheel", "description": "a wheel", "at": [0.9, 1.0]}],
+        "states": [{"name": "open", "description": "lid open"}],
+    }))
+    assert len(model.calls) == 2  # the body and the lid
+    assert result["art"] == "generated"
+    assert result["note"] == "image budget for this run is used up (2 images); wheel, open of Suitcase uses placeholder art"
+    prop = repo.get_prop(FAM, result["id"])
+    assert prop.art["body"] is not None and prop.art["lid"] is not None and prop.art["wheel"] is None
+    assert prop.states == {"open": {}}
+
+
+def test_a_zero_budget_never_calls_the_model_and_a_failure_with_budget_left_has_no_note() -> None:
+    repo = PropRepo()
+    model = FakeImageModel()
+    tool = tools_for(repo, ArtService(model, FakeBackgroundRemover(), max_images_per_run=0))["generate_prop"]
+    result = json.loads(tool.invoke({"name": "Cup", "description": "a tin cup", "size": "hand"}))
+    assert model.calls == [] and result["art"] == "placeholder" and "budget" in result["note"]
+
+    failing = tools_for(PropRepo(), ArtService(FakeImageModel(), FailingRemover(), max_images_per_run=5))
+    result = json.loads(failing["generate_prop"].invoke({"name": "Cup", "description": "a tin cup", "size": "hand"}))
+    assert result["art"] == "placeholder" and "note" not in result
+
+
+def test_each_run_has_its_own_prop_budget() -> None:
+    repo = PropRepo()
+    model = FakeImageModel()
+    art = ArtService(model, FakeBackgroundRemover(), max_images_per_run=1)
+    for run_id in ("run_a", "run_b"):
+        tool = tools_for(repo, art, run_id=run_id)["generate_prop"]
+        assert json.loads(tool.invoke({"name": f"Cup {run_id}", "description": "a cup", "size": "hand"}))["art"] == "generated"
+        assert json.loads(tool.invoke({"name": f"Pot {run_id}", "description": "a pot", "size": "hand"}))["art"] == "placeholder"
+    assert len(model.calls) == 2

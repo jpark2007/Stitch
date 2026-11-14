@@ -9,8 +9,10 @@ or change another family's props or media.
 - ``generate_prop`` draws a new prop in the locked style, cuts it out, auto-rigs it
   (anchor from the shape, grip hint snapped to the shape's edge, sockets from the model or
   the size class's defaults), optionally draws separate moving parts and state images, and
-  saves it. With no art service, or when a call fails, it saves a placeholder card
-  (``art: null`` plus a ``color``) so the story can always be staged.
+  saves it. With no art service, when a call fails, or once the run has used its image
+  budget (``ArtService.max_images_per_run``), it saves a placeholder card (``art: null``
+  plus a ``color``) so the story can always be staged; a spent budget adds a ``note`` line
+  to the result.
 - ``confirm_props`` is the family's review. The studio gates it with
   ``ask.INTERRUPT_ON``, so the run pauses before it executes; runs.py turns that pause
   into the ``props_found`` event and the family's answer into an ``edit`` decision whose
@@ -48,6 +50,7 @@ from agent.tools.art import (
     ALPHA_THRESHOLD,
     ArtService,
     Cutout,
+    budget_note,
     build_art_prompt,
     placeholder_color,
     snap_grip,
@@ -479,7 +482,9 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
         cutout: Cutout | None = art.make_cutout(
             build_art_prompt(f"{name}: {description}", kind="prop", era=era),
             reference_images=references,
+            run_id=run.run_id,
         )
+        missing_art: list[str] = []  # parts and states drawn with no art
 
         art_map: dict[str, str | None] = {BODY: None}
         prop_parts: dict[str, schemas.PropPart] = {}
@@ -498,8 +503,11 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
                 piece = art.make_cutout(
                     build_art_prompt(f"{name}, {part.name}: {part.description}", kind="part", era=era),
                     reference_images=related,
+                    run_id=run.run_id,
                 )
                 art_map[part.name] = put_png(piece.png) if piece is not None else None
+                if piece is None:
+                    missing_art.append(part.name)
             for state in state_specs:
                 if not state.description.strip():
                     prop_states[state.name] = {}
@@ -507,8 +515,11 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
                 look = art.make_cutout(
                     build_art_prompt(f"{name}, {state.name}: {state.description}", kind="state", era=era),
                     reference_images=related,
+                    run_id=run.run_id,
                 )
                 prop_states[state.name] = {BODY: put_png(look.png)} if look is not None else {}
+                if look is None:
+                    missing_art.append(state.name)
         else:
             # Placeholder card: every part key exists with no art; states change nothing.
             for part in part_specs:
@@ -542,21 +553,25 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
             saved = repo.save_prop(family_id, schemas.Prop(id=unique_id(name), **fields))
             generated_ids.add(saved.id)
             release_claim(family_id, "prop", run.run_id, saved.id)
-        return json.dumps(
-            {
-                "id": saved.id,
-                "name": saved.name,
-                "size": saved.size,
-                "art": "generated" if cutout is not None else "placeholder",
-                "preview": _body_ref(saved),
-                "aspect": round(saved.aspect, 4),
-                "anchor": _round(saved.anchor),
-                "grip": _round(saved.grip) if saved.grip is not None else None,
-                "parts": list(saved.parts),
-                "states": list(saved.states),
-                "sockets": _round_sockets(saved.sockets),
-            }
-        )
+        result: dict[str, Any] = {
+            "id": saved.id,
+            "name": saved.name,
+            "size": saved.size,
+            "art": "generated" if cutout is not None else "placeholder",
+            "preview": _body_ref(saved),
+            "aspect": round(saved.aspect, 4),
+            "anchor": _round(saved.anchor),
+            "grip": _round(saved.grip) if saved.grip is not None else None,
+            "parts": list(saved.parts),
+            "states": list(saved.states),
+            "sockets": _round_sockets(saved.sockets),
+        }
+        # Art is missing because the run's image budget is spent (not a failed call): say so,
+        # so the agent stops expecting art and does not retry. The prop works on stage either way.
+        if (cutout is None or missing_art) and art.images_left(run.run_id) == 0:
+            thing = name if cutout is None else f"{', '.join(missing_art)} of {name}"
+            result["note"] = budget_note(art.max_images_per_run or 0, thing)
+        return json.dumps(result)
 
     def generate_prop(
         name: str,
@@ -575,7 +590,7 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
         get_in, sit_on and place_on use) for the screenplay. Omitted sockets take the size
         class's defaults (a vehicle gets driver and passenger, furniture a seat). "art" is
         "placeholder" when no image could be made: the prop still works on stage as a
-        colored card."""
+        colored card. A "note" says when that is because this run's image budget is used up."""
         try:
             return _generate(name, description, size, grip, reference_photo_id, parts, states, sockets)
         except Exception as exc:  # noqa: BLE001 - a failed prop must not end the run

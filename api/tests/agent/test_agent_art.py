@@ -7,6 +7,9 @@ import json
 import logging
 import subprocess
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from PIL import Image, ImageDraw
@@ -552,3 +555,118 @@ def test_cut_out_tool_errors_are_returned_not_raised():
     no_remover = make_cut_out_tool(ArtService(FakeImageModel(), None), store.put, store.get)
     assert "error" in json.loads(no_remover.invoke({"media_id": blank_id}))
     assert len(store.items) == 2  # nothing new was stored on any error
+
+
+# --------------------------------------------------------------------------- image budget
+
+
+class _SlowModel(FakeImageModel):
+    """A thread-safe recording model that holds each call open briefly, so parallel calls overlap."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self.active = self.peak = 0
+
+    def generate(self, prompt, *, reference_images=(), size=(1024, 1024)):
+        with self._lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(0.01)
+            with self._lock:
+                return super().generate(prompt, reference_images=reference_images, size=size)
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
+def test_image_budget_caps_generate_calls_per_run(caplog):
+    model = FakeImageModel()
+    service = ArtService(model, FakeBackgroundRemover(), max_images_per_run=2)
+    assert service.images_left("run_a") == 2
+    with caplog.at_level(logging.WARNING, logger="agent.tools.art"):
+        assert service.make_cutout("a cup", run_id="run_a") is not None
+        assert service.make_layer("a hill", layer="back", size=(64, 32), run_id="run_a") is not None
+        assert service.images_left("run_a") == 0
+        assert service.make_cutout("a plate", run_id="run_a") is None
+        assert service.make_layer("a fence", layer="front", size=(64, 32), run_id="run_a") is None
+    assert len(model.calls) == 2
+    budget_logs = [r.getMessage() for r in caplog.records if "image budget" in r.getMessage()]
+    assert len(budget_logs) == 1 and "run_a" in budget_logs[0]  # logged once per run
+
+    # Another run has its own budget.
+    assert service.images_left("run_b") == 2
+    assert service.make_cutout("a spoon", run_id="run_b") is not None
+    assert service.images_left("run_b") == 1 and service.images_left("run_a") == 0
+    assert len(model.calls) == 3
+
+
+def test_a_failed_generation_still_counts_and_keeps_its_fallback(caplog):
+    service = ArtService(_BrokenModel(), FakeBackgroundRemover(), max_images_per_run=1)
+    with caplog.at_level(logging.WARNING):
+        assert service.make_cutout("a cup", run_id="r") is None
+    assert any("art generation failed" in r.getMessage() for r in caplog.records)
+    assert service.images_left("r") == 0
+
+
+def test_a_zero_budget_never_calls_the_model():
+    model = FakeImageModel()
+    service = ArtService(model, FakeBackgroundRemover(), max_images_per_run=0)
+    assert service.images_left("r") == 0
+    assert service.make_cutout("a cup", run_id="r") is None
+    assert service.make_layer("a hill", layer="back", run_id="r") is None
+    assert model.calls == []
+
+
+def test_no_cap_is_unlimited_and_calls_without_a_run_id_are_not_counted():
+    model = FakeImageModel()
+    unlimited = ArtService(model, FakeBackgroundRemover())
+    assert unlimited.max_images_per_run is None and unlimited.images_left("r") is None
+    for i in range(30):
+        assert unlimited.make_cutout(f"cup {i}", run_id="r") is not None
+    assert len(model.calls) == 30
+
+    capped = ArtService(FakeImageModel(), FakeBackgroundRemover(), max_images_per_run=1)
+    for i in range(3):
+        assert capped.make_cutout(f"cup {i}") is not None
+    assert capped.images_left("r") == 1
+
+
+def test_a_negative_budget_is_rejected():
+    with pytest.raises(ValueError, match="max_images_per_run"):
+        ArtService(None, None, max_images_per_run=-1)
+
+
+def test_concurrent_calls_never_exceed_the_cap():
+    model = _SlowModel()
+    service = ArtService(model, FakeBackgroundRemover(), max_images_per_run=5)
+
+    def draw(i):
+        if i % 2:
+            return service.make_cutout(f"cup {i}", size=(64, 64), run_id="r")
+        return service.make_layer(f"hill {i}", layer="back", size=(64, 32), run_id="r")
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(draw, range(40)))
+    assert len(model.calls) == 5
+    assert sum(r is not None for r in results) == 5
+    assert model.peak > 1  # the calls really overlapped
+    assert service.images_left("r") == 0
+
+
+def test_budget_memory_is_bounded(monkeypatch):
+    monkeypatch.setattr(art, "BUDGET_RUNS_KEPT", 3)
+    service = ArtService(None, None, max_images_per_run=1)
+    for run in ("r1", "r2", "r3", "r4"):
+        assert service._take_image(run)
+    assert len(service._used) == 3 and "r1" not in service._used
+    assert service.images_left("r1") == 1  # a forgotten run starts over
+    assert service.images_left("r4") == 0
+
+
+def test_budget_note_wording():
+    assert art.budget_note(24, "the lunch pail") == (
+        "image budget for this run is used up (24 images); the lunch pail uses placeholder art"
+    )
+    assert art.budget_note(1, "the cup").startswith("image budget for this run is used up (1 image); ")

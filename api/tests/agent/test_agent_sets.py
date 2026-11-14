@@ -554,3 +554,47 @@ def test_generated_set_validates_as_a_contract_set() -> None:
     data = repo.get_set(FAM, "corner_bakery").model_dump(mode="json", by_alias=True)
     assert set(data) >= {"id", "familyId", "name", "layers", "marks"}
     assert schemas.SetDef.model_validate(data).layers[2].height == 0.18
+
+
+# ---------------------------------------------------------------------- image budget
+
+
+def test_a_run_that_spent_its_image_budget_still_saves_placeholder_layers() -> None:
+    repo = make_repo()
+    model = RecordingImageModel()
+    tools = tools_for(repo, art=ArtService(model, FakeBackgroundRemover(), max_images_per_run=2))
+
+    back, middle = gen_ok(tools, "back"), gen_ok(tools, "middle", marks={"counter": [0.5, 0.0]})
+    assert back["art"] == middle["art"] == "generated"
+    assert "note" not in back and "note" not in middle
+
+    front = gen_ok(tools, "front")
+    assert len(model.requests) == 2
+    assert front["art"] == "placeholder"
+    assert front["note"] == (
+        "image budget for this run is used up (2 images); the front layer of Corner bakery uses placeholder art"
+    )
+    saved = repo.get_set(FAM, front["setId"])
+    layer = next(la for la in saved.layers if la.depth == 2)
+    assert layer.art is None and layer.color == placeholder_color(f"{PLACE} front")
+    # The earlier layers and marks are kept.
+    assert [la.art is not None for la in saved.layers] == [True, True, False]
+    assert saved.marks == {"counter": [0.5, 0.0]}
+
+
+def test_a_zero_budget_never_calls_the_model_for_layers() -> None:
+    model = RecordingImageModel()
+    tools = tools_for(make_repo(), art=ArtService(model, FakeBackgroundRemover(), max_images_per_run=0))
+    outs = [gen_ok(tools, layer) for layer in ("back", "middle", "front")]
+    assert model.requests == []
+    assert all(o["art"] == "placeholder" and "image budget" in o["note"] for o in outs)
+
+
+def test_a_layer_failure_with_budget_left_has_no_budget_note() -> None:
+    class Broken(FakeImageModel):
+        def generate(self, prompt: str, **kw: Any) -> bytes:
+            raise RuntimeError("image service down")
+
+    tools = tools_for(make_repo(), art=ArtService(Broken(), FakeBackgroundRemover(), max_images_per_run=5))
+    out = gen_ok(tools, "back")
+    assert out["art"] == "placeholder" and "note" not in out
