@@ -287,20 +287,28 @@ function Player({
       animate={{ opacity: ready || time !== null ? 1 : 0 }}
       transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
     >
-      {/* Lifted so the caption strip sits under the action, not over it. */}
+      {/* Stepped back a little and lifted, so the shot sits between the
+          title and the caption strip instead of running under either. */}
       <TimelineStage
         className="absolute inset-0"
         controller={controller}
         scene={scene}
         onReady={onStageReady}
-        lift={captions ? 0.065 : 0}
+        lift={captions ? 0.02 : 0}
+        zoom={captions ? 0.92 : 1}
         overlay={overlay}
       />
-      {/* Soft lens vignette: the lamp's pool, falling off into the room. */}
+      {/* Soft lens vignette: the lamp's pool, falling off into the room, and
+          a faint shade at the head of the frame where the title sits when a
+          close shot fills the screen. */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
-        style={{ background: "radial-gradient(120% 95% at 50% 42%, transparent 56%, rgb(20 12 6 / 0.55))" }}
+        style={{
+          background: ui
+            ? "radial-gradient(120% 95% at 50% 42%, transparent 56%, rgb(20 12 6 / 0.55)), linear-gradient(180deg, rgb(20 12 6 / 0.34) 0%, transparent 15%)"
+            : "radial-gradient(120% 95% at 50% 42%, transparent 56%, rgb(20 12 6 / 0.55))",
+        }}
       />
 
       {ui && (

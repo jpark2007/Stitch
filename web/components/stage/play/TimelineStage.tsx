@@ -26,6 +26,8 @@ export interface TimelineStageProps {
   orbit?: boolean;
   /** Lens-shift the picture up by this share of the screen, leaving room for captions. Default 0. */
   lift?: number;
+  /** Lens zoom; below 1 steps the picture back a little, leaving room for the title. Default 1. */
+  zoom?: number;
   /** Soft depth of field focused on the camera target. Default false. */
   dof?: boolean;
   /** Called once the scene is fully drawn (all art in, shadows settled). Keep it stable. */
@@ -40,6 +42,7 @@ export const TimelineStage = memo(function TimelineStage({
   className,
   orbit = true,
   lift = 0,
+  zoom = 1,
   dof = false,
   onReady,
   overlay,
@@ -48,7 +51,16 @@ export const TimelineStage = memo(function TimelineStage({
   const grade = useMemo(() => createGrade(), []);
   return (
     <Stage className={className} camera={null} dof={dof} overlay={overlay} grade={grade}>
-      <TimelineScene controller={controller} scene={scene} camera orbit={orbit} lift={lift} onReady={onReady} grade={grade} />
+      <TimelineScene
+        controller={controller}
+        scene={scene}
+        camera
+        orbit={orbit}
+        lift={lift}
+        zoom={zoom}
+        onReady={onReady}
+        grade={grade}
+      />
     </Stage>
   );
 });

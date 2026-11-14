@@ -56,29 +56,41 @@ export interface CameraBindingProps {
    * for captions laid over it. Default 0.
    */
   lift?: number;
+  /**
+   * Lens zoom (below 1 widens the picture a little around its centre, like
+   * stepping back), so the shot sits inside the room the title and captions
+   * leave. Default 1.
+   */
+  zoom?: number;
 }
 
-export function CameraBinding({ orbit = true, lift = 0 }: CameraBindingProps) {
+export function CameraBinding({ orbit = true, lift = 0, zoom = 1 }: CameraBindingProps) {
   const { frame, runtime } = useScene();
   const path = useMemo(() => timelineCameraPath(frame, runtime), [frame, runtime]);
   const camera = useThree((s) => s.camera);
-  const last = useRef({ w: 0, h: 0, lift: Number.NaN });
+  const last = useRef({ w: 0, h: 0, lift: Number.NaN, zoom: Number.NaN });
 
   useFrame((state) => {
     const cam = state.camera as PerspectiveCamera;
     if (!cam.isPerspectiveCamera) return;
     const { width: w, height: h } = state.size;
     const l = last.current;
-    if (l.w === w && l.h === h && l.lift === lift) return;
+    if (l.w === w && l.h === h && l.lift === lift && l.zoom === zoom) return;
     l.w = w;
     l.h = h;
     l.lift = lift;
+    l.zoom = zoom;
+    cam.zoom = zoom;
     if (lift) cam.setViewOffset(w, h, 0, Math.round(lift * h), w, h);
     else cam.clearViewOffset();
+    cam.updateProjectionMatrix();
   });
   useEffect(
     () => () => {
-      if ((camera as PerspectiveCamera).isPerspectiveCamera) (camera as PerspectiveCamera).clearViewOffset();
+      const cam = camera as PerspectiveCamera;
+      if (!cam.isPerspectiveCamera) return;
+      cam.zoom = 1;
+      cam.clearViewOffset();
     },
     [camera],
   );

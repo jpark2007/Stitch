@@ -94,6 +94,8 @@ export interface TimelineSceneProps {
   orbit?: boolean;
   /** With `camera`: lens-shift the picture up by this share of the screen (room for captions). Default 0. */
   lift?: number;
+  /** With `camera`: lens zoom; below 1 steps the picture back a little (room for title and captions). Default 1. */
+  zoom?: number;
   /** Tick the controller from the render loop. Default true (see SceneProvider). */
   tick?: boolean;
   /**
@@ -120,6 +122,7 @@ export function TimelineScene({
   camera = false,
   orbit = true,
   lift = 0,
+  zoom = 1,
   tick = true,
   reveal,
   onReady,
@@ -132,7 +135,7 @@ export function TimelineScene({
       <SetLayers />
       <Cast />
       <EffectBindings grade={grade} />
-      {camera && <CameraBinding orbit={orbit} lift={lift} />}
+      {camera && <CameraBinding orbit={orbit} lift={lift} zoom={zoom} />}
       {children}
     </SceneProvider>
   );
