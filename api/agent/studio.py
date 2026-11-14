@@ -33,6 +33,8 @@ from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
+from agent.guards import RunLimits
+
 if TYPE_CHECKING:
     from langgraph.checkpoint.mongodb import MongoDBSaver
     from langgraph.graph.state import CompiledStateGraph
@@ -60,9 +62,10 @@ Each SKILL.md needs YAML frontmatter with `name` (equal to its folder name) and
 `description`, or the middleware skips it.
 """
 
-RECURSION_LIMIT = 1_000
-"""Graph steps per run. One model turn plus its tool calls is about 2 steps and
-sub-agents run inside the `task` tool, so this allows several hundred studio
+RECURSION_LIMIT = RunLimits.max_graph_steps
+"""Default graph steps per run (env STITCH_MAX_GRAPH_STEPS overrides it, see
+`agent.guards.RunLimits`). One model turn plus its tool calls is about 2 steps and
+sub-agents run inside the `task` tool, so 1000 allows several hundred studio
 turns: far beyond a normal run, low enough to stop a looping agent."""
 
 _NAMESPACE_COMPONENT = re.compile(r"^[A-Za-z0-9\-_.@+:~]+$")
@@ -75,14 +78,26 @@ _NAMESPACE_COMPONENT = re.compile(r"^[A-Za-z0-9\-_.@+:~]+$")
 
 
 def make_model(model: str | None = None) -> BaseChatModel:
-    """The production chat model: ChatAnthropic, model id from `model`, env STITCH_MODEL, or DEFAULT_MODEL."""
+    """The production chat model: ChatAnthropic, model id from `model`, env STITCH_MODEL, or DEFAULT_MODEL.
+
+    Each request is bounded by `RunLimits.model_timeout_s` seconds and retried up to
+    `RunLimits.model_max_retries` times (env STITCH_MODEL_TIMEOUT_S, STITCH_MODEL_MAX_RETRIES),
+    so a hung request cannot stall a run forever.
+    """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         msg = "ANTHROPIC_API_KEY is not set"
         raise RuntimeError(msg)
     from langchain_anthropic import ChatAnthropic
 
+    limits = RunLimits.from_env()
     model_id = model or os.environ.get("STITCH_MODEL") or DEFAULT_MODEL
-    return ChatAnthropic(model_name=model_id, max_tokens=16_000, timeout=None, stop=None)
+    return ChatAnthropic(
+        model_name=model_id,
+        max_tokens=16_000,
+        timeout=limits.model_timeout_s,
+        max_retries=limits.model_max_retries,
+        stop=None,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -248,8 +263,9 @@ def build_studio(
 
 
 def thread_config(run_id: str) -> dict[str, Any]:
-    """Run config for one studio run: its thread (resume with the same one) and a step limit."""
-    return {"configurable": {"thread_id": run_id}, "recursion_limit": RECURSION_LIMIT}
+    """Run config for one studio run: its thread (resume with the same one) and a step limit
+    (`RunLimits.max_graph_steps`, env STITCH_MAX_GRAPH_STEPS, default RECURSION_LIMIT)."""
+    return {"configurable": {"thread_id": run_id}, "recursion_limit": RunLimits.from_env().max_graph_steps}
 
 
 # --------------------------------------------------------------------------

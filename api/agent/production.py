@@ -16,6 +16,17 @@ the agent, so the API needs no startup hook. Each service is picked from env var
                            whose labelled diagrams the critic is told are not the real stage
                            (a warning is logged)
 
+Time and cost limits (agent.guards.RunLimits; a bad value warns and keeps the default):
+
+    STITCH_MAX_IMAGES_PER_RUN  image generations per run (24); 0: placeholder art only
+    STITCH_MAX_GRAPH_STEPS     graph steps per run (1000, at least 50; studio.thread_config)
+    STITCH_MODEL_TIMEOUT_S     seconds per Claude request (120; studio.make_model)
+    STITCH_MODEL_MAX_RETRIES   retries of a failed Claude request (2; studio.make_model)
+    STITCH_RUN_TIMEOUT_S       seconds per run (1200; enforced by the run manager)
+
+The "limits" label shows the limits in force, e.g. "images=24 steps=1000 model_timeout=120s
+model_retries=2".
+
 The family data goes through `MongoRepo(db.client.get_db())`, so it follows whatever
 database the API uses, including the STITCH_FAKE_DB mongomock override.
 
@@ -38,6 +49,7 @@ from langgraph.store.memory import InMemoryStore
 
 from agent import studio
 from agent.adapters import AlphaAwareRemover, AnthropicVision, ElevenLabsTTS, OpenAIImageModel
+from agent.guards import RunLimits
 from agent.mongo_repo import MongoRepo
 from agent.runs import RunManager
 from agent.tools.art import ArtService
@@ -65,6 +77,7 @@ LABEL_ORDER: tuple[str, ...] = (
     "critic",
     "renderer",
     "compiler",
+    "limits",
 )
 
 
@@ -117,6 +130,7 @@ def production_services() -> Services:
             "(set it in the API's environment and retry)"
         )
     labels: dict[str, str] = {}
+    limits = RunLimits.from_env()
 
     model = studio.make_model()
     labels["model"] = "real"
@@ -142,7 +156,7 @@ def production_services() -> Services:
 
     remover = AlphaAwareRemover()
     if _env("IMAGE_API_KEY"):
-        art = ArtService(OpenAIImageModel(), remover)
+        art = ArtService(OpenAIImageModel(), remover, max_images_per_run=limits.max_images_per_run)
         labels["art"] = "real"
     else:
         art = ArtService(None, remover)  # placeholder art; cut_out of uploaded photos still works
@@ -178,6 +192,7 @@ def production_services() -> Services:
 
     compiler = load_compiler()
     labels["compiler"] = compiler_label(compiler)
+    labels["limits"] = limits.label()
 
     return Services(
         repo=repo,

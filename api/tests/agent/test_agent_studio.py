@@ -162,10 +162,37 @@ def test_studio_plans_delegates_and_subagent_files_reach_parent_state() -> None:
     assert "/screenplay.json" in graph.get_state(config).values["files"]
 
 
-def test_thread_config_has_thread_and_recursion_limit() -> None:
+def test_thread_config_has_thread_and_recursion_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("STITCH_MAX_GRAPH_STEPS", raising=False)
     config = studio.thread_config("run-1")
     assert config["configurable"] == {"thread_id": "run-1"}
-    assert config["recursion_limit"] >= 200
+    assert config["recursion_limit"] == studio.RECURSION_LIMIT == 1000
+
+
+def test_thread_config_reads_the_step_limit_from_env(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("STITCH_MAX_GRAPH_STEPS", "250")
+    assert studio.thread_config("run-1")["recursion_limit"] == 250
+    caplog.set_level("WARNING", logger="agent.guards")
+    monkeypatch.setenv("STITCH_MAX_GRAPH_STEPS", "10")  # below the minimum: the default, with a warning
+    assert studio.thread_config("run-1")["recursion_limit"] == studio.RECURSION_LIMIT
+    assert any("STITCH_MAX_GRAPH_STEPS" in r.getMessage() for r in caplog.records)
+
+
+def test_the_step_limit_stops_a_looping_studio(monkeypatch: pytest.MonkeyPatch) -> None:
+    from langgraph.errors import GraphRecursionError
+
+    monkeypatch.setenv("STITCH_MAX_GRAPH_STEPS", "50")
+    # A studio that never stops calling a tool.
+    looping = ScriptedChatModel(responder=lambda _messages, _tools: tool_call("find_prop", {"description": "a cup"}))
+    graph = studio.build_studio(
+        family_id="fam_loop", model=looping, tools=[find_prop], subagents=[], interrupt_on={},
+        checkpointer=InMemorySaver(), store=InMemoryStore(), system_prompt=STUDIO_PROMPT,
+    )
+    with pytest.raises(GraphRecursionError):
+        graph.invoke({"messages": [HumanMessage(content="go")]}, studio.thread_config("run-loop"))
+    assert 0 < len(looping.calls) < 50  # each model turn plus its tool call is at least 2 steps
 
 
 # ---------------------------------------------------------------- skills
@@ -448,6 +475,24 @@ def test_make_model_reads_the_model_id_from_env(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.delenv("STITCH_MODEL")
     assert studio.make_model().model == studio.DEFAULT_MODEL
     assert studio.make_model("claude-sonnet-5-5").model == "claude-sonnet-5-5"
+
+
+def test_make_model_bounds_each_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    from langchain_anthropic import ChatAnthropic
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")  # constructing makes no request
+    monkeypatch.delenv("STITCH_MODEL_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("STITCH_MODEL_MAX_RETRIES", raising=False)
+    chat = studio.make_model()
+    assert isinstance(chat, ChatAnthropic)
+    assert chat.default_request_timeout == 120.0 and chat.max_retries == 2
+    assert chat._client_params["timeout"] == 120.0 and chat._client_params["max_retries"] == 2
+
+    monkeypatch.setenv("STITCH_MODEL_TIMEOUT_S", "30")
+    monkeypatch.setenv("STITCH_MODEL_MAX_RETRIES", "0")
+    chat = studio.make_model("claude-sonnet-5-5")
+    assert chat.default_request_timeout == 30.0 and chat.max_retries == 0
+    assert chat._client_params["timeout"] == 30.0 and chat._client_params["max_retries"] == 0
 
 
 @pytest.mark.skipif(not os.environ.get("MONGODB_URI_TEST"), reason="MONGODB_URI_TEST is not set")
