@@ -48,6 +48,14 @@ export function isFinalEvent(event: string): boolean {
 }
 
 /**
+ * After a final event, how long followRun keeps reading for the end of the
+ * stream before it closes the connection itself. The server closes the stream
+ * right after `done`/`error`, but a replayed stream may still be on its way;
+ * cutting it off shows up as an aborted request (ERR_ABORTED) in the browser.
+ */
+export const FINISH_DRAIN_MS = 1500;
+
+/**
  * The short record of an accepted answer, kept on the log's `answered` entry.
  * feedView.answeredLine phrases it per kind for the family.
  */
@@ -433,6 +441,39 @@ export interface FollowRunOptions {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Injected for tests. Defaults to Date.now. */
   now?: () => number;
+  /** How long to wait for the stream to end after a final event (default FINISH_DRAIN_MS). */
+  finishDrainMs?: number;
+}
+
+/**
+ * Reads what is left of a stream after its final event, ignoring it, until
+ * the stream ends (true) or `ms` pass or `signal` aborts first (false).
+ */
+async function drainStream(
+  iterator: AsyncIterator<RunEventMessage>,
+  ms: number,
+  signal: AbortSignal,
+): Promise<boolean> {
+  let stop: () => void = () => {};
+  const stopped = new Promise<"stop">((resolve) => {
+    stop = () => resolve("stop");
+  });
+  const timer = setTimeout(stop, Math.max(0, ms));
+  signal.addEventListener("abort", stop, { once: true });
+  try {
+    for (;;) {
+      if (signal.aborted) return false;
+      const step = await Promise.race([iterator.next(), stopped]);
+      if (step === "stop") return false;
+      if (step.done) return true;
+      // Anything after the final event is not part of the run: drop it.
+    }
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", stop);
+  }
 }
 
 export function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -454,11 +495,16 @@ export function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
  * connection that follows earlier events resets the state, the replayed log
  * is folded again, and recorded answers are re-applied where they were given.
  * Resolves when finished, out of retries, or aborted.
+ *
+ * After a final event the rest of the stream is read (and ignored) until it
+ * ends, for up to `finishDrainMs`; only a stream still open after that is
+ * closed from this side. Aborting `signal` closes it at once.
  */
 export async function followRun(o: FollowRunOptions): Promise<void> {
   const { book, dispatch, signal } = o;
   const sleep = o.sleep ?? abortableSleep;
   const now = o.now ?? Date.now;
+  const drainMs = o.finishDrainMs ?? FINISH_DRAIN_MS;
   let failures = 0;
 
   while (!signal.aborted) {
@@ -467,13 +513,23 @@ export async function followRun(o: FollowRunOptions): Promise<void> {
     const startedAt = now();
     let ended: ConnectionEnd = "dropped";
 
-    // One controller per connection, so a finished stream is closed too.
+    // One controller per connection, so a stream left open is closed too.
     const conn = new AbortController();
     const forward = () => conn.abort();
     signal.addEventListener("abort", forward, { once: true });
+    let iterator: AsyncIterator<RunEventMessage> | null = null;
+    // Whether the stream may still be open when this connection is over.
+    let open = true;
     try {
       let first = true;
-      for await (const message of o.stream(conn.signal)) {
+      iterator = o.stream(conn.signal)[Symbol.asyncIterator]();
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) {
+          open = false;
+          break;
+        }
+        const message = next.value;
         if (signal.aborted) break;
         if (first && resetOnFirst) {
           book.folded = 0;
@@ -491,14 +547,23 @@ export async function followRun(o: FollowRunOptions): Promise<void> {
         for (const a of due) dispatch({ type: "answered", kind: a.kind, summary: a.summary });
         if (isFinalEvent(message.event)) {
           ended = "finished";
+          // Let the server end the stream itself; closing it first is an
+          // aborted request in the browser.
+          open = !(await drainStream(iterator, drainMs, signal));
           break;
         }
       }
     } catch {
       // A thrown stream is a drop; the policy below decides what follows.
+      // It has ended, but its connection may not be closed yet.
     } finally {
       signal.removeEventListener("abort", forward);
-      conn.abort();
+      if (open || signal.aborted) {
+        conn.abort();
+        // Release the stream (as a `for await` break would); it ends quietly
+        // once its signal aborts.
+        void iterator?.return?.()?.catch(() => undefined);
+      }
     }
     if (signal.aborted) ended = "aborted";
 

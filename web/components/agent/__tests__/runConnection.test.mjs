@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULT_MAX_RETRIES,
+  FINISH_DRAIN_MS,
   HEALTHY_CONNECTION_MS,
   answerBody,
   answerErrorMessage,
@@ -663,6 +664,7 @@ async function follow(scripts, opts = {}) {
       await opts.onSleep?.(ms, { controller, signal });
     },
     now: opts.now ?? (() => 0),
+    finishDrainMs: opts.finishDrainMs ?? 5,
   });
   return { actions, sleeps, calls, state, book };
 }
@@ -685,6 +687,64 @@ test("an error event ends the run and nothing after it is read", async () => {
   assert.deepEqual(types(r.actions), ["plan", "error"]);
   assert.equal(r.state.phase, "error");
   assert.equal(r.state.error, "The studio stopped.");
+});
+
+test("FINISH_DRAIN_MS gives the server a moment to end the stream", () => {
+  assert.equal(FINISH_DRAIN_MS, 1500);
+});
+
+test("after the final event the stream is read to its end and never aborted", async () => {
+  // The server closes a finished run's stream itself: closing it first would
+  // be an aborted request (ERR_ABORTED) in the browser.
+  const r = await follow([[PLAN, START, END, DONE, "end"]], { finishDrainMs: 60_000 });
+  assert.equal(r.calls.length, 1);
+  assert.deepEqual(types(r.actions), ["plan", "subagent_start", "subagent_end", "done"]);
+  assert.equal(r.state.phase, "done");
+  assert.equal(r.calls[0].signal.aborted, false, "a stream that ended by itself is not aborted");
+  assert.equal(r.calls[0].closed, true);
+});
+
+test("anything after the final event is drained, not dispatched", async () => {
+  const r = await follow([[PLAN, DONE, START, END, "end"]], { finishDrainMs: 60_000 });
+  assert.deepEqual(types(r.actions), ["plan", "done"]);
+  assert.equal(r.calls[0].yielded, 4, "the rest of the stream was read");
+  assert.equal(r.calls[0].signal.aborted, false);
+  assert.equal(r.state.phase, "done");
+});
+
+test("a stream still open after the drain deadline is aborted then", async () => {
+  const started = Date.now();
+  const r = await follow([[PLAN, DONE, "hang"]], { finishDrainMs: 30 });
+  const took = Date.now() - started;
+  assert.equal(r.calls.length, 1);
+  assert.equal(r.calls[0].signal.aborted, true, "closed from this side after the deadline");
+  assert.equal(r.calls[0].closed, true);
+  assert.ok(took >= 25, `waited for the deadline (${took}ms)`);
+  assert.deepEqual(r.sleeps, [], "no reconnect");
+  assert.equal(r.state.phase, "done");
+});
+
+test("a user abort during the drain closes the stream at once", async () => {
+  const controller = new AbortController();
+  const started = Date.now();
+  const r = await follow([[PLAN, DONE, "hang"]], {
+    controller,
+    finishDrainMs: 60_000,
+    onDispatch: (a) => {
+      if (a.type === "event" && a.message.event === "done") setTimeout(() => controller.abort(), 0);
+    },
+  });
+  const took = Date.now() - started;
+  assert.ok(took < 1000, `did not wait for the drain deadline (${took}ms)`);
+  assert.equal(r.calls[0].signal.aborted, true);
+  assert.equal(r.calls[0].closed, true);
+  assert.deepEqual(r.sleeps, []);
+});
+
+test("an error event's stream is drained the same way", async () => {
+  const r = await follow([[PLAN, ERROR, "end"]], { finishDrainMs: 60_000 });
+  assert.deepEqual(types(r.actions), ["plan", "error"]);
+  assert.equal(r.calls[0].signal.aborted, false);
 });
 
 test("a drop reconnects, resets once, and refolds the replayed log without duplicates", async () => {
