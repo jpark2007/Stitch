@@ -4,9 +4,10 @@
 // a RunState, reconnects after drops, and posts the family's answers. The
 // stream and the answer route come in through an injected RunSource, so this
 // hook never talks to the API client directly.
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import type { AnswerRequest, PropEdit } from "@/lib/types";
+import { draftPauseKey, type AnswerDraftTarget, type DraftedAnswer } from "./answerDraft";
 import { initialRunState, runReducer, type RunEventMessage, type RunState } from "./runState";
 import {
   DEFAULT_MAX_RETRIES,
@@ -27,8 +28,10 @@ export interface RunSource {
   stream(signal: AbortSignal): AsyncIterable<RunEventMessage>;
   /**
    * POST the answer; rejects with an Error whose message is user-safe. An
-   * error with `status` 409 means the run is no longer waiting for it: the
-   * hook then closes the pause quietly instead of showing that message.
+   * error with `status` 409 and the NOT_WAITING detail means the run is no
+   * longer waiting for it: the hook then closes the pause quietly instead of
+   * showing that message. Any other 409 (the answer did not fit) reaches the
+   * card as a calm message, and the card stays open.
    */
   answer(body: AnswerRequest): Promise<void>;
 }
@@ -43,7 +46,9 @@ export interface UseAgentRunOptions {
   /**
    * Names the run (family and run id). With it, the answers given in this tab
    * are kept in sessionStorage, so after a reload the replay closes each
-   * answered pause where it was answered instead of showing its card again.
+   * answered pause where it was answered instead of showing its card again,
+   * and `answerQuestion` carries the draft target (answerDraft) a follow-up
+   * card keeps its unsent text under.
    */
   runKey?: string;
 }
@@ -88,7 +93,8 @@ export function useAgentRun(
   opts?: UseAgentRunOptions,
 ): {
   state: RunState;
-  answerQuestion(text: string): Promise<void>;
+  /** Tagged with `draft` (the run and this pause) when a runKey is given and a question is open. */
+  answerQuestion: DraftedAnswer;
   reviewProps(edits: PropEdit[]): Promise<void>;
   decideMerge(approve: boolean): Promise<void>;
   retry(): void;
@@ -166,9 +172,9 @@ export function useAgentRun(
   const send = useCallback(
     async (body: AnswerRequest): Promise<void> => {
       if (!source) return;
-      // Ignored unless the run is paused on this kind. A 409 (already
-      // answered) closes the pause and resolves; any other rejection reaches
-      // the card, which shows its message inline.
+      // Ignored unless the run is paused on this kind. A 409 NOT_WAITING
+      // (already answered) closes the pause and resolves; any other rejection
+      // reaches the card, which shows its message inline.
       await sendAnswer({
         answer: (b) => source.answer(b),
         body,
@@ -184,7 +190,19 @@ export function useAgentRun(
     [source, pendingKind],
   );
 
-  const answerQuestion = useCallback((text: string) => send(answerBody("answer", text)), [send]);
+  // Where the open follow-up's unsent text is kept across a reload: the run
+  // and the pause's own log entry, which the replay gives the same number.
+  const draftRunId = opts?.runKey;
+  const draftPause =
+    state.pending?.kind === "answer" && state.pauseSeq !== null ? draftPauseKey("answer", state.pauseSeq) : null;
+  const answerQuestion = useMemo((): DraftedAnswer => {
+    const draft: AnswerDraftTarget | undefined =
+      draftRunId && draftPause ? { runId: draftRunId, pauseKey: draftPause } : undefined;
+    // Object.assign only sets the tag; nothing is called during render. (The
+    // refs rule cannot tell, since `send` reads refs when it is called.)
+    // eslint-disable-next-line react-hooks/refs
+    return Object.assign((text: string) => send(answerBody("answer", text)), { draft });
+  }, [send, draftRunId, draftPause]);
   const reviewProps = useCallback((edits: PropEdit[]) => send(answerBody("props", edits)), [send]);
   const decideMerge = useCallback((approve: boolean) => send(answerBody("merge", approve)), [send]);
   const retry = useCallback(() => setNonce((n) => n + 1), []);
