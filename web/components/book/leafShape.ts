@@ -50,26 +50,39 @@ export function gutterProfile(x: number, depth: number): number {
   return depth * (1 - Math.pow(1 - u, 2.4));
 }
 
+/** Rise of the gentle bow an open page makes across its width. */
+export const BOW = 0.012;
+
+/**
+ * The resting page surface: it dives into the gutter, swells a little across
+ * the page (pages held by a sewn spine never lie quite flat) and eases back
+ * down to the block's height at the fore-edge. `bow` is 0 on a closed book.
+ */
+export function pageProfile(x: number, depth: number, bow = 0): number {
+  const f = clamp01(x / PAGE_W);
+  return gutterProfile(x, depth) + bow * Math.sin(Math.PI * Math.pow(f, 0.7)) * (1 - 0.35 * f);
+}
+
 /**
  * Segment angles (elevation, radians) of a sheet resting on a block whose top
  * is `depth` above the hinge, walking out from the hinge so each joint lands
- * exactly on the surface.
+ * exactly on the surface (`pageProfile`).
  */
-export function restAngles(depth: number, out: Float32Array): Float32Array {
+export function restAngles(depth: number, out: Float32Array, bow = 0): Float32Array {
   let x = 0;
   let y = 0;
   for (let i = 0; i < out.length; i++) {
-    if (depth <= 1e-5 || x >= GUTTER_W) {
+    if ((depth <= 1e-5 || x >= GUTTER_W) && bow <= 1e-5) {
       out[i] = 0;
       x += SEG;
       continue;
     }
     // Bisection on the elevation that puts the next joint on the surface.
-    let lo = -0.05;
+    let lo = -0.4;
     let hi = 1.45;
     for (let k = 0; k < 18; k++) {
       const a = (lo + hi) / 2;
-      const g = y + SEG * Math.sin(a) - gutterProfile(x + SEG * Math.cos(a), depth);
+      const g = y + SEG * Math.sin(a) - pageProfile(x + SEG * Math.cos(a), depth, bow);
       if (g > 0) hi = a;
       else lo = a;
     }

@@ -54,10 +54,20 @@ describe("resting page profile", () => {
   });
 
   it("lays every joint of a resting sheet on the profile", () => {
-    const d = 0.06;
-    for (const [x, y] of joints(rest(d))) {
-      assert.ok(Math.abs(y - m.gutterProfile(x, d)) < 2e-4, `joint at x=${x.toFixed(3)} is ${(y - m.gutterProfile(x, d)).toFixed(5)} off`);
+    for (const [d, bow] of [[0.06, 0], [0.06, m.BOW], [0.004, m.BOW]]) {
+      for (const [x, y] of joints(m.restAngles(d, new Float32Array(BONES), bow))) {
+        const off = y - m.pageProfile(x, d, bow);
+        assert.ok(Math.abs(off) < 2e-4, `depth ${d} bow ${bow}: joint at x=${x.toFixed(3)} is ${off.toFixed(5)} off`);
+      }
     }
+  });
+
+  it("bows gently across an open page and settles at the fore-edge", () => {
+    const d = 0.05;
+    const mid = m.pageProfile(0.45, d, m.BOW) - d;
+    assert.ok(mid > m.BOW * 0.7 && mid <= m.BOW, `swell ${mid}`);
+    assert.ok(Math.abs(m.pageProfile(m.PAGE_W, d, m.BOW) - d) < 1e-9, "back to the block at the edge");
+    assert.equal(m.pageProfile(0, d, m.BOW), 0, "still dives into the gutter");
   });
 });
 

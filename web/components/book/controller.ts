@@ -10,12 +10,14 @@ import { BufferAttribute, type BufferGeometry, type Group, type Mesh, type Persp
 import type { BlockGeometry } from "./blockGeometry";
 import {
   BLOCK_T,
+  BOW,
   COVER_OVERHANG,
   COVER_T,
   HINGE_LIFT,
   LEAF_REST_GAP,
   PAGE_H,
   PAGE_W,
+  pageProfile,
   releaseCompletes,
   smoothstep,
   spineCrossing,
@@ -425,9 +427,11 @@ export class BookController {
     const o = easeInOut(clamp01(cover));
     // Closed, the block is flat; open, the pages dip into the gutter.
     rt.hinge = lerp(topR + LEAF_REST_GAP, COVER_T + HINGE_LIFT, clamp01(this.open * 1.4));
-    setDepths(rt, Math.max(0, topL + LEAF_REST_GAP - rt.hinge), Math.max(0, topR + LEAF_REST_GAP - rt.hinge));
-    parts.blocks.right.update(topR, Math.min(topR, rt.hinge - LEAF_REST_GAP));
-    parts.blocks.left.update(topL, Math.min(topL, rt.hinge - LEAF_REST_GAP));
+    // Open pages swell a little across their width; a closed book lies flat.
+    const bow = BOW * smoothstep(0.55, 1, this.open);
+    setDepths(rt, Math.max(0, topL + LEAF_REST_GAP - rt.hinge), Math.max(0, topR + LEAF_REST_GAP - rt.hinge), bow);
+    parts.blocks.right.update(topR, Math.min(topR, rt.hinge - LEAF_REST_GAP), rt.bow);
+    parts.blocks.left.update(topL, Math.min(topL, rt.hinge - LEAF_REST_GAP), rt.bow);
     if (parts.leftBlock) parts.leftBlock.visible = cntL * per > 0.0015;
 
     // Visible sheets: anything off its stack, plus the top of each stack.
@@ -472,7 +476,8 @@ export class BookController {
       this.reveal.current = rv + (target - rv) * (still ? 0.06 : 0.25);
       moving = true;
     } else this.reveal.current = target;
-    if (parts.stage) parts.stage.position.y = topR + LEAF_REST_GAP * 2;
+    // The slot sits on the right page's surface, swell included.
+    if (parts.stage) parts.stage.position.y = rt.hinge + pageProfile(PAGE_W / 2, rt.depthR, rt.bow) + LEAF_REST_GAP;
     const stage = still ? this.pos : this.reveal.current > 0 ? this.stageSpread : 0;
     if (stage !== this.stageSpread) {
       this.stageSpread = stage;

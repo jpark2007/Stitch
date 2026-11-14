@@ -42,6 +42,8 @@ export interface BookRuntime {
   /** Flat top of each block above the hinge. */
   depthL: number;
   depthR: number;
+  /** Bow of the resting pages (0 closed, `BOW` open). */
+  bow: number;
   restL: Float32Array;
   restR: Float32Array;
   /** Bumped whenever the rest shapes change, so settled leaves re-pose. */
@@ -72,6 +74,7 @@ export function createRuntime(leafCount: number, leftCount: number): BookRuntime
     hinge: 0,
     depthL: 0,
     depthR: 0,
+    bow: 0,
     restL: new Float32Array(BONES),
     restR: new Float32Array(BONES),
     restVersion: 0,
@@ -79,15 +82,17 @@ export function createRuntime(leafCount: number, leftCount: number): BookRuntime
   };
 }
 
-/** Update block depths; recomputes rest shapes only when they really change. */
-export function setDepths(rt: BookRuntime, depthL: number, depthR: number) {
+/** Update block depths and bow; recomputes rest shapes only when they really change. */
+export function setDepths(rt: BookRuntime, depthL: number, depthR: number, bow = 0) {
   const q = (v: number) => Math.round(v * 20000) / 20000;
   const l = q(depthL);
   const r = q(depthR);
-  if (l === rt.depthL && r === rt.depthR) return;
-  if (l !== rt.depthL) restAngles(l, rt.restL);
-  if (r !== rt.depthR) restAngles(r, rt.restR);
+  const b = q(bow);
+  if (l === rt.depthL && r === rt.depthR && b === rt.bow) return;
+  if (l !== rt.depthL || b !== rt.bow) restAngles(l, rt.restL, b);
+  if (r !== rt.depthR || b !== rt.bow) restAngles(r, rt.restR, b);
   rt.depthL = l;
   rt.depthR = r;
+  rt.bow = b;
   rt.restVersion++;
 }

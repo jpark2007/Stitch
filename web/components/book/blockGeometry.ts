@@ -8,7 +8,7 @@
  */
 
 import { BufferAttribute, BufferGeometry } from "three";
-import { BLOCK_T, COVER_T, PAGE_H, PAGE_W, gutterProfile } from "./leafShape";
+import { BLOCK_T, COVER_T, PAGE_H, PAGE_W, pageProfile } from "./leafShape";
 import { rng } from "./pageArt";
 
 const NX = 28;
@@ -18,8 +18,8 @@ const BLOCK_W = PAGE_W - 0.012;
 
 export interface BlockGeometry {
   geometry: BufferGeometry;
-  /** `top`: flat top height (book space); `hinge`: gutter height. */
-  update(top: number, hinge: number): void;
+  /** `top`: flat top height (book space); `hinge`: gutter height; `bow`: page swell. */
+  update(top: number, hinge: number, bow?: number): void;
 }
 
 export function createBlockGeometry(sign: 1 | -1, seed: number): BlockGeometry {
@@ -87,14 +87,16 @@ export function createBlockGeometry(sign: 1 | -1, seed: number): BlockGeometry {
 
   let lastTop = NaN;
   let lastHinge = NaN;
+  let lastBow = NaN;
 
-  function update(top: number, hinge: number) {
-    if (Math.abs(top - lastTop) < 1e-6 && Math.abs(hinge - lastHinge) < 1e-6) return;
+  function update(top: number, hinge: number, bow = 0) {
+    if (Math.abs(top - lastTop) < 1e-6 && Math.abs(hinge - lastHinge) < 1e-6 && Math.abs(bow - lastBow) < 1e-6) return;
     lastTop = top;
     lastHinge = hinge;
+    lastBow = bow;
     const base = COVER_T;
     const depth = Math.max(0, top - hinge);
-    const yAt = (x: number) => Math.max(base, hinge + gutterProfile(x, depth));
+    const yAt = (x: number) => Math.max(base, hinge + pageProfile(x, depth, bow));
     const v = (y: number) => (y - base) / BLOCK_T;
     const xEnd = (j: number) => BLOCK_W + jitter[j];
     const put = (k: number, x: number, y: number, z: number, u: number, w: number) => {
