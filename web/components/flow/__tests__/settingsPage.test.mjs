@@ -17,9 +17,15 @@ registerHooks({
   },
 });
 
-const { SETTINGS_LOAD_FALLBACK, findFamily, isWelcome, settingsLoadError } = await import(
-  "../settingsPage.ts"
-);
+const {
+  SETTINGS_LOAD_FALLBACK,
+  addRelativeHref,
+  findFamily,
+  inviteAskLine,
+  isWelcome,
+  listOfNames,
+  settingsLoadError,
+} = await import("../settingsPage.ts");
 // The same module settingsPage.ts resolves to, so instanceof agrees.
 const { ApiError, NETWORK_ERROR_MESSAGE } = await import("../../../lib/api.ts");
 
@@ -72,6 +78,64 @@ describe("isWelcome", () => {
     assert.equal(isWelcome(new URLSearchParams("welcome=1")), true);
     assert.equal(isWelcome(new URLSearchParams({ welcome: "0" })), false);
     assert.equal(isWelcome(new URLSearchParams()), false);
+  });
+});
+
+// ---- addRelativeHref --------------------------------------------------------
+
+describe("addRelativeHref", () => {
+  test("the family's new-person page, with no next", () => {
+    assert.equal(addRelativeHref("f1"), "/families/f1/people/new");
+    assert.equal(addRelativeHref("6650c0ffee"), "/families/6650c0ffee/people/new");
+  });
+
+  test("encodes the family id", () => {
+    assert.equal(addRelativeHref("a/b c?d#e"), "/families/a%2Fb%20c%3Fd%23e/people/new");
+  });
+});
+
+// ---- listOfNames ------------------------------------------------------------
+
+describe("listOfNames", () => {
+  test("one, two and three names", () => {
+    assert.equal(listOfNames(["David"]), "David");
+    assert.equal(listOfNames(["David", "Rosa"]), "David and Rosa");
+    assert.equal(listOfNames(["David", "Rosa", "Luis"]), "David, Rosa and Luis");
+  });
+
+  test("empty for none; blanks are dropped and names trimmed", () => {
+    assert.equal(listOfNames([]), "");
+    assert.equal(listOfNames(["", "  "]), "");
+    assert.equal(listOfNames([" David ", "", "Rosa"]), "David and Rosa");
+  });
+});
+
+// ---- inviteAskLine ----------------------------------------------------------
+
+describe("inviteAskLine", () => {
+  const row = (name, role, extra = {}) => ({ name, role, personId: `p-${name}`, isYou: false, ...extra });
+
+  test("names the admins, never the viewer or a member", () => {
+    assert.equal(
+      inviteAskLine([row("Ana", "member", { isYou: true }), row("David", "admin"), row("Sam", "member")]),
+      "Ask David to send them the invite link.",
+    );
+    assert.equal(
+      inviteAskLine([row("David", "admin"), row("Rosa", "admin"), row("Ana", "member", { isYou: true })]),
+      "Ask David and Rosa to send them the invite link.",
+    );
+  });
+
+  test("an admin with no person in the tree has no name to give", () => {
+    assert.equal(
+      inviteAskLine([row("A family member", "admin", { personId: null }), row("Ana", "member", { isYou: true })]),
+      "Ask an admin to send them the invite link.",
+    );
+  });
+
+  test("falls back to 'an admin' when there is nobody to name", () => {
+    assert.equal(inviteAskLine([]), "Ask an admin to send them the invite link.");
+    assert.equal(inviteAskLine([row("Ana", "admin", { isYou: true })]), "Ask an admin to send them the invite link.");
   });
 });
 
