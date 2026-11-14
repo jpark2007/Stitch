@@ -1,6 +1,7 @@
 """'Ask the family': memory search with quotes from the tellings (ARCHITECTURE.md section 5).
 
-A keyword search over titles and tellings always runs. When a query vector is available
+A keyword search over titles and telling texts (never the prompt a teller answered) always
+runs. When a query vector is available
 and the server can run Atlas Vector Search over `memories.embedding` (index VECTOR_INDEX,
 `familyId` pre-filter), its hits are merged with the keyword matches (_merge_memory_hits):
 keyword matches first, then vector-only hits scoring at least VECTOR_MIN_SCORE. When there
@@ -9,7 +10,9 @@ OperationFailure, mongomock raises NotImplementedError), keywords alone answer, 
 works offline and on plain MongoDB.
 
 No network by default: `embed` returns None until something calls `set_embedder`.
-Answers are composed deterministically from quotes; no model is involved.
+Answers are composed deterministically from quotes; no model is involved. A hit quotes
+only its tellings that share a word with the query, each by its best sentence; when none
+does (a title-only or vector-only match), it quotes the first sentence of every telling.
 """
 
 from __future__ import annotations
@@ -103,6 +106,7 @@ _STOPWORDS = frozenset(
     very was we were what when where which while who whom why will with would you your
     yours yourself yourselves tell told remember remembers story stories anyone someone
     family ever did does dont didnt wasnt isnt im ive id youre hes shes theyre thats
+    happen happened happens happening like really
     """.split()
 )
 
@@ -216,11 +220,28 @@ def _year_key(doc: dict) -> int:
     return year if isinstance(year, int) else 10**6
 
 
+def _overlaps(text: str, wanted: set[str]) -> bool:
+    """True when some sentence of text shares a token with wanted."""
+    return any(wanted & set(_tokens(sentence)) for sentence in _sentences(text))
+
+
 def _quotes_for(doc: dict, query: str) -> list[schemas.AskQuote]:
-    quotes: list[schemas.AskQuote] = []
+    """One quote per telling, in telling order; empty tellings are skipped.
+
+    When any telling shares a word with the query, only those tellings are quoted, each by
+    its best sentence. Otherwise (a title-only keyword match or a vector-only hit) every
+    telling is quoted by its first sentence, so such matches still give an answer.
+    """
     memory_id = str(doc["_id"])
-    for telling in doc.get("tellings") or []:
-        text = (telling or {}).get("text") or ""
+    wanted = set(_tokens(query))
+    texts = [
+        (telling, text)
+        for telling in doc.get("tellings") or []
+        if (text := (telling or {}).get("text") or "")
+    ]
+    overlapping = [(telling, text) for telling, text in texts if _overlaps(text, wanted)]
+    quotes: list[schemas.AskQuote] = []
+    for telling, text in overlapping or texts:
         best = best_sentences(text, query, 1)
         if not best:
             continue
@@ -264,6 +285,8 @@ def _keyword_search(
 ) -> list[tuple[dict, float]]:
     """(doc, score in (0, 1]) for every family memory sharing a word with query, best first.
 
+    The index is the memory title plus each telling's text; telling questions are ignored.
+
     limit=None returns every match.
     """
     wanted = list(dict.fromkeys(_tokens(query)))
@@ -278,8 +301,8 @@ def _keyword_search(
         title = set(_tokens(doc.get("title")))
         body: set[str] = set()
         for telling in doc.get("tellings") or []:
+            # Only what the teller said: a memory must not match on the prompt they answered.
             body.update(_tokens((telling or {}).get("text")))
-            body.update(_tokens((telling or {}).get("question")))
         indexed.append((doc, title, body))
 
     # Rare words say more than common ones: weight each query token by its IDF.
