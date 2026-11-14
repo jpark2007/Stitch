@@ -250,7 +250,7 @@ def test_selected_second_telling_target_cannot_be_reassigned(scheduled):
         service.select_question(other)
 
 
-def test_archive_is_bounded_and_lifetime_budget_never_resets(scheduled):
+def test_archive_is_bounded_and_new_preserves_current_day_budget(scheduled):
     _, db, _, _, _, _ = scheduled
     class Immediate:
         serial = 0
@@ -261,11 +261,15 @@ def test_archive_is_bounded_and_lifetime_budget_never_resets(scheduled):
             yield "done", schemas.RUN_EVENTS["done"](memoryId="memory")
         def stream_run(self, *args):
             return self.events()
-    service = ConversationService.for_contact(db, "family-a", "family-a:alice", runs=Immediate())
+    now = datetime.now(timezone.utc)
+    service = ConversationService.for_contact(db, "family-a", "family-a:alice", runs=Immediate(), clock=lambda: now)
     db.conversations.update_one({"principal": {"$exists": True}}, {"$set": {"modelCalls": 13}})
     token = "archive-test"
     conversations.acquire_worker(db, "family-a", "family-a:alice", token)
-    for _ in range(12):
+    for index in range(12):
+        if index and index % 3 == 0:
+            now += timedelta(days=1)
+        calls_before = service._state()["modelCalls"]
         service.save_story_draft("Story", year=1998)
         service.submit_story()
         events = asyncio.run(service.relay_run_events(durable=True))
@@ -273,8 +277,9 @@ def test_archive_is_bounded_and_lifetime_budget_never_resets(scheduled):
         conversations.update_worker(db, "family-a", "family-a:alice", token,
             {"runFinished": True, "pollRun": False, "outbox": []})
         service.start_new_story(token)
+        assert service._state()["modelCalls"] == calls_before
     state = service._state()
-    assert state["modelCalls"] == 13 and state["generation"] == 12
+    assert state["modelCalls"] == 0 and state["generation"] == 12
     assert len(state["archive"]) == 10 and state["archive"][0]["runId"] == "3"
 
 

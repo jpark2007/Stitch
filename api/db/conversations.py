@@ -91,13 +91,39 @@ def conversation_key(family_id: str, contact_id: str) -> str:
     return hashlib.sha256(json.dumps([family_id, contact_id]).encode()).hexdigest()
 
 
-def load_conversation(db, family_id: str, contact_id: str, person_id: str, principal: str) -> dict:
+class ConversationBudgetExceeded(RuntimeError):
+    def __init__(self, kind):
+        self.kind = kind
+        super().__init__("Conversation model-call limit reached" if kind == "model" else "Daily studio submission limit reached")
+
+
+def _budget_day(now=None):
+    value = now or datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        raise ValueError("Budget clock must be timezone-aware")
+    return value.astimezone(timezone.utc).date().isoformat()
+
+
+def refresh_conversation_budgets(db, family_id, contact_id, *, now=None):
+    day = _budget_day(now)
+    query = {"_id": conversation_key(family_id, contact_id), "familyId": family_id}
+    for date_field, count_field in (("modelBudgetDay", "modelCalls"), ("studioBudgetDay", "studioSubmissions")):
+        # Old lifetime model usage is conservatively charged to the first day.
+        db.conversations.update_one({**query, date_field: {"$exists": False}}, {"$set": {date_field: day}})
+        db.conversations.update_one({**query, count_field: {"$exists": False}}, {"$set": {count_field: 0}})
+        # A stale caller cannot roll a newer window backwards at midnight.
+        db.conversations.update_one({**query, date_field: {"$lt": day}}, {"$set": {date_field: day, count_field: 0}})
+    return day
+
+
+def load_conversation(db, family_id: str, contact_id: str, person_id: str, principal: str, *, now=None) -> dict:
     key = conversation_key(family_id, contact_id)
     db.conversations.update_one({"_id": key, "familyId": family_id}, {"$setOnInsert": {
         "familyId": family_id, "contactId": contact_id, "personId": person_id,
         "principal": principal, "draft": {"text": ""}, "revision": 0,
         "status": "draft", "cursor": 0, "modelCalls": 0,
     }}, upsert=True)
+    refresh_conversation_budgets(db, family_id, contact_id, now=now)
     row = db.conversations.find_one({"_id": key, "familyId": family_id})
     if row["personId"] != person_id or row["principal"] != principal:
         raise PermissionError("Contact identity changed; operator reconciliation required")
@@ -117,12 +143,29 @@ def update_conversation(db, family_id: str, contact_id: str, revision: int, fiel
     return row
 
 
-def take_conversation_model_call(db, family_id: str, contact_id: str, limit: int) -> None:
+def take_conversation_model_call(db, family_id: str, contact_id: str, limit: int, *, now=None) -> None:
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError("Invalid model budget")
+    day = refresh_conversation_budgets(db, family_id, contact_id, now=now)
     row = db.conversations.find_one_and_update(
         {"_id": conversation_key(family_id, contact_id), "familyId": family_id,
-         "modelCalls": {"$lt": limit}}, {"$inc": {"modelCalls": 1}})
+         "modelBudgetDay": day, "modelCalls": {"$lt": limit}}, {"$inc": {"modelCalls": 1}})
     if row is None:
-        raise RuntimeError("Conversation model-call limit reached")
+        raise ConversationBudgetExceeded("model")
+
+
+def reserve_conversation_submission(db, family_id, contact_id, revision, *, now=None):
+    day = refresh_conversation_budgets(db, family_id, contact_id, now=now)
+    row = db.conversations.find_one_and_update({"_id": conversation_key(family_id, contact_id),
+        "familyId": family_id, "revision": revision, "status": "draft", "studioBudgetDay": day,
+        "studioSubmissions": {"$lt": 3}}, {"$set": {"status": "submitting"},
+        "$inc": {"revision": 1, "studioSubmissions": 1}}, return_document=ReturnDocument.AFTER)
+    if row is None:
+        current = db.conversations.find_one({"_id": conversation_key(family_id, contact_id), "familyId": family_id})
+        if current and current.get("studioBudgetDay") == day and current.get("studioSubmissions", 0) >= 3:
+            raise ConversationBudgetExceeded("studio")
+        raise RuntimeError("Conversation changed; reload before retrying")
+    return row
 
 
 def worker_candidates(db, *, limit: int = 5) -> list[tuple[str, str]]:
@@ -204,6 +247,38 @@ def reserve_worker_receipts(db, family_id: str, contact_id: str, ids: list[str],
 def complete_worker_receipts(db, family_id: str, contact_id: str, token: str) -> None:
     db.channelMessages.update_many({"familyId": family_id, "contactId": contact_id,
         "status": "processing", "workerToken": token}, {"$set": {"status": "processed"}})
+
+
+def resume_preflight_worker(db, family_id: str, contact_id: str) -> None:
+    """Operator-only recovery of a proved pre-effect failure; never a generic reset.
+
+    Stop worker ticks before invoking. A failed recovery remains held; old generic
+    reconciliation states have no proof and cannot use this path.
+    """
+    active_contact(db, family_id, contact_id)
+    key = "worker:" + conversation_key(family_id, contact_id)
+    query = {"_id": key, "familyId": family_id, "contactId": contact_id,
+             "status": "blocked", "reason": "preflight_only", "preflightOnly": True}
+    worker = db.conversations.find_one(query)
+    if worker is None:
+        raise RuntimeError("No proven preflight-only failure to resume")
+    state = db.conversations.find_one({"_id": conversation_key(family_id, contact_id), "familyId": family_id})
+    if (not state or state["status"] != "draft" or state.get("runId") or state.get("pending")
+            or state.get("relayBuffer") or state.get("answerStatus") == "sending"
+            or worker.get("pollRun") or any(x["status"] not in {"sent", "cancelled"} for x in worker.get("outbox", []))):
+        raise RuntimeError("Uncertain work cannot be resumed by preflight recovery")
+    receipts = list(db.channelMessages.find({"familyId": family_id, "contactId": contact_id,
+        "status": "processing"}))
+    if any(r.get("workerToken") != worker.get("token") or r.get("receiptType") == "voice"
+           or r.get("transcriptionStatus") for r in receipts):
+        raise RuntimeError("Receipt effects require reconciliation")
+    if db.conversations.update_one({**query, "token": worker["token"]}, {"$set": {"status": "recovering"}}).modified_count != 1:
+        raise RuntimeError("Worker recovery changed")
+    db.channelMessages.update_many({"familyId": family_id, "contactId": contact_id,
+        "status": "processing", "workerToken": worker["token"]},
+        {"$set": {"status": "received"}, "$unset": {"workerToken": ""}})
+    db.conversations.update_one({"_id": key, "familyId": family_id, "status": "recovering", "token": worker["token"]},
+        {"$set": {"status": "idle", "preflightOnly": False}, "$unset": {"reason": ""}})
 
 
 class PhotoConflict(ValueError):

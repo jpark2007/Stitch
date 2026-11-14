@@ -171,11 +171,22 @@ Its bounded interview question can be relayed after the save. Studio follow-ups
 accept text, prop review only `KEEP`, and person matching only `YES` or `NO`.
 Other prop edits require the web app.
 
-The interview has a 20-second cancellation deadline, 32 persisted model calls and
+The interview has a 20-second cancellation deadline, 32 persisted model calls per UTC day and
 a recursion bound. The tick stops starting contacts after 25 seconds. This is a
 soft batch bound: in-flight bounded model, relay, database and outbound work must
 settle. Framework tools already running cannot be forcibly undone. Cancellation
 or failure leaves a durable reservation; no uncertain operation is repeated.
+
+Studio submission separately permits at most three starts per contact per UTC day.
+Its quota increment and draft-to-submitting reservation are one atomic write before
+`start_run`, including model-tool submissions; NEW never resets the quota. A lost
+start acknowledgement retains the charge and uncertain state. Daily exhaustion,
+missing model configuration, an eleventh draft photo or a combined draft over
+20,000 characters produce fixed replies without changing existing draft content or
+permanently blocking the contact. Rejected input is marked processed and must be
+resent if wanted later. Midnight UTC refreshes daily budgets; it does not reset runs,
+sends, consent or other uncertain state. See the conversation service's
+[daily budgets and narrow operator recovery](../agent/conversation/README.md#recovery-boundary).
 
 Family-scoped `conversations` documents with `kind:"channelWorker"` hold the
 per-contact idle→running reservation and outbox. Success releases the reservation;
@@ -336,7 +347,7 @@ That collection contains no family data and is intentionally shared; all persona
 question and notification reads remain family-scoped. Previously attempted question
 keys are never reasked for the same family/contact, including cancelled attempts.
 A draft, active studio, incoming receipt queue, unanswered chain, or exhausted
-32-call lifetime interview budget prevents another proactive prompt. Notification
+32-call current UTC-day interview budget prevents another proactive prompt. Notification
 history inspection is capped at 1000; reaching the cap stops further scheduling.
 
 Family-scoped `notifications` reserve a stable question/contact identity before
@@ -358,8 +369,8 @@ opaque IDs, never family question text.
 Typed `NEW` starts a fresh draft only after an actual persisted studio `done` or
 `error` event, a drained outbox/relay buffer, no pending question or uncertain
 answer/submission, and the current contact's worker reservation. It never clears
-uncertain state. The last ten run summaries are archived; model-call usage remains
-lifetime-scoped and the conversation thread generation advances. A due scheduler
+uncertain state. The last ten run summaries are archived; current-day model/studio
+usage is preserved and the conversation thread generation advances. A due scheduler
 can perform the same guarded reset before a new prompt, but cannot interrupt a
 draft or active run. Once selected, a draft's question cannot be replaced with a
 different question; NEW clears the old binding only through those gates.

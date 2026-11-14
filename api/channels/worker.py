@@ -9,7 +9,7 @@ from urllib.parse import quote, urlencode, urlsplit
 from uuid import uuid4
 
 from db import contacts, conversations, question_bank
-from agent.conversation.service import ConversationService
+from agent.conversation.service import ConversationService, ModelConfigurationUnavailable
 
 
 class ChannelWorker:
@@ -48,6 +48,9 @@ class ChannelWorker:
                 blocked += 1
                 continue
             try:
+                conversations.update_worker(self.db, family, contact_id, token,
+                    {"preflightOnly": not (any(x["status"] not in {"sent", "cancelled"} for x in row.get("outbox", []))
+                                           or row.get("pollRun") or self.scheduler_enabled)})
                 count, delivered = self._contact(family, contact_id, token, row)
                 processed += count
                 sent += delivered
@@ -58,7 +61,9 @@ class ChannelWorker:
                 # reservation, including after a process crash or database failure.
                 try:
                     from .audio import AudioConversionError
-                    reason = "audio_conversion_" + exc.code if isinstance(exc, AudioConversionError) else "reconciliation_required"
+                    preflight = conversations.locked_worker(self.db, family, contact_id, token).get("preflightOnly")
+                    reason = ("preflight_only" if preflight else
+                              "audio_conversion_" + exc.code if isinstance(exc, AudioConversionError) else "reconciliation_required")
                     conversations.update_worker(self.db, family, contact_id, token,
                                                 {"status": "blocked", "reason": reason})
                 except Exception:
@@ -67,7 +72,7 @@ class ChannelWorker:
 
     def _contact(self, family, contact_id, token, row):
         from . import scheduler
-        service = ConversationService.for_contact(self.db, family, contact_id, runs=self.runs)
+        service = ConversationService.for_contact(self.db, family, contact_id, runs=self.runs, clock=self.now)
         identity = contacts.worker_contact(self.db, family, contact_id)
         if identity["channel"] == "imessage" and (identity.get("spaceKind") != "direct" or not identity.get("spaceId")):
             raise PermissionError("Verified direct-message space is required")
@@ -258,6 +263,7 @@ class ChannelWorker:
         is_voice = batch[0].get("receiptType") == "voice"
         voice_text = None
         if is_voice:
+            update({"preflightOnly": False})
             from .voice import transcribe_receipt
             transcriber = self.transcriber
             if transcriber is None:
@@ -266,13 +272,41 @@ class ChannelWorker:
             voice_text = transcribe_receipt(self.db, family, contact_id, batch[0],
                                            transcriber=transcriber, check=check)
             check()
-        if photo_ids:
-            service.attach_photos(photo_ids)
         text = voice_text if is_voice else "\n".join(r["text"] for r in batch if r["text"].strip())
         state = service._state()
         pending = state.get("pending")
         typed_control = not is_voice and not photo_ids and all(r.get("receiptType") not in {"photo", "voice"} for r in batch)
         command = text.strip().upper()
+        year_command = typed_control and re.fullmatch(r"YEAR\s+(\d{4})", text.strip(), re.IGNORECASE)
+        story_input = not (typed_control and (command in {"HELP", "CALL", "NEW", "SUBMIT"} or year_command))
+        preflight_reply = None
+        agent = None
+        if photo_ids and state["status"] != "draft":
+            preflight_reply = "Photos can only be added to an open draft. Wait for the studio, then send NEW. No draft changes were applied."
+        elif state["status"] == "draft" and story_input:
+            try:
+                service.preflight_draft_input(text, photo_ids)
+            except ValueError:
+                preflight_reply = "A draft allows 10 photos and 20,000 characters. This message was not added; your existing draft was kept. Send YEAR and SUBMIT when ready."
+            if preflight_reply is None and text.strip():
+                if state.get("modelCalls", 0) >= 32:
+                    preflight_reply = "Today's interview limit is reached. This message was not added. Your draft is kept; send YEAR and SUBMIT, or try again after midnight UTC."
+                else:
+                    try:
+                        agent = self.agent_factory(service)
+                        if state.get("modelCalls", 0) >= getattr(agent, "model_call_limit", 32):
+                            preflight_reply = "Today's interview limit is reached. This message was not added. Your draft is kept; send YEAR and SUBMIT, or try again after midnight UTC."
+                    except ModelConfigurationUnavailable:
+                        preflight_reply = "The story assistant is not configured. This message was not added; your draft was kept. Ask the operator to configure it, then resend."
+        # Everything below may change a draft or produce an external effect.
+        update({"preflightOnly": False})
+        if preflight_reply:
+            queue([preflight_reply])
+            deliver()
+            conversations.complete_worker_receipts(self.db, family, contact_id, token)
+            return len(batch), sent
+        if photo_ids:
+            service.attach_photos(photo_ids)
         if typed_control and command in {"HELP", "CALL"}:
             queue([("Send story words, YEAR followed by its year, then SUBMIT. Reply KEEP for props or YES/NO "
                     "for a person match. NEW starts another draft after the studio finishes. STOP ends messages. "
@@ -310,14 +344,26 @@ class ChannelWorker:
                 if not state["draft"].get("year") or not state["draft"].get("text", "").strip():
                     queue(["Send your story and YEAR followed by its year before SUBMIT."])
                 else:
-                    service.submit_story()
-                    update({"pollRun": True})
-                    queue(["Your story was submitted. I'll relay the studio's questions here."])
+                    try:
+                        service.submit_story()
+                    except conversations.ConversationBudgetExceeded:
+                        queue(["Today's limit of 3 studio submissions is reached. Your draft was kept. Try SUBMIT after midnight UTC."])
+                    except ModelConfigurationUnavailable:
+                        queue(["The studio is not configured. Your draft was kept. Ask the operator to configure it, then send SUBMIT again."])
+                    else:
+                        update({"pollRun": True})
+                        queue(["Your story was submitted. I'll relay the studio's questions here."])
             elif text.strip():
                 service.save_story_draft(text=text)
                 question_bank.answer_prompt(self.db, family, contact_id, batch[0]["_id"], self.now())
-                agent = self.agent_factory(service)
-                response = asyncio.run(agent.ainvoke(text, timeout=20))
+                try:
+                    response = asyncio.run(agent.ainvoke(text, timeout=20))
+                except conversations.ConversationBudgetExceeded:
+                    if not getattr(agent, "worker_managed", False):
+                        raise  # Only the production read-only tool set is safely resumable.
+                    # Worker-managed interview tools are read-only. No unknown
+                    # provider exception is caught here or silently retried.
+                    response = "Today's interview limit is reached; it renews after midnight UTC. Would you like to submit your saved draft using YEAR and SUBMIT?"
                 check()
                 if isinstance(response, dict):
                     messages = response.get("messages", [])

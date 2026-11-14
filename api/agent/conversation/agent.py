@@ -6,7 +6,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import tool
 
 from db import conversations
-from .service import ConversationService
+from .service import ConversationService, preflight_model_configuration
 
 
 def conversation_tools(service: ConversationService, *, worker_managed: bool = False):
@@ -54,7 +54,8 @@ class _Budget(BaseCallbackHandler):
     def on_chat_model_start(self, serialized, messages, **kwargs):
         self.service._state()
         c = self.service.context
-        conversations.take_conversation_model_call(self.service.db, c.family_id, c.contact_id, self.limit)
+        conversations.take_conversation_model_call(self.service.db, c.family_id, c.contact_id, self.limit,
+                                                    now=self.service.now())
         # The budget write can overlap a consent update. Recheck the frozen proof
         # after that reservation, immediately before entering the model provider.
         self.service._state()
@@ -70,13 +71,13 @@ class ConversationAgent:
         from deepagents import create_deep_agent
         from deepagents.backends import StateBackend
         from langgraph.checkpoint.memory import InMemorySaver
-        from agent.studio import make_model
 
         self.service = service
         self.worker_managed = worker_managed
+        self.model_call_limit = max_model_calls
         self._budget = _Budget(service, max_model_calls)
         self._graph = create_deep_agent(
-            model=model if model is not None else make_model(),
+            model=model if model is not None else preflight_model_configuration(),
             tools=conversation_tools(service, worker_managed=worker_managed),
             backend=StateBackend(),
             checkpointer=checkpointer if checkpointer is not None else InMemorySaver(),

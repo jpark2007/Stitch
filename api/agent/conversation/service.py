@@ -15,6 +15,18 @@ import schemas
 from db import conversations, media, memories
 
 
+class ModelConfigurationUnavailable(RuntimeError):
+    """A definite pre-provider configuration failure; never an uncertain call."""
+
+
+def preflight_model_configuration():
+    from agent.studio import make_model
+    try:
+        return make_model()  # Constructs configuration only; makes no request.
+    except (RuntimeError, ValueError):
+        raise ModelConfigurationUnavailable("Story model configuration is unavailable") from None
+
+
 def _worker_only() -> None:
     try:
         asyncio.get_running_loop()
@@ -33,19 +45,21 @@ class ContactContext:
 
 
 class ConversationService:
-    def __init__(self, db, context: ContactContext, *, runs=None):
+    def __init__(self, db, context: ContactContext, *, runs=None, clock=None):
         self.db = db
         self.context = context
         self._runs = runs
+        self._production_runs = runs is None
+        self.now = clock or (lambda: datetime.now(timezone.utc))
         self._state()
 
     @classmethod
-    def for_contact(cls, db, family_id: str, contact_id: str, *, runs=None):
+    def for_contact(cls, db, family_id: str, contact_id: str, *, runs=None, clock=None):
         contact = conversations.active_contact(db, family_id, contact_id)
         context = ContactContext(family_id, contact_id, contact["personId"],
                                  contact.get("userId") or f"contact:{contact_id}",
                                  tuple((conversations.contact_proof(contact) or {}).items()))
-        return cls(db, context, runs=runs)
+        return cls(db, context, runs=runs, clock=clock)
 
     @property
     def thread_id(self) -> str:
@@ -68,7 +82,7 @@ class ConversationService:
                     or not isinstance(expected.get("verifiedAt"), datetime)
                     or not isinstance(expected.get("optInAt"), datetime)):
                 raise PermissionError("Verified contact proof changed or is unavailable")
-        return conversations.load_conversation(self.db, c.family_id, c.contact_id, c.person_id, c.principal)
+        return conversations.load_conversation(self.db, c.family_id, c.contact_id, c.person_id, c.principal, now=self.now())
 
     def _update(self, row: dict, fields: dict, *, status: str | None = None) -> dict:
         c = self.context
@@ -142,7 +156,11 @@ class ConversationService:
                                             question=question.text if question else None,
                                             memory_id=question.memory_id if question else None,
                                             participant_ids=[self.context.person_id])
-        reserved = self._update(row, {"status": "submitting"}, status="draft")
+        if self._production_runs:
+            preflight_model_configuration()
+        c = self.context
+        reserved = conversations.reserve_conversation_submission(self.db, c.family_id, c.contact_id,
+                                                                 row["revision"], now=self.now())
         try:
             # Recheck STOP after acquiring the durable reservation, before side effects.
             self._state()
@@ -184,6 +202,16 @@ class ConversationService:
         self._state()
         self._update(row, {"draft": draft}, status="draft")
         return {"photoCount": len(combined)}
+
+    def preflight_draft_input(self, text: str, photo_ids: list[str]) -> None:
+        """Validate the entire incoming batch before either text or photos mutate."""
+        row = self._state()
+        if row["status"] != "draft":
+            raise ValueError("Draft is not open")
+        combined = "\n".join(x for x in (row["draft"].get("text", ""), text.strip()) if x)
+        if len(combined) > 20_000:
+            raise ValueError("Combined story is longer than 20000 characters")
+        self._validate_photos(list(dict.fromkeys([*row["draft"].get("photoIds", []), *photo_ids])))
 
     async def relay_run_events(self, *, timeout: float = 1.0, max_events: int = 50,
                                durable: bool = False) -> list[dict]:
@@ -264,7 +292,7 @@ class ConversationService:
         self._update(row, {"status": "draft", "draft": {"text": ""}, "runId": None, "cursor": 0,
             "pending": None, "relayBuffer": [], "terminalEvent": None, "answerStatus": None,
             "generation": generation, "archive": archive}, status="submitted")
-        # modelCalls is deliberately lifetime-scoped and never reset here.
+        # NEW never resets the current day's studio or model budgets.
         return {"started": True, "generation": generation}
 
     def answer_run_question(self, kind: str, text: str | None = None,

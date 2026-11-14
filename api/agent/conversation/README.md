@@ -31,6 +31,9 @@ Fresh consent in the same space does not revive an older in-flight invocation.
   passing them to the existing studio; no caller-controlled family is accepted.
 - `submit_story()` reserves the draft durably before `start_run`. It returns
   `{runId, duplicate}`; a repeated successful submission returns the same run.
+  The same atomic reservation charges one of three studio submissions per contact
+  per UTC day. Failed/uncertain starts keep their charge; NEW cannot reset it.
+  A known configuration failure or exhausted daily cap leaves the draft unchanged.
 - `await relay_run_events(timeout=1.0, max_events=50)` reads only the bound run,
   persists its replay cursor/pending pause, and closes the stream. Limits are
   ten seconds, 100 new events, 64 KiB per batch, and 10,000 replayed events.
@@ -54,10 +57,15 @@ coroutine from the module-level studio API cannot accidentally be stored as an I
 builds `create_deep_agent` lazily at construction, using `studio.make_model()`
 unless a model is injected. Imports make no provider call. `invoke(text)` fixes
 the LangGraph thread ID to the family/contact and sets a recursion bound of 64.
-The model-call budget is persisted in the family-scoped conversation document;
+The model-call budget is persisted per UTC day in the family-scoped conversation document;
 callbacks count nested/subagent and summarization calls too. Consent is checked
 before each model call and again before returning output. The model receives no
 tools for changing family/person/principal/run IDs or for direct outbound delivery.
+`modelBudgetDay` and `modelCalls` hold the current UTC-day interview window;
+`studioBudgetDay` and `studioSubmissions` hold the separate studio window. Counters
+roll forward atomically, never backward, and remain bounded across agent rebuilds.
+Legacy model counts without a date are charged to the first observed day rather
+than silently granting a new budget. UTC midnight restores the next day's allowance.
 
 `worker_managed=True` exposes only the read-only `get_open_questions` tool. The worker saves
 raw words/year, and handles SUBMIT/KEEP/YES/NO and actual studio events itself.
@@ -82,7 +90,7 @@ There is one active draft/run per family/contact. Trusted worker
 fully drained outbox/relay, no pending/uncertain answer or submission, and the
 current durable worker reservation. It archives the last ten run summaries, clears
 the completed draft/run, and increments the thread generation. It never resets
-the lifetime model-call budget and is not exposed to the model. Typed NEW and the
+the current day's model/studio budgets and is not exposed to the model. Typed NEW and the
 eligible manual scheduler use the same gate. Question selection is immutable within
 a draft, preserving a scheduled second-telling target. A durable compare-and-set
 prevents concurrent duplicate submissions.
@@ -92,6 +100,24 @@ retry or clear that reservation:** an operator must reconcile whether a run was
 created. A failed answer similarly records an uncertain `sending` state with no
 pending answer, preventing blind repeat side effects. This favors avoiding
 duplicate stories over claiming exactly-once recovery across independent systems.
+
+The worker preflights the combined draft length, combined photo count, known model
+configuration and interview budget before changing either text or photos. Rejected
+messages receive a fixed explanation, are marked processed, and must be resent if
+the teller wants to try later; existing draft words/photos remain unchanged. The
+worker stays idle and usable. If a read-only worker interview reaches its callback
+budget mid-graph, already saved words remain and a fixed limit reply is delivered.
+Provider timeouts and unknown exceptions are still uncertain, not ordinary limits.
+
+For a new, explicitly marked pre-effect failure only, an operator may stop ticks
+and invoke `db.conversations.resume_preflight_worker(db, family_id, contact_id)`.
+It requires `reason="preflight_only"`, `preflightOnly=True`, current contact authority,
+an open draft and no run, pending answer, relay buffer, uncertain outbox or voice
+processing. It restores only that worker token's receipt reservations. Recovery
+uses a held `recovering` state; a partial database failure needs manual inspection.
+Old `reconciliation_required`, crashed running workers, uncertain submissions,
+transcription and sends are deliberately ineligible. This helper is not an HTTP
+route, a model tool, or a way to clear budget/uncertainty markers.
 
 No shared audio/channel schema fields or settings UI are added here. The separately
 flagged manual worker scheduler selects public neutral or person-bound open questions
