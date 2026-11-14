@@ -17,7 +17,7 @@ from `channels/`. Export these values privately; the bridge loads no env file:
 | `CHANNELS_PHOTON_VERSION=beta` | Required explicit version; Stable cloud disabled |
 | `PHOTON_PROJECT_ID` | Beta `pho_prj_...` project |
 | `PHOTON_API_KEY` | Project `pho_sk_...` bearer key with `project:read` and `project:write` |
-| `PHOTON_WEBHOOK_SECRET` | Destination's full `whsec_...` signing secret; distinct from API key |
+| `PHOTON_WEBHOOK_SECRET` | Destination's full `whsec_...` signing secret, canonical base64 encoding at least 24 bytes; distinct from API key |
 | `PHOTON_AGENT_HANDLE` | Exact assigned agent iMessage number/email, not the human sender |
 | `CHANNELS_SHARED_SECRET` | Existing internal API/bridge HMAC secret |
 | `CHANNELS_API_URL` | Loopback API origin; default `http://127.0.0.1:8000` |
@@ -69,13 +69,28 @@ unsupported events do not become permanent rejected deliveries.
 One bridge process holds an exclusive database lock. State directory/file must
 be owned by the process user with no group/world permissions. SQLite uses full
 synchronous writes and a rollback journal. Events are reserved before API effects;
-queued rows resume after restart, but processing/blocked rows never auto-retry.
-Completed event bodies are removed while their hashes remain; blocked rows retain
-private payloads for reconciliation. A failed part can leave earlier parts accepted.
-Inspect the API receipts before deciding how to recover; never reset the whole batch
-blindly, especially a consumed LINK code.
+queued rows resume after restart, but crashed processing/blocked rows never auto-retry.
+Transient verification, read-only preflight and idempotent text-inbox failures retry
+at most six total attempts, with durable 1/2/4/8/16-second backoff. Successful parts
+are checkpointed before proceeding, preserving their original message IDs. A lost
+LINK or photo-storage acknowledgement is uncertain and never automatically retried.
+Exhausted retries remain blocked and produce a generic operator warning; **STOP is
+not guaranteed delivered**. Inspect the ledger/API receipts and apply an unresolved
+STOP through the authenticated settings page. Do not reset the batch blindly.
 
-Reply IDs and body hashes are reserved before provider effects. A successful 202
+Completed event bodies are removed immediately; their hashes remain for seven days
+after completion (the four-day provider retry horizon plus a safety margin). After
+that local deduplication horizon, completed IDs may be accepted again. Refusals with
+403/404 also remove the body immediately and invalidate any cached reply route.
+Other unfinished payloads expire seven days after receipt; their identity and blocked
+state remain so uncertainty cannot be erased into a replay. Cached routes expire
+after 30 days without a successfully forwarded inbound event. Route-cache capacity
+or persistence failure never prevents an already-forwarded STOP/LINK from completing;
+replies to an uncached space fail closed until a later event can establish its route.
+
+Reply IDs and body hashes are reserved after current verification/consent checks,
+immediately before provider effects. A pre-send refusal leaves no sending reservation.
+A successful 202
 must have the expected project, sender and direct space before being recorded.
 The provider receives a stable `Idempotency-Key`. A lost ACK, crash, timeout, or
 failed persistence leaves `sending` uncertain; repeated/restarted attempts are
@@ -91,9 +106,14 @@ by the API's family purge hook.
 
 ## Bounds and remaining qualification
 
-Webhook bodies are capped at 64 KiB; request/socket timeouts are 10 seconds. Queues
-retain at most 10,000 events and 10,000 replies, with 1,000 verified routes and a
-64 MiB SQLite page ceiling. Capacity fails closed rather than evicting replay IDs.
+Webhook bodies are capped at 64 KiB, with an absolute ten-second upload deadline,
+five-second header timeout, one-second connection checks and at most 64 simultaneous
+connections. Queues retain at most 10,000 active events (queued/processing/blocked)
+and 10,000 reply identities, with 1,000 verified routes and a 64 MiB SQLite page
+ceiling. Completed-event hashes do not consume active capacity; pruning runs during
+queue activity, including idle drain checks. Uncertain event/reply identities are
+never pruned. Capacity still fails closed if active work, reply identities or disk
+storage exhausts these bounds; operators must reconcile rather than delete the ledger.
 Each event has at most 10 parts and 8,000 total text bytes. REST JSON is bounded to
 256 KiB; attachment data to 20 MiB; REST/download deadlines are 15 seconds. A drain
 starts no new part after its 60-second deadline. An already started local API call
@@ -103,7 +123,7 @@ requests use fixed project-scoped HTTPS paths and refuse redirects. Error logs
 contain no provider body, message text, code, audio, key or signing secret.
 
 The queue drains one event at a time; signed API ticks run every 60 seconds without
-overlap. Shutdown stops listeners/timers and waits for bounded reserved work,
+overlap using a separate 45-second, one-attempt client. Shutdown stops listeners/timers and waits for bounded reserved work,
 preserving uncertainty. Unit tests exercise fake REST and real loopback signed
 webhook/API boundaries, restarts, concurrency, consent refusal and malformed
 identities. Real Photon delivery, filesystem crash durability, network failures
