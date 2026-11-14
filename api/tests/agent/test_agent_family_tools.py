@@ -700,6 +700,28 @@ def test_saving_twice_in_one_run_updates_the_same_memory(rebuild_tools: bool) ->
     assert json.loads(_text(files, "/saved_memory.json"))["memoryId"] == "memory_1"
 
 
+def test_parallel_save_calls_in_one_message_save_one_memory() -> None:
+    """Reviewer finding: two save_memory calls in ONE AI message both see state with no
+    saved-memory record yet. They must still leave one memory (v1, then v2)."""
+    repo = make_repo()
+    replies, files = _call_tools_in_parallel(make_family_tools(repo, dad_run()), _scene_files(), "save_memory",
+                                             [SAVE_ARGS, SAVE_ARGS])
+    assert sorted(replies) == ["saved memory_1 v1", "saved memory_1 v2"]
+    assert [(m.id, m.version) for m in repo.find_memories(FAM)] == [("memory_1", 2)]
+    assert json.loads(_text(files, "/saved_memory.json"))["memoryId"] == "memory_1"
+
+
+def test_parallel_second_telling_saves_do_not_lose_a_version() -> None:
+    repo = make_repo()
+    existing = _existing_memory_without_mom(repo)
+    replies, _ = _call_tools_in_parallel(make_family_tools(repo, mom_run(existing.id)), _files(*_moms_draft()),
+                                         "save_memory", [SAVE_ARGS, SAVE_ARGS])
+    assert sorted(replies) == [f"saved {existing.id} v2", f"saved {existing.id} v3"]
+    saved = repo.get_memory(FAM, existing.id)
+    assert saved is not None and saved.version == 3
+    assert [t.author_id for t in saved.tellings].count("mom") == 1
+
+
 def test_a_second_save_keeps_people_the_linker_added() -> None:
     repo = make_repo()
     repo.add_person(FAM, schemas.Person(id="aunt", family_id=FAM, name="Aunt May",

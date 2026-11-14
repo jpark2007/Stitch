@@ -381,6 +381,11 @@ def make_family_tools(repo: AgentRepo, run: RunInfo) -> list[BaseTool]:
     # files update lands in state. The state files stay the durable record (resume).
     link_lock = threading.Lock()
     asked_here: set[tuple[str, str]] = set()
+    # The same for save_memory: two parallel calls in one AI message both see state with
+    # no saved-memory record yet. The lock serializes them and `saved_here` hands the
+    # first call's memory id to the second, so the run still saves one memory.
+    save_lock = threading.Lock()
+    saved_here: list[str] = []
 
     @tool(parse_docstring=True)
     def get_person(person_id: str) -> str:
@@ -490,23 +495,28 @@ def make_family_tools(repo: AgentRepo, run: RunInfo) -> list[BaseTool]:
         timeline, error = _read_draft(state, TIMELINE_PATH, Timeline)
         if error:
             return error
-        saved_id: str | None = None
-        if not run.is_second_telling:
-            saved_id, error = _saved_memory_id(files, run)
-            if error:
-                return error
-        try:
-            memory, ignored = save_scene_with_report(
-                repo,
-                run,
-                title=title,
-                participant_ids=participant_ids,
-                screenplay=screenplay,
-                timeline=timeline,
-                update_memory_id=saved_id,
-            )
-        except (ValueError, ValidationError) as exc:
-            return f"error: could not save: {exc}"
+        with save_lock:
+            saved_id: str | None = None
+            if not run.is_second_telling:
+                saved_id, error = _saved_memory_id(files, run)
+                if error:
+                    return error
+                if saved_id is None and saved_here:
+                    saved_id = saved_here[-1]
+            try:
+                memory, ignored = save_scene_with_report(
+                    repo,
+                    run,
+                    title=title,
+                    participant_ids=participant_ids,
+                    screenplay=screenplay,
+                    timeline=timeline,
+                    update_memory_id=saved_id,
+                )
+            except (ValueError, ValidationError) as exc:
+                return f"error: could not save: {exc}"
+            if not run.is_second_telling:
+                saved_here.append(memory.id)
         _emit("scene_ready", schemas.SceneReadyEvent(memory_id=memory.id, version=memory.version))
         result = f"saved {memory.id} v{memory.version}"
         if ignored:
