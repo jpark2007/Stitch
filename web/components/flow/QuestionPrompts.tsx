@@ -1,6 +1,6 @@
 "use client";
 
-// Questions family members asked this person, as small handwritten notes
+// Questions family members asked this person, as quiet handwritten lines
 // above the story on the add-a-memory page. Each note is one toggle button:
 // pressing it answers that question (the page turns it into a draft with
 // draftFromQuestion), pressing it again lets it go. A question about a moment
@@ -14,8 +14,6 @@ import type { Question } from "@/lib/types";
 import { Button, FOCUS_RING } from "./Button";
 
 const VISIBLE = 2;
-// A hand-placed tilt per note, small enough that the list still reads tidy.
-const TILTS = [-0.4, 0.3, -0.25, 0.4, -0.3];
 
 export function QuestionPrompts(props: {
   questions: Question[];
@@ -38,32 +36,30 @@ export function QuestionPrompts(props: {
 
   return (
     <section aria-labelledby={headingId} className="min-w-0">
-      <h2 id={headingId} className="font-display text-[1.1875rem] leading-tight text-ink">
+      <h2 id={headingId} className="font-sans text-[0.9375rem] leading-snug font-medium text-ink-soft">
         Someone asked you
       </h2>
 
-      <ul id={listId} className="mt-3 list-none space-y-2.5 p-0">
-        {shown.map((q, i) => {
+      {/* Each note is one quiet line on the paper, in the asker's hand; the
+          left edge of its text lines up with the page (the hover wash bleeds
+          out past it). */}
+      <ul id={listId} className="mt-1 list-none space-y-0.5 p-0">
+        {shown.map((q) => {
           const picked = q.id === pickedId;
           return (
-            <li key={q.id} style={{ transform: `rotate(${TILTS[i % TILTS.length]}deg)` }}>
+            <li key={q.id}>
               <button
                 type="button"
                 aria-pressed={picked}
                 onClick={() => onPick(q)}
                 className={[
-                  "group relative flex min-h-11 w-full flex-col items-start gap-0.5 rounded-paper border bg-paper-light px-4 py-2 text-left shadow-paper sm:py-2.5",
+                  "group relative -mx-3 flex min-h-11 w-[calc(100%+1.5rem)] flex-col items-start gap-0.5 rounded-card px-3 py-1.5 text-left",
                   "sm:flex-row sm:items-center sm:justify-between sm:gap-5",
                   "transition-colors duration-150 ease-paper motion-reduce:transition-none",
                   FOCUS_RING,
-                  picked ? "border-accent bg-paper" : "border-rule hover:border-accent",
+                  picked ? "bg-paper-deep/70" : "hover:bg-paper-deep/40",
                 ].join(" ")}
               >
-                {/* A strip of tape holding the note to the page. */}
-                <span
-                  aria-hidden="true"
-                  className="absolute -top-1.5 left-6 h-3 w-10 -rotate-3 bg-[#e9dcbd]/80 mix-blend-multiply"
-                />
                 <span className="min-w-0 font-hand text-[1.25rem] leading-[1.15] text-pretty break-words text-ink sm:text-[1.375rem]">
                   {q.text}
                 </span>

@@ -3,7 +3,14 @@
 // A four-digit year field. A text input with a numeric keyboard (no spinner
 // arrows); the value stays a string and the page decides what is valid.
 import { useId, type ReactNode } from "react";
-import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS, fieldControlClass } from "./Field";
+import {
+  FIELD_ERROR_CLASS,
+  FIELD_HINT_CLASS,
+  FIELD_LABEL_CLASS,
+  FIELD_ROW_CLASS,
+  FIELD_ROW_LABEL_CLASS,
+  fieldControlClass,
+} from "./Field";
 
 export function YearInput(props: {
   label: ReactNode;
@@ -18,8 +25,13 @@ export function YearInput(props: {
   max?: number;
   id?: string;
   name?: string;
+  /**
+   * "row": the label in a left column beside the field (the add-a-memory
+   * details), rather than above it. Default "stacked".
+   */
+  layout?: "stacked" | "row";
 }) {
-  const { label, value, onChange, hint, error, required, min, max, name } = props;
+  const { label, value, onChange, hint, error, required, min, max, name, layout = "stacked" } = props;
   const uid = useId();
   const inputId = props.id ?? `${uid}-year`;
   const hintId = `${inputId}-hint`;
@@ -39,28 +51,20 @@ export function YearInput(props: {
     .filter(Boolean)
     .join(" ");
 
-  return (
-    <div>
-      <label htmlFor={inputId} className={FIELD_LABEL_CLASS}>
-        {label}
-        {required ? (
-          <span className="ml-1 font-normal text-ink-faint">
-            <span aria-hidden="true">*</span>
-            <span className="sr-only">(required)</span>
-          </span>
-        ) : null}
-      </label>
-      {hint ? (
-        <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
-          {hint}
-        </p>
-      ) : null}
-      {range ? (
-        <span id={rangeId} className="sr-only">
-          {range}
-        </span>
-      ) : null}
-      <input
+  const row = layout === "row";
+  // No asterisk: the input's `required` tells assistive tech, and a missing
+  // year is said beside the field when someone sends without it.
+  const labelEl = (
+    <label
+      htmlFor={inputId}
+      className={row ? `${FIELD_ROW_LABEL_CLASS} flex min-h-11 shrink-0 items-center` : FIELD_LABEL_CLASS}
+    >
+      {label}
+      {required ? <span className="sr-only"> (required)</span> : null}
+    </label>
+  );
+  const input = (
+    <input
         id={inputId}
         name={name}
         type="text"
@@ -68,24 +72,59 @@ export function YearInput(props: {
         pattern="[0-9]*"
         maxLength={4}
         autoComplete="off"
-        placeholder="YYYY"
+        placeholder={row ? "Year" : "YYYY"}
         required={required}
         value={value}
         // Keep only digits: a stray letter or space is dropped as it is typed.
         onChange={(e) => onChange(e.target.value.replace(/\D+/g, "").slice(0, 4))}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy || undefined}
-        // The same recessed well as TextField, just four digits wide.
+        // The same underlined line as TextField, just four digits wide.
         className={fieldControlClass(
           !!error,
-          "mt-2 w-[7.5rem] tabular-nums tracking-[0.12em] placeholder:tracking-normal",
+          `${row ? "" : "mt-1 "}w-[5.5rem] tabular-nums tracking-[0.08em] placeholder:tracking-normal`,
         )}
       />
-      {error ? (
-        <p id={errorId} className={`mt-1.5 ${FIELD_ERROR_CLASS}`}>
-          {error}
-        </p>
-      ) : null}
+  );
+  const hintEl = hint ? (
+    <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
+      {hint}
+    </p>
+  ) : null;
+  const rangeEl = range ? (
+    <span id={rangeId} className="sr-only">
+      {range}
+    </span>
+  ) : null;
+  const errorEl = error ? (
+    <p id={errorId} className={`mt-1.5 ${FIELD_ERROR_CLASS}`}>
+      {error}
+    </p>
+  ) : null;
+
+  if (row) {
+    // Four digits fit beside the label even on a phone, so this row stays
+    // inline at every width ("When was this? 1988").
+    return (
+      <div className={`flex items-start gap-x-4 ${FIELD_ROW_CLASS}`}>
+        {labelEl}
+        <div className="min-w-0">
+          {input}
+          {hintEl}
+          {rangeEl}
+          {errorEl}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {labelEl}
+      {hintEl}
+      {rangeEl}
+      {input}
+      {errorEl}
     </div>
   );
 }

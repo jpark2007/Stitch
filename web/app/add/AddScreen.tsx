@@ -39,8 +39,6 @@ import {
   currentPath,
   FamilyLine,
   LoadingSheet,
-  NEW_MEMORY_LEDE,
-  SECOND_TELLING_LEDE,
   sessionStore,
   type MomentHome,
 } from "./parts";
@@ -55,9 +53,9 @@ const TITLE = "Add a memory";
 export function AddLoading(props: { kind?: "new" | "second" | "run" }) {
   const { kind = "new" } = props;
   const title = kind === "second" ? "Add your telling" : kind === "run" ? "Your memory" : TITLE;
-  const lede = kind === "second" ? SECOND_TELLING_LEDE : kind === "run" ? undefined : NEW_MEMORY_LEDE;
+  // No lede: the form has none either (the story's placeholder invites).
   return (
-    <FlowPage title={title} lede={lede} back={ADD_BACK} width="wide">
+    <FlowPage title={title} back={ADD_BACK} width="wide">
       <LoadingSheet label="Opening your family’s pages…" />
     </FlowPage>
   );

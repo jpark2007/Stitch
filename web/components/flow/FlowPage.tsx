@@ -22,7 +22,11 @@ export function FlowFrame(props: { width?: "narrow" | "wide"; children: ReactNod
   const { width = "narrow", children } = props;
   return (
     // The same gutter and top spacing as the home page, so the mark sits in the same place.
-    <main className="w-full min-w-0 overflow-x-clip px-[var(--gutter)] pt-8 pb-20 font-sans text-ink sm:pt-12">
+    // data-flow-page: inside it PaperCard lies flat on the page (see PaperCard).
+    <main
+      data-flow-page=""
+      className="w-full min-w-0 overflow-x-clip px-[var(--gutter)] pt-8 pb-24 font-sans text-ink sm:pt-12"
+    >
       {/* Home's header is max-w-6xl including its gutter; this matches its inner edge. */}
       <nav aria-label="Stitch" className="mx-auto flex w-full max-w-[calc(72rem-2*var(--gutter))]">
         {/* -my keeps the 44px tap target without pushing the column down. */}
@@ -47,22 +51,22 @@ export function FlowPage(props: {
   children: ReactNode;
 }) {
   const { title, lede, back, width = "narrow", children } = props;
-  const ledeClass = "mt-3 text-[1.0625rem] leading-relaxed text-ink-soft";
+  const ledeClass = "mt-3 text-base leading-relaxed text-ink-soft";
 
   return (
     <FlowFrame width={width}>
       {back ? (
         <Link
           href={back.href}
-          className={`-ml-2 mb-4 inline-flex min-h-11 items-center gap-1.5 rounded-paper px-2 text-[0.9375rem] font-medium text-ink-soft no-underline transition-colors duration-150 ease-paper hover:text-accent-deep motion-reduce:transition-none ${FOCUS_RING}`}
+          className={`-ml-2 mb-3 inline-flex min-h-11 items-center gap-1.5 rounded-paper px-2 text-sm font-medium text-ink-soft no-underline transition-colors duration-150 ease-paper hover:text-accent-deep motion-reduce:transition-none ${FOCUS_RING}`}
         >
           <span aria-hidden="true">&larr;</span>
           {back.label}
         </Link>
       ) : null}
 
-      <header className="mb-8">
-        <h1 className="font-display text-[2rem] leading-[1.15] tracking-[-0.015em] text-balance break-words text-ink sm:text-[2.5rem]">
+      <header className="mb-10">
+        <h1 className="font-display text-[2rem] leading-[1.15] tracking-[-0.015em] text-balance break-words text-ink sm:text-[2.375rem]">
           {title}
         </h1>
         {lede == null || lede === false ? null : typeof lede === "string" ? (

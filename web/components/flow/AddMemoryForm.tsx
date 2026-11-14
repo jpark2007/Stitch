@@ -21,7 +21,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } fr
 import type { SubmitMemoryFields } from "@/lib/types";
 import { isApiError } from "@/lib/api";
 import { Button, FOCUS_RING } from "./Button";
-import { FIELD_LABEL_CLASS, OptionalMark, TextAreaField, TextField } from "./Field";
+import { FIELD_ROW_CLASS, FIELD_ROW_LABEL_CLASS, TextAreaField, TextField } from "./Field";
 import { FormError, focusFirstError } from "./FormError";
 import {
   MEMORY_FIELDS,
@@ -36,7 +36,6 @@ import {
   type MemoryField,
   type QuestionArea,
 } from "./memoryForm";
-import { PaperCard } from "./PaperCard";
 import { PersonPicker } from "./PersonPicker";
 import { PhotoUpload } from "./PhotoUpload";
 import { mergeServerErrors, type FieldErrors } from "./validation";
@@ -46,14 +45,18 @@ const GENERIC_ERROR = "That didn't save. Your story is still here: try sending i
 const PHOTOS_TOO_BIG = "Those photos are too big to send together. Try fewer or smaller ones.";
 const PHOTOS_WRONG_TYPE = "One of those photos isn't a kind we can use. Try a JPEG, PNG, WebP, HEIC or GIF.";
 
-/** A visible asterisk; the control's `required` tells assistive tech. */
-function RequiredMark() {
-  return (
-    <span aria-hidden="true" className="ml-1 font-normal text-ink-faint">
-      *
-    </span>
-  );
-}
+/** The invitation in the empty story: it is also the page's only instruction. */
+const STORY_PLACEHOLDER =
+  "Tell it the way you would at the kitchen table: who was there, what was said, the weather, a smell, a song…";
+/** The same for a second telling of a moment. */
+const SECOND_TELLING_PLACEHOLDER = "Tell it as you remember it. It doesn’t have to match anyone else’s.";
+
+// Large, comfortable serif for writing in. `!`: these beat the kit control's
+// own sans text style whatever the CSS order. The placeholder is ink-soft
+// (above 4.5:1 on the paper), not the kit's fainter one: it carries the
+// invitation.
+const STORY_CLASS =
+  "font-serif! text-[1.1875rem]! leading-[1.65]! sm:text-[1.3125rem]! pb-3! placeholder:text-ink-soft!";
 
 export function AddMemoryForm(props: {
   people: Array<{ id: string; name: string; born?: number | null; color?: string | null }>;
@@ -260,17 +263,16 @@ export function AddMemoryForm(props: {
   }
 
   return (
-    <PaperCard
-      as="form"
+    <form
       ref={formRef}
       noValidate
       onSubmit={handleSubmit}
       aria-busy={pending || undefined}
-      className="space-y-8"
+      className="min-w-0"
     >
       {secondTellingOf ? (
-        <div className="border-l-[3px] border-accent bg-paper px-4 py-3">
-          <p className="text-[1.0625rem] leading-snug font-semibold text-pretty text-ink">
+        <div className="mb-8 border-l-2 border-accent pl-4">
+          <p className="text-base leading-snug font-semibold text-pretty text-ink">
             You&rsquo;re adding your version of &lsquo;{secondTellingOf.title}&rsquo; ({secondTellingOf.year})
           </p>
           <p className="mt-1 text-sm leading-snug text-ink-soft">
@@ -278,7 +280,7 @@ export function AddMemoryForm(props: {
             {alreadyTold ? " You’ve told this one before: this replaces your earlier telling." : null}
           </p>
           {askedQuestion ? (
-            <p className="mt-3 border-t border-dashed border-rule pt-2.5 text-sm leading-snug text-ink-soft">
+            <p className="mt-3 text-sm leading-snug text-ink-soft">
               <span className="block">You were asked</span>
               <span className="mt-0.5 block font-hand text-[1.375rem] leading-[1.15] text-pretty break-words text-ink">
                 {askedQuestion}
@@ -287,48 +289,39 @@ export function AddMemoryForm(props: {
           ) : null}
         </div>
       ) : askedQuestion ? (
-        <div className="border-l-[3px] border-accent bg-paper px-4 py-3">
+        <div className="mb-8 border-l-2 border-accent pl-4">
           <p className="text-sm leading-snug text-ink-soft">
             <span className="block">You&rsquo;re answering</span>
             <span className="mt-0.5 block font-hand text-[1.375rem] leading-[1.15] text-pretty break-words text-ink">
               {askedQuestion}
             </span>
           </p>
-          <p className="mt-2 text-sm leading-snug text-ink-soft">Press the note again to let it go.</p>
+          <p className="mt-1 text-sm leading-snug text-ink-soft">Press the note again to let it go.</p>
         </div>
       ) : null}
 
-      {/* mx-0, not m-0: the sheet's space-y-8 gives the fieldset its bottom
-          margin, and m-0 would cancel it, leaving the dashed rule over the
-          send button pressed against the last field. */}
-      <fieldset disabled={locked} className="mx-0 min-w-0 space-y-8 border-0 p-0">
+      <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
         <div>
-          {/* A second telling needs only the story, so no key to the asterisk. */}
-          {secondTellingOf ? null : (
-            <p className="mb-5 text-sm text-ink-soft">
-              <span aria-hidden="true">* </span>
-              Needed: your story and the year.
-            </p>
-          )}
+          {/* The story is the page: a large, borderless writing area on the
+              paper, one hairline under it, its invitation as the placeholder.
+              The label is for assistive tech; nothing is starred: what is
+              missing is said beside the field when someone sends without it. */}
           <TextAreaField
-            label={
-              <>
-                Your story
-                <RequiredMark />
-              </>
-            }
-            hint="Small details help: who said what, the weather, a smell, a song."
+            label="Your story"
+            labelHidden
+            placeholder={secondTellingOf ? SECOND_TELLING_PLACEHOLDER : STORY_PLACEHOLDER}
             required
             name="text"
-            rows={7}
+            rows={5}
             value={draft.text}
             onChange={(e) => update("text", e.target.value)}
             error={errors.text}
             disabled={locked}
+            className={STORY_CLASS}
           />
 
           {!showQuestionField ? null : questionShown ? (
-            <div className="mt-6">
+            <div className="mt-8">
               <TextField
                 ref={questionRef}
                 label="What question are you answering?"
@@ -372,92 +365,96 @@ export function AddMemoryForm(props: {
                 focusQuestionOnOpen.current = true;
                 setQuestionOpen(true);
               }}
-              className="mt-2 -ml-3"
+              className="mt-1 -ml-3 font-medium"
             >
-              <span aria-hidden="true" className="font-normal">
-                +
-              </span>
               Answering a question?
             </Button>
           )}
         </div>
 
-        {secondTellingOf ? (
-          <div>
-            <p className={FIELD_LABEL_CLASS}>Year</p>
-            <p className="mt-2 text-base text-ink">
-              <span className="tabular-nums">{secondTellingOf.year}</span>
-              <span className="text-ink-soft">, the same as the moment</span>
-            </p>
-          </div>
-        ) : (
-          <YearInput
-            label="When was this?"
-            hint="The year it happened. A good guess is fine."
-            required
-            name="year"
-            // No max: reading the clock while rendering breaks prerendering.
-            // validateYear checks "not in the future" on submit.
-            min={MEMORY_YEAR_MIN}
-            value={draft.year}
-            onChange={(v) => update("year", v)}
-            error={errors.year}
-          />
-        )}
+        {/* The details, quiet and compact under the story: one row each, the
+            labels in a narrow column so the answers line up. */}
+        <div className="mt-10 space-y-5 sm:space-y-3">
+          {secondTellingOf ? (
+            <div className={FIELD_ROW_CLASS}>
+              <p className={FIELD_ROW_LABEL_CLASS}>Year</p>
+              <p className="flex min-h-11 items-center text-base text-ink">
+                <span>
+                  <span className="tabular-nums">{secondTellingOf.year}</span>
+                  <span className="text-ink-soft">, the same as the moment</span>
+                </span>
+              </p>
+            </div>
+          ) : (
+            <YearInput
+              layout="row"
+              label="When was this?"
+              required
+              name="year"
+              // No max: reading the clock while rendering breaks prerendering.
+              // validateYear checks "not in the future" on submit.
+              min={MEMORY_YEAR_MIN}
+              value={draft.year}
+              onChange={(v) => update("year", v)}
+              error={errors.year}
+            />
+          )}
 
-        <PhotoUpload
-          label={
-            <>
-              Photos
-              <OptionalMark />
-            </>
-          }
-          hint="Old snapshots help us draw the scene."
-          files={photos}
-          onChange={(files) => {
-            setPhotos(files);
-            if (errors.photos) {
-              setErrors((e) => {
-                const next = { ...e };
-                delete next.photos;
-                return next;
-              });
-            }
-          }}
-          error={errors.photos}
-          disabled={locked}
-          attempt={attempt}
-        />
-
-        {secondTellingOf ? null : (
-          <div>
+          {secondTellingOf ? null : (
             <PersonPicker
+              layout="row"
               legend="Who was there?"
-              hint="You're already in. Add anyone else who was part of it."
               people={people}
               value={draft.participantIds}
               onChange={(ids) => update("participantIds", ids)}
               lockedIds={[selfPersonId]}
               error={errors.participantIds}
               disabled={locked}
+              footer={
+                addPersonHref ? (
+                  <p className="mt-3 text-sm leading-snug text-ink-soft">
+                    Someone missing?{" "}
+                    {/* Inline padding: a 44px tap target without breaking the line. */}
+                    <Link
+                      href={addPersonHref}
+                      onClick={onAddPerson}
+                      className={`rounded-paper py-3.5 font-medium text-accent-deep underline decoration-1 underline-offset-[0.2em] hover:decoration-2 ${FOCUS_RING}`}
+                    >
+                      Add them to the family
+                    </Link>
+                  </p>
+                ) : null
+              }
             />
-            {addPersonHref ? (
-              <p className="mt-3 text-sm leading-snug text-ink-soft">
-                Someone missing?{" "}
-                <Link
-                  href={addPersonHref}
-                  onClick={onAddPerson}
-                  className={`rounded-paper font-medium text-accent-deep underline decoration-1 underline-offset-[0.2em] hover:decoration-2 ${FOCUS_RING}`}
-                >
-                  Add them to the family
-                </Link>
-              </p>
-            ) : null}
-          </div>
-        )}
+          )}
+
+          <PhotoUpload
+            layout="row"
+            label={
+              <>
+                Photos
+                <span className="sr-only"> (optional)</span>
+              </>
+            }
+            files={photos}
+            onChange={(files) => {
+              setPhotos(files);
+              if (errors.photos) {
+                setErrors((e) => {
+                  const next = { ...e };
+                  delete next.photos;
+                  return next;
+                });
+              }
+            }}
+            error={errors.photos}
+            disabled={locked}
+            attempt={attempt}
+          />
+        </div>
       </fieldset>
 
-      <div className="space-y-4 border-t border-dashed border-rule pt-6">
+      <div className="mt-12 space-y-4">
         <FormError message={formError} />
         <Button
           type="submit"
@@ -469,7 +466,7 @@ export function AddMemoryForm(props: {
           {submitLabel}
         </Button>
       </div>
-    </PaperCard>
+    </form>
   );
 }
 
@@ -493,7 +490,7 @@ function SuggestionChip(props: {
         "disabled:cursor-not-allowed disabled:opacity-60",
         picked
           ? "border-ink-soft bg-paper-deep text-ink"
-          : "border-rule bg-paper-light text-ink-soft not-disabled:hover:border-accent not-disabled:hover:text-ink",
+          : "border-rule bg-transparent text-ink-soft not-disabled:hover:border-ink-faint not-disabled:hover:text-ink",
       ].join(" ")}
     >
       {children}

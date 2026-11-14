@@ -23,7 +23,7 @@ export function FormError(props: { message?: string | null; title?: string }) {
       data-form-error=""
       // Dimmed while its form is busy: a form that keeps the last message up
       // during a retry (so nothing shifts under the pointer) shows it is stale.
-      className={`min-w-0 break-words rounded-paper border border-[#9c3b2a]/35 border-l-[3px] border-l-[#9c3b2a] bg-[#f7e4dc] px-4 py-3 text-[0.9375rem] leading-snug text-[#9c3b2a] transition-opacity duration-150 ease-paper motion-reduce:transition-none in-[form[aria-busy=true]]:opacity-55 ${FOCUS_RING}`}
+      className={`min-w-0 break-words rounded-paper border-l-2 border-[#9c3b2a] bg-[#f7e4dc] px-4 py-3 text-[0.9375rem] leading-snug text-[#9c3b2a] transition-opacity duration-150 ease-paper motion-reduce:transition-none in-[form[aria-busy=true]]:opacity-55 ${FOCUS_RING}`}
     >
       {title ? <p className="font-semibold">{title}</p> : null}
       <p className={title ? "mt-0.5" : undefined}>{message}</p>

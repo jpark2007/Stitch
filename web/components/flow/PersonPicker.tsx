@@ -9,7 +9,14 @@
 // the surrounding form (see pickerSearchKey).
 import { useId, useState, type ReactNode } from "react";
 import { FOCUS_RING_WITHIN } from "./Button";
-import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS, fieldControlClass } from "./Field";
+import {
+  FIELD_ERROR_CLASS,
+  FIELD_HINT_CLASS,
+  FIELD_LABEL_CLASS,
+  FIELD_ROW_CLASS,
+  FIELD_ROW_LABEL_CLASS,
+  fieldControlClass,
+} from "./Field";
 import { PICKER_SEARCH_FROM, filterPeople, pickerSearchKey } from "./memoryForm";
 
 interface PickablePerson {
@@ -40,8 +47,16 @@ export function PersonPicker(props: {
   hint?: ReactNode;
   error?: string | null;
   disabled?: boolean;
+  /**
+   * "row": the legend shown in a left column beside the chips (the
+   * add-a-memory details), rather than above them. Default "stacked".
+   */
+  layout?: "stacked" | "row";
+  /** Shown after the chips, in the same column (a quiet "add someone" link). */
+  footer?: ReactNode;
 }) {
-  const { legend, people, value, onChange, hint, error, disabled } = props;
+  const { legend, people, value, onChange, hint, error, disabled, layout = "stacked", footer } = props;
+  const row = layout === "row";
   const lockedIds = props.lockedIds ?? [];
   const uid = useId();
   const hintId = `${uid}-hint`;
@@ -64,21 +79,16 @@ export function PersonPicker(props: {
     onChange(next);
   }
 
-  return (
-    <fieldset
-      disabled={disabled}
-      aria-describedby={describedBy || undefined}
-      className="min-w-0"
-    >
-      <legend className={`p-0 ${FIELD_LABEL_CLASS}`}>{legend}</legend>
+  const body = (
+    <>
       {hint ? (
-        <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
+        <p id={hintId} className={`${row ? "" : "mt-0.5 "}${FIELD_HINT_CLASS}`}>
           {hint}
         </p>
       ) : null}
 
       {searchable ? (
-        <div className="mt-2">
+        <div className={row && !hint ? undefined : "mt-2"}>
           <label htmlFor={searchId} className="sr-only">
             Find someone
           </label>
@@ -112,11 +122,11 @@ export function PersonPicker(props: {
       ) : null}
 
       {people.length === 0 ? (
-        <p className="mt-2 text-sm text-ink-soft italic">
+        <p className={`${row && !hint && !searchable ? "flex min-h-11 items-center" : "mt-2"} text-sm text-ink-soft`}>
           No one else is in the family yet.
         </p>
       ) : (
-        <ul className="mt-2 flex list-none flex-wrap gap-2 p-0">
+        <ul className={`${row && !hint && !searchable ? "" : "mt-2 "}flex list-none flex-wrap gap-2 p-0`}>
           {shown.map((person) => {
             const locked = lockedIds.includes(person.id);
             const checked = locked || value.includes(person.id);
@@ -131,9 +141,10 @@ export function PersonPicker(props: {
                     "relative inline-flex min-h-11 select-none items-center gap-2 rounded-full border px-3.5 text-sm transition-colors duration-150 ease-paper motion-reduce:transition-none",
                     FOCUS_RING_WITHIN,
                     "has-[:disabled]:cursor-not-allowed",
+                    // Flat: picked is a filled chip with a tick, not picked a hairline.
                     checked
-                      ? "border-ink-soft bg-paper-deep text-ink shadow-inset"
-                      : "border-rule bg-paper-light text-ink-soft shadow-[0_1px_1px_rgb(74_47_29/0.08)] hover:border-accent",
+                      ? "border-ink-soft/40 bg-paper-deep text-ink"
+                      : "border-rule bg-transparent text-ink-soft hover:border-ink-faint hover:text-ink",
                     disabled ? "opacity-60" : locked ? "" : "cursor-pointer",
                   ].join(" ")}
                 >
@@ -177,6 +188,35 @@ export function PersonPicker(props: {
           {error}
         </p>
       ) : null}
+      {footer}
+    </>
+  );
+
+  if (row) {
+    // A rendered <legend> cannot sit in a grid cell, so the legend names the
+    // group for assistive tech and a twin label (hidden from it) is drawn in
+    // the left column.
+    return (
+      <fieldset disabled={disabled} aria-describedby={describedBy || undefined} className="min-w-0">
+        <legend className="sr-only">{legend}</legend>
+        <div className={FIELD_ROW_CLASS}>
+          <span aria-hidden="true" className={FIELD_ROW_LABEL_CLASS}>
+            {legend}
+          </span>
+          <div className="mt-2 min-w-0 sm:mt-0">{body}</div>
+        </div>
+      </fieldset>
+    );
+  }
+
+  return (
+    <fieldset
+      disabled={disabled}
+      aria-describedby={describedBy || undefined}
+      className="min-w-0"
+    >
+      <legend className={`p-0 ${FIELD_LABEL_CLASS}`}>{legend}</legend>
+      {body}
     </fieldset>
   );
 }

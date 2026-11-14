@@ -268,7 +268,9 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
   } else {
     const rows = memberRows(load.family.members ?? [], load.tree.people, me.user.id, isAdmin);
     body = (
-      <div ref={contentRef} tabIndex={-1} className="flex flex-col gap-8 focus:outline-none">
+      // gap-14: the sections lie flat on the page now (no sheets), so
+      // whitespace is what tells one from the next.
+      <div ref={contentRef} tabIndex={-1} className="flex flex-col gap-14 focus:outline-none">
         {lostAdmin && !isAdmin ? (
           <p role="status" className="border-l-[3px] border-rule pl-4 text-[0.9375rem] leading-relaxed text-pretty text-ink-soft">
             {NO_LONGER_ADMIN}
