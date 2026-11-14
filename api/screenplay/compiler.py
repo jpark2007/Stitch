@@ -33,8 +33,10 @@ as of its own time: a puppet's own actions keep their order, and an action on a 
 hands dad the books while dad follows kid) sees the follower where the follow put him, never a
 stale position. A ``follow`` of a cast member is runnable only once every action that can move
 its leader has run (the leader's own actions except STILL_VERBS such as wave or point_at, and
-any drive_to / ride_to of a vehicle while the leader sits in it), so the follower sees the leader's
-whole path; the follower's later actions wait behind the follow. Without follows this is plain
+any drive_to / ride_to of a vehicle while the leader sits in it or on a prop resting on it), so
+the follower sees the leader's whole path; the follower's later actions wait behind the follow.
+A follow with ``dur`` reads the leader's path only up to ``t + dur``, so it waits only for the
+leader's moves that start before then. Without follows this is plain
 time order. When nothing can run, the waits form a loop through a follow: a loop of follows
 only (puppets that follow one another round a loop) is reported as ``follow_cycle`` on its
 earliest follow, and any other loop as ``follow_order`` on the move of the leader that needs
@@ -61,7 +63,7 @@ from __future__ import annotations
 import importlib
 import logging
 import pkgutil
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 
 import schemas
@@ -240,16 +242,40 @@ def _touches(action: Action, cast: Mapping[str, object], props: Collection[str])
     return frozenset(names)
 
 
-def _moves(actions: list[Action], who: str, seated_in: Mapping[str, str], by_time: list[int]) -> list[int]:
+SeatedIn = Mapping[str, "str | Sequence[str]"]
+"""Who sits on what at a shot's start: a puppet -> its seat prop, or the tuple (seat prop, the
+prop that rests on, ..., down to the one on the ground) (``World.supports``). A plain string
+is a seat with nothing under it."""
+
+
+def _seat_chain(value: str | Sequence[str] | None) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    return (value,) if isinstance(value, str) else tuple(value)
+
+
+def _moves(
+    actions: list[Action],
+    who: str,
+    seated_in: SeatedIn,
+    by_time: list[int],
+    rests_on: Mapping[str, Sequence[str]] | None = None,
+    vehicles: Collection[str] = (),
+) -> list[int]:
     """Every action in the shot that can move ``who``'s root, in ``by_time`` order: its own
-    actions except the STILL_VERBS, and every drive_to / ride_to of the vehicle ``who`` sits
-    in when it runs (the one it starts the shot in, until its get_out, or one it gets into,
-    from its get_in to its get_out). A drive before the get_in or after the get_out leaves
-    ``who`` where it is.
+    actions except the STILL_VERBS, and every drive_to / ride_to of a vehicle that carries
+    ``who`` when it runs. A vehicle carries ``who`` while ``who`` sits in it, or on a prop
+    resting on it, directly or through other props (a chair on a pickup's bed): from the shot's
+    start (``seated_in``: the seat and everything under it), or from ``who``'s get_in to its
+    get_out, or from its sit_on of a prop (``rests_on``: what that prop rests on at the shot's
+    start) to its stand_up. A drive before the get_in / sit_on or after the get_out /
+    stand_up leaves ``who`` where it is. A stand_up from a seat in one of ``vehicles`` changes
+    nothing (the world refuses it: that takes a get_out).
 
     ``by_time`` is the (retimed t, index) order. It is also the order those actions run in:
     the get_in, get_out and drive all name the vehicle, so they keep time order."""
-    riding = seated_in.get(who)
+    rests_on = rests_on or {}
+    riding = _seat_chain(seated_in.get(who))
     out: list[int] = []
     for i in by_time:
         a = actions[i]
@@ -257,12 +283,30 @@ def _moves(actions: list[Action], who: str, seated_in: Mapping[str, str], by_tim
             if a.do not in STILL_VERBS:
                 out.append(i)
             if a.do == "get_in":
-                riding = a.what
-            elif a.do == "get_out" and a.what == riding:
-                riding = None
-        elif a.do in _VEHICLE_MOVES and a.what is not None and a.what == riding:
+                riding = _seat_chain(a.what)
+            elif a.do == "get_out" and riding and a.what == riding[0]:
+                riding = ()
+            elif a.do == "sit_on" and a.what is not None:
+                riding = (a.what, *rests_on.get(a.what, ()))
+            elif a.do == "stand_up" and riding and riding[0] not in vehicles:
+                riding = ()
+        elif a.do in _VEHICLE_MOVES and a.what is not None and a.what in riding:
             out.append(i)
     return out
+
+
+def _window_end(action: Action, shot_t: float) -> float | None:
+    """Where a follow's window ends (shot time): ``t + dur``, as verbs_motion.apply_follow
+    clips the follow (any stand-up time counts inside dur). None for a follow without dur, or
+    any other action."""
+    if action.do != "follow" or action.dur is None:
+        return None
+    return shot_t + action.dur
+
+
+def _in_window(retimed_j: float, end: float | None) -> bool:
+    """A leader move at ``retimed_j`` can change a follow whose window ends at ``end``."""
+    return end is None or retimed_j < end - TIME_EPS
 
 
 def _called(action: Action) -> str:
@@ -325,20 +369,29 @@ def _schedule(
     retimed: list[float],
     cast: Mapping[str, object],
     props: Collection[str] = (),
-    seated_in: Mapping[str, str] | None = None,
+    seated_in: SeatedIn | None = None,
+    rests_on: Mapping[str, Sequence[str]] | None = None,
+    vehicles: Collection[str] = (),
 ) -> tuple[list[int], list[tuple[int, str, str]]]:
     """The order to run a shot's actions in, and the actions left out: (index, code, reason).
 
-    ``seated_in`` maps a puppet to the vehicle (or seat prop) it starts the shot in. The
-    earliest runnable action, by (retimed t, index), runs next. An action is runnable when
+    ``seated_in`` maps a puppet to the seat it starts the shot in, with every prop that seat
+    rests on (``SeatedIn``); ``rests_on`` maps a prop to the props it rests on at the shot's
+    start, and ``vehicles`` names the vehicles (see ``_moves``). The earliest runnable action,
+    by (retimed t, index), runs next. An action is runnable when
 
     - every earlier action (by retimed t, index) that touches one of its puppets or props has
       run, so whatever it reads (where a puppet stands, who holds a prop) is as of its own
       time; that includes every earlier action of its own puppet; and
-    - for a follow of a cast member, every action that can move the leader has run
-      (``_moves``), so the follower sees the leader's whole path. The leader's still actions
-      (a wave, a point_at, a hand_to), and a drive of a vehicle the leader is not in at the
-      time, do not hold the follow back.
+    - for a follow of a cast member, every action that can move the leader inside the
+      follow's window has run (``_moves``), so the follower sees the leader's whole path. The
+      leader's still actions (a wave, a point_at, a hand_to), and a drive of a vehicle that
+      does not carry the leader at the time (it is not in it, nor on a prop resting on it),
+      do not hold the follow back. A follow with ``dur`` only reads its leader's path up to
+      ``t + dur``, so it waits only for the leader's moves that start before then; a later
+      move keeps plain time order with it (it starts after the follow, so it runs after it
+      unless they share nothing). A follow without ``dur`` waits for every move of its
+      leader.
 
     Without follows that is plain time order. When nothing can run, the waits form a loop
     that goes through a follow's wait for its leader. A loop of follows only is reported as
@@ -355,7 +408,12 @@ def _schedule(
     movers: list[list[int]] = []
     for i, a in enumerate(actions):
         leader = _follows_a_leader(a, cast)
-        movers.append(_moves(actions, leader, seated_in, by_time) if leader else [])
+        if leader is None:
+            movers.append([])
+            continue
+        end = _window_end(a, retimed[i])
+        movers.append([j for j in _moves(actions, leader, seated_in, by_time, rests_on, vehicles)
+                       if _in_window(retimed[j], end)])
     done: set[int] = set()
     order: list[int] = []
     left_out: list[tuple[int, str, str]] = []
@@ -407,6 +465,68 @@ def _schedule(
         done.update(i for i, _, _ in reports)
         left_out.extend(sorted(reports, key=lambda r: rank[r[0]]))
     return order, left_out
+
+
+@dataclass(frozen=True)
+class _FollowWindow:
+    """A follow with ``dur`` of cast member ``leader``: it reads the leader's path only up to
+    ``t + dur``. ``later``: the leader has a move in the shot (``_moves``) that starts after
+    that."""
+
+    leader: str
+    later: bool
+
+
+def _follow_windows(
+    actions: list[Action],
+    retimed: list[float],
+    cast: Mapping[str, object],
+    seated_in: SeatedIn | None = None,
+    rests_on: Mapping[str, Sequence[str]] | None = None,
+    vehicles: Collection[str] = (),
+) -> dict[int, _FollowWindow]:
+    """The window of every follow of a cast member that has a ``dur``, by action index."""
+    seated_in = seated_in or {}
+    by_time = sorted(range(len(actions)), key=lambda i: (retimed[i], i))
+    out: dict[int, _FollowWindow] = {}
+    for i, a in enumerate(actions):
+        leader = _follows_a_leader(a, cast)
+        end = _window_end(a, retimed[i])
+        if leader is None or end is None:
+            continue
+        moves = _moves(actions, leader, seated_in, by_time, rests_on, vehicles)
+        out[i] = _FollowWindow(leader, any(not _in_window(retimed[j], end) for j in moves))
+    return out
+
+
+def _clip_after(keys: list[tuple[float, object]], end: float) -> list[tuple[float, object]]:
+    """A raw key list (insertion order) as it reads up to ``end``: the keys before it, by time,
+    and the first key at or after it, which ends any move under way at ``end``. A move that
+    starts at or after ``end`` is gone."""
+    ordered = sorted(keys, key=lambda k: k[0])  # stable: insertion order breaks ties, as TrackSet does
+    cut = end - TIME_EPS
+    before = [k for k in ordered if k[0] < cut]
+    after = [k for k in ordered if k[0] >= cut]
+    return before + after[:1]
+
+
+class _LeaderWindow(TrackSet):
+    """``tracks`` as a follow with ``dur`` reads them: the leader's ``root.position`` ends at the
+    window's end (``_clip_after``), so a leader move that starts after the follow ends, and may
+    run before or after it, never changes it. The follow then works exactly as if the leader
+    stopped for good at ``t + dur``. Every other track reads as is, and every key the follow
+    adds goes straight into ``tracks``."""
+
+    def __init__(self, tracks: TrackSet, leader: str, end: float) -> None:
+        super().__init__()
+        self._base = tracks
+        self._raw = dict(tracks._raw)  # the same key lists; only the leader's root is replaced
+        key = (f"puppet:{leader}", "root.position")
+        if key in self._raw:
+            self._raw[key] = _clip_after(self._raw[key], end)
+
+    def add(self, target: str, channel: str, t: float, value: object) -> None:
+        self._base.add(target, channel, t, value)
 
 
 def _set_busy_from_spans(world: World, spans: Spans, now: float) -> None:
@@ -654,15 +774,19 @@ def compile(
         retimed_by_shot[shot.id] = ([a.t for a in shot.actions], list(retimed))
 
         locate = make_locate(world, tracks, marks, shot.id)
-        seated_in = {who: p.seat[0] for who, p in world.people.items() if p.seat is not None}
-        order, left_out = _schedule(shot.actions, retimed, world.people, world.props, seated_in)
+        rests_on = {what: tuple(world.supports(what)) for what in world.props}
+        seated_in = {who: (p.seat[0], *rests_on[p.seat[0]]) for who, p in world.people.items() if p.seat is not None}
+        vehicles = frozenset(what for what in world.props if world.is_vehicle(what))
+        order, left_out = _schedule(shot.actions, retimed, world.people, world.props, seated_in, rests_on, vehicles)
         for ci, code, reason in left_out:
             errors.add(E.error(code, reason, shot.id, shot.actions[ci]), si, ci)
+        windows = _follow_windows(shot.actions, retimed, world.people, seated_in, rests_on, vehicles)
         spans: Spans = {}
         shot_effects: list[tuple[int, TimelineEffect]] = []
         for ai in order:
             action = shot.actions[ai]
-            err, effect = _run_action(world, tracks, action, retimed[ai], action_start, locate, shot.id, spans)
+            err, effect = _run_action(world, tracks, action, retimed[ai], action_start, locate, shot.id, spans,
+                                      windows.get(ai))
             if err is not None:
                 errors.add(err, si, ai)
             elif effect is not None:
@@ -752,9 +876,15 @@ def _run_action(
     locate: Locate,
     shot_id: str,
     spans: Spans,
+    window: _FollowWindow | None = None,
 ) -> tuple[CompileError | None, TimelineEffect | None]:
     """Run one action through its handler, with the busy checks around it.
     Returns (its error, its Timeline.effects entry for an effect verb).
+
+    A follow with ``dur`` (``window``) reads its leader's path only up to ``t + dur``
+    (``_LeaderWindow``), whatever ran before it. When the leader stands still all that time
+    but moves later in the shot, its ``nothing_to_follow`` says so: "kid does not move between
+    t=1 and t=3, when the follow ends".
 
     Busy state comes from ``spans`` (this shot's busy spans so far), and the spans of every
     puppet the action occupies are added to it. Every time a busy reason shows is in the
@@ -778,13 +908,19 @@ def _run_action(
     before = {w: (p.busy_until, p.activity) for w, p in world.people.items()}
     shift = action.t - shot_t  # written frame - retimed frame; 0.0 when no cue moved the action
     world.busy_time_offset = shift
+    reads = tracks
+    if window is not None and action.dur is not None:
+        reads = _LeaderWindow(tracks, window.leader, t + action.dur)
     try:
         if action.who is not None:
             world.check_free(action.who)
-        end = handler(world, tracks, action, t, action_start, locate)
+        end = handler(world, reads, action, t, action_start, locate)
         if action.who is not None:
             world.occupy(action.who, round(end - action_start, 6), ACTIVITY[action.do], at=now)
     except StateError as e:
+        if window is not None and window.later and action.dur is not None and e.code == "nothing_to_follow":
+            e = StateError(e.code, (f"{window.leader} does not move between t={fmt_t(now)} and "
+                                    f"t={fmt_t(now + action.dur)}, when the follow ends"))
         return E.from_state_error(e, shot_id, action), None
     except ik.OutOfReach as e:
         return E.from_out_of_reach(e, shot_id, action), None
