@@ -23,8 +23,10 @@ import { Matrix4, type Object3D } from "three";
  * @param socket  "hand_r", "hand_l", "head", or a prop socket like "driver"
  * @param out     write the socket's matrix here: its translation is the socket
  *                point; its rotation is the socket's orientation (used only
- *                with heldOrientation="socket"); a negative determinant means
- *                mirrored (a puppet facing left). Scale is ignored.
+ *                with heldOrientation="socket"). Scale and mirror are ignored:
+ *                a puppet facing left may return its mirrored socket matrix
+ *                as is, and the held prop is still drawn unmirrored, as the
+ *                timeline compiler assumes (CONTRACTS.md has no prop facing).
  * @returns       false if the target or socket is unknown (the prop then
  *                holds its last placement, or stays hidden if it never had one)
  *

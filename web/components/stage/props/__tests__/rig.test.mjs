@@ -78,14 +78,33 @@ test("held, the grip sits on the socket and the prop keeps its world size", () =
   near(bottom.x, 0.3 + Math.sin(1.1) * d.height);
 });
 
-test("a held prop follows the socket's mirror", () => {
-  const d = propDims({ size: "hand", aspect: 2 }, SIZES);
-  const g = imageToLocal({ x: 0, y: 0 }, 0.5, 0.5, d.width, d.height);
-  const facingLeft = new Matrix4().compose(new Vector3(0, 0.3, 0.5), new Quaternion(), new Vector3(-0.5, 0.5, 0.5));
-  const m = heldMatrix(new Matrix4(), facingLeft, "upright", [0, 0, 0], 0, g.x, g.y);
-  // The image's right edge ends up on the left.
-  nearVec(landing(m, 1, 0.5, d), [-d.width / 2, 0.3, 0.5]);
-  assert.ok(m.determinant() < 0);
+test("a held prop is not mirrored by a puppet facing left", () => {
+  // The compiler's anchor_from_grip (api/screenplay/body.py) puts the anchor
+  // at grip + (anchor.u - grip.u) * width whatever the facing; the stage must
+  // agree, or the prop jumps at the drop key.
+  const prop = { size: "carried", aspect: 1.5 };
+  const grip = [0.2, 0.5];
+  const anchor = [0.5, 1];
+  const d = propDims(prop, SIZES);
+  const g = imageToLocal({ x: 0, y: 0 }, grip[0], grip[1], d.width, d.height);
+  const hand = [0.3, 0.5, 0.5];
+  const compilerAnchor = [
+    hand[0] + (anchor[0] - grip[0]) * d.width,
+    hand[1] + (grip[1] - anchor[1]) * d.height,
+    0.5,
+  ];
+  for (const facing of [1, -1]) {
+    // A puppet's hand socket: mirrored when facing left, drawn at 0.6 scale.
+    const socket = new Matrix4().compose(new Vector3(...hand), new Quaternion(), new Vector3(0.6 * facing, 0.6, 0.6));
+    const m = heldMatrix(new Matrix4(), socket, "upright", [0, 0, 0], 0, g.x, g.y);
+    nearVec(landing(m, grip[0], grip[1], d), hand);
+    nearVec(landing(m, anchor[0], anchor[1], d), compilerAnchor);
+    assert.ok(m.determinant() > 0, `facing ${facing}: drawn mirrored`);
+    // In socket orientation it turns with the socket but still never mirrors.
+    const turned = heldMatrix(new Matrix4(), socket, "socket", [0, 0, 0], 0, g.x, g.y);
+    nearVec(landing(turned, grip[0], grip[1], d), hand);
+    assert.ok(turned.determinant() > 0, `facing ${facing}, socket: drawn mirrored`);
+  }
 });
 
 test("the held offset is in socket space and rotation pivots on the grip", () => {

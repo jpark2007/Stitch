@@ -18,9 +18,13 @@
  *   held:    M = S * T(offset) * Rz(rotation) * T(-grip)
  *            The grip sits on the socket (plus `offset`, normally 0, in the
  *            socket's space); rotation pivots about the grip. S is the socket
- *            frame with its scale removed (a prop keeps its world size no
- *            matter how big the puppet is) but its mirror kept (a prop held
- *            by a puppet facing left is mirrored with it).
+ *            frame reduced to its position (and, in "socket" orientation, its
+ *            visible rotation): its scale is dropped, so a prop keeps its world
+ *            size however big the puppet is, and so is its mirror, so a prop
+ *            held by a puppet facing left is NOT mirrored. The contract has no
+ *            facing for props, and the compiler's grip/anchor maths
+ *            (api/screenplay/body.py anchor_from_grip) assumes an unmirrored
+ *            prop, so the anchor lands where the drop key says it does.
  */
 
 import { Matrix4, Quaternion, Vector3 } from "three";
@@ -214,27 +218,29 @@ export function groundMatrix(
 }
 
 /** How a held prop is oriented: "upright" keeps it level with the stage
- *  (only the socket's position and mirror apply), "socket" turns it with the
- *  socket (a prop pinned to the forearm). */
+ *  (only the socket's position applies), "socket" turns it with the socket's
+ *  visible rotation (a prop pinned to the forearm). Neither mirrors it. */
 export type HeldOrientation = "upright" | "socket";
 
 const _pos = new Vector3();
 const _quat = new Quaternion();
 const _scale = new Vector3();
-const _one = new Vector3();
+const _unit = new Vector3(1, 1, 1);
 const _local = new Matrix4();
 
 /**
  * Normalise a socket's frame: keep its position, keep (or drop) its rotation,
- * drop its scale but keep its mirror. Writes into `out`.
+ * drop its scale and its mirror. Writes into `out`.
+ *
+ * decompose() reports a mirrored matrix as a negative scale.x and returns the
+ * rotation that is left, which is the rotation as seen on screen (a puppet
+ * facing left with its forearm at +a in its own frame shows it at -a). That
+ * is the rotation "socket" orientation follows; the mirror itself is dropped.
  */
 export function socketFrame(out: Matrix4, socket: Matrix4, orientation: HeldOrientation): Matrix4 {
-  // decompose() reports a mirrored matrix as a negative scale.x.
   socket.decompose(_pos, _quat, _scale);
-  const mirror = _scale.x * _scale.y * _scale.z < 0 ? -1 : 1;
   if (orientation === "upright") _quat.identity();
-  _one.set(mirror, 1, 1);
-  return out.compose(_pos, _quat, _one);
+  return out.compose(_pos, _quat, _unit);
 }
 
 /**
