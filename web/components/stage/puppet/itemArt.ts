@@ -136,13 +136,15 @@ function glasses(h: ReturnType<typeof headIn>): ItemPiece[] {
   // running back to the ear. The lens is a ring (the head shows through).
   const ly = h.cy + 0.006;
   const lx = h.cx + h.rx - 0.004;
-  const lens = ellipse(lx, ly, 0.024, 0.022);
-  const hole = ellipse(lx, ly, 0.0168, 0.0152);
+  const lens = ellipse(lx, ly, 0.025, 0.023);
+  const hole = ellipse(lx, ly, 0.0165, 0.015);
+  // The arm runs back only as far as the ear (mid-head in profile) and
+  // hooks down behind it.
   const arm: number[] = [];
   const b = new PathBuilder()
-    .move(lx - 0.024, ly + 0.003)
-    .quad(h.cx - 0.02, ly + 0.01, h.cx - 0.045, ly + 0.002)
-    .quad(h.cx - 0.055, ly - 0.002, h.cx - 0.054, ly - 0.014);
+    .move(lx - 0.024, ly + 0.004)
+    .quad(h.cx + 0.012, ly + 0.008, h.cx - 0.014, ly + 0.004)
+    .quad(h.cx - 0.022, ly + 0.002, h.cx - 0.021, ly - 0.012);
   arm.push(...b.pts);
   return [
     { outline: lens, holes: [hole], tone: "ink", layer: 1, rough: 0.5 },
