@@ -83,9 +83,13 @@ def test_kinship_resolves_for_lily(query, expected):
 def test_kinship_depends_on_who_asks():
     assert _resolved("my grandparents", "kid") == [("grandparents", {"dad", "mom"})]
     assert _resolved("how did I meet my wife", "dad") == [("self", {"dad"}), ("spouses", {"mom"})]
-    # Nobody recorded above Walter and Edith, so David's "grandma" is his children's grandparents.
-    assert _resolved("my grandma", "dad") == [("grandparents", {"gp", "gm"})]
-    assert _resolved("my grandma", "gm") == []  # nobody above her, nor above her children's parents
+    # Nobody recorded above Walter and Edith: a bare "grandma" from David is his children's
+    # grandparents, but "my grandma" is anchored to David and names nobody.
+    assert _resolved("where did grandma meet grandpa", "dad") == [("grandparents", {"gp", "gm"})] * 2
+    assert _resolved("my grandma", "dad") == []
+    assert search._resolve("my grandma", TREE, "dad")[1] == ["grandma"]
+    assert _resolved("Max's grandma", "dad") == [("grandparents", {"dad", "mom"})]
+    assert _resolved("Walter's grandma", "dad") == []  # anchored to Walter: no fallback
 
 
 def test_without_an_asker_or_when_asking_you_only_names_resolve():
@@ -203,6 +207,73 @@ def test_polite_openers_keep_kinship(demo_db):
     assert _resolved("How did you meet Mom?") == []
     assert _resolved("Tell me about your wife") == []
     assert _resolved("when you met grandma") == []
+
+
+@pytest.fixture
+def young_family(mdb):
+    """Jen added her husband and kids but not her parents; Walt is a widower with no spouse recorded."""
+    db_client.ensure_indexes(mdb)
+    u = users_db.create_user(mdb, email="jen@x.com", password_hash="x", name="Jen")
+    families_db.create_family(mdb, name="F", creator_user_id=u.id, family_id="yf")
+
+    def person(pid, name, parents=(), spouses=()):
+        people_db.create_person(mdb, "yf", schemas.NewPerson(name=name, parent_ids=list(parents),
+                                spouse_ids=list(spouses)), added_by=u.id, person_id=pid)
+
+    person("jen", "Jen")
+    person("mark", "Mark", spouses=["jen"])
+    person("kid1", "Ella", parents=["jen", "mark"])
+    person("kid2", "Owen", parents=["jen", "mark"])
+    person("walt", "Walt")
+    person("pete", "Pete", parents=["walt"])
+    person("nora", "Nora", spouses=["pete"])
+
+    def mem(mid, title, who, teller, text):
+        memories_db.create_memory(mdb, "yf", title=title, year=2000, participant_ids=who,
+                                  telling=schemas.Telling(author_id=teller, text=text), memory_id=mid)
+
+    mem("m_bbq", "Mark's barbecue", ["mark"], "mark", "Mark burned every burger that summer.")
+    mem("m_pancakes", "Saturday pancakes", ["jen", "kid1", "kid2"], "jen", "We made pancakes every Saturday.")
+    mem("m_pete_nora", "How Pete met Nora", ["pete", "nora"], "pete", "I met Nora on a train.")
+    mem("m_fish", "Walt's fishing trip", ["walt", "pete"], "walt", "We caught nothing all day.")
+    return mdb
+
+
+def _rank_yf(db, asker, query):
+    return search.rank_memories(db, "yf", query, people=people_db.list_people(db, "yf"), asker_id=asker)
+
+
+@pytest.mark.parametrize(("asker", "query", "wrong"), [
+    ("jen", "how did my parents meet", "mark"),
+    ("jen", "my mom's cooking", "mark"),
+    ("jen", "my mom", "mark"),
+    ("walt", "how did I meet my wife", "nora"),
+])
+def test_missing_relatives_stay_unresolved(young_family, asker, query, wrong):
+    ranking = _rank_yf(young_family, asker, query)
+    assert ranking.unresolved
+    assert all(wrong not in m.person_ids for m in ranking.mentions)
+    assert not ranking.confident()
+    best = ranking.best()
+    assert best is None or not best.confident
+
+
+def test_my_grandma_with_no_grandparents_is_unresolved(young_family):
+    ranking = _rank_yf(young_family, "kid1", "my grandma's garden")
+    assert ranking.unresolved == ["grandma"] and not ranking.confident()
+
+
+@pytest.mark.parametrize("asker", ["dad", "mom"])
+def test_parents_asking_about_grandpa_and_grandma(demo_db, asker):
+    ranking = _rank(demo_db, asker, "where did grandpa and grandma meet")
+    assert ranking.best().memory_id == ROSA_WEDDING and not ranking.unresolved
+
+
+def test_skipped_kinship_does_not_veto_confidence(demo_db):
+    ranking = _rank(demo_db, "dad", "How did you meet Mom?")  # addressed to "you"
+    assert ranking.unresolved == [] and ranking.best().memory_id == HYMN and ranking.confident()
+    ranking = _rank(demo_db, None, "How did Mom and Dad meet?")  # no person in the tree
+    assert ranking.unresolved == []
 
 
 def test_unresolved_kinship_is_never_confident(demo_db):

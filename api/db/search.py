@@ -637,6 +637,10 @@ _OPENER = re.compile(
 _RANK_SKIP = frozenset({"get", "gets", "got", "gotten", "getting", "go", "goes", "going", "went", "gone"})
 
 
+# Words that tie the kinship word after them to a particular person ("my grandma").
+_ANCHORS = frozenset({"my", "our", "his", "her", "their"})
+
+
 def strip_openers(query: str) -> str:
     """The question without polite openers ("Can you show me where ..." -> "where ...")."""
     return " ".join(_OPENER.sub(" ", query or "").split())
@@ -743,10 +747,12 @@ def resolve_people(
       asker's grandparents. Possessives chain: "dad's parents" is the parents of the asker's
       parents, "Sam's wife" Sam's spouses. A kinship word followed by a name narrows to that
       name when it can ("uncle Joe" is the aunt or uncle called Joe).
-    - A kinship word the tree cannot resolve from the asker is read one generation down, as
-      the asker's children would say it (a parent calls their own parents "Grandma" and
-      "Grandpa"), and failing that falls back to people whose name holds that word
-      ("Grandma Rose", a person named "Dad"). Still nobody: the word is unresolved.
+    - A bare grandparent word ("grandma", not "my grandma" or "Sam's grandma") the tree
+      cannot resolve from the asker is read from the asker's children's side (a parent calls
+      their own parents "Grandma" and "Grandpa"). No other relation gets that fallback.
+      Failing that, a kinship word falls back to people whose name holds it ("Grandma Rose",
+      a person named "Dad"). Still nobody: the word is unresolved (Ranking.unresolved), unless
+      kinship was skipped on purpose (no asker, or a question about the listener's life).
     - Names: a query word equal to a word of a person's name, or (when written with a capital
       but not as the question's first word, or right after a kinship word, at least 3 letters)
       the start of one: "Sam" -> Samuel; and through _NICKNAMES "Joe" -> Joseph.
@@ -811,8 +817,11 @@ def _resolve(
             else:
                 base, words, phrase = set(), (), written
             ids = tree.relation(relation, base) if base else set()
-            if not ids and pending is None and asker is not None:
-                # One generation down: the asker's children's grandparents are the asker's parents.
+            anchored = pending is not None or (index > 0 and raw[index - 1][1] in _ANCHORS)
+            if not ids and relation == "grandparents" and not anchored and asker is not None:
+                # A parent calls their own parents "Grandma" and "Grandpa", as their children
+                # do: read a bare grandparent word from the asker's children's side. Only for
+                # grandparents, and never for "my grandma" or "Sam's grandpa".
                 ids = tree.relation(relation, tree.children.get(asker, set())) - {asker}
             if not ids and pending is None:
                 ids = {pid for pid, nwords in names if word in nwords}
@@ -820,7 +829,9 @@ def _resolve(
                 if pending is not None and mentions and mentions[-1] is pending:
                     mentions.pop()  # "dad's parents" replaces "dad"
                 mention = Mention(phrase, relation, frozenset(ids), (*words, word))
-            else:
+            elif base:
+                # Resolution was attempted and named nobody. Not when kinship was skipped on
+                # purpose (no asker, or a question about the listener's life).
                 unresolved.append(word)
         else:
             capital = written[:1].isupper()
