@@ -10,12 +10,12 @@
  */
 
 import { useMemo } from "react";
-import { cameraPath, closeUp, stagePoses, type CameraPath } from "@/components/stage/CameraRig";
+import { cameraCues, stagePoses, type CameraCue, type CameraPath } from "@/components/stage/CameraRig";
 import { getCutout, type CutoutSpec } from "@/components/stage/cutout";
 import { PaperEffect, type EffectKind, type PaperEffectProps } from "@/components/stage/Effects";
 import { SetPiece } from "@/components/stage/SetPiece";
 import { PALETTE, bush, church, skyCard, trees } from "@/components/stage/art";
-import { easeInOutSine, linear } from "@/components/stage/timeline";
+import { linear } from "@/components/stage/timeline";
 
 export const DEMO_OPEN_AT = 0.5;
 
@@ -38,14 +38,16 @@ const LAYERS: DemoLayer[] = [
 
 const poses = stagePoses();
 
-/** Wide while the set rises, then a slow dolly in towards the church door. */
-export const demoCamera: CameraPath = cameraPath([
-  { at: 0, pose: poses.wide },
-  { at: 2.6, pose: poses.wide },
-  { at: 8.6, pose: closeUp([0.24, 0.5, -0.5], { distance: 3.05, height: 0.78, yaw: -0.16, fov: 30 }), ease: easeInOutSine },
+/** Wide while the set rises, then a slow dolly in towards the church door,
+ *  written as screenplay camera cues. */
+export const DEMO_CUES: CameraCue[] = [
+  { t: 0, move: "wide", dur: 0 },
+  { t: 2.6, move: "dolly_to", target: [0.2, 0.5, -0.5], distance: 3.05, height: 0.8, dur: 6 },
   // Never quite stop: a slow drift keeps the held shot alive.
-  { at: 20, pose: closeUp([0.2, 0.5, -0.5], { distance: 2.85, height: 0.74, yaw: -0.05, fov: 30 }), ease: linear },
-]);
+  { t: 8.6, move: "dolly_to", target: [0.16, 0.5, -0.5], distance: 2.85, height: 0.74, dur: 11.4, ease: linear },
+];
+
+export const demoCamera: CameraPath = cameraCues(DEMO_CUES, poses.wide);
 
 const EFFECTS: Record<EffectKind, Omit<PaperEffectProps, "kind">> = {
   confetti: { origin: [0.25, 0.4, -0.05], spread: [0.55, 0.38], count: 80, start: 4.6 },

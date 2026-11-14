@@ -40,15 +40,19 @@ export const DEFAULT_STAGE_SIZE: StageSize = [2.4, 3.2];
 /* Presets and moves                                                         */
 /* ------------------------------------------------------------------------ */
 
-/** The two resting framings of a stage page. */
+/**
+ * The resting framings of a stage page. The stage page is the right-hand page
+ * of the open book; the left page (and the spine at x = -w/2) lie to its left.
+ */
 export function stagePoses(size: StageSize = DEFAULT_STAGE_SIZE) {
   const [w, d] = size;
   const s = Math.max(w / 2.4, d / 3.2);
   return {
     /** Reading view: the whole diorama, from just above the reader's eye line. */
-    reading: { position: [0, 1.55 * s, 4.6 * s], target: [0, 0.52 * s, -0.25 * s], fov: 30 } as CameraPose,
-    /** Wide: higher and further back, the page and some of the table. */
-    wide: { position: [1.1 * s, 2.75 * s, 6.3 * s], target: [-0.05 * s, 0.38 * s, -0.25 * s], fov: 30 } as CameraPose,
+    reading: { position: [0.1 * s, 1.65 * s, 4.7 * s], target: [0, 0.5 * s, -0.25 * s], fov: 30 } as CameraPose,
+    /** Wide: a three-quarter view from above of the whole open book on the
+     *  table, centred between the spread and the set. */
+    wide: { position: [0.7 * s, 4.7 * s, 6.5 * s], target: [-0.36 * w, 0.2 * s, 0.1 * s], fov: 30 } as CameraPose,
   };
 }
 
@@ -120,6 +124,99 @@ export function cameraPath(stops: readonly CameraStop[]): CameraPath {
     }
     return stops[stops.length - 1].pose;
   };
+}
+
+/* ------------------------------------------------------------------------ */
+/* Cues: the screenplay's camera vocabulary                                  */
+/* ------------------------------------------------------------------------ */
+
+/** The screenplay's camera moves (plus `reading`, the book's resting view). */
+export type CameraMove = "reading" | "wide" | "dolly_to" | "pan_to" | "close_up" | "pull_back";
+
+/**
+ * One camera cue: start `move` at time `t`, taking `dur` seconds. Kept close
+ * to the screenplay's camera track ({ t, move, target, dur }); the player maps
+ * named targets ("mom") to stage points before handing cues over.
+ */
+export interface CameraCue {
+  t: number;
+  move: CameraMove;
+  /** Look-at point for dolly_to, pan_to and close_up (stage units). */
+  target?: Vec3;
+  /** Seconds the move takes; 0 cuts. Default 2.5. */
+  dur?: number;
+  /** Camera distance from the target for dolly_to and close_up. */
+  distance?: number;
+  /** Camera height above the target for dolly_to and close_up (default: keep
+   *  the current angle for dolly_to, low for close_up). */
+  height?: number;
+  /** Override the move's easing. */
+  ease?: Ease;
+}
+
+const CUE_DUR = 2.5;
+
+/** Where a cue wants the camera to end up, starting from `from`. */
+export function resolveCue(cue: CameraCue, from: CameraPose, size: StageSize = DEFAULT_STAGE_SIZE): CameraPose {
+  const presets = stagePoses(size);
+  const target = cue.target ?? from.target;
+  switch (cue.move) {
+    case "reading":
+      return presets.reading;
+    case "wide":
+      return presets.wide;
+    case "pull_back":
+      // Out past the wide shot, as the memory ends and the page turns.
+      return pullBack(presets.wide, 1.12);
+    case "pan_to":
+      return pan(from, sub(target, from.target));
+    case "dolly_to": {
+      // Approach along the current line of sight (or settle to `height`).
+      const off = sub(from.position, from.target);
+      const dist = cue.distance ?? Math.max(1.4, len(off) * 0.55);
+      if (cue.height !== undefined) {
+        return closeUp(target, { distance: dist, height: cue.height, yaw: Math.atan2(off[0], off[2]), fov: from.fov });
+      }
+      return { position: add(target, scale(off, dist / (len(off) || 1))), target, fov: from.fov };
+    }
+    case "close_up": {
+      // Lower and nearer, from the side the camera is already on.
+      const off = sub(from.position, from.target);
+      const yaw = Math.atan2(off[0], off[2]);
+      return closeUp(target, { distance: cue.distance ?? 1.15, height: cue.height ?? 0.3, yaw, fov: 27 });
+    }
+  }
+}
+
+/**
+ * The camera pose at stage time `t` for cues sorted by `t`, starting from
+ * `initial`. A cue that starts before the previous one has finished picks up
+ * from wherever the camera is at that moment, so moves chain smoothly. Pure:
+ * the same time always gives the same pose.
+ */
+export function cameraPoseAt(
+  cues: readonly CameraCue[],
+  t: number,
+  initial?: CameraPose,
+  size: StageSize = DEFAULT_STAGE_SIZE,
+): CameraPose {
+  let cur = initial ?? stagePoses(size).reading;
+  for (let i = 0; i < cues.length; i++) {
+    const cue = cues[i];
+    if (cue.t > t) break;
+    const to = resolveCue(cue, cur, size);
+    const until = Math.min(t, i + 1 < cues.length ? cues[i + 1].t : Infinity);
+    const dur = cue.dur ?? CUE_DUR;
+    const k = dur <= 0 ? 1 : (cue.ease ?? easeInOutSine)((until - cue.t) / dur);
+    cur = blendPose(cur, to, k);
+  }
+  return cur;
+}
+
+/** A CameraPath from cues, for <CameraRig pose={...}> (sorts a copy). */
+export function cameraCues(cues: readonly CameraCue[], initial?: CameraPose, size?: StageSize): CameraPath {
+  const sorted = [...cues].sort((a, b) => a.t - b.t);
+  return (t) => cameraPoseAt(sorted, t, initial, size);
 }
 
 /* ------------------------------------------------------------------------ */
