@@ -1,4 +1,10 @@
-"""compile_screenplay tool, parse_and_compile, and the compiler seam."""
+"""compile_screenplay tool, parse_and_compile, and the compiler seam.
+
+Every test that runs a compiler runs twice, on the FakeCompiler and on `load_compiler()` (the
+real `screenplay.compiler.compile` on main), through the `compiler` fixture. Nothing here pins
+one compiler's wording: the bad draft's message is read back from the compiler under test
+(`bad_message`), and only its head (`BAD_HEAD`) and code are fixed.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +26,7 @@ from agent.fake_compiler import FakeCompiler
 from agent.tools import compile as compile_mod
 from agent.tools.compile import (
     MAX_COMPILE_ROUNDS,
+    Compiler,
     SceneInputs,
     SceneLookupError,
     load_compiler,
@@ -49,23 +56,47 @@ BAD = copy.deepcopy(SAMPLE)
 BAD["shots"][0]["actions"][4]["t"] = 5  # hand_to before dad picks the books up (mom has dropped them)
 BAD["shots"][0]["actions"].pop(3)  # remove pick_up
 BAD_TEXT = json.dumps(BAD)
-BAD_MESSAGE = 'shot s1, t=5: dad cannot hand_to "hymn_books"; nobody is holding it'
+BAD_HEAD = 'shot s1, t=5: dad cannot hand_to "hymn_books"; '  # the reason after it is the compiler's
+ROUND_1 = "round 1 of 3\nFix /screenplay.json and call compile_screenplay again."
+STOP = ("STOP: 3 compile rounds have failed. Do not edit or recompile again; "
+        "report these errors as your final answer.")
 
 
 def scene_for(_: Screenplay) -> SceneInputs:
     return SCENE
 
 
+def _real_compiler() -> Compiler:
+    compiler = load_compiler()
+    if isinstance(compiler, FakeCompiler):
+        pytest.skip("screenplay.compiler.compile is not importable; load_compiler() fell back to the fake")
+    return compiler
+
+
+@pytest.fixture(params=["fake", "real"])
+def compiler(request) -> Compiler:
+    return FakeCompiler() if request.param == "fake" else _real_compiler()
+
+
+def bad_message(compiler: Compiler) -> str:
+    """The one error the compiler under test gives for BAD: dad hands over books nobody holds."""
+    res = parse_and_compile(BAD_TEXT, compiler, scene_for)
+    (err,) = res.errors
+    assert err.code == "not_holding"
+    assert err.message.startswith(BAD_HEAD) and len(err.message) > len(BAD_HEAD), err.message
+    return err.message
+
+
 # ------------------------------------------------------------------ parse_and_compile
 
 
-def test_parse_and_compile_ok():
-    res = parse_and_compile(SAMPLE_TEXT, FakeCompiler(), scene_for)
+def test_parse_and_compile_ok(compiler):
+    res = parse_and_compile(SAMPLE_TEXT, compiler, scene_for)
     assert res.ok and isinstance(res.timeline, Timeline)
 
 
-def test_invalid_json():
-    res = parse_and_compile('{"memoryId": "m1",\n  "cast": [', FakeCompiler(), scene_for)
+def test_invalid_json(compiler):
+    res = parse_and_compile('{"memoryId": "m1",\n  "cast": [', compiler, scene_for)
     assert not res.ok
     (err,) = res.errors
     assert err.code == "invalid_json"
@@ -78,21 +109,21 @@ def _pydantic_error_count(data: dict) -> int:
     return len(info.value.errors())
 
 
-def test_unknown_verb_gives_one_error_per_pydantic_error():
+def test_unknown_verb_gives_one_error_per_pydantic_error(compiler):
     data = copy.deepcopy(SAMPLE)
     data["shots"][0]["actions"][0]["do"] = "teleport"
-    res = parse_and_compile(json.dumps(data), FakeCompiler(), scene_for)
+    res = parse_and_compile(json.dumps(data), compiler, scene_for)
     assert not res.ok
     assert len(res.errors) == _pydantic_error_count(data)
     assert all(e.code == "invalid_screenplay" for e in res.errors)
     assert res.errors[0].message.startswith("shots.0.actions.0.do: Input should be ")
 
 
-def test_unknown_field_gives_one_error_per_pydantic_error():
+def test_unknown_field_gives_one_error_per_pydantic_error(compiler):
     data = copy.deepcopy(SAMPLE)
     data["shots"][0]["actions"][1]["teleport"] = True
     data["shots"][0]["pageTxt"] = "typo"
-    res = parse_and_compile(json.dumps(data), FakeCompiler(), scene_for)
+    res = parse_and_compile(json.dumps(data), compiler, scene_for)
     assert len(res.errors) == _pydantic_error_count(data) == 2
     messages = {e.message for e in res.errors}
     assert "shots.0.actions.1.teleport: Extra inputs are not permitted" in messages
@@ -109,18 +140,24 @@ def test_unknown_field_gives_one_error_per_pydantic_error():
         (KeyError("hymn_books"), "unknown_prop", 'unknown prop "hymn_books"'),
     ],
 )
-def test_scene_lookup_key_errors_become_compile_errors(exc, code, message):
+def test_scene_lookup_key_errors_become_compile_errors(compiler, exc, code, message):
     def failing(_: Screenplay) -> SceneInputs:
         raise exc
 
-    res = parse_and_compile(SAMPLE_TEXT, FakeCompiler(), failing)
+    res = parse_and_compile(SAMPLE_TEXT, compiler, failing)
     assert not res.ok
     assert [(e.code, e.message) for e in res.errors] == [(code, message)]
 
 
-def test_compiler_errors_pass_through_verbatim():
-    res = parse_and_compile(BAD_TEXT, FakeCompiler(), scene_for)
-    assert [e.message for e in res.errors] == [BAD_MESSAGE]
+def test_compiler_errors_pass_through_verbatim(compiler):
+    direct = compiler(Screenplay.model_validate(BAD), SCENE)
+    res = parse_and_compile(BAD_TEXT, compiler, scene_for)
+    assert [e.message for e in res.errors] == [e.message for e in direct.errors] == [bad_message(compiler)]
+
+
+def test_both_compilers_give_the_same_bad_draft_message():
+    """The fake says what the real compiler says for a prop lying on the ground."""
+    assert bad_message(FakeCompiler()) == bad_message(_real_compiler())
 
 
 # ----------------------------------------------------------------------- load_compiler
@@ -158,8 +195,8 @@ def test_load_compiler_uses_the_real_compile_when_present(monkeypatch):
 # ------------------------------------------------------------------------------ the tool
 
 
-def _graph(compiler=None):
-    tool = make_compile_tool(compiler or FakeCompiler(), scene_for)
+def _graph(compiler: Compiler):
+    tool = make_compile_tool(compiler, scene_for)
     assert tool.name == "compile_screenplay"
     builder = StateGraph(FilesystemState)
     builder.add_node("tools", ToolNode([tool]))
@@ -193,8 +230,8 @@ def _last_tool_message(state) -> ToolMessage:
     return msg
 
 
-def test_tool_good_draft_writes_timeline():
-    graph = _graph()
+def test_tool_good_draft_writes_timeline(compiler):
+    graph = _graph(compiler)
     state, events = _call(graph, "good", 1, files={"/screenplay.json": create_file_data(SAMPLE_TEXT)})
     msg = _last_tool_message(state)
     assert msg.tool_call_id == "call_1"
@@ -206,8 +243,8 @@ def test_tool_good_draft_writes_timeline():
     assert events == []
 
 
-def test_tool_good_draft_writes_an_empty_scene_review():
-    graph = _graph()
+def test_tool_good_draft_writes_an_empty_scene_review(compiler):
+    graph = _graph(compiler)
     state, _ = _call(graph, "clean", 1, files={"/screenplay.json": create_file_data(SAMPLE_TEXT)})
     assert "\n" not in _last_tool_message(state).content
     assert _text(state, "/scene_review.txt") == ""
@@ -218,8 +255,8 @@ del NO_PAGE_TEXT["shots"][0]["pageText"]
 NO_PAGE_TEXT_WARNING = "shot s1: no pageText; add one or two short storybook sentences (at most 30 words)"
 
 
-def test_tool_success_appends_scene_review_warnings_without_using_a_round():
-    graph = _graph()
+def test_tool_success_appends_scene_review_warnings_without_using_a_round(compiler):
+    graph = _graph(compiler)
     state, events = _call(graph, "review", 1, files={"/screenplay.json": create_file_data(json.dumps(NO_PAGE_TEXT))})
     tl = Timeline.model_validate_json(_text(state, "/timeline.json"))
     lines = _last_tool_message(state).content.splitlines()
@@ -239,7 +276,8 @@ def test_tool_success_appends_scene_review_warnings_without_using_a_round():
     assert events == []
 
 
-def test_tool_scene_review_gets_the_scene_props():
+def test_tool_scene_review_gets_the_scene_props(compiler):
+    """The scene review sees the scene inputs the compiler gets: the full scene, car included."""
     car = schemas.Prop(
         id="car", name="car", size="vehicle", art={"body": None}, color="#335",
         parts={"wheel": schemas.PropPart(art="body", at=[0.2, 0.9])},
@@ -247,20 +285,22 @@ def test_tool_scene_review_gets_the_scene_props():
     scene = SceneInputs(sets=SCENE.sets, props={**SCENE.props, "car": car}, people=SCENE.people)
     data = copy.deepcopy(SAMPLE)
     data["props"].append("car")
+    data["shots"][0]["propStart"] = {"car": {"at": "curb"}}  # on stage, so its explanation has a track
     data["explanations"].append({"target": "prop:car", "text": "the car"})
     del data["interactions"]
 
-    def accept_all(screenplay, _scene):
+    def same_scene(screenplay, _scene):
         assert _scene is scene
-        return FakeCompiler()(screenplay, SCENE)
+        return compiler(screenplay, _scene)
 
-    tool = make_compile_tool(accept_all, lambda _: scene)
+    tool = make_compile_tool(same_scene, lambda _: scene)
     builder = StateGraph(FilesystemState)
     builder.add_node("tools", ToolNode([tool]))
     builder.add_edge(START, "tools")
     builder.add_edge("tools", END)
     graph = builder.compile(checkpointer=InMemorySaver())
     state, events = _call(graph, "props", 1, files={"/screenplay.json": create_file_data(json.dumps(data))})
+    assert _last_tool_message(state).content.startswith("ok: ")
     assert _text(state, "/scene_review.txt") == (
         "interactions: none, but car can move or change; "
         "add a pull_tab that drives one of them (prop_part or prop_state)\n"
@@ -268,12 +308,12 @@ def test_tool_scene_review_gets_the_scene_props():
     assert events == []
 
 
-def test_tool_scene_review_crash_does_not_fail_the_compile(monkeypatch):
+def test_tool_scene_review_crash_does_not_fail_the_compile(compiler, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("review bug")
 
     monkeypatch.setattr(compile_mod, "review_scene", boom)
-    graph = _graph()
+    graph = _graph(compiler)
     state, events = _call(graph, "boom", 1, files={"/screenplay.json": create_file_data(json.dumps(NO_PAGE_TEXT))})
     content = _last_tool_message(state).content
     assert content.startswith("ok: ") and "\n" not in content
@@ -294,8 +334,9 @@ def _late_tab_warning(tl: Timeline) -> str:
     )
 
 
-def test_tool_success_appends_timeline_warnings_after_scene_warnings_without_using_a_round():
-    graph = _graph()
+def test_tool_success_appends_timeline_warnings_after_scene_warnings_without_using_a_round(compiler):
+    bad = bad_message(compiler)
+    graph = _graph(compiler)
     # a failed round first, so we can see the warnings neither add a round nor stop the loop
     state, _ = _call(graph, "tl", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
     assert json.loads(_text(state, "/compile_log.json")) == {"rounds": 1}
@@ -315,18 +356,16 @@ def test_tool_success_appends_timeline_warnings_after_scene_warnings_without_usi
         assert events == []
 
     state, events = _call(graph, "tl", 5, files={"/screenplay.json": create_file_data(BAD_TEXT)})
-    assert _last_tool_message(state).content == (
-        f"{BAD_MESSAGE}\nround 1 of 3\nFix /screenplay.json and call compile_screenplay again."
-    )
+    assert _last_tool_message(state).content == f"{bad}\n{ROUND_1}"
     assert [e["event"] for e in events] == ["compile_error"]
     assert events[0]["data"]["round"] == 1
 
 
-def test_tool_timeline_review_reads_the_compiled_timeline():
+def test_tool_timeline_review_reads_the_compiled_timeline(compiler):
     """A compiler whose timeline leaves dad without tracks: the explanation for him warns."""
 
     def no_dad(screenplay, scene):
-        result = FakeCompiler()(screenplay, scene)
+        result = compiler(screenplay, scene)
         tl = result.timeline.model_copy(
             update={"tracks": [t for t in result.timeline.tracks if t.target != "puppet:dad"]}
         )
@@ -349,12 +388,12 @@ def test_tool_timeline_review_reads_the_compiled_timeline():
     assert events == []
 
 
-def test_tool_timeline_review_crash_keeps_the_scene_warnings(monkeypatch):
+def test_tool_timeline_review_crash_keeps_the_scene_warnings(compiler, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("timeline review bug")
 
     monkeypatch.setattr(compile_mod, "review_timeline", boom)
-    graph = _graph()
+    graph = _graph(compiler)
     state, events = _call(graph, "tlboom", 1, files={"/screenplay.json": create_file_data(json.dumps(LATE_TAB))})
     lines = _last_tool_message(state).content.splitlines()
     assert lines[0].startswith("ok: ")
@@ -363,49 +402,46 @@ def test_tool_timeline_review_crash_keeps_the_scene_warnings(monkeypatch):
     assert events == []
 
 
-def test_tool_failure_output_is_unchanged_and_writes_no_scene_review():
-    graph = _graph()
+def test_tool_failure_output_is_unchanged_and_writes_no_scene_review(compiler):
+    bad = bad_message(compiler)
+    graph = _graph(compiler)
     state, _ = _call(graph, "fail", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
-    assert _last_tool_message(state).content == (
-        f"{BAD_MESSAGE}\nround 1 of 3\nFix /screenplay.json and call compile_screenplay again."
-    )
+    assert _last_tool_message(state).content == f"{bad}\n{ROUND_1}"
     assert "/scene_review.txt" not in state["files"]
     state, _ = _call(graph, "fail", 2)
     state, _ = _call(graph, "fail", 3)
-    assert _last_tool_message(state).content == (
-        f"{BAD_MESSAGE}\nround 3 of 3\nSTOP: 3 compile rounds have failed. Do not edit or recompile again; "
-        "report these errors as your final answer."
-    )
+    assert _last_tool_message(state).content == f"{bad}\nround 3 of 3\n{STOP}"
 
 
-def test_tool_reads_a_custom_path():
-    graph = _graph()
+def test_tool_reads_a_custom_path(compiler):
+    graph = _graph(compiler)
     state, _ = _call(graph, "path", 1, files={"/drafts/v2.json": create_file_data(SAMPLE_TEXT)}, args={"path": "/drafts/v2.json"})
     assert _last_tool_message(state).content.startswith("ok: ")
 
 
-def test_tool_missing_draft_is_a_failed_round():
-    graph = _graph()
+def test_tool_missing_draft_is_a_failed_round(compiler):
+    graph = _graph(compiler)
     state, events = _call(graph, "missing", 1, files={})
     assert "no file at /screenplay.json" in _last_tool_message(state).content
     assert events[0]["data"]["round"] == 1
 
 
-def test_tool_bad_draft_writes_errors_and_emits_event_then_stops_at_round_three():
-    graph = _graph()
+def test_tool_bad_draft_writes_errors_and_emits_event_then_stops_at_round_three(compiler):
+    bad = bad_message(compiler)
+    graph = _graph(compiler)
     state, events = _call(graph, "bad", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
     msg = _last_tool_message(state)
-    assert msg.content.splitlines()[0] == BAD_MESSAGE
+    assert msg.content.splitlines()[0] == bad
     assert f"round 1 of {MAX_COMPILE_ROUNDS}" in msg.content
     assert "STOP" not in msg.content
-    assert _text(state, "/compile_errors.txt") == BAD_MESSAGE + "\n"
+    assert _text(state, "/compile_errors.txt") == bad + "\n"
     assert _text(state, "/timeline.json") == ""  # blanked: no timeline to voice, render or save
     assert json.loads(_text(state, "/compile_log.json")) == {"rounds": 1}
     (event,) = events
     assert event["event"] == "compile_error"
     payload = schemas.CompileErrorEvent.model_validate(event["data"])
     assert payload.round == 1
-    assert [e.message for e in payload.errors] == [BAD_MESSAGE]
+    assert [e.message for e in payload.errors] == [bad]
     assert payload.errors[0].code == "not_holding"
 
     state, events = _call(graph, "bad", 2)
@@ -414,14 +450,14 @@ def test_tool_bad_draft_writes_errors_and_emits_event_then_stops_at_round_three(
 
     state, events = _call(graph, "bad", 3)
     content = _last_tool_message(state).content
-    assert content.splitlines()[0] == BAD_MESSAGE
+    assert content.splitlines()[0] == bad
     assert "round 3 of 3" in content
     assert "STOP" in content and "report these errors" in content
     assert events[0]["data"]["round"] == 3
 
 
-def test_tool_success_resets_the_round_counter():
-    graph = _graph()
+def test_tool_success_resets_the_round_counter(compiler):
+    graph = _graph(compiler)
     _call(graph, "fix", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
     _call(graph, "fix", 2)
     state, _ = _call(graph, "fix", 3, files={"/screenplay.json": create_file_data(SAMPLE_TEXT)})
@@ -450,14 +486,15 @@ def test_emit_is_a_silent_no_op_outside_a_graph():
 
 
 class SpyCompiler:
-    """Counts calls and delegates to the fake compiler."""
+    """Counts calls and delegates to the compiler under test."""
 
-    def __init__(self) -> None:
+    def __init__(self, inner: Compiler) -> None:
+        self.inner = inner
         self.calls = 0
 
     def __call__(self, screenplay, scene):
         self.calls += 1
-        return FakeCompiler()(screenplay, scene)
+        return self.inner(screenplay, scene)
 
 
 STOP_LINE = (
@@ -465,9 +502,10 @@ STOP_LINE = (
 )
 
 
-def test_tool_refuses_a_fourth_round_without_compiling_or_emitting():
+def test_tool_refuses_a_fourth_round_without_compiling_or_emitting(compiler):
     """Finding 12: the 3-round cap is enforced by the tool, not only by the prompts."""
-    spy = SpyCompiler()
+    bad = bad_message(compiler)
+    spy = SpyCompiler(compiler)
     graph = _graph(spy)
     all_events = []
     state, events = _call(graph, "cap", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
@@ -485,14 +523,14 @@ def test_tool_refuses_a_fourth_round_without_compiling_or_emitting():
     assert events == []  # and no compile_error with round 4
     content = _last_tool_message(state).content
     assert "STOP" in content
-    assert content.splitlines() == [STOP_LINE, BAD_MESSAGE]
+    assert content.splitlines() == [STOP_LINE, bad]
     assert state["files"] == files_before  # no file changed
     assert json.loads(_text(state, "/compile_log.json")) == {"rounds": MAX_COMPILE_ROUNDS}
 
 
-def test_tool_past_the_cap_does_not_read_a_new_draft():
+def test_tool_past_the_cap_does_not_read_a_new_draft(compiler):
     """Even a fixed draft is not compiled once the cap is spent: the run must report."""
-    spy = SpyCompiler()
+    spy = SpyCompiler(compiler)
     graph = _graph(spy)
     _call(graph, "cap2", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
     _call(graph, "cap2", 2)
@@ -503,8 +541,8 @@ def test_tool_past_the_cap_does_not_read_a_new_draft():
     assert _text(state, "/timeline.json") == ""
 
 
-def test_tool_past_the_cap_without_saved_errors_still_stops():
-    graph = _graph()
+def test_tool_past_the_cap_without_saved_errors_still_stops(compiler):
+    graph = _graph(compiler)
     files = {
         "/screenplay.json": create_file_data(SAMPLE_TEXT),
         "/compile_log.json": create_file_data(json.dumps({"rounds": 3})),

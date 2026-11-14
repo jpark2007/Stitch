@@ -272,7 +272,7 @@ def test_hand_to_when_nobody_holds_it(scene):
             ],
         )
     )
-    assert err.message == 'shot s1, t=5: dad cannot hand_to "hymn_books"; nobody is holding it'
+    assert err.message == 'shot s1, t=5: dad cannot hand_to "hymn_books"; it is on the ground'
 
 
 def test_holding_is_simulated_in_time_order(scene):
@@ -286,7 +286,7 @@ def test_holding_is_simulated_in_time_order(scene):
             ],
         )
     )
-    assert err.message == 'shot s1, t=2: mom cannot hand_to "hymn_books"; nobody is holding it'
+    assert err.message == 'shot s1, t=2: mom cannot hand_to "hymn_books"; it is on the ground'
 
 
 def test_pick_up_of_a_held_prop(scene):
@@ -379,7 +379,7 @@ def test_holding_carries_between_shots(scene):
         }
     )
     err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
-    assert err.message == 'shot s2, t=2: mom cannot hand_to "hymn_books"; nobody is holding it'
+    assert err.message == 'shot s2, t=2: mom cannot hand_to "hymn_books"; it is on the ground'
 
 
 def test_all_errors_are_reported_together(scene):
@@ -488,14 +488,14 @@ def test_camera_target_must_be_on_stage(scene):
                                        'shot s1, t=1: cannot close_up "hymn_books"; hymn_books is not on stage')
 
 
-def test_not_holding_on_the_ground_keeps_its_old_wording(scene):
-    """The real compiler says "it is on the ground"; the fake keeps "nobody is holding it" (see
-    LEGACY_REASONS) because tests/agent/test_agent_compile_tool.py pins that text."""
+def test_not_holding_on_the_ground_says_so(scene):
+    """The real compiler's reason (screenplay.state.World): "it is on the ground"."""
     err = _only_error(_compile(scene, [
         {"t": 0, "who": "mom", "do": "drop", "what": "hymn_books"},
         {"t": 1, "who": "mom", "do": "hold", "what": "hymn_books"},
     ]))
-    assert err.message == 'shot s1, t=1: mom cannot hold "hymn_books"; nobody is holding it'
+    assert err.code == "not_holding"
+    assert err.message == 'shot s1, t=1: mom cannot hold "hymn_books"; it is on the ground'
 
 
 def test_static_errors_stop_before_the_simulation(scene):
@@ -507,13 +507,14 @@ def test_static_errors_stop_before_the_simulation(scene):
     assert [e.code for e in res.errors] == ["unknown_mark"]
 
 
-def test_unused_prop_missing_from_the_scene_passes(scene):
-    """Documented gap: a listed prop the scene lacks and nothing uses passes in the fake (the
-    studio's scene_for reports it first); a used one is unknown_prop, as in the real compiler."""
+@pytest.mark.parametrize("used", [False, True], ids=["unused", "used"])
+def test_prop_missing_from_the_scene_is_unknown_prop(scene, used):
+    """A listed prop the scene inputs lack is unknown_prop whether or not anything uses it, as in
+    the real compiler (parity case in tests/agent/test_agent_real_compiler.py)."""
     data = copy.deepcopy(BASE)
     data["props"].append("car")
-    assert FakeCompiler()(Screenplay.model_validate(data), scene).ok
-    data["shots"][0]["camera"] = [{"t": 0, "move": "close_up", "target": "car"}]
+    if used:
+        data["shots"][0]["camera"] = [{"t": 0, "move": "close_up", "target": "car"}]
     err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
     assert err.code == "unknown_prop" and err.message.startswith('screenplay: prop "car" is not a known prop')
 
