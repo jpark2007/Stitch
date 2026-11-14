@@ -77,10 +77,12 @@ describe("stepPlayGate", () => {
     for (const t of [end, end + 300, end + g.END_HOLD_MS - 1]) {
       const { step, wake } = frame({ ended: true, now: t });
       assert.equal(step.offer, true, `held at +${t - end} ms`);
-      assert.equal(wake, true, "the hold keeps frames coming");
+      assert.equal(wake, false, "nothing to draw while the last line holds");
+      assert.equal(step.wakeAt, end + g.END_HOLD_MS, "one wake, when the hold is up");
     }
     // The hold runs out: the offer goes, and that frame asks for one more.
     const out = frame({ ended: true, now: end + g.END_HOLD_MS });
+    assert.equal(out.step.wakeAt, 0);
     assert.equal(out.step.offer, false);
     assert.equal(shot.want, 0);
     assert.equal(out.wake, true, "the camera must get a frame to ease out on");

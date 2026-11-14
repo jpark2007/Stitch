@@ -117,29 +117,48 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
     [invalidate],
   );
 
+  // One timer for the end hold's wake (stepPlayGate's wakeAt).
+  const wake = useRef<{ at: number; id: ReturnType<typeof setTimeout> | null }>({ at: 0, id: null });
+
   // A stage folded away (unmounted) never plays on unseen, nor holds the camera.
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const w = wake.current;
+    return () => {
+      if (w.id !== null) clearTimeout(w.id);
+      w.id = null;
+      w.at = 0;
       controller.pause();
       if (shot.offer(false)) invalidate();
-    },
-    [controller, shot, invalidate],
-  );
+    };
+  }, [controller, shot, invalidate]);
 
   useFrame((state) => {
     gate.current ??= createPlayGate();
     const status = controller.getStatus();
+    const now = performance.now();
     const step = stepPlayGate(gate.current, {
       reveal: reveal.current,
       view: view.current,
       ended: status.ended,
       playing: status.playing,
-      now: performance.now(),
+      now,
     });
     // The camera read the offer earlier this frame (CAMERA_PRIORITY): a
     // change needs one more frame to be seen, or the camera, drawn on
     // demand, stays leaned in once the hold ends.
     if (shot.offer(step.offer) || step.redraw) state.invalidate();
+    // The last line holds still: no frames till the hold is up, then one
+    // (on which the offer goes, and that change wakes the camera).
+    const w = wake.current;
+    if (step.wakeAt && step.wakeAt !== w.at) {
+      if (w.id !== null) clearTimeout(w.id);
+      w.at = step.wakeAt;
+      w.id = setTimeout(() => {
+        w.id = null;
+        w.at = 0;
+        invalidate();
+      }, step.wakeAt - now + 1);
+    }
     switch (step.action) {
       case "rearm":
         // Folded away: next time the page opens, the set rises from the start.

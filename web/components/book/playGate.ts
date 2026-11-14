@@ -6,6 +6,7 @@
  *   useFrame((state) => {
  *     const step = stepPlayGate(gate, { reveal, view, ended, playing, now });
  *     if (shot.offer(step.offer) || step.redraw) state.invalidate();
+ *     if (step.wakeAt) // one timer: invalidate at step.wakeAt
  *     // step.action: "rearm" | "start" | "pauseAway" | "resume" | "none"
  *   });
  *
@@ -20,8 +21,9 @@
  *     and holds the last line a beat in close-up after it ends.
  *
  * The book draws on demand, so `redraw` asks for a frame only while
- * something here is changing (the page settling, the view panning, the end
- * hold running): a book at rest draws nothing. The book's camera reads the
+ * something here is changing (the page settling, the view panning), and
+ * `wakeAt` for the one frame the end hold runs out on: a book at rest draws
+ * nothing. The book's camera reads the
  * offer before the stages' default-priority work in a frame, so a changed
  * offer also needs a frame (StageShot.offer says when).
  *
@@ -68,6 +70,12 @@ export interface GateStep {
   offer: boolean;
   /** Ask the demand-driven canvas for another frame. */
   redraw: boolean;
+  /**
+   * Wall time (ms) a frame is next needed at, with nothing to draw till
+   * then (the end hold running out); 0 for none. The same value each frame
+   * of one hold, so the caller schedules one wake for it.
+   */
+  wakeAt: number;
   action: GateAction;
 }
 
@@ -84,7 +92,7 @@ export interface GateInput {
 }
 
 export function createPlayGate(): PlayGate {
-  return { ready: false, armed: true, awayPaused: false, endedAt: -1, lastView: -1, step: { offer: false, redraw: false, action: "none" } };
+  return { ready: false, armed: true, awayPaused: false, endedAt: -1, lastView: -1, step: { offer: false, redraw: false, wakeAt: 0, action: "none" } };
 }
 
 /** One frame of the gate: what the stage offers, whether to draw again, and what the player should do. */
@@ -96,7 +104,9 @@ export function stepPlayGate(g: PlayGate, { reveal: r, view: v, ended, playing, 
   if (!ended) g.endedAt = -1;
   else if (g.endedAt < 0) g.endedAt = now;
   const holding = ended && now - g.endedAt < END_HOLD_MS;
-  step.redraw = holding;
+  // Nothing moves while the last line holds: wake once when the hold is up.
+  step.redraw = false;
+  step.wakeAt = holding ? g.endedAt + END_HOLD_MS : 0;
   step.offer = !g.armed && r >= OPEN_TO_PLAY && (!ended || holding);
   const viewMoved = v !== g.lastView;
   g.lastView = v;
