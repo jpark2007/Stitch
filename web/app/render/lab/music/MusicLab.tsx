@@ -11,7 +11,7 @@
  */
 
 import { useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { ERAS, PALETTES, eraForYear, eraMidYear, useEraMusic, type EraId, type EraMusic } from "@/components/audio";
 import type { OfflineCue } from "@/components/audio/offline";
 import { isMuted, setMuted, subscribeMuted } from "@/components/book/sound";
@@ -58,11 +58,16 @@ export function MusicLab() {
   const [active, setActive] = useState(true);
   const [ducked, setDucked] = useState(false);
   const muted = useSyncExternalStore(subscribeMuted, isMuted, () => false);
-  const music = useEraMusic(year, { active, ducked });
+  // The engine lives in <Player>, so the probe can unmount it to check teardown.
+  const [mounted, setMounted] = useState(true);
+  const music = useRef<EraMusic | null>(null);
+  const onEngine = useCallback((m: EraMusic | null) => {
+    music.current = m;
+  }, []);
   const era = eraForYear(year);
   const probe = params.get("probe") === "1";
 
-  useProbe(probe, music);
+  useProbe(probe, music, setMounted);
 
   const step = (dir: 1 | -1) => {
     const i = era ? ERAS.findIndex((e) => e.id === era) : dir === 1 ? -1 : ERAS.length;
@@ -72,6 +77,7 @@ export function MusicLab() {
 
   return (
     <main className="relative min-h-dvh w-full px-[var(--gutter)] pb-8 pt-5 sm:pb-10 sm:pt-8">
+      {mounted && <Player year={year} active={active} ducked={ducked} onEngine={onEngine} />}
       <div className="mx-auto flex w-full max-w-[76rem] flex-col gap-4 sm:gap-8">
         <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-1">
           <div>
@@ -108,6 +114,26 @@ export function MusicLab() {
       </div>
     </main>
   );
+}
+
+/** Runs the engine through the book's hook and lends it to the lab's meter. */
+function Player({
+  year,
+  active,
+  ducked,
+  onEngine,
+}: {
+  year: number | null;
+  active: boolean;
+  ducked: boolean;
+  onEngine: (m: EraMusic | null) => void;
+}) {
+  const music = useEraMusic(year, { active, ducked });
+  useEffect(() => {
+    onEngine(music.current);
+    return () => onEngine(null);
+  }, [music, onEngine]);
+  return null;
 }
 
 function EraCard({ id, index, playing, onPick }: { id: EraId; index: number; playing: boolean; onPick: () => void }) {
@@ -335,17 +361,23 @@ declare global {
     __eraMusic?: {
       render(cues: OfflineCue[], seconds: number): Promise<{ wav: string; notes: number; busyMs: number; maxTickMs: number }>;
       stats(): ReturnType<EraMusic["stats"]> | null;
+      /** Mount or unmount the engine's component (teardown check). */
+      mount(on: boolean): void;
+      /** The shared context's state and whether any engine holds it awake. */
+      hub(): { context: AudioContextState | "none"; awake: boolean };
     };
   }
 }
 
-function useProbe(on: boolean, music: RefObject<EraMusic | null>) {
+function useProbe(on: boolean, music: RefObject<EraMusic | null>, setMounted: (on: boolean) => void) {
   useEffect(() => {
     if (!on) return;
     let live = true;
-    void import("@/components/audio/offline").then(({ renderEraMusic, encodeWav }) => {
+    void Promise.all([import("@/components/audio/offline"), import("@/components/audio/hub")]).then(([{ renderEraMusic, encodeWav }, hub]) => {
       if (!live) return;
       window.__eraMusic = {
+        mount: setMounted,
+        hub: () => ({ context: hub.musicContext()?.state ?? "none", awake: hub.musicAwake() }),
         async render(cues, seconds) {
           const r = await renderEraMusic(cues, seconds);
           const bytes = new Uint8Array(encodeWav(r.buffer));
@@ -360,5 +392,5 @@ function useProbe(on: boolean, music: RefObject<EraMusic | null>) {
       live = false;
       delete window.__eraMusic;
     };
-  }, [on, music]);
+  }, [on, music, setMounted]);
 }
