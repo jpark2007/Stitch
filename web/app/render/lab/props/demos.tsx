@@ -296,8 +296,8 @@ function HandMarker({ control }: { control: HeldHand }) {
         <circleGeometry args={[0.007, 24]} />
       </mesh>
       {/* A thumb on the side the hand faces, so turning it shows. */}
-      <mesh position={[0.024, 0.008, 0]} material={paper} castShadow>
-        <circleGeometry args={[0.009, 24]} />
+      <mesh position={[0.021, 0.01, -0.0005]} material={paper} castShadow>
+        <circleGeometry args={[0.008, 24]} />
       </mesh>
       {/* A generous invisible hit area so the hand is easy to grab. */}
       <mesh

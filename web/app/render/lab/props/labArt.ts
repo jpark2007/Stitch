@@ -191,7 +191,33 @@ function caseClosed(): string {
       rr(ctx, S * x, S * 0.52, S * 0.06, S * 0.08, S * 0.012);
       glue(ctx, "#e6c375", 0.5);
     }
+    luggageTag(ctx, S);
   });
+}
+
+/** A paper tag tied to the right of the handle. It makes the case
+ *  asymmetric, so the held demo shows the case never mirrors. */
+function luggageTag(ctx: Ctx, S: number) {
+  ctx.save();
+  ctx.strokeStyle = TAN_DEEP;
+  ctx.lineWidth = S * 0.008;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(S * 0.6, S * 0.4);
+  ctx.quadraticCurveTo(S * 0.68, S * 0.43, S * 0.75, S * 0.47);
+  ctx.stroke();
+  ctx.translate(S * 0.79, S * 0.55);
+  ctx.rotate(-0.22);
+  rr(ctx, -S * 0.05, -S * 0.08, S * 0.1, S * 0.15, [S * 0.03, S * 0.03, S * 0.012, S * 0.012]);
+  glue(ctx, CREAM, 0.6);
+  ctx.beginPath();
+  ctx.arc(0, -S * 0.05, S * 0.012, 0, Math.PI * 2);
+  ctx.fillStyle = TAN_DEEP;
+  ctx.fill();
+  ctx.fillStyle = RUST;
+  ctx.fillRect(-S * 0.03, S * 0.0, S * 0.06, S * 0.008);
+  ctx.fillRect(-S * 0.03, S * 0.025, S * 0.04, S * 0.008);
+  ctx.restore();
 }
 
 function caseOpen(): string {
