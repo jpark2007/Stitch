@@ -7,6 +7,7 @@ import pytest
 
 from screenplay.camera import (
     CAMERA_X_LIMIT,
+    CLOSE_UP_FOV,
     DEFAULT_MOVE_SECONDS,
     TARGET_MOVES,
     FLY_IN,
@@ -203,3 +204,105 @@ def test_unknown_move_error_names_it():
         resolve_move("spin", CUR, None)
     with pytest.raises(ValueError, match="'zoom_in'"):
         shot_camera_keys([CameraCue.model_construct(t=1, move="zoom_in", target=None, dur=None)], 0, 1.2, None, lambda n, t: (0, 0, 0.5))
+
+
+# ---------------------------------------------------------------- bug hunt: edge cases
+
+def _compile_yard(camera: list[dict], actions: list[dict], start: dict, prop_start: dict | None = None):
+    from verb_cases import base_scene
+
+    from screenplay.compiler import compile as compile_screenplay
+    from screenplay.schema import Screenplay
+
+    scene = base_scene()
+    sp = Screenplay.model_validate({
+        "memoryId": "m", "cast": ["dad", "mom", "kid"], "props": ["hymn_books", "sedan"],
+        "shots": [{"id": "s1", "set": "yard", "start": start, "propStart": prop_start or {},
+                   "camera": camera, "actions": actions}],
+    })
+    return compile_screenplay(sp, sets=scene.sets, props=scene.props, people=scene.people)
+
+
+def _camera_keys(res, channel):
+    (track,) = [t for t in res.timeline.tracks if (t.target, t.channel) == ("camera", channel)]
+    return [(k[0], k[1]) for k in track.keys]
+
+
+def test_an_offstage_target_is_framed_at_the_stage_edge_on_its_side():
+    """A target offstage when the move ends (a puppet still entering, a car driving off; the
+    seeded green-sedan trip pans after its car to x=1.51) is clamped, not an error: the camera
+    waits at the edge it comes in from or leaves by."""
+    res = _compile_yard([{"t": 0, "move": "close_up", "target": "kid"}, {"t": 6, "move": "pan_to", "target": "dad"}],
+                        [{"t": 0, "who": "kid", "do": "enter", "to": "door"},
+                         {"t": 0, "who": "dad", "do": "exit", "to": "offstage_right"}],
+                        {"dad": {"at": "curb"}, "kid": {"at": "offstage_left"}})
+    assert res.ok, res.errors
+    pos = _camera_keys(res, "position")
+    assert pos[1] == (1.2, [-CAMERA_X_LIMIT, 0.3, 1.1])  # kid is at x=-1.3 when the action starts
+    assert pos[-1][1][0] == CAMERA_X_LIMIT  # dad has left by x=1.3
+    assert all(abs(v[0]) <= CAMERA_X_LIMIT for _, v in pos)
+
+
+def test_a_close_up_on_a_held_prop_raised_high_frames_the_hand():
+    res = _compile_yard([{"t": 1, "move": "close_up", "target": "hymn_books", "dur": 1}],
+                        [{"t": 0, "who": "mom", "do": "pose", "pose": "arms_raised"}],
+                        {"mom": {"at": "by_table", "holding": "hymn_books"}})
+    assert res.ok, res.errors
+    (t_end, end), = [k for k in _camera_keys(res, "lookAt") if k[0] == pytest.approx(3.2)]
+    assert end[1] > 0.5  # above a standing puppet's shoulders: the hand, not the feet
+
+
+def test_a_close_up_on_a_passenger_lands_where_the_car_stops():
+    res = _compile_yard([{"t": 2, "move": "dolly_to", "target": "dad", "dur": 4}],
+                        [{"t": 0, "who": "dad", "do": "get_in", "what": "sedan"},
+                         {"t": 2, "who": "dad", "do": "drive_to", "what": "sedan", "to": "door"}],
+                        {"dad": {"at": "curb"}}, {"sedan": {"at": "curb"}})
+    assert res.ok, res.errors
+    root = {(t.target, t.channel): t.keys for t in res.timeline.tracks}[("puppet:dad", "root.position")]
+    final_x = root[-1][1][0]
+    assert _camera_keys(res, "position")[-1][1][0] == pytest.approx(max(-CAMERA_X_LIMIT, final_x))
+
+
+def _assert_sane(keys):
+    by = _by_channel(keys)
+    for ch, ks in by.items():
+        times = [t for t, _ in ks]
+        assert times == sorted(times), ch
+        for _, v in ks:
+            for x in (v if isinstance(v, list) else [v]):
+                assert x == x and abs(x) < 1e6, (ch, v)
+    for _, fov in by["fov"]:
+        assert CLOSE_UP_FOV <= fov <= FLY_IN.fov
+
+
+@pytest.mark.parametrize("cues", [
+    # two cues at the same time: the later one in the list wins from the same hold
+    [CameraCue(t=2, move="dolly_to", target="mom", dur=2), CameraCue(t=2, move="wide", dur=1)],
+    # very short moves and moves back to back
+    [CameraCue(t=1, move="close_up", target="mom", dur=0.001), CameraCue(t=1.001, move="pull_back", dur=0.001)],
+    # three overlapping moves, each interrupting the last
+    [CameraCue(t=1, move="dolly_to", target="mom", dur=3), CameraCue(t=2, move="close_up", target="dad", dur=3),
+     CameraCue(t=3, move="wide", dur=0.5)],
+    # several opening cues, then a move long after the action
+    [CameraCue(t=0, move="close_up", target="dad"), CameraCue(t=0, move="pull_back"), CameraCue(t=60, move="wide")],
+    # a move that starts exactly where the last one ends
+    [CameraCue(t=1, move="pan_to", target="dad", dur=2), CameraCue(t=3, move="close_up", target="mom", dur=2)],
+])
+def test_camera_keys_are_monotonic_finite_and_in_fov_range(cues):
+    where = {"mom": (0.2, 0.3, 0.5), "dad": (-0.95, 0.0, 0.5)}
+    keys, final = shot_camera_keys(cues, 3.0, 4.2, WIDE, lambda n, t: where[n])
+    _assert_sane(keys)
+    last = max(t for _, _, t, _ in keys)
+    assert last >= 4.2 + max(c.t for c in cues)
+
+
+def test_same_time_cues_resolve_from_the_same_hold():
+    cues = [CameraCue(t=2, move="dolly_to", target="mom", dur=2), CameraCue(t=2, move="wide", dur=1)]
+    keys, final = shot_camera_keys(cues, 0, 1.2, None, lambda n, t: (0.2, 0.3, 0.5))
+    pos = _by_channel(keys)["position"]
+    ts = TrackSet()
+    ts.extend(keys)
+    assert final == WIDE
+    # the dolly never plays: the camera holds WIDE from 3.2 to 4.2
+    assert ts.value_at("camera", "position", 3.7) == pytest.approx(list(WIDE.position))
+    assert [t for t, _ in pos] == sorted(t for t, _ in pos)
