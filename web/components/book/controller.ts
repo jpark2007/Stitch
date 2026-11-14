@@ -92,6 +92,8 @@ interface Tap {
   side: -1 | 1;
   startX: number;
   startY: number;
+  /** Pressed on a turn edge while a leaf was still moving: queue this turn. */
+  queued?: 1 | -1;
 }
 
 interface Drag {
@@ -351,9 +353,11 @@ export class BookController {
     if (this.drag) return "grabbing";
     if (this.frozen || this.open < 1) return "";
     const z = this.zone(pt);
-    if (z && this.peels && !this.busy()) this.setHover(z.leaf, z.dir, z.corner);
+    const busy = this.busy();
+    if (z && this.peels && !busy) this.setHover(z.leaf, z.dir, z.corner);
     else this.clearHover();
-    if (z) return "grab";
+    // Mid-turn the edge can't be held, only clicked to queue another turn.
+    if (z) return busy ? "pointer" : "grab";
     if (this.phone) return "";
     return this.focusGoal === (pt.x < 0 ? -1 : 1) ? "zoom-out" : "zoom-in";
   }
@@ -390,9 +394,10 @@ export class BookController {
    */
   pageDown(pt: PagePoint, clientX: number, clientY: number): boolean {
     if (this.frozen || this.open < 1 || this.drag || this.tap) return false;
-    const z = this.busy() ? null : this.zone(pt);
-    if (!z) {
-      this.tap = { side: pt.x < 0 ? -1 : 1, startX: clientX, startY: clientY };
+    const z = this.zone(pt);
+    if (!z || this.busy()) {
+      // Mid-turn the leaf can't be grabbed; a press on its edge queues one more turn.
+      this.tap = { side: pt.x < 0 ? -1 : 1, startX: clientX, startY: clientY, queued: z?.dir };
       return true;
     }
     this.drag = {
@@ -439,6 +444,11 @@ export class BookController {
     const tap = this.tap;
     if (tap) {
       this.tap = null;
+      if (tap.queued) {
+        this.queue.push(tap.queued);
+        this.invalidate();
+        return;
+      }
       const dx = clientX - tap.startX;
       const dy = clientY - tap.startY;
       if (Math.abs(dx) > 40 && Math.abs(dx) > 1.3 * Math.abs(dy)) {
