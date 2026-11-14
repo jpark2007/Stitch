@@ -1,8 +1,13 @@
 """Agent runs: the seam the run routes call (ARCHITECTURE.md sections 2 and 6).
 
-    POST /families/{fid}/memories          -> start_run(...)   -> run id
+    POST /families/{fid}/memories          -> start_run(...)   -> run id (awaitable on a loop)
     GET  /families/{fid}/runs/{id}/stream  -> stream_run(...)  -> (event name, payload model), ...
     POST /families/{fid}/runs/{id}/answer  -> answer_run(...)  -> resumes the same thread
+
+The event loop never waits on the database here: `start_run` called on a loop returns
+an awaitable that does its repo reads and first record write on a worker thread,
+`stream_run` only takes a run's lock for in-memory work, and `answer_run` is sync and
+belongs in the threadpool.
 
 One run is one studio thread (`studio.thread_config(run_id)`). `RunManager` drives the
 studio graph on a worker thread with sync `graph.stream(stream_mode=["updates", "custom"],
@@ -56,6 +61,16 @@ A run id missing from the dict is looked up there, only under its own family:
   (streaming input None on the same thread, or the answer it had accepted when that
   answer's interrupt is still pending); a log line, not an event, says so.
 
+Writing the run record: the run's lock (`_Run.cond`) is never held across a store write.
+A change is made under the lock and marks the run dirty; once the lock is released, the
+thread that made it takes a snapshot (record, a rising version and the event count)
+under the lock, releases it and writes. Writes of one run are serialized by its own
+`write_lock` (never taken on the event loop), and a snapshot older than one already
+written is skipped, so a stale record never overwrites a newer one. Subscribers are
+only served `events[:published]`, and `published` moves past an event only after a
+record holding it has been written (or the write failed and was logged), so a
+subscriber still never sees an event a restart would lose.
+
 The graph state itself lives in whatever checkpointer `build_graph` uses, so this only
 survives a restart when that checkpointer persists too (MongoDBSaver in production).
 Without a store, a restart forgets the run ids, as before. One API process per store:
@@ -70,8 +85,9 @@ import logging
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -236,12 +252,49 @@ class _Run:
     # (the process died before checkpointing it): when the thread asks it again, it is
     # shown without being logged twice.
     logged_interrupt: str | None = None
+    # ---- record writes (see "Writing the run record" in the module docstring)
+    # Serializes the store writes of this run. Never taken on the event loop, never with cond held.
+    write_lock: threading.Lock = field(default_factory=threading.Lock)
+    # True when the run changed since its last snapshot (under cond).
+    dirty: bool = False
+    # Version of the last snapshot taken (under cond); every snapshot gets the next one.
+    version: int = 0
+    # Highest snapshot version whose write has returned (under cond).
+    stored_version: int = 0
+    # Highest snapshot version written to the store (under write_lock).
+    written_version: int = 0
+    # How many events are stored, so subscribers may see them (under cond). Always <= len(events).
+    published: int = 0
+    # Each event as the record keeps it, [name, payload JSON], built once in append.
+    event_json: list[list[str]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Events a run starts with were read back from the store: already stored.
+        if self.events and not self.event_json:
+            self.event_json = [[name, payload.model_dump_json(by_alias=True)] for name, payload in self.events]
+        self.published = len(self.events)
 
     @property
     def terminal(self) -> bool:
         return self.status in ("done", "error")
 
-    # Every mutation below happens with `cond` held.
+    @property
+    def saved(self) -> bool:
+        """Every change so far is in the store (or there is no store). Read with cond held."""
+        return not self.dirty and self.stored_version >= self.version
+
+    # Every mutation below happens with `cond` held. None of them does I/O: a change that
+    # the record must keep marks the run dirty (`persist`), and whoever made it calls
+    # `flush` once cond is released (`changing` does both).
+
+    @contextmanager
+    def changing(self) -> Iterator[None]:
+        """Hold cond for a change, then write the record with cond released."""
+        try:
+            with self.cond:
+                yield
+        finally:
+            self.flush()
 
     def append(self, name: str, payload: BaseModel) -> None:
         if self.terminal:
@@ -251,6 +304,7 @@ class _Run:
         if not isinstance(payload, expected):
             raise TypeError(f"{name} needs a {expected.__name__}, got {type(payload).__name__}")
         self.events.append((name, payload))
+        self.event_json.append([name, payload.model_dump_json(by_alias=True)])
         if name in TERMINAL_EVENTS:
             self.status = "done" if name == "done" else "error"
             self.finished_at = time.monotonic()
@@ -262,7 +316,9 @@ class _Run:
             self.tasks.clear()
             self.ended_tasks.clear()
             self.seen_interrupts.clear()
-        # Stored before anyone hears of it, so a subscriber never sees an event a restart would lose.
+        # Stored before anyone hears of it, so a subscriber never sees an event a restart
+        # would lose: subscribers are served events[:published], and published only moves
+        # past this event once a record holding it has been written (`flush`).
         self.persist()
         self.notify()
 
@@ -282,7 +338,7 @@ class _Run:
             "answered": self._answered_record(),
             "tasks": [[call_id, name] for call_id, name in self.tasks.items()],
             "ended_tasks": sorted(self.ended_tasks),
-            "events": [[name, payload.model_dump_json(by_alias=True)] for name, payload in self.events],
+            "events": [list(pair) for pair in self.event_json],
         }
 
     def _answered_record(self) -> dict[str, str] | None:
@@ -297,13 +353,56 @@ class _Run:
             return None
 
     def persist(self) -> None:
-        """Write the run record (a no-op without a store). A failed write is logged, never raised."""
+        """Mark the run as changed, so the next `flush` writes its record. Call with cond held.
+
+        Without a store nothing is written: every event is published at once."""
         if self.store is None:
+            self.published = len(self.events)
             return
-        try:
-            self.store.put(run_namespace(self.info.family_id), self.info.run_id, self.record(), index=False)
-        except Exception:  # noqa: BLE001 - the run goes on in this process even if the store is down
-            logger.exception("run %s: could not write the run record", self.info.run_id)
+        self.dirty = True
+
+    def snapshot(self) -> tuple[int, dict[str, Any], int] | None:
+        """(version, record, event count) of the run as it is now, if it changed since the
+        last snapshot; None otherwise. Call with cond held; cheap and does no I/O."""
+        if self.store is None or not self.dirty:
+            return None
+        self.dirty = False
+        self.version += 1
+        return self.version, self.record(), len(self.events)
+
+    def write(self, snap: tuple[int, dict[str, Any], int]) -> None:
+        """Write a snapshot, then publish its events. Call WITHOUT cond held.
+
+        Writes of one run are serialized by write_lock, and a snapshot older than one
+        already written is skipped, so a stale record never overwrites a newer one. A
+        failed write is logged, never raised; its events are published all the same
+        (the run goes on in this process even if the store is down)."""
+        version, record, count = snap
+        store = self.store
+        with self.write_lock:
+            if store is not None and version > self.written_version:
+                try:
+                    store.put(run_namespace(self.info.family_id), self.info.run_id, record, index=False)
+                except Exception:  # noqa: BLE001 - see above
+                    logger.exception("run %s: could not write the run record", self.info.run_id)
+                self.written_version = version
+        with self.cond:
+            self.stored_version = max(self.stored_version, version)
+            self.published = max(self.published, min(count, len(self.events)))
+            self.notify()
+
+    def flush(self) -> None:
+        """Write the record if the run changed since its last snapshot. Call WITHOUT cond held.
+
+        Called while this thread still holds cond (a `changing` block nested in another
+        hold; cond is reentrant) it does nothing, so the store is never written with cond
+        held: the outermost `changing` block flushes once cond is really released."""
+        if self.store is None or self.cond._is_owned():  # type: ignore[attr-defined]
+            return
+        with self.cond:
+            snap = self.snapshot()
+        if snap is not None:
+            self.write(snap)
 
     def notify(self) -> None:
         self.cond.notify_all()
@@ -370,13 +469,28 @@ class RunManager:
         graph_input = self._initial_input(info)  # ValueError / MemoryNotFound: nothing started
 
         run = _Run(info=info, config=studio.thread_config(run_id), driving=True, store=self._store)
-        with run.cond:
+        with run.changing():
             run.persist()
         with self._lock:
             self._prune_finished()
             self._runs[run_id] = run
         self._pool.submit(self._drive, run, graph_input)
         return run_id
+
+    async def start_run_async(
+        self,
+        family_id: str,
+        user_id: str,
+        person_id: str,
+        fields: schemas.SubmitMemoryFields,
+        photo_ids: list[str],
+    ) -> str:
+        """`start_run` on a worker thread, for callers on an event loop.
+
+        start_run reads the repo (the teller, the memory of a second telling) and writes
+        the first run record, so on the loop it would stall every other request while the
+        database answers. Raises what start_run raises."""
+        return await asyncio.to_thread(self.start_run, family_id, user_id, person_id, fields, photo_ids)
 
     async def stream_run(self, family_id: str, run_id: str) -> AsyncIterator[Event]:
         """Every event of the run from the first one, then live events, until done or error.
@@ -386,6 +500,10 @@ class RunManager:
         answer the iterator stays open. Any number of subscribers may follow one run;
         each gets the full sequence. A run this process does not hold is loaded from the
         store on a worker thread, so the event loop never waits on the database.
+
+        Only events already stored are served (`_Run.published`), and the run's lock is
+        only taken for in-memory work: no store write ever happens with it held, so the
+        event loop never waits on the database here either.
         """
         run = self._cached(family_id, run_id)
         if run is None:
@@ -399,13 +517,15 @@ class RunManager:
             while True:
                 wake.clear()
                 with run.cond:
-                    batch = run.events[index:]
-                    finished = run.terminal
+                    published = run.published
+                    batch = run.events[index:published]
+                    # Nothing is appended after done or error; the end is the last event, stored.
+                    finished = run.terminal and published == len(run.events)
                 for event in batch:
                     yield event
                 index += len(batch)
-                if finished:
-                    return  # nothing is appended after done or error
+                if finished and index >= published:
+                    return
                 if not batch:
                     await wake.wait()
         finally:
@@ -424,11 +544,13 @@ class RunManager:
         the same step is still working. Then the answer is queued on the run and the
         worker resumes with it once that stream closes; otherwise a worker resumes now.
         Either way this call only takes the run's lock briefly and never waits for it.
+        The run record is written after the lock is released (it may wait for another
+        write of the same run), so call this off the event loop.
         """
         run = self._get(family_id, run_id)
         if run.info.user_id != user_id:
             raise NotRunOwner("only the person who started this run can answer it")
-        with run.cond:
+        with run.changing():
             if run.status != "waiting" or run.pending is None:
                 raise RunNotWaiting(f"run {run_id} is {run.status}, not waiting for an answer")
             pending = run.pending
@@ -459,19 +581,21 @@ class RunManager:
             return run.status
 
     def events(self, family_id: str, run_id: str) -> list[Event]:
-        """A snapshot of the run's events so far (tests and debugging)."""
+        """A snapshot of the run's events so far, as a subscriber would see them: only
+        the stored ones (tests and debugging)."""
         run = self._get(family_id, run_id)
         with run.cond:
-            return list(run.events)
+            return run.events[: run.published]
 
     def wait(self, family_id: str, run_id: str, timeout: float | None = None) -> schemas.RunStatus:
-        """Block until the run is no longer running (waiting, done or error), or `timeout` passes.
+        """Block until the run is no longer running (waiting, done or error) and its record
+        says so, or `timeout` passes.
 
         For scripts and tests; never call it on the API's event loop.
         """
         run = self._get(family_id, run_id)
         with run.cond:
-            run.cond.wait_for(lambda: run.status != "running", timeout)
+            run.cond.wait_for(lambda: run.status != "running" and run.saved, timeout)
             return run.status
 
     def shutdown(self, *, wait: bool = True) -> None:
@@ -592,7 +716,7 @@ class RunManager:
             else:
                 redrive = True
             if redrive:
-                with run.cond:
+                with run.changing():
                     run.status = "running"
                     run.driving = True
                     run.persist()
@@ -613,10 +737,10 @@ class RunManager:
             interrupts = list(graph.get_state(run.config).interrupts)
         except Exception as exc:  # noqa: BLE001 - the family sees why the run cannot go on
             logger.exception("run %s: could not restore its studio", run.info.run_id)
-            with run.cond:
+            with run.changing():
                 run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
             return True
-        with run.cond:
+        with run.changing():
             run.graph = graph
             if not interrupts:
                 # The record got ahead of the checkpoint: drive on, and when the thread
@@ -663,7 +787,7 @@ class RunManager:
                     graph_input = _resume_command(match, answered[1], len(interrupts))
         except Exception as exc:  # noqa: BLE001 - every failure becomes the run's error event
             logger.exception("run %s failed to resume", run_id)
-            with run.cond:
+            with run.changing():
                 run.driving = False
                 run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
             return
@@ -694,14 +818,14 @@ class RunManager:
                 graph_input = self._settle(run, graph)
         except Exception as exc:  # noqa: BLE001 - every failure becomes the run's error event
             logger.exception("run %s failed", run_id)
-            with run.cond:
+            with run.changing():
                 run.driving = False
                 run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
 
     def _translate(self, run: _Run, chunk: Any) -> bool:
         """Turn one stream chunk into events. Returns False once the run has ended."""
         namespace, mode, data = chunk
-        with run.cond:
+        with run.changing():
             if run.terminal:
                 return False
             if mode == "custom":
@@ -802,7 +926,7 @@ class RunManager:
         otherwise wait for an answer, or end with done / error, and release the run (None)."""
         state = graph.get_state(run.config)
         interrupts = list(state.interrupts)
-        with run.cond:
+        with run.changing():
             if run.terminal:
                 run.driving = False
                 return None
@@ -887,8 +1011,37 @@ def start_run(
     person_id: str,
     fields: schemas.SubmitMemoryFields,
     photo_ids: list[str],
+) -> str | Awaitable[str]:
+    """Start a run (see `RunManager.start_run`).
+
+    Called outside an event loop (scripts, demo.py, tests) it starts the run and returns
+    the run id. Called from a thread running an event loop (the submit route) it returns
+    an awaitable instead, which does the work on a worker thread, so the loop never waits
+    on the repo or the store; the route awaits it (`_maybe_await`). Then every error
+    (ValueError, MemoryNotFound, the not-configured RuntimeError) is raised on await.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return get_manager().start_run(family_id, user_id, person_id, fields, photo_ids)
+    return _start_run_async(family_id, user_id, person_id, fields, photo_ids)
+
+
+async def _start_run_async(
+    family_id: str,
+    user_id: str,
+    person_id: str,
+    fields: schemas.SubmitMemoryFields,
+    photo_ids: list[str],
 ) -> str:
-    return get_manager().start_run(family_id, user_id, person_id, fields, photo_ids)
+    # Building the production manager on first use opens connections: off the loop too.
+    manager = _manager if _manager is not None else await asyncio.to_thread(get_manager)
+    start_async = getattr(manager, "start_run_async", None)
+    if start_async is not None:
+        return await start_async(family_id, user_id, person_id, fields, photo_ids)
+    # A stand-in installed with configure() that only has the sync start_run
+    # (seed/fake_runs.ScriptedRunManager): run it on a worker thread all the same.
+    return await asyncio.to_thread(manager.start_run, family_id, user_id, person_id, fields, photo_ids)
 
 
 def stream_run(family_id: str, run_id: str) -> AsyncIterator[Event]:

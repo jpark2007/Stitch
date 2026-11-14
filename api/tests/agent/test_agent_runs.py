@@ -738,7 +738,8 @@ def test_start_run_inside_a_running_loop_returns_at_once(harnesses: list[Harness
 
     async def main() -> tuple[float, list[tuple[str, BaseModel]]]:
         began = time.monotonic()
-        run_id = h.start()
+        form = schemas.SubmitMemoryFields(text="Dad passed the hymn books down the pew.", year=1962)
+        run_id = await h.manager.start_run_async(FAMILY, USER, "dad", form, ["photo_1"])
         took = time.monotonic() - began
         assert h.manager.status(FAMILY, run_id) == "running"
         # The loop stays free while the run works: a timer still fires.
@@ -749,6 +750,335 @@ def test_start_run_inside_a_running_loop_returns_at_once(harnesses: list[Harness
     took, events = asyncio.run(asyncio.wait_for(main(), WAIT))
     assert took < 1.0
     assert [n for n, _ in events] == ["plan", "scene_ready", "done"]
+
+
+SLOW = 0.2
+"""How long the slow store takes to write a run record, and the slow repo to read."""
+
+
+class SlowStore(InMemoryStore):
+    """An InMemoryStore whose run-record writes take SLOW seconds (the studio's own
+    namespaces stay fast). It remembers what each finished write held."""
+
+    def __init__(self, delay: float = SLOW) -> None:
+        super().__init__()
+        self.delay = delay
+        self.lock = threading.Lock()
+        self.in_flight = 0
+        # run id -> event count of the last record whose put has returned.
+        self.written_count: dict[str, int] = {}
+        # (status, event count) of every finished run-record write, in order.
+        self.writes: list[tuple[str, int]] = []
+        # Called with the record as each run-record write starts (on the writing thread).
+        self.on_put: Callable[[dict[str, Any]], None] | None = None
+
+    def put(self, namespace: tuple[str, ...], key: str, value: dict[str, Any], *args: Any, **kwargs: Any) -> None:
+        if namespace[:1] != (runs.RUNS_NAMESPACE,):
+            return super().put(namespace, key, value, *args, **kwargs)
+        with self.lock:
+            self.in_flight += 1
+        try:
+            if self.on_put is not None:
+                self.on_put(value)
+            time.sleep(self.delay)
+            super().put(namespace, key, value, *args, **kwargs)
+            with self.lock:
+                self.written_count[key] = len(value["events"])
+                self.writes.append((value["status"], len(value["events"])))
+        finally:
+            with self.lock:
+                self.in_flight -= 1
+
+
+class SlowRepo:
+    """The harness repo, with get_person and get_memory taking SLOW seconds (a database read)."""
+
+    def __init__(self, inner: InMemoryRepo, delay: float = SLOW) -> None:
+        self.inner = inner
+        self.delay = delay
+
+    def get_person(self, *args: Any, **kwargs: Any) -> Any:
+        time.sleep(self.delay)
+        return self.inner.get_person(*args, **kwargs)
+
+    def get_memory(self, *args: Any, **kwargs: Any) -> Any:
+        time.sleep(self.delay)
+        return self.inner.get_memory(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+
+def slow_harness(responder: Responder, *, store: InMemoryStore | None = None, **kwargs: Any) -> Harness:
+    """A Harness whose manager writes run records to a slow store and reads a slow repo."""
+    h = Harness(responder, keep_runs=True, store=store if store is not None else SlowStore(), **kwargs)
+    h.manager.shutdown(wait=True)
+    h.manager = runs.RunManager(repo=SlowRepo(h.repo), build_graph=h.build, store=h.store)  # type: ignore[arg-type]
+    return h
+
+
+FORM = schemas.SubmitMemoryFields(text="Dad passed the hymn books down the pew.", year=1962)
+
+
+def test_the_event_loop_never_waits_on_the_store_or_the_repo(harnesses: list[Harness]) -> None:
+    # Regression: start_run read the repo and wrote the first record on the loop, and every
+    # record write happened with run.cond held, so stream_run stalled the loop behind it.
+    h = slow_harness(make_responder(STRAIGHT_STUDIO))
+    harnesses.append(h)
+    runs.configure(h.manager)
+
+    async def main() -> tuple[list[float], list[tuple[str, BaseModel]]]:
+        gaps: list[float] = []
+        stop = asyncio.Event()
+
+        async def ticker() -> None:
+            last = time.monotonic()
+            while not stop.is_set():
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                gaps.append(now - last)
+                last = now
+
+        ticking = asyncio.create_task(ticker())
+        await asyncio.sleep(0.05)
+        pending = runs.start_run(FAMILY, USER, "dad", FORM, ["photo_1"])
+        assert inspect.isawaitable(pending)
+        run_id = await pending
+        events = [e async for e in runs.stream_run(FAMILY, run_id)]
+        stop.set()
+        await ticking
+        return gaps, events
+
+    try:
+        gaps, events = asyncio.run(asyncio.wait_for(main(), WAIT))
+    finally:
+        runs.configure(None)
+    assert [n for n, _ in events] == ["plan", "scene_ready", "done"]
+    assert len(h.store.writes) >= 4  # the start, three events: each write took SLOW seconds
+    assert max(gaps) < 0.1, f"the event loop stalled for {max(gaps):.3f}s"
+
+
+def test_no_event_reaches_a_subscriber_before_a_record_holding_it_is_stored(harnesses: list[Harness]) -> None:
+    store = SlowStore()
+    h = slow_harness(make_responder(NEW_MEMORY_STUDIO, interviewer=script(ask("Which church?"), report)), store=store)
+    harnesses.append(h)
+    run_id = h.start()
+
+    async def follow() -> list[tuple[str, int, int]]:
+        seen: list[tuple[str, int, int]] = []
+        async for name, _ in h.manager.stream_run(FAMILY, run_id):
+            with store.lock:
+                stored_count = store.written_count.get(run_id, 0)
+            seen.append((name, len(seen) + 1, stored_count))
+            if name == "question":
+                # As the route does: answer_run is sync and runs off the loop.
+                await asyncio.to_thread(h.answer, run_id, "St. Mark's.")
+        return seen
+
+    seen = asyncio.run(asyncio.wait_for(follow(), WAIT))
+    assert [name for name, _, _ in seen] == QUESTION_RUN
+    for name, position, stored_count in seen:
+        assert stored_count >= position, f"{name} (event {position}) was yielded with only {stored_count} stored"
+    assert stored(h, run_id)["status"] == "done"
+
+
+def test_a_subscriber_joining_during_a_slow_write_gets_everything_once(harnesses: list[Harness]) -> None:
+    store = SlowStore()
+    h = slow_harness(make_responder(STRAIGHT_STUDIO), store=store)
+    harnesses.append(h)
+    writing_plan = threading.Event()
+    writing_done = threading.Event()
+
+    def on_put(record: dict[str, Any]) -> None:
+        names = [n for n, _ in record["events"]]
+        if names == ["plan"]:
+            writing_plan.set()
+        if record["status"] == "done":
+            writing_done.set()
+
+    store.on_put = on_put
+    run_id = h.start()
+
+    async def follow() -> list[tuple[str, BaseModel]]:
+        return [e async for e in h.manager.stream_run(FAMILY, run_id)]
+
+    async def main() -> tuple[list[Any], list[Any], dict[str, Any]]:
+        at_join: dict[str, Any] = {}
+        assert await asyncio.to_thread(writing_plan.wait, WAIT)
+        with store.lock:
+            at_join["plan_write_in_flight"] = store.in_flight
+        during_plan = asyncio.create_task(follow())
+        assert await asyncio.to_thread(writing_done.wait, WAIT)
+        with store.lock:
+            at_join["done_write_in_flight"] = store.in_flight
+        # The run has ended in memory, but its last event is not stored yet.
+        at_join["status"] = h.manager.status(FAMILY, run_id)
+        at_join["visible"] = [n for n, _ in h.manager.events(FAMILY, run_id)]
+        during_done = asyncio.create_task(follow())
+        first, second = await asyncio.wait_for(asyncio.gather(during_plan, during_done), WAIT)
+        return first, second, at_join
+
+    first, second, at_join = asyncio.run(main())
+    assert at_join["plan_write_in_flight"] >= 1 and at_join["done_write_in_flight"] >= 1
+    assert at_join["status"] == "done" and "done" not in at_join["visible"]
+    for events in (first, second):
+        assert_typed(events)
+        names = [n for n, _ in events]
+        assert names == ["plan", "scene_ready", "done"]  # in order, no gaps, no duplicates
+        assert names.count("done") == 1
+    assert dumped(first) == dumped(second) == dumped(h.manager.events(FAMILY, run_id))
+
+
+class LateLock:
+    """A run's write_lock that makes every thread but the studio worker wait `delay`
+    seconds before taking it: the answer's snapshot then reaches the store after the
+    worker has written newer ones."""
+
+    def __init__(self, delay: float) -> None:
+        self.inner = threading.Lock()
+        self.delay = delay
+        self.delayed = threading.Event()
+
+    def __enter__(self) -> bool:
+        if not threading.current_thread().name.startswith("studio-run"):
+            self.delayed.set()
+            time.sleep(self.delay)
+        return self.inner.__enter__()
+
+    def __exit__(self, *exc: Any) -> None:
+        self.inner.__exit__(*exc)
+
+
+def test_a_late_answer_write_never_leaves_an_older_record(harnesses: list[Harness]) -> None:
+    # answer_run and the worker both write the record: the answer (queued while a parallel
+    # branch works) snapshots first but writes last. The newer records must win.
+    release = threading.Event()
+
+    def slow_sibling(messages: list[BaseMessage]) -> AIMessage:
+        assert release.wait(WAIT), "the sibling was never released"
+        return say("It was 1962.")
+
+    studio_script = script(
+        tool_calls(
+            ("task", {"subagent_type": "interviewer", "description": "Ask about the church."}),
+            ("task", {"subagent_type": "second_interviewer", "description": "Work out the year."}),
+        ),
+        say("unreachable: both task results arrive in the same step"),
+        write("/screenplay.json", SCREENPLAY_JSON),
+        write("/timeline.json", TIMELINE_JSON),
+        save(),
+        say("Saved."),
+    )
+    store = SlowStore(delay=0.0)
+    h = slow_harness(
+        make_responder(studio_script, interviewer=script(ask("Which church?"), report), second=slow_sibling),
+        store=store, subagents=[INTERVIEWER, OTHER_INTERVIEWER],
+    )
+    harnesses.append(h)
+    run_id = h.start()
+    run = h.manager._runs[run_id]
+    late = LateLock(delay=1.0)
+    run.write_lock = late  # type: ignore[assignment]
+
+    async def follow_and_answer() -> list[tuple[str, BaseModel]]:
+        seen: list[tuple[str, BaseModel]] = []
+        answering: asyncio.Task[None] | None = None
+        async for name, model in h.manager.stream_run(FAMILY, run_id):
+            seen.append((name, model))
+            if name == "question":
+                answering = asyncio.create_task(asyncio.to_thread(h.answer, run_id, "St. Mark's."))
+                assert await asyncio.to_thread(late.delayed.wait, WAIT)  # its snapshot is taken
+                release.set()
+        assert answering is not None
+        await answering  # the answer's (older) write has finished, or was skipped
+        return seen
+
+    seen = asyncio.run(asyncio.wait_for(follow_and_answer(), WAIT))
+    assert h.wait(run_id) == "done"
+    assert [n for n, _ in seen][-2:] == ["scene_ready", "done"]
+    record = stored(h, run_id)
+    assert record is not None
+    with run.cond:
+        assert record["status"] == run.status == "done"
+        assert len(record["events"]) == len(run.events) == len(seen)
+        assert record == run.record()
+    assert store.writes[-1] == ("done", len(seen))
+
+
+def test_a_stale_snapshot_is_never_written_over_a_newer_one() -> None:
+    store = SlowStore(delay=0.0)
+    info = RunInfo(run_id="run_stale", family_id=FAMILY, user_id=USER, author_id="dad", fields=FORM, photo_ids=())
+    run = runs._Run(info=info, config={}, store=store)
+    plan = schemas.PlanEvent(todos=[schemas.PlanItem(text="Stage", status="in_progress")])
+    with run.cond:
+        run.append("plan", plan)
+        older = run.snapshot()
+        run.append("compile_error", schemas.CompileErrorEvent(errors=[], round=1))
+        newer = run.snapshot()
+        assert run.published == 0  # nothing is visible before it is stored
+    assert older is not None and newer is not None and newer[0] > older[0]
+
+    run.write(newer)
+    run.write(older)  # arrives late: skipped
+    assert store.writes == [("running", 2)]
+    assert [n for n, _ in stored_record(store, "run_stale")["events"]] == ["plan", "compile_error"]
+    with run.cond:
+        assert run.published == 2 and run.saved
+    run.flush()  # nothing changed since: no write
+    assert len(store.writes) == 1
+
+
+def stored_record(store: BaseStore, run_id: str) -> dict[str, Any]:
+    item = store.get(runs.run_namespace(FAMILY), run_id)
+    assert item is not None
+    return dict(item.value)
+
+
+def test_module_start_run_is_sync_outside_a_loop_and_awaitable_inside(
+    harnesses: list[Harness], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = Harness(make_responder(STRAIGHT_STUDIO))
+    harnesses.append(h)
+    runs.configure(h.manager)
+    try:
+        run_id = runs.start_run(FAMILY, USER, "dad", FORM, [])
+        assert isinstance(run_id, str) and run_id
+        assert h.wait(run_id) == "done"
+        with pytest.raises(ValueError, match="person"):
+            runs.start_run(FAMILY, USER, "grandpa", FORM, [])
+        with pytest.raises(runs.MemoryNotFound):
+            runs.start_run(FAMILY, USER, "dad", FORM.model_copy(update={"memory_id": "memory_404"}), [])
+
+        async def inside() -> str:
+            pending = runs.start_run(FAMILY, USER, "dad", FORM, [])
+            assert inspect.isawaitable(pending)
+            started = await pending
+            assert isinstance(started, str) and started
+            unknown = runs.start_run(FAMILY, USER, "grandpa", FORM, [])
+            assert inspect.isawaitable(unknown)  # nothing raised yet
+            with pytest.raises(ValueError, match="person"):
+                await unknown
+            missing = runs.start_run(FAMILY, USER, "dad", FORM.model_copy(update={"memory_id": "memory_404"}), [])
+            with pytest.raises(runs.MemoryNotFound):
+                await missing
+            return started
+
+        started = asyncio.run(asyncio.wait_for(inside(), WAIT))
+        assert h.wait(started) == "done"
+        assert len(h.built) == 2  # the refused submits started nothing
+    finally:
+        runs.configure(None)
+
+    # Not configured: raised at once outside a loop (see the delegate test), on await inside.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    async def unconfigured() -> None:
+        pending = runs.start_run(FAMILY, USER, "dad", FORM, [])
+        assert inspect.isawaitable(pending)
+        with pytest.raises(RuntimeError, match="not configured"):
+            await pending
+
+    asyncio.run(unconfigured())
 
 
 # ------------------------------------------------------------------ surviving a restart
