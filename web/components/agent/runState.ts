@@ -36,6 +36,8 @@ export interface FeedStep {
   task?: string | null;
   summary?: string | null;
   status: "running" | "done";
+  /** Log sequence number when the step ended (null while it runs). Its span is (start entry, endSeq]. */
+  endSeq?: number | null;
 }
 
 export type FeedEntry = { seq: number } & (
@@ -43,7 +45,19 @@ export type FeedEntry = { seq: number } & (
   | { kind: "compile_error"; event: CompileErrorEvent }
   | { kind: "frames"; event: FramesEvent }
   | { kind: "asked"; text: string }
-  | { kind: "answered"; summary: string }
+  | {
+      kind: "answered";
+      /** Which pause this answers. */
+      answer: PendingInput["kind"];
+      /**
+       * What the family chose (see answerSummary), or null when the pause was
+       * answered somewhere this page did not see: the run moved on past it
+       * (a reload after answering), or the server said it was no longer waiting.
+       */
+      summary: string | null;
+      /** What was asked: the question or merge text; null for a props review. */
+      prompt: string | null;
+    }
   | { kind: "props"; count: number }
   | { kind: "merge"; text: string }
   | { kind: "scene_ready"; memoryId: string }
@@ -56,6 +70,14 @@ export interface RunState {
   steps: FeedStep[];
   log: FeedEntry[];
   pending: PendingInput | null;
+  /**
+   * Keys of the steps that were running when the current pause arrived, or
+   * null when nothing is pending. The pause counts as answered once none of
+   * them is running any more (see clearsPause).
+   */
+  pauseSteps: string[] | null;
+  /** Log sequence number of the current pause's own entry, or null. Stable across replays. */
+  pauseSeq: number | null;
   memoryId: string | null;
   version: number | null;
   error: string | null;
@@ -69,6 +91,8 @@ export const initialRunState: RunState = {
   steps: [],
   log: [],
   pending: null,
+  pauseSteps: null,
+  pauseSeq: null,
   memoryId: null,
   version: null,
   error: null,
@@ -77,7 +101,8 @@ export const initialRunState: RunState = {
 
 export type RunAction =
   | { type: "event"; message: RunEventMessage }
-  | { type: "answered"; kind: PendingInput["kind"]; summary: string }
+  /** `summary` null: the pause was already answered elsewhere (logged as a neutral line). */
+  | { type: "answered"; kind: PendingInput["kind"]; summary: string | null }
   | { type: "connection_error"; message: string }
   | { type: "reset" };
 
@@ -103,8 +128,61 @@ function wake(state: RunState): Pick<RunState, "phase" | "error"> {
   return { phase: state.phase, error: state.error };
 }
 
+function promptOf(pending: PendingInput): string | null {
+  if (pending.kind === "answer") return pending.question.text;
+  if (pending.kind === "merge") return pending.merge.text;
+  return null;
+}
+
+/** Closes the current pause (if any) and logs the answer line for it. */
+function closePause(state: RunState, summary: string | null): RunState {
+  const { pending } = state;
+  if (!pending) return state;
+  return withEntry(
+    { ...state, pending: null, pauseSteps: null, pauseSeq: null },
+    { kind: "answered", answer: pending.kind, summary, prompt: promptOf(pending) },
+  );
+}
+
 function pause(state: RunState, pending: PendingInput, body: EntryBody): RunState {
-  return withEntry({ ...state, pending, phase: "waiting" }, body);
+  // The server shows one pause at a time, so a new one means the last was
+  // answered (on another page, or before a reload): log that quietly first.
+  const closed = closePause(state, null);
+  const pauseSteps = closed.steps.filter((s) => s.status === "running").map((s) => s.key);
+  return withEntry(
+    { ...closed, pending, pauseSteps, pauseSeq: closed.seq + 1, phase: "waiting", error: null },
+    body,
+  );
+}
+
+/**
+ * Whether `message` shows that the open pause has been answered, so a reload
+ * (which replays the run from its first event, with no record of the answer)
+ * does not bring back a card the family already answered. The run is paused
+ * inside one of its tool calls; while it is, the root agent can neither start
+ * another sub-agent nor finish the scene. So:
+ *
+ * - subagent_start: always (the root moved on).
+ * - subagent_end: once none of the steps that were running at the pause still
+ *   runs, or for any end when nothing was running at the pause (pauseOutlived,
+ *   checked after the end is folded).
+ * - scene_ready and done: always.
+ *
+ * plan, frames and compile_error never do: a sibling branch of the paused step
+ * can send them while the run really waits.
+ */
+function clearsPause(state: RunState, message: RunEventMessage): boolean {
+  if (!state.pending) return false;
+  return message.event === "subagent_start" || message.event === "scene_ready" || message.event === "done";
+}
+
+/** After a subagent_end: true when the open pause has outlived every step running at the time. */
+function pauseOutlived(state: RunState): boolean {
+  if (!state.pending) return false;
+  const watched = state.pauseSteps ?? [];
+  if (watched.length === 0) return true;
+  const running = new Set(state.steps.filter((s) => s.status === "running").map((s) => s.key));
+  return !watched.some((key) => running.has(key));
 }
 
 function applyEvent(state: RunState, message: RunEventMessage): RunState {
@@ -124,6 +202,7 @@ function applyEvent(state: RunState, message: RunEventMessage): RunState {
         task: message.data.task ?? null,
         summary: null,
         status: "running",
+        endSeq: null,
       };
       return withEntry(
         { ...state, ...wake(state), steps: [...state.steps, step] },
@@ -144,12 +223,14 @@ function applyEvent(state: RunState, message: RunEventMessage): RunState {
       const awake = wake(state);
       if (index >= 0) {
         const steps = state.steps.map((s, i) =>
-          i === index ? { ...s, status: "done" as const, summary: summary ?? s.summary ?? null } : s,
+          i === index
+            ? { ...s, status: "done" as const, summary: summary ?? s.summary ?? null, endSeq: state.seq }
+            : s,
         );
         return { ...state, ...awake, steps };
       }
       const key = `step-${state.seq + 1}`;
-      const step: FeedStep = { key, name, task: null, summary: summary ?? null, status: "done" };
+      const step: FeedStep = { key, name, task: null, summary: summary ?? null, status: "done", endSeq: state.seq + 1 };
       return withEntry(
         { ...state, ...awake, steps: [...state.steps, step] },
         { kind: "step", stepKey: key },
@@ -206,6 +287,8 @@ function applyEvent(state: RunState, message: RunEventMessage): RunState {
         phase: "done",
         memoryId: message.data.memoryId,
         pending: null,
+        pauseSteps: null,
+        pauseSeq: null,
         error: null,
       };
 
@@ -228,15 +311,28 @@ export function runReducer(state: RunState, action: RunAction): RunState {
   if (state.phase === "done") return state;
 
   switch (action.type) {
-    case "event":
-      return applyEvent(state, action.message);
+    case "event": {
+      const message = action.message;
+      if (message.event === "subagent_end") {
+        // Decided on the steps as they are after this one ends. A known
+        // step's end logs nothing, so the quiet line still reads in order.
+        const next = applyEvent(state, message);
+        if (!pauseOutlived(next)) return next;
+        return { ...closePause(next, null), phase: next.phase === "waiting" ? "running" : next.phase };
+      }
+      // A pause this event shows was answered closes first (with a quiet
+      // line), so the log reads in order: the answer, then what came next.
+      // Its phase becomes running here; wake() and the event take it on.
+      const s = clearsPause(state, message) ? { ...closePause(state, null), phase: "running" as const } : state;
+      return applyEvent(s, message);
+    }
 
-    case "answered":
-      if (!state.pending || state.pending.kind !== action.kind) return state;
-      return withEntry(
-        { ...state, pending: null, phase: "running", error: null },
-        { kind: "answered", summary: action.summary },
-      );
+    case "answered": {
+      if (!state.pending || state.pending.kind !== action.kind) {
+        return action.summary === null ? state : fillNeutralAnswer(state, action.kind, action.summary);
+      }
+      return { ...closePause(state, action.summary), phase: "running", error: null };
+    }
 
     case "connection_error":
       return withEntry(
@@ -247,6 +343,26 @@ export function runReducer(state: RunState, action: RunAction): RunState {
     default:
       return state;
   }
+}
+
+/**
+ * The family's own answer, arriving after the pause was already closed with a
+ * neutral line (the run moved on while the answer was in flight, or a replay
+ * re-applies it after the event that closed the pause): it fills in that
+ * line instead of logging the answer twice. Only the latest pause line, and
+ * only while it is still neutral; otherwise nothing changes.
+ */
+function fillNeutralAnswer(state: RunState, kind: PendingInput["kind"], summary: string): RunState {
+  for (let i = state.log.length - 1; i >= 0; i--) {
+    const e = state.log[i];
+    if (e.kind === "asked" || e.kind === "props" || e.kind === "merge") return state;
+    if (e.kind !== "answered") continue;
+    if (e.answer !== kind || e.summary !== null) return state;
+    const log = state.log.slice();
+    log[i] = { ...e, summary };
+    return { ...state, log };
+  }
+  return state;
 }
 
 /** True while the run is paused on the family: show FollowUpCard, PropChips or the merge card. */

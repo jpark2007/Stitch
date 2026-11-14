@@ -21,7 +21,11 @@ import {
 export interface RunSource {
   /** Opens the run's event stream; must end quietly when signal aborts. */
   stream(signal: AbortSignal): AsyncIterable<RunEventMessage>;
-  /** POST the answer; rejects with an Error whose message is user-safe. */
+  /**
+   * POST the answer; rejects with an Error whose message is user-safe. An
+   * error with `status` 409 means the run is no longer waiting for it: the
+   * hook then closes the pause quietly instead of showing that message.
+   */
   answer(body: AnswerRequest): Promise<void>;
 }
 
@@ -128,8 +132,9 @@ export function useAgentRun(
   const send = useCallback(
     async (body: AnswerRequest): Promise<void> => {
       if (!source) return;
-      // Ignored unless the run is paused on this kind; a rejection reaches the
-      // card, which shows its message inline.
+      // Ignored unless the run is paused on this kind. A 409 (already
+      // answered) closes the pause and resolves; any other rejection reaches
+      // the card, which shows its message inline.
       await sendAnswer({
         answer: (b) => source.answer(b),
         body,

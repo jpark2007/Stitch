@@ -47,7 +47,10 @@ export function isFinalEvent(event: string): boolean {
   return event === "done" || event === "error";
 }
 
-/** The line logged as "You answered: …" after an answer is accepted. */
+/**
+ * The short record of an accepted answer, kept on the log's `answered` entry.
+ * feedView.answeredLine phrases it per kind for the family.
+ */
 export function answerSummary(body: AnswerRequest): string {
   switch (body.kind) {
     case "answer":
@@ -168,7 +171,8 @@ export interface AnsweredRecord {
   /** How many run events had been folded when the answer was accepted. */
   after: number;
   kind: AnswerKind;
-  summary: string;
+  /** null: the server said the pause was already answered (see sendAnswer). */
+  summary: string | null;
 }
 
 /** Book-keeping for one run, kept across reconnects and retries of the same source. */
@@ -193,7 +197,7 @@ export function newRunBook(): RunBook {
 export function recordAnswer(
   book: RunBook,
   kind: AnswerKind,
-  summary: string,
+  summary: string | null,
   sentAt: number = book.folded,
 ): RunAction {
   book.answers.push({ after: Math.max(sentAt, book.folded), kind, summary });
@@ -211,11 +215,26 @@ export function answerBody(kind: AnswerKind, value: string | PropEdit[] | boolea
 }
 
 /**
+ * True for a rejection that says the run is not waiting for this answer
+ * (HTTP 409 from the answer route). Duck-typed on `status`, so this module
+ * needs no runtime import of the API client's error class.
+ */
+export function isNotWaiting(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { status?: unknown }).status === 409;
+}
+
+/**
  * Posts one answer for the run. Does nothing (resolves false) unless the run
- * is paused on this kind of input. A failed post rejects with the source's
- * error and dispatches nothing; a successful one records the answer and
+ * is paused on this kind of input. A successful post records the answer and
  * dispatches `answered`, unless the run was swapped out meanwhile
  * (`currentBook` then returns null).
+ *
+ * A 409 means the run has already moved past this pause (it was answered
+ * before a reload, or in another tab): the pause is closed with a neutral
+ * `answered` (summary null), recorded so a replay closes it again, and the
+ * call resolves so the card simply goes away. The server's wording is never
+ * logged. Any other failure rejects with the source's error and dispatches
+ * nothing.
  */
 export async function sendAnswer(o: {
   answer: (body: AnswerRequest) => Promise<void>;
@@ -226,9 +245,16 @@ export async function sendAnswer(o: {
 }): Promise<boolean> {
   if (o.pendingKind !== o.body.kind) return false;
   const sentAt = o.currentBook()?.folded ?? 0;
-  await o.answer(o.body);
+  let summary: string | null;
+  try {
+    await o.answer(o.body);
+    summary = answerSummary(o.body);
+  } catch (error) {
+    if (!isNotWaiting(error)) throw error;
+    summary = null;
+  }
   const book = o.currentBook();
-  if (book) o.dispatch(recordAnswer(book, o.body.kind, answerSummary(o.body), sentAt));
+  if (book) o.dispatch(recordAnswer(book, o.body.kind, summary, sentAt));
   return true;
 }
 

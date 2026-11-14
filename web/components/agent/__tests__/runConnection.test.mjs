@@ -14,6 +14,7 @@ import {
   followRun,
   isFinalEvent,
   isFinished,
+  isNotWaiting,
   newRunBook,
   nextConnectionStep,
   recordAnswer,
@@ -299,6 +300,144 @@ test("sendAnswer ignores a call the run is not waiting on", async () => {
     assert.equal(posts, 0);
     assert.deepEqual(actions, []);
   }
+});
+
+/** An error shaped like the API client's ApiError (status + message). */
+function httpError(status, message) {
+  const e = new Error(message);
+  e.status = status;
+  return e;
+}
+
+test("sendAnswer: a 409 means already answered: it resolves and closes the pause quietly", async () => {
+  const raw = "run x is running, not waiting for an answer";
+  let state = [PLAN, QUESTION].reduce((s, m) => runReducer(s, { type: "event", message: m }), initialRunState);
+  assert.equal(state.phase, "waiting");
+  const actions = [];
+  const book = { folded: 2, highWater: 2, answers: [] };
+  const sent = await sendAnswer({
+    answer: async () => {
+      throw { status: 409, message: raw };
+    },
+    body: answerBody("answer", "Grandpa"),
+    pendingKind: "answer",
+    currentBook: () => book,
+    dispatch: (a) => {
+      actions.push(a);
+      state = runReducer(state, a);
+    },
+  });
+  assert.equal(sent, true);
+  assert.deepEqual(actions, [{ type: "answered", kind: "answer", summary: null }]);
+  assert.equal(state.pending, null);
+  assert.equal(state.phase, "running");
+  assert.doesNotMatch(JSON.stringify(state.log), /not waiting|running, not/);
+  assert.doesNotMatch(JSON.stringify(actions), /not waiting/);
+  // Recorded, so a replay closes the pause again at the same point.
+  assert.deepEqual(book.answers, [{ after: 2, kind: "answer", summary: null }]);
+
+  // An ApiError-like instance works the same way.
+  const again = await sendAnswer({
+    answer: async () => {
+      throw httpError(409, raw);
+    },
+    body: answerBody("props", []),
+    pendingKind: "props",
+    currentBook: () => null,
+    dispatch: () => assert.fail("nothing to dispatch for a swapped-out run"),
+  });
+  assert.equal(again, true);
+});
+
+test("sendAnswer: other failures still reject with their message", async () => {
+  for (const status of [503, 500, 0, 422, undefined]) {
+    const actions = [];
+    const book = newRunBook();
+    await assert.rejects(
+      sendAnswer({
+        answer: async () => {
+          throw httpError(status, "The studio is busy. Try again.");
+        },
+        body: answerBody("merge", true),
+        pendingKind: "merge",
+        currentBook: () => book,
+        dispatch: (a) => actions.push(a),
+      }),
+      { message: "The studio is busy. Try again." },
+    );
+    assert.deepEqual(actions, [], String(status));
+    assert.deepEqual(book.answers, []);
+  }
+});
+
+test("isNotWaiting duck-types status 409 only", () => {
+  assert.equal(isNotWaiting({ status: 409 }), true);
+  assert.equal(isNotWaiting(httpError(409, "x")), true);
+  for (const e of [null, undefined, "409", 409, { status: "409" }, { status: 503 }, new Error("409")]) {
+    assert.equal(isNotWaiting(e), false, String(e));
+  }
+});
+
+test("replay after a 409 closes the replayed pause again without a second line", async () => {
+  const book = newRunBook();
+  const { stream } = fakeStream([
+    [PLAN, QUESTION, "throw"],
+    [PLAN, QUESTION, DIRECTOR, DONE],
+  ]);
+  let state = initialRunState;
+  const dispatch = (a) => {
+    state = runReducer(state, a);
+    if (a.type === "event" && a.message.event === "question" && book.answers.length === 0) {
+      dispatch(recordAnswer(book, "answer", null));
+    }
+  };
+  await followRun({
+    stream,
+    book,
+    dispatch,
+    signal: new AbortController().signal,
+    replayOnReconnect: true,
+    maxRetries: 5,
+    retryDelayMs: defaultRetryDelay,
+    sleep: async () => {},
+  });
+  assert.equal(state.phase, "done");
+  assert.deepEqual(
+    state.log.filter((e) => e.kind === "answered").map((e) => e.summary),
+    [null],
+  );
+});
+
+test("replay re-applies an answer recorded after the run moved on: one line, the family's words", async () => {
+  // The POST resolved only after the next sub-agent had started, so the
+  // answer is recorded past the event that closed the pause.
+  const book = newRunBook();
+  const { stream } = fakeStream([
+    [PLAN, QUESTION, DIRECTOR, "throw"],
+    [PLAN, QUESTION, DIRECTOR, DONE],
+  ]);
+  let state = initialRunState;
+  const dispatch = (a) => {
+    state = runReducer(state, a);
+    if (a.type === "event" && a.message.event === "subagent_start" && book.answers.length === 0) {
+      dispatch(recordAnswer(book, "answer", "Grandpa drove", 2));
+    }
+  };
+  await followRun({
+    stream,
+    book,
+    dispatch,
+    signal: new AbortController().signal,
+    replayOnReconnect: true,
+    maxRetries: 5,
+    retryDelayMs: defaultRetryDelay,
+    sleep: async () => {},
+  });
+  assert.equal(state.phase, "done");
+  assert.deepEqual(
+    state.log.filter((e) => e.kind === "answered").map((e) => e.summary),
+    ["Grandpa drove"],
+  );
 });
 
 test("sendAnswer does not dispatch for a run that was swapped out meanwhile", async () => {
