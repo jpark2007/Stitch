@@ -38,6 +38,7 @@ import {
   MeshStandardMaterial,
   type PerspectiveCamera,
   Vector2,
+  Vector3,
 } from "three";
 import {
   createCardEdgeMaterial,
@@ -95,10 +96,11 @@ export interface Book3DProps {
   renderStage?: (args: StageSlotArgs) => ReactNode;
   /**
    * Which telling is playing on each spread with `tellings` (spread id ->
-   * teller id). Its label is printed as playing; a change reprints only that
-   * story page.
+   * teller id), as a source the book subscribes to: its label is printed as
+   * playing, and a change reprints only that story page, with no React
+   * render of the book.
    */
-  tellings?: Readonly<Record<string, string>>;
+  tellings?: TellingsSource;
   /** A teller's label was chosen on a story page. */
   onTelling?: (spreadId: string, tellerId: string) => void;
   /** Screenshots and tests: no parallax, no hover peels, no hints. */
@@ -131,7 +133,14 @@ function resolveStart(initial: BookInitial | undefined, n: number): BookStart {
 /* Shell: loading, overlay UI                                                */
 /* ------------------------------------------------------------------------ */
 
-const NO_TELLINGS: Readonly<Record<string, string>> = {};
+/** Which telling plays on each spread (spread id -> teller id), read when it says it changed. */
+export interface TellingsSource {
+  get(): Readonly<Record<string, string>>;
+  subscribe(listener: () => void): () => void;
+}
+
+const NONE: Readonly<Record<string, string>> = {};
+const NO_TELLINGS: TellingsSource = { get: () => NONE, subscribe: () => () => {} };
 
 export function Book3D({
   spreads,
@@ -168,7 +177,7 @@ export function Book3D({
   useEffect(() => {
     let live = true;
     Promise.all([
-      buildBookArt(spreads, cover, tellingsNow.current),
+      buildBookArt(spreads, cover, tellingsNow.current.get()),
       preloadPaperTextures({ kinds: ["paper", "card"], wood: true, masks: [LEAF_MASK] }),
     ]).then(([a]) => {
       if (live) setArt(a);
@@ -434,7 +443,7 @@ interface SceneProps {
   onControls: (api: BookControls | null) => void;
   onView: (v: BookView) => void;
   renderStage?: (args: StageSlotArgs) => ReactNode;
-  tellings: Readonly<Record<string, string>>;
+  tellings: TellingsSource;
   onTelling: (spreadId: string, tellerId: string) => void;
   still: boolean;
   debug: boolean;
@@ -608,26 +617,33 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
     }));
   }, [textures, leafMasks]);
 
-  // A telling chosen: reprint that story page (its labels), in place.
+  // A telling chosen: reprint that story page (its labels), in place. The
+  // book subscribes itself, so this never renders React.
   useEffect(() => {
     let live = true;
-    spreads.forEach((spread, i) => {
-      const want = tellings[spread.id] ?? null;
-      const leaf = art.leaves[i];
-      if (!leaf || leaf.active === want) return;
-      leaf.active = want;
-      drawSpreadStory(spread, i, art.fonts, want).then((story) => {
-        if (!live || leaf.active !== want) return;
-        leaf.back = story.canvas;
-        leaf.labels = story.labels;
-        const t = textures.leaves[i].back;
-        t.image = story.canvas;
-        t.needsUpdate = true;
-        invalidate();
+    const sync = () => {
+      const now = tellings.get();
+      spreads.forEach((spread, i) => {
+        const want = now[spread.id] ?? null;
+        const leaf = art.leaves[i];
+        if (!leaf || leaf.active === want) return;
+        leaf.active = want;
+        drawSpreadStory(spread, i, art.fonts, want).then((story) => {
+          if (!live || leaf.active !== want) return;
+          leaf.back = story.canvas;
+          leaf.labels = story.labels;
+          const t = textures.leaves[i].back;
+          t.image = story.canvas;
+          t.needsUpdate = true;
+          invalidate();
+        });
       });
-    });
+    };
+    sync();
+    const off = tellings.subscribe(sync);
     return () => {
       live = false;
+      off();
     };
   }, [tellings, spreads, art, textures, invalidate]);
 
@@ -650,6 +666,22 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
       frames: () => ctl.rt.frames,
       focus: () => ctl.focus,
       leaves: () => ctl.rt.leaves.map((l) => `${l.mode}:${l.p.toFixed(3)}${l.visible ? "" : "(hidden)"}`),
+      /** Screen points (CSS px) of the open spread's teller labels, by teller id. */
+      labels: () => {
+        const j = ctl.settledSpread;
+        const leaf = j > 0 ? art.leaves[j - 1] : null;
+        const out: Record<string, { x: number; y: number }> = {};
+        if (!leaf) return out;
+        const r = gl.domElement.getBoundingClientRect();
+        const bx = book.current?.position.x ?? 0;
+        const at = new Vector3();
+        for (const l of leaf.labels) {
+          at.set(bx - PAGE_W + ((l.x + l.w / 2) / PAGE_PX_W) * PAGE_W, ctl.leftSurfaceY, ((l.y + l.h / 2) / PAGE_PX_H) * PAGE_H - PAGE_H / 2);
+          at.project(camera);
+          out[l.id] = { x: r.left + ((at.x + 1) / 2) * r.width, y: r.top + ((1 - at.y) / 2) * r.height };
+        }
+        return out;
+      },
     };
     invalidate();
     return () => {
@@ -657,7 +689,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
       delete w.__stitchBook;
       delete w.__book;
     };
-  }, [ctl, camera, gl, onControls, invalidate, debug]);
+  }, [ctl, camera, gl, art, onControls, invalidate, debug]);
 
   // Reduced motion and pointer parallax follow the reader's settings live.
   useEffect(() => {

@@ -3,7 +3,7 @@
 /**
  * /memories/<id>: one moment, opened as a pop-up book.
  *
- *   /memories/demo                   the hardcoded demo book (three spreads, no stages)
+ *   /memories/demo                   the hand-made demo book; its first spread plays the reference sample
  *   /memories/hymn_books             the reference sample: its scene plays as the pop-up
  *   /memories/<id>?family=<fid>      a saved moment from the API
  *
@@ -12,23 +12,28 @@
  * right, rising from the page when the spread opens and playing once it lies
  * still. Choosing a teller's label replays the scene from the start with
  * their words. The mute button silences the narration with the paper sounds.
+ * Keyboards and screen readers get the same controls as plain HTML
+ * (MomentKeys): a button per telling and a slider per pull tab.
  *
  * Query, for deterministic views and tests: ?state=closed|open, ?spread=<n>,
  * ?turn=<0..1>, ?focus=left|right, ?still=1, ?debug=1 (see readInitial),
- * ?narrator=<personId> (start with that telling), ?t=<seconds> (hold the
- * scene at that time once it opens, instead of playing).
+ * ?narrator=<person id or name> (start with that telling), ?t=<seconds>
+ * (hold the scene at that time once it opens, instead of playing).
  */
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { use, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { demoCover, demoSpreads } from "@/components/book/demoSpreads";
 import type { StageSlotArgs } from "@/components/book/StoryPage";
+import { pickTeller } from "@/components/book/moment";
+import { installMomentProbe } from "@/components/book/moment/probe";
+import { playingTellings } from "@/components/book/moment/tellings";
 import { isMuted, subscribeMuted } from "@/components/book/sound";
-import { useTimelinePlayer } from "@/components/stage/playback";
+import type { BookPullTab, BookSpread, BookTeller } from "@/components/book/types";
+import { useTimelinePlayer, type PlaybackController } from "@/components/stage/playback";
 import { preloadScene, type SceneData } from "@/components/stage/play";
 import { api, bareMediaId } from "@/lib/api";
-import { isSampleMoment, loadMoment, type Moment } from "./moment";
+import { isDemoBook, isSampleMoment, loadMomentBook, type MomentBookData } from "./moment";
 
 // three.js needs the browser: load the book on the client only.
 const Book3D = dynamic(() => import("@/components/book/Book3D").then((m) => m.Book3D), {
@@ -75,24 +80,17 @@ function readTime(v: string | undefined): number | null {
 export function MemoryBook({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Search> }) {
   const { id } = use(params);
   const q = use(searchParams);
-  const initial = readInitial(q);
-  const still = one(q.still) === "1";
-  const debug = one(q.debug) === "1";
-
-  if (id === "demo") {
-    return <Book3D spreads={demoSpreads} cover={demoCover} initial={initial} still={still} debug={debug} />;
-  }
   const family = one(q.family)?.trim() || null;
-  if (!isSampleMoment(id) && !family) return <NotInBook />;
+  if (!isDemoBook(id) && !isSampleMoment(id) && !family) return <NotInBook />;
   return (
     <MomentBook
       id={id}
       family={family}
-      initial={initial}
+      initial={readInitial(q)}
       narrator={one(q.narrator) ?? null}
       freezeAt={readTime(one(q.t))}
-      still={still}
-      debug={debug}
+      still={one(q.still) === "1"}
+      debug={one(q.debug) === "1"}
     />
   );
 }
@@ -107,17 +105,19 @@ interface MomentBookProps {
   debug: boolean;
 }
 
-type Loaded = { kind: "moment"; moment: Moment } | { kind: "error"; detail: string };
+type ViewProps = Omit<MomentBookProps, "id" | "family">;
 
-/** Loads the moment and gets its scene's art ready, then opens the book. */
+type Loaded = { kind: "book"; book: MomentBookData } | { kind: "error"; detail: string };
+
+/** Loads the book and gets its scene's art ready, then opens it. */
 function MomentBook({ id, family, ...rest }: MomentBookProps) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   useEffect(() => {
     const ctl = new AbortController();
-    loadMoment(id, family, ctl.signal)
-      .then(async (moment) => {
-        if (moment.scene) await preloadScene(moment.scene);
-        if (!ctl.signal.aborted) setLoaded({ kind: "moment", moment });
+    loadMomentBook(id, family, ctl.signal)
+      .then(async (book) => {
+        if (book.scene) await preloadScene(book.scene);
+        if (!ctl.signal.aborted) setLoaded({ kind: "book", book });
       })
       .catch((e: unknown) => {
         if (ctl.signal.aborted) return;
@@ -129,33 +129,37 @@ function MomentBook({ id, family, ...rest }: MomentBookProps) {
 
   if (!loaded) return <BookLoading />;
   if (loaded.kind === "error") return <NotInBook detail={loaded.detail} />;
-  const { moment } = loaded;
-  return moment.scene ? <PlayingBook moment={moment} scene={moment.scene} {...rest} /> : <StillBook moment={moment} {...rest} />;
+  const { book } = loaded;
+  return book.scene && book.playing ? (
+    <PlayingBook book={book} scene={book.scene} playing={book.playing} {...rest} />
+  ) : (
+    <Book3D spreads={book.spreads} cover={book.cover} initial={rest.initial} still={rest.still} debug={rest.debug} />
+  );
 }
 
-/** A moment with no compiled scene yet: its pages, no pop-up. */
-function StillBook({ moment, initial, still, debug }: Omit<MomentBookProps, "id" | "family"> & { moment: Moment }) {
-  const spreads = useMemo(() => [moment.spread, moment.end], [moment]);
-  return <Book3D spreads={spreads} cover={moment.cover} initial={initial} still={still} debug={debug} />;
-}
-
+/**
+ * A book with a moment that plays. Nothing here re-renders while it plays:
+ * the book subscribes to which telling is playing itself (playingTellings),
+ * and the stage reads the player inside the Canvas's frame loop.
+ */
 function PlayingBook({
-  moment,
+  book,
   scene,
+  playing,
   initial,
   narrator,
   freezeAt,
   still,
   debug,
-}: Omit<MomentBookProps, "id" | "family"> & { moment: Moment; scene: SceneData }) {
-  const { spread, end, cover } = moment;
-  const spreads = useMemo(() => [spread, end], [spread, end]);
+}: ViewProps & { book: MomentBookData; scene: SceneData; playing: BookSpread }) {
+  const tellers = useMemo(() => playing.tellings ?? [], [playing]);
   const familyId = scene.familyId;
   const resolveAudio = useCallback(
     (mediaId: string) => (familyId ? api.mediaUrl(familyId, bareMediaId(mediaId)) : null),
     [familyId],
   );
-  const start = narrator && spread.tellings?.some((t) => t.id === narrator) ? narrator : null;
+  // ?narrator by person id or name; the start is read once.
+  const [start] = useState(() => pickTeller(tellers, narrator));
   // The book's own loop ticks the player (MomentStage), so a paused scene costs nothing.
   const { controller } = useTimelinePlayer(scene.timeline, { narrator: start, audio: false, clock: "manual", resolveAudio });
 
@@ -191,7 +195,8 @@ function PlayingBook({
     };
   }, [controller]);
 
-  // Test hook (?debug=1): the moment's player.
+  // Test hooks: window.__stitchMoment always; the raw player as __moment with ?debug=1.
+  useEffect(() => installMomentProbe(controller), [controller]);
   useEffect(() => {
     if (!debug) return;
     const w = window as Window & { __moment?: unknown };
@@ -201,15 +206,7 @@ function PlayingBook({
     };
   }, [controller, debug]);
 
-  // The telling being told, or none once it has ended (every label then
-  // offers its telling, the last one included: choose it to hear it again).
-  // Only this changing re-renders the book, to reprint the labels.
-  const telling = useCallback(() => {
-    const s = controller.getStatus();
-    return s.ended ? null : s.narrator;
-  }, [controller]);
-  const playing = useSyncExternalStore(controller.subscribe, telling, telling);
-  const tellings = useMemo(() => (playing ? { [spread.id]: playing } : {}), [spread.id, playing]);
+  const tellings = useMemo(() => playingTellings(controller, playing.id), [controller, playing.id]);
 
   const onTelling = useCallback(
     (_spreadId: string, tellerId: string) => {
@@ -225,10 +222,10 @@ function PlayingBook({
     [controller],
   );
 
-  // The pop-up stands on the moment's spread only (not the closing one).
+  // The pop-up stands on the playing spread only.
   const renderStage = useCallback(
     (args: StageSlotArgs) =>
-      args.spread.stage ? (
+      args.spread.id === playing.id && args.spread.stage ? (
         <MomentStage
           controller={controller}
           scene={scene}
@@ -241,20 +238,117 @@ function PlayingBook({
           onReady={markStageReady}
         />
       ) : null,
-    [controller, scene, freezeAt],
+    [controller, scene, playing.id, freezeAt],
   );
 
   return (
-    <Book3D
-      spreads={spreads}
-      cover={cover}
-      initial={initial}
-      renderStage={renderStage}
-      tellings={tellings}
-      onTelling={onTelling}
-      still={still}
-      debug={debug}
-    />
+    <>
+      <Book3D
+        spreads={book.spreads}
+        cover={book.cover}
+        initial={initial}
+        renderStage={renderStage}
+        tellings={tellings}
+        onTelling={onTelling}
+        still={still}
+        debug={debug}
+      />
+      <MomentKeys
+        controller={controller}
+        title={playing.title}
+        tellers={tellers}
+        tabs={playing.stage?.pullTabs ?? []}
+        onTelling={(id) => onTelling(playing.id, id)}
+      />
+    </>
+  );
+}
+
+/**
+ * The moment's controls as plain HTML, for keyboards and screen readers: a
+ * button per telling ("Hear Ana's version") and a slider per pull tab. They
+ * are hidden until one has focus; then they show as a small paper card in
+ * the corner. The 3D tab follows the slider (PullTabLever reads the held
+ * value), and leaving the slider lets go, as releasing the tab does.
+ */
+function MomentKeys({
+  controller,
+  title,
+  tellers,
+  tabs,
+  onTelling,
+}: {
+  controller: PlaybackController;
+  title: string;
+  tellers: readonly BookTeller[];
+  tabs: readonly BookPullTab[];
+  onTelling: (tellerId: string) => void;
+}) {
+  // Re-renders this card only, when the teller changes.
+  const narrator = useSyncExternalStore(
+    controller.subscribe,
+    () => controller.getStatus().narrator,
+    () => null,
+  );
+  if (tellers.length < 2 && tabs.length === 0) return null;
+  return (
+    <section
+      aria-label={`${title}: tellings and pull tabs`}
+      className="pointer-events-none fixed bottom-[calc(4.75rem+env(safe-area-inset-bottom))] left-4 z-20 flex max-w-[min(22rem,calc(100vw-2rem))] translate-y-2 flex-col gap-3 rounded-[4px] bg-[#f7f0e1] p-4 text-ink opacity-0 shadow-[0_10px_30px_-10px_rgb(0_0_0/0.7)] transition-[opacity,translate] duration-300 focus-within:pointer-events-auto focus-within:translate-y-0 focus-within:opacity-100"
+    >
+      {tellers.length > 1 && (
+        <nav aria-label={`Tellings of ${title}`} className="flex flex-wrap gap-2">
+          {tellers.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              aria-pressed={narrator === t.id}
+              onClick={() => onTelling(t.id)}
+              className="rounded-[3px] border border-[#d9c9ab] bg-[#fbf7ee] px-3 py-1 font-hand text-xl leading-tight"
+              style={{ borderBottom: `3px solid ${t.color}` }}
+            >
+              Hear {t.name}&rsquo;s version
+            </button>
+          ))}
+        </nav>
+      )}
+      {tabs.map((tab) => (
+        <PullSlider key={tab.id} controller={controller} tab={tab} />
+      ))}
+    </section>
+  );
+}
+
+/**
+ * A slider standing in for a pull tab: arrow keys pull it out (holding the
+ * interaction, as a hand does), and leaving it lets go, so the scene
+ * returns to its time as when the tab is released (CONTRACTS.md
+ * Clarifications 7).
+ */
+function PullSlider({ controller, tab }: { controller: PlaybackController; tab: BookPullTab }) {
+  const [value, setValue] = useState(0);
+  const release = () => {
+    controller.releaseInteraction(tab.id, { settle: "return" });
+    setValue(0);
+  };
+  return (
+    <label className="flex flex-col gap-1 font-hand text-xl leading-tight">
+      {tab.label}
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={value}
+        aria-valuetext={`${value}% pulled`}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          setValue(v);
+          controller.holdInteraction(tab.id, v / 100);
+        }}
+        onBlur={release}
+        className="accent-[#b9573d]"
+      />
+    </label>
   );
 }
 
