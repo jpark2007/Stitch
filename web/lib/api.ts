@@ -2,9 +2,11 @@
 // section 6, plus GET /families/{fid}/threads.
 //
 // Request and response types come from ./types (generated from
-// api/schemas.py). Pages import `api` (or call `createApiClient` with an
-// injected fetch in tests). `isMockMode()` reports NEXT_PUBLIC_API_MOCK=1; the
-// in-memory mock backend is wired in separately and is not selected here yet.
+// api/schemas.py). `api` here always talks to the real server. The mock is
+// selected by components/flow/client.ts: pages call its `getApi()`, which
+// returns `api`, or, when `isMockMode()` (NEXT_PUBLIC_API_MOCK=1), a client
+// wired to the in-memory mock backend (components/flow/mock). Tests call
+// `createApiClient` with an injected fetch.
 //
 // This file has no runtime imports and uses only erasable TypeScript (no
 // enums, namespaces, parameter properties or decorators), so `node --test`
@@ -18,6 +20,7 @@ import type {
   CreateFamilyRequest,
   CreateFamilyResponse,
   ErrorResponse,
+  Family,
   InvitePreview,
   InviteResponse,
   JoinRequest,
@@ -335,6 +338,8 @@ export interface StitchApi {
   /** Rejects with ApiError status 401 when signed out. */
   me(): Promise<MeResponse>;
   createFamily(body: CreateFamilyRequest): Promise<CreateFamilyResponse>;
+  /** The family with its members; `invites` is filled for admins only. */
+  getFamily(fid: string): Promise<Family>;
   createInvite(fid: string): Promise<InviteResponse>;
   revokeInvite(fid: string, code: string): Promise<void>;
   previewInvite(code: string): Promise<InvitePreview>;
@@ -353,6 +358,13 @@ export interface StitchApi {
   getProps(fid: string): Promise<PropsResponse>;
   getSets(fid: string): Promise<SetsResponse>;
   updateProp(fid: string, propId: string, body: PropPatch): Promise<Prop>;
+  /**
+   * Multipart, one field named `file`: a photo for this family (for example a
+   * prop's replacement photo). Resolves to the bare media id. The server
+   * answers 415 for anything but JPEG, PNG, WebP, GIF or HEIC, 413 when the
+   * file is too large and 400 when it is empty.
+   */
+  uploadMedia(fid: string, file: Blob): Promise<{ id: string }>;
   /** Multipart: the answer, the year, optional question/title/memoryId, participants and photos. */
   submitMemory(
     fid: string,
@@ -409,6 +421,11 @@ const PHOTO_EXTENSIONS: Record<string, string> = {
 
 function isFile(b: Blob): b is File {
   return typeof File !== "undefined" && b instanceof File;
+}
+
+/** The multipart filename for a photo: its own name, else `<stem><ext from its type>`. */
+function photoFilename(photo: Blob, stem: string): string {
+  return isFile(photo) && photo.name ? photo.name : `${stem}${PHOTO_EXTENSIONS[photo.type] ?? ""}`;
 }
 
 type RequestBody = { json: unknown } | { form: FormData } | undefined;
@@ -538,6 +555,7 @@ export function createApiClient(opts?: {
     me: async () => request<MeResponse>("GET", "/me"),
     createFamily: async (body) =>
       request<CreateFamilyResponse>("POST", "/families", { json: body }),
+    getFamily: async (fid) => request<Family>("GET", path`/families/${fid}`),
     createInvite: async (fid) =>
       request<InviteResponse>("POST", path`/families/${fid}/invites`),
     revokeInvite: async (fid, code) =>
@@ -569,6 +587,12 @@ export function createApiClient(opts?: {
     getSets: async (fid) => request<SetsResponse>("GET", path`/families/${fid}/sets`),
     updateProp: async (fid, propId, body) =>
       request<Prop>("PATCH", path`/families/${fid}/props/${propId}`, { json: body }),
+    uploadMedia: async (fid, file) => {
+      const p = path`/families/${fid}/media`;
+      const form = new FormData();
+      form.append("file", file, photoFilename(file, "photo"));
+      return request<{ id: string }>("POST", p, { form });
+    },
     submitMemory: async (fid, fields, photos) => {
       const p = path`/families/${fid}/memories`;
       const form = new FormData();
@@ -579,10 +603,7 @@ export function createApiClient(opts?: {
       if (fields.memoryId != null) form.append("memoryId", fields.memoryId);
       for (const id of fields.participantIds ?? []) form.append("participantIds", id);
       (photos ?? []).forEach((photo, i) => {
-        const name = isFile(photo) && photo.name
-          ? photo.name
-          : `photo-${i + 1}${PHOTO_EXTENSIONS[photo.type] ?? ""}`;
-        form.append("photos", photo, name);
+        form.append("photos", photo, photoFilename(photo, `photo-${i + 1}`));
       });
       return request<SubmitMemoryResponse>("POST", p, { form });
     },

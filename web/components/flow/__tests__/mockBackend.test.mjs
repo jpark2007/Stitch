@@ -3,7 +3,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { buildDemoSeed } from "../mock/demoSeed.ts";
-import { createMockBackend, FOLLOW_UP_QUESTION, MOCK_STORAGE_KEY } from "../mock/mockBackend.ts";
+import {
+  createMockBackend,
+  FOLLOW_UP_QUESTION,
+  MAX_MEDIA_BYTES,
+  MOCK_STORAGE_KEY,
+} from "../mock/mockBackend.ts";
+import { createApiClient, isApiError } from "../../../lib/api.ts";
 
 const SAMPLE = JSON.parse(
   fs.readFileSync(new URL("../../../public/samples/hymn_books.memory.json", import.meta.url), "utf8"),
@@ -928,6 +934,155 @@ test("the seed loads lazily, once, and may be async", async () => {
   });
   assert.equal((await call(flaky, "GET", "/invites/riveras-demo")).status, 503);
   assert.equal((await call(flaky, "GET", "/invites/riveras-demo")).status, 200);
+});
+
+async function upload(backend, fid, file, field = "file") {
+  const form = new FormData();
+  if (file) form.append(field, file, file.name ?? "photo.png");
+  const res = await backend.fetch(`${BASE}/families/${encodeURIComponent(fid)}/media`, {
+    method: "POST",
+    body: form,
+    credentials: "include",
+  });
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : null };
+}
+
+test("POST /families/{fid}/media stores a photo that mediaUrl and GET media serve", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const png = new File([new Uint8Array([137, 80, 78, 71, 1, 2, 3])], "hymns.png", { type: "image/png" });
+  const r = await upload(b, "sample_family", png);
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.deepEqual(Object.keys(r.body), ["id"]);
+  const id = r.body.id;
+  assert.ok(id && !id.startsWith("media/"), "a bare media id");
+
+  const served = await b.fetch(`${BASE}/families/sample_family/media/${id}`, { credentials: "include" });
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("content-type"), "image/png");
+  assert.deepEqual(new Uint8Array(await served.arrayBuffer()), new Uint8Array([137, 80, 78, 71, 1, 2, 3]));
+
+  const url = b.mediaUrl("sample_family", id);
+  assert.ok(url.startsWith("blob:"), url);
+  assert.equal(b.mediaUrl("sample_family", `media/${id}`), url, "the media/ prefix is accepted");
+  assert.equal((await (await fetch(url)).arrayBuffer()).byteLength, 7, "the blob URL holds the bytes");
+  assert.ok(b.mediaUrl("other_family", id).startsWith("data:"), "another family gets the placeholder");
+
+  // The id is good for a prop's replacement photo, with or without the prefix.
+  const patched = await call(b, "PATCH", "/families/sample_family/props/hymn_books", { photoId: `media/${id}` });
+  assert.equal(patched.status, 200, JSON.stringify(patched.body));
+  assert.equal(patched.body.art.body, `media/${id}`, "stored in the media/<id> form, as the real API does");
+  assert.equal(patched.body.source, "photo");
+  const bare = await call(b, "PATCH", "/families/sample_family/props/hymn_books", { photoId: id });
+  assert.equal(bare.status, 200, JSON.stringify(bare.body));
+  assert.equal(bare.body.art.body, `media/${id}`);
+  assert.equal(b.mediaUrl("sample_family", bare.body.art.body), url, "the stored art resolves to the upload");
+
+  const unknown = await call(b, "PATCH", "/families/sample_family/props/hymn_books", { photoId: "media/nope" });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.detail, "Unknown photo");
+});
+
+test("an uploaded photo works as a replace_photo edit in the props review", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const png = new File([new Uint8Array([137, 80, 78, 71, 5])], "hymnal.png", { type: "image/png" });
+  const { body } = await upload(b, "sample_family", png);
+  const sub = await submit(b, "sample_family", { text: "Sam learned to swim at the lake that summer.", year: 2001 });
+  assert.equal(sub.status, 201);
+  const { runId } = sub.body;
+  const { events } = await openStream(b, "sample_family", runId);
+  await readUntil(events, "question");
+  assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "At the lake." })).status, 204);
+  await readUntil(events, "props_found");
+  const unknown = await answer(b, "sample_family", runId, {
+    kind: "props",
+    props: [{ id: "hymn_books", action: "replace_photo", photoId: "nope" }],
+  });
+  assert.equal(unknown.status, 422, "a photo that is not this family's is refused");
+  const ok = await answer(b, "sample_family", runId, {
+    kind: "props",
+    props: [{ id: "hymn_books", action: "replace_photo", photoId: body.id }],
+  });
+  assert.equal(ok.status, 204, JSON.stringify(ok.body));
+  for await (const msg of events) if (msg.event === "done" || msg.event === "error") break;
+  const props = await call(b, "GET", "/families/sample_family/props");
+  const hymns = props.body.props.find((p) => p.id === "hymn_books");
+  assert.equal(hymns.art.body, `media/${body.id}`);
+  assert.equal(hymns.source, "photo");
+  assert.ok(b.mediaUrl("sample_family", hymns.art.body).startsWith("blob:"));
+});
+
+test("media upload rules: members only, images only, not empty, not too big", async () => {
+  const b = makeBackend();
+  const png = () => new File([new Uint8Array([1, 2, 3])], "p.png", { type: "image/png" });
+
+  // Signed out, then a non-member: the same answers as other family routes.
+  assert.equal((await upload(b, "sample_family", png())).status, 401);
+  await signup(b, "Mei", "mei@example.com");
+  const outsider = await upload(b, "sample_family", png());
+  assert.equal(outsider.status, 404);
+  assert.equal(outsider.body.detail, "We couldn't find that family.");
+
+  await login(b, "ana@example.com"); // a plain member may upload
+  const text = await upload(b, "sample_family", new File(["hello"], "note.txt", { type: "text/plain" }));
+  assert.equal(text.status, 415);
+  assert.equal(text.body.detail, "Upload a JPEG, PNG, WebP, GIF or HEIC image");
+  const untyped = await upload(b, "sample_family", new File(["hello"], "mystery"));
+  assert.equal(untyped.status, 415);
+
+  const empty = await upload(b, "sample_family", new File([], "empty.png", { type: "image/png" }));
+  assert.equal(empty.status, 400);
+  assert.equal(empty.body.detail, "The file is empty");
+
+  assert.equal(MAX_MEDIA_BYTES, 20 * 1024 * 1024);
+  const big = await upload(
+    b,
+    "sample_family",
+    new File([new Uint8Array(MAX_MEDIA_BYTES + 1)], "big.jpg", { type: "image/jpeg" }),
+  );
+  assert.equal(big.status, 413);
+  assert.equal(big.body.detail, "Photos must be 20 MB or smaller");
+  const atLimit = await upload(
+    b,
+    "sample_family",
+    new File([new Uint8Array(MAX_MEDIA_BYTES)], "ok.jpg", { type: "image/jpeg" }),
+  );
+  assert.equal(atLimit.status, 201);
+
+  for (const type of ["image/jpeg", "image/webp", "image/gif", "image/heic", "IMAGE/PNG"]) {
+    const ok = await upload(b, "sample_family", new File([new Uint8Array([9])], "x", { type }));
+    assert.equal(ok.status, 201, type);
+  }
+  // The real API's ALLOWED_IMAGE_TYPES has no image/heif.
+  assert.equal((await upload(b, "sample_family", new File([new Uint8Array([9])], "x", { type: "image/heif" }))).status, 415);
+
+  const wrongField = await upload(b, "sample_family", png(), "photo");
+  assert.equal(wrongField.status, 422);
+  assert.deepEqual(wrongField.body.detail[0].loc, ["body", "file"]);
+});
+
+test("the API client's uploadMedia and getFamily work against the mock", async () => {
+  const b = makeBackend();
+  const client = createApiClient({ baseUrl: BASE, fetch: b.fetch, mediaUrl: b.mediaUrl });
+  await client.login({ email: "david@example.com", password: "stitch-demo" });
+
+  const family = await client.getFamily("sample_family");
+  assert.equal(family.name, "The Riveras");
+  assert.equal(family.members.length, 2);
+
+  const { id } = await client.uploadMedia("sample_family", new Blob(["gif"], { type: "image/gif" }));
+  assert.ok(client.mediaUrl("sample_family", id).startsWith("blob:"));
+
+  try {
+    await client.uploadMedia("sample_family", new Blob(["text"], { type: "text/plain" }));
+    assert.fail("expected a 415");
+  } catch (e) {
+    assert.ok(isApiError(e));
+    assert.equal(e.status, 415);
+    assert.equal(e.detail, "Upload a JPEG, PNG, WebP, GIF or HEIC image");
+  }
 });
 
 test("accepts Request and URL inputs", async () => {

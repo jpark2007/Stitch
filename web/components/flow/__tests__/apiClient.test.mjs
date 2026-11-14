@@ -120,6 +120,7 @@ describe("module surface", () => {
       "createFamily",
       "createInvite",
       "getBook",
+      "getFamily",
       "getMemory",
       "getProps",
       "getQuestions",
@@ -139,9 +140,8 @@ describe("module surface", () => {
       "submitMemory",
       "updatePerson",
       "updateProp",
+      "uploadMedia",
     ]);
-    assert.equal("getFamily" in client, false);
-    assert.equal("uploadMedia" in client, false);
     assert.deepEqual(Object.keys(api).sort(), Object.keys(client).sort());
   });
 
@@ -189,6 +189,8 @@ const ROUTES = [
   ["me", [], "GET", "/me", undefined, { user: { id: "u1" }, families: [] }],
   ["createFamily", [{ name: "The Maos", person: newPerson }], "POST", "/families",
     { name: "The Maos", person: newPerson }, { family: { id: "f1" }, person: { id: "p1" } }],
+  ["getFamily", [F], "GET", `/families/${FE}`, undefined,
+    { id: "fam 1", name: "The Maos", members: [{ userId: "u1", role: "admin" }], invites: [] }],
   ["createInvite", [F], "POST", `/families/${FE}/invites`, undefined, { code: "abc", url: "/join/abc" }],
   ["revokeInvite", [F, "abc"], "DELETE", `/families/${FE}/invites/abc`, undefined, null],
   ["previewInvite", ["abc"], "GET", "/invites/abc", undefined,
@@ -209,6 +211,8 @@ const ROUTES = [
     { name: "Hymn book" }, { id: "pr1" }],
   ["submitMemory", [F, { text: "We sang.", year: 1962 }], "POST", `/families/${FE}/memories`,
     undefined, { runId: "r1", memoryId: null }],
+  ["uploadMedia", [F, new Blob(["png"], { type: "image/png" })], "POST", `/families/${FE}/media`,
+    undefined, { id: "abc123" }],
   ["answerRun", [F, "r1", answer], "POST", `/families/${FE}/runs/r1/answer`, answer, null],
   ["getQuestions", [F], "GET", `/families/${FE}/questions`, undefined, { questions: [] }],
   ["ask", [F, { query: "who sang?" }], "POST", `/families/${FE}/ask`, { query: "who sang?" },
@@ -241,7 +245,7 @@ describe("routes", () => {
         assert.deepEqual(JSON.parse(init.body), json);
       } else {
         assert.equal(headers.get("content-type"), null);
-        if (name !== "submitMemory") assert.equal(init.body, undefined);
+        if (name !== "submitMemory" && name !== "uploadMedia") assert.equal(init.body, undefined);
       }
       if (response === null) assert.equal(result, undefined);
       else assert.deepEqual(result, response);
@@ -377,6 +381,99 @@ describe("submitMemory", () => {
     const form = calls[0].init.body;
     assert.deepEqual([...form.keys()].sort(), ["text", "year"]);
     assert.equal(headersOf(calls[0].init).get("content-type"), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFamily and uploadMedia
+
+describe("getFamily", () => {
+  test("encodes the family id and sends cookies", async () => {
+    const family = { id: "a/b", name: "The Maos", members: [], invites: [] };
+    const { fetch, calls } = recordingFetch(() => jsonResponse(family));
+    const client = createApiClient({ baseUrl: BASE, fetch });
+    assert.deepEqual(await client.getFamily("a/b"), family);
+    assert.equal(calls[0].url, `${BASE}/families/a%2Fb`);
+    assert.equal(calls[0].init.method, "GET");
+    assert.equal(calls[0].init.credentials, "include");
+  });
+
+  test("a non-member's 404 is an ApiError with the server detail", async () => {
+    const { fetch } = recordingFetch(() => jsonResponse({ detail: "We couldn't find that family." }, 404));
+    await rejectsWith(createApiClient({ baseUrl: BASE, fetch }).getFamily("f"), (e) => {
+      assert.ok(isApiError(e));
+      assert.equal(e.status, 404);
+      assert.equal(e.detail, "We couldn't find that family.");
+    });
+  });
+
+  test("empty and '..' family ids are refused without a request", async () => {
+    const { fetch, calls } = recordingFetch();
+    const client = createApiClient({ baseUrl: BASE, fetch });
+    for (const bad of ["", ".."]) {
+      await rejectsWith(client.getFamily(bad), (e) => assert.equal(e.status, 404));
+    }
+    assert.equal(calls.length, 0);
+  });
+});
+
+describe("uploadMedia", () => {
+  test("posts one multipart field named 'file' with the File's own name", async () => {
+    const { fetch, calls } = recordingFetch(() => jsonResponse({ id: "m1" }, 201));
+    const client = createApiClient({ baseUrl: BASE, fetch });
+    const file = new File(["jpeg bytes"], "hymn book.jpg", { type: "image/jpeg" });
+    assert.deepEqual(await client.uploadMedia("fam 1", file), { id: "m1" });
+
+    const { url, init } = calls[0];
+    assert.equal(url, `${BASE}/families/fam%201/media`);
+    assert.equal(init.method, "POST");
+    assert.equal(init.credentials, "include");
+    assert.equal(headersOf(init).get("content-type"), null, "fetch must set the multipart boundary");
+    assert.ok(init.body instanceof FormData);
+    assert.deepEqual([...init.body.keys()], ["file"]);
+    const sent = init.body.get("file");
+    assert.equal(sent.name, "hymn book.jpg");
+    assert.equal(sent.type, "image/jpeg");
+    assert.equal(await sent.text(), "jpeg bytes");
+  });
+
+  test("a bare Blob is named photo<ext from its type>", async () => {
+    const { fetch, calls } = recordingFetch(() => jsonResponse({ id: "m2" }, 201));
+    const client = createApiClient({ baseUrl: BASE, fetch });
+    await client.uploadMedia("f", new Blob(["png"], { type: "image/png" }));
+    await client.uploadMedia("f", new Blob(["heic"], { type: "image/heic" }));
+    await client.uploadMedia("f", new Blob(["?"], { type: "application/octet-stream" }));
+    assert.deepEqual(
+      calls.map((c) => c.init.body.get("file").name),
+      ["photo.png", "photo.heic", "photo"],
+    );
+  });
+
+  test("413 and 415 become ApiErrors carrying the server detail", async () => {
+    for (const [status, detail] of [
+      [413, "Photos must be 20 MB or smaller"],
+      [415, "Upload a JPEG, PNG, WebP, GIF or HEIC image"],
+      [400, "The file is empty"],
+    ]) {
+      const { fetch } = recordingFetch(() => jsonResponse({ detail }, status));
+      const client = createApiClient({ baseUrl: BASE, fetch });
+      await rejectsWith(client.uploadMedia("f", new Blob(["x"], { type: "image/png" })), (e) => {
+        assert.ok(isApiError(e));
+        assert.equal(e.status, status);
+        assert.equal(e.detail, detail);
+      });
+    }
+  });
+
+  test("a 413 without a body falls back to the friendly size message", async () => {
+    const { fetch } = recordingFetch(() => new Response(null, { status: 413 }));
+    await rejectsWith(
+      createApiClient({ baseUrl: BASE, fetch }).uploadMedia("f", new Blob(["x"], { type: "image/png" })),
+      (e) => {
+        assert.equal(e.status, 413);
+        assert.equal(e.detail, "That file is too large.");
+      },
+    );
   });
 });
 
