@@ -74,7 +74,7 @@ export const DEFAULT_LAYOUT: LayoutOptions = {
   nodeWidth: 112,
   siblingGap: 34,
   familyGap: 64,
-  rowHeight: 214,
+  rowHeight: 236,
   margin: 28,
 };
 

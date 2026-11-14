@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { CSSProperties } from "react";
 import { DEFAULT_LAYOUT, layoutFamily, type TreeLayout } from "./layout";
 import { Puppet, PuppetDefs, type Build } from "./Puppet";
-import { hashSeed, wobblyCubic, type Pt } from "./sketch";
+import { hashSeed, wobblyCubic, wobblyLine, type Pt } from "./sketch";
 import "./tree.css";
 
 /**
@@ -85,22 +85,32 @@ function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>) {
     const start: Pt =
       coupleKnot.get([...fam.parentIds].sort().join("+")) ??
       [fam.anchorX, Math.max(...parents.map((p) => p.y)) + NODE_H - 4];
-    for (const childId of fam.childIds) {
+    // A short shared trunk drops between the parents' names, then each
+    // child's strand branches off toward them.
+    const branchY = Math.max(...parents.map((p) => p.y)) + NODE_H + 2;
+    const n = fam.childIds.length;
+    fam.childIds.forEach((childId, i) => {
       const child = layout.byId.get(childId)!;
+      const seed = hashSeed(childId);
+      const ox = (i - (n - 1) / 2) * 2.2;
+      const fork: Pt = [start[0] + ox, branchY];
       const end: Pt = [child.x, child.y + HEAD_TOP - 6];
-      const dy = end[1] - start[1];
+      const dy = end[1] - fork[1];
+      const trunk = wobblyLine([start[0] + ox * 0.3, start[1]], fork, { seed, amplitude: 1.2 });
+      const branch = wobblyCubic(fork, [fork[0], fork[1] + dy * 0.75], [end[0], end[1] - dy * 0.75], end, {
+        seed: seed + 1,
+        amplitude: 2.2,
+        samples: 16,
+      });
       threads.push({
         key: `child-${childId}`,
-        d: wobblyCubic(start, [start[0], start[1] + dy * 0.62], [end[0], end[1] - dy * 0.5], end, {
-          seed: hashSeed(childId),
-          amplitude: 2.4,
-          samples: 18,
-        }),
+        // Continue the trunk into the branch as one path (drop the second M).
+        d: `${trunk} ${branch.replace(/^M[^C]*/, "")}`,
         color: colorOf(childId),
         delay: 0.6 + parents[0].gen * 0.45,
       });
       knots.push({ key: `end-${childId}`, at: end, delay: 1.3 + parents[0].gen * 0.45 });
-    }
+    });
   }
   return { threads, knots };
 }
