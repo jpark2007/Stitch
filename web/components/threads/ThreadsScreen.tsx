@@ -14,6 +14,7 @@ import { hrefs } from "@/components/flow/session";
 import { demoFamily, demoMoments, demoPeople } from "@/components/tree/demoFamily";
 import type { FamilySummary } from "@/lib/types";
 import type { LooseMoment } from "./data";
+import { momentHref } from "./links";
 import { MenuDisclosure } from "./MenuDisclosure";
 import type { ThreadMoment, ThreadPerson } from "./model";
 import ThreadsView from "./ThreadsView";
@@ -126,6 +127,7 @@ export default function ThreadsScreen(props: ThreadsScreenProps) {
       return (
         <ThreadsView
           key="demo"
+          demo
           familyName={demoFamily.name}
           people={demoThreadPeople}
           moments={demoThreadMoments}
@@ -230,7 +232,7 @@ function LooseMoments(props: { loose: LooseMoment[]; familyId: string }) {
   return (
     <MenuDisclosure label={label} buttonClassName="text-ink-soft underline decoration-dotted decoration-1 underline-offset-[0.2em]">
       {loose.map((m) => (
-        <Link key={m.id} href={`${hrefs.memory(m.id)}?family=${encodeURIComponent(familyId)}`} className="threads-menu-item">
+        <Link key={m.id} href={momentHref(m.id, { familyId })} className="threads-menu-item">
           <span className="min-w-0 flex-1 break-words font-hand text-[1.15rem] leading-tight">{m.title}</span>
           <span className="shrink-0 text-xs text-ink-faint">{m.reason === "year" ? "no year" : "no one"}</span>
         </Link>
