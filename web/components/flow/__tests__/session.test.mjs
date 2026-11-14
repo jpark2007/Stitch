@@ -104,6 +104,7 @@ describe("hrefs", () => {
       "memory",
       "newFamily",
       "person",
+      "render",
       "settings",
       "signup",
     ]);
@@ -133,6 +134,7 @@ describe("hrefs", () => {
     assert.equal(hrefs.join("../x"), "/join/..%2Fx");
     assert.equal(hrefs.memory("m/1"), "/memories/m%2F1");
     assert.equal(hrefs.person("p&q é"), "/people/p%26q%20%C3%A9");
+    assert.equal(hrefs.render("m/1?t=4#x"), "/render/m%2F1%3Ft%3D4%23x");
   });
 
   test("add takes an optional family and memory", () => {
@@ -160,6 +162,24 @@ describe("hrefs", () => {
     assert.deepEqual(["a", "b"].map((id) => hrefs.memory(id)), ["/memories/a", "/memories/b"]);
   });
 
+  test("render plays a saved moment, with the same ?family= rule as memory", () => {
+    assert.equal(hrefs.render("m1"), "/render/m1");
+    assert.equal(hrefs.render("m1", "f 1"), "/render/m1?family=f%201");
+    assert.equal(hrefs.render("m1", null), "/render/m1");
+    assert.equal(hrefs.render("m1", undefined), "/render/m1");
+    assert.equal(hrefs.render("m1", ""), "/render/m1");
+    assert.equal(hrefs.render("m é", "a&b=c"), "/render/m%20%C3%A9?family=a%26b%3Dc");
+    // The stage and the book page take the same id and family.
+    for (const [id, fid] of [["m1", "f1"], ["m/1", "f 1"], ["m", ""], ["m", null]]) {
+      assert.equal(
+        hrefs.render(id, fid).replace(/^\/render\//, "/memories/"),
+        hrefs.memory(id, fid),
+        `${id} ${fid}`,
+      );
+    }
+    assert.deepEqual(["a", "b"].map((id) => hrefs.render(id, "f")), ["/render/a?family=f", "/render/b?family=f"]);
+  });
+
   test("the hrefs it builds pass safeNext", () => {
     for (const h of [
       hrefs.add({ familyId: "f", memoryId: "m" }),
@@ -167,6 +187,7 @@ describe("hrefs", () => {
       hrefs.join("c"),
       hrefs.memory("m", "f 1"),
       hrefs.person("p", "f"),
+      hrefs.render("m", "f 1"),
     ]) {
       assert.equal(safeNext(h), h);
     }
