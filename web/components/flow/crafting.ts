@@ -450,7 +450,7 @@ export function craftScene(run: CraftRun, props: readonly CraftProp[] = [], o: C
     caption = "The pop-up stands. A last look over the page…";
   } else if (run.phase === "done") {
     stage = "done";
-    caption = run.memoryId ? "Your page is made." : "All done.";
+    caption = !run.memoryId ? "All done." : o.second ? "Your version is on the page." : "Your page is made.";
     note = null;
   } else if (run.phase === "error") {
     stage = "stopped";
@@ -602,6 +602,7 @@ export function sceneKeys(scene: CraftScene, castCount: number): string[] {
   for (let i = 0; i < scene.layers; i++) keys.push(`layer:${i}`);
   if (scene.cast) for (let i = 0; i < castCount; i++) keys.push(`cast:${i}`);
   for (let i = 0; i < Math.min(scene.checked, MAX_CHECKS); i++) keys.push(`check:${i}`);
+  if (scene.linked) keys.push("ribbon");
   return keys;
 }
 

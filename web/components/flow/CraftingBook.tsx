@@ -235,9 +235,12 @@ export function CraftingBook({ owner, page: pageWatch, run, placement }: Craftin
         : null,
     [run, input, page.cast, teller, second],
   );
-  const [held, setHeld] = useState<CraftScene | null>(null);
-  const scene = next && input ? holdScene(held, next, input.run) : null;
-  if (scene !== held) setHeld(scene);
+  // Held per run: another run on this page never shows the last one's pieces.
+  const watch = run?.watch ?? null;
+  const [held, setHeld] = useState<{ watch: typeof watch; scene: CraftScene | null }>({ watch, scene: null });
+  const before = held.watch === watch ? held.scene : null;
+  const scene = next && input ? holdScene(before, next, input.run) : null;
+  if (scene !== held.scene || watch !== held.watch) setHeld({ watch, scene });
 
   // Warm the set's cut-outs in idle time once a run is under way.
   const running = run !== null;
@@ -329,6 +332,14 @@ export function CraftingBook({ owner, page: pageWatch, run, placement }: Craftin
     return () => window.clearTimeout(t);
   }, [ready, memoryId, reduced, run?.fresh]);
   const playing = ready && swapped === memoryId && moment !== null;
+  // The moment's book names the tab after the moment; the page has its own name back after.
+  const [tabTitle] = useState(() => (typeof document === "undefined" ? null : document.title));
+  useEffect(() => {
+    if (!playing || !tabTitle) return;
+    return () => {
+      document.title = tabTitle;
+    };
+  }, [playing, tabTitle]);
 
   const renderStage = useCallback(
     (args: StageSlotArgs) =>
