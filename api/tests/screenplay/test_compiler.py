@@ -172,8 +172,12 @@ def test_out_of_reach_message():
     data["shots"][0]["marks"]["steps_top"] = [0.6, 1.2]  # ...but mom stands so high the books land out of reach
     res = run(data)
     err = next(e for e in res.errors if e.code == "out_of_reach")
-    assert err.message.startswith('shot s1, t=5.5: dad cannot pick_up "hymn_books"; dad\'s arm_r cannot reach: target is ')
-    assert err.message.endswith("from the shoulder, reach is 0.19")
+    # The books are above every standing shoulder, so no spot dad could step to reaches them.
+    # The distance is the closest miss over those spots: the shoulder right under the books.
+    assert err.message == (
+        'shot s1, t=5.5: dad cannot pick_up "hymn_books"; dad\'s arm_r cannot reach: target is 0.86 from the '
+        "shoulder, reach is 0.19"
+    )
 
 
 def test_a_shot_start_the_world_rejects_stops_compilation():

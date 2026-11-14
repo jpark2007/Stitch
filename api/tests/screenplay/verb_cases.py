@@ -484,6 +484,32 @@ def _props() -> list[VerbCase]:
                  "not_on_stage",
                  # state.py World._require_placed (via World.pick_up)
                  'shot s1, t=1: dad cannot pick_up "cap"; cap is not on stage'),
+        # Added with finding F3 (verbs_core.py apply_pick_up steps to a spot the arm reaches
+        # from). Standing over the cap, whose grip is under the hips: it steps back first.
+        _ok("pick_up", "steps_back_off_the_cap", _one(_a(1, "pick_up", who="dad", what="cap"),
+                                                      start={"dad": _at("door")}, prop_start={"cap": _at("door")})),
+        # hand_r is full, so arm_l takes it: the walk-up stops where the left shoulder reaches.
+        _ok("pick_up", "left_hand_walks_up", _one(_a(1, "pick_up", who="dad", what="cap"),
+                                                  start={"dad": _at("curb", holding="hymn_books")},
+                                                  prop_start={"cap": _at("door")})),
+        _dynamic("pick_up", "out_of_reach",
+                 # The cap on a chair standing on the table is above the kid's standing reach
+                 # from every spot it could step to.
+                 _one(_a(1, "pick_up", who="kid", what="cap"), start={"kid": _at("by_table")},
+                      prop_start={**TABLE, "chair": {"on": "table.top"}, "cap": {"on": "chair.seat"}}),
+                 "out_of_reach",
+                 # errors.py out_of_reach_reason (ik.OutOfReach from verbs_core.py _reach_spot, the
+                 # closest miss over the spots tried)
+                 "shot s1, t=1: kid cannot pick_up \"cap\"; kid's arm_r cannot reach: target is 0.23 from the "
+                 "shoulder, reach is 0.14"),
+        _dynamic("pick_up", "seated_out_of_reach",
+                 # Seated, mom only bends from the chair (she never steps): the cap at its foot is too low.
+                 _one(_a(1, "pick_up", who="mom", what="cap"), start={"mom": _at("bench_spot", **{"in": "chair.seat"})},
+                      prop_start={**CHAIR, "cap": _at("bench_spot")}),
+                 "out_of_reach",
+                 # errors.py out_of_reach_reason (ik.OutOfReach from verbs_core.py _crouch_solution)
+                 "shot s1, t=1: mom cannot pick_up \"cap\"; mom's arm_r cannot reach: target is 0.23 from the "
+                 "shoulder, reach is 0.17"),
 
         # --------------------------------------------------------------------- hold
         _ok("hold", "ok", _one(_a(1, "hold", who="mom", what="hymn_books"),
