@@ -12,12 +12,15 @@ def is_stop_command(text: str) -> bool:
     """Recognize a whole command, not an incidental word inside a story.
 
     Compatibility letters and invisible format characters normalize; punctuation
-    and emoji separate tokens. Quoted standalone commands also count. Only the
+    and emoji separate tokens. Unicode variation selectors are ignored; other
+    combining marks remain meaningful. Quoted standalone commands also count. Only the
     documented polite suffixes are allowed, so ``I told him to stop`` stays text.
     """
     normalized = unicodedata.normalize("NFKC", text).casefold()
     normalized = "".join(
-        "" if unicodedata.category(char) == "Cf" else
+        "" if (unicodedata.category(char) == "Cf"
+               or "\ufe00" <= char <= "\ufe0f"
+               or "\U000e0100" <= char <= "\U000e01ef") else
         " " if unicodedata.category(char)[0] in {"P", "S"} else char
         for char in normalized
     )

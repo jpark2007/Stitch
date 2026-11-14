@@ -9,7 +9,7 @@ from tests.channels.test_photos import envelope as photo_envelope
 def test_command_normalization(text):
     assert is_stop_command(text)
 
-@pytest.mark.parametrize('text', ['I told him to stop', 'the bus stop', 'stopwatch', 'do not stop', 'stop was what he said', 'the end', 'cancel our picnic', ''])
+@pytest.mark.parametrize('text', ['I told him to stop', 'the bus stop', 'stopwatch', 'do not stop', 'stop was what he said', 'the end', 'cancel our picnic', 'sto\u0301p', 'I told him to stop ❤️', ''])
 def test_story_is_not_command(text):
     assert not is_stop_command(text)
 
@@ -25,11 +25,12 @@ def test_stop_revokes_all_families_even_when_receipt_fails(stack, monkeypatch):
     assert result.json()['stopped'] is True
     assert db.contacts.count_documents({'status': 'active'}) == 0
 
-def test_photo_stop_precedes_decode_and_storage(stack, monkeypatch):
+@pytest.mark.parametrize('caption', ['Stop please!', 'STOP ❤️', 'STOP‼️', 'STOP\U000e0100'])
+def test_photo_stop_precedes_decode_and_storage(stack, monkeypatch, caption):
     client, db = stack
     monkeypatch.setattr(photos, 'decode_photo', lambda *_: pytest.fail('decoded STOP photo'))
     monkeypatch.setattr(conversations, 'save_photo_inbound', lambda *_: pytest.fail('stored STOP photo'))
-    result = send(client, photo_envelope(data=b'invalid image', caption='Stop please!'), path='/internal/channels/inbound-photo')
+    result = send(client, photo_envelope(data=b'invalid image', caption=caption), path='/internal/channels/inbound-photo')
     assert result.status_code == 202
     assert result.json()['stopped'] is True
     assert db.contacts.count_documents({'status': 'active'}) == 0
@@ -43,3 +44,12 @@ def test_unknown_photo_stop_has_normal_unknown_contact_response(stack, monkeypat
     monkeypatch.setattr(photos, 'decode_photo', lambda *_: pytest.fail('decoded unknown STOP photo'))
     result = send(client, photo_envelope(senderId='unknown', caption='QUIT'), path='/internal/channels/inbound-photo')
     assert result.status_code == 404
+
+
+@pytest.mark.parametrize('text', ['STOP‼️', 'STOP ❤️', 'STOP\ufe0e', 'STOP\ufe00', 'STOP\U000e0100', 'STOP\U000e01ef'])
+def test_variation_selector_text_revokes_consent(stack, text):
+    client, db = stack
+    response = send(client, envelope(text=text))
+    assert response.status_code == 202
+    assert response.json()['stopped'] is True
+    assert db.contacts.count_documents({'status': 'active'}) == 0
