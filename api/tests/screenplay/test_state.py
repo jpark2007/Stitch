@@ -1219,3 +1219,83 @@ def test_reseat_riders_leaves_a_puppet_whose_seat_has_no_world_position(world: W
     before = world.people["mom"].pos
     assert world.reseat_riders(["chair"], _seat_root(world)) == {"mom": None}
     assert world.people["mom"].pos == before
+
+
+# ----------------------------------------------- riders of a vehicle and what a prop rests on
+
+def stacked(world: World) -> World:
+    """The wagon at the curb with the crate on its bed and the bench on the crate's top; kid on
+    the bench's right seat, dad on its left one, mom on the wagon's seat; the chair on its own."""
+    world.begin_shot(
+        shot(start={"kid": {"at": "curb", "in": "bench.right_seat"}, "mom": {"at": "curb", "in": "wagon.seat"},
+                    "dad": {"at": "curb", "in": "bench.left_seat"}},
+             propStart={"wagon": {"at": "curb"}, "crate": {"on": "wagon.bed"}, "bench": {"on": "crate.top"},
+                        "chair": {"at": "home"}}),
+        MARKS, same_set_as_previous=False,
+    )
+    return world
+
+
+def test_riders_lists_the_vehicles_own_seats_first_then_stacked_props_in_order(world: World):
+    stacked(world)
+    assert world.riders("wagon") == [
+        ("wagon", "seat", "mom"),
+        ("bench", "right_seat", "kid"),  # sockets in the order they were taken (start order)
+        ("bench", "left_seat", "dad"),
+    ]
+    assert world._riders("wagon") == ["mom", "kid", "dad"]
+    assert world.riders("crate") == [("bench", "right_seat", "kid"), ("bench", "left_seat", "dad")]
+    assert world.riders("chair") == []
+    # a puppet seated straight on a prop and one on top of another prop on it, in descendant order
+    world.stand_up("kid")
+    world.sit_on("kid", "bench", "right_seat")
+    assert world.riders("wagon") == [("wagon", "seat", "mom"), ("bench", "left_seat", "dad"),
+                                     ("bench", "right_seat", "kid")]
+    raises("unknown_id", "boat is not a known prop", world.riders, "boat")
+
+
+def test_riders_follow_descendants_depth_first(world: World):
+    world.begin_shot(
+        shot(start={"kid": {"at": "curb", "in": "chair.seat"}, "mom": {"at": "curb", "in": "bench.left_seat"}},
+             propStart={"wagon": {"at": "curb"}, "crate": {"on": "wagon.bed"}, "chair": {"on": "crate.top"},
+                        "bench": {"on": "wagon.seat"}}),
+        MARKS, same_set_as_previous=False,
+    )
+    # the wagon's occupants in insertion order: crate (bed), then bench (seat); the crate's chair
+    # comes before the bench, as World._descendants walks them
+    assert list(world._descendants("wagon")) == ["crate", "chair", "bench"]
+    assert world.riders("wagon") == [("chair", "seat", "kid"), ("bench", "left_seat", "mom")]
+
+
+def test_supports_lists_what_a_prop_rests_on_nearest_first(world: World):
+    stacked(world)
+    assert world.supports("bench") == ["crate", "wagon"]
+    assert world.supports("crate") == ["wagon"]
+    assert world.supports("wagon") == [] and world.supports("chair") == []
+    w = opening(World(PEOPLE, PROPS))
+    assert w.supports("hymn_books") == []  # a held prop rests on nothing
+    raises("unknown_id", "boat is not a known prop", world.supports, "boat")
+
+
+def test_move_vehicle_carries_riders_of_stacked_props(world: World):
+    stacked(world)
+    before = {w: world.people[w].pos for w in ("kid", "dad", "mom")}
+    world.move_vehicle("wagon", (0.3, 0.0, 0.5))
+    for w in ("kid", "dad", "mom"):
+        assert world.people[w].pos == pytest.approx((before[w][0] - 0.5, before[w][1], before[w][2]))
+
+
+def test_check_rider_accepts_a_puppet_on_a_prop_stacked_on_the_vehicle(world: World):
+    world.begin_shot(
+        shot(start={"kid": {"at": "curb", "in": "chair.seat"}, "mom": {"at": "curb", "in": "sedan.driver"},
+                    "dad": {"at": "home", "in": "bench.left_seat"}},
+             propStart={"sedan": {"at": "curb"}, "crate": {"on": "sedan.back_seat"}, "chair": {"on": "crate.top"},
+                        "bench": {"at": "home"}}),
+        MARKS, same_set_as_previous=False,
+    )
+    world.check_rider("kid", "sedan")  # on the chair, on the crate, on the sedan
+    world.check_rider("mom", "sedan")
+    raises("not_in_vehicle", "dad is not in sedan", world.check_rider, "dad", "sedan")
+    raises("not_in_vehicle", "kid is not in wagon", world.check_rider, "kid", "wagon")
+    world.get_out("mom", "sedan")
+    raises("no_driver", "nobody is driving sedan", world.check_rider, "kid", "sedan")

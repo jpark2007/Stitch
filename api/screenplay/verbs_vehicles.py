@@ -6,7 +6,9 @@ A vehicle is a prop of size ``vehicle`` standing on the ground. Its ``position``
 world position of its anchor. Puppets have no ``parent`` channel (shared/CONTRACTS.md channel
 table), so riding is expressed as ``root.position`` keys that keep each seated puppet's hips
 exactly on its socket while the vehicle moves (motion.seated_root_keys). Props resting on the
-vehicle's sockets need no keys: their position is socket-relative.
+vehicle's sockets need no keys: their position is socket-relative. A puppet seated on such a
+prop (a chair on a pickup's bed) is carried too: its root keys translate it with the vehicle,
+exactly as World.move_vehicle moves its world position.
 
 Every handler follows the shared handler contract (see compiler.py):
 
@@ -151,9 +153,14 @@ def _sit_root_offset(build: str) -> Vec3:
 
 
 def _seated(world: World, what: str) -> list[tuple[str, str]]:
-    """(socket, person id) of every puppet seated in the vehicle, in socket order."""
-    occ = world.props[what].occupants
-    return [(sock, o.partition(":")[2]) for sock, o in occ.items() if o.startswith("puppet:")]
+    """(socket, person id) of every puppet seated in the vehicle's own sockets, in socket order."""
+    return [(sock, who) for seat, sock, who in world.riders(what) if seat == what]
+
+
+def _stacked(world: World, what: str) -> list[tuple[str, str, str]]:
+    """(seat prop, socket, person id) of every puppet seated on a prop stacked on the vehicle
+    (a chair on its bed, or on something resting there), in ``World.riders`` order."""
+    return [r for r in world.riders(what) if r[0] != what]
 
 
 # --------------------------------------------------------------------------- get_in
@@ -242,6 +249,13 @@ def _drive(world: World, tracks: TrackSet, what: str, to: str, t: float, action_
            locate: Locate) -> tuple[list[Key], float, Vec3]:
     """The vehicle's path to `to`, wheel spin, and seated puppets' root keys. Pure: no mutation.
 
+    Every puppet ``World.move_vehicle`` carries gets root keys at exactly the path's key times:
+    one in the vehicle's own sockets stays on its socket (motion.seated_root_keys); one seated
+    on a prop stacked on the vehicle (a chair on its bed) keeps its root at t translated by
+    the vehicle's travel so far (path position - start anchor), the same translation
+    move_vehicle applies to its world position. A rider whose root is still moving at t
+    (sitting down) is ``busy``.
+
     Returns (keys, arrival time, end anchor position).
     """
     _on_stage(world, what)
@@ -249,10 +263,11 @@ def _drive(world: World, tracks: TrackSet, what: str, to: str, t: float, action_
     if st.parent != GROUND:
         raise StateError("not_on_ground", f"{what} is not on the ground")
     _check_still(tracks, what, t, action_start)
-    for sock, rider in _seated(world, what):
+    for seat, sock, rider in world.riders(what):
         until = _moving_until(tracks, f"puppet:{rider}", "root.position", t)
         if until is not None:
-            raise StateError("busy", f"{rider} is still settling into {what}.{sock} until t={fmt_t(until - action_start)}")
+            where = f"{what}.{sock}" if seat == what else f"{seat}.{sock}, which rests on {what},"
+            raise StateError("busy", f"{rider} is still settling into {where} until t={fmt_t(until - action_start)}")
     end = _vec3(locate(to, t))
     start = _anchor(world, tracks, what, t)
     prop = world.catalog[what]
@@ -272,7 +287,18 @@ def _drive(world: World, tracks: TrackSet, what: str, to: str, t: float, action_
     for sock, rider in _seated(world, what):
         out += motion.seated_root_keys(rider, path, motion.prop_socket_offset(prop, sock),
                                        _sit_root_offset(world.people[rider].build))
+    for _, _, rider in _stacked(world, what):
+        out += _carried_root_keys(rider, _root(world, tracks, rider, t), start, path)
     return out, arrival, end
+
+
+def _carried_root_keys(who: str, root: Vec3, start: Vec3, path: Iterable[tuple[float, Vec3]]) -> list[Key]:
+    """``root.position`` keys for a puppet carried along by a moving vehicle without sitting in
+    one of its sockets (it sits on a prop stacked on the vehicle): one key per path key, at the
+    puppet's root plus the vehicle's travel from ``start`` (its anchor when the drive starts)."""
+    return [(f"puppet:{who}", "root.position", kt,
+             [root[0] + a[0] - start[0], root[1] + a[1] - start[1], root[2] + a[2] - start[2]])
+            for kt, a in path]
 
 
 def apply_drive_to(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
@@ -293,7 +319,11 @@ def apply_drive_to(world: World, tracks: TrackSet, action: Action, t: float, act
 
 def apply_ride_to(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                   locate: Locate) -> float:
-    """A rider asks to go to a mark: the puppet in the driver's seat drives; all ride along."""
+    """A rider asks to go to a mark: the puppet in the driver's seat drives; all ride along.
+
+    The rider sits in the vehicle, or on a prop resting on it (World.check_rider). Everyone
+    else carried along, the driver and riders on stacked props included, must be free, and is
+    busy (driving / riding) until the vehicle arrives."""
     who = _require(action, "who")
     what = _require(action, "what")
     to = _require(action, "to")
@@ -301,7 +331,7 @@ def apply_ride_to(world: World, tracks: TrackSet, action: Action, t: float, acti
     _vehicle(world, what)
     world.check_rider(who, what)
     driver = world.props[what].occupants[DRIVER_SOCKET].partition(":")[2]
-    others = [r for _, r in _seated(world, what) if r != who]  # the driver and every other rider
+    others = [r for _, _, r in world.riders(what) if r != who]  # the driver and every other rider
     for other in others:
         world.check_free(other)
     keys, arrival, end = _drive(world, tracks, what, to, t, action_start, locate)

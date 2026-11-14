@@ -661,6 +661,9 @@ def random_shot(rng: random.Random):
     props = rng.sample(PROP_POOL, rng.randint(0, 3))
     named = cast + props + list(MARKS) + ["nobody"]
     seated_in = {p: "sedan" for p in cast if "sedan" in props and rng.random() < 0.3}
+    # some start on a chair resting on the sedan's bed: the sedan's drives carry them too
+    seated_in.update({p: ("chair", "sedan") for p in cast if "sedan" in props and p not in seated_in
+                      and rng.random() < 0.15})
     actions = []
     for _ in range(rng.randint(2, 10)):
         who = rng.choice(cast)
@@ -670,6 +673,8 @@ def random_shot(rng: random.Random):
             a = {"who": who, "do": rng.choice(["get_in", "get_out", "drive_to", "ride_to"]), "what": "sedan", "to": "curb"}
         elif roll < 0.35:
             a = {"who": who, "do": "follow", "target": rng.choice(cast + cast + [who, "nobody", thing])}
+            if rng.random() < 0.4:  # a window: only the leader's moves that start inside it count
+                a["dur"] = rng.choice([0.5, 1, 2, 3, 5])
         elif roll < 0.43:
             a = {"who": who, "do": "hand_to", "what": thing, "to": rng.choice(cast)}
         elif roll < 0.5:
@@ -705,16 +710,17 @@ def precedence(actions, retimed, cast, props, seated_in) -> dict[tuple[int, int]
     """Every constraint "i runs before j", labelled (b), (c) or (d)."""
     key = [(retimed[i], i) for i in range(len(actions))]
     touch = [oracle_touches(a, cast, props) for a in actions]
-    # Who sits where as the shot plays out in time order, and so who each vehicle move carries.
-    seat = dict(seated_in)
+    # Who sits where as the shot plays out in time order, and so who each vehicle move carries:
+    # a puppet in the vehicle's seat, or on a chair resting on it.
+    seat = {p: [v] if isinstance(v, str) else list(v) for p, v in seated_in.items()}
     carries: dict[int, set[str]] = {}
     for i in sorted(range(len(actions)), key=key.__getitem__):
         a = actions[i]
         if a.do in ("drive_to", "ride_to"):
-            carries[i] = {p for p, v in seat.items() if v == a.what}
+            carries[i] = {p for p, v in seat.items() if a.what in v}
         if a.do == "get_in":
-            seat[a.who] = a.what
-        elif a.do == "get_out" and seat.get(a.who) == a.what:
+            seat[a.who] = [a.what]
+        elif a.do == "get_out" and a.who in seat and seat[a.who][0] == a.what:
             del seat[a.who]
     edges: dict[tuple[int, int], str] = {}
     for j, f in enumerate(actions):
@@ -722,6 +728,9 @@ def precedence(actions, retimed, cast, props, seated_in) -> dict[tuple[int, int]
             continue
         leader = f.target
         for i, a in enumerate(actions):
+            # a follow with dur only reads its leader up to t + dur: later moves do not count
+            if f.dur is not None and not retimed[i] < retimed[j] + f.dur - 1e-6:
+                continue
             if i != j and ((a.who == leader and a.do not in ORACLE_STILL) or leader in carries.get(i, ())):
                 edges[(i, j)] = "c"
     for i, a in enumerate(actions):
@@ -830,7 +839,7 @@ def test_the_property_test_catches_the_old_vehicle_rule(monkeypatch):
     """The oracle's vehicle rule is worked out on its own (who sits where, in time order), so
     the old rule (a follow waits for every drive of any vehicle its leader is in at any time
     in the shot) fails the property test."""
-    def old_moves(actions, who, seated_in, by_time):
+    def old_moves(actions, who, seated_in, by_time, *_):
         rides = {a.what for a in actions if a.who == who and a.do == "get_in"} | (
             {seated_in[who]} if who in seated_in else set())
         return [i for i in by_time
@@ -840,6 +849,110 @@ def test_the_property_test_catches_the_old_vehicle_rule(monkeypatch):
     monkeypatch.setattr(C, "_moves", old_moves)
     failing = [seed for seed in range(2500) if check_shot(*random_shot(random.Random(seed)))]
     assert failing, "the property test no longer tells the old vehicle rule apart"
+
+
+def test_the_property_test_catches_a_follow_that_ignores_its_window(monkeypatch):
+    """The old rule (a follow with dur waits for every move of its leader) fails it too."""
+    monkeypatch.setattr(C, "_in_window", lambda retimed_j, end: True)
+    failing = [seed for seed in range(2500) if check_shot(*random_shot(random.Random(seed)))]
+    assert failing, "the property test no longer tells a follow's window apart"
+
+
+def test_the_property_test_catches_riders_on_a_stacked_seat_left_out(monkeypatch):
+    """A rule that only counts a drive of the puppet's own seat misses the chair on the sedan."""
+    real = C._moves
+
+    def seat_only(actions, who, seated_in, by_time, *rest):
+        own = {p: C._seat_chain(v)[:1] for p, v in seated_in.items()}
+        return real(actions, who, own, by_time, *rest)
+
+    monkeypatch.setattr(C, "_moves", seat_only)
+    failing = [seed for seed in range(2500) if check_shot(*random_shot(random.Random(seed)))]
+    assert failing, "the property test no longer tells stacked riders apart"
+
+
+# ------------------------------------------------- what moves a puppet: seats, stacks, windows
+
+def test_moves_counts_drives_of_any_vehicle_under_the_seat():
+    actions = acts(
+        {"t": 1, "who": "dad", "do": "drive_to", "what": "sedan", "to": "curb"},
+        {"t": 2, "who": "dad", "do": "drive_to", "what": "wagon", "to": "curb"},
+        {"t": 3, "who": "kid", "do": "wave"},
+    )
+    by_time = [0, 1, 2]
+    # kid on a chair on a crate on the sedan's bed: the sedan's drive moves kid
+    assert C._moves(actions, "kid", {"kid": ("chair", "crate", "sedan")}, by_time) == [0]
+    # a plain string is a seat with nothing under it, as before
+    assert C._moves(actions, "kid", {"kid": "sedan"}, by_time) == [0]
+    assert C._moves(actions, "kid", {"kid": "chair"}, by_time) == []
+    assert C._moves(actions, "kid", {}, by_time) == []
+    assert C._seat_chain(None) == () and C._seat_chain("sedan") == ("sedan",)
+    assert C._seat_chain(["chair", "sedan"]) == ("chair", "sedan")
+
+
+def test_moves_follows_get_in_get_out_sit_on_and_stand_up():
+    actions = acts(
+        {"t": 0, "who": "mom", "do": "drive_to", "what": "sedan", "to": "curb"},     # 0: kid not aboard
+        {"t": 1, "who": "kid", "do": "sit_on", "what": "chair"},                     # 1: onto the stacked chair
+        {"t": 2, "who": "mom", "do": "drive_to", "what": "sedan", "to": "steps"},    # 2: carries kid
+        {"t": 3, "who": "kid", "do": "stand_up"},                                    # 3
+        {"t": 4, "who": "mom", "do": "drive_to", "what": "sedan", "to": "curb"},     # 4: kid is off
+        {"t": 5, "who": "kid", "do": "get_in", "what": "sedan"},                     # 5
+        {"t": 6, "who": "mom", "do": "ride_to", "what": "sedan", "to": "steps"},     # 6: carries kid
+        {"t": 7, "who": "kid", "do": "get_out", "what": "sedan"},                    # 7
+        {"t": 8, "who": "mom", "do": "drive_to", "what": "sedan", "to": "curb"},     # 8: kid is off
+    )
+    by_time = list(range(len(actions)))
+    assert C._moves(actions, "kid", {}, by_time, {"chair": ("sedan",)}, {"sedan"}) == [1, 2, 3, 5, 6, 7]
+    # without knowing what the chair rests on, sitting on it rides nothing
+    assert C._moves(actions, "kid", {}, by_time) == [1, 3, 5, 6, 7]
+    # a stand_up from a vehicle seat changes nothing (the world refuses it; get_out it is)
+    in_car = acts({"t": 1, "who": "kid", "do": "stand_up"},
+                  {"t": 2, "who": "mom", "do": "drive_to", "what": "sedan", "to": "curb"})
+    assert C._moves(in_car, "kid", {"kid": "sedan"}, [0, 1], vehicles={"sedan"}) == [0, 1]
+    # a get_out of the vehicle under kid's chair is not kid's seat: kid still rides
+    stacked = acts({"t": 1, "who": "kid", "do": "get_out", "what": "sedan"},
+                   {"t": 2, "who": "mom", "do": "drive_to", "what": "sedan", "to": "curb"})
+    assert C._moves(stacked, "kid", {"kid": ("chair", "sedan")}, [0, 1]) == [0, 1]
+
+
+def test_moves_follows_props_put_on_and_taken_off_the_vehicle_mid_shot():
+    actions = acts(
+        {"t": 0, "who": "mom", "do": "place_on", "what": "chair", "on": "sedan"},     # 0: chair onto the bed
+        {"t": 1, "who": "kid", "do": "sit_on", "what": "chair"},                     # 1
+        {"t": 2, "who": "dad", "do": "drive_to", "what": "sedan", "to": "curb"},     # 2: carries kid
+        {"t": 3, "who": "kid", "do": "stand_up"},                                    # 3
+        {"t": 4, "who": "mom", "do": "pick_up", "what": "chair"},                    # 4: chair off the bed
+        {"t": 5, "who": "mom", "do": "place_on", "what": "chair", "on": "curb"},     # 5: onto a mark
+        {"t": 6, "who": "kid", "do": "sit_on", "what": "chair"},                     # 6
+        {"t": 7, "who": "dad", "do": "drive_to", "what": "sedan", "to": "steps"},    # 7: kid stays
+    )
+    by_time = list(range(len(actions)))
+    # the chair starts in mom's hands (rests on nothing): it is on the sedan only from t=0 to t=4
+    assert C._moves(actions, "kid", {}, by_time, {"chair": ()}, {"sedan"}) == [1, 2, 3, 6]
+    # a crate put on the sedan carries a chair already resting on it, and the puppet on that
+    stacked = acts(
+        {"t": 0, "who": "mom", "do": "place_on", "what": "crate", "on": "sedan"},
+        {"t": 1, "who": "dad", "do": "drive_to", "what": "sedan", "to": "curb"},
+        {"t": 2, "who": "mom", "do": "drop", "what": "crate"},
+        {"t": 3, "who": "dad", "do": "drive_to", "what": "sedan", "to": "steps"},
+    )
+    assert C._moves(stacked, "kid", {"kid": ("chair", "crate")}, [0, 1, 2, 3]) == [1]
+    # a put_on (onto a head) lifts the prop off the vehicle as well
+    worn = acts(
+        {"t": 0, "who": "mom", "do": "put_on", "what": "crate"},
+        {"t": 1, "who": "dad", "do": "drive_to", "what": "sedan", "to": "curb"},
+    )
+    assert C._moves(worn, "kid", {"kid": ("chair", "crate", "sedan")}, [0, 1]) == []
+
+
+def test_schedule_a_follow_of_a_stacked_rider_waits_for_the_drive():
+    actions = acts(
+        {"t": 1, "who": "mom", "do": "follow", "target": "kid"},
+        {"t": 3, "who": "dad", "do": "drive_to", "what": "sedan", "to": "curb"},
+    )
+    assert schedule(actions, CAST, {"sedan", "chair"}, {"kid": ("chair", "sedan"), "dad": "sedan"}) == ([1, 0], [])
+    assert schedule(actions, CAST, {"sedan", "chair"}, {"kid": "chair", "dad": "sedan"}) == ([0, 1], [])
 
 
 # ------------------------------------------------------------------ the verb cases still hold

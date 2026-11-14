@@ -831,3 +831,113 @@ def test_standing_empty_handed_get_in_and_get_out_keys_are_unchanged():
     assert _digest(tracks.raw) == (10, "510382d0c32a1e12cd37ab08361d3699db7e40f38be345714a59002039ca1ad1")
     run(world, tracks, 1.0, do="get_out", who="dad", what="car")
     assert _digest(tracks.raw[n:]) == (10, "2afb0cdf1ec939eb6c87874355f60fd2ec1e1fc22d703b1c232575a63df07e67")
+
+
+# ------------------------------------------------------- riders on props stacked on the vehicle
+
+PICKUP = schemas.Prop(
+    id="pickup", name="Pickup", size="vehicle", art={"body": None, "wheel": None}, aspect=2.0,
+    sockets={"driver": [0.35, 0.55], "passenger": [0.5, 0.55], "bed": [0.8, 0.5]},
+    parts={"wheel_front": {"art": "wheel", "at": [0.22, 0.9], "spin": True}},
+)
+CRATE = schemas.Prop(id="crate", name="Crate", size="furniture", art={"body": None}, sockets={"top": [0.5, 0.0]})
+
+
+def pickup_world(start: dict | None = None, chair_on: str = "pickup.bed") -> World:
+    """The pickup on the lot with the chair on its bed: dad drives, mom is the passenger, kid
+    sits on the chair. ``chair_on="crate.top"`` puts the crate on the bed and the chair on it;
+    ``"chair_spot"`` stands the chair on the ground instead."""
+    prop_start: dict = {"pickup": {"at": "lot"}}
+    if chair_on == "crate.top":
+        prop_start["crate"] = {"on": "pickup.bed"}
+    prop_start["chair"] = {"at": "chair_spot"} if chair_on == "chair_spot" else {"on": chair_on}
+    world = World(PEOPLE, [PICKUP, CHAIR, CRATE])
+    world.begin_shot(Shot.model_validate({
+        "id": "s1", "set": "street",
+        "start": start if start is not None else {"dad": {"at": "lot", "in": "pickup.driver"},
+                                                  "mom": {"at": "lot", "in": "pickup.passenger"},
+                                                  "kid": {"at": "lot", "in": "chair.seat"}},
+        "prop_start": prop_start,
+    }), MARKS, same_set_as_previous=False)
+    return world
+
+
+def test_seated_lists_only_the_vehicles_own_sockets():
+    world = pickup_world()
+    assert verbs_vehicles._seated(world, "pickup") == [("driver", "dad"), ("passenger", "mom")]
+    assert verbs_vehicles._stacked(world, "pickup") == [("chair", "seat", "kid")]
+
+
+@pytest.mark.parametrize("chair_on", ["pickup.bed", "crate.top"], ids=["on_the_bed", "on_a_crate_on_the_bed"])
+def test_drive_to_carries_a_rider_on_a_stacked_prop_by_the_vehicles_travel(chair_on):
+    tracks = RecordingTracks()
+    world = pickup_world(chair_on=chair_on)
+    kid_before = world.people["kid"].pos
+    arrival = run(world, tracks, 2.0, do="drive_to", who="dad", what="pickup", to="church")
+    path = motion.path_from_keys(tracks.raw, "prop:pickup")
+    start = path[0][1]
+    kid = motion.path_from_keys(tracks.raw, "puppet:kid", "root.position")
+    # one key per path key, at the same times, translated by the pickup's travel so far
+    assert [t for t, _ in kid] == [t for t, _ in path] == [2.0, arrival]
+    for (_, k), (_, a) in zip(kid, path, strict=True):
+        assert list(k) == pytest.approx([kid_before[i] + a[i] - start[i] for i in range(3)], abs=1e-12)
+    # the same place World.move_vehicle put kid
+    assert list(kid[-1][1]) == pytest.approx(list(world.people["kid"].pos), abs=1e-12)
+    assert world.people["kid"].pos[0] == pytest.approx(kid_before[0] + 0.9)
+    # the driver and the passenger still ride on their sockets (motion.seated_root_keys)
+    for who, sock in (("dad", "driver"), ("mom", "passenger")):
+        root = motion.path_from_keys(tracks.raw, f"puppet:{who}", "root.position")
+        assert root == [(t, (a[0] + o[0], a[1] + o[1] - HIP[who], a[2] + o[2]))
+                        for (t, a), o in zip(path, [motion.prop_socket_offset(PICKUP, sock)] * len(path))]
+
+
+def test_drive_to_uses_the_stacked_riders_track_where_it_has_one():
+    tracks = RecordingTracks()
+    world = pickup_world()
+    tracks.add("puppet:kid", "root.position", 0.0, [0.25, 0.5, 0.5])
+    run(world, tracks, 1.0, do="drive_to", who="dad", what="pickup", to="church")
+    kid = [k for k in tracks.raw if k[0] == "puppet:kid"][1:]
+    assert [k[3] for k in kid] == [pytest.approx([0.25, 0.5, 0.5]), pytest.approx([1.15, 0.5, 0.5])]
+
+
+def test_drive_to_while_a_stacked_rider_is_still_sitting_down():
+    tracks = TrackSet()
+    world = pickup_world(start={"dad": {"at": "lot", "in": "pickup.driver"}, "kid": {"at": "porch"}})
+    action = Action.model_validate({"t": 0.0, "do": "sit_on", "who": "kid", "what": "chair"})
+    world.now = 0.0
+    end = verbs_body.HANDLERS["sit_on"](world, tracks, action, 0.0, 0.0, make_locate(world))  # walks over first
+    assert end > 1.0
+    assert_atomic(world, tracks, "busy",
+                  f"kid is still settling into chair.seat, which rests on pickup, until t={round(end, 2):g}",
+                  do="drive_to", who="dad", what="pickup", to="church", t=1.0)
+
+
+def test_ride_to_from_a_stacked_seat_drives_and_occupies_everyone_else():
+    tracks = TrackSet()
+    world = pickup_world()
+    arrival = run(world, tracks, 1.0, do="ride_to", who="kid", what="pickup", to="church")
+    assert (world.people["dad"].busy_until, world.people["dad"].activity) == (pytest.approx(arrival), "driving")
+    assert (world.people["mom"].busy_until, world.people["mom"].activity) == (pytest.approx(arrival), "riding")
+    assert world.people["kid"].activity == "riding"  # run() occupies the one who asked
+
+
+def test_ride_to_by_the_driver_occupies_the_stacked_rider():
+    tracks = TrackSet()
+    world = pickup_world()
+    arrival = run(world, tracks, 1.0, do="ride_to", who="dad", what="pickup", to="church")
+    assert (world.people["kid"].busy_until, world.people["kid"].activity) == (pytest.approx(arrival), "riding")
+
+
+def test_ride_to_with_a_busy_stacked_rider():
+    tracks = TrackSet()
+    world = pickup_world()
+    world.occupy("kid", 5.0, "waving", at=0.0)
+    assert_atomic(world, tracks, "busy", "kid is still waving until t=5",
+                  do="ride_to", who="mom", what="pickup", to="church", t=1.0)
+
+
+def test_ride_to_from_a_chair_on_the_ground_is_not_in_the_vehicle():
+    tracks = TrackSet()
+    world = pickup_world(chair_on="chair_spot")
+    assert_atomic(world, tracks, "not_in_vehicle", "kid is not in pickup",
+                  do="ride_to", who="kid", what="pickup", to="church", t=1.0)
