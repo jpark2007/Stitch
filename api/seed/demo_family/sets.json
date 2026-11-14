@@ -6,7 +6,7 @@
     "layers": [
       {"art": null, "depth": 0, "height": 1.0, "color": "#b5654a"},
       {"art": null, "depth": 1, "height": 0.45, "color": "#cfc6b4"},
-      {"art": null, "depth": 2, "height": 0.18, "color": "#7d9a5b"}
+      {"art": null, "depth": 2, "height": 0.18, "color": "#8f8a80"}
     ],
     "marks": {"steps_left": [0.2, 0.0], "steps_foot": [0.5, 0.0], "steps_top": [0.6, 0.3], "curb": [0.9, 0.0]}
   },

@@ -11,6 +11,7 @@ explanations for every puppet and prop, and a good spread of the vocabulary acro
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterator
 
 import mongomock
@@ -502,6 +503,59 @@ def test_the_family_watches_lily_from_their_seats(memories, scene):
         # one small reaction each to Lily's bow, so the audience is alive but not crowding
         reactions = [a for a in hall.actions if a.who == pid and a.do != "sit_on"]
         assert len(reactions) == 1, (pid, [a.do for a in reactions])
+
+
+def _lab(color: str) -> tuple[float, float, float]:
+    """sRGB hex -> CIELAB (D65), the textbook conversion."""
+    rgb = [int(color.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    r, g, b = (c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb)
+    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+    def f(t: float) -> float:
+        return t ** (1 / 3) if t > 216 / 24389 else (24389 / 27 * t + 16) / 116
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
+
+
+# CIE76 colour difference (Euclidean distance in CIELAB). About 2.3 is the smallest difference
+# people notice side by side; at 10 two flat colours read as different at a glance. A puppet is a
+# flat card in its character colour (placeholder art) standing in front of, or partly behind, the
+# set's flat colour layers, so anything closer than this makes them vanish into the set (Joseph's
+# #7d9a5b on church_steps_1988's old front band was 0).
+MIN_DELTA_E = 10.0
+
+
+def test_nobody_vanishes_into_the_set_they_stand_on():
+    people = {p.id: p.character.color for p in demo.demo_people()}
+    sets = {s.id: s for s in demo.load_sets()}
+    problems = []
+    for memory_id in MEMORY_IDS:
+        sp = demo.load_screenplay(memory_id)
+        for shot in sp.shots:
+            on_stage = set(shot.start) | {a.who for a in shot.actions if a.who}
+            for pid in sorted(on_stage):
+                color = people[pid]
+                for i, layer in enumerate(sets[shot.set].layers):
+                    assert layer.color is not None
+                    delta = math.dist(_lab(color), _lab(layer.color))
+                    if color.lower() == layer.color.lower() or delta < MIN_DELTA_E:
+                        problems.append(
+                            f"{memory_id} {shot.id}: {pid} ({color}) on {shot.set} layer {i} ({layer.color}), "
+                            f"delta E {delta:.1f}"
+                        )
+    assert not problems, "\n".join(problems)
+
+
+def test_the_colour_check_catches_a_match():
+    """Guards against a vacuous pass: Joseph's own colour as a layer is caught."""
+    joseph = next(p.character.color for p in demo.demo_people() if p.id == "grandpa_joseph")
+    assert joseph.lower() == "#7d9a5b"
+    assert math.dist(_lab(joseph), _lab(joseph.upper())) == 0.0 < MIN_DELTA_E
+    church = next(s for s in demo.load_sets() if s.id == "church_steps_1988")
+    assert all(layer.color and layer.color.lower() != joseph.lower() for layer in church.layers)
 
 
 def test_rosa_and_joseph_come_out_into_the_sun(memories):
