@@ -14,13 +14,17 @@ type Module = typeof import("./traditionBook");
 const paths = ["./traditionBook.ts"];
 const {
   WHEN_MAX,
+  STORY_MAX_ALONE,
+  STORY_MAX_WITH_PHOTOS,
   familyCore,
+  fitStory,
   keepersOf,
   monthName,
   namesLine,
   orderTraditions,
   peopleById,
   sinceLine,
+  storyBudget,
   storyText,
   traditionBook,
   traditionsCover,
@@ -215,5 +219,47 @@ describe("the spreads", () => {
   it("is empty without traditions", () => {
     const book = traditionBook([], people, { familyName: "The Riveras" });
     assert.deepEqual(book.spreads, []);
+  });
+});
+
+describe("the story fits the page", () => {
+  const people = [person("rosa", "Rosa"), person("luis", "Luis", "#5f7f52")];
+  const sentence = "Every year we gather at the old house and cook together. ";
+  const long = sentence.repeat(100).slice(0, 5000);
+
+  it("keeps a story that fits as it is", () => {
+    assert.equal(fitStory("  We make tamales.  ", 440), "We make tamales.");
+  });
+
+  it("cuts a long story at a sentence, with an ellipsis", () => {
+    const out = fitStory(long, 440);
+    assert.ok(out.length <= 440, `${out.length}`);
+    assert.ok(out.length >= 440 * 0.6);
+    assert.match(out, /together\. …$/);
+  });
+
+  it("cuts at a word when no sentence ends late enough", () => {
+    const words = "tamales and pancakes and hymns ".repeat(40);
+    const out = fitStory(words, 100);
+    assert.ok(out.length <= 100);
+    assert.match(out, /[a-z]…$/);
+    assert.ok(words.startsWith(out.slice(0, -1)), "never half a word");
+  });
+
+  it("gives less room beside prints and under a long title", () => {
+    assert.equal(storyBudget("Tamales", true), STORY_MAX_WITH_PHOTOS);
+    assert.equal(storyBudget("Tamales", false), STORY_MAX_ALONE);
+    assert.ok(storyBudget("A very long title that wraps over several lines of the page", true) < STORY_MAX_WITH_PHOTOS);
+    assert.ok(storyBudget("x".repeat(200), true) >= 160);
+  });
+
+  it("prints a 5000-character description within the page's limit", () => {
+    const withShot = traditionBook([tradition({ description: long })], people, { snapshot: () => "data:image/png;base64,x" });
+    assert.ok(withShot.spreads[0].photos.length > 0);
+    assert.ok(withShot.spreads[0].text.length <= STORY_MAX_WITH_PHOTOS, `${withShot.spreads[0].text.length}`);
+    const plain = traditionBook([tradition({ description: long })], people);
+    assert.equal(plain.spreads[0].photos.length, 0);
+    assert.ok(plain.spreads[0].text.length <= STORY_MAX_ALONE, `${plain.spreads[0].text.length}`);
+    assert.ok(plain.spreads[0].text.endsWith("…"));
   });
 });

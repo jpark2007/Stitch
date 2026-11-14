@@ -236,6 +236,44 @@ export function storyText(tradition: Pick<Tradition, "description" | "title" | "
   return who ? `${when}, ${who} keep it going.` : `${when}, without fail.`;
 }
 
+/**
+ * The most of a story the left page holds (pageArt.ts sets it at 31px over a
+ * 770px measure, about 50 characters a line): with prints taped in below,
+ * about nine lines, so the prints keep their size; alone, the page's height.
+ * A title over one line takes about a line and a half of story with each
+ * extra line (it is set at 64px, about 22 characters a line).
+ */
+export const STORY_MAX_WITH_PHOTOS = 440;
+export const STORY_MAX_ALONE = 750;
+const STORY_MIN = 160;
+
+/** How much of a story fits on the page beside its title, with or without prints. */
+export function storyBudget(title: string, withPhotos: boolean): number {
+  const extraTitleLines = Math.max(0, Math.ceil(title.trim().length / 22) - 1);
+  const max = withPhotos ? STORY_MAX_WITH_PHOTOS : STORY_MAX_ALONE;
+  return Math.max(STORY_MIN, max - extraTitleLines * 75);
+}
+
+/**
+ * A story cut to at most `max` characters, the ellipsis included: at the
+ * last sentence that ends in the back part of it, else at the last word, so
+ * the page never prints half a word. A story that fits comes back as is.
+ */
+export function fitStory(text: string, max: number): string {
+  if (text.trim().length <= max) return text.trim();
+  const s = text.replace(/\s+/g, " ").trim();
+  // Room for the ellipsis (and its space after a whole sentence).
+  const head = s.slice(0, Math.max(1, max - 2));
+  // A whole sentence, when one ends in the last 40% of the room.
+  const sentence = /[.!?]["'”’)]?(?= )/g;
+  let cut = -1;
+  for (let m = sentence.exec(head); m; m = sentence.exec(head)) cut = m.index + m[0].length;
+  if (cut >= max * 0.6) return `${head.slice(0, cut)} …`;
+  const space = head.lastIndexOf(" ");
+  const words = (space > 0 ? head.slice(0, space) : head).replace(/[\s,;:–—-]+$/, "");
+  return `${words}…`;
+}
+
 export interface TraditionBookOptions {
   /** The family's name, for the cover. */
   familyName?: string | null;
@@ -260,11 +298,13 @@ export function traditionSpread(tradition: Tradition, keepers: readonly Traditio
     const last = photos[photos.length - 1];
     photos[photos.length - 1] = { ...last, caption: since };
   }
+  const title = tradition.title.trim() || "A family tradition";
   return {
     id: tradition.id,
-    title: tradition.title.trim() || "A family tradition",
+    title,
     year: printedLine(whenLine(tradition.when)),
-    text: storyText(tradition, keepers),
+    // Cut to what the page holds: the printer has no overflow of its own.
+    text: fitStory(storyText(tradition, keepers), storyBudget(title, photos.length > 0)),
     photos,
     // The kit stands on the right page: printed plain, no "the pop-up rises here".
     stage: {},
