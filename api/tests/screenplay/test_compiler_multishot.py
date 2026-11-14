@@ -1,0 +1,312 @@
+"""compile() end to end across several shots, on small hand-built sets, props and people:
+held props and positions carried between shots, set changes, shot timing, per-teller
+narration, cross-shot state errors and determinism."""
+
+from __future__ import annotations
+
+import copy
+
+import pytest
+
+import schemas
+from screenplay import body, layout
+from screenplay.compiler import compile as compile_screenplay
+from screenplay.schema import CompileResult, Screenplay
+from screenplay.tracks import evaluate
+
+# ------------------------------------------------------------------------- fixtures
+
+SETS = {
+    "porch": schemas.SetDef(
+        id="porch", name="porch",
+        layers=[{"art": None, "depth": 0, "height": 1.0}, {"art": None, "depth": 1, "height": 0.5}],
+        marks={"door": [0.3, 0.0], "mid": [0.5, 0.0], "gate": [0.7, 0.0]},
+    ),
+    "kitchen": schemas.SetDef(
+        id="kitchen", name="kitchen",
+        layers=[
+            {"art": None, "depth": 0, "height": 1.0},
+            {"art": None, "depth": 1, "height": 0.6},
+            {"art": None, "depth": 2, "height": 0.3},
+        ],
+        marks={"stove": [0.25, 0.0], "table": [0.6, 0.0]},
+    ),
+}
+PROPS = {
+    "cup": schemas.Prop(id="cup", name="cup", size="hand", art={"body": None}, grip=[0.5, 0.5]),
+    "bag": schemas.Prop(id="bag", name="bag", size="carried", art={"body": None}, grip=[0.5, 0.1]),
+}
+PEOPLE = {
+    pid: schemas.Person(id=pid, family_id="f", name=pid.title(), character={"color": "#336699", "build": build})
+    for pid, build in (("ann", "average"), ("ben", "tall"))
+}
+
+# x on stage for a mark u: 2u - 1
+DOOR, MID, GATE = [-0.4, 0.0, 0.5], [0.0, 0.0, 0.5], [0.4, 0.0, 0.5]
+STOVE, TABLE = [-0.5, 0.0, 0.5], [0.2, 0.0, 0.5]
+OFFSTAGE_LEFT = [-1.3, 0.0, 0.5]
+
+
+def run(data: dict) -> CompileResult:
+    return compile_screenplay(Screenplay.model_validate(data), sets=SETS, props=PROPS, people=PEOPLE)
+
+
+def screenplay(*shots: dict, **extra) -> dict:
+    return {"memoryId": "m", "cast": ["ann", "ben"], "props": ["cup", "bag"], "shots": list(shots), **extra}
+
+
+def track(result, target, channel):
+    for tr in result.timeline.tracks:
+        if (tr.target, tr.channel) == (target, channel):
+            return [(k[0], k[1]) for k in tr.keys]
+    return []
+
+
+def value(result, target, channel, t):
+    return evaluate(result.timeline.tracks, target, channel, t)
+
+
+def messages(result):
+    return [e.message for e in result.errors]
+
+
+def targets(result):
+    return {tr.target for tr in result.timeline.tracks}
+
+
+# ------------------------------------------------- (a) two shots on the same set
+
+def test_two_shots_on_the_same_set_carry_held_props_and_positions():
+    res = run(screenplay(
+        {"id": "s1", "set": "porch",
+         "start": {"ann": {"at": "door", "holding": "cup", "facing": "right"}, "ben": {"at": "gate", "facing": "left"}},
+         "actions": [{"t": 0, "who": "ann", "do": "walk_to", "to": "mid"}]},
+        {"id": "s2", "set": "porch",
+         "actions": [{"t": 0.5, "who": "ann", "do": "walk_to", "to": "door"}]},
+    ))
+    assert res.ok, messages(res)
+    s1, s2 = res.timeline.shots
+    # no fold between same-set shots, and no second rise: each layer only rises once
+    assert (s2.start, s2.action_start) == (s1.end, round(s1.end + layout.RISE, 3))
+    assert track(res, "set:porch.layer0", "fold") == [(0.0, 0.0), (0.8, 1.0)]
+    assert track(res, "set:porch.layer1", "fold") == [(0.2, 0.0), (1.0, 1.0)]
+    assert not any(t.startswith("set:kitchen") for t in targets(res))
+    # the cup never leaves ann's hand: one parent key, and her arm stays in the hold pose
+    assert track(res, "prop:cup", "parent") == [(0.0, "puppet:ann.hand_r")]
+    assert track(res, "prop:cup", "position") == [(0.0, [0.0, 0.0, 0.0])]
+    hold_upper, hold_lower = body.hold_pose("arm_r")
+    for t in (s1.end, s2.action_start, s2.end):
+        assert value(res, "puppet:ann", "arm_r.upper.rot", t) == pytest.approx(hold_upper)
+        assert value(res, "puppet:ann", "arm_r.lower.rot", t) == pytest.approx(hold_lower)
+    # ann ends shot 1 at mid and walks back to the door from there in shot 2
+    ann = track(res, "puppet:ann", "root.position")
+    assert value(res, "puppet:ann", "root.position", s1.end) == MID
+    assert value(res, "puppet:ann", "root.position", s2.action_start + 0.5) == MID
+    assert (s2.action_start + 0.5, MID) in ann
+    assert ann[-1][1] == DOOR
+    # no start keys for the same-set shot: shot 1's walk, then shot 2's walk (and its turn)
+    assert [k[0] for k in ann] == [0.0, s1.action_start, round(s1.end - layout.ACTION_TAIL, 3),
+                                   s2.action_start + 0.5, round(s2.end - layout.ACTION_TAIL, 3)]
+    assert track(res, "puppet:ann", "root.facing") == [(0.0, 1.0), (s2.action_start + 0.5, -1.0)]
+    # ben is not listed in shot 2 but the set is the same: he stays at the gate
+    assert track(res, "puppet:ben", "root.position") == [(0.0, GATE)]
+
+
+# ------------------------------------------------------------ (b) a set change
+
+def set_change(prop_start=None):
+    return screenplay(
+        {"id": "s1", "set": "porch",
+         "start": {"ann": {"at": "door", "holding": "cup", "facing": "right"},
+                   "ben": {"at": "gate", "holding": "bag", "facing": "left"}},
+         "actions": [{"t": 0, "who": "ann", "do": "drop", "what": "cup"}]},
+        {"id": "s2", "set": "kitchen",
+         "start": {"ann": {"at": "stove", "facing": "right"}},
+         "propStart": prop_start or {},
+         "actions": [{"t": 0, "who": "ann", "do": "walk_to", "to": "table"}]},
+    )
+
+
+def test_a_set_change_folds_rises_and_clears_what_stays_behind():
+    res = run(set_change())
+    assert res.ok, messages(res)
+    s1, s2 = res.timeline.shots
+    fold = layout.fold_out_seconds(2)
+    content_end = round(s1.end - fold, 3)
+    # porch folds front layer first from the end of shot 1's content; the kitchen rises from s2.start
+    assert track(res, "set:porch.layer1", "fold") == [
+        (0.2, 0.0), (1.0, 1.0), (content_end, 1.0), (round(content_end + 0.4, 3), 0.0),
+    ]
+    assert track(res, "set:porch.layer0", "fold") == [
+        (0.0, 0.0), (0.8, 1.0), (round(content_end + 0.1, 3), 1.0), (round(content_end + 0.5, 3), 0.0),
+    ]
+    assert s1.end == round(content_end + fold, 3) and s2.start == s1.end
+    for i in range(3):
+        start = round(s2.start + layout.LAYER_STAGGER * i, 3)
+        assert track(res, f"set:kitchen.layer{i}", "fold") == [(start, 0.0), (round(start + layout.LAYER_RISE, 3), 1.0)]
+
+    # the cup ann dropped on the porch is not in the kitchen: it steps offstage at s2.start
+    cup_parent = track(res, "prop:cup", "parent")
+    assert cup_parent[0] == (0.0, "puppet:ann.hand_r")
+    assert cup_parent[1][1] == "ground"
+    dropped_at = cup_parent[1][0]
+    assert len(cup_parent) == 2  # still "ground" in the kitchen, so no new parent key
+    on_porch = value(res, "prop:cup", "position", dropped_at + 1.0)
+    assert on_porch[0] == pytest.approx(-0.4 + 0.08)  # beside her feet, facing right
+    assert value(res, "prop:cup", "position", s2.start - 0.001) == on_porch  # held, no slide during the fold
+    assert value(res, "prop:cup", "position", s2.start) == OFFSTAGE_LEFT
+
+    # ben is not in shot 2: he waits at offstage_left, and (state.py) the bag he carried stays
+    # behind with the old set, so it leaves his hand and his arm drops out of the hold pose
+    assert value(res, "puppet:ben", "root.position", s2.start - 0.001) == GATE
+    assert value(res, "puppet:ben", "root.position", s2.start) == OFFSTAGE_LEFT
+    assert track(res, "prop:bag", "parent") == [(0.0, "puppet:ben.hand_r"), (s2.start, "ground")]
+    assert value(res, "prop:bag", "position", s2.start) == OFFSTAGE_LEFT
+    assert value(res, "puppet:ben", "arm_r.upper.rot", s2.start - 0.001) == pytest.approx(body.hold_pose("arm_r")[0])
+    assert value(res, "puppet:ben", "arm_r.upper.rot", s2.start) == 0.0
+
+    # ann steps to the stove at s2.start (not sliding there during the fold) and walks on
+    assert value(res, "puppet:ann", "root.position", s2.start - 0.001) == DOOR
+    assert value(res, "puppet:ann", "root.position", s2.start) == STOVE
+    assert track(res, "puppet:ann", "root.position")[-1][1] == TABLE
+
+
+def test_a_prop_placed_with_prop_start_is_in_the_new_set():
+    res = run(set_change(prop_start={"cup": {"at": "table"}}))
+    assert res.ok, messages(res)
+    s2 = res.timeline.shots[1]
+    assert value(res, "prop:cup", "parent", s2.start) == "ground"
+    assert (s2.start, TABLE) in track(res, "prop:cup", "position")
+    assert value(res, "prop:cup", "position", s2.start) == TABLE
+    assert OFFSTAGE_LEFT not in [v for _, v in track(res, "prop:cup", "position")]
+
+
+def test_a_listed_puppet_carries_its_prop_into_the_new_set():
+    data = set_change()
+    data["shots"][1]["start"]["ben"] = {"at": "table", "facing": "left"}
+    res = run(data)
+    assert res.ok, messages(res)
+    s2 = res.timeline.shots[1]
+    assert track(res, "prop:bag", "parent") == [(0.0, "puppet:ben.hand_r")]
+    assert value(res, "puppet:ben", "root.position", s2.start) == TABLE
+    assert value(res, "puppet:ben", "arm_r.upper.rot", s2.start) == pytest.approx(body.hold_pose("arm_r")[0])
+
+
+# ------------------------------------------------------------ (c) three shots
+
+def test_three_shots_chain_their_timing_like_layout():
+    pose = [{"t": 1, "who": "ann", "do": "pose", "pose": "wave"}]
+    start = {"ann": {"at": "mid"}}
+    res = run(screenplay(
+        {"id": "s1", "set": "porch", "start": start, "actions": pose},
+        {"id": "s2", "set": "porch", "actions": copy.deepcopy(pose)},
+        {"id": "s3", "set": "kitchen", "start": {"ann": {"at": "table"}}, "actions": copy.deepcopy(pose)},
+    ))
+    assert res.ok, messages(res)
+    s1, s2, s3 = res.timeline.shots
+    # each shot's content ends ACTION_TAIL after its pose has blended in (1 s + POSE_SECONDS)
+    def content_end(shot):
+        return layout.content_end(shot.action_start + 1 + body.POSE_SECONDS, None)
+
+    assert (s1.start, s1.action_start) == (0.0, layout.RISE)
+    end1, start2, action2, _ = layout.next_shot_timing(content_end(s1), "porch", 2, "porch", "fold")
+    assert (s1.end, s2.start, s2.action_start) == (end1, start2, action2)
+    end2, start3, action3, _ = layout.next_shot_timing(content_end(s2), "porch", 2, "kitchen", "fold")
+    assert (s2.end, s3.start, s3.action_start) == (end2, start3, action3)
+    assert s3.end == content_end(s3)
+    # the same numbers, written out: same set (no fold), then a 2-layer fold of 0.5 s
+    assert [(s.start, s.action_start, s.end) for s in (s1, s2, s3)] == [
+        (0.0, 1.2, 3.1), (3.1, 4.3, 6.7), (6.7, 7.9, 9.8),
+    ]
+    assert res.timeline.duration == s3.end == 9.8
+    assert [s.id for s in res.timeline.shots] == ["s1", "s2", "s3"]
+    assert [s.set for s in res.timeline.shots] == ["porch", "porch", "kitchen"]
+
+
+# ------------------------------------------- (d) tellings, explanations, page text
+
+def test_per_teller_narrations_explanations_and_page_text_are_carried():
+    res = run(screenplay(
+        {"id": "s1", "set": "porch", "start": {"ann": {"at": "door"}, "ben": {"at": "gate"}},
+         "narration": [{"t": 0.5, "text": "It was a cold morning.", "source": "telling:ann:t1"}],
+         "pageText": "The porch, 1979."},
+        {"id": "s2", "set": "kitchen", "start": {"ann": {"at": "stove"}},
+         "narration": [{"t": 0, "text": "Then we went inside.", "source": "telling:ann:t2"}],
+         "pageText": "The kitchen."},
+        narrations={
+            "ben": {
+                "s1": [{"t": 1, "text": "I remember the frost.", "source": "telling:ben:t1"}],
+                "s2": [{"t": 0.25, "text": "The kettle was on.", "source": "telling:ben:t2"}],
+            },
+        },
+        explanations=[
+            {"target": "puppet:ann", "text": "Ann was nine."},
+            {"target": "prop:cup", "text": "Grandma's cup."},
+        ],
+    ))
+    assert res.ok, messages(res)
+    tl = res.timeline
+    s1, s2 = tl.shots
+    assert tl.default_narrator == "ann"
+    assert list(tl.narrations) == ["ann", "ben"]
+    ann, ben = tl.narrations["ann"], tl.narrations["ben"]
+    assert (ann.author_id, ben.author_id) == ("ann", "ben")
+    # each line lands at its shot's action start plus its own t, in shot order
+    assert [(line.t, line.text, line.source) for line in ann.lines] == [
+        (s1.action_start + 0.5, "It was a cold morning.", "telling:ann:t1"),
+        (s2.action_start, "Then we went inside.", "telling:ann:t2"),
+    ]
+    assert [(line.t, line.text) for line in ben.lines] == [
+        (s1.action_start + 1, "I remember the frost."),
+        (s2.action_start + 0.25, "The kettle was on."),
+    ]
+    assert [(c.t, c.text) for c in ben.captions] == [(line.t, line.text) for line in ben.lines]
+    # the top-level captions are the default teller's
+    assert [(c.t, c.text) for c in tl.captions] == [(line.t, line.text) for line in ann.lines]
+    assert [(e.target, e.text) for e in tl.explanations] == [
+        ("puppet:ann", "Ann was nine."), ("prop:cup", "Grandma's cup."),
+    ]
+    assert [s.page_text for s in tl.shots] == ["The porch, 1979.", "The kitchen."]
+
+
+# ------------------------------------------------------- (e) cross-shot state errors
+
+def dropped_then_handed(second_set):
+    return screenplay(
+        {"id": "s1", "set": "porch",
+         "start": {"ann": {"at": "door", "holding": "cup", "facing": "right"}, "ben": {"at": "mid", "facing": "left"}},
+         "actions": [{"t": 0, "who": "ann", "do": "drop", "what": "cup"}]},
+        {"id": "s2", "set": second_set,
+         "start": {"ann": {"at": "door" if second_set == "porch" else "stove"},
+                   "ben": {"at": "mid" if second_set == "porch" else "table"}},
+         "actions": [{"t": 1.5, "who": "ann", "do": "hand_to", "what": "cup", "to": "ben"}]},
+    )
+
+
+@pytest.mark.parametrize(("second_set", "reason"), [
+    ("porch", "it is on the ground"),     # same set: the cup is still where she dropped it
+    ("kitchen", "it is not on stage"),    # new set: the cup stayed behind on the porch
+])
+def test_handing_over_a_prop_dropped_in_the_previous_shot(second_set, reason):
+    res = run(dropped_then_handed(second_set))
+    assert not res.ok and res.timeline is None
+    assert [(e.code, e.message, e.shot, e.t, e.who, e.do) for e in res.errors] == [(
+        "not_holding", f'shot s2, t=1.5: ann cannot hand_to "cup"; {reason}', "s2", 1.5, "ann", "hand_to",
+    )]
+
+
+# --------------------------------------------------------------- (f) determinism
+
+@pytest.mark.parametrize("data", [
+    set_change(),
+    set_change(prop_start={"cup": {"at": "table"}}),
+    dropped_then_handed("kitchen"),
+])
+def test_compiling_twice_is_byte_identical(data):
+    first = run(data).model_dump_json(by_alias=True)
+    second = run(copy.deepcopy(data)).model_dump_json(by_alias=True)
+    assert first == second
+    sp = Screenplay.model_validate(data)
+    before = sp.model_dump_json()
+    again = compile_screenplay(sp, sets=SETS, props=PROPS, people=PEOPLE).model_dump_json(by_alias=True)
+    assert again == first and sp.model_dump_json() == before

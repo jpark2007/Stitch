@@ -59,7 +59,7 @@ from screenplay.schema import (
     Timeline,
     TimelineShot,
 )
-from screenplay.state import HANDS, OFFSTAGE_LEFT, TIME_EPS, StateError, World, fmt_t
+from screenplay.state import GROUND, HANDS, OFFSTAGE_LEFT, TIME_EPS, StateError, World, fmt_t
 from screenplay.tracks import Key, TrackSet, round_value
 from screenplay.validate import validate
 
@@ -332,6 +332,15 @@ def _start_keys(world: World, tracks: TrackSet, shot: Shot, t: float, same_set: 
         for who in world.people:
             if who not in shot.start:
                 puppet(who, OFFSTAGE_LEFT, held_bones(who))
+        # Props the new shot does not bring along (state.py took them off the stage) leave
+        # with the old set: on the ground at offstage_left, stepping there at the shot's start.
+        for what in world.props:
+            target = f"prop:{what}"
+            if not world.is_unplaced(what) or not tracks.has_track(target, "parent"):
+                continue
+            if tracks.value_at(target, "parent", t) != GROUND:
+                keys.append((target, "parent", t, GROUND))
+            keys.extend(_hold_then(tracks, target, "position", t, [float(c) for c in OFFSTAGE_LEFT]))
 
     for what, ps in shot.prop_start.items():
         st = world.props[what]
