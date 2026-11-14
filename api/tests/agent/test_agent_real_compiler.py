@@ -2,8 +2,10 @@
 
 The real compiler (`screenplay.compiler.compile`) lands one PR at a time. Every test that needs
 it takes the `real` fixture, which skips while `agent.tools.compile.load_compiler()` returns
-FakeCompiler, so these switch on by themselves as the compiler lands. A case or example that uses
-a verb the real compiler has no handler for yet (`unsupported_verb`) skips and names the verb.
+FakeCompiler, so these switch on by themselves as the compiler lands. Every verb but the effects
+has a real handler on main; a case or example the real compiler rejects only because it does not
+dispatch an effect verb yet (`unsupported_verb` / `not_an_effect` on confetti, steam, rain, smoke
+or time_of_day) skips, naming that gap, and turns into a parity check by itself once it does.
 The corpus and the doc snippets are stored here; the fake-only checks at the bottom always run.
 
 Scene inputs are built the way production builds them: the sample family seeded into an
@@ -332,7 +334,6 @@ class Case:
     screenplay: dict
     ok: bool  # what the real compiler should say (and the fake must agree)
     codes: tuple[str, ...] = ()  # error codes expected from the fake, in order (not-ok cases)
-    exclude: str | None = None  # why this case is outside the fake/real parity assertion
 
 
 def _corpus() -> dict[str, Case]:
@@ -388,6 +389,9 @@ def _corpus() -> dict[str, Case]:
         "unknown_prop_listed": Case(_sample(lambda d: (d["props"].append("umbrella"),
                                                        _actions(d)[3].update(what="umbrella"))),
                                     False, ("unknown_prop",)),
+        # listed in props, used by nothing, missing from the scene inputs: still unknown_prop
+        "unused_prop_missing_from_the_scene": Case(_sample(lambda d: d["props"].append("umbrella")),
+                                                   False, ("unknown_prop",)),
         "hand_to_receiver_out_of_reach": Case(_base(
             [{"t": 1, "who": "mom", "do": "hand_to", "what": "hymn_books", "to": "dad"}],
             start={"dad": {"at": "steps_left", "facing": "right"},
@@ -454,13 +458,10 @@ def _corpus() -> dict[str, Case]:
         "open_out_of_reach": Case(_suitcase(
             [{"t": 0, "who": "mom", "do": "open", "what": "suitcase"}],
             start={"mom": {"at": "steps_left", "facing": "right"}}), False, ("out_of_reach",)),
-        # ------------------------------------------------------- exclusions
-        "effect_confetti": Case(
-            _sample(_with_confetti), True,
-            exclude="the real compiler (#60, #66, #70) has screenplay/effects.py but no handler for effect verbs, "
-                    "so it rejects every one as unsupported_verb; shared/CONTRACTS.md and the vocabulary allow "
-                    "them, so the fake accepts them",
-        ),
+        # ---------------------------------------------------------- effects
+        # shared/CONTRACTS.md and the vocabulary allow effects, so the fake accepts them; the real
+        # compiler skips this case (EFFECTS_GAP) until compile() dispatches effect verbs.
+        "effect_confetti": Case(_sample(_with_confetti), True),
     }
     return c
 
@@ -571,24 +572,36 @@ def test_skill_sample_compiles_cleanly_and_its_timeline_validates(real, lookup):
 @pytest.mark.parametrize("where, snippet", doc_snippets(), ids=[w for w, _ in doc_snippets()])
 def test_doc_snippets_compile_cleanly(real, lookup, where, snippet):
     res = compile_text(json.dumps(screenplay_for_snippet(snippet)), real, lookup)
-    _skip_unsupported(res)
+    _skip_effects_gap(res)
     assert res.ok and res.errors == [], (where, [e.message for e in res.errors])
 
 
-def _skip_unsupported(res: CompileResult) -> None:
-    """A verb the real compiler has no handler for yet (its verb modules land one PR at a time)
-    is a compiler gap, not a parity failure: skip, naming the verbs."""
-    verbs = sorted({e.do for e in res.errors if e.code == "unsupported_verb" and e.do})
+EFFECT_VERBS = frozenset(json.loads((REPO / "shared" / "vocabulary.json").read_text())["effects"])
+EFFECTS_GAP = "screenplay.compiler.compile does not dispatch effect verbs yet"
+EFFECTS_GAP_CODES = {"unsupported_verb", "not_an_effect"}
+
+
+def _skip_effects_gap(res: CompileResult) -> None:
+    """The one known compiler-side gap: screenplay/effects.py exists, but compile() emits
+    `effects=[]` and has no handler for an effect verb. Skip, naming the gap, only while the real
+    compiler says so for an effect verb; any other unsupported_verb is a real failure."""
+    verbs = sorted({e.do for e in res.errors if e.code in EFFECTS_GAP_CODES and e.do in EFFECT_VERBS})
     if verbs:
-        pytest.skip(f"the real compiler on this branch has no handler for {', '.join(verbs)} yet (unsupported_verb)")
+        pytest.skip(f"{EFFECTS_GAP} ({', '.join(verbs)}: unsupported_verb)")
 
 
-def _parity_cases() -> list:
-    return [pytest.param(name, id=name, marks=pytest.mark.skip(reason=f"parity exclusion: {case.exclude}"))
-            if case.exclude else pytest.param(name, id=name) for name, case in CORPUS.items()]
+def test_effects_gap_skip_is_narrow():
+    """The dynamic skip fires on an effect verb only, never on a verb the compiler should run."""
+    from screenplay.schema import CompileError
+
+    gap = CompileResult(ok=False, errors=[CompileError(code="unsupported_verb", message="m", do="confetti")])
+    with pytest.raises(pytest.skip.Exception, match=re.escape(EFFECTS_GAP)):
+        _skip_effects_gap(gap)
+    for code, do in (("unsupported_verb", "follow"), ("busy", "confetti"), ("unsupported_verb", None)):
+        _skip_effects_gap(CompileResult(ok=False, errors=[CompileError(code=code, message="m", do=do)]))
 
 
-@pytest.mark.parametrize("name", _parity_cases())
+@pytest.mark.parametrize("name", list(CORPUS))
 def test_fake_and_real_agree_on_ok_versus_not_ok(real, lookup, name):
     case = CORPUS[name]
     text = json.dumps(case.screenplay)
@@ -596,7 +609,7 @@ def test_fake_and_real_agree_on_ok_versus_not_ok(real, lookup, name):
     got_fake = compile_text(text, FakeCompiler(), lookup)
     real_msgs = [f"{e.code}: {e.message}" for e in got_real.errors]
     fake_msgs = [f"{e.code}: {e.message}" for e in got_fake.errors]
-    _skip_unsupported(got_real)
+    _skip_effects_gap(got_real)
     assert got_real.ok == case.ok, (name, real_msgs)
     assert got_fake.ok == got_real.ok, (name, {"real": real_msgs, "fake": fake_msgs})
     if not got_real.ok:
@@ -699,7 +712,7 @@ def test_doc_snippets_compile_with_the_fake(lookup, where, snippet):
 
 @pytest.mark.parametrize("name", list(CORPUS))
 def test_corpus_fake_verdict(lookup, name):
-    """The fake's own answer for every corpus case, including exclusions (no real compiler needed)."""
+    """The fake's own answer for every corpus case, effects included (no real compiler needed)."""
     case = CORPUS[name]
     res = compile_text(json.dumps(case.screenplay), FakeCompiler(), lookup)
     msgs = [f"{e.code}: {e.message}" for e in res.errors]
