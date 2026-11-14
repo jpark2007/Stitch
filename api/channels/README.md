@@ -212,10 +212,18 @@ WebM, Ogg and FLAC, including its documented aliases. PCM WAV frames are checked
 complete declared data. Compressed formats receive bounded container/header sanity
 checks that reject obvious non-audio and MIME mismatches; these checks do **not**
 prove decodability, authenticity or duration. The opted-in provider performs actual
-decoding. No local decoder, URL fetch, ffprobe or shell converter is invoked.
-**Native iMessage voice notes can arrive as `audio/x-caf`, which is unsupported in
-this checkpoint. A separate bounded CAF conversion slice is still required; this
-is not a complete native iMessage voice feature.**
+decoding. No URL fetch or ffprobe is invoked.
+
+Native iMessage `audio/x-caf` is additionally accepted by the inbox and converted
+locally before transcription, using optional macOS `/usr/bin/afconvert` or installed
+ffmpeg on POSIX. CAF is never sent directly to OpenAI. The converter uses private
+temporary files, fixed argument arrays without a shell, a scrubbed environment,
+15-second wall/CPU bounds and a 20 MiB file-size limit. It must produce complete
+mono 16-bit 16 kHz PCM WAV of at most five minutes; no truncation option is used.
+Original CAF media stays unchanged; only verified WAV reaches transcription after
+another consent check. Missing/failed conversion blocks with a stable
+`audio_conversion_<code>` reason and makes no provider request. See the full
+[conversion contract and platform limitations](TRANSCRIPTION.md#native-caf-conversion-before-transcription).
 
 202 `{accepted:true,duplicate:boolean}` means audio storage completed, not that a
 transcript or story exists. Family-scoped receipts have `receiptType:"voice"`,
@@ -245,10 +253,12 @@ in media. This slice does not add shared `audioId`/telling fields or recording
 playback: the studio receives transcript text through its existing interface only.
 Those shared contracts and book playback remain Jonah/Ethan work.
 
-The byte and request-time limits do **not** cap audio duration, provider processing
+Except for converted CAF's verified five-minute bound, byte/request limits do **not** cap audio duration, provider processing
 time after cancellation, or billing. Compressed audio may represent much more than
 its byte size suggests. There is no proven minute estimate or per-account spending
 budget here; contact-frequency/budget policy is deferred. Tests use synthetic PCM
 and structural compressed fixtures with injected transcribers, not real recordings,
-provider accounts or live decoding. Run `uv run pytest tests/channels/test_voice.py
-tests/channels/test_transcription.py -q` from `api/`.
+provider accounts or live provider decoding. Synthetic CAF has also been decoded
+locally using real macOS afconvert; real ffmpeg/Linux and phone delivery still need
+qualification. Run `uv run pytest tests/channels/test_voice.py
+tests/channels/test_transcription.py tests/channels/test_audio.py -q` from `api/`.

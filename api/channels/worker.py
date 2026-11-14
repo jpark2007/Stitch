@@ -43,13 +43,15 @@ class ChannelWorker:
                 processed += count
                 sent += delivered
                 conversations.update_worker(self.db, family, contact_id, token, {"status": "idle"})
-            except Exception:
+            except Exception as exc:
                 blocked += 1
                 # A model/tool/send may already have acted. Never steal/retry this
                 # reservation, including after a process crash or database failure.
                 try:
+                    from .audio import AudioConversionError
+                    reason = "audio_conversion_" + exc.code if isinstance(exc, AudioConversionError) else "reconciliation_required"
                     conversations.update_worker(self.db, family, contact_id, token,
-                                                {"status": "blocked", "reason": "reconciliation_required"})
+                                                {"status": "blocked", "reason": reason})
                 except Exception:
                     pass
         return {"processed": processed, "sent": sent, "blocked": blocked, "scheduler": "manual"}
