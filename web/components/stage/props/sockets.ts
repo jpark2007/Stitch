@@ -50,12 +50,15 @@ export interface PropSocketSource {
 export class PropRegistry {
   private readonly props = new Map<string, PropSocketSource>();
   private readonly resolving = new Set<string>();
+  private fallback: SocketResolver | null;
 
   /**
    * @param fallback resolver for targets that are not registered props,
    *                 normally the puppets'. Settable later via `setFallback`.
    */
-  constructor(private fallback: SocketResolver | null = null) {}
+  constructor(fallback: SocketResolver | null = null) {
+    this.fallback = fallback;
+  }
 
   setFallback(fallback: SocketResolver | null) {
     this.fallback = fallback;
