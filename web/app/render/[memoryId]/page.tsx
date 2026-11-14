@@ -6,6 +6,7 @@
 //   /render/demo?open=0.5        freeze the pop-up at half open (time frozen at ?t or 0)
 //   /render/demo?effect=rain     swap the effect: confetti | steam | rain | smoke | none
 //   /render/demo?close=10        fold the set back down at 10 s (front pieces first)
+//   /render/demo?dof             soft depth of field focused on the camera target
 //   /render/<anything else>      an empty stage
 //
 // Once the first frames have rendered, <html data-stage-ready="1"> is set so a
@@ -35,6 +36,7 @@ async function RenderParams({ params, searchParams }: { params: Promise<{ memory
       open={open === null ? null : Math.min(1, Math.max(0, open))}
       effect={one(q.effect) ?? null}
       closeAt={num(q.close)}
+      dof={q.dof !== undefined && one(q.dof) !== "0"}
     />
   );
 }

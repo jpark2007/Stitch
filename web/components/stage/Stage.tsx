@@ -24,6 +24,7 @@ import { useCardBoxMaterials, usePaperMaterial, useWoodMaterial } from "@/compon
 import { createCardEdgeMaterial } from "@/components/paper/materials";
 import { StageClock, StaticShadows } from "./clock";
 import { CameraRig, DEFAULT_STAGE_SIZE, stagePoses, type CameraPath, type CameraPose, type StageSize } from "./CameraRig";
+import { DepthOfField } from "./DepthOfField";
 import { PopUp, type OpenSource, type PopUpTiming } from "./SetPiece";
 
 export const STAGE_COLORS = {
@@ -253,6 +254,8 @@ export interface StageProps extends Omit<StageSceneProps, "surface"> {
   overlay?: ReactNode;
   /** Redraw shadow maps only while something moves (see StaticShadows). Default true. */
   staticShadows?: boolean;
+  /** Soft depth of field focused on the camera target. Default false. */
+  dof?: boolean;
 }
 
 export function Stage({
@@ -262,6 +265,7 @@ export function Stage({
   className,
   overlay,
   staticShadows = true,
+  dof = false,
   size = DEFAULT_STAGE_SIZE,
   ...scene
 }: StageProps) {
@@ -291,6 +295,7 @@ export function Stage({
         <OpenBook size={size} />
         <StageScene {...scene} size={size} surface={false} />
         <CameraRig pose={pose} orbit={orbit} />
+        {dof && <DepthOfField />}
         {overlay}
       </StageClock>
     </Canvas>

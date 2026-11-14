@@ -336,6 +336,8 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
     }
     camera.position.copy(target).add(off);
     camera.lookAt(target);
+    // What the camera looks at is what stays sharp (see DepthOfField).
+    camera.userData.focus = off.length();
     if (camera instanceof PerspectiveCamera && Math.abs(camera.fov - (p.fov ?? 30)) > 1e-3) {
       camera.fov = p.fov ?? 30;
       camera.updateProjectionMatrix();
