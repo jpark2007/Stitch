@@ -9,6 +9,16 @@
  * with a small constant depth bias, so the page being turned always shows over
  * the stale one while content standing on it still shows over it.
  *
+ * The bias only breaks exact ties. A landing sheet does worse than tie: its
+ * gutter bones come to rest against the stack (clamped to the very same rest
+ * shape) while its corner-lift twist is still springing out, and that twist
+ * dips the sheet a hair below the stack top for a few frames, so the stale
+ * page showed through near the gutter. So once a sheet coming down on a stack
+ * is within `LANDING_REACH` of it, that stack's top is not drawn at all: the
+ * landing sheet already covers it, bar a sliver under its trailing fore-edge
+ * where the page block's blank top shows instead (as it does anyway in the
+ * frames after the sheet lands while its edge settles).
+ *
  * Pure (no imports), so the rule is unit-tested in stacking.test.ts.
  */
 
@@ -17,6 +27,10 @@ export interface StackSheet {
   p: number;
   /** "rest" means lying on a stack; anything else is in motion. */
   mode: string;
+  /** Turn direction: +1 forward (right to left), -1 back. */
+  dir: number;
+  /** Where an "auto" turn is headed (0 or 1). */
+  to: number;
 }
 
 export interface SheetLayer {
@@ -26,20 +40,57 @@ export interface SheetLayer {
 }
 
 /**
- * Visibility and depth priority for each sheet. `warm` draws every sheet once
- * (so each texture reaches the GPU before it is first turned to).
+ * How near (in progress) a landing sheet comes to its stack before that
+ * stack's top is hidden. In a simulated landing the sheet first dips below the
+ * stack top about 0.09-0.1 out (any turn speed, either direction, up to nine
+ * leaves; stacking.test.ts); this leaves a margin, while the landing sheet's
+ * fore-edge falls short of the stack's by about 1% of a page.
  */
-export function stackLayers(sheets: readonly StackSheet[], warm = false): SheetLayer[] {
+export const LANDING_REACH = 0.15;
+
+/**
+ * The stack (1 left, 0 right) a sheet is coming down on and is within
+ * `LANDING_REACH` of, or -1. A clicked or released sheet lands where its clock
+ * is headed; a held sheet lands on the far side from where it was picked up.
+ * Peels and frozen poses never land, and a sheet lifting off is not landing.
+ */
+export function landingOn(s: StackSheet): -1 | 0 | 1 {
+  let side: 0 | 1;
+  if (s.mode === "auto") side = s.to >= 0.5 ? 1 : 0;
+  else if (s.mode === "drag") side = s.dir > 0 ? 1 : 0;
+  else return -1;
+  return Math.abs(s.p - side) <= LANDING_REACH ? side : -1;
+}
+
+/**
+ * Sets `visible` and `front` on each sheet, in place (it runs every frame).
+ * `warm` draws every sheet once, so each texture reaches the GPU before it is
+ * first turned to.
+ */
+export function layStacks(sheets: readonly (StackSheet & SheetLayer)[], warm = false): void {
   let leftTop = -1;
   let rightTop = -1;
-  sheets.forEach((s, i) => {
-    if (s.mode === "rest" && s.p >= 1) leftTop = i;
-    if (s.mode === "rest" && s.p <= 0 && rightTop < 0) rightTop = i;
-  });
-  return sheets.map((s, i) => {
+  let landsLeft = false;
+  let landsRight = false;
+  for (let i = 0; i < sheets.length; i++) {
+    const s = sheets[i];
+    if (s.mode === "rest") {
+      if (s.p >= 1) leftTop = i;
+      else if (s.p <= 0 && rightTop < 0) rightTop = i;
+    } else {
+      const side = landingOn(s);
+      if (side === 1) landsLeft = true;
+      else if (side === 0) landsRight = true;
+    }
+  }
+  if (landsLeft) leftTop = -1;
+  if (landsRight) rightTop = -1;
+  for (let i = 0; i < sheets.length; i++) {
+    const s = sheets[i];
     const moving = s.mode !== "rest";
-    return { visible: warm || moving || i === leftTop || i === rightTop, front: moving };
-  });
+    s.visible = warm || moving || i === leftTop || i === rightTop;
+    s.front = moving;
+  }
 }
 
 /**

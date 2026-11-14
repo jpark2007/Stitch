@@ -26,7 +26,7 @@ import {
 } from "./leafShape";
 import { createRuntime, setDepths, type BookRuntime, type LeafState } from "./runtime";
 import { coverOpen, pageLand, pageTurn, paperLift } from "./sound";
-import { stackLayers } from "./stacking";
+import { layStacks } from "./stacking";
 
 export const BOARD_W = PAGE_W + COVER_OVERHANG;
 export const BOARD_D = PAGE_H + 2 * COVER_OVERHANG;
@@ -631,16 +631,13 @@ export class BookController {
     parts.blocks.left.update(topL, Math.min(topL, rt.hinge - LEAF_REST_GAP), rt.bow);
     if (parts.leftBlock) parts.leftBlock.visible = cntL * per > 0.0015;
 
-    // Visible sheets: anything off its stack, plus the top of each stack. A
-    // moving sheet lying on a stack's top sheet (held past the edge, landing)
-    // is drawn in front of it. The first frames draw every sheet once (under
-    // the fade-in), so each page's texture is on the GPU before it is first
-    // turned to.
+    // Visible sheets: anything off its stack, plus the top of each stack,
+    // unless a sheet is coming down on it (see stacking.ts). A moving sheet
+    // lying on a stack's top sheet is drawn in front of it. The first frames
+    // draw every sheet once (under the fade-in), so each page's texture is on
+    // the GPU before it is first turned to.
     const warm = rt.frames <= 2;
-    stackLayers(rt.leaves, warm).forEach((layer, i) => {
-      rt.leaves[i].visible = layer.visible;
-      rt.leaves[i].front = layer.front;
-    });
+    layStacks(rt.leaves, warm);
     if (warm) moving = true;
 
     // Cover, spine, the book's place on the table.
