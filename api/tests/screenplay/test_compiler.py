@@ -215,8 +215,10 @@ def test_camera_target_that_is_not_on_stage():
 def test_narration_timing_errors_are_static():
     data = sample()
     # mom's line would have to start before the shot for "everywhere" to land on the drop
+    # 25 words before the cue at 0.25 s each: the line starts at 3.25 - 6.25 = -3.0, before the
+    # set starts rising at -layout.RISE (-1.2)
     data["narrations"]["mom"]["s1"][1]["t"] = 0
-    data["narrations"]["mom"]["s1"][1]["text"] = " ".join(["word"] * 15) + " everywhere"
+    data["narrations"]["mom"]["s1"][1]["text"] = " ".join(["word"] * 25) + " everywhere"
     data["shots"][0]["actions"].append({"t": 9, "who": "dad", "do": "hold", "what": "hymn_books"})
     res = run(data)
     # validate.py times the narration statically, so this stops compilation before any state error
@@ -224,6 +226,20 @@ def test_narration_timing_errors_are_static():
     cue = res.errors[0]
     assert cue.shot == "s1" and cue.message.startswith(
         "shot s1, mom's narration line 1: to land its cue word on the action, "
+    )
+
+
+def test_a_line_inside_the_rise_window_may_start_but_must_not_overlap():
+    data = sample()
+    # 15 words before the cue: the line starts at 3.25 - 3.75 = -0.5, inside the rise window
+    # (not before -layout.RISE), but line 0 is still being said until t=2.0
+    data["narrations"]["mom"]["s1"][1]["text"] = " ".join(["word"] * 15) + " everywhere"
+    res = run(data)
+    assert [e.code for e in res.errors] == ["lines_overlap"]
+    assert res.errors[0].shot == "s1"
+    assert res.errors[0].message == (
+        "shot s1, mom's narration line 1: line 1 starts at shot t=-0.50, before line 0 has been said "
+        "(its last word ends at shot t=2.00); start line 1 later or shorten line 0"
     )
 
 
