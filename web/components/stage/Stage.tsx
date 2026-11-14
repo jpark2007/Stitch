@@ -69,7 +69,9 @@ export function StageLights({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize })
   return (
     <>
       <primitive object={target} />
-      <hemisphereLight args={["#fff0da", "#a07a5a", 0.62]} />
+      {/* Ground colour = light bouncing off the page: it keeps card faces
+          that tip towards the page (mid-fold) reading as paper, not black. */}
+      <hemisphereLight args={["#fff0da", "#d6b68e", 0.66]} />
       <spotLight
         castShadow
         target={target}
@@ -88,6 +90,10 @@ export function StageLights({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize })
         shadow-camera-far={14 * s}
       />
       <directionalLight target={target} color="#ece6ee" intensity={0.5} position={[4.2, 2.2, 4.6]} />
+      {/* Bounce up off the page towards the reader: lights only faces that
+          look down (a card mid-fold, tipped towards the reader), which the
+          lamp cannot reach. The page and table face away from it. */}
+      <directionalLight target={target} color="#f0d2a8" intensity={0.9} position={[0.4, -2.5, 3.2]} />
       {/* Rim from behind: catches the top edges of the cards. */}
       <directionalLight target={target} color="#ffc68e" intensity={0.85} position={[1.6, 3, -4.5]} />
     </>
