@@ -3,10 +3,13 @@
 // Pick people from the family (who was there for this memory). A plain
 // fieldset of real checkboxes, drawn as paper chips with each person's
 // thread colour. Colours are the global look's theme utilities; text styles
-// and the focus ring are the kit's shared ones.
-import { useId, type ReactNode } from "react";
+// and the focus ring are the kit's shared ones. A big family (more than
+// PICKER_SEARCH_FROM people) also gets a "Find someone" field; whoever is
+// picked stays in view whatever it holds.
+import { useId, useState, type ReactNode } from "react";
 import { FOCUS_RING_WITHIN } from "./Button";
-import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS } from "./Field";
+import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS, fieldControlClass } from "./Field";
+import { PICKER_SEARCH_FROM, filterPeople } from "./memoryForm";
 
 interface PickablePerson {
   id: string;
@@ -44,6 +47,12 @@ export function PersonPicker(props: {
   const errorId = `${uid}-error`;
   const describedBy = [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(" ");
   const duplicates = sharedNames(people);
+  const searchable = people.length > PICKER_SEARCH_FROM;
+  const [query, setQuery] = useState("");
+  const shown = searchable ? filterPeople(people, query, [...lockedIds, ...value]) : people;
+  const noMatch = searchable && query.trim() !== "" && filterPeople(people, query).length === 0;
+  const searchId = `${uid}-search`;
+  const resultsId = `${uid}-results`;
 
   function toggle(id: string, checked: boolean) {
     if (lockedIds.includes(id)) return;
@@ -67,13 +76,41 @@ export function PersonPicker(props: {
         </p>
       ) : null}
 
+      {searchable ? (
+        <div className="mt-2">
+          <label htmlFor={searchId} className="sr-only">
+            Find someone
+          </label>
+          <input
+            id={searchId}
+            type="search"
+            autoComplete="off"
+            placeholder="Find someone"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Escape empties the search instead of leaving the page's focus.
+              if (e.key === "Escape" && query) {
+                e.preventDefault();
+                setQuery("");
+              }
+            }}
+            aria-controls={resultsId}
+            className={fieldControlClass(false, "w-full sm:w-72")}
+          />
+          <p id={resultsId} aria-live="polite" className="sr-only">
+            {query.trim() ? `${shown.length} shown` : ""}
+          </p>
+        </div>
+      ) : null}
+
       {people.length === 0 ? (
         <p className="mt-2 text-sm text-ink-soft italic">
           No one else is in the family yet.
         </p>
       ) : (
         <ul className="mt-2 flex list-none flex-wrap gap-2 p-0">
-          {people.map((person) => {
+          {shown.map((person) => {
             const locked = lockedIds.includes(person.id);
             const checked = locked || value.includes(person.id);
             const inputId = `${uid}-${person.id}`;
@@ -120,6 +157,11 @@ export function PersonPicker(props: {
               </li>
             );
           })}
+          {noMatch ? (
+            <li className="flex min-h-11 items-center px-1 text-sm text-ink-soft italic">
+              No one called &ldquo;{query.trim()}&rdquo;.
+            </li>
+          ) : null}
         </ul>
       )}
 
