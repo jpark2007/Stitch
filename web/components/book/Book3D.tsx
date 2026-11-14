@@ -62,6 +62,8 @@ const KRAFT = "#b58c62";
 /** Fraction of the deckle mask skipped at the gutter edge. */
 const GUTTER_INSET = 0.035;
 const TABLE_BG = "#1a110b";
+/** useFrame priority of the book's controller: first in every frame (stages tick at -4..-2). */
+const BOOK_PRIORITY = -10;
 
 export interface BookInitial {
   state?: "closed" | "open";
@@ -641,7 +643,9 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
     if (moving) state.invalidate();
     // Screenshot hook: the scene has drawn (a still closed book stops at ~2 frames).
     if (ctl.rt.frames === 2) document.documentElement.dataset.bookReady = "1";
-  });
+    // Before the leaves read the runtime, and before a mounted stage ticks:
+    // otherwise the last frame of a settle draws the stacks a frame stale.
+  }, BOOK_PRIORITY);
 
   const toBook = (e: ThreeEvent<PointerEvent>) => ({ x: e.point.x - (book.current?.position.x ?? 0), z: e.point.z });
   const setCursor = (c: string) => {
