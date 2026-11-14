@@ -16,6 +16,16 @@ export function sessionStore(): Storage | null {
   }
 }
 
+/** The lede under "Add a memory". The loading sheets show it too, so nothing moves when the form arrives. */
+export const NEW_MEMORY_LEDE =
+  "Tell it the way you would at the kitchen table. The studio turns it into a scene for the family book.";
+
+/** The lede under "Add your telling" (a second telling of a moment). */
+export const SECOND_TELLING_LEDE = "Tell it as you remember it. It doesn’t have to match anyone else’s.";
+
+/** Where every /add screen's back link goes, loading sheets included. */
+export const ADD_BACK = { href: hrefs.home(), label: "Family tree" };
+
 /** The path and query of this page, for coming back after logging in. */
 export function currentPath(): string {
   return `${window.location.pathname}${window.location.search}`;
@@ -75,13 +85,15 @@ export function FamilyLine(props: {
   if (!show || !current) return null;
   const links = switchable ? others : [];
   return (
-    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-[0.9375rem] leading-snug text-ink-soft">
+    // Stacked on phones (a dot left dangling at the end of a wrapped line reads
+    // as a stray mark); one line with a dot between from sm up.
+    <div className="flex min-w-0 flex-col gap-y-1 text-[0.9375rem] leading-snug text-ink-soft sm:flex-row sm:flex-wrap sm:items-baseline sm:gap-x-2">
       <p className="min-w-0 break-words">
         Adding to <span className="font-semibold text-ink">{current.name}</span>
       </p>
       {links.length ? (
         <>
-          <span aria-hidden="true" className="text-ink-soft/50">
+          <span aria-hidden="true" className="hidden text-ink-soft/50 sm:inline">
             &middot;
           </span>
           <nav aria-label="Add to another family" className="min-w-0 break-words">

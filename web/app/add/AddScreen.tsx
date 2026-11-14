@@ -19,6 +19,7 @@ import {
   familyChoice,
   loadSentDraft,
   loadTelling,
+  questionIdFromQuery,
   readAddQuery,
   retryHref,
   runHref,
@@ -28,14 +29,28 @@ import { hrefs, recallFamily, rememberFamily } from "@/components/flow/session";
 
 import { AddForm, type StartedRun } from "./AddForm";
 import { AddRun } from "./AddRun";
-import { FamilyLine, LoadingSheet, sessionStore } from "./parts";
+import {
+  ADD_BACK,
+  FamilyLine,
+  LoadingSheet,
+  NEW_MEMORY_LEDE,
+  SECOND_TELLING_LEDE,
+  sessionStore,
+} from "./parts";
 
 const TITLE = "Add a memory";
 
-/** The page shell with a quiet loading sheet: the prerendered HTML and the session wait. */
-export function AddLoading() {
+/**
+ * The page shell with a quiet loading sheet: the prerendered HTML and the
+ * session wait. It has the form's back link, title and lede (none for a run,
+ * whose page has none), so nothing jumps when the page arrives.
+ */
+export function AddLoading(props: { kind?: "new" | "second" | "run" }) {
+  const { kind = "new" } = props;
+  const title = kind === "second" ? "Add your telling" : kind === "run" ? "Your memory" : TITLE;
+  const lede = kind === "second" ? SECOND_TELLING_LEDE : kind === "run" ? undefined : NEW_MEMORY_LEDE;
   return (
-    <FlowPage title={TITLE} width="wide">
+    <FlowPage title={title} lede={lede} back={ADD_BACK} width="wide">
       <LoadingSheet label="Opening your family’s pages…" />
     </FlowPage>
   );
@@ -45,8 +60,10 @@ export function AddScreen() {
   const params = useSearchParams();
   const { familyId, memoryId, runId, retryOf } = readAddQuery(params);
   const added = addedFromQuery(params);
+  const questionId = questionIdFromQuery(params);
+  const loadingKind = runId ? "run" : memoryId ? "second" : "new";
   return (
-    <SessionGate requireFamily loading={<AddLoading />}>
+    <SessionGate requireFamily loading={<AddLoading kind={loadingKind} />}>
       {(session) => (
         <AddFlow
           session={session}
@@ -55,6 +72,7 @@ export function AddScreen() {
           runId={runId}
           retryOf={retryOf}
           added={added}
+          questionId={questionId}
         />
       )}
     </SessionGate>
@@ -81,8 +99,10 @@ function AddFlow(props: {
   retryOf: string | null;
   /** `?added=`: someone just added on the add-relative page (AddForm ticks them). */
   added: string | null;
+  /** `?questionId=`: the family question picked before a reload (AddForm picks it again). */
+  questionId: string | null;
 }) {
-  const { session, familyId, memoryId, runId, retryOf, added } = props;
+  const { session, familyId, memoryId, runId, retryOf, added, questionId } = props;
   const { me, api } = session;
   const router = useRouter();
 
@@ -229,6 +249,7 @@ function AddFlow(props: {
       choice={choice}
       onStarted={onStarted}
       added={added}
+      questionId={questionId}
     />
   );
 }

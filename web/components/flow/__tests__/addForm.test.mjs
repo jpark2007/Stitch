@@ -37,6 +37,12 @@ const {
   sentDraftFromSubmit,
   tellingFromSubmit,
   withoutAdded,
+  clearTypedDraft,
+  draftForForm,
+  questionIdFromQuery,
+  readTypedDraft,
+  saveTypedDraft,
+  withQuestionId,
 } = await import("../addPage.ts");
 const { withAddedParam } = await import("../relativeForm.ts");
 const { safeNext } = await import("../session.ts");
@@ -247,5 +253,107 @@ describe("adding a relative from /add and coming back", () => {
     assert.equal(ids, null);
     const draft = emptyDraft(SELF, carryInto(undefined, { text: "", year: "", participantIds: ids }, false));
     assert.deepEqual(draft.participantIds, [SELF]);
+  });
+});
+
+describe("reloading /add in the same tab", () => {
+  function storage() {
+    const map = new Map();
+    return {
+      map,
+      getItem: (k) => (map.has(k) ? map.get(k) : null),
+      setItem: (k, v) => void map.set(k, String(v)),
+      removeItem: (k) => void map.delete(k),
+    };
+  }
+
+  /** What AddForm's onDraftChange keeps for family `fid` (baseMemoryId: the ?memoryId= moment). */
+  function keep(st, fid, draft, { baseMemoryId = null, pickedId = null, photos = 0 } = {}) {
+    const second = Boolean(draft.memoryId);
+    saveTypedDraft(st, {
+      familyId: fid,
+      memoryId: baseMemoryId,
+      questionId: pickedId,
+      text: draft.text,
+      year: second ? "" : draft.year,
+      participantIds: second ? [] : draft.participantIds.filter((id) => id !== SELF),
+      question: pickedId || second ? "" : draft.question,
+      photoCount: photos,
+    });
+  }
+
+  /** What AddForm does on mount after a reload of `url`: the pick and the draft it starts from. */
+  function reload(st, url) {
+    const search = url.slice(url.indexOf("?"));
+    const { familyId, memoryId } = readAddQuery(search);
+    const questionId = questionIdFromQuery(search);
+    const kept = draftForForm(readTypedDraft(st, familyId), { memoryId, questionId });
+    const pickId = questionId ?? kept?.questionId ?? null;
+    const q = pickId ? questions.find((x) => x.id === pickId) : null;
+    const carried = {
+      text: kept?.text ?? "",
+      year: kept?.year ?? "",
+      participantIds: kept?.participantIds.length ? kept.participantIds : null,
+      question: kept?.question ?? "",
+    };
+    return { q, kept, ...(q ? pick(q, carried) : { moment: null, draft: emptyDraft(SELF, carryInto(undefined, carried, false)) }) };
+  }
+
+  test("a picked moment's question and the story come back: still the second telling", () => {
+    const st = storage();
+    // Ana picks the wedding question and starts typing; the page puts the pick in the URL.
+    const url = withQuestionId("?family=demo_family", "q_wedding");
+    const { draft } = pick(questions[1], { text: "His flower fell right off.", year: "", participantIds: null });
+    keep(st, "demo_family", draft, { pickedId: "q_wedding" });
+    const back = reload(st, url);
+    assert.equal(back.q.id, "q_wedding");
+    assert.equal(back.moment.title, "Sam's wedding in the orchard");
+    assert.equal(back.draft.memoryId, "demo_sam_wedding_2019");
+    assert.equal(back.draft.year, "2019");
+    assert.equal(back.draft.text, "His flower fell right off.");
+    assert.equal(back.draft.question, questions[1].text);
+  });
+
+  test("a new memory's story, year, people and typed question come back; photos are counted", () => {
+    const st = storage();
+    const draft = { ...emptyDraft(SELF), text: "The porch light", year: "1987", participantIds: [SELF, "lily"], question: "What was the porch like?" };
+    keep(st, "demo_family", draft, { photos: 1 });
+    const back = reload(st, "/add?family=demo_family");
+    assert.equal(back.q, null);
+    assert.deepEqual(
+      { text: back.draft.text, year: back.draft.year, question: back.draft.question },
+      { text: "The porch light", year: "1987", question: "What was the porch like?" },
+    );
+    assert.deepEqual(back.draft.participantIds, [SELF, "lily"]);
+    assert.match(carriedPhotosNote(back.kept.photoCount), /photo didn’t come along/);
+  });
+
+  test("a second telling from ?memoryId= gets its story back, and only on that moment", () => {
+    const st = storage();
+    const draft = emptyDraft(SELF, { text: "My side of it.", memoryId: "sample_hymn_books", year: "1988" });
+    keep(st, "demo_family", draft, { baseMemoryId: "sample_hymn_books" });
+    const search = "?family=demo_family&memoryId=sample_hymn_books";
+    assert.equal(draftForForm(readTypedDraft(st, "demo_family"), { memoryId: "sample_hymn_books", questionId: null }).text, "My side of it.");
+    assert.equal(draftForForm(readTypedDraft(st, "demo_family"), { memoryId: null, questionId: null }), null);
+    assert.equal(questionIdFromQuery(search), null);
+  });
+
+  test("letting the question go drops it from the URL; sending drops the draft", () => {
+    const st = storage();
+    const url = withQuestionId("?family=demo_family&questionId=q_wedding", null);
+    assert.equal(url, "/add?family=demo_family");
+    keep(st, "demo_family", { ...emptyDraft(SELF), text: "Kept" });
+    clearTypedDraft(st, "demo_family");
+    const back = reload(st, url);
+    assert.equal(back.draft.text, "");
+    assert.equal(back.q, null);
+  });
+
+  test("a fresh link to another question does not take a draft typed for the first", () => {
+    const st = storage();
+    keep(st, "demo_family", { ...emptyDraft(SELF), text: "About the wedding" }, { pickedId: "q_wedding" });
+    const back = reload(st, withQuestionId("?family=demo_family", "q_born"));
+    assert.equal(back.q.id, "q_born");
+    assert.equal(back.draft.text, "");
   });
 });

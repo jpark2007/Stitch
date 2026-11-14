@@ -67,6 +67,30 @@ export function withoutAdded(search: string | URLSearchParams | null): string {
 }
 
 /**
+ * `?questionId=<id>`: the family question picked on /add, kept in the URL so
+ * a reload opens the same question (and, for one about a moment, the same
+ * second telling). Null when missing or empty.
+ */
+export function questionIdFromQuery(search: string | URLSearchParams | null): string | null {
+  if (search === null || search === undefined) return null;
+  const params = typeof search === "string" ? new URLSearchParams(search) : search;
+  const v = params.get("questionId");
+  return v ? v : null;
+}
+
+/**
+ * This /add URL with `?questionId=` set to `questionId` (dropped for null or
+ * ""), every other param kept as it was (family, memoryId, run, retry...).
+ */
+export function withQuestionId(search: string | URLSearchParams | null, questionId: string | null): string {
+  const params = new URLSearchParams(search === null || search === undefined ? "" : search);
+  if (questionId) params.set("questionId", questionId);
+  else params.delete("questionId");
+  const q = params.toString();
+  return q ? `/add?${q}` : "/add";
+}
+
+/**
  * The add-relative page for family `familyId`, sent back to this family's
  * /add when the person is saved (it appends `added=<personId>`). The family
  * id is encoded inside `next` too, so an id with "&" or "#" survives the
@@ -458,6 +482,160 @@ export function clearCarry(storage: Pick<Storage, "removeItem"> | null): void {
   } catch {
     // Blocked storage: nothing was kept either.
   }
+}
+
+// ---------------------------------------------------------------------------
+// The draft being typed, kept in sessionStorage for each family while it is
+// typed, so a reload of /add in the same tab gives it back. One draft per
+// family, cleared once it is sent. Photos are files and cannot be stored:
+// only how many there were. These helpers never throw.
+
+/** sessionStorage key: every family's draft, by family id. */
+export const DRAFT_KEY = "stitch.addDraft";
+
+/** What is typed on a family's /add form, as kept for a reload. */
+export interface TypedDraft {
+  familyId: string;
+  /** The moment of a second telling opened from `?memoryId=`; null otherwise. */
+  memoryId: string | null;
+  /** The family question picked above the story; null for none. */
+  questionId: string | null;
+  text: string;
+  /** "" when this form has no year of its own (a second telling). */
+  year: string;
+  /** People ticked under "Who was there?", the author left out. */
+  participantIds: string[];
+  /** A question typed into the question field (never a picked one); "" for none. */
+  question: string;
+  /** How many photos were attached (the files themselves do not come back). */
+  photoCount: number;
+}
+
+type DraftRecord = Omit<TypedDraft, "familyId">;
+
+function readDraftMap(storage: Pick<Storage, "getItem"> | null): Record<string, unknown> {
+  if (!storage) return {};
+  let raw: string | null;
+  try {
+    raw = storage.getItem(DRAFT_KEY);
+  } catch {
+    return {};
+  }
+  if (typeof raw !== "string" || !raw) return {};
+  try {
+    const o: unknown = JSON.parse(raw);
+    return typeof o === "object" && o !== null && !Array.isArray(o) ? (o as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeDraftMap(storage: Pick<Storage, "setItem" | "removeItem">, map: Record<string, unknown>): void {
+  if (Object.keys(map).length === 0) storage.removeItem(DRAFT_KEY);
+  else storage.setItem(DRAFT_KEY, JSON.stringify(map));
+}
+
+/**
+ * Keeps family `d.familyId`'s draft, replacing the one kept before. A draft
+ * with nothing typed (no story, year, people, typed question or photos)
+ * drops it instead: a picked question alone lives in the URL.
+ */
+export function saveTypedDraft(
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null,
+  d: TypedDraft,
+): void {
+  if (!storage || !d.familyId) return;
+  const participantIds = uniqueStrings(d.participantIds ?? []);
+  const photoCount = wholeCount(d.photoCount);
+  const text = typeof d.text === "string" ? d.text : "";
+  const year = typeof d.year === "string" ? d.year : "";
+  const question = typeof d.question === "string" ? d.question : "";
+  const anything =
+    text.trim() !== "" || year.trim() !== "" || question.trim() !== "" || participantIds.length > 0 || photoCount > 0;
+  try {
+    const map = readDraftMap(storage);
+    if (anything) {
+      const record: DraftRecord = {
+        memoryId: d.memoryId || null,
+        questionId: d.questionId || null,
+        text,
+        year,
+        participantIds,
+        question,
+        photoCount,
+      };
+      map[d.familyId] = record;
+    } else {
+      if (!(d.familyId in map)) return;
+      delete map[d.familyId];
+    }
+    writeDraftMap(storage, map);
+  } catch {
+    // Not kept: a reload starts blank.
+  }
+}
+
+/**
+ * Family `familyId`'s kept draft, or null when there is none or it is
+ * unreadable. A year that is not a year reads as none; wrong-shaped optional
+ * fields read as empty.
+ */
+export function readTypedDraft(storage: Pick<Storage, "getItem"> | null, familyId: string): TypedDraft | null {
+  if (!familyId) return null;
+  const o = readDraftMap(storage)[familyId];
+  if (typeof o !== "object" || o === null || Array.isArray(o)) return null;
+  const r = o as Record<string, unknown>;
+  if (typeof r.text !== "string") return null;
+  const yearRaw = typeof r.year === "string" ? r.year.trim() : "";
+  const draft: TypedDraft = {
+    familyId,
+    memoryId: typeof r.memoryId === "string" && r.memoryId ? r.memoryId : null,
+    questionId: typeof r.questionId === "string" && r.questionId ? r.questionId : null,
+    text: r.text,
+    year: /^\d{1,4}$/.test(yearRaw) ? yearRaw : "",
+    participantIds: Array.isArray(r.participantIds) ? uniqueStrings(r.participantIds) : [],
+    question: typeof r.question === "string" ? r.question : "",
+    photoCount: wholeCount(r.photoCount),
+  };
+  const anything =
+    draft.text.trim() !== "" ||
+    draft.year !== "" ||
+    draft.question.trim() !== "" ||
+    draft.participantIds.length > 0 ||
+    draft.photoCount > 0;
+  return anything ? draft : null;
+}
+
+/** Drops family `familyId`'s kept draft (the others stay). Never throws. */
+export function clearTypedDraft(
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null,
+  familyId: string,
+): void {
+  if (!storage || !familyId) return;
+  try {
+    const map = readDraftMap(storage);
+    if (!(familyId in map)) return;
+    delete map[familyId];
+    writeDraftMap(storage, map);
+  } catch {
+    // Blocked storage: nothing was kept either.
+  }
+}
+
+/**
+ * The kept draft when it belongs to the form being opened: the same moment
+ * (`memoryId`, null for a new memory) and, when the URL names a question,
+ * the same question. A draft for another moment or question is not this
+ * form's, so the form starts blank (the draft is replaced once typing starts).
+ */
+export function draftForForm(
+  d: TypedDraft | null,
+  form: { memoryId: string | null; questionId: string | null },
+): TypedDraft | null {
+  if (!d) return null;
+  if ((d.memoryId ?? null) !== (form.memoryId ?? null)) return null;
+  if (form.questionId && d.questionId !== form.questionId) return null;
+  return d;
 }
 
 // ---------------------------------------------------------------------------

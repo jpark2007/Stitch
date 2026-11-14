@@ -10,7 +10,10 @@
 // into the form a pick remounts, and the story and year carry into another
 // family's form when the person switches family. "Someone missing?" under
 // the people goes to the add-relative page with the whole draft kept (but the
-// photo files); coming back with ?added= ticks the new person.
+// photo files); coming back with ?added= ticks the new person. What is typed
+// is also kept for the tab (saveTypedDraft) and a picked question rides in
+// the URL (?questionId=), so a reload gives the same form back; sending it
+// drops the draft.
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -26,6 +29,8 @@ import {
   carriedPhotosNote,
   carryInto,
   clearCarry,
+  clearTypedDraft,
+  draftForForm,
   draftFromSent,
   hasTold,
   momentFromMemory,
@@ -33,12 +38,15 @@ import {
   preselectAdded,
   questionForMemory,
   readCarry,
+  readTypedDraft,
   restoreNotice,
   saveCarry,
   saveSentDraft,
   saveTelling,
+  saveTypedDraft,
   sentDraftFromSubmit,
   tellingFromSubmit,
+  withQuestionId,
   withoutAdded,
   type FamilyChoice,
   type MomentInfo,
@@ -50,7 +58,17 @@ import { hrefs } from "@/components/flow/session";
 import { isApiError, type StitchApi } from "@/lib/api";
 import type { Question, SubmitMemoryFields } from "@/lib/types";
 
-import { currentPath, FamilyLede, ledeWithFamily, LoadingSheet, Notice, sessionStore } from "./parts";
+import {
+  ADD_BACK,
+  currentPath,
+  FamilyLede,
+  ledeWithFamily,
+  LoadingSheet,
+  NEW_MEMORY_LEDE,
+  Notice,
+  SECOND_TELLING_LEDE,
+  sessionStore,
+} from "./parts";
 
 type Moment = MomentInfo;
 
@@ -173,6 +191,8 @@ export function AddForm(props: {
   restore?: Restore;
   /** `?added=`: someone just added on the add-relative page, to tick under "Who was there?". */
   added?: string | null;
+  /** `?questionId=`: the family question to open picked (read once, when the form appears). */
+  questionId?: string | null;
 }) {
   const [attempt, setAttempt] = useState(0);
   return <AddFormLoader key={attempt} {...props} onRetry={() => setAttempt((n) => n + 1)} />;
@@ -187,9 +207,11 @@ function AddFormLoader(props: {
   onStarted: (run: StartedRun) => void;
   restore?: Restore;
   added?: string | null;
+  questionId?: string | null;
   onRetry: () => void;
 }) {
-  const { api, fid, selfPersonId, memoryId, choice, onStarted, restore, added = null, onRetry } = props;
+  const { api, fid, selfPersonId, memoryId, choice, onStarted, restore, added = null, questionId = null, onRetry } =
+    props;
   const router = useRouter();
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   // The last `?added=` person seen. A new one loads the family again: this
@@ -256,7 +278,7 @@ function AddFormLoader(props: {
     return (
       <FlowPage
         title={memoryId ? "Add your telling" : "Add a memory"}
-        lede={ledeWithFamily(choice)}
+        lede={ledeWithFamily(choice, memoryId ? SECOND_TELLING_LEDE : NEW_MEMORY_LEDE)}
         width="wide"
         back={BACK}
       >
@@ -288,11 +310,12 @@ function AddFormLoader(props: {
       onStarted={onStarted}
       restore={restore}
       added={added}
+      questionId={questionId}
     />
   );
 }
 
-const BACK = { href: hrefs.home(), label: "Family tree" };
+const BACK = ADD_BACK;
 
 function AddFormReady(props: {
   api: StitchApi;
@@ -303,34 +326,47 @@ function AddFormReady(props: {
   onStarted: (run: StartedRun) => void;
   restore?: Restore;
   added: string | null;
+  questionId: string | null;
 }) {
-  const { api, fid, selfPersonId, data, choice, onStarted, restore, added } = props;
+  const { api, fid, selfPersonId, data, choice, onStarted, restore, added, questionId } = props;
   const { people, questions, base } = data;
   const router = useRouter();
+  const baseMemoryId = base.kind === "second" ? base.memoryId : null;
 
   // A new memory starts from what came back to this page: the draft carried
   // from another family's form, or from this one before a trip to the
-  // add-relative page (its story, year, people and picked question), with
-  // whoever was just added there (?added=) ticked. Read once, on mount.
+  // add-relative page (its story, year, people and picked question), else
+  // the draft kept for this tab (a reload), with whoever was just added on
+  // the add-relative page (?added=) ticked and the question in ?questionId=
+  // picked. A second telling from ?memoryId= gets its kept story back. Read
+  // once, on mount.
   const [start] = useState<Start>(() => {
-    if (base.kind !== "new" || restore) return BLANK_START;
-    const c = readCarry(sessionStore(), fid);
+    if (restore) return BLANK_START;
+    const store = sessionStore();
+    if (base.kind === "second") {
+      const kept = draftForForm(readTypedDraft(store, fid), { memoryId: base.memoryId, questionId: null });
+      if (!kept) return BLANK_START;
+      return { carried: { ...NOTHING_CARRIED, text: kept.text }, picked: null, photosLeft: kept.photoCount };
+    }
+    const c = readCarry(store, fid);
+    const kept = c ? null : draftForForm(readTypedDraft(store, fid), { memoryId: null, questionId });
     const participantIds = preselectAdded(
-      c?.participantIds ?? null,
+      c ? c.participantIds : (kept?.participantIds ?? null),
       added,
       people.map((p) => p.id),
     );
-    if (!c && !participantIds) return BLANK_START;
+    const pickId = questionId ?? c?.questionId ?? kept?.questionId ?? null;
+    if (!c && !kept && !participantIds && !pickId) return BLANK_START;
     return {
       carried: {
         ...NOTHING_CARRIED,
-        text: c?.text ?? "",
-        year: c?.year ?? "",
+        text: c?.text ?? kept?.text ?? "",
+        year: c?.year ?? kept?.year ?? "",
         participantIds,
-        question: c?.question ?? "",
+        question: c?.question ?? kept?.question ?? "",
       },
-      picked: repick(c?.questionId ?? null, questions, data.moments),
-      photosLeft: c?.photoCount ?? 0,
+      picked: repick(pickId, questions, data.moments),
+      photosLeft: c?.photoCount ?? kept?.photoCount ?? 0,
     };
   });
 
@@ -386,10 +422,39 @@ function AddFormReady(props: {
     });
   }, []);
 
-  const onDraftChange = useCallback((draft: MemoryDraft, photos: File[]) => {
-    latest.current = { draft, photos, second: Boolean(draft.memoryId) };
-    if (photos.length > 0) setPhotosLeft(0);
-  }, []);
+  // The picked question rides in the URL (?questionId=), every other param
+  // kept, so a reload picks it again. A second telling from ?memoryId= picks
+  // nothing, so its URL is left alone. Only on /add itself: this page can be
+  // kept alive, hidden, while another route shows.
+  const syncQuestion = base.kind === "new";
+  useEffect(() => {
+    if (!syncQuestion || window.location.pathname !== "/add") return;
+    const next = withQuestionId(window.location.search, currentId);
+    if (next !== `${window.location.pathname}${window.location.search}`) {
+      window.history.replaceState(null, "", next);
+    }
+  }, [currentId, syncQuestion]);
+
+  const onDraftChange = useCallback(
+    (draft: MemoryDraft, photos: File[]) => {
+      const second = Boolean(draft.memoryId);
+      latest.current = { draft, photos, second };
+      if (photos.length > 0) setPhotosLeft(0);
+      // Kept for a reload of this tab. A picked question's text, a moment's
+      // year and people are not typed: they come back with the pick.
+      saveTypedDraft(sessionStore(), {
+        familyId: fid,
+        memoryId: baseMemoryId,
+        questionId: currentId,
+        text: draft.text,
+        year: second ? "" : draft.year,
+        participantIds: second ? [] : draft.participantIds.filter((id) => id !== selfPersonId),
+        question: currentId || second ? "" : draft.question,
+        photoCount: photos.length > 0 ? photos.length : photosLeft,
+      });
+    },
+    [fid, baseMemoryId, currentId, selfPersonId, photosLeft],
+  );
 
   // Off to the add-relative page: keep the whole draft (all but the photo
   // files) for the form that comes back with the new person ticked.
@@ -409,11 +474,16 @@ function AddFormReady(props: {
     });
   }, [fid, selfPersonId, pickedId]);
 
-  // Switching family: the story and year go along to that family's form.
-  const onSwitch = useCallback((familyId: string) => {
-    const { draft, second } = latest.current;
-    saveCarry(sessionStore(), { familyId, text: draft?.text ?? "", year: draft && !second ? draft.year : "" });
-  }, []);
+  // Switching family: the story and year go along to that family's form,
+  // and leave this one (else a later visit here would find them again).
+  const onSwitch = useCallback(
+    (familyId: string) => {
+      const { draft, second } = latest.current;
+      saveCarry(sessionStore(), { familyId, text: draft?.text ?? "", year: draft && !second ? draft.year : "" });
+      if (familyId !== fid) clearTypedDraft(sessionStore(), fid);
+    },
+    [fid],
+  );
 
   const onPick = useCallback(
     (q: Question) => {
@@ -524,7 +594,7 @@ function AddFormReady(props: {
 
   const second = secondTellingOf !== null;
   const secondTitle = secondTellingOf?.title ?? null;
-  const photosNote = second ? null : carriedPhotosNote(photosLeft);
+  const photosNote = carriedPhotosNote(photosLeft);
   // One question area: the family's notes for a new memory, nothing to pick
   // for a second telling (its own question rides along read-only).
   const area = questionAreaFor({
@@ -538,6 +608,8 @@ function AddFormReady(props: {
     async (fields: SubmitMemoryFields, photos: File[]) => {
       // ApiErrors reject from here, so the form shows them where they belong.
       const res = await api.submitMemory(fid, fields, photos);
+      // Sent: the draft kept for a reload has done its job.
+      clearTypedDraft(sessionStore(), fid);
       const telling = tellingFromSubmit(fields, photos.length, secondTitle);
       saveTelling(sessionStore(), res.runId, telling);
       // Kept so a run that fails can bring the form back filled in.
@@ -554,7 +626,7 @@ function AddFormReady(props: {
         <FamilyLede choice={choice} onSwitch={onSwitch}>
           {second ? (
             <>
-              Tell it as you remember it. It doesn&rsquo;t have to match anyone else&rsquo;s.
+              {SECOND_TELLING_LEDE}
               {base.kind === "second" && !picked ? (
                 <>
                   {" "}
@@ -570,7 +642,7 @@ function AddFormReady(props: {
               ) : null}
             </>
           ) : (
-            "Tell it the way you would at the kitchen table. The studio turns it into a scene for the family book."
+            NEW_MEMORY_LEDE
           )}
         </FamilyLede>
       }
