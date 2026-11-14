@@ -385,7 +385,7 @@ export function placeNote(p: PlaceInput, out: Placement): Placement {
         const gapX = Math.max(0, Math.abs(cx - tcx) - (r.x1 - r.x0) / 2 - tw / 2);
         const dist = (Math.abs(gapX - gap) + 0.35 * Math.abs(cy - tcy)) / vw;
         const hop = p.prevX === null ? 0 : Math.abs(x - p.prevX) * 0.4;
-        const score = 6 * hide + 2.5 * crowd + 1.2 * avoidCost + dist + hop + small + 0.12 * d;
+        const score = 6 * hide + 2.5 * crowd + 0.8 * avoidCost + dist + hop + small + 0.12 * d;
         if (score < bestScore) {
           bestScore = score;
           bestX = x;
@@ -477,9 +477,9 @@ export const RISE_MS = 820;
 export const FOLD_MS = 360;
 /** The cutout's lift: how long it takes, and its height off the layer (stage units). */
 export const LIFT_MS = 220;
-export const LIFT = 0.032;
+export const LIFT = 0.04;
 /** A hovered cutout lifts this fraction of LIFT. */
-export const HOVER_LIFT = 0.4;
+export const HOVER_LIFT = 0.55;
 
 const clamp01 = (t: number) => (t < 0 ? 0 : t > 1 ? 1 : t);
 export const smooth = (t: number) => {

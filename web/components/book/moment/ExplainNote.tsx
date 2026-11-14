@@ -58,6 +58,7 @@ import {
   Raycaster,
   SRGBColorSpace,
   Shape,
+  ShapeGeometry,
   SphereGeometry,
   Vector3,
   type Camera,
@@ -214,14 +215,14 @@ const STITCHES = 26;
 const THREAD_R = 0.0052;
 /** On-screen body type size the note is sized for (CSS px; the handwriting runs small), and the smallest it may shrink to. */
 const READ_PX = 21;
-const READ_PX_PHONE = 18;
-const MIN_PX = 14;
+const READ_PX_PHONE = 19;
+const MIN_PX = 15;
 /** The tallest a note may stand on the page, stage units (a puppet is 0.5). */
 const MAX_H = 0.95;
 /** Screen margins the note keeps clear of (the book's header, its bottom hints and buttons). */
 const VIEW_PAD = { top: 58, bottom: 74, side: 12 };
 /** Most a note turns toward the camera, and leans back to face it, radians. */
-const MAX_YAW = 0.42;
+const MAX_YAW = 0.3;
 const MAX_LEAN = 0.38;
 /** Pointer slack round a cutout's edge, px: a mouse, and a finger. */
 const SLACK_FINE = 5;
@@ -331,8 +332,10 @@ class NoteRig {
   private readonly knotA: Mesh;
   private readonly knotB: Mesh;
   private readonly cardGeo: ExtrudeGeometry;
+  private readonly faceGeo: ShapeGeometry;
   private readonly texture: CanvasTexture;
   private readonly face: MeshStandardMaterial;
+  private readonly back: MeshStandardMaterial;
   private readonly edge: MeshStandardMaterial;
   private readonly threadMat: MeshStandardMaterial;
 
@@ -372,23 +375,28 @@ class NoteRig {
     this.texture.repeat.set(1 / this.aspect, 1);
     this.texture.offset.set(0.5, 0);
     const grain = getPaperTextures("paper", [2, 2]);
-    this.face = new MeshStandardMaterial({ map: this.texture, roughness: 0.93, metalness: 0 });
+    // The written face is printed on the card's front, a hair proud of it.
+    this.face = new MeshStandardMaterial({ map: this.texture, roughness: 0.93, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1 });
     this.face.normalMap = grain.normalMap;
     this.face.normalScale.set(0.45, 0.45);
+    this.back = new MeshStandardMaterial({ color: "#efe5cf", roughness: 0.95, metalness: 0 });
+    this.back.normalMap = grain.normalMap;
+    this.back.normalScale.set(0.6, 0.6);
     this.edge = new MeshStandardMaterial({ color: "#d8c6a2", roughness: 1, metalness: 0 });
     this.threadMat = new MeshStandardMaterial({ color, roughness: 0.72, metalness: 0 });
 
-    // Built at unit height and depth, and sized by its group.
-    this.cardGeo = new ExtrudeGeometry(deckledCard(this.aspect, seedOf(item.target, 3)), {
-      depth: 1,
-      bevelEnabled: false,
-      curveSegments: 1,
-      steps: 1,
-    });
-    this.card = new Mesh(this.cardGeo, [this.face, this.edge]);
+    // Built at unit height and depth, and sized by its group: the card (plain
+    // both sides, its cut edge darker) and its written face.
+    const outline = deckledCard(this.aspect, seedOf(item.target, 3));
+    this.cardGeo = new ExtrudeGeometry(outline, { depth: 1, bevelEnabled: false, curveSegments: 1, steps: 1 });
+    this.faceGeo = new ShapeGeometry(outline, 1);
+    this.card = new Mesh(this.cardGeo, [this.back, this.edge]);
     this.card.castShadow = true;
     this.card.receiveShadow = true;
-    this.sizer.add(this.card, this.attach);
+    const face = new Mesh(this.faceGeo, this.face);
+    face.position.z = 1;
+    face.receiveShadow = true;
+    this.sizer.add(this.card, face, this.attach);
     this.hinge.add(this.sizer);
     this.root.add(this.hinge);
 
@@ -501,19 +509,21 @@ class NoteRig {
       this.lean = g.lean;
     }
 
-    // The card on its hinge: flat back on the page at 0, leaning a little toward the reader at 1.
+    // The card on its hinge: face down on the page toward the reader at 0
+    // (so it never sweeps through the set behind it), standing and leaning
+    // back a touch at 1, past that mid-bounce.
     this.root.position.set(this.x, BASE_Y, this.z);
     this.root.rotation.set(0, this.yaw, 0);
-    this.hinge.rotation.x = -(Math.PI / 2) * (1 - up) - this.lean * up;
+    this.hinge.rotation.x = (Math.PI / 2) * (1 - up) - this.lean * up;
     this.sizer.scale.set(this.h, this.h, CARD_T);
 
-    // The strut: from the page behind the card to its back, under half way up.
+    // The strut: from the page behind the card to its back, under half way up (once it stands).
     const a = -this.hinge.rotation.x;
     const reach = 0.42 * this.h;
     const by = reach * Math.cos(a);
     const bz = -reach * Math.sin(a) - CARD_T;
     const foot = -0.16 * this.h;
-    this.strut.visible = up > 0.08;
+    this.strut.visible = a > 0.02 && up > 0.6;
     this.strut.position.set(0, by / 2, (bz + foot) / 2);
     this.strut.rotation.set(Math.atan2(bz - foot, by), 0, 0);
     this.strut.scale.set(0.24 * this.h * this.aspect, Math.hypot(by, bz - foot), CARD_T * 0.8);
@@ -567,8 +577,10 @@ class NoteRig {
   dispose() {
     for (const p of this.parts) p.removeFromParent();
     this.cardGeo.dispose();
+    this.faceGeo.dispose();
     this.texture.dispose();
     this.face.dispose();
+    this.back.dispose();
     this.edge.dispose();
     this.threadMat.dispose();
     this.thread.dispose();
@@ -1009,7 +1021,7 @@ class ExplainStage {
     root.updateWorldMatrix(true, false);
     cam.updateMatrixWorld();
     const camStage = root.worldToLocal(s.cam.setFromMatrixPosition(cam.matrixWorld));
-    const yawAt = (x: number, z: number) => Math.max(-MAX_YAW, Math.min(MAX_YAW, Math.atan2(camStage.x - x, camStage.z - z) * 0.75));
+    const yawAt = (x: number, z: number) => Math.max(-MAX_YAW, Math.min(MAX_YAW, Math.atan2(camStage.x - x, camStage.z - z) * 0.55));
     const leanAt = (x: number, h: number, z: number) => {
       const el = Math.atan2(camStage.y - h * 0.5, Math.hypot(camStage.x - x, camStage.z - z));
       return Math.max(0, Math.min(MAX_LEAN, el * 0.5));
