@@ -31,7 +31,8 @@ import {
   turnTargets,
 } from "./leafShape";
 import { createRuntime, setDepths, type BookRuntime, type LeafState } from "./runtime";
-import { blendShot, copyPose, createPose, createStageShot, stepShotWeight, type StageShot } from "./shot";
+import { SceneView, chooseViewShot, stepViewShot, type SceneViewMode, type ViewShot } from "./sceneView";
+import { blendShot, copyPose, createPose, createStageShot, type StageShot } from "./shot";
 import { coverOpen, pageLand, pageTurn, paperLift } from "./sound";
 import { layStacks } from "./stacking";
 
@@ -68,11 +69,6 @@ const SHOT_FOLLOW = 0.45;
 const SHOT_HALF_W = 0.48;
 /** The stage's words and pull tabs stay above this much of the frame's lower half (clear of the dots). */
 const SHOT_KEEP_BELOW = 0.8;
-/** Seconds to lean in; to come back out when the telling ends, the reader steps back, or a page lifts. */
-const SHOT_IN = 1.8;
-const SHOT_OUT = 1.5;
-const SHOT_YIELD = 0.9;
-const SHOT_TURN = 0.5;
 /** Rates (1/s) a pop-up page tilts up and down under the pointer, and its stage settles flat after a lift takes over. */
 const TILT_RATE = 12;
 const STAGE_UNTILT_RATE = 10;
@@ -214,12 +210,21 @@ export class BookController {
   private trackKeep: Vector3 | null = null;
   private outPose = createPose();
   private camDirty = true;
-  /** Eased 0..1 toward the settled spread's shot, and its last applied value. */
+  /** Eased 0..1 toward the settled spread's shot (viewShot.w, as last stepped), and its last applied value. */
   private shotW = 0;
   private shotApplied = -1;
-  private shotWant = 0;
-  /** The reader stepped back out of the shot (a tap): stay out until the telling starts again. */
-  private shotYield = false;
+  /** The weight's state toward the shot (sceneView.ts), reused every frame. */
+  private viewShot: ViewShot = { w: 0, quickTo: -1 };
+  /** The reader's view (scene or the whole book): the mode this camera last picked up. */
+  private readonly sceneView: SceneView;
+  private modeSeen: SceneViewMode;
+  /**
+   * Book view, with a moment playing on this spread (and, on a phone, held
+   * after it ends until the reader pans or turns): a phone frames the whole
+   * spread rather than one page. The spread it holds for (1-based), or 0.
+   */
+  private wideAt = 0;
+  private wide = false;
   /** Eased 0..1: how far a leaf stands up; the camera eases back for it. */
   private lift = 0;
   private lastFrameT = 0;
@@ -252,10 +257,14 @@ export class BookController {
     invalidate: () => void,
     onView: (v: BookView) => void,
     onStages: (indices: number[]) => void,
+    /** The reader's scene or book view (Book3D keeps one per book); a fresh one by default. */
+    sceneView: SceneView = new SceneView(),
   ) {
     this.invalidate = invalidate;
     this.onView = onView;
     this.onStages = onStages;
+    this.sceneView = sceneView;
+    this.modeSeen = sceneView.mode;
     this.n = spreads;
     this.rt = createRuntime(spreads + 1, start.opened ? start.spread : 0);
     this.tmpAngles = new Float32Array(this.rt.restR.length);
@@ -367,6 +376,11 @@ export class BookController {
   setFocus(side: -1 | 0 | 1) {
     // A phone always reads one page; it pans between them.
     const goal = this.phone && side === 0 ? this.focusGoal || -1 : side;
+    // A phone held on the whole book after its moment ended reads one page again.
+    if (this.wideAt && this.phone && !this.sceneView.available) {
+      this.wideAt = 0;
+      this.invalidate();
+    }
     if (goal === this.focusGoal) return;
     this.focusGoal = goal;
     this.invalidate();
@@ -376,21 +390,14 @@ export class BookController {
     return this.focusGoal;
   }
 
-  /** The camera is (mostly) in a playing stage's shot, and the reader has not stepped back out. */
+  /** The camera is (mostly) in a playing stage's shot, and the reader has not chosen the whole book. */
   get inShot() {
-    return this.shotW > 0.25 && !this.shotYield;
+    return this.shotW > 0.25 && this.modeSeen === "scene";
   }
 
   /** How far the camera is into the stage's shot (0 the reading view .. 1), for capture scripts. */
   get shotWeight() {
     return this.shotW;
-  }
-
-  /** A telling chosen again: the camera may lean back into its stage. */
-  resumeShot() {
-    if (!this.shotYield) return;
-    this.shotYield = false;
-    this.invalidate();
   }
 
   /** Reading one page at a time (a portrait phone). */
@@ -415,7 +422,8 @@ export class BookController {
    */
   step(dir: 1 | -1) {
     if (!this.isOpen) return dir > 0 ? this.openBook() : undefined;
-    if (this.phone && !this.busy()) {
+    // In book view the whole spread is in view already: page on.
+    if (this.phone && !this.busy() && !this.wide) {
       if (dir > 0 && this.focusGoal < 0) return this.setFocus(1);
       if (dir < 0 && this.focusGoal > 0) return this.setFocus(-1);
     }
@@ -658,12 +666,17 @@ export class BookController {
       } else if (Math.hypot(dx, dy) < 8 && !tap.busy) {
         // A tap: look closer at that page (a phone pans to it), or back out.
         // Not mid-turn: the turn in flight already chose where to look.
-        // In a stage's shot, a tap steps back out to the spread first.
-        if (this.phone) this.setFocus(tap.side);
-        else if (this.inShot) {
-          this.shotYield = true;
-          this.invalidate();
-        }
+        // While a moment plays, a tap on the pop-up in book view goes back
+        // into the scene, and a tap in the scene's shot steps out to the
+        // whole book (and the reader's choice is kept).
+        const sv = this.sceneView;
+        if (sv.available && this.modeSeen === "book") {
+          if (tap.side === 1) sv.choose("scene");
+          // The desktop may still look closely at the story page; a phone
+          // has the whole book in view, and never pans away from the scene.
+          else if (!this.phone) this.setFocus(this.focusGoal === -1 ? 0 : -1);
+        } else if (this.phone) this.setFocus(tap.side);
+        else if (this.inShot) sv.choose("book");
         else this.setFocus(this.focusGoal === tap.side ? 0 : tap.side);
       }
       return;
@@ -738,6 +751,23 @@ export class BookController {
     this.lastFrameT = t;
     let moving = false;
     rt.frames++;
+
+    // The reader's view: scene or the whole book.
+    const mode = this.sceneView.mode;
+    if (mode !== this.modeSeen) {
+      this.modeSeen = mode;
+      chooseViewShot(this.viewShot, mode);
+      // Both views stand on the whole spread underneath (the scene's shot
+      // leans in from it); a phone stays on the stage page, so its scene
+      // never pans away and pauses, and widens from there.
+      this.focusGoal = this.phone ? 1 : 0;
+    }
+    const sj = this.pos - 1;
+    const playing = this.open >= 1 && sj >= 0 && sj < this.n && this.shots[sj].want > 0;
+    if (mode !== "book") this.wideAt = 0;
+    else if (playing) this.wideAt = this.pos;
+    else if (this.wideAt !== this.pos) this.wideAt = 0;
+    this.wide = this.wideAt > 0;
 
     // Cover.
     if (this.opening) {
@@ -904,7 +934,8 @@ export class BookController {
       // A phone reads one page at a time, starting with the story.
       if (phone && this.focusGoal === 0) this.focusGoal = -1;
     }
-    const singleGoal = this.phone ? 1 : Math.abs(this.focusGoal);
+    // A phone in book view frames the whole spread; elsewhere one page.
+    const singleGoal = this.phone ? (this.wide ? 0 : 1) : Math.abs(this.focusGoal);
     // On a phone the camera travels with a turning leaf, over the spine.
     let focusGoal: number = this.focusGoal;
     if (this.phone) {
@@ -920,8 +951,9 @@ export class BookController {
       this.focusE = focusGoal;
       this.single = singleGoal;
     }
-    // A phone reads one page: the stage is in view once the camera has panned to it.
-    this.stageView.current = this.phone ? smoothstep(-0.2, 0.7, this.focusE) : 1;
+    // A phone reads one page: the stage is in view once the camera has panned
+    // to it. In book view it is in view all along (the camera widens from it).
+    this.stageView.current = this.phone && !this.wide ? smoothstep(-0.2, 0.7, this.focusE) : 1;
     // Parallax holds still while a page is held, so the drag maps cleanly.
     if (!this.drag?.active) {
       const on = this.parallaxOn && !this.calm && !this.frozen;
@@ -970,25 +1002,25 @@ export class BookController {
     const j = this.pos - 1;
     const shot = this.open >= 1 && j >= 0 && j < this.n ? this.shots[j] : null;
     const want = shot ? shot.want : 0;
-    // A telling starting (again) takes the shot again, whatever the reader stepped back from.
-    if (want > 0 && this.shotWant === 0) this.shotYield = false;
-    this.shotWant = want;
     if (shot && want > 0) {
-      copyPose(this.trackPose, shot);
+      // Reduced motion: a still close-up of the stage page, not the moving track.
+      copyPose(this.trackPose, this.calm ? this.pagePose : shot);
       this.trackKeep = shot.hasKeep ? this.keepAt.copy(shot.keep) : null;
     }
-    // A phone follows the shot only while it reads the stage page; reduced motion never.
-    const reading = !this.phone || this.focusGoal === 1;
+    // The reader may switch between the scene and the whole book only while a moment plays here.
+    this.sceneView.offer(want > 0);
+    // A phone follows the shot only while it reads the stage page. Book view
+    // never follows it: the stage plays on, only the book's camera stays out.
+    const reading = !this.phone || this.focusGoal === 1 || this.wide;
     const turning = this.lift > 0.01 || this.queue.length > 0 || this.drag?.active === true;
-    const goal = want > 0 && reading && !turning && !this.shotYield && !this.calm ? 1 : 0;
-    const out = turning ? SHOT_TURN : this.shotYield ? SHOT_YIELD : SHOT_OUT;
     // Wall time, so a slow frame does not stretch the move; starting from
     // still (the book draws on demand, so the last frame may be long ago)
     // it takes one frame's step.
     const t = now();
     const dt = !this.shotT ? 0 : this.shotEasing ? Math.min(0.5, t - this.shotT) : 1 / 60;
     this.shotT = t;
-    this.shotW = stepShotWeight(this.shotW, goal, dt, SHOT_IN, out);
+    const goal = stepViewShot(this.viewShot, want > 0, reading, turning, this.modeSeen, this.calm, dt);
+    this.shotW = this.viewShot.w;
     const moving = this.shotW !== goal;
     this.shotEasing = moving;
     // Out of any shot and nothing new to frame: the camera stays where it is.

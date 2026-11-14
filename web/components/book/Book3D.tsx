@@ -874,7 +874,6 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
       if (ev.type !== "pointerup" || Math.hypot(ev.clientX - x0, ev.clientY - y0) > 10) return;
       paperLift();
       onTelling(spreads[label.spread].id, label.id);
-      ctl.resumeShot();
       // Show the stage the new telling plays on: a phone pans to it, a
       // close look at the story page steps back to the spread.
       if (ctl.focus === -1) ctl.setFocus(ctl.onePage ? 1 : 0);
