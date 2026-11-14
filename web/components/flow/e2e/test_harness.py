@@ -681,3 +681,269 @@ def test_sweep_accounts_owners() -> None:
     assert sweep_accounts.owner_for_url("http://localhost:3215/families/new") == "pages"
     assert sweep_accounts.problem_owner({"kind": "http", "pageUrl": "http://localhost:3215/login"}) == "api"
     assert sweep_accounts.problem_owner({"kind": "pageerror", "pageUrl": "http://localhost:3215/"}) == "ethan"
+
+
+# --------------------------------------------------------------------------- wait_stage_ready
+
+
+class _StagePage:
+    def __init__(self, outcome: BaseException | None) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[str, float]] = []
+
+    def wait_for_function(self, expression: str, *, timeout: float) -> None:
+        self.calls.append((expression, timeout))
+        if self.outcome is not None:
+            raise self.outcome
+
+
+class TimeoutError(Exception):  # noqa: A001 - named like playwright's, which is what it stands for
+    pass
+
+
+def test_wait_stage_ready_true_when_the_flag_is_set() -> None:
+    page = _StagePage(None)
+    assert harness.wait_stage_ready(page, 1234) is True
+    expression, timeout = page.calls[0]
+    assert timeout == 1234
+    assert "dataset.stageReady === '1'" in expression and "__STITCH_READY__" in expression
+
+
+def test_wait_stage_ready_false_on_timeout_and_raises_otherwise() -> None:
+    assert harness.wait_stage_ready(_StagePage(TimeoutError("60000ms exceeded")), 10) is False
+    with pytest.raises(RuntimeError):
+        harness.wait_stage_ready(_StagePage(RuntimeError("Target page, context or browser has been closed")), 10)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_stage_ready_expression_reads_both_flags(tmp_path: Path) -> None:
+    probe = tmp_path / "probe.js"
+    probe.write_text(
+        f"const ready = {harness.STAGE_READY_JS};\n"
+        "const out = [];\n"
+        "globalThis.document = {documentElement: {dataset: {}}}; globalThis.window = {};\n"
+        "out.push(ready());\n"
+        "document.documentElement.dataset.stageReady = '1'; out.push(ready());\n"
+        "document.documentElement.dataset = {}; window.__STITCH_READY__ = true; out.push(ready());\n"
+        "console.log(JSON.stringify(out));\n"
+    )
+    out = subprocess.run(["node", str(probe)], capture_output=True, text=True, timeout=30, check=True).stdout  # noqa: S603, S607
+    assert json.loads(out) == [False, True, True]
+
+
+# --------------------------------------------------------------------------- demo_path.py links
+
+
+def test_check_scene_href_accepts_the_family_query() -> None:
+    import demo_path
+
+    assert demo_path.check_scene_href("/memories/m1?family=f1", "memories", "f1", "x") == "m1"
+    assert demo_path.check_scene_href("/render/m%201?family=f%2F1", "render", "f/1", "x") == "m 1"
+    assert demo_path.check_scene_href("/memories/m1?x=1&family=f1", "memories", "f1", "x") == "m1"
+
+
+@pytest.mark.parametrize(
+    ("href", "words"),
+    [
+        ("/memories/m1", "missing"),
+        ("/memories/m1?family=", "missing"),
+        ("/memories/m1?family=other", "'other'"),
+        ("/memories/m1?family=f1&family=f2", "'f1', 'f2'"),
+        ("/render/m1?family=f1", "not /memories/<id>"),
+        ("/memories/m1/extra?family=f1", "not /memories/<id>"),
+        ("", "not /memories/<id>"),
+    ],
+)
+def test_check_scene_href_is_a_pages_seam_with_the_href(href: str, words: str) -> None:
+    import demo_path
+
+    with pytest.raises(demo_path.Seam) as exc:
+        demo_path.check_scene_href(href, "memories", "f1", "'Open your page'")
+    assert exc.value.owner == "pages"
+    assert repr(href) in str(exc.value) and words in str(exc.value)
+
+
+def test_demo_path_strict_ethan_flag(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import demo_path
+
+    assert demo_path.parse_args([]).strict_ethan is False
+    assert demo_path.parse_args(["--strict-ethan"]).strict_ethan is True
+    seams = SeamLog()
+    seams.record("fine", True)
+    seams.record("6b A watches the scene", False, "REQUEST for Ethan: the stage", "ethan")
+    assert demo_path.summarize(seams, tmp_path / "a") == 0
+    assert demo_path.summarize(seams, tmp_path / "b", strict_ethan=True) == 1
+    ok = SeamLog()
+    ok.record("fine", True)
+    assert demo_path.summarize(ok, tmp_path / "c", strict_ethan=True) == 0
+    assert "REQUEST for Ethan: the stage" in capsys.readouterr().out
+
+
+def test_request_texts_cite_ethan_s_lines() -> None:
+    import demo_path
+
+    assert "MemoryBook.tsx:48" in demo_path.REQUEST_SCENE
+    assert "TreeHome.tsx:170" in demo_path.REQUEST_HOME_LINKS
+    assert "TreeHome.tsx:170" in demo_path.REQUEST_HOME_FAMILY.format(shown="x", family="y")
+    stage = demo_path.REQUEST_STAGE.format(href="/render/m?family=f", seconds=60)
+    assert stage.startswith("REQUEST for Ethan") and "/render/m?family=f" in stage and "60 s" in stage
+
+
+# --------------------------------------------------------------------------- run_all.py
+
+
+def test_run_all_discovers_demo_and_sweeps(tmp_path: Path) -> None:
+    import run_all
+
+    for name in ("demo_path.py", "sweep_join.py", "sweep_accounts.py", "sweep_zeta.py", "harness.py",
+                 "run_all.py", "test_harness.py", "sweep_.py", "sweep_notes.txt"):
+        (tmp_path / name).write_text("")
+    found = run_all.discover_scripts(tmp_path)
+    assert found == [
+        ("demo", tmp_path / "demo_path.py"),
+        ("accounts", tmp_path / "sweep_accounts.py"),
+        ("join", tmp_path / "sweep_join.py"),
+        ("zeta", tmp_path / "sweep_zeta.py"),
+    ]
+    assert run_all.discover_scripts(tmp_path / "nowhere") == []
+
+
+def test_run_all_finds_the_real_scripts() -> None:
+    import run_all
+
+    found = dict(run_all.discover_scripts(run_all.HERE))
+    assert found["demo"].name == "demo_path.py"
+    assert {"accounts", "join"} <= set(found)
+
+
+def test_run_all_skips_missing_sweeps(tmp_path: Path) -> None:
+    import run_all
+
+    (tmp_path / "demo_path.py").write_text("")
+    (tmp_path / "sweep_join.py").write_text("")
+    found = run_all.discover_scripts(tmp_path)
+    chosen, missing = run_all.select_scripts(found, ["join", "add", "demo", "run", "settings", "join"])
+    assert [a for a, _ in chosen] == ["demo", "join"]
+    assert missing == ["add", "run", "settings"]
+    assert run_all.select_scripts(found, None) == (found, [])
+    assert run_all.script_name("demo") == "demo_path.py"
+    assert run_all.script_name("add") == "sweep_add.py"
+
+
+def test_run_all_build_command(tmp_path: Path) -> None:
+    import run_all
+
+    demo = run_all.build_command("demo", Path("/e2e/demo_path.py"), "mock", tmp_path, 8301, 3301, False)
+    assert demo[:2] == [sys.executable, "/e2e/demo_path.py"]
+    assert "--mode" not in demo, "demo_path.py always runs real"
+    assert demo[demo.index("--out") + 1] == str(tmp_path / "demo")
+    assert (demo[demo.index("--api-port") + 1], demo[demo.index("--web-port") + 1]) == ("8301", "3301")
+    assert "--headed" not in demo
+
+    sweep = run_all.build_command("join", Path("/e2e/sweep_join.py"), "both", tmp_path, 8302, 3302, True)
+    assert sweep[sweep.index("--mode") + 1] == "both"
+    assert sweep[sweep.index("--out") + 1] == str(tmp_path / "join")
+    assert (sweep[sweep.index("--api-port") + 1], sweep[sweep.index("--web-port") + 1]) == ("8302", "3302")
+    assert "--headed" in sweep and "--keep-going" not in sweep
+    # Every flag a sweep gets is one harness.sweep_args() accepts.
+    args = harness.sweep_args("x", sweep[2:])
+    assert (args.mode, args.headed, args.out, args.api_port, args.web_port) == (
+        "both", True, tmp_path / "join", 8302, 3302)
+    import demo_path
+
+    parsed = demo_path.parse_args(demo[2:])
+    assert (parsed.out, parsed.api_port, parsed.web_port) == (tmp_path / "demo", 8301, 3301)
+
+
+def test_run_all_merge_counts() -> None:
+    import run_all
+
+    a = {"total": 10, "ok": 7, "failed": 3, "failedByOwner": {"pages": 1, "ethan": 2, "api": 0}}
+    b = {"total": 5, "ok": 4, "failed": 1, "failedByOwner": {"pages": 0, "ethan": 0, "api": 1}}
+    assert run_all.merge_counts([a, None, b, {}]) == {
+        "total": 15,
+        "ok": 11,
+        "failed": 4,
+        "failedByOwner": {"pages": 1, "ethan": 2, "api": 1},
+    }
+    assert run_all.merge_counts([]) == {"total": 0, "ok": 0, "failed": 0,
+                                        "failedByOwner": {"pages": 0, "ethan": 0, "api": 0}}
+
+
+def test_run_all_read_counts(tmp_path: Path) -> None:
+    import run_all
+
+    assert run_all.read_counts(tmp_path) is None
+    (tmp_path / "seams.json").write_text("not json")
+    assert run_all.read_counts(tmp_path) is None
+    log = SeamLog()
+    log.record("x", False, "boom", "api")
+    log.write(tmp_path)
+    assert run_all.read_counts(tmp_path) == log.to_json()["counts"]
+
+
+def test_run_all_skips_without_chromium(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import run_all
+
+    monkeypatch.setattr(harness, "chromium_available", lambda: False)
+
+    def no_run(*_: object, **__: object) -> None:
+        raise AssertionError("nothing runs without Chromium")
+
+    monkeypatch.setattr(run_all, "run_one", no_run)
+    assert run_all.main(["--unit"]) == 0
+    assert capsys.readouterr().out.strip() == SKIP_LINE
+
+
+def test_run_all_main_summary_and_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fake runs: per-area out dirs and ports, summary.json, exit 1 when any run failed."""
+    import run_all
+
+    scripts = tmp_path / "e2e"
+    scripts.mkdir()
+    for name in ("demo_path.py", "sweep_join.py"):
+        (scripts / name).write_text("")
+    monkeypatch.setattr(run_all, "HERE", scripts)
+    monkeypatch.setattr(harness, "chromium_available", lambda: True)
+    ports = iter(range(9001, 9100))
+    monkeypatch.setattr(run_all, "free_port", lambda: next(ports))
+    monkeypatch.setattr(run_all, "wait_port_free", lambda port, timeout=30.0: True)
+    seen: list[tuple[str, list[str]]] = []
+
+    def fake_run(area: str, cmd: list[str], cwd: Path, out: str) -> dict[str, object]:
+        seen.append((area, cmd))
+        if area == "demo":
+            log = SeamLog()
+            log.record("ok", True)
+            log.record("stage", False, "REQUEST for Ethan", "ethan")
+            log.write(Path(out))
+            return {"area": area, "exit": 0, "seconds": 1.0, "out": out}
+        if area == "join":
+            log = SeamLog()
+            log.record("broken", False, "boom", "pages")
+            log.write(Path(out))
+            return {"area": area, "exit": 1, "seconds": 2.0, "out": out}
+        return {"area": area, "exit": 0, "seconds": 0.5, "out": out}
+
+    monkeypatch.setattr(run_all, "run_one", fake_run)
+    out = tmp_path / "out"
+    code = run_all.main(["--only", "demo,join,add", "--unit", "--mode", "mock", "--out", str(out)])
+    assert code == 1
+    assert [a for a, _ in seen] == ["unit", "demo", "join"]
+    assert seen[0][1] == list(run_all.UNIT_COMMAND)
+    demo_cmd, join_cmd = seen[1][1], seen[2][1]
+    assert demo_cmd[demo_cmd.index("--api-port") + 1] != join_cmd[join_cmd.index("--api-port") + 1]
+    assert join_cmd[join_cmd.index("--mode") + 1] == "mock" and "--mode" not in demo_cmd
+    summary = json.loads((out / "summary.json").read_text())
+    assert [(r["area"], r["exit"]) for r in summary["runs"]] == [("unit", 0), ("demo", 0), ("join", 1)]
+    assert summary["runs"][0]["seams"] is None
+    assert summary["runs"][1]["seams"]["failedByOwner"] == {"pages": 0, "ethan": 1, "api": 0}
+    assert summary["failedByOwner"] == {"pages": 1, "ethan": 1, "api": 0}
+    printed = capsys.readouterr().out
+    assert "sweep_add.py" in printed and "skipped" in printed
+
+    monkeypatch.setattr(run_all, "run_one", lambda area, cmd, cwd, out: {
+        "area": area, "exit": 0, "seconds": 0.1, "out": out})
+    assert run_all.main(["--only", "demo", "--out", str(tmp_path / "out2")]) == 0
