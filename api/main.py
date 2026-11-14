@@ -119,6 +119,7 @@ import routes.families  # noqa: E402
 import routes.memories  # noqa: E402
 import routes.props  # noqa: E402
 import routes.tree  # noqa: E402
+import asking  # noqa: E402
 from db import client, search  # noqa: E402
 from db.embeddings import embedder_from_env  # noqa: E402
 from db.media import MAX_BYTES  # noqa: E402
@@ -269,6 +270,24 @@ def _configure_embeddings() -> None:
     )
 
 
+def _configure_answerer() -> None:
+    """Install the ask model step (asking.answerer_from_env), or none. One log line, never the key.
+
+    ANTHROPIC_API_KEY set and STITCH_ASK_MODEL not "off": /ask lets a small model pick the
+    memory among the search's candidates. Installed with STITCH_FAKE_DB too (the demo runs on it).
+    """
+    try:
+        answerer = asking.answerer_from_env()
+    except Exception as exc:  # noqa: BLE001 - /ask falls back to the search answer
+        log.warning("Ask model step off: it could not be built (%s)", type(exc).__name__)
+        answerer = None
+    asking.set_answerer(answerer)
+    if answerer is None:
+        log.info("Ask model step off (no ANTHROPIC_API_KEY, or STITCH_ASK_MODEL=off): /ask answers from search")
+    else:
+        log.info("Ask model step on: %s", getattr(answerer, "model", "?"))
+
+
 def _install_agent_fake() -> bool:
     """Scripted runs (seed/fake_runs.py) behind agent.runs. True when a manager was installed."""
     from seed.fake_runs import install_fake_runs
@@ -349,6 +368,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     installed_fake = False
     # Read on purpose (db.search has no getter): shutdown puts back whatever was there.
     previous_embedder = getattr(search, "_embedder", None)
+    previous_answerer = asking.get_answerer()
+    _configure_answerer()
     if fake_db_enabled():
         await run_in_threadpool(_install_fake_db)
         installed_fake = True
@@ -371,6 +392,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        asking.set_answerer(previous_answerer)
         if configured_agent:
             await run_in_threadpool(_shutdown_agent)
         if installed_fake:

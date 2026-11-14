@@ -273,14 +273,27 @@ def test_demo_meet_questions_find_the_hymn_books(demo_db, query):
     assert search.search_memories(demo_db, DEMO_FAMILY_ID, query)[0].memory_id == HYMN
 
 
-@pytest.mark.parametrize("query", MEET_QUERIES)
+@pytest.mark.parametrize("query", MEET_QUERIES[:2])
 def test_demo_ask_route_as_david(david, query):
+    """Asked to 'you', the kinship words are the listener's, so search answers as before."""
     res = david.post(f"/families/{DEMO_FAMILY_ID}/ask", json={"query": query})
     assert res.status_code == 200, res.text
     body = schemas.AskResponse.model_validate(res.json())
     assert body.quotes and body.quotes[0].memory_id == HYMN, body
     assert body.quotes[0].title == "How I met your mother"
     assert body.answer != search.NO_STORY
+
+
+def test_demo_mom_and_dad_depend_on_who_asks(david, demo_db):
+    """'Mom and Dad' are David's parents when David asks, and David and Ana when Sam asks."""
+    query = "How did Mom and Dad meet?"
+    body = david.post(f"/families/{DEMO_FAMILY_ID}/ask", json={"query": query}).json()
+    assert body["best"]["memoryId"] == ROSA_WEDDING, body
+    sam = TestClient(david.app)
+    assert sam.post("/auth/login", json={"email": "sam@demo.stitch", "password": DEMO_PASSWORD}).status_code == 200
+    body = sam.post(f"/families/{DEMO_FAMILY_ID}/ask", json={"query": query}).json()
+    assert body["best"]["memoryId"] == HYMN, body
+    assert body["quotes"][0]["memoryId"] == HYMN
 
 
 def test_demo_rain_finds_rosa_and_josephs_wedding(david, demo_db):

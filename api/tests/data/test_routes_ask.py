@@ -138,7 +138,7 @@ def test_ask_finds_the_other_memory(env):
 def test_ask_with_no_match_returns_no_story(env):
     resp = env["tc"].post(f"/families/{FAM_A}/ask", json={"query": "xylophone submarine"})
     assert resp.status_code == 200
-    assert resp.json() == {"answer": search_db.NO_STORY, "quotes": []}
+    assert resp.json() == {"answer": search_db.NO_STORY, "quotes": [], "best": None, "mode": "search"}
 
 
 @pytest.mark.parametrize("query", ["", "   ", "\n\t "])

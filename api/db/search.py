@@ -22,6 +22,12 @@ mama, mum -> mother; dad, papa, pop -> father; nana, granny, abuela -> grandma; 
 abuelo -> grandpa: _KINSHIP). So "How did you meet Mom?" finds "How I met your mother".
 Sentences do not end at the period of a title or initial ("Dr. Kim", "St. Mary's",
 "J. R.") or of "a.m." and the like inside a sentence (_ABBREVIATION).
+
+POST /families/{fid}/ask uses rank_memories, which adds the asker to all this: kinship words
+and names in the question resolve to people of the family tree relative to the caller's
+person (resolve_people), memories those people take part in or tell are boosted, and the
+result is an ordered candidate list (Ranking) whose top one is `best`, `confident` when it
+clearly leads (Ranking.confident). search_memories and ask_quotes are unchanged.
 """
 
 from __future__ import annotations
@@ -234,6 +240,8 @@ def _stem(word: str) -> str:
     word = _plural(word)
     if word in _KINSHIP:
         return _KINSHIP[word]  # moms, mothers, grannies -> mother, grandma
+    if len(word) >= 9 and word.endswith("ation"):
+        return word[:-3]  # graduation, celebration -> graduat, celebrat (as graduate, celebrate)
     return _verb(word)
 
 
@@ -580,6 +588,478 @@ def ask_quotes(
             if len(quotes) >= limit:
                 return quotes
     return quotes
+
+
+# ------------------------------------------------------------------ kinship for the asker
+#
+# "grandpa and grandma", "my mom", "uncle Joe", "dad's parents" name different people
+# depending on who asks. resolve_people turns those words into person ids, relative to the
+# asker's person in the family tree (parent_ids, spouse_ids; spouses are symmetrised). The
+# tree has no gender, so a gendered word names the whole relation: "grandpa" is every
+# grandparent, "mom" both parents, "sister" every sibling, "wife" every spouse.
+
+# A kinship word (as written, casefolded, or once de-pluralised) -> the relation it names.
+_KIN_RELATION = {
+    **dict.fromkeys(
+        ("mom", "mother", "mama", "mum", "mommy", "momma", "dad", "father", "papa", "daddy",
+         "pop", "parent"), "parents"),
+    **dict.fromkeys(
+        ("grandma", "grandmother", "granny", "nana", "abuela", "grandpa", "grandfather",
+         "granddad", "grandad", "abuelo", "grandparent", "grandparents"), "grandparents"),
+    **dict.fromkeys(("brother", "sister", "sibling", "bro", "sis"), "siblings"),
+    **dict.fromkeys(("son", "daughter", "child", "children", "kid"), "children"),
+    **dict.fromkeys(("husband", "wife", "wives", "spouse"), "spouses"),
+    **dict.fromkeys(("uncle", "aunt", "auntie", "aunty", "tia", "tio"), "aunts_uncles"),
+    **dict.fromkeys(("cousin",), "cousins"),
+    **dict.fromkeys(
+        ("grandson", "granddaughter", "grandchild", "grandchildren", "grandkid"), "grandchildren"),
+    **dict.fromkeys(("nephew", "niece"), "nieces_nephews"),
+}
+# The asker as the subject ("how did I meet my wife"). "my" alone only says whose relative.
+_SELF_WORDS = frozenset({"i", "me", "myself"})
+# A question addressed to someone else ("How did you meet Mom?", "your wife") says "Mom"
+# from the listener's side, not the asker's, so kinship is not resolved for the asker. These
+# words always mean that; plain "you" only as the subject of the story's verb (_listener_side).
+_SECOND_PERSON = frozenset({"your", "yours", "youre", "yourself", "yall"})
+# "did you meet", "were you there": an auxiliary right before "you".
+_AUX_BEFORE_YOU = frozenset({"did", "do", "does", "were", "was", "have", "had", "are"})
+# Polite openers that address the app, not a relative: "Can you show me ...", "Do you know
+# ...", "Tell me ...", "please". Stripped before kinship and keywords are read.
+_OPENER = re.compile(
+    r"\b(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:(?:tell|show|remind|help|find|give)\s+)?(?:me\s+)?"
+    r"|do\s+you\s+(?:know|remember|recall)\b"
+    r"|(?:tell|show|remind|find|give)\s+me\b"
+    r"|please\b)",
+    re.IGNORECASE,
+)
+# Light verbs that say nothing about which memory ("did they get married", "we got a flat
+# tire"): left out of /ask ranking keywords (rank_memories), not out of search in general.
+_RANK_SKIP = frozenset({"get", "gets", "got", "gotten", "getting", "go", "goes", "going", "went", "gone"})
+
+
+# Words that tie the kinship word after them to a particular person ("my grandma").
+_ANCHORS = frozenset({"my", "our", "his", "her", "their"})
+
+
+def strip_openers(query: str) -> str:
+    """The question without polite openers ("Can you show me where ..." -> "where ...")."""
+    return " ".join(_OPENER.sub(" ", query or "").split())
+
+
+def _listener_side(words: list[str]) -> bool:
+    """True when the question speaks about the listener's life ("did you meet", "your wife")."""
+    for i, word in enumerate(words):
+        if word in _SECOND_PERSON:
+            return True
+        if word == "you":
+            before = words[i - 1] if i else ""
+            after = words[i + 1] if i + 1 < len(words) else ""
+            if before in _AUX_BEFORE_YOU or after in _IRREGULAR_PAST or (len(after) > 3 and after.endswith("ed")):
+                return True
+    return False
+# Common English nicknames -> the start of the formal name they shorten ("Joe" -> Joseph).
+_NICKNAMES = {
+    "joe": "jos", "bill": "will", "billy": "will", "bob": "rob", "bobby": "rob", "liz": "eliz",
+    "beth": "eliz", "betty": "eliz", "kate": "kat", "katie": "kat", "jim": "jam", "jimmy": "jam",
+    "mike": "mich", "dick": "rich", "rick": "rich", "peggy": "marg", "maggie": "marg",
+    "tony": "ant", "jack": "john", "johnny": "john", "chuck": "charl", "charlie": "charl",
+    "lou": "lu", "lucho": "luis", "pepe": "jos", "paco": "franc", "chris": "chris", "nick": "nich",
+}
+# A word plus whether it carried a possessive 's: "dad's" -> ("dad", True).
+_QUERY_WORD = re.compile(r"([^\W_]+)('s)?(?![^\W_])")
+
+
+@dataclass(frozen=True)
+class Mention:
+    """People a phrase of the query names. relation is a _KIN_RELATION value, 'self' or 'name'."""
+
+    phrase: str
+    relation: str
+    person_ids: frozenset[str]
+    words: tuple[str, ...] = ()  # the query words it consumed, casefolded
+
+
+class _Tree:
+    """Relations over one family's people (all from the same family_id)."""
+
+    def __init__(self, people: list[schemas.Person]) -> None:
+        self.ids = {p.id for p in people}
+        self.parents: dict[str, set[str]] = {p.id: {i for i in p.parent_ids if i in self.ids} for p in people}
+        self.children: dict[str, set[str]] = {p.id: set() for p in people}
+        self.spouses: dict[str, set[str]] = {p.id: set() for p in people}
+        for p in people:
+            for parent in self.parents[p.id]:
+                self.children[parent].add(p.id)
+            for spouse in p.spouse_ids:
+                if spouse in self.ids and spouse != p.id:
+                    self.spouses[p.id].add(spouse)
+                    self.spouses[spouse].add(p.id)
+
+    def _step(self, edges: dict[str, set[str]], start: set[str]) -> set[str]:
+        return set().union(*(edges.get(i, set()) for i in start)) if start else set()
+
+    def relation(self, name: str, start: set[str]) -> set[str]:
+        parents = lambda s: self._step(self.parents, s)  # noqa: E731
+        children = lambda s: self._step(self.children, s)  # noqa: E731
+        spouses = lambda s: self._step(self.spouses, s)  # noqa: E731
+
+        def siblings(s: set[str]) -> set[str]:
+            return children(parents(s)) - s
+
+        if name == "parents":
+            return parents(start)
+        if name == "grandparents":
+            return parents(parents(start))
+        if name == "siblings":
+            return siblings(start)
+        if name == "children":
+            return children(start)
+        if name == "spouses":
+            return spouses(start)
+        if name == "grandchildren":
+            return children(children(start))
+        if name == "aunts_uncles":
+            blood = siblings(parents(start))
+            return blood | spouses(blood)
+        if name == "cousins":
+            blood = siblings(parents(start))
+            return children(blood | spouses(blood)) - start
+        if name == "nieces_nephews":
+            return children(siblings(start))
+        return set()
+
+
+def _kin_relation(word: str) -> str | None:
+    return _KIN_RELATION.get(word) or _KIN_RELATION.get(_plural(word))
+
+
+def _name_words(name: str) -> list[str]:
+    return _WORD.findall(unicodedata.normalize("NFKC", name or "").casefold())
+
+
+def resolve_people(
+    query: str, people: list[schemas.Person], asker_id: str | None
+) -> list[Mention]:
+    """The people the query names, in query order, relative to asker_id. Deterministic, no I/O.
+
+    - Polite openers ("Can you show me", "Do you know", "please") are stripped first.
+    - Kinship words (_KIN_RELATION) resolve through the tree from the asker: "grandma" is the
+      asker's grandparents. Possessives chain: "dad's parents" is the parents of the asker's
+      parents, "Sam's wife" Sam's spouses. A kinship word followed by a name narrows to that
+      name when it can ("uncle Joe" is the aunt or uncle called Joe).
+    - A bare grandparent word ("grandma", not "my grandma" or "Sam's grandma") the tree
+      cannot resolve from the asker is read from the asker's children's side (a parent calls
+      their own parents "Grandma" and "Grandpa"). No other relation gets that fallback.
+      Failing that, a kinship word falls back to people whose name holds it ("Grandma Rose",
+      a person named "Dad"). Still nobody: the word is unresolved (Ranking.unresolved), unless
+      kinship was skipped on purpose (no asker, or a question about the listener's life).
+    - Names: a query word equal to a word of a person's name, or (when written with a capital
+      but not as the question's first word, or right after a kinship word, at least 3 letters)
+      the start of one: "Sam" -> Samuel; and through _NICKNAMES "Joe" -> Joseph.
+    - "I"/"me", and "my" before a word that is not kinship ("my wedding"), name the asker.
+      Without an asker, or when the question is about the listener's life ("How did you
+      meet Mom?", "your wife": _listener_side), kinship and "I" are skipped and only names
+      resolve.
+    Mentions that name nobody are dropped.
+    """
+    return _resolve(query, people, asker_id)[0]
+
+
+def _resolve(
+    query: str, people: list[schemas.Person], asker_id: str | None
+) -> tuple[list[Mention], list[str]]:
+    """(mentions, kinship words that named nobody): see resolve_people."""
+    if not query or not people:
+        return [], []
+    tree = _Tree(people)
+    asker = asker_id if asker_id in tree.ids else None
+    text = unicodedata.normalize("NFKC", strip_openers(query)).replace("’", "'")
+    raw = [(m.group(1), m.group(1).casefold(), bool(m.group(2))) for m in _QUERY_WORD.finditer(text)]
+    if _listener_side([word for _, word, _ in raw]):
+        asker = None
+    names = [(p.id, _name_words(p.name)) for p in people]
+
+    def by_name(word: str, loose: bool, nickname: bool) -> set[str]:
+        if word in _STOPWORDS and word not in _SELF_WORDS or len(word) < 2:
+            return set()
+        exact = {pid for pid, words in names if word in words}
+        if exact or len(word) < 3:
+            return exact
+        if nickname and word in _NICKNAMES:
+            prefix = _NICKNAMES[word]
+        elif loose:
+            prefix = word
+        else:
+            return exact
+        return {pid for pid, words in names if any(w.startswith(prefix) for w in words)}
+
+    mentions: list[Mention] = []
+    unresolved: list[str] = []
+    pending: Mention | None = None  # the possessor before a possessive 's ("dad's")
+    previous_kin: Mention | None = None
+    for index, (written, word, possessive) in enumerate(raw):
+        relation = _kin_relation(word)
+        mention: Mention | None = None
+        if word == "my":
+            following = raw[index + 1][1] if index + 1 < len(raw) else ""
+            has_self = any(m.relation == "self" for m in mentions)
+            if asker is not None and following and _kin_relation(following) is None and not has_self:
+                mention = Mention(written, "self", frozenset({asker}), ())
+        elif word in _SELF_WORDS:
+            if asker is not None and not any(m.relation == "self" for m in mentions):
+                mention = Mention(written, "self", frozenset({asker}), (word,))
+        elif relation is not None:
+            if pending is not None:
+                base, words = set(pending.person_ids), pending.words
+                phrase = f"{pending.phrase}'s {written}"
+            elif asker is not None:
+                base, words, phrase = {asker}, (), written
+            else:
+                base, words, phrase = set(), (), written
+            ids = tree.relation(relation, base) if base else set()
+            anchored = pending is not None or (index > 0 and raw[index - 1][1] in _ANCHORS)
+            if not ids and relation == "grandparents" and not anchored and asker is not None:
+                # A parent calls their own parents "Grandma" and "Grandpa", as their children
+                # do: read a bare grandparent word from the asker's children's side. Only for
+                # grandparents, and never for "my grandma" or "Sam's grandpa".
+                ids = tree.relation(relation, tree.children.get(asker, set())) - {asker}
+            if not ids and pending is None:
+                ids = {pid for pid, nwords in names if word in nwords}
+            if ids:
+                if pending is not None and mentions and mentions[-1] is pending:
+                    mentions.pop()  # "dad's parents" replaces "dad"
+                mention = Mention(phrase, relation, frozenset(ids), (*words, word))
+            elif base:
+                # Resolution was attempted and named nobody. Not when kinship was skipped on
+                # purpose (no asker, or a question about the listener's life).
+                unresolved.append(word)
+        else:
+            capital = written[:1].isupper()
+            loose = (capital and index > 0) or previous_kin is not None
+            ids = by_name(word, loose, capital or previous_kin is not None)
+            if ids and previous_kin is not None and mentions and mentions[-1] is previous_kin:
+                narrowed = ids & previous_kin.person_ids
+                if narrowed:  # "uncle Joe": the uncle called Joe
+                    mentions.pop()
+                    mention = Mention(f"{previous_kin.phrase} {written}", previous_kin.relation,
+                                      frozenset(narrowed), (*previous_kin.words, word))
+            if mention is None and ids:
+                mention = Mention(written, "name", frozenset(ids), (word,))
+        if mention is not None:
+            mentions.append(mention)
+        pending = mention if possessive and mention is not None else None
+        previous_kin = mention if mention is not None and relation is not None else None
+    return mentions, unresolved
+
+
+# ------------------------------------------------------------------ ranking for /ask
+
+# How much the people a query names count against keyword relevance (which is in [0, 1]).
+PERSON_WEIGHT = 1.5
+# A vector-only hit (no shared word) ranks at this fraction of its vector score.
+VECTOR_ONLY_WEIGHT = 0.5
+# The asker naming themself ("I", "me") says less than naming a relative.
+SELF_MENTION_WEIGHT = 0.5
+# best is confident when its score is at least CONFIDENT_MIN_SCORE and at least
+# CONFIDENT_RATIO times the runner-up's, and none of Ranking.confident's vetoes apply.
+CONFIDENT_MIN_SCORE = 0.3
+CONFIDENT_RATIO = 1.5
+# A keyword-only top match must cover at least this share of the query's word weight.
+CONFIDENT_MIN_COVERAGE = 0.5
+MAX_CANDIDATES = 20
+MAX_QUOTES = 5
+
+
+@dataclass
+class Candidate:
+    memory_id: str
+    title: str
+    year: int | None
+    participant_ids: list[str]
+    teller_ids: list[str]
+    score: float
+    quotes: list[schemas.AskQuote] = field(default_factory=list)
+    keyword: float = 0.0  # the keyword (or vector-only) part of score
+    person: float = 0.0  # _person_score, before PERSON_WEIGHT
+    coverage: float = 0.0  # share of the query's word weight this memory matches
+
+
+@dataclass
+class Ranking:
+    """Candidate memories for a question, best first, and the people it named."""
+
+    candidates: list[Candidate]
+    mentions: list[Mention]
+    unresolved: list[str] = field(default_factory=list)  # kinship words that named nobody
+
+    def quotes(self, limit: int = MAX_QUOTES, first: str | None = None) -> list[schemas.AskQuote]:
+        """Quotes in candidate order (memory `first` leading, when given), at most limit."""
+        ordered = sorted(self.candidates, key=lambda c: c.memory_id != first) if first else self.candidates
+        out: list[schemas.AskQuote] = []
+        for candidate in ordered:
+            for quote in candidate.quotes:
+                if len(out) >= limit:
+                    return out
+                out.append(quote)
+        return out
+
+    def confident(self) -> bool:
+        """The top candidate clearly leads.
+
+        True only when its score is at least CONFIDENT_MIN_SCORE and at least CONFIDENT_RATIO
+        times the runner-up's (no runner-up counts as 0), and none of these hold:
+        - a kinship word in the question named nobody (the people may be the wrong ones);
+        - the top match is keyword-only and covers under CONFIDENT_MIN_COVERAGE of the
+          query's word weight (words matching no memory count at the highest weight);
+        - the top match is person-only (no keyword overlap) and is the only candidate.
+        """
+        if not self.candidates or self.unresolved:
+            return False
+        first = self.candidates[0]
+        if first.person <= 0 and first.coverage < CONFIDENT_MIN_COVERAGE:
+            return False
+        if first.keyword <= 0 and len(self.candidates) == 1:
+            return False
+        runner_up = self.candidates[1].score if len(self.candidates) > 1 else 0.0
+        return first.score >= CONFIDENT_MIN_SCORE and first.score >= CONFIDENT_RATIO * runner_up
+
+    def best(self, memory_id: str | None = None, confident: bool | None = None) -> schemas.AskBest | None:
+        """AskBest for memory_id (default: the top candidate), or None when there is none."""
+        if not self.candidates:
+            return None
+        candidate = next((c for c in self.candidates if c.memory_id == memory_id), None) if memory_id \
+            else self.candidates[0]
+        if candidate is None:
+            return None
+        teller = next((q.author_id for q in candidate.quotes if q.author_id), None)
+        person_id = teller or (candidate.participant_ids[0] if candidate.participant_ids else None)
+        return schemas.AskBest(
+            memory_id=candidate.memory_id,
+            title=candidate.title or None,
+            year=candidate.year,
+            person_id=person_id,
+            confident=self.confident() if confident is None else confident,
+        )
+
+
+def _person_score(participants: set[str], tellers: set[str], mentions: list[Mention]) -> float:
+    """In [0, 1]: how many named groups take part (participant or teller), and how focused on them.
+
+    coverage = weighted share of mentions with someone in the memory; focus = share of the
+    memory's participants who are named. score = coverage * (0.5 + 0.5 * focus), so a
+    memory about exactly the named people beats a crowded one that merely includes them.
+    """
+    if not mentions:
+        return 0.0
+    present = participants | tellers
+    total = covered = 0.0
+    named: set[str] = set()
+    for mention in mentions:
+        weight = SELF_MENTION_WEIGHT if mention.relation == "self" else 1.0
+        total += weight
+        named |= mention.person_ids
+        if mention.person_ids & present:
+            covered += weight
+    if not covered:
+        return 0.0
+    focus = len(participants & named) / len(participants) if participants else 0.0
+    return (covered / total) * (0.5 + 0.5 * focus)
+
+
+def rank_memories(
+    db: Database,
+    family_id: str,
+    query: str,
+    *,
+    people: list[schemas.Person] | None = None,
+    asker_id: str | None = None,
+    vector: list[float] | None = None,
+    limit: int = MAX_CANDIDATES,
+) -> Ranking:
+    """Rank this family's memories for an /ask question, best first. One read of the family's memories.
+
+    score = keyword score (as _keyword_search, in [0, 1]; a vector-only hit scoring at least
+    VECTOR_MIN_SCORE counts VECTOR_ONLY_WEIGHT * its vector score instead)
+          + PERSON_WEIGHT * _person_score for the people the query names (resolve_people).
+    Kinship words that resolved for the asker are dropped from the keywords: tellings use
+    "Mom" from the teller's side, so they would match the wrong mothers. Polite openers
+    (strip_openers) and light verbs (_RANK_SKIP: get, got, went, ...) are dropped too. A memory counts when
+    its score is above 0. Ties go to the nearer vector hit, then the earlier year, then id.
+    `people` must be this family's people (the route passes people_db.list_people).
+    """
+    if not family_id or limit <= 0:
+        return Ranking([], [])
+    mentions, unresolved = _resolve(query, people or [], asker_id)
+    dropped = {w for m in mentions if m.relation not in ("name", "self") for w in m.words} | _RANK_SKIP
+    wanted = list(dict.fromkeys(_stem(w) for w in _words(strip_openers(query)) if w not in dropped))
+
+    docs = list(db[MEMORIES].find({"familyId": family_id}, _HEAVY_FIELDS))
+    if not docs:
+        return Ranking([], mentions, unresolved)
+    indexed = []
+    for doc in docs:
+        title = set(_tokens(doc.get("title")))
+        body: set[str] = set()
+        for telling in doc.get("tellings") or []:
+            body.update(_tokens((telling or {}).get("text")))
+        indexed.append((doc, title, body))
+    n = len(indexed)
+    weights = {}
+    for token in wanted:
+        df = sum(1 for _, title, body in indexed if token in title or token in body)
+        weights[token] = math.log(1 + n / df) if df else 0.0
+    best_possible = TITLE_WEIGHT * sum(weights.values())
+    # For `coverage` only: a word no memory holds weighs as much as the rarest possible word.
+    unseen = math.log(1 + 2 * n)
+    query_weight = sum(w or unseen for w in weights.values())
+
+    vector = vector or (embed(query) if wanted else None)
+    vector_docs = _vector_search(db, family_id, vector, limit) if vector else None
+    vscores: dict[str, float] = {}
+    for doc in sorted(vector_docs or [], key=lambda d: -float(d.get("score") or 0.0)):
+        vscores.setdefault(str(doc["_id"]), round(float(doc.get("score") or 0.0), 9))
+    vrank = {mid: rank for rank, mid in enumerate(vscores)}
+
+    scored: list[tuple[float, int, int, str, dict, tuple[float, float, float]]] = []
+    for doc, title, body in indexed:
+        memory_id = str(doc["_id"])
+        keyword = coverage = 0.0
+        if best_possible > 0:
+            raw = sum(
+                TITLE_WEIGHT * weights[t] if t in title else weights[t] if t in body else 0.0
+                for t in wanted
+            )
+            keyword = raw / best_possible
+            coverage = sum(weights[t] for t in wanted if t in title or t in body) / query_weight
+        if keyword <= 0 and vscores.get(memory_id, 0.0) >= VECTOR_MIN_SCORE:
+            keyword = VECTOR_ONLY_WEIGHT * vscores[memory_id]
+        participants = {str(p) for p in doc.get("participantIds") or []}
+        tellers = {str((t or {}).get("authorId")) for t in doc.get("tellings") or [] if (t or {}).get("authorId")}
+        person = _person_score(participants, tellers, mentions)
+        score = round(keyword + PERSON_WEIGHT * person, 9)
+        if score > 0:
+            scored.append((-score, vrank.get(memory_id, len(vrank)), _year_key(doc), memory_id, doc,
+                           (keyword, person, coverage)))
+    scored.sort(key=lambda item: item[:4])
+
+    candidates = []
+    for neg_score, _, _, memory_id, doc, (keyword, person, coverage) in scored[:limit]:
+        year = doc.get("year") if isinstance(doc.get("year"), int) else None
+        candidates.append(Candidate(
+            memory_id=memory_id,
+            title=doc.get("title") or "",
+            year=year,
+            participant_ids=[str(p) for p in doc.get("participantIds") or []],
+            teller_ids=list(dict.fromkeys(
+                str((t or {}).get("authorId")) for t in doc.get("tellings") or [] if (t or {}).get("authorId")
+            )),
+            score=-neg_score,
+            quotes=_quotes_for(doc, query),
+            keyword=keyword,
+            person=person,
+            coverage=coverage,
+        ))
+    return Ranking(candidates, mentions, unresolved)
 
 
 def compose_answer(
