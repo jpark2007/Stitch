@@ -220,9 +220,11 @@ export class LeafBody {
 
     this.settled = springs.error(target, twTarget) < 2e-4;
     if (this.settled) springs.snap(target, twTarget);
-    // Where the sheet really is, for hiding the stack top it lands on.
-    leaf.gapL = springs.edgeGap(rt.restL, true);
-    leaf.gapR = springs.edgeGap(rt.restR, false);
+    // Where a moving sheet really is, for hiding the stack top it lands on
+    // (stacking.ts); a resting one lands on nothing.
+    const moving = leaf.mode !== "rest";
+    leaf.gapL = moving ? springs.edgeGap(rt.restL, true) : Infinity;
+    leaf.gapR = moving ? springs.edgeGap(rt.restR, false) : Infinity;
 
     const { phi, tw } = springs;
     let prev = 0;

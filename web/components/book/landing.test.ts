@@ -185,11 +185,12 @@ function simulate(turn: Turn, leaves: number, frame: number) {
   };
 
   Object.assign(sheets[k], { mode: turn.mode, dir: turn.dir, p: turn.from, to: turn.to, curl: turn.curl, corner: turn.corner, stiff: turn.stiff });
-  // Leaf.tsx: each drawn sheet notes where it was posed; a hidden one is nowhere.
+  // Leaf.tsx: each moving sheet notes where it was posed; a resting one lands on nothing.
   const pose = (i: number) => {
     const sh = sheets[i];
-    sh.gapL = sh.visible ? springs[i].edgeGap(restL, true) : Infinity;
-    sh.gapR = sh.visible ? springs[i].edgeGap(restR, false) : Infinity;
+    const moving = sh.visible && sh.mode !== "rest";
+    sh.gapL = moving ? springs[i].edgeGap(restL, true) : Infinity;
+    sh.gapR = moving ? springs[i].edgeGap(restR, false) : Infinity;
   };
   shapeStacks();
   sheets.forEach((_, i) => (aim(i), springs[i].snap(target, twTarget), pose(i)));
@@ -217,7 +218,7 @@ function simulate(turn: Turn, leaves: number, frame: number) {
       gap: lowestGap(top, under),
       staleDrawn: sheets[stale].visible,
       edge: edgeDistance(top, under),
-      posed: turn.to === 1 ? leaf.gapL : leaf.gapR,
+      posed: springs[k].edgeGap(turn.to === 1 ? restL : restR, turn.to === 1),
       landing: leaf.mode !== "rest",
     });
   }

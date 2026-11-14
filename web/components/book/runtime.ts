@@ -37,8 +37,8 @@ export interface LeafState {
   stiff: number;
   /**
    * How far (page widths) the free edge, as the leaf last posed it, is from
-   * where it lies on the left / right stack. Written by the leaf; Infinity
-   * until it poses (and while it is hidden).
+   * where it lies on the left / right stack. Written by the leaf while it
+   * moves; Infinity at rest, hidden or not yet posed.
    */
   gapL: number;
   gapR: number;
