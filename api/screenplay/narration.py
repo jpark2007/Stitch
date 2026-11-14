@@ -34,7 +34,9 @@ Speaking rules checked here (each a ``NarrationError``):
 Scrub interactions (``convert_interactions``) are written in shot time against the actions as
 written. When the compiler passes each shot's original and retimed action times, a scrub's
 ``from``/``to`` follow those actions onto their cue words (``retime_point``); a range that
-would run backwards afterwards is ``interaction_bad_range``.
+would run backwards afterwards is ``interaction_bad_range``. A scrub that leaves out ``from``
+starts at its shot's t=0; one that leaves out ``to`` ends where its shot ends, which the
+compiler passes as ``end_by_shot`` (without it, a missing ``to`` is ``interaction_missing_to``).
 """
 
 from __future__ import annotations
@@ -516,6 +518,7 @@ def convert_interactions(
     first_shot: str,
     *,
     retimed_by_shot: Mapping[str, tuple[Sequence[float], Sequence[float]]] | None = None,
+    end_by_shot: Mapping[str, float] | None = None,
 ) -> list[Interaction]:
     """Screenplay interactions -> timeline interactions.
 
@@ -523,12 +526,19 @@ def convert_interactions(
     shot's ``action_start`` (``shot`` None means the first shot). Every other field is
     copied unchanged.
 
+    The timeline always gets both ends, so a tab only ever scrubs its own shot:
+
+    - a missing ``from`` is the shot's t=0, its ``action_start`` in timeline time;
+    - a missing ``to`` is the shot's end, ``end_by_shot[shot]`` (timeline time). If the shot
+      has no entry there (or ``end_by_shot`` is None), ``interaction_missing_to`` is raised.
+
     ``retimed_by_shot`` maps a shot id to ``(original, retimed)``: its actions' shot-time
-    ``t`` before and after ``retime_actions``. When the scrub's shot has an entry, ``from`` and
-    ``to`` first follow the actions onto their cue words (``retime_point``), so the tab still
-    scrubs the actions it was written for. If that turns the range around (``to`` before
-    ``from``), ``interaction_bad_range`` is raised. Without ``retimed_by_shot`` (or with no
-    entry for the shot) the shot times are used as written.
+    ``t`` before and after ``retime_actions``. When the scrub's shot has an entry, a ``from``
+    or ``to`` written in the screenplay first follows the actions onto their cue words
+    (``retime_point``), so the tab still scrubs the actions it was written for; a filled-in
+    default is never retimed. If the range then runs backwards (``to`` before ``from``),
+    ``interaction_bad_range`` is raised. Without ``retimed_by_shot`` (or with no entry for the
+    shot) the shot times are used as written.
     """
     out: list[Interaction] = []
     for i, it in enumerate(interactions):
@@ -545,6 +555,14 @@ def convert_interactions(
             )
         base = action_start_by_shot[shot_id]
         t_from, t_to = it.drives.from_, it.drives.to
+        shot_end = end_by_shot.get(shot_id) if end_by_shot is not None else None
+        if t_to is None and shot_end is None:
+            raise NarrationError(
+                "interaction_missing_to",
+                f'interaction "{it.id}" in shot "{shot_id}" needs to: the shot time its scrub ends',
+                shot=shot_id,
+                line_index=i,
+            )
         timing = retimed_by_shot.get(shot_id) if retimed_by_shot is not None else None
         if timing is not None:
             original, retimed = timing
@@ -560,11 +578,26 @@ def convert_interactions(
                     shot=shot_id,
                     line_index=i,
                 )
-        update: dict[str, float | None] = {}
-        if t_from is not None:
-            update["from_"] = _r(base + t_from)
+        tl_from = _r(base + t_from) if t_from is not None else _r(base)
         if t_to is not None:
-            update["to"] = _r(base + t_to)
-        drives = it.drives.model_copy(deep=True, update=update)
+            tl_to = _r(base + t_to)
+        else:
+            assert shot_end is not None  # a missing to without an end was raised above
+            tl_to = _r(shot_end)
+        if (t_from is None or t_to is None) and tl_to < tl_from:
+            # A filled-in end on the wrong side of the written one (two written ends are
+            # checked by validate, and above once retimed).
+            if t_to is None:
+                reason = (
+                    f'interaction "{it.id}" would scrub from shot t={_f2(tl_from - base)} back to '
+                    f't={_f2(tl_to - base)}, where shot "{shot_id}" ends; give it a "to" after its "from"'
+                )
+            else:
+                reason = (
+                    f'interaction "{it.id}" would scrub from shot t=0.00, where shot "{shot_id}" starts, '
+                    f'back to t={_f2(tl_to - base)}; give it a "from" before its "to"'
+                )
+            raise NarrationError("interaction_bad_range", reason, shot=shot_id, line_index=i)
+        drives = it.drives.model_copy(deep=True, update={"from_": tl_from, "to": tl_to})
         out.append(it.model_copy(deep=True, update={"drives": drives}))
     return out
