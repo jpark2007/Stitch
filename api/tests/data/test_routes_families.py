@@ -7,6 +7,8 @@ Every response passes through a hook that fails the test if it mentions password
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -449,6 +451,68 @@ def test_join_by_adding_when_already_linked_is_409(family_a, users, client, mdb)
     assert res.status_code == 409
     assert families_db.get_member_role(mdb, fid, users["b"].id) == "member"
     assert mdb.people.count_documents({"familyId": fid, "userId": users["b"].id}) == 1
+
+
+def test_concurrent_join_by_adding_never_links_two_people(family_a, users, client, mdb, monkeypatch):
+    """Two simultaneous "add yourself" joins by one user: one 200, one 409, one Ben doc."""
+    fid = family_a["fid"]
+    code = _invite(family_a["client"], fid)
+    real_usage = people_db._family_character_usage
+    barrier = threading.Barrier(2)
+
+    def usage(db, family_id):
+        barrier.wait(timeout=5)  # both requests are past create_person's pre-check here
+        return real_usage(db, family_id)
+
+    monkeypatch.setattr(people_db, "_family_character_usage", usage)
+
+    def join(_):
+        return client(users["b"]).post(f"/invites/{code}/join", json={"person": {"name": "Ben"}})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(join, range(2)))
+
+    assert sorted(r.status_code for r in responses) == [200, 409], [r.text for r in responses]
+    winner = next(r for r in responses if r.status_code == 200).json()
+    # The loser's insert never landed: the only Ben is the winner's.
+    assert [d["_id"] for d in mdb.people.find({"familyId": fid, "name": "Ben"})] == [winner["person"]["id"]]
+    assert mdb.people.count_documents({"familyId": fid, "userId": users["b"].id}) <= 1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "routes/families.py: the losing join's _undo_join (was_member read before the "
+        "winner's add_member) calls families_db.remove_member, which drops Ben's membership "
+        "and unclaims the winner's person. Needs a route fix, outside this task's files."
+    ),
+)
+def test_concurrent_join_by_adding_keeps_the_winner_linked(family_a, users, client, mdb, monkeypatch):
+    """Deterministic interleaving: request A passes its pre-check, then request B joins fully."""
+    fid = family_a["fid"]
+    code = _invite(family_a["client"], fid)
+    real_usage = people_db._family_character_usage
+    inner: list[httpx.Response] = []
+    started = threading.Event()
+
+    def usage(db, family_id):
+        if not started.is_set():
+            started.set()  # before the call: the inner request runs this hook too
+            inner.append(
+                client(users["b"]).post(f"/invites/{code}/join", json={"person": {"name": "Ben"}})
+            )
+        return real_usage(db, family_id)
+
+    monkeypatch.setattr(people_db, "_family_character_usage", usage)
+    outer = client(users["b"]).post(f"/invites/{code}/join", json={"person": {"name": "Ben"}})
+
+    assert inner[0].status_code == 200, inner[0].text
+    assert outer.status_code == 409, outer.text
+    winner = inner[0].json()["person"]["id"]
+    assert [d["_id"] for d in mdb.people.find({"familyId": fid, "name": "Ben"})] == [winner]
+    assert mdb.people.count_documents({"familyId": fid, "userId": users["b"].id}) == 1
+    assert people_db.get_person_for_user(mdb, fid, users["b"].id).id == winner
+    assert families_db.get_member_role(mdb, fid, users["b"].id) == "member"
 
 
 def test_join_by_adding_spouse_links_both_ways(family_a, users, client, mdb):
