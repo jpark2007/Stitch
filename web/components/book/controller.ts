@@ -99,6 +99,8 @@ interface Tap {
   startY: number;
   /** Pressed on a turn edge while a leaf was still moving: queue this turn. */
   queued?: 1 | -1;
+  /** Pressed while a leaf was moving: it never zooms the camera. */
+  busy: boolean;
 }
 
 interface Drag {
@@ -348,12 +350,18 @@ export class BookController {
 
   /* ---------- Pages: hover peel, click, drag ---------- */
 
-  private zone(pt: PagePoint) {
-    const corner = 0.3 + 0.7 * clamp01((pt.z + PAGE_H / 2) / PAGE_H);
+  /** Which outer edge band the point is in, whether or not a leaf is left to turn there. */
+  private band(pt: PagePoint): 1 | -1 | 0 {
     // On a phone the page fills the screen: only its outer edge turns it.
     const edge = PAGE_W * (this.phone ? 0.72 : 0.55);
-    if (pt.x > edge && this.pos < this.n) return { dir: 1 as const, leaf: this.pos, corner };
-    if (pt.x < -edge && this.pos > 1) return { dir: -1 as const, leaf: this.pos - 1, corner };
+    return pt.x > edge ? 1 : pt.x < -edge ? -1 : 0;
+  }
+
+  private zone(pt: PagePoint) {
+    const corner = 0.3 + 0.7 * clamp01((pt.z + PAGE_H / 2) / PAGE_H);
+    const b = this.band(pt);
+    if (b > 0 && this.pos < this.n) return { dir: 1 as const, leaf: this.pos, corner };
+    if (b < 0 && this.pos > 1) return { dir: -1 as const, leaf: this.pos - 1, corner };
     return null;
   }
 
@@ -361,17 +369,21 @@ export class BookController {
   pageMove(pt: PagePoint): string {
     if (this.drag) return "grabbing";
     if (this.frozen || this.open < 1) return "";
-    const z = this.zone(pt);
     const busy = this.busy();
+    // Mid-turn pos has already moved on, so the edge is tested by geometry alone.
+    const b = busy ? this.band(pt) : 0;
+    const z = busy ? null : this.zone(pt);
     // Off the page only counts mid-turn, to queue another turn.
-    if (!onPage(pt) && !(busy && z)) {
+    if (!onPage(pt) && !b) {
       this.clearHover();
       return "";
     }
-    if (z && this.peels && !busy) this.setHover(z.leaf, z.dir, z.corner);
+    if (z && this.peels) this.setHover(z.leaf, z.dir, z.corner);
     else this.clearHover();
     // Mid-turn the edge can't be held, only clicked to queue another turn.
-    if (z) return busy ? "pointer" : "grab";
+    if (b) return "pointer";
+    if (z) return "grab";
+    if (busy) return "";
     if (this.phone) return "";
     return this.focusGoal === (pt.x < 0 ? -1 : 1) ? "zoom-out" : "zoom-in";
   }
@@ -408,12 +420,15 @@ export class BookController {
    */
   pageDown(pt: PagePoint, clientX: number, clientY: number): boolean {
     if (this.frozen || this.open < 1 || this.drag || this.tap) return false;
-    const z = this.zone(pt);
     const busy = this.busy();
-    if (!onPage(pt) && !(busy && z)) return false;
-    if (!z || busy) {
+    // Mid-turn pos has already moved on, so the edge is tested by geometry
+    // alone; a turn past either end is dropped when the queue reaches it.
+    const b = busy ? this.band(pt) : 0;
+    const z = busy ? null : this.zone(pt);
+    if (!onPage(pt) && !b) return false;
+    if (!z) {
       // Mid-turn the leaf can't be grabbed; a press on its edge queues one more turn.
-      this.tap = { side: pt.x < 0 ? -1 : 1, startX: clientX, startY: clientY, queued: z?.dir };
+      this.tap = { side: pt.x < 0 ? -1 : 1, startX: clientX, startY: clientY, queued: b || undefined, busy };
       return true;
     }
     this.drag = {
@@ -473,8 +488,9 @@ export class BookController {
       if (Math.abs(dx) > 40 && Math.abs(dx) > 1.3 * Math.abs(dy)) {
         // A swipe: the page follows the finger, so a swipe left reads on.
         this.step(dx < 0 ? 1 : -1);
-      } else if (Math.hypot(dx, dy) < 8) {
+      } else if (Math.hypot(dx, dy) < 8 && !tap.busy) {
         // A tap: look closer at that page (a phone pans to it), or back out.
+        // Not mid-turn: the turn in flight already chose where to look.
         if (this.phone) this.setFocus(tap.side);
         else this.setFocus(this.focusGoal === tap.side ? 0 : tap.side);
       }
