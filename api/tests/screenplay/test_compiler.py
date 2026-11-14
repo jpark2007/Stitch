@@ -448,10 +448,15 @@ def test_every_verb_compiles_or_gives_a_precise_error(verb):
     assert res.timeline is None
     for err in res.errors:
         assert err.code and err.message.startswith("shot s1"), err
-        assert err.code not in ("invalid_action",), err
-        if err.code == "unsupported_verb":
-            assert err.do not in C.HANDLERS
-            assert err.message.endswith(f"the compiler does not support {err.do} yet")
+        assert err.code not in ("invalid_action", "unsupported_verb"), err
+
+
+def test_every_vocabulary_verb_has_a_handler_or_is_an_effect():
+    from screenplay.effects import EFFECT_VERBS
+
+    assert sorted(set(VOCABULARY["actions"]) - set(C.HANDLERS) - set(EFFECT_VERBS)) == []
+    # effects run no puppet handler: no verbs_* module claims one
+    assert not set(C.HANDLERS) & set(EFFECT_VERBS)
 
 
 @pytest.mark.parametrize("verb", ["enter", "walk_to", "run_to", "pose", "pick_up", "hold", "drop", "hand_to"])
@@ -585,3 +590,103 @@ def test_load_compiler_returns_the_real_adapter_and_the_sample_compiles():
     res = parse_and_compile(json.dumps(bad), compiler, lambda _sp: scene)
     assert not res.ok
     assert 'shot s1, t=5: dad cannot hand_to "hymn_books"; it is on the ground' in messages(res)
+
+
+# --------------------------------------------- scrub interactions follow cue-moved actions
+
+def drop_cued_one_second_later(data: dict) -> dict:
+    """The drop line's cueWord "book" is said 1 s after "dropped", so the drop (and every
+    uncued action after it) happens 1 s later."""
+    lines = data["shots"][0]["narration"]
+    assert lines[1]["cue"] == "drop" and lines[1]["cueWord"] == "dropped"
+    lines[1]["cueWord"] = "book"
+    return data
+
+
+def test_the_drop_scrub_follows_the_drop_onto_its_cue_word():
+    plain = run(sample())
+    assert plain.ok, messages(plain)
+    (tab,) = plain.timeline.interactions
+    assert (tab.drives.from_, tab.drives.to) == (4.45, 4.75)
+    assert (4.45, "ground") in track(plain, "prop:hymn_books", "parent")
+
+    data = drop_cued_one_second_later(sample())
+    data["shots"][0]["narration"][2]["t"] = 7.35  # the hand-back line keeps its spacing after the drop
+    res = run(data)
+    assert res.ok, messages(res)
+    assert (5.45, "ground") in track(res, "prop:hymn_books", "parent")
+    (tab,) = res.timeline.interactions
+    assert (tab.drives.from_, tab.drives.to) == (5.45, 5.75)
+    assert tab.drives.targets == ["prop:hymn_books", "puppet:mom"]
+
+
+def test_a_scrub_turned_around_by_the_cues_is_a_narration_error():
+    # The tab scrubs from the drop (t=3.25) to the walk (t=3.6). Cueing the walk on "and"
+    # (shot t=2.5) instead of the drop moves the walk before the drop, so the range would run
+    # backwards (3.25 -> 2.5).
+    data = sample()
+    shot = data["shots"][0]
+    data["interactions"][0]["drives"]["to"] = 3.6
+    shot["actions"][2]["id"] = "walk"
+    shot["narration"][1]["cue"] = "walk"
+    shot["narration"][1]["cueWord"] = "and"
+    res = run(data)
+    assert not res.ok
+    bad = [e for e in res.errors if e.code == "interaction_bad_range"]
+    assert len(bad) == 1 and bad[0].shot == "s1"
+    # narration.py builds the head ("shot s1, narration line 0: ..."); the reason is the point here
+    assert bad[0].message.startswith("shot s1, ")
+    assert bad[0].message.endswith(
+        'interaction "drop_books" would scrub from shot t=3.25 back to t=2.50 '
+        "once its actions move onto their cue words; widen the range or cue the actions in order"
+    )
+
+
+# ---------------------------------------------- busy reasons are in the written frame
+
+def hand_back_uncued_at(data: dict, t: float) -> dict:
+    shot = data["shots"][0]
+    line = shot["narration"][2]
+    assert line["cue"] == "hand_back"
+    del line["cue"], line["cueWord"]
+    hand = shot["actions"][4]
+    assert hand["id"] == "hand_back"
+    hand["t"] = t
+    return data
+
+
+def test_a_busy_time_is_stated_in_the_blocked_actions_written_frame():
+    # The drop's cue moves it, and with it pick_up (5.5 -> 6.5) and the uncued hand_to
+    # (6.0 -> 7.0), 1 s later. Dad's pick_up runs until 7.3 in retimed shot time; for the
+    # hand_to as written that is t=6.3, so moving the hand_to to t=6.3 clears it.
+    res = run(hand_back_uncued_at(drop_cued_one_second_later(sample()), 6.0))
+    assert not res.ok
+    (err,) = res.errors
+    assert (err.code, err.message) == (
+        "busy", 'shot s1, t=6: dad cannot hand_to "hymn_books"; dad is still picking up until t=6.3',
+    )
+    moved = run(hand_back_uncued_at(drop_cued_one_second_later(sample()), 6.3))
+    assert moved.ok, messages(moved)
+
+
+def test_a_second_puppets_busy_time_is_in_the_blocked_actions_written_frame_too():
+    # mom (the taker) poses from written t=5 (retimed 6) until retimed 8.4; dad's hand_to at
+    # written 6.3 runs at retimed 7.3, so mom is busy until t=7.4 in its frame
+    def build(hand_t: float) -> dict:
+        data = hand_back_uncued_at(drop_cued_one_second_later(sample()), hand_t)
+        data["shots"][0]["actions"].append({"t": 5.0, "who": "mom", "do": "pose", "pose": "wave", "dur": 2})
+        return data
+
+    res = run(build(6.3))
+    assert [(e.code, e.message) for e in res.errors][:1] == [
+        ("busy", 'shot s1, t=6.3: dad cannot hand_to "hymn_books"; mom is still posing until t=7.4'),
+    ]
+    moved = run(build(7.4))
+    assert not [e for e in moved.errors if e.do == "hand_to"], messages(moved)
+
+
+def test_busy_times_without_cue_moves_are_shot_times_as_before():
+    data = hand_back_uncued_at(sample(), 6.0)
+    res = run(data)
+    (err,) = res.errors
+    assert err.message == 'shot s1, t=6: dad cannot hand_to "hymn_books"; dad is still picking up until t=6.3'

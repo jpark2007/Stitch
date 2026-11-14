@@ -336,6 +336,21 @@ def test_a_held_back_follow_that_runs_into_a_later_span_is_busy(fake_follow, fak
     )]
 
 
+def test_a_clash_with_a_later_span_is_stated_in_the_written_frame(fake_follow, fake_shower, ran):
+    # A cued line lands the follow on "along" (shot t=1.5, written t=1): the follow and every
+    # uncued action after it move 0.5 s later. The clash times are shown for the follow as
+    # written, so they read exactly as in the uncued shot above.
+    fake_follow["dur"] = 3.0
+    data = follow_shot(SHOWER_DURING_FOLLOW)
+    data["shots"][0]["narration"] = [{"t": 1.0, "text": "he went along", "cue": "follow"}]
+    res = run(data)
+    assert [(e.code, e.message) for e in res.errors] == [(
+        "busy",
+        "shot s1, t=1: dad cannot follow; dad would still be following until t=4, but starts being showered at t=2",
+    )]
+    assert [c["now"] for c in fake_follow["calls"]] == [1.5]
+
+
 def test_a_held_back_follow_that_ends_before_a_later_span_is_not_busy(fake_follow, fake_shower):
     fake_follow["dur"] = 0.5
     res = run(follow_shot(SHOWER_DURING_FOLLOW))
@@ -829,9 +844,8 @@ def test_the_property_test_catches_the_old_vehicle_rule(monkeypatch):
 
 # ------------------------------------------------------------------ the verb cases still hold
 
-EFFECTS = {"confetti", "steam", "rain", "smoke", "time_of_day"}
-# exit, turn_to and follow (verbs_motion, PR #70) are on main now and run through compile() too.
-VERB_CASES = [c for c in CASES if c.verb not in EFFECTS and not c.verb.startswith("camera")]
+# Every case, effects (screenplay/effects.py, wired into compile()) and camera moves included.
+VERB_CASES = list(CASES)
 
 
 def _compile_case(case):

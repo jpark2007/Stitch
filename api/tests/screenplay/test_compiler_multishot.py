@@ -395,3 +395,202 @@ def test_a_later_put_on_swaps_the_signature_items_parent():
     assert value(res, "prop:cap", "parent", s2.start - 0.01) == "puppet:cara.head"
     assert value(res, "prop:cap", "parent", s2.end) == "puppet:ben.head"
     assert value(res, "prop:cap", "position", s2.end) == [0.0, 0.0, 0.0]
+
+
+# ------------------------------------- propStart on a later shot of the same set (verb_cases stage)
+
+def _vc_run(*shots: dict) -> CompileResult:
+    from verb_cases import _sp, base_scene
+
+    scene = base_scene()
+    return compile_screenplay(_sp(*shots), sets=scene.sets, props=scene.props, people=scene.people)
+
+
+def _vc():
+    import verb_cases
+
+    return verb_cases
+
+
+def _times_inside(start: float, end: float, n: int = 40) -> list[float]:
+    return [round(start + (end - start) * i / n, 4) for i in range(1, n)]
+
+
+YARD_TABLE_SPOT, YARD_BENCH_SPOT = [0.2, 0.0, 0.5], [-0.4, 0.0, 0.5]
+STREET_GARAGE, STREET_CORNER = [-0.4, 0.0, 0.5], [0.6, 0.0, 0.5]
+
+
+def test_a_prop_re_placed_on_the_same_set_steps_at_the_shot_start():
+    vc = _vc()
+    res = _vc_run(
+        vc._shot(vc._a(1, "wave", who="kid"), start={"kid": vc._at("door")}, prop_start={"table": {"at": "table_spot"}}),
+        vc._shot(vc._a(1, "wave", who="kid"), id="s2", prop_start={"table": {"at": "bench_spot"}}),
+    )
+    assert res.ok, messages(res)
+    s1, s2 = res.timeline.shots
+    assert s1.end == s2.start
+    for t in [s1.start, *_times_inside(s1.start, s2.start)]:
+        assert value(res, "prop:table", "position", t) == YARD_TABLE_SPOT, t
+    for t in [s2.start, *_times_inside(s2.start, s2.end), s2.end]:
+        assert value(res, "prop:table", "position", t) == YARD_BENCH_SPOT, t
+    # parent did not change (ground both times), so it gets no second key
+    assert track(res, "prop:table", "parent") == [(0.0, "ground")]
+
+
+def test_re_placing_a_prop_where_it_already_is_adds_no_keys():
+    vc = _vc()
+    res = _vc_run(
+        vc._shot(vc._a(1, "wave", who="kid"), start={"kid": vc._at("door")}, prop_start={"table": {"at": "table_spot"}}),
+        vc._shot(vc._a(1, "wave", who="kid"), id="s2", prop_start={"table": {"at": "table_spot"}}),
+    )
+    assert res.ok, messages(res)
+    assert track(res, "prop:table", "position") == [(0.0, YARD_TABLE_SPOT)]
+
+
+def test_a_prop_state_steps_at_the_shot_start():
+    vc = _vc()
+    res = _vc_run(
+        vc._shot(vc._a(1, "wave", who="kid"), start={"kid": vc._at("door")},
+                 prop_start={"lamp": {"at": "table_spot", "state": "lit"}}),
+        vc._shot(vc._a(1, "wave", who="kid"), id="s2", prop_start={"lamp": {"state": "out"}}),
+    )
+    assert res.ok, messages(res)
+    s2 = res.timeline.shots[1]
+    assert track(res, "prop:lamp", "state") == [(0.0, "lit"), (s2.start, "out")]
+    assert value(res, "prop:lamp", "state", s2.start - 0.01) == "lit"
+
+
+def test_a_prop_moved_onto_another_prop_swaps_parent_and_position_at_the_shot_start():
+    vc = _vc()
+    res = _vc_run(
+        vc._shot(vc._a(1, "wave", who="kid"), start={"kid": vc._at("door")},
+                 prop_start={"table": {"at": "table_spot"}, "hymn_books": {"at": "bench_spot"}}),
+        vc._shot(vc._a(1, "wave", who="kid"), id="s2", prop_start={"hymn_books": {"on": "table.top"}}),
+    )
+    assert res.ok, messages(res)
+    s2 = res.timeline.shots[1]
+    assert track(res, "prop:hymn_books", "parent") == [(0.0, "ground"), (s2.start, "prop:table.top")]
+    positions = track(res, "prop:hymn_books", "position")
+    assert (s2.start, [0.0, 0.0, 0.0]) in positions  # a position key at the parent key
+    assert value(res, "prop:hymn_books", "position", s2.start - 0.01) == YARD_BENCH_SPOT
+
+
+def _drive_then_re_place(*s2_actions: dict) -> CompileResult:
+    vc = _vc()
+    return _vc_run(
+        vc._shot(vc._a(0, "drive_to", who="dad", what="sedan", to="corner"), set="street",
+                 start={"dad": vc._at("garage", **{"in": "sedan.driver"})}, prop_start={"sedan": {"at": "garage"}}),
+        vc._shot(*(s2_actions or (vc._a(0, "wave", who="kid"),)), id="s2", set="street",
+                 start={"kid": vc._at("garage")}, prop_start={"sedan": {"at": "garage"}}),
+    )
+
+
+def test_a_driven_vehicle_re_placed_next_shot_stays_parked_until_the_shot_start():
+    res = _drive_then_re_place()
+    assert res.ok, messages(res)
+    s1, s2 = res.timeline.shots
+    drive_end = max(t for t, _ in track(res, "prop:sedan", "position") if t < s2.start)
+    # held by its own position key, not only by the stage's parent-key rule
+    assert (s2.start, STREET_CORNER) in track(res, "prop:sedan", "position")
+    for t in [*_times_inside(drive_end, s2.start), drive_end]:
+        assert value(res, "prop:sedan", "position", t) == STREET_CORNER, t
+    for t in [s2.start, *_times_inside(s2.start, s2.end)]:
+        assert value(res, "prop:sedan", "position", t) == STREET_GARAGE, t
+
+
+def test_a_seated_puppet_rides_along_when_its_vehicle_is_re_placed():
+    res = _drive_then_re_place()
+    assert res.ok, messages(res)
+    s1, s2 = res.timeline.shots
+    # dad was listed in sedan.driver at the garage in s1: the same seated-root formula, at the
+    # same sedan position, is where he must be in s2
+    seated_at_garage = value(res, "puppet:dad", "root.position", s1.start)
+    seated_at_corner = value(res, "puppet:dad", "root.position", s2.start - 0.01)
+    assert seated_at_corner[0] == pytest.approx(seated_at_garage[0] + (STREET_CORNER[0] - STREET_GARAGE[0]))
+    assert value(res, "puppet:dad", "root.position", s2.start) == seated_at_garage
+    for t in _times_inside(s2.start, s2.end):
+        assert value(res, "puppet:dad", "root.position", t) == seated_at_garage, t
+    # it holds its s1 value until s2 starts, then steps
+    drive_end = max(t for t, _ in track(res, "puppet:dad", "root.position") if t < s2.start)
+    for t in _times_inside(drive_end, s2.start):
+        assert value(res, "puppet:dad", "root.position", t) == seated_at_corner, t
+
+
+def test_the_world_agrees_a_re_placed_vehicles_rider_is_at_its_new_seat():
+    # dad gets out in s2: the world has him at the garage, so he stands up beside the sedan
+    # there (and his get_out keys start from the seat at the garage, not the corner)
+    vc = _vc()
+    res = _drive_then_re_place(vc._a(0, "get_out", who="dad", what="sedan"))
+    assert res.ok, messages(res)
+    s2 = res.timeline.shots[1]
+    seated_at_garage = value(res, "puppet:dad", "root.position", 0.0)
+    assert value(res, "puppet:dad", "root.position", s2.action_start) == seated_at_garage
+    stood = value(res, "puppet:dad", "root.position", s2.end)
+    assert abs(stood[0] - STREET_GARAGE[0]) < 0.5 and stood[1] == 0.0
+
+
+def test_a_seated_puppet_rides_along_when_its_chair_is_re_placed():
+    vc = _vc()
+    res = _vc_run(
+        vc._shot(vc._a(1, "wave", who="kid"), start={"kid": vc._at("door"), "mom": vc._at("bench_spot", **{"in": "chair.seat"})},
+                 prop_start={"chair": {"at": "bench_spot"}}),
+        vc._shot(vc._a(1, "wave", who="kid"), id="s2", prop_start={"chair": {"at": "table_spot"}}),
+    )
+    assert res.ok, messages(res)
+    s1, s2 = res.timeline.shots
+    before = value(res, "puppet:mom", "root.position", s1.action_start)
+    after = value(res, "puppet:mom", "root.position", s2.start)
+    assert value(res, "puppet:mom", "root.position", s2.start - 0.01) == before
+    assert after[0] == pytest.approx(before[0] + YARD_TABLE_SPOT[0] - YARD_BENCH_SPOT[0])
+    assert after[1:] == before[1:]
+
+
+def test_a_puppet_seated_on_a_prop_resting_on_the_re_placed_prop_rides_along():
+    # the chair stands on the sedan's roof... well, its passenger socket; mom sits on the chair
+    vc = _vc()
+    res = _vc_run(
+        vc._shot(vc._a(0, "wave", who="kid"), set="street",
+                 start={"kid": vc._at("garage"), "mom": vc._at("garage", **{"in": "chair.seat"})},
+                 prop_start={"sedan": {"at": "garage"}, "chair": {"on": "sedan.passenger"}}),
+        vc._shot(vc._a(0, "wave", who="kid"), id="s2", set="street", prop_start={"sedan": {"at": "corner"}}),
+    )
+    assert res.ok, messages(res)
+    s1, s2 = res.timeline.shots
+    before = value(res, "puppet:mom", "root.position", s1.action_start)
+    after = value(res, "puppet:mom", "root.position", s2.start)
+    assert after[0] == pytest.approx(before[0] + STREET_CORNER[0] - STREET_GARAGE[0])
+    assert after[1:] == before[1:]
+    # the chair is parented to the sedan's socket and follows on its own: no new keys for it
+    assert track(res, "prop:chair", "parent") == [(0.0, "prop:sedan.passenger")]
+
+
+def test_a_listed_puppet_is_placed_by_its_start_not_carried():
+    vc = _vc()
+    res = _vc_run(
+        vc._shot(vc._a(1, "wave", who="kid"), start={"kid": vc._at("door"), "mom": vc._at("bench_spot", **{"in": "chair.seat"})},
+                 prop_start={"chair": {"at": "bench_spot"}}),
+        vc._shot(vc._a(1, "wave", who="kid"), id="s2", start={"mom": vc._at("curb")},
+                 prop_start={"chair": {"at": "table_spot"}}),
+    )
+    assert res.ok, messages(res)
+    assert value(res, "puppet:mom", "root.position", res.timeline.shots[1].start)[0] == pytest.approx(0.8)
+
+
+def test_a_rider_whose_seat_ends_up_on_a_held_prop_is_a_start_error():
+    props = {
+        **PROPS,
+        "tray": schemas.Prop(id="tray", name="tray", size="hand", art={"body": None}, sockets={"top": [0.5, 0.2]}),
+        "stool": schemas.Prop(id="stool", name="stool", size="hand", art={"body": None}, sockets={"seat": [0.5, 0.3]}),
+    }
+    data = {"memoryId": "m", "cast": ["ann", "ben"], "props": ["tray", "stool"], "shots": [
+        {"id": "s1", "set": "porch", "start": {"ann": {"at": "door", "in": "stool.seat"}, "ben": {"at": "gate"}},
+         "propStart": {"stool": {"at": "door"}, "tray": {"at": "gate"}}},
+        {"id": "s2", "set": "porch", "start": {"ben": {"at": "gate", "holding": "tray"}},
+         "propStart": {"stool": {"on": "tray.top"}}},
+    ]}
+    res = compile_screenplay(Screenplay.model_validate(data), sets=SETS, props=props, people=PEOPLE)
+    assert [(e.code, e.message) for e in res.errors] == [(
+        "bad_start",
+        "shot s2: ann is still seated in stool.seat, but stool now rests on something a puppet is holding; "
+        "list ann in this shot's start",
+    )]

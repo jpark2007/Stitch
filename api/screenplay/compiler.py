@@ -9,9 +9,20 @@
    their narration words, run each action through its verb handler (state + keys) in schedule
    order (below), move the camera, time the narration, and work out when the shot ends and the
    next one starts (the outgoing shot's transition folds its set).
-3. Join the tellings, carry interactions and explanations, and return the Timeline, or every
-   error found as exact CompileError messages such as
+   On a later shot of the same set, a prop that propStart re-places holds its old position,
+   parent and state up to the shot's start and steps there, and a puppet still seated in it
+   (or in a prop resting on it) and not listed in the start rides along to its seat's new place.
+3. Join the tellings, carry interactions (a scrub's from/to follow cue-moved actions) and
+   explanations, collect the effects, and return the Timeline, or every error found as exact
+   CompileError messages such as
    ``shot s1, t=5: dad cannot hand_to "hymn_books"; mom is holding it``.
+
+Effects (confetti, steam, rain, smoke, time_of_day) have no verb handler: effects.effect_for
+turns each into a ``Timeline.effects`` entry at timeline time, its ``at`` placed by the shot's
+locate. They occupy nobody, but still go through the schedule, so an effect ``at`` a puppet or
+prop reads it as of its own time. A shot's end covers every effect: an effect counts like a key
+at ``t + dur`` (rain with no ``dur`` at its start, and it then lasts until the shot's end, its
+outgoing fold included). ``Timeline.effects`` is ordered by (t, shot, action index).
 
 It never raises for a bad screenplay, and the same input gives byte-identical JSON.
 
@@ -34,7 +45,9 @@ of it and is not reported.
 Because of that reordering, ``World.busy_until`` only describes the action running now. The
 compiler keeps every puppet's busy spans in shot time and, before each handler, sets each
 puppet's ``busy_until`` / ``activity`` to the span covering ``world.now`` (if any). A new span
-that runs into a span the puppet starts later is reported as ``busy`` too.
+that runs into a span the puppet starts later is reported as ``busy`` too. Spans are in
+cue-retimed shot time, but a busy message states its times in the blocked action's written
+frame (``World.busy_time_offset``), like the ``t=`` in its head.
 
 Verb handlers come from every ``screenplay.verbs_*`` module's ``HANDLERS`` dict (verbs_core
 first, then the rest by module name), so a new verb module only has to exist to be used.
@@ -53,7 +66,7 @@ from dataclasses import dataclass, field
 
 import schemas
 import screenplay as _pkg
-from screenplay import body, character, ik, layout, motion, verbs_core
+from screenplay import body, character, effects, ik, layout, motion, verbs_core
 from screenplay import camera as camera_mod
 from screenplay import errors as E
 from screenplay import narration as N
@@ -66,6 +79,7 @@ from screenplay.schema import (
     Screenplay,
     Shot,
     Timeline,
+    TimelineEffect,
     TimelineShot,
 )
 from screenplay.state import (
@@ -74,11 +88,12 @@ from screenplay.state import (
     HEAD,
     OFFSTAGE_LEFT,
     TIME_EPS,
+    PuppetState,
     StateError,
     World,
     fmt_t,
 )
-from screenplay.tracks import Key, TrackSet, round_value
+from screenplay.tracks import Key, TrackSet, is_step, round_value
 from screenplay.validate import validate
 
 Vec3 = tuple[float, float, float]
@@ -434,13 +449,22 @@ def _record_spans(
 
 def _hold_then(tracks: TrackSet, target: str, channel: str, t: float, value: object) -> list[Key]:
     """A key setting ``value`` at ``t``. On a track that already has keys, the old value is held
-    up to ``t`` first, so it steps at ``t`` instead of drifting there through the previous shot."""
+    up to ``t`` first, so it steps at ``t`` instead of drifting there through the previous shot.
+    A step channel (parent, state, facing) holds on its own, so it gets only the new key. An
+    unchanged value gets no key."""
     if not tracks.has_track(target, channel):
         return [(target, channel, t, value)]
     old = tracks.value_at(target, channel, t)
     if round_value(old) == round_value(value):
         return []
+    if is_step(channel, value):
+        return [(target, channel, t, value)]
     return [(target, channel, t, old), (target, channel, t, value)]
+
+
+def _seated_root(p: PuppetState, seat: Vec3) -> Vec3:
+    """A seated puppet's root for a seat socket at world position ``seat``: the hip sits on it."""
+    return (seat[0], seat[1] - ik.RIG["hipHeight"] * ik.scale(p.build), seat[2])
 
 
 def _start_keys(world: World, tracks: TrackSet, shot: Shot, t: float, same_set: bool) -> tuple[list[Key], list[str]]:
@@ -478,7 +502,7 @@ def _start_keys(world: World, tracks: TrackSet, shot: Shot, t: float, same_set: 
             if seat is None:
                 problems.append(f"{who} starts in {prop}.{sock}, but {prop} is not on stage")
             else:
-                root = (seat[0], seat[1] - ik.RIG["hipHeight"] * scale, seat[2])
+                root = _seated_root(p, seat)
             bones.update({b: float(v) for b, v in _POSES["sit"].items() if b != "rootOffset"})
         if p.pose not in _POSES:
             problems.append(f"{p.pose} is not a pose; poses are: {', '.join(sorted(_POSES))}")
@@ -510,13 +534,47 @@ def _start_keys(world: World, tracks: TrackSet, shot: Shot, t: float, same_set: 
                 keys.append((target, "parent", t, GROUND))
             keys.extend(_hold_then(tracks, target, "position", t, [float(c) for c in OFFSTAGE_LEFT]))
 
+    # propStart: on a prop that already has keys (an earlier shot of the same set, or a vehicle
+    # driven earlier), each channel holds its old value up to the shot's start and steps there,
+    # instead of gliding to the new place through the previous shot. A prop seen for the first
+    # time gets one key per channel, as before.
     for what, ps in shot.prop_start.items():
         st = world.props[what]
+        target = f"prop:{what}"
         if ps.at is not None or ps.on is not None:
-            keys.append((f"prop:{what}", "parent", t, st.parent))
-            keys.append((f"prop:{what}", "position", t, [float(c) for c in st.pos]))
+            pos = [float(c) for c in st.pos]
+            parent_keys = _hold_then(tracks, target, "parent", t, st.parent)
+            pos_keys = _hold_then(tracks, target, "position", t, pos)
+            if parent_keys and not pos_keys:  # a position key at every parent key (CONTRACTS.md)
+                pos_keys = [(target, "position", t, pos)]
+            keys.extend(parent_keys)
+            keys.extend(pos_keys)
         if ps.state is not None:
-            keys.append((f"prop:{what}", "state", t, ps.state))
+            keys.extend(_hold_then(tracks, target, "state", t, ps.state))
+    return keys, problems
+
+
+def _reseat_keys(world: World, tracks: TrackSet, shot: Shot, t: float) -> tuple[list[Key], list[str]]:
+    """Puppets still seated in a prop that the shot's propStart re-placed (or in a prop resting
+    on one), and not listed in its start, ride along: the World moves each to the seated root
+    at its seat's new place, and its root.position holds until the shot's start and steps
+    there. Props they hold, or that rest on the moved prop, are parented and follow on their
+    own. Returns (keys, problems)."""
+    moved = [what for what, ps in shot.prop_start.items() if ps.at is not None or ps.on is not None]
+    if not moved:
+        return [], []
+    keys: list[Key] = []
+    problems: list[str] = []
+    placed = world.reseat_riders(moved, lambda who, seat: _seated_root(world.people[who], seat), skip=shot.start)
+    for who, root in placed.items():
+        if root is None:
+            prop, sock = world.people[who].seat  # type: ignore[misc]
+            problems.append(
+                f"{who} is still seated in {prop}.{sock}, but {prop} now rests on something a puppet is "
+                f"holding; list {who} in this shot's start"
+            )
+            continue
+        keys.extend(_hold_then(tracks, f"puppet:{who}", "root.position", t, [float(c) for c in root]))
     return keys, problems
 
 
@@ -548,6 +606,8 @@ def compile(
     timeline_shots: list[TimelineShot] = []
     per_shot_lines: list[dict[str, list[NarrationLine]]] = []
     action_start_by_shot: dict[str, float] = {}
+    retimed_by_shot: dict[str, tuple[list[float], list[float]]] = {}
+    all_effects: list[tuple[float, int, int, TimelineEffect]] = []  # (t, shot index, action index, entry)
     cam_pose: camera_mod.CameraPose | None = None
     shot_start, action_start = 0.0, layout.RISE
 
@@ -573,6 +633,10 @@ def compile(
         for reason in problems:
             errors.add(E.error("bad_start", reason, shot.id), si)
         tracks.extend(start_keys)
+        reseat_keys, problems = _reseat_keys(world, tracks, shot, shot_start)
+        for reason in problems:
+            errors.add(E.error("bad_start", reason, shot.id), si)
+        tracks.extend(reseat_keys)
         if si == 0:
             # Signature items (state.py puts them on the head when the World is built): parent
             # each to its wearer's head, so it goes wherever the puppet goes. One already keyed
@@ -587,6 +651,7 @@ def compile(
         except N.NarrationError as e:
             errors.add(E.from_narration_error(e), si)
             retimed = [a.t for a in shot.actions]
+        retimed_by_shot[shot.id] = ([a.t for a in shot.actions], list(retimed))
 
         locate = make_locate(world, tracks, marks, shot.id)
         seated_in = {who: p.seat[0] for who, p in world.people.items() if p.seat is not None}
@@ -594,11 +659,14 @@ def compile(
         for ci, code, reason in left_out:
             errors.add(E.error(code, reason, shot.id, shot.actions[ci]), si, ci)
         spans: Spans = {}
+        shot_effects: list[tuple[int, TimelineEffect]] = []
         for ai in order:
             action = shot.actions[ai]
-            err = _run_action(world, tracks, action, retimed[ai], action_start, locate, shot.id, spans)
+            err, effect = _run_action(world, tracks, action, retimed[ai], action_start, locate, shot.id, spans)
             if err is not None:
                 errors.add(err, si, ai)
+            elif effect is not None:
+                shot_effects.append((ai, effect))
 
         cam_errors, cam_pose = _camera(shot, shot_start, action_start, cam_pose, locate, tracks)
         for err in cam_errors:
@@ -612,7 +680,7 @@ def compile(
             lines = {default: []}
         per_shot_lines.append(lines)
 
-        content_end = layout.content_end(tracks.last_key_time(), N.last_word_time(lines))
+        content_end = layout.content_end(_last_moment(tracks, shot_effects), N.last_word_time(lines))
         if si + 1 < len(sp.shots):
             nxt = sp.shots[si + 1]
             end, next_start, next_action_start, fold = layout.next_shot_timing(
@@ -625,13 +693,24 @@ def compile(
             id=shot.id, set=shot.set, start=shot_start, action_start=action_start, end=end,
             transition=shot.transition, page_text=shot.page_text,
         ))
+        for ai, effect in shot_effects:
+            if effect.kind == "rain" and shot.actions[ai].dur is None:  # rain with no dur lasts the shot
+                t_rain = round(action_start + retimed[ai], 6)
+                try:
+                    effect = effects.effect_for(shot.actions[ai], t_rain, locate, end)
+                except StateError as e:  # cannot happen: the shot's end covers the rain's start
+                    errors.add(E.from_state_error(e, shot.id, shot.actions[ai]), si, ai)
+                    continue
+            all_effects.append((effect.t, si, ai, effect))
         shot_start, action_start = next_start, next_action_start
 
     narrations, captions = N.assemble(per_shot_lines, default)
     interactions = None
     if sp.interactions is not None and len(action_start_by_shot) == len(sp.shots):
         try:
-            interactions = N.convert_interactions(sp.interactions, action_start_by_shot, sp.shots[0].id)
+            interactions = N.convert_interactions(
+                sp.interactions, action_start_by_shot, sp.shots[0].id, retimed_by_shot=retimed_by_shot,
+            )
         except N.NarrationError as e:
             errors.add(E.from_narration_error(e), len(sp.shots))
     explanations = [ex.model_copy(deep=True) for ex in sp.explanations] if sp.explanations is not None else None
@@ -644,13 +723,23 @@ def compile(
         tracks=tracks.tracks(),
         captions=captions,
         shots=timeline_shots,
-        effects=[],
+        effects=[e for *_, e in sorted(all_effects, key=lambda it: it[:3])],
         narrations=narrations,
         default_narrator=default,
         interactions=interactions,
         explanations=explanations,
     )
     return CompileResult(ok=True, timeline=timeline)
+
+
+def _last_moment(tracks: TrackSet, shot_effects: list[tuple[int, TimelineEffect]]) -> float:
+    """The shot's last key time, where an effect counts as a key at its end (``t + dur``), so
+    the next shot's fold never cuts a burst short. Rain with no ``dur`` lasts until the shot's
+    end, so it counts at its start: the shot still reaches every effect it has."""
+    last = tracks.last_key_time()
+    for _, e in shot_effects:
+        last = max(last, round(e.t + (e.dur if e.dur is not None else 0.0), 3))
+    return last
 
 
 def _run_action(
@@ -662,19 +751,32 @@ def _run_action(
     locate: Locate,
     shot_id: str,
     spans: Spans,
-) -> CompileError | None:
-    """Run one action through its handler, with the busy checks around it. Returns its error.
+) -> tuple[CompileError | None, TimelineEffect | None]:
+    """Run one action through its handler, with the busy checks around it.
+    Returns (its error, its Timeline.effects entry for an effect verb).
 
     Busy state comes from ``spans`` (this shot's busy spans so far), and the spans of every
-    puppet the action occupies are added to it."""
+    puppet the action occupies are added to it. Every time a busy reason shows is in the
+    blocked action's written frame: a span time T (cue-retimed shot time) shows as
+    ``action.t + (T - shot_t)``, so moving the action to the stated time clears the error
+    (when that does not change its cue shift). With no cue shift that is T itself.
+
+    An effect verb (effects.EFFECT_VERBS) with no handler of its own runs no puppet handler and
+    occupies nobody: effects.effect_for builds its entry at timeline time, with ``at`` placed
+    by the shot's locate. A rain with no ``dur`` gets a placeholder ``dur`` here; compile()
+    rebuilds it once the shot's end is known."""
     handler = HANDLERS.get(action.do)
+    t = round(action_start + shot_t, 6)
     if handler is None:
-        return E.error("unsupported_verb", f"the compiler does not support {action.do} yet", shot_id, action)
+        if action.do in effects.EFFECT_VERBS:
+            return _run_effect(action, t, locate, shot_id)
+        return E.error("unsupported_verb", f"the compiler does not support {action.do} yet", shot_id, action), None
     now = round(shot_t, 6)
     world.now = now
     _set_busy_from_spans(world, spans, now)
     before = {w: (p.busy_until, p.activity) for w, p in world.people.items()}
-    t = round(action_start + shot_t, 6)
+    shift = action.t - shot_t  # written frame - retimed frame; 0.0 when no cue moved the action
+    world.busy_time_offset = shift
     try:
         if action.who is not None:
             world.check_free(action.who)
@@ -682,22 +784,40 @@ def _run_action(
         if action.who is not None:
             world.occupy(action.who, round(end - action_start, 6), ACTIVITY[action.do], at=now)
     except StateError as e:
-        return E.from_state_error(e, shot_id, action)
+        return E.from_state_error(e, shot_id, action), None
     except ik.OutOfReach as e:
-        return E.from_out_of_reach(e, shot_id, action)
+        return E.from_out_of_reach(e, shot_id, action), None
     except N.NarrationError as e:
-        return E.from_narration_error(e)
+        return E.from_narration_error(e), None
     except ValueError as e:
-        return E.error("invalid_action", str(e), shot_id, action)
+        return E.error("invalid_action", str(e), shot_id, action), None
+    finally:
+        world.busy_time_offset = 0.0
     clash = _record_spans(world, spans, now, before, action.who)
     if clash is not None:
         who, new, later = clash
+
+        def shown(x: float) -> str:
+            return fmt_t(x + shift if shift else x)
+
         reason = (
-            f"{who} would still be {new.activity} until t={fmt_t(new.end)}, "
-            f"but starts {later.activity} at t={fmt_t(later.start)}"
+            f"{who} would still be {new.activity} until t={shown(new.end)}, "
+            f"but starts {later.activity} at t={shown(later.start)}"
         )
-        return E.error("busy", reason, shot_id, action)
-    return None
+        return E.error("busy", reason, shot_id, action), None
+    return None, None
+
+
+def _run_effect(action: Action, t: float, locate: Locate, shot_id: str) -> tuple[CompileError | None, TimelineEffect | None]:
+    """An effect action's Timeline.effects entry at timeline time ``t``, or its error (an ``at``
+    that cannot be placed, say a prop that is not on stage). A rain with no ``dur`` is checked
+    with a zero-length placeholder; compile() rebuilds it with the shot's end."""
+    try:
+        return None, effects.effect_for(action, t, locate, t)
+    except StateError as e:
+        return E.from_state_error(e, shot_id, action), None
+    except ValueError as e:
+        return E.error("invalid_action", str(e), shot_id, action), None
 
 
 def _camera(
