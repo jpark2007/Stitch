@@ -1,5 +1,110 @@
 # Demo seed
 
+## Quick start: the offline demo in one command
+
+From a fresh clone (needs only [uv](https://docs.astral.sh/uv/); no MongoDB, Docker or API
+keys):
+
+```sh
+cd api && uv sync && uv run python -m seed.serve
+```
+
+It starts the API at `http://localhost:8000` on an in-memory database seeded with the demo
+family (`STITCH_FAKE_DB=1`), with scripted "add a memory" runs. It prints a banner, then
+uvicorn's log, and is ready when you see `Application startup complete`:
+
+```text
+Stitch offline demo: in-memory database with the demo family (The Maos), scripted runs
+  API      http://localhost:8000   (health: http://localhost:8000/health)
+  Web app  http://localhost:3000   (cd web && npm install && npm run dev)
+           open it at localhost, not 127.0.0.1: the session cookie is SameSite=Lax,
+           and the browser treats the two as different sites
+  Sign in  (password stitch-demo for every account)
+           david@demo.stitch  David Mao (admin)
+           ana@demo.stitch    Ana Mao (member)
+           sam@demo.stitch    Sam Mao (member)
+  No MongoDB, Docker or API keys needed.
+  Ctrl+C to stop; data resets on every restart.
+
+INFO:     Started server process [12345]
+INFO:     Waiting for application startup.
+INFO:     No .env file found (looked for .../api/.env, .../.env)
+INFO:     STITCH_FAKE_DB: in-memory database with demo family 'demo_family'; sign in as david@demo.stitch, ana@demo.stitch, sam@demo.stitch, password 'stitch-demo'
+INFO:     STITCH_AGENT=fake: scripted agent runs, no model calls (step 0.6s)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+```
+
+(With a `.env` file the third log line names the files it loaded instead.) Startup takes a
+few seconds; the first `uv sync` downloads the dependencies once.
+
+The demo accounts all use the password **`stitch-demo`**:
+
+| Email | Person | Role |
+|---|---|---|
+| `david@demo.stitch` | David (`dad`) | admin |
+| `ana@demo.stitch` | Ana (`mom`) | member |
+| `sam@demo.stitch` | Sam (`sam`) | member |
+
+**The web app.** In a second terminal, `cd web && npm install && npm run dev`, then open
+**http://localhost:3000** (not `127.0.0.1:3000`, see the banner) and sign in with an
+account above. The web app calls `http://localhost:8000` by default.
+
+**Check it with curl** (a second terminal):
+
+```sh
+curl -s localhost:8000/health
+# {"status":"ok"}
+curl -s -H 'Content-Type: application/json' \
+  -d '{"email":"sam@demo.stitch","password":"stitch-demo"}' localhost:8000/auth/login
+# {"user":{"id":"demo_user_sam","email":"sam@demo.stitch","name":"Sam Mao",...},
+#  "families":[{"id":"demo_family","name":"The Maos","role":"member","personId":"sam"}]}
+```
+
+More curl calls are in [Smoke check](#smoke-check), and `uv run python -m seed.smoke`
+drives a whole "add a memory" run against it (see [Agent runs](#agent-runs-stitch_agent)).
+
+**Stop it** with Ctrl+C in its terminal.
+
+Options: `--port N` (default 8000), `--host H` (default `127.0.0.1`), `--reload` (restart
+on code changes under `api/`). `--help` lists them.
+
+### Troubleshooting
+
+- **`port 8000 is in use: is the API already running? pass --port`**: another server
+  (often an API you started earlier) has the port. Stop it, or use another port and point
+  the web app at it: `uv run python -m seed.serve --port 8001`, then
+  `NEXT_PUBLIC_API_URL=http://localhost:8001 npm run dev` in `web/`.
+- **Everything resets on restart.** The database lives in the server process: every
+  restart, including each `--reload`, seeds the demo family again from scratch, and
+  accounts, families and memories you created are gone. Sessions survive a restart (the
+  demo users are re-created with the same ids, and sessions are signed with a fixed,
+  public, dev-only `JWT_SECRET` when you have not set one in the environment or a `.env`
+  file), but an account you signed up for does not, so sign in again.
+- **Signed in, but the web app acts signed out**: you opened `127.0.0.1:3000`; use
+  `localhost:3000`.
+- **Sign-in fails with a CORS error in the browser console**: `npm run dev` printed
+  `Port 3000 is in use ..., using available port 3001 instead`. The API only allows
+  `localhost:3000` and `127.0.0.1:3000`; stop the other web server, or allow the new
+  origin: `STITCH_CORS_ORIGINS=http://localhost:3000,http://localhost:3001 uv run python -m seed.serve`.
+- **It never needs MongoDB, Docker or keys.** It sets `STITCH_FAKE_DB=1` and leaves
+  `STITCH_AGENT` alone, so runs are scripted even when a `.env` holds an
+  `ANTHROPIC_API_KEY` (set `STITCH_AGENT=real` yourself to try the model studio on the
+  in-memory database). `VOYAGE_API_KEY` is ignored in this mode.
+- **What it does not exercise**: MongoDB itself (the database is mongomock), Atlas Vector
+  Search (unavailable here, so "ask the family" and prop matching use their keyword
+  fallbacks; Vector Search has not been verified against a real Atlas cluster), GridFS
+  (media is kept in memory), and real model runs (no model, image, speech or vision calls;
+  every new memory gets the hand-written hymn-book scene). See
+  [What does not work in this mode](#what-does-not-work-in-this-mode) and, for the real
+  thing, [Run the API on a real MongoDB](#run-the-api-on-a-real-mongodb).
+
+`python -m seed.serve` is a thin wrapper: the same server is
+`STITCH_FAKE_DB=1 uv run uvicorn main:app --port 8000` (see
+[Run the API without MongoDB](#run-the-api-without-mongodb)).
+
+## The demo family
+
 The stage demo starts with a full tree and books. `seed/demo.py` creates the demo family,
 **The Maos** (family id `demo_family`):
 
@@ -88,16 +193,6 @@ Nothing authored is ever left out of the stored screenplay. An effect that canno
 placed (say `at` names someone not on stage) fails the seed like any other `CompileError`.
 `test_seed_scenes.py` checks that every authored effect is in the stored timeline.
 
-## Demo accounts
-
-All three use the password **`stitch-demo`**.
-
-| Email | Person | Role |
-|---|---|---|
-| `david@demo.stitch` | David (`dad`) | admin |
-| `ana@demo.stitch` | Ana (`mom`) | member |
-| `sam@demo.stitch` | Sam (`sam`) | member |
-
 ## Seed a real MongoDB
 
 From `api/`, with `MONGODB_URI` and `MONGODB_DB` set (defaults: `mongodb://localhost:27017`
@@ -119,50 +214,36 @@ From code: `seed.demo.seed_demo(db, reset=False) -> DemoSeed`.
 
 ## Run the API without MongoDB
 
-Neither MongoDB nor Docker is needed for local frontend work. With `STITCH_FAKE_DB=1`,
-`api/main.py` calls `seed.fake.install_fake_db()` on startup: the API runs on an in-memory
-mongomock database with the indexes created and the demo family seeded.
+`python -m seed.serve` ([Quick start](#quick-start-the-offline-demo-in-one-command)) is the
+easy way. Underneath, it is `STITCH_FAKE_DB=1`: on startup `api/main.py` calls
+`seed.fake.install_fake_db()`, and the API runs on an in-memory mongomock database with the
+indexes created and the demo family seeded. The same server with plain uvicorn:
 
 ```sh
 cd api && uv sync && STITCH_FAKE_DB=1 uv run uvicorn main:app --reload --port 8000
 ```
 
-Startup logs two lines confirming it, after a line naming the `.env` files it loaded (see
-[Run the API on a real MongoDB](#run-the-api-on-a-real-mongodb)): the demo accounts and
-password, and the agent mode (scripted runs, see [Agent runs](#agent-runs-stitch_agent)):
-
-```text
-INFO:     STITCH_FAKE_DB: in-memory database with demo family 'demo_family'; sign in as david@demo.stitch, ana@demo.stitch, sam@demo.stitch, password 'stitch-demo'
-INFO:     STITCH_AGENT=fake: scripted agent runs, no model calls (step 0.6s)
-```
-
-`STITCH_FAKE_DB` accepts `1`, `true` or `yes`. mongomock is a dev dependency, which
-`uv sync` and `uv run` install by default.
+It logs the same `STITCH_FAKE_DB` and `STITCH_AGENT` lines as the quick start, after a line
+naming the `.env` files it loaded (see
+[Run the API on a real MongoDB](#run-the-api-on-a-real-mongodb)). `STITCH_FAKE_DB` accepts
+`1`, `true` or `yes`. mongomock is a dev dependency, which `uv sync` and `uv run` install
+by default.
 
 ### The frontend
 
 The web app calls the API at `NEXT_PUBLIC_API_URL`, which defaults to
-`http://localhost:8000`, so `npm run dev` in `web/` works against this server with no
-setup. Open the web app at `http://localhost:3000`, not `127.0.0.1`: the session cookie is
-`SameSite=Lax`, and `localhost` and `127.0.0.1` are different sites to the browser.
-
-CORS allows `http://localhost:3000` and `http://127.0.0.1:3000`, with credentials. To allow
-other origins (another port, a tunnel), list them all, comma-separated; `*` is ignored
-because credentials are on:
-
-```sh
-STITCH_CORS_ORIGINS=http://localhost:3000,http://localhost:3001 STITCH_FAKE_DB=1 uv run uvicorn main:app --reload --port 8000
-```
+`http://localhost:8000`. Open it at `http://localhost:3000`, not `127.0.0.1` (the session
+cookie is `SameSite=Lax`). CORS allows `http://localhost:3000` and `http://127.0.0.1:3000`,
+with credentials. To allow other origins (another port, a tunnel), list them all in
+`STITCH_CORS_ORIGINS`, comma-separated; `*` is ignored because credentials are on.
 
 ### Sessions and restarts
 
-Everything lives in the server process. Any restart, including each `--reload` after a code
-change, wipes the in-memory database and seeds the demo family again from scratch: accounts,
-families and memories you created are gone.
-
-Sessions are signed with `JWT_SECRET`. Without it the API picks a random secret per process
-(and logs a warning), so every restart also signs everyone out. Set it to keep a browser
-session valid across restarts (the demo users are re-created with the same ids):
+Any restart, including each `--reload`, wipes the in-memory database and seeds the demo
+family again. Sessions are signed with `JWT_SECRET`; with plain uvicorn and no
+`JWT_SECRET`, the API picks a random secret per process (and logs a warning), so every
+restart also signs everyone out. `seed.serve` sets a fixed dev-only secret instead when you
+have none; with uvicorn, set one yourself:
 
 ```sh
 JWT_SECRET=any-local-dev-secret-at-least-32-chars STITCH_FAKE_DB=1 uv run uvicorn main:app --reload --port 8000
