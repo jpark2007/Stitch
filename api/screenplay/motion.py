@@ -154,11 +154,22 @@ def locomotion_keys(
 
 def enter_keys(who: str, build: str, t0: float, from_pos: Vec3, to: Vec3, facing_now: int,
                gait: Literal["walk", "run"] = "walk", skip_bones: Iterable[str] = (),
-               speed_scale: float = 1.0) -> tuple[list[Key], float, int]:
-    """Place the puppet at from_pos at t0 (usually offstage), then move it to `to`."""
-    first: Key = (_target(who), "root.position", t0, [from_pos[0], from_pos[1], from_pos[2]])
+               speed_scale: float = 1.0, prev_pos: Vec3 | None = None) -> tuple[list[Key], float, int]:
+    """Place the puppet at from_pos at t0 (usually offstage), then move it to `to`.
+
+    ``prev_pos`` is where the root.position track already has the puppet at t0 (None when it
+    has no track). When it differs from from_pos (at the tracks' 3 dp), the old value is keyed
+    at t0 first, then from_pos at t0: two keys at one time, which the stage and tracks._sample
+    resolve to the later one. So the puppet jumps offstage instead of gliding across the stage
+    from, say, offstage_left to offstage_right through everything before t0.
+    """
+    target = _target(who)
+    first: Key = (target, "root.position", t0, [from_pos[0], from_pos[1], from_pos[2]])
+    hold: list[Key] = []
+    if prev_pos is not None and [round(c, 3) for c in prev_pos] != [round(c, 3) for c in from_pos]:
+        hold = [(target, "root.position", t0, [prev_pos[0], prev_pos[1], prev_pos[2]])]
     keys, t1, facing = locomotion_keys(who, build, t0, from_pos, to, facing_now, gait, skip_bones, speed_scale)
-    return [first] + [k for k in keys if k != first], t1, facing
+    return hold + [first] + [k for k in keys if k != first], t1, facing
 
 
 def exit_keys(who: str, build: str, t0: float, start: Vec3, to: Vec3, facing_now: int,

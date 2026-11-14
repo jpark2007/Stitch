@@ -17,7 +17,7 @@ from screenplay.locate import make_locate, puppet_root, puppet_socket_at
 from screenplay.motion import resolve_marks
 from screenplay.schema import Action, Screenplay, Shot
 from screenplay.state import StateError, World
-from screenplay.tracks import TrackSet
+from screenplay.tracks import TrackSet, evaluate
 from screenplay.verbs_core import HANDLERS
 from verb_cases import base_scene
 
@@ -802,3 +802,178 @@ def test_drop_while_kneeling_on_the_ground_lands_on_the_ground():
     (_, parent), (_, landing) = _books_land(res)
     assert parent == "ground"
     assert landing[1] == 0.0
+
+
+# ------------------------------------------------- the torso: reaches from a leaning body
+
+def _compile(shots, cast=("dad", "mom"), props=("hymn_books",)):
+    sp = Screenplay.model_validate({"memoryId": "m", "cast": list(cast), "props": list(props), "shots": shots})
+    sc = base_scene()
+    return compile_screenplay(sp, sets=sc.sets, props=sc.props, people=sc.people)
+
+
+def _hand_on_timeline(timeline, who, socket, t):
+    """A hand's world position from the compiled tracks alone, every bone (torso included)."""
+    sc = base_scene()
+    rots = {b: evaluate(timeline.tracks, f"puppet:{who}", f"{b}.rot", t) or 0.0 for b in ik.RIG["bones"]}
+    x, y, _ = evaluate(timeline.tracks, f"puppet:{who}", "root.position", t)
+    facing = int(evaluate(timeline.tracks, f"puppet:{who}", "root.facing", t))
+    return ik.socket_world(socket, rots, (x, y), facing, sc.people[who].character.build)
+
+
+@pytest.mark.parametrize("slumped", [True, False])
+def test_hand_to_from_a_slumped_giver_meets_hand_to_hand(slumped):
+    """Dad leans (slumped: torso -0.25) and hands the books over: both hands are on the same
+    point when the books change parent. Before the IK knew the torso, the gap was 0.055."""
+    actions = [{"t": 1, "do": "hand_to", "who": "dad", "what": "hymn_books", "to": "mom"}]
+    if slumped:
+        actions.insert(0, {"t": 0, "do": "pose", "who": "dad", "pose": "slumped"})
+    res = _compile([{"id": "s1", "set": "yard",
+                     "start": {"dad": {"at": "bench_spot", "holding": "hymn_books", "facing": "right"},
+                               "mom": {"at": "beside_bench", "facing": "left"}},
+                     "actions": actions}])
+    assert res.ok, [e.message for e in res.errors]
+    tl = res.timeline
+    (t_swap, _), = [k for k in _track(res, "prop:hymn_books", "parent") if k[1] == "puppet:mom.hand_r"]
+    if slumped:
+        assert evaluate(tl.tracks, "puppet:dad", "torso.rot", t_swap) == pytest.approx(-0.25)
+    gap = math.dist(_hand_on_timeline(tl, "dad", "hand_r", t_swap), _hand_on_timeline(tl, "mom", "hand_r", t_swap))
+    assert gap <= 1e-3
+
+
+def test_hand_to_keeps_each_bodys_torso_when_it_turns_them():
+    world, tracks = handover_scene(dad_facing="left")
+    tracks.add("puppet:dad", "torso.rot", 0.0, -0.25)
+    tracks.add("puppet:mom", "torso.rot", 0.0, -0.1)
+    world.people["mom"].facing = 1
+    run(world, tracks, 0, who="dad", do="hand_to", what="books", to="mom")
+    t_meet = 1.2 + B.PASS_SECONDS
+    dad = puppet_socket_at(world, tracks, "dad", "hand_r", t_meet)
+    mom = puppet_socket_at(world, tracks, "mom", "hand_r", t_meet)
+    assert math.dist(dad[:2], mom[:2]) <= 2e-3  # keys are rounded to 3 dp
+
+
+def test_pick_up_from_a_slumped_torso_lands_the_hand_on_the_grip():
+    world, tracks = scene({"dad": {"at": "steps_foot", "facing": "right"}})
+    tracks.add("puppet:dad", "torso.rot", 0.0, -0.25)
+    geom = B.PropGeom.from_prop(world.catalog["cup"])
+    shoulder = ik.shoulder_world("arm_r", (0.0, 0.0), 1, "tall", torso=-0.25)
+    grip = (shoulder[0] + 0.1, shoulder[1] - 0.05)
+    world._to_ground("cup", (*B.anchor_from_grip(geom, grip), 0.5))
+    run(world, tracks, 0, who="dad", do="pick_up", what="cup")
+    t_grab = 1.2 + B.REACH_SECONDS
+    assert keys(tracks, "prop:cup", "parent") == [(t_grab, "puppet:dad.hand_r")]
+    assert hand_at(world, tracks, "dad", t_grab) == pytest.approx(grip, abs=2e-3)
+
+
+def test_pick_up_reach_check_uses_the_torso_rotated_shoulder():
+    """A grip just beyond an upright reach but within a forward lean's is taken where the
+    puppet stands, with no auto-walk."""
+    world, tracks = scene({"dad": {"at": "steps_foot", "facing": "right"}})
+    tracks.add("puppet:dad", "torso.rot", 0.0, -0.25)
+    geom = B.PropGeom.from_prop(world.catalog["cup"])
+    bent = ik.shoulder_world("arm_r", (0.0, 0.0), 1, "tall", torso=-0.25)
+    grip = (bent[0] + 0.97 * ik.arm_reach("tall"), bent[1])
+    assert not ik.can_reach("arm_r", grip, (0.0, 0.0), 1, "tall")
+    world._to_ground("cup", (*B.anchor_from_grip(geom, grip), 0.5))
+    end = run(world, tracks, 0, who="dad", do="pick_up", what="cup")
+    assert keys(tracks, "puppet:dad", "root.position") == []  # no walk
+    assert end == pytest.approx(1.2 + 2 * B.REACH_SECONDS)
+    assert hand_at(world, tracks, "dad", 1.2 + B.REACH_SECONDS) == pytest.approx(grip, abs=2e-3)
+
+
+def test_bent_arm_helpers_are_the_ik_formula():
+    from screenplay.verbs_core import _bent_shoulder, _solve_bent_arm
+
+    for bend in (0.0, -0.3, -0.9):
+        assert _bent_shoulder("arm_r", (0.1, 0.0), -1, "small", bend) == ik.shoulder_world(
+            "arm_r", (0.1, 0.0), -1, "small", torso=bend
+        )
+        grip = (0.0, 0.05)
+        dist, angles = _solve_bent_arm("arm_r", grip, (0.1, 0.0), -1, "small", bend)
+        assert (dist, angles) == ik.arm_solution("arm_r", grip, (0.1, 0.0), -1, "small", torso=bend)
+        if angles is not None:
+            assert angles == ik.solve_arm("arm_r", grip, (0.1, 0.0), -1, "small", torso=bend)
+
+
+# ------------------------------------------------------ enter: a step offstage, no glide
+
+def _x_before(res, who, t_from, t_to, step=0.05):
+    """root.position x at every sample in [t_from, t_to)."""
+    xs = []
+    t = t_from
+    while t < t_to - 1e-9:
+        xs.append(evaluate(res.timeline.tracks, f"puppet:{who}", "root.position", t)[0])
+        t += step
+    xs.append(evaluate(res.timeline.tracks, f"puppet:{who}", "root.position", t_to - 1e-6)[0])
+    return xs
+
+
+def test_enter_from_the_other_side_steps_offstage_instead_of_gliding():
+    res = _compile([{"id": "s1", "set": "yard", "start": {"dad": {"at": "offstage_left", "facing": "right"}},
+                     "actions": [{"t": 1, "do": "enter", "who": "dad", "from": "offstage_right", "to": "curb"}]}])
+    assert res.ok, [e.message for e in res.errors]
+    t_enter = res.timeline.shots[0].action_start + 1
+    assert set(_x_before(res, "dad", 0.0, t_enter)) == {-1.3}
+    assert evaluate(res.timeline.tracks, "puppet:dad", "root.position", t_enter)[0] == 1.3
+    pos = _track(res, "puppet:dad", "root.position")
+    at_enter = [k for k in pos if k[0] == pytest.approx(t_enter)]
+    assert at_enter == [(t_enter, [-1.3, 0.0, 0.5]), (t_enter, [1.3, 0.0, 0.5])]  # held, then the step
+
+
+def test_exit_right_then_enter_left_waits_offstage_right():
+    res = _compile([{"id": "s1", "set": "yard", "start": {"dad": {"at": "curb", "facing": "right"}},
+                     "actions": [{"t": 0, "do": "exit", "who": "dad", "to": "offstage_right"},
+                                 {"t": 6, "do": "enter", "who": "dad", "from": "offstage_left", "to": "door"}]}])
+    assert res.ok, [e.message for e in res.errors]
+    a0 = res.timeline.shots[0].action_start
+    gone = a0 + (1.3 - 0.8) / 0.35  # the exit walk arrives offstage right
+    assert set(_x_before(res, "dad", gone + 1e-3, a0 + 6)) == {1.3}
+    assert evaluate(res.timeline.tracks, "puppet:dad", "root.position", a0 + 6)[0] == -1.3
+
+
+def test_a_puppet_parked_by_a_new_set_enters_from_the_right_without_gliding():
+    res = _compile([
+        {"id": "s1", "set": "yard", "start": {"dad": {"at": "door"}, "mom": {"at": "bench_spot"}},
+         "actions": [{"t": 0, "do": "pose", "who": "mom", "pose": "bow_head"}]},
+        {"id": "s2", "set": "street", "start": {"dad": {"at": "garage"}},
+         "actions": [{"t": 1, "do": "enter", "who": "mom", "from": "offstage_right", "to": "corner"}]},
+    ])
+    assert res.ok, [e.message for e in res.errors]
+    s2 = res.timeline.shots[1]
+    t_enter = s2.action_start + 1
+    assert set(_x_before(res, "mom", s2.start, t_enter)) == {-1.3}
+    assert evaluate(res.timeline.tracks, "puppet:mom", "root.position", t_enter)[0] == 1.3
+
+
+def test_enter_from_where_the_puppet_already_is_adds_no_key():
+    """The hymn sample: dad waits at offstage_left and enters from there, so his root keys
+    stay exactly the reference's."""
+    import json
+    from pathlib import Path
+
+    samples = Path(__file__).resolve().parents[3] / "web" / "public" / "samples"
+    memory = json.loads((samples / "hymn_books.memory.json").read_text())
+    res = compile_screenplay(
+        Screenplay.model_validate(json.loads((samples / "hymn_books.screenplay.json").read_text())),
+        sets={s["id"]: schemas.SetDef.model_validate(s) for s in memory["sets"]},
+        props={p["id"]: schemas.Prop.model_validate(p) for p in memory["props"]},
+        people={p["id"]: schemas.Person.model_validate(p) for p in memory["people"]},
+    )
+    assert res.ok, [e.message for e in res.errors]
+    pos = _track(res, "puppet:dad", "root.position")
+    assert pos[:3] == [(0.0, [-1.3, 0.0, 0.5]), (1.2, [-1.3, 0.0, 0.5]), (3.2, [-0.6, 0.0, 0.5])]
+    times = [k[0] for k in pos]
+    assert len(times) == len(set(times))  # no two keys at one time anywhere
+
+
+def test_enter_holds_the_previous_root_in_the_handler():
+    world, tracks = scene()
+    tracks.add("puppet:dad", "root.position", 0.0, [-1.3, 0.0, 0.5])
+    run(world, tracks, 0, who="dad", do="enter", **{"from": "offstage_right"}, to="curb")
+    assert keys(tracks, "puppet:dad", "root.position") == [
+        (0.0, [-1.3, 0.0, 0.5]), (1.2, [-1.3, 0.0, 0.5]), (1.2, [1.3, 0.0, 0.5]),
+        (pytest.approx(1.2 + 0.5 / 0.35, abs=1e-3), [0.8, 0.0, 0.5]),
+    ]
+    assert puppet_root(world, tracks, "dad", 1.0)[0] == -1.3
+    assert puppet_root(world, tracks, "dad", 1.2)[0] == 1.3

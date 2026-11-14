@@ -383,6 +383,55 @@ def test_point_behind_turns_first():
     assert math.pi / 2 < up[1][1] < math.pi  # aimed up and forward after turning
 
 
+@pytest.mark.parametrize("torso", [-0.25, 0.3])
+def test_point_from_a_leaning_torso_aims_from_the_moved_shoulder(torso):
+    """The upper arm is in the torso's frame: its world angle (torso + upper) points along the
+    leaning shoulder-to-target line, also after turning around."""
+    from screenplay.ik import shoulder_world
+
+    for target in ((0.6, 0.418), (-0.8, 1.0)):
+        leaning = Body("dad", (0.0, 0.0), 1, "tall", torso)
+        keys = point_keys(leaning, 2.0, {}, target)
+        facing = 1 if target[0] > 0 else -1
+        sh = shoulder_world("arm_r", (0.0, 0.0), facing, "tall", torso=torso)
+        up = [k[3] for k in keys if k[1] == "arm_r.upper.rot"][1]
+        want = math.atan2(facing * (target[0] - sh[0]), -(target[1] - sh[1]))
+        assert up + torso == pytest.approx(want, abs=1e-12)
+
+
+def test_point_with_an_upright_body_is_unchanged_by_the_torso_field():
+    explicit = Body("dad", (0.0, 0.0), 1, "tall", 0.0)
+    assert point_keys(DAD, 2.0, {}, (0.6, 0.418)) == point_keys(explicit, 2.0, {}, (0.6, 0.418))
+
+
+def test_drop_starts_the_prop_at_the_leaning_hand():
+    leaning = Body("dad", (0.0, 0.0), 1, "tall", -0.25)
+    upright = Body("dad", (0.0, 0.0), 1, "tall")
+    arm = (0.3, 1.2)
+    geom = PropGeom("hymn_books", 0.1, 0.1, (0.5, 1.0), (0.5, 0.0))
+    def first_position(body):
+        keys, _ = drop_keys(body, 1.0, arm, geom, surface_y=0.0, z=0.5)
+        return next(k[3] for k in keys if k[1] == "position")
+
+    start = first_position(leaning)
+    hand = socket_world("hand_r", {"torso": -0.25, "arm_r.upper": 0.3, "arm_r.lower": 1.2}, (0.0, 0.0), 1, "tall")
+    assert start[:2] == pytest.approx(list(anchor_from_grip(geom, hand)), abs=1e-12)
+    upright_start = first_position(upright)
+    assert start != upright_start
+
+
+def test_hand_to_from_a_leaning_giver_meets_at_both_hands():
+    giver = Body("dad", (0.0, 0.0), 1, "tall", -0.25)
+    taker = Body("mom", (0.2, 0.3), -1, "average", -0.1)
+    keys = hand_to_keys(giver, HOLD, taker, (0.0, 0.0), "hymn_books", 7.8)
+    t_meet = 7.8 + PASS_SECONDS
+    hands = []
+    for body in (giver, taker):
+        rots = {k[1][:-4]: k[3] for k in keys if k[0] == f"puppet:{body.id}" and k[2] == t_meet}
+        hands.append(body_socket(body, "hand_r", rots))
+    assert math.dist(*hands) <= 1e-9
+
+
 # ------------------------------------------------------------- kneel / sit / stand
 
 def test_kneel_bakes_root_offset():

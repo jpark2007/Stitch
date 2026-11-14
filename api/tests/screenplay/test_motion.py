@@ -199,6 +199,39 @@ def test_enter_from_right_faces_left():
     assert ("puppet:mom", "root.facing", 0, -1) in keys
 
 
+def test_enter_from_where_the_track_already_is_adds_no_key():
+    plain = enter_keys("dad", "tall", 1.2, (-1.3, 0, 0.5), (-0.6, 0, 0.5), 1)
+    assert enter_keys("dad", "tall", 1.2, (-1.3, 0, 0.5), (-0.6, 0, 0.5), 1, prev_pos=(-1.3, 0.0, 0.5)) == plain
+    # equal at the tracks' 3 dp is equal
+    assert enter_keys("dad", "tall", 1.2, (-1.3, 0, 0.5), (-0.6, 0, 0.5), 1, prev_pos=(-1.3002, 0.0, 0.5)) == plain
+    assert enter_keys("dad", "tall", 1.2, (-1.3, 0, 0.5), (-0.6, 0, 0.5), 1, prev_pos=None) == plain
+
+
+def test_enter_from_elsewhere_holds_the_old_root_then_steps():
+    """Two keys at t0, old then new: the stage resolves equal times to the later key, so the
+    puppet jumps offstage instead of gliding across the stage before the enter."""
+    keys, t1, facing = enter_keys("mom", "average", 2.0, (1.3, 0, 0.5), (0.4, 0, 0.5), 1, prev_pos=(-1.3, 0.0, 0.5))
+    pos = [k for k in keys if k[1] == "root.position"]
+    assert pos[0] == ("puppet:mom", "root.position", 2.0, [-1.3, 0.0, 0.5])
+    assert pos[1] == ("puppet:mom", "root.position", 2.0, [1.3, 0, 0.5])
+    assert len(pos) == 3 and pos[2][3] == [0.4, 0, 0.5]
+    assert facing == -1
+    plain, plain_t1, _ = enter_keys("mom", "average", 2.0, (1.3, 0, 0.5), (0.4, 0, 0.5), 1)
+    assert keys[1:] == plain and t1 == plain_t1  # everything else is unchanged
+
+
+def test_enter_hold_key_resolves_to_a_step_on_the_tracks():
+    from screenplay.tracks import TrackSet
+
+    tracks = TrackSet()
+    tracks.add("puppet:mom", "root.position", 0.0, [-1.3, 0.0, 0.5])
+    keys, _, _ = enter_keys("mom", "average", 2.0, (1.3, 0, 0.5), (0.4, 0, 0.5), 1, prev_pos=(-1.3, 0.0, 0.5))
+    tracks.extend(keys)
+    for t in (0.0, 0.5, 1.0, 1.5, 1.99, 1.999999):
+        assert tracks.value_at("puppet:mom", "root.position", t)[0] == -1.3
+    assert tracks.value_at("puppet:mom", "root.position", 2.0)[0] == 1.3
+
+
 def test_exit_walks_offstage():
     keys, t1, facing = exit_keys("mom", "average", 2.0, (0.4, 0, 0.5), (1.3, 0, 0.5), -1)
     assert facing == 1

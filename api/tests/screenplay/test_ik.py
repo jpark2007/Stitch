@@ -12,6 +12,7 @@ from screenplay.ik import (
     arm_bones,
     arm_reach,
     arm_socket,
+    body_socket,
     bone_frame,
     can_reach,
     handover_point,
@@ -371,3 +372,143 @@ def test_target_straight_above_the_shoulder_is_pi_for_both_facings():
         assert up + lo / 2 == pytest.approx(math.pi)
         up, lo = solve_arm("arm_r", (sh[0], sh[1] + 5.0), (0.0, 0.0), facing, "average", clamp=True)
         assert (up, lo) == (pytest.approx(math.pi), 0.0)
+
+
+# ------------------------------------------------------------------ the torso's frame
+
+TORSOS = [0.0, -0.25, 0.3]
+
+
+def test_body_torso_is_last_and_defaults_upright():
+    assert Body("dad", (0.0, 0.0), 1, "tall").torso == 0.0
+    assert Body("dad", (0.0, 0.0), 1, "tall", -0.25).torso == -0.25
+
+
+@pytest.mark.parametrize("arm", ARMS)
+@pytest.mark.parametrize("facing", FACINGS)
+@pytest.mark.parametrize("torso", TORSOS)
+def test_shoulder_world_follows_the_torso(torso, facing, arm):
+    ground = (0.3, 0.1)
+    upper, _ = arm_bones(arm)
+    (px, py), _ = bone_frame(upper, {"torso": torso})
+    s = scale("average")
+    assert shoulder_world(arm, ground, facing, "average", torso=torso) == pytest.approx(
+        (ground[0] + facing * px * s, ground[1] + (py + RIG["hipHeight"]) * s), abs=1e-12
+    )
+    if torso:
+        upright = shoulder_world(arm, ground, facing, "average")
+        assert shoulder_world(arm, ground, facing, "average", torso=torso) != upright
+
+
+@pytest.mark.parametrize("build", BUILDS)
+@pytest.mark.parametrize("arm", ARMS)
+@pytest.mark.parametrize("facing", FACINGS)
+@pytest.mark.parametrize("torso", TORSOS)
+def test_solve_arm_with_a_torso_lands_the_hand_on_target(torso, facing, arm, build):
+    """Contract Clarification 2: the upper rotation is in the torso's frame, so FK with the same
+    torso puts the hand back on the target."""
+    ground = (0.37, 0.12)
+    upper, lower = arm_bones(arm)
+    sh = shoulder_world(arm, ground, facing, build, torso=torso)
+    reach = arm_reach(build, arm)
+    for frac in (0.05, 0.3, 0.6, 0.95, 1.0):
+        for deg in range(0, 360, 30):
+            a = math.radians(deg)
+            target = (sh[0] + frac * reach * math.cos(a), sh[1] + frac * reach * math.sin(a))
+            up, lo = solve_arm(arm, target, ground, facing, build, torso=torso)
+            got = socket_world(arm_socket(arm), {"torso": torso, upper: up, lower: lo}, ground, facing, build)
+            assert got == pytest.approx(target, abs=1e-9), (target, got)
+            body = Body("p", ground, facing, build, torso)
+            assert solve_body_arm(body, arm, target) == (up, lo)
+
+
+# Outputs of the upright solver before the torso existed (origin/main): with torso=0 the
+# results must stay bit-identical, or the hymn sample would drift.
+UPRIGHT_FIXED = [  # (solve_arm args, (upper, lower), shoulder_world)
+    (("arm_r", (0.1, 0.3), (0.0, 0.0), 1, "tall"),
+     (-0.40992385890886857, 1.6286082725743116), (0.0495, 0.41800000000000004)),
+    (("arm_l", (-0.3, 0.3), (-0.2, 0.0), -1, "average"),
+     (0.8387470686938404, 0.45576659324380603), (-0.15500000000000003, 0.38)),
+    (("arm_r", (0.45, 0.35), (0.5, 0.1), -1, "small"),
+     (-0.8944641766639458, 2.2962765456051772), (0.464, 0.404)),
+    (("arm_r", (0.1, 0.25), (0.0, 0.0), 1, "average"),
+     (-0.190857742312598, 1.1821967986931443), (0.045, 0.38)),
+]
+
+
+@pytest.mark.parametrize("args,angles,shoulder", UPRIGHT_FIXED)
+def test_torso_zero_is_bit_identical_to_the_upright_solver(args, angles, shoulder):
+    arm, _target, ground, facing, build = args
+    assert solve_arm(*args) == angles
+    assert solve_arm(*args, torso=0.0) == angles
+    assert shoulder_world(arm, ground, facing, build) == shoulder
+    assert shoulder_world(arm, ground, facing, build, torso=0.0) == shoulder
+
+
+def test_torso_zero_clamp_and_handover_are_bit_identical():
+    assert solve_arm("arm_r", (2.0, 0.3), (0.0, 0.0), 1, "tall", clamp=True) == (1.5103726619521898, 0.0)
+    assert handover_point(DAD, MOM) == (0.10747500484713177, 0.561975841421313)
+
+
+@pytest.mark.parametrize("torso", [-0.25, 0.3])
+def test_clamp_with_a_torso_aims_the_straight_arm_at_the_target(torso):
+    ground = (0.0, 0.0)
+    sh = shoulder_world("arm_r", ground, 1, "tall", torso=torso)
+    target = (sh[0] + 0.8, sh[1] + 0.2)
+    up, lo = solve_arm("arm_r", target, ground, 1, "tall", clamp=True, torso=torso)
+    assert lo == 0.0
+    hand = socket_world("hand_r", {"torso": torso, "arm_r.upper": up, "arm_r.lower": lo}, ground, 1, "tall")
+    want = math.atan2(target[1] - sh[1], target[0] - sh[0])
+    assert math.atan2(hand[1] - sh[1], hand[0] - sh[0]) == pytest.approx(want, abs=1e-9)
+
+
+def test_out_of_reach_uses_the_torso_rotated_shoulder():
+    ground, build, torso = (0.0, 0.0), "tall", -0.25
+    reach = arm_reach(build)
+    bent = shoulder_world("arm_r", ground, 1, build, torso=torso)
+    upright = shoulder_world("arm_r", ground, 1, build)
+    # Just inside reach of the bent shoulder, but beyond reach of the upright one.
+    target = (bent[0] + 0.99 * reach, bent[1])
+    assert math.dist(target, upright) > reach
+    assert not can_reach("arm_r", target, ground, 1, build)
+    assert can_reach("arm_r", target, ground, 1, build, torso=torso)
+    # And the reverse: out of reach of the bent shoulder, reported from it.
+    far = (bent[0] + 1.2 * reach, bent[1])
+    with pytest.raises(OutOfReach) as e:
+        solve_arm("arm_r", far, ground, 1, build, torso=torso)
+    assert e.value.distance == pytest.approx(1.2 * reach)
+    assert e.value.reach == pytest.approx(reach)
+    with pytest.raises(OutOfReach) as e:
+        solve_body_arm(Body("dad", ground, 1, build, torso), "arm_r", far)
+    assert e.value.who == "dad" and e.value.distance == pytest.approx(1.2 * reach)
+
+
+def test_solve_arm_rejects_a_non_finite_torso():
+    with pytest.raises(ValueError, match="finite"):
+        solve_arm("arm_r", (0.1, 0.3), (0.0, 0.0), 1, "average", torso=math.nan)
+
+
+@pytest.mark.parametrize("giver_torso,taker_torso", [(-0.25, 0.0), (0.3, 0.0), (-0.25, -0.1), (0.0, -0.25)])
+def test_handover_point_with_a_leaning_body_is_reached_by_both_hands(giver_torso, taker_torso):
+    giver = Body("dad", (0.0, 0.0), 1, "tall", giver_torso)
+    taker = Body("mom", (0.2, 0.3), -1, "average", taker_torso)
+    sg = shoulder_world("arm_r", giver.ground, 1, "tall", torso=giver_torso)
+    st = shoulder_world("arm_r", taker.ground, -1, "average", torso=taker_torso)
+    f = 0.83 * arm_reach("tall") / math.dist(sg, st)
+    meet = handover_point(giver, taker)
+    assert meet == pytest.approx((sg[0] + (st[0] - sg[0]) * f, sg[1] + (st[1] - sg[1]) * f), abs=1e-12)
+    assert meet != handover_point(Body("dad", (0.0, 0.0), 1, "tall"), Body("mom", (0.2, 0.3), -1, "average"))
+    for body in (giver, taker):
+        up, lo = solve_body_arm(body, "arm_r", meet)
+        hand = socket_world("hand_r", {"torso": body.torso, "arm_r.upper": up, "arm_r.lower": lo},
+                            body.ground, body.facing, body.build)
+        assert hand == pytest.approx(meet, abs=1e-9), body.id
+
+
+def test_body_socket_uses_the_body_torso_unless_given():
+    body = Body("dad", (0.0, 0.0), 1, "tall", -0.25)
+    rots = {"arm_r.upper": 0.3, "arm_r.lower": 1.2}
+    assert body_socket(body, "hand_r", rots) == socket_world("hand_r", {"torso": -0.25, **rots}, (0.0, 0.0), 1, "tall")
+    assert body_socket(body, "hand_r", {**rots, "torso": 0.1}) == socket_world(
+        "hand_r", {"torso": 0.1, **rots}, (0.0, 0.0), 1, "tall"
+    )
