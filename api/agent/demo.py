@@ -6,6 +6,7 @@
     uv run python -m agent.demo --fake --auto --weekend    # offline: the whole weekend demo path
     ANTHROPIC_API_KEY=... uv run python -m agent.demo       # real studio (Claude), answers on stdin
     ANTHROPIC_API_KEY=... STITCH_FAKE_DB=1 uv run python -m agent.demo --auto
+    ANTHROPIC_API_KEY=... STITCH_FAKE_DB=1 uv run python -m agent.demo --auto --weekend   # real studio
 
 It starts one run with `RunManager.start_run`, follows `RunManager.stream_run` on asyncio
 and prints one line per run event. When the studio pauses (question, props_found, merge)
@@ -103,6 +104,10 @@ MISSING_KEY_MESSAGE = (
     "voices, else silent audio with real timings) and STITCH_WEB_URL (render frames from the "
     "web /render page, else diagrams). Set ANTHROPIC_API_KEY and retry, or run offline with "
     "--fake --auto."
+)
+WEEKEND_OFFLINE_HINT = (
+    "agent.demo: --weekend without --fake is the real studio. For the weekend path offline: "
+    "uv run python -m agent.demo --fake --auto --weekend"
 )
 
 Answerer = Callable[[str, BaseModel], schemas.AnswerRequest]
@@ -584,6 +589,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.fake and not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
         print(MISSING_KEY_MESSAGE, file=sys.stderr)
+        if args.weekend:
+            print(WEEKEND_OFFLINE_HINT, file=sys.stderr)
         return 2
 
     setup: _Setup | None = None

@@ -311,6 +311,18 @@ def test_main_without_key_exits_2_with_a_clear_message(
     for name in ("ANTHROPIC_API_KEY", "MONGODB_URI", "STITCH_FAKE_DB", "IMAGE_API_KEY", "ELEVENLABS_API_KEY",
                  "STITCH_WEB_URL", "--fake"):
         assert name in err
+    assert "--weekend" not in err
+
+
+def test_weekend_without_fake_or_key_exits_2_and_names_the_offline_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], no_network: None
+) -> None:
+    """`python -m agent.demo --weekend` is the real studio: with no key it says how to run it offline."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert demo.main(["--weekend"]) == 2
+    err = capsys.readouterr().err
+    assert "ANTHROPIC_API_KEY is not set" in err
+    assert "uv run python -m agent.demo --fake --auto --weekend" in err
 
 
 def test_missing_key_exit_imports_no_network_clients() -> None:
