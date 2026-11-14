@@ -103,3 +103,41 @@ function gesture(s: HubState, fx: HubEffect[]) {
     s.status = "running";
   }
 }
+
+/**
+ * hubStep driven by events, never re-entered. Carrying out an effect can
+ * raise a new event: "create" hands the context to the engines, and one
+ * that already has an era wakes ("awake") from inside that call. Stepping it
+ * there, mid-list, would apply its "resume" and then the outer list's stale
+ * "suspend" (new, resume, suspend: silent until the next tap). So an event
+ * raised while effects are being applied waits until the current list is
+ * done (new, suspend, resume), and every effect still runs inside the
+ * gesture that caused it.
+ */
+export function createHubDispatcher(apply: (fx: HubEffect) => void, initial: HubState = INITIAL_HUB) {
+  let state = initial;
+  const queue: HubEvent[] = [];
+  let busy = false;
+  return {
+    get state() {
+      return state;
+    },
+    dispatch(ev: HubEvent) {
+      queue.push(ev);
+      if (busy) return;
+      busy = true;
+      try {
+        for (let next = queue.shift(); next; next = queue.shift()) {
+          const r = hubStep(state, next);
+          state = r.state;
+          for (const fx of r.effects) apply(fx);
+        }
+      } finally {
+        // An effect that throws drops the events behind it rather than
+        // leaving the hub deaf to every later one.
+        queue.length = 0;
+        busy = false;
+      }
+    },
+  };
+}

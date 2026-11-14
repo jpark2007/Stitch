@@ -93,3 +93,85 @@ describe("hub lifecycle", () => {
     assert.equal(r.effects.filter((e) => e === "create").length, 1);
   });
 });
+
+describe("hub dispatcher", () => {
+  /**
+   * hub.ts in miniature: a fake context that records its calls and whose
+   * state settles in call order, and engines whose attach callback runs
+   * inside "create" (engine.ts wakes there when it already has an era).
+   */
+  function fakeHub(wakeOnCreate: boolean) {
+    const calls: string[] = [];
+    let settled = "none";
+    const awake = new Set<object>();
+    const clients: (() => void)[] = [];
+    const d = h.createHubDispatcher((fx) => {
+      calls.push(fx);
+      if (fx === "create") {
+        settled = "running";
+        for (const cb of clients) cb();
+      } else if (fx === "resume") settled = "running";
+      else if (fx === "suspend") settled = "suspended";
+    });
+    const owner = {};
+    const wake = () => {
+      const had = awake.size > 0;
+      awake.add(owner);
+      if (!had) d.dispatch({ type: "awake", on: true });
+    };
+    clients.push(() => {
+      if (wakeOnCreate) wake();
+    });
+    d.dispatch({ type: "attach" });
+    return { d, calls, wake, context: () => settled };
+  }
+
+  it("an engine that wakes inside create leaves the context running", () => {
+    const f = fakeHub(true);
+    f.d.dispatch({ type: "gesture" });
+    // The nested wake waits for the gesture's own effects: its resume is last.
+    assert.deepEqual(f.calls, ["listen", "unlockBook", "create", "suspend", "resume"]);
+    assert.equal(f.context(), "running");
+    assert.equal(f.d.state.status, "running");
+    assert.equal(f.d.state.awake, true);
+  });
+
+  it("an engine with nothing to play yet leaves it asleep until it wakes", () => {
+    const f = fakeHub(false);
+    f.d.dispatch({ type: "gesture" });
+    assert.equal(f.context(), "suspended");
+    f.wake();
+    assert.equal(f.context(), "running");
+    assert.deepEqual(f.calls.slice(-2), ["suspend", "resume"]);
+  });
+
+  it("events raised by an effect run in order, each once", () => {
+    const seen: string[] = [];
+    const d: ReturnType<typeof h.createHubDispatcher> = h.createHubDispatcher((fx) => {
+      seen.push(fx);
+      // listen() reads the current mute and dispatches it from inside the effect.
+      if (fx === "listen") {
+        d.dispatch({ type: "mute", on: true });
+        d.dispatch({ type: "gesture" });
+      }
+    });
+    d.dispatch({ type: "attach" });
+    assert.deepEqual(seen, ["listen"]);
+    assert.equal(d.state.muted, true);
+    assert.equal(d.state.status, "none");
+  });
+
+  it("an effect that throws does not leave the hub deaf", () => {
+    let boom = true;
+    const seen: string[] = [];
+    const d = h.createHubDispatcher((fx) => {
+      seen.push(fx);
+      if (boom && fx === "listen") throw new Error("boom");
+    });
+    assert.throws(() => d.dispatch({ type: "attach" }));
+    boom = false;
+    d.dispatch({ type: "gesture" });
+    assert.deepEqual(seen, ["listen", "unlockBook", "create", "suspend"]);
+  });
+});
+

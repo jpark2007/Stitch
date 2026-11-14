@@ -18,10 +18,9 @@
  */
 
 import { isMuted, subscribeMuted, unlockAudio } from "@/components/book/sound";
-import { INITIAL_HUB, hubStep, type HubEffect, type HubEvent, type HubState } from "./hubState";
+import { createHubDispatcher, type HubEffect, type HubEvent } from "./hubState";
 
 let ctx: AudioContext | null = null;
-let state: HubState = INITIAL_HUB;
 const clients = new Set<(c: AudioContext) => void>();
 const awake = new Set<object>();
 let unsubscribeMute: (() => void) | null = null;
@@ -30,11 +29,10 @@ export function musicContext(): AudioContext | null {
   return ctx;
 }
 
-function dispatch(ev: HubEvent) {
-  const r = hubStep(state, ev);
-  state = r.state;
-  for (const fx of r.effects) apply(fx);
-}
+// Not re-entrant (hubState.ts): an engine woken inside "create" is stepped
+// after the gesture's own effects, so its "resume" comes last and wins.
+const hub = createHubDispatcher(apply);
+const dispatch = (ev: HubEvent) => hub.dispatch(ev);
 
 function apply(fx: HubEffect) {
   switch (fx) {
@@ -79,7 +77,7 @@ function listen(on: boolean) {
   if (on) {
     window.addEventListener("pointerdown", onGesture, true);
     window.addEventListener("keydown", onGesture, true);
-    if (isMuted() !== state.muted) dispatch({ type: "mute", on: isMuted() });
+    if (isMuted() !== hub.state.muted) dispatch({ type: "mute", on: isMuted() });
     unsubscribeMute = subscribeMuted((m) => dispatch({ type: "mute", on: m }));
   } else {
     window.removeEventListener("pointerdown", onGesture, true);
