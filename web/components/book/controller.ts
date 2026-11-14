@@ -62,7 +62,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * of the stage page that always stays in frame.
  */
 const SHOT_FOLLOW = 0.45;
-const SHOT_HALF_W = 0.45;
+const SHOT_HALF_W = 0.48;
 /** The stage's words and pull tabs stay above this much of the frame's lower half (clear of the dots). */
 const SHOT_KEEP_BELOW = 0.8;
 /** Seconds to lean in; to come back out when the telling ends, the reader steps back, or a page lifts. */
