@@ -8,6 +8,8 @@ import { Button } from "@/components/flow/Button";
 import { Photo } from "@/components/paper/Photo";
 import type { PropChip, PropEdit } from "@/lib/types";
 import {
+  REUSED_PROP_LABEL,
+  propSizeLabel,
   toPropEdits,
   validatePropDecisions,
   type PropDecision,
@@ -19,15 +21,6 @@ type PhotoDraft = {
   photoId: string | null;
   fileName?: string;
   previewUrl?: string;
-};
-
-const SIZE_LABEL: Record<PropChip["size"], string> = {
-  tiny: "Tiny",
-  hand: "Hand-sized",
-  carried: "Carried",
-  furniture: "Furniture",
-  vehicle: "Vehicle",
-  building: "Building",
 };
 
 // Paper tints behind a prop's initials when it has no picture yet.
@@ -300,16 +293,10 @@ function ChipCard(p: {
 
   return (
     <div
-      className={`relative rounded-paper border bg-paper p-4 shadow-paper transition-[border-color] duration-150 ease-paper ${
+      className={`rounded-paper border bg-paper p-4 shadow-paper transition-[border-color] duration-150 ease-paper ${
         p.error || p.uploadError ? "border-accent-deep/60" : "border-rule"
       }`}
     >
-      {/* Tag punch hole, purely decorative. */}
-      <span
-        aria-hidden="true"
-        className="absolute top-3 right-3 size-2.5 rounded-full border border-ink-faint/50 bg-paper-light shadow-inset"
-      />
-
       <div className="flex items-start gap-4">
         <div className={`shrink-0 pt-0.5 transition-opacity duration-200 ease-paper ${removed ? "opacity-55" : ""}`}>
           {showPhotoPreview ? (
@@ -338,7 +325,7 @@ function ChipCard(p: {
 
         <div className="min-w-0 flex-1">
           {/* A removed prop is struck through in softer ink (not faded), so it stays readable. */}
-          <div className="pr-5">
+          <div>
             <p
               id={titleId}
               className={`font-display text-lg leading-snug break-words ${removed ? "text-ink-soft line-through decoration-accent-deep" : ""}`}
@@ -346,9 +333,9 @@ function ChipCard(p: {
               {chip.name}
             </p>
             <p className="mt-0.5 flex flex-wrap items-center gap-2 text-sm text-ink-soft">
-              <span>{SIZE_LABEL[chip.size] ?? chip.size}</span>
+              <span>{propSizeLabel(chip.size)}</span>
               {chip.reused ? (
-                <span className="rounded-full bg-sage/25 px-2 py-px text-xs font-semibold text-ink-soft">saved</span>
+                <span className="rounded-full bg-sage/20 px-2 py-px text-xs text-ink-soft">{REUSED_PROP_LABEL}</span>
               ) : null}
               {removed ? <span className="sr-only">(will be removed)</span> : null}
             </p>
