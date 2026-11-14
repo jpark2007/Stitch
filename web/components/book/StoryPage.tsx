@@ -19,6 +19,7 @@ import { drawContactShadow, drawCoverArt, drawEndpaper, drawPageEdges, drawSpine
 import { drawBlankPage, drawStagePage, drawStoryPage, drawTitlePage, PAGE_PX_W, STAGE_SLOT_PX } from "./pageArt";
 import type { LabelRect } from "./labelArt";
 import { loadPageFonts, type PageFonts } from "./paperArt";
+import type { StageShot } from "./shot";
 import type { BookCover, BookSpread } from "./types";
 
 export interface BookArt {
@@ -163,6 +164,13 @@ export interface StageSlotArgs {
    * rises, so two stages can be mounted at once; fold flat at 0.
    */
   reveal: { readonly current: number };
+  /**
+   * The camera this stage offers the book (shot.ts), written each frame in
+   * world space after the stage ticks: set `want` to 1 while its telling
+   * plays and the book's camera eases toward it (a phone only on the stage
+   * page; reduced motion never), back out at 0, a page turn, or a tap.
+   */
+  shot: StageShot;
   /** Slot size in world units: x across the page, z down it (one page is PAGE_W × PAGE_H). */
   width: number;
   depth: number;

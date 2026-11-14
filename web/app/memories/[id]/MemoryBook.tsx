@@ -233,6 +233,7 @@ function PlayingBook({
           fonts={args.fonts}
           reveal={args.reveal}
           view={args.view}
+          shot={args.shot}
           size={[args.width, args.depth]}
           freezeAt={freezeAt}
           onReady={markStageReady}

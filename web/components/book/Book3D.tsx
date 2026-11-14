@@ -77,6 +77,8 @@ const GUTTER_INSET = 0.035;
 const TABLE_BG = "#1a110b";
 /** useFrame priority of the book's controller: first in every frame (stages tick at -4..-2). */
 const BOOK_PRIORITY = -10;
+/** useFrame priority of the book's camera: after the stages tick (-4..-2), before default (0) work. */
+const CAMERA_PRIORITY = -1;
 
 export interface BookInitial {
   state?: "closed" | "open";
@@ -749,6 +751,12 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
     // otherwise the last frame of a settle draws the stacks a frame stale.
   }, BOOK_PRIORITY);
 
+  // The camera, once the stages have ticked and written this frame's shot,
+  // and before anything (labels, pull tabs) projects through it.
+  useFrame((state) => {
+    if (ctl.poseCamera(state.camera as PerspectiveCamera, state.scene)) state.invalidate();
+  }, CAMERA_PRIORITY);
+
   const toBook = (e: ThreeEvent<PointerEvent>) => ({ x: e.point.x - (book.current?.position.x ?? 0), z: e.point.z });
   const setCursor = (c: string) => {
     document.body.style.cursor = c;
@@ -791,6 +799,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
       if (ev.type !== "pointerup" || Math.hypot(ev.clientX - x0, ev.clientY - y0) > 10) return;
       paperLift();
       onTelling(spreads[label.spread].id, label.id);
+      ctl.resumeShot();
       // Show the stage the new telling plays on: a phone pans to it, a
       // close look at the story page steps back to the spread.
       if (ctl.focus === -1) ctl.setFocus(ctl.onePage ? 1 : 0);
@@ -912,6 +921,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
                       index: i,
                       reveal: ctl.reveals[i],
                       view: ctl.stageView,
+                      shot: ctl.shots[i],
                       fonts: art.fonts,
                       width: STAGE_SLOT.width,
                       depth: STAGE_SLOT.depth,
