@@ -32,9 +32,11 @@ import {
   parseParent,
   propDims,
   propSocketMatrix,
+  socketPivot,
   type HeldOrientation,
   type PropDims,
   type PropPose,
+  type SocketPivot,
 } from "./rig";
 import type { SocketResolver } from "./sockets";
 
@@ -84,8 +86,9 @@ export class PropRig {
   resolver: SocketResolver | null = null;
   orientation: HeldOrientation = "upright";
   depthBias = 0.012;
-  /** Which point of the prop sits on a "prop:<id>.<socket>" parent. */
-  propSocketPivot: "anchor" | "grip" = "anchor";
+  /** Which point of the prop sits on a "prop:<id>.<socket>" parent. Puppet
+   *  sockets ignore it: a hand takes the grip, the head the anchor. */
+  propSocketPivot: SocketPivot = "anchor";
 
   private readonly anchor = { x: 0, y: 0 };
   private readonly grip = { x: 0, y: 0 };
@@ -275,13 +278,12 @@ export class PropRig {
       groundMatrix(this.matrix, pose.position, pose.rotation, this.anchor.x, this.anchor.y);
       ok = true;
     } else if (parent.kind !== "invalid" && this.resolver?.(parent.target, parent.socket, this.socket)) {
-      // Held by a puppet: by the grip. Resting on a prop's socket (a seat, a
-      // tabletop, a roof): by the anchor, unless told otherwise.
-      const resting = parent.kind === "prop" && this.propSocketPivot === "anchor";
-      const pivot = resting ? this.anchor : this.grip;
+      // In a hand: by the grip. On a head (worn) or a prop's socket (a seat,
+      // a tabletop): by the anchor, as the compiler places it.
+      const pivot = socketPivot(parent, this.propSocketPivot) === "grip" ? this.grip : this.anchor;
       heldMatrix(this.matrix, this.socket, this.orientation, pose.position, pose.rotation, pivot.x, pivot.y);
-      // In front of the hand (or the surface) it is on, not inside it.
-      this.matrix.elements[14] += resting ? this.depthBias * 0.5 : this.depthBias;
+      // In front of the puppet (or the surface) it is on, not inside it.
+      this.matrix.elements[14] += parent.kind === "puppet" ? this.depthBias : this.depthBias * 0.5;
       ok = true;
     }
     if (ok) {

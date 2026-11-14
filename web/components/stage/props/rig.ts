@@ -15,9 +15,14 @@
  * Placement (the prop's transform in stage space):
  *   ground:  M = T(position) * Rz(rotation) * T(-anchor)
  *            The anchor sits on `position`; rotation pivots about the anchor.
- *   held:    M = S * T(offset) * Rz(rotation) * T(-grip)
- *            The grip sits on the socket (plus `offset`, normally 0, in the
- *            socket's space); rotation pivots about the grip. S is the socket
+ *   socket:  M = S * T(offset) * Rz(rotation) * T(-pivot)
+ *            The pivot sits on the socket (plus `offset`, normally 0, in the
+ *            socket's space); rotation turns about it. The pivot is the grip
+ *            on a hand socket (hand_l, hand_r: CONTRACTS.md, a held prop sits
+ *            on its grip) and the anchor on every other socket: a puppet's
+ *            head (a worn cap rests on it, as the compiler's put_on_keys
+ *            places it) and a prop's socket (a seat, a tabletop). See
+ *            socketPivot. S is the socket
  *            frame reduced to its position (and, in "socket" orientation, its
  *            visible rotation): its scale is dropped, so a prop keeps its world
  *            size however big the puppet is, and so is its mirror, so a prop
@@ -243,9 +248,31 @@ export function socketFrame(out: Matrix4, socket: Matrix4, orientation: HeldOrie
   return out.compose(_pos, _quat, _unit);
 }
 
+/** The puppet sockets a hand holds by: the ones the arms end in
+ *  (shared/rig/puppet.json, `arms.*.socket`). */
+export const HAND_SOCKETS: ReadonlySet<string> = new Set(["hand_l", "hand_r"]);
+
+/** Which point of a prop sits on a socket. */
+export type SocketPivot = "anchor" | "grip";
+
 /**
- * Placement in a socket: the grip sits on the socket, plus `offset` in the
- * (normalised) socket space. `socket` is the socket's raw matrix in stage
+ * The point of the prop that sits on a socket parent, matching the compiler
+ * (api/screenplay/body.py): a hand holds by the grip (pick_up, hand_to);
+ * everything else carries the prop by its anchor, a puppet's head for a worn
+ * prop (put_on: anchor on `puppet:<id>.head`) and a prop's socket for a prop
+ * set on it (place_on). `propSocketPivot` lets a prop socket take the grip
+ * instead (a lamp hanging from a hook); the compiler never asks for that.
+ */
+export function socketPivot(parent: ParsedParent, propSocketPivot: SocketPivot = "anchor"): SocketPivot {
+  if (parent.kind === "puppet") return HAND_SOCKETS.has(parent.socket) ? "grip" : "anchor";
+  if (parent.kind === "prop") return propSocketPivot;
+  return "anchor";
+}
+
+/**
+ * Placement in a socket: the prop-local point `pivot` (its grip or anchor, per
+ * socketPivot) sits on the socket, plus `offset` in the (normalised) socket
+ * space; rotation turns about it. `socket` is the socket's raw matrix in stage
  * space, as a SocketResolver returns it.
  */
 export function heldMatrix(
@@ -254,11 +281,11 @@ export function heldMatrix(
   orientation: HeldOrientation,
   offset: Readonly<Vec3>,
   rotation: number,
-  gripX: number,
-  gripY: number,
+  pivotX: number,
+  pivotY: number,
 ): Matrix4 {
   socketFrame(out, socket, orientation);
-  pivotMatrix(_local, offset[0], offset[1], offset[2], rotation, gripX, gripY);
+  pivotMatrix(_local, offset[0], offset[1], offset[2], rotation, pivotX, pivotY);
   return out.multiply(_local);
 }
 

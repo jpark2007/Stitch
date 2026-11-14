@@ -23,11 +23,15 @@
  *
  * Placement, from `pose.parent`:
  *   "ground"                 the anchor sits on `pose.position` (stage space)
- *   "puppet:<id>.<socket>"   held: the grip sits on that socket, offset by
- *                            `pose.position` in the socket's space
+ *   "puppet:<id>.hand_l|r"   held: the grip sits on the hand socket, offset
+ *                            by `pose.position` in the socket's space
+ *   "puppet:<id>.head"       worn (put_on): the anchor sits on the head
+ *                            socket, same offset rule
  *   "prop:<id>.<socket>"     resting on a seat, tabletop or roof: the anchor
  *                            sits on the socket (the grip with
  *                            propSocketPivot="grip"), same offset rule
+ * This matches the compiler (api/screenplay/body.py): only a hand holds by
+ * the grip; put_on and place_on carry the prop by its anchor.
  * `pose.rotation` (radians about z) turns the card about that point.
  * `pose.state` picks the art; `pose.parts[name]` turns each part.
  *
@@ -91,12 +95,12 @@ export interface PropActorProps {
   /** "upright" (default) keeps a held prop level; "socket" turns it with the
    *  hand. */
   heldOrientation?: HeldOrientation;
-  /** Held props sit this far toward the viewer from the socket, so they are in
-   *  front of the hand. Default 0.012 stage units. */
+  /** Props on a puppet's socket sit this far toward the viewer from it, so
+   *  they are in front of the hand (or head). Default 0.012 stage units. */
   heldDepthBias?: number;
   /** On a "prop:<id>.<socket>" parent (a seat, a tabletop, a roof) the prop
-   *  rests on the socket by its anchor (default), or hangs by its grip. A
-   *  puppet's socket always takes the grip. */
+   *  rests on the socket by its anchor (default), or hangs by its grip.
+   *  Puppet sockets ignore it: a hand takes the grip, the head the anchor. */
   propSocketPivot?: "anchor" | "grip";
   castShadow?: boolean;
   receiveShadow?: boolean;
