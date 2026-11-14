@@ -12,14 +12,27 @@ front 0.18 stage units. The middle layer holds the main structure the actors sta
 height (0.5) so it frames the stage without hiding the actors. (The task brief's 0.7 and
 0.35 differ from the sample; a 0.35 front layer would cover most of a 0.5 puppet.)
 
-Ids: a generated set's id is a snake_case slug of the place. A set that already exists in
-the family and was not made by this run is never overwritten: generation takes a fresh
+Ids: a generated set's id is a snake_case slug of the place, unique within the family only
+(another family can use the same slug). A set that already exists in the family and was
+not made by this run is never overwritten or merged into: generation takes a fresh
 suffixed id (`_2`, `_3`, ...) instead. Reusing a saved place means using `find_set`'s id.
 Later calls for the same place in the same run update the set this run made.
+
+Concurrent runs: a set is saved only after the image model returns, seconds after its id
+was picked. The id is therefore claimed in the process-wide registry
+(`agent.tools.claims`, kind "set", owner the run id) when it is picked and released once
+the set is saved, so a second run of the same family that names the same place meanwhile
+takes the next suffix rather than the same id (after the save, the saved set itself
+makes it skip the id). As a second line of defence, the save never merges into a set this run did
+not save itself: should one appear at the reserved id anyway (a writer outside the
+registry, such as another API process; see the claims module on the single-process
+assumption), the layer is saved under a freshly claimed id, with a warning in the log,
+and the tool result reports the id actually used.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import math
@@ -34,6 +47,7 @@ from langchain_core.tools import BaseTool, tool
 from agent.repo import AgentRepo
 from agent.run_info import RunInfo
 from agent.tools.art import ArtService, build_art_prompt, placeholder_color
+from agent.tools.claims import claim_id, owner_of, release_claim
 from agent.tools.family import era_for_year
 from schemas import SetDef, SetLayer
 
@@ -162,10 +176,12 @@ def _find_sets(repo: AgentRepo, family_id: str, text: str, limit: int) -> list[S
 
 @dataclass
 class _RunSets:
-    """What this run has generated: place slug -> set id, and each set's layer descriptions."""
+    """What this run has generated: place slug -> set id, each set's layer descriptions, and
+    the ids this run has saved (the only sets a later call may merge into)."""
 
     by_slug: dict[str, str] = field(default_factory=dict)
     descriptions: dict[str, dict[int, str]] = field(default_factory=dict)
+    saved: set[str] = field(default_factory=set)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
@@ -183,20 +199,27 @@ def make_set_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[BaseT
     era = era_label(run.fields.year)
     state = _RunSets()
 
+    def _claim_new_id(base: str) -> str:
+        """Claim the first free id of `base`, `base_2`, ... for this run (call with state.lock held).
+
+        Free means: not claimed by another run, not used by this run for another place and
+        not saved in the family.
+        """
+        created = state.created
+        return claim_id(
+            family_id,
+            "set",
+            run.run_id,
+            (_with_suffix(base, n) for n in itertools.count(1)),
+            lambda candidate: candidate in created or repo.get_set(family_id, candidate) is not None,
+        )
+
     def _reserve_id(place: str) -> str:
         """The set id for `place` in this run (call with state.lock held)."""
         base = slugify(place)
-        if base in state.by_slug:
-            return state.by_slug[base]
-        created = state.created
-        n = 1
-        while True:
-            candidate = _with_suffix(base, n)
-            if candidate not in created and repo.get_set(family_id, candidate) is None:
-                break
-            n += 1
-        state.by_slug[base] = candidate
-        return candidate
+        if base not in state.by_slug:
+            state.by_slug[base] = _claim_new_id(base)
+        return state.by_slug[base]
 
     def _reference_images(photo_id: str | None) -> tuple[list[bytes], str | None]:
         if photo_id is None:
@@ -270,7 +293,22 @@ def make_set_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[BaseT
             new_layer = SetLayer(art=None, depth=depth, height=height, color=placeholder_color(f"{place} {layer}"))
 
         with state.lock:
+            # Re-read the reservation: a parallel call for this place may have moved it.
+            base = slugify(place)
+            set_id = state.by_slug.get(base, set_id)
             existing = repo.get_set(family_id, set_id)
+            if existing is not None and set_id not in state.saved:
+                # A set this run never saved sits at the reserved id, so someone else wrote
+                # it (a writer outside the claim registry). Never merge into it: move this
+                # run's set to a fresh id, which later calls for the place then use too.
+                log.warning(
+                    "set %r in family %r appeared while run %s drew its layer (claimed by %s); "
+                    "saving under a new id instead of merging into it",
+                    set_id, family_id, run.run_id, owner_of(family_id, "set", set_id) or "nobody",
+                )
+                set_id = _claim_new_id(base)
+                state.by_slug[base] = set_id
+                existing = None
             layers = [la for la in (existing.layers if existing else []) if la.depth != depth]
             layers.append(new_layer)
             layers.sort(key=lambda la: la.depth)
@@ -285,6 +323,9 @@ def make_set_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[BaseT
                 marks={**(existing.marks if existing else {}), **new_marks},
             )
             saved = repo.save_set(family_id, set_def)
+            state.saved.add(saved.id)
+            # Saved: the repo now guards the id, and state.saved keeps it this run's.
+            release_claim(family_id, "set", run.run_id, saved.id)
 
         return json.dumps(
             {

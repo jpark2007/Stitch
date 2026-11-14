@@ -27,13 +27,14 @@ string, never an exception, so the model can correct itself.
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import logging
 import math
 import re
 import threading
 import unicodedata
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -52,6 +53,7 @@ from agent.tools.art import (
     snap_grip,
 )
 from agent.tools.ask import CONFIRM_PROPS
+from agent.tools.claims import claim_id, release_claim
 from agent.tools.family import era_for_year
 from screenplay.schema import VOCABULARY
 
@@ -360,13 +362,24 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
         return repo.put_media(family_id, png, "image/png", kind="cutout")
 
     def unique_id(name: str) -> str:
+        """A free prop id for ``name`` (``base``, ``base_2``, ...), claimed for this run.
+
+        The claim is process-wide (``agent.tools.claims``): ``id_lock`` belongs to this run
+        only, so without it another run of the family could pick the same id between this
+        check and the save, and one save would overwrite the other's prop.
+        """
         base = prop_slug(name)
-        candidate, n = base, 2
-        while repo.get_prop(family_id, candidate) is not None:
-            suffix = f"_{n}"
-            candidate = base[: ID_MAX_CHARS - len(suffix)].rstrip("_") + suffix
-            n += 1
-        return candidate
+
+        def candidates() -> Iterator[str]:
+            yield base
+            for n in itertools.count(2):
+                suffix = f"_{n}"
+                yield base[: ID_MAX_CHARS - len(suffix)].rstrip("_") + suffix
+
+        return claim_id(
+            family_id, "prop", run.run_id, candidates(),
+            lambda candidate: repo.get_prop(family_id, candidate) is not None,
+        )
 
     # ---------------------------------------------------------------- find_prop
 
@@ -524,9 +537,11 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
         )
         # The model may generate several props in parallel (tool calls run on threads):
         # pick the id and save under one lock so two props with the same name never share an id.
+        # unique_id also claims the id process-wide, so another run of the family cannot take it.
         with id_lock:
             saved = repo.save_prop(family_id, schemas.Prop(id=unique_id(name), **fields))
             generated_ids.add(saved.id)
+            release_claim(family_id, "prop", run.run_id, saved.id)
         return json.dumps(
             {
                 "id": saved.id,
@@ -685,6 +700,8 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
                         prop = _validated(prop, id=unique_id(prop.name))
                     prop = repo.save_prop(family_id, prop)
                     generated_ids.add(prop.id)
+                    if forked:
+                        release_claim(family_id, "prop", run.run_id, prop.id)
             elif renamed:
                 prop = repo.save_prop(family_id, prop)
             status = "photo" if photo else "renamed" if renamed else "kept"
