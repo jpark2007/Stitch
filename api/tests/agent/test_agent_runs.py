@@ -682,14 +682,18 @@ def test_a_studio_that_never_saves_ends_in_error(harnesses: list[Harness]) -> No
     assert events[-1][1].message == "the studio finished without saving a scene: I could not find the church."
 
 
-def test_a_question_the_web_cannot_show_is_an_error(harnesses: list[Harness]) -> None:
+def test_a_question_the_web_cannot_show_goes_back_to_the_model(harnesses: list[Harness]) -> None:
+    # Not shown and not an error by itself: the model is told why and gives up here, so
+    # the run ends because nothing was saved (more in test_agent_runs_malformed_pause.py).
     h = Harness(make_responder(script(tool_call("ask_teller", {"question": "   "}), say("never"))))
     harnesses.append(h)
     run_id = h.start()
     assert h.wait(run_id) == "error"
     names = h.names(run_id)
     assert names == ["error"]
-    assert "ask_teller" in h.manager.events(FAMILY, run_id)[0][1].message
+    assert h.manager.events(FAMILY, run_id)[0][1].message == "the studio finished without saving a scene: never"
+    rejected = last_tool_message(h.model.calls[-1][1])
+    assert rejected is not None and rejected.name == "ask_teller" and "not shown to the family" in rejected.text
 
 
 def test_a_graph_that_cannot_be_built_is_an_error(harnesses: list[Harness]) -> None:

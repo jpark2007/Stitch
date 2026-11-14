@@ -37,6 +37,14 @@ arrives then is accepted at once and queued on the run; the worker resumes with 
 soon as the current stream closes (langgraph can only resume a thread once its step
 has finished). `answer_run` never blocks on the run.
 
+A pause the web cannot show (the HITL middleware pauses on the model's raw tool args,
+before the tool's schema is checked: an empty question, a prop chip with a size outside
+the vocabulary) is not shown and does not end the run. It is rejected back to the model
+with the reason (`ask.reject_to_resume`), through the same queued resume an answer uses,
+so the model can fix its arguments and call the tool again; the run stays running and
+no event is sent. After MAX_MALFORMED_PAUSES such rejections in one run, the next one
+ends the run with a short, family-safe error. The count is kept in the run record.
+
 Interrupts are shown one at a time. `AnswerRequest` carries no interrupt id, so when
 one step pauses on several gated calls at once (two sub-agents in parallel), the first
 one is shown and answered; it is resumed with `Command(resume={id: payload})` (langgraph
@@ -101,7 +109,7 @@ import schemas
 from agent import studio
 from agent.repo import AgentRepo
 from agent.run_info import RunInfo
-from agent.tools.ask import answer_to_resume, interrupt_to_event
+from agent.tools.ask import answer_to_resume, interrupt_to_event, reject_to_resume
 from agent.tools.family import SCREENPLAY_PATH, TIMELINE_PATH
 
 if TYPE_CHECKING:
@@ -117,6 +125,10 @@ TEXT_LIMIT = 500
 """Longest sub-agent task description or summary sent to the web."""
 ERROR_TEXT_LIMIT = 300
 """Longest piece of the studio's last message quoted in an error event."""
+MAX_MALFORMED_PAUSES = 3
+"""How many pauses the web cannot show are handed back to the model in one run; the next one ends it."""
+MALFORMED_PAUSE_ERROR = "the studio could not put together a question for you; please try again"
+"""The error the family sees when the studio keeps pausing on arguments the web cannot show."""
 FINISHED_RUN_TTL_SECONDS = 3600.0
 """How long a finished run stays replayable before the manager forgets it."""
 
@@ -252,6 +264,8 @@ class _Run:
     # (the process died before checkpointing it): when the thread asks it again, it is
     # shown without being logged twice.
     logged_interrupt: str | None = None
+    # Pauses the web could not show that were rejected back to the model (MAX_MALFORMED_PAUSES).
+    malformed_pauses: int = 0
     # ---- record writes (see "Writing the run record" in the module docstring)
     # Serializes the store writes of this run. Never taken on the event loop, never with cond held.
     write_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -336,6 +350,7 @@ class _Run:
             "memory_id": self.memory_id,
             "pending_interrupt_id": self.pending.id if self.pending is not None else None,
             "answered": self._answered_record(),
+            "malformed_pauses": self.malformed_pauses,
             "tasks": [[call_id, name] for call_id, name in self.tasks.items()],
             "ended_tasks": sorted(self.ended_tasks),
             "events": [list(pair) for pair in self.event_json],
@@ -693,6 +708,7 @@ class RunManager:
                     answered = (str(answered["interrupt_id"]), json.loads(answered["payload"]))
                 else:
                     answered = None
+                malformed_pauses = int(record.get("malformed_pauses") or 0)
             except (KeyError, TypeError, ValueError) as exc:  # pydantic ValidationError is a ValueError
                 logger.error("run %s: unreadable run record: %s", run_id, exc)
                 return None
@@ -706,6 +722,7 @@ class RunManager:
             run.ended_tasks = {str(call_id) for call_id in record.get("ended_tasks") or ()}
             run.last_plan = next((p for n, p in reversed(events) if n == "plan"), None)  # type: ignore[misc]
             run.answered = answered
+            run.malformed_pauses = malformed_pauses
 
             redrive = False
             if status in ("done", "error"):
@@ -757,6 +774,11 @@ class RunManager:
             # The question on record is gone; show what the thread is waiting for now.
             run.status = "running"
             self._interrupt(run, interrupts[0])
+            if run.queued is not None:
+                # A pause the web cannot show, rejected back to the model: drive on with that
+                # rejection, which _redrive finds in `answered`.
+                run.queued = None
+                return False
             return True
 
     def _redrive(self, run: _Run) -> None:
@@ -913,13 +935,41 @@ class RunManager:
         try:
             name, payload = interrupt_to_event(interrupt)
         except ValueError as exc:
-            run.append("error", schemas.ErrorEvent(message=f"the studio paused on something it cannot ask: {exc}"))
+            self._reject_malformed(run, interrupt, str(exc))
             return
         # Waiting from the moment the family can see it, even if a sibling branch is still working.
         run.pending = interrupt
         run.status = "waiting"
         run.answered = None  # the answer before this one has been taken in
         run.append(name, payload)
+
+    def _reject_malformed(self, run: _Run, interrupt: Interrupt, reason: str) -> None:
+        """Hand a pause the web cannot show back to the model, or end the run past the cap.
+
+        The rejection is queued like an answer (`run.queued`), so _settle resumes the same
+        thread with it once the stream closes; it is also kept in `run.answered`, so a
+        restart while that resume is in flight replays it. No event, and the run stays
+        running. Call with `cond` held.
+        """
+        run_id = run.info.run_id
+        payload: Any = None
+        if run.malformed_pauses < MAX_MALFORMED_PAUSES:
+            message = f"not shown to the family: {reason}. Fix the arguments and call the tool again."
+            try:
+                payload = reject_to_resume(interrupt, message)
+            except ValueError:
+                payload = None  # not a human-in-the-loop pause: nothing the model can fix
+        if payload is None:
+            logger.warning("run %s: ended on a pause the web cannot show (%d handed back already): %s",
+                           run_id, run.malformed_pauses, reason)
+            run.append("error", schemas.ErrorEvent(message=MALFORMED_PAUSE_ERROR))
+            return
+        run.malformed_pauses += 1
+        logger.warning("run %s: handed a pause the web cannot show back to the studio (%d of %d): %s",
+                       run_id, run.malformed_pauses, MAX_MALFORMED_PAUSES, reason)
+        run.queued = (interrupt, payload)
+        run.answered = (interrupt.id, payload)
+        run.persist()
 
     def _settle(self, run: _Run, graph: Any) -> Command | None:
         """After a stream closes: the Command to resume with if an answer was queued meanwhile;
@@ -950,6 +1000,14 @@ class RunManager:
                     self._interrupt(run, shown)
                     if run.terminal:
                         return None
+                    if run.queued is not None:
+                        # Not showable: rejected back to the model; resume with that now.
+                        pending, payload = run.queued
+                        run.queued = None
+                        run.driving = True
+                        run.pending_count = 0
+                        run.seen_interrupts.clear()
+                        return _resume_command(pending, payload, len(interrupts))
                 run.pending_count = len(interrupts)
                 run.status = "waiting"
                 run.persist()
