@@ -554,8 +554,9 @@ def screenplay_for(example: dict) -> dict:
                                  "at": [0.85, 0.82], "drives": example}]
     elif set(example) == {"target", "text"}:  # an explanation
         data["explanations"] = [e for e in data["explanations"] if e["target"] != example["target"]] + [example]
-    elif "move" in example:  # a camera cue: the worked example's own
-        assert example in shot["camera"], example
+    elif "move" in example:  # a camera cue: the worked example's own, or one added to it
+        if example not in shot["camera"]:
+            shot["camera"] = sorted([*shot["camera"], example], key=lambda cue: cue["t"])
     elif "do" in example:  # an action: the worked example's own, or one added to it
         if example not in shot["actions"]:
             shot["actions"].append(example)

@@ -17,6 +17,10 @@ and the two skills the sub-agents read (popup-style, storyboarding):
 (f) no prompt is a prefix of another (the fake studio tells agents apart by prefix);
 (g) every prompt that follows a skill (subagents.SUBAGENT_SKILLS) names it exactly, up front.
 
+Pinned statements at the bottom tie key rules in the prompts and skills to the code that makes
+them true: the default-narrator second telling, the /frames.json diagram marker, the quality
+bar (pageText, explanations, pull tabs, camera, cue ids), placeholder art and the voice warning.
+
 Extraction is plain regex over backticks and `name(` patterns. director.md is audited like
 every other prompt; the directing skill is not audited here (tests/agent/test_agent_skills.py
 covers it). The xfail list below is empty; it stays so a known mismatch in a file another
@@ -761,3 +765,150 @@ def test_studio_states_the_order_the_cap_second_tellings_and_one_question():
     assert "never two calls in the same turn" in lowered
     mode = _section(text, "## Run context").lower()
     assert "no new props, sets or shots" in mode and "narration only, then save" in mode
+
+
+# --------------------------------------------------------------------------- pinned statements
+#
+# Statements the prompts and skills must keep, each checked against the code that makes it true.
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _directing_skill() -> str:
+    return (SKILLS_DIR / "directing" / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_the_default_narrator_exception_is_stated_alike_in_director_and_narrator():
+    """A second telling fixes only narrations[<authorId>], except when the teller is the
+    memory's default narrator: then the pass rewrites each shot's own `narration` (with sources
+    naming them) and never adds narrations[<authorId>]. That is what family.save_scene and
+    narration.lines_for_author(retells_default=...) read, and what the compiler accepts."""
+    director = _flat(_section(load_prompt("director"), "## Second-telling mode"))
+    assert "`narrations[<authorId>]` only" in director
+    assert "**The default-narrator exception**" in director
+    assert "rewrites each shot's own `narration` lines" in director
+    assert "`telling:<authorId>:s<n>` naming them" in director
+    assert "Never give them `narrations[<authorId>]` too" in director and "duplicate_telling" in director
+
+    narrator = _flat(_section(load_prompt("narrator"), "## Where the lines go"))
+    assert "**Second telling by the memory's default narrator**" in narrator
+    assert "rewrite each shot's own `narration` lines" in narrator
+    assert "do not use `narrations[<authorId>]`" in narrator and "duplicate_telling" in narrator
+
+    skill = _flat(_directing_skill())
+    assert "**The default-narrator exception**" in skill and "never adds `narrations.<authorId>`" in skill
+
+    studio_text = _flat(STUDIO_PROMPT)
+    assert "when the teller is the memory's default narrator, rewrites each shot's own narration lines" in studio_text
+
+
+def test_the_default_narrator_exception_matches_the_code():
+    """The two halves of the exception, on the code: lines_for_author reads a retelling default
+    narrator from each shot's narration and a second teller only from narrations[author]; the
+    compiler refuses narrations[<default teller>] as duplicate_telling."""
+    from agent.tools import narration
+    from agent.tools.compile import load_compiler, parse_and_compile
+    from agent.wiring import scene_for
+    from screenplay.schema import Screenplay
+
+    sp = Screenplay.model_validate(SAMPLE_SCREENPLAY)
+    assert narration.lines_for_author(sp, "dad", second_telling=True) == {}
+    retold = narration.lines_for_author(sp, "dad", second_telling=True, retells_default=True)
+    assert retold == {shot.id: list(shot.narration) for shot in sp.shots}
+    assert narration.lines_for_author(sp, "mom", second_telling=True) == {
+        k: list(v) for k, v in sp.narrations["mom"].items()}
+
+    from agent.repo import InMemoryRepo, load_sample_family
+
+    repo = InMemoryRepo()
+    load_sample_family(repo, "fam_audit")
+    data = json.loads(json.dumps(SAMPLE_SCREENPLAY))
+    data["narrations"]["dad"] = {"s1": [{"t": 0, "text": "Hello.", "source": "telling:dad:s1"}]}
+    res = parse_and_compile(json.dumps(data), load_compiler(), scene_for(repo, "fam_audit"))
+    assert not res.ok and "duplicate_telling" in {e.code for e in res.errors}
+
+
+def test_checker_documents_the_frames_contract_and_diagram_critique():
+    """/frames.json entries are {t, mediaId, timeline} plus "diagram": true or a "note", exactly
+    as frames._frames_json writes them; on diagrams the checker judges staging only and never
+    reports missing art."""
+    from agent.tools.frames import DIAGRAM_CRITIC_NOTE, _frames_json, _Frame
+
+    shot = schemas.FrameShot(t=1.0, media_id="m1")
+    entries = json.loads(_frames_json([
+        _Frame(shot, "abc", None), _Frame(shot, "abc", DIAGRAM_CRITIC_NOTE), _Frame(shot, "abc", "a test note"),
+    ]))
+    assert set(entries[0]) == {"t", "mediaId", "timeline"}
+    assert set(entries[1]) - set(entries[0]) == {"diagram"} and entries[1]["diagram"] is True
+    assert set(entries[2]) - set(entries[0]) == {"note"}
+
+    text = _flat(load_prompt("checker"))
+    assert "a list of `{t, mediaId, timeline}`" in text
+    assert 'optional `"diagram": true` or a `"note"`' in text
+    assert "Judge only staging: positions, facing, who holds what, hand-offs and reach" in text
+    assert "never report that the art is missing" in text
+    assert "Never judge art, colors, lighting, scenery or framing on a diagram" in text
+    # The legend inspect_frames sends for diagrams asks the vision model for the same.
+    assert "Do not report colors, art, scenery, framing" in DIAGRAM_CRITIC_NOTE
+
+
+def test_director_and_skill_state_the_quality_bar():
+    """pageText on every shot within scene_review's word limit, one explanation per cast member
+    and prop, at least one pull_tab on the main beat with targets that exist, vocabulary camera
+    moves that end inside their shot, and an id on every action a line may cue."""
+    from agent.tools import scene_review
+
+    limit = f"at most {scene_review.MAX_PAGE_TEXT_WORDS} words"
+    director = _flat(load_prompt("director"))
+    assert "**`pageText` for every shot**" in director and limit in director
+    assert "exactly one per cast member" in director and "and one per prop" in director
+    assert "at least one `pull_tab` per memory, on the main beat" in director
+    assert "each one that exists: `puppet:<personId>` in `cast`, `prop:<propId>` in `props`" in director
+    camera = load_prompt("director").split("- **`camera`**", 1)[1].split("\n", 1)[0]
+    for move in VOCAB["camera"]:
+        assert f"`{move}`" in camera, move
+    assert "`t` + `dur` (default 1.5 s) ends by the shot's last action or line" in camera
+    assert "every action a line could land on" in director and "narration cues actions by `id`" in director
+    assert "lists warnings" in director and "use no compile round" in director
+
+    skill = _flat(_directing_skill())
+    assert "**Every shot has `pageText`**" in skill and limit in skill
+    assert "**Exactly one per cast member and one per prop**" in skill
+    assert "**Every memory has at least one `pull_tab`**, on the main beat" in skill
+    assert "Only reference targets that exist" in skill
+    assert "**Choose a move per beat**" in skill and "end every move by then" in skill
+    assert "Give every action a line may cue an `id`" in skill
+
+
+def test_storyboarder_and_skill_ask_for_one_main_beat_per_shot():
+    storyboarder = _flat(load_prompt("storyboarder"))
+    assert "**one main beat**" in storyboarder and "click-to-explain note" in storyboarder
+    skill = _flat((SKILLS_DIR / "storyboarding" / "SKILL.md").read_text(encoding="utf-8"))
+    assert "**One main beat per shot**" in skill and "Every shot gets `pageText`" in skill
+    assert "click-to-explain note" in skill
+
+
+@pytest.mark.parametrize("unit", ["prop_master", "set_designer", "studio", "skill:popup-style"])
+def test_placeholder_art_and_the_image_budget_note_are_acceptable(unit):
+    """The prop and set tools add art.budget_note(...) when the run's image budget is spent; the
+    agents that act on it are told placeholder art is fine and never to retry for art."""
+    from agent.tools.art import budget_note
+
+    phrase = "image budget for this run is used up"
+    assert budget_note(3, "the hymn books").startswith(phrase)
+    text = _flat(unit_text(unit))
+    assert f"{phrase} ..." in text
+    assert "placeholder art is acceptable" in text.lower()
+    assert "never send" in text or "never call again to retry the art" in text
+
+
+@pytest.mark.parametrize("unit", ["narrator", "studio"])
+def test_a_voice_warning_is_success(unit):
+    """synthesize_narration answers `warning: ...` when it degraded (silent narration, estimated
+    timings) but still voiced: that is success, not a reason to retry or stop."""
+    text = _flat(load_prompt(unit))
+    assert "`warning:`" in text
+    assert "warning: the speech service failed ..." in text
+    assert re.search(r"succeeded|success", text)
