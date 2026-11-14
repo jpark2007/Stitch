@@ -24,10 +24,12 @@ one word per token every ``WORD_SECONDS``.
 Speaking rules checked here (each a ``NarrationError``):
 - a cue word must land at or after the shot's t=0, and no action may be pushed before it
   (``cue_before_start``);
-- a non-default telling's line shifted onto its action must not start before the shot's set
-  starts rising, ``layout.RISE`` seconds before t=0 (``cue_before_start``);
+- a non-default telling's line shifted onto its action must not start before the shot starts,
+  that is before its set starts rising at ``TimelineShot.start``, ``layout.RISE`` seconds
+  before t=0 (``cue_before_start``);
 - within one telling of a shot, a line must not start before the previous line's last word
-  has been said, ``WORD_SECONDS`` after its time (``lines_overlap``).
+  has been said, ``WORD_SECONDS`` after its time (``lines_overlap``). ``build_shot_narration``
+  checks each other telling right after shifting it, then the default telling once.
 """
 
 from __future__ import annotations
@@ -330,6 +332,8 @@ def build_shot_narration(
     retimed: list[float],
     other: dict[str, list[NarrationLine]],
     default: str,
+    *,
+    check_default: bool = True,
 ) -> dict[str, list[NarrationLine]]:
     """One shot's narration in timeline time: ``author -> lines``, default teller first.
 
@@ -338,6 +342,12 @@ def build_shot_narration(
     (the actions moved to them in ``retime_actions``); each cued line of another telling is
     shifted so its cue word lands on the retimed action. ``other`` is author -> this shot's
     lines from ``Screenplay.narrations``.
+
+    ``lines_overlap`` is checked for each other teller right after its own cue checks, in
+    ``other`` order, and then for the default telling, so a default overlap never hides a
+    teller's own error. A caller that builds the tellings one teller per call (validation)
+    should pass ``check_default=False`` on those calls and check the default once, with
+    ``other={}``, so a default overlap is reported once per shot.
     """
     out: dict[str, list[NarrationLine]] = {
         default: [_timeline_line(line, action_start + line.t) for line in shot.narration]
@@ -374,20 +384,21 @@ def build_shot_narration(
                     raise NarrationError(
                         "cue_before_start",
                         f'to land its cue word on the action, "{line.text}" would start at shot '
-                        f"t={_f2(start - action_start)}, before the set starts rising at shot "
-                        f"t={_f2(-RISE)}; shorten the words before the cue word or move the action later",
+                        f"t={_f2(start - action_start)}, before the shot starts; "
+                        f"shorten the words before the cue word or move the action later",
                         author=author,
                         shot=shot.id,
                         line_index=li,
                     )
             built.append(_timeline_line(line, start))
+        _check_no_overlap(shot, action_start, author, built)
         out[author] = built
-    for author, lines in out.items():
-        _check_no_overlap(shot, action_start, author, lines)
+    if check_default:
+        _check_no_overlap(shot, action_start, default, out[default])
     return out
 
 
-def _check_no_overlap(shot: Shot, action_start: float, author: str, lines: list[NarrationLine]) -> None:
+def _check_no_overlap(shot: Shot, action_start: float, author: str | None, lines: list[NarrationLine]) -> None:
     """Raise ``lines_overlap`` when a line starts before the previous spoken line has been said.
 
     ``lines`` are timeline lines (words filled in). A line is said by its last word's time
