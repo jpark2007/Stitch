@@ -628,18 +628,21 @@ def test_mom_never_speaks_the_default_telling(screenplay):
     ]
 
 
+# Mom's lines are written as a narrator writes them: each starts after the line before has been
+# said at the compiler's estimate (WORD_SECONDS per word), so her write pass compiles; they are
+# long enough that, voiced, they push shot s2 later in the draft compile.
 MOM_S1 = [
     {"t": 0, "text": "I was carrying far too many hymn books that Sunday, the whole choir's worth of them.",
      "source": "telling:mom:s1"},
     {"t": 5.0, "text": "And of course they went everywhere, right down the steps, right in front of him, "
      "every single one of them, and I could not stop it.", "source": "telling:mom:s2"},
-    {"t": 11.0, "text": "He handed them back so carefully, one by one, without a word, and I still could not "
+    {"t": 12.0, "text": "He handed them back so carefully, one by one, without a word, and I still could not "
      "look up at him at all.", "source": "telling:mom:s3"},
 ]
 MOM_S2 = [
     {"t": 0.5, "text": "Then it all happened again, the very same way, and I wanted the steps to swallow me whole.",
      "source": "telling:mom:s4"},
-    {"t": 2.0, "text": "He only smiled.", "source": "telling:mom:s5"},
+    {"t": 5.5, "text": "He only smiled.", "source": "telling:mom:s5"},
 ]
 
 
@@ -659,11 +662,17 @@ def _run(author: str, memory_id: str | None = None) -> RunInfo:
 
 
 def _steps(files: dict, *tools) -> dict:
-    """Call each tool in turn over the draft files; returns the last state (files merged)."""
+    """Call each tool in turn over the draft files; returns the last state (files merged).
+
+    Every step must succeed: compile_screenplay answers "ok: ..." (its failure text does not
+    start with "Error", and a failed compile blanks /timeline.json), and the voice pass answers
+    "Narrated ...".
+    """
     state: dict = {"files": files}
     for tool in tools:
         state = _run_tool(tool, state["files"])
-        assert not _tool_text(state).startswith("Error"), _tool_text(state)
+        text = _tool_text(state)
+        assert text.startswith("ok:" if tool.name == "compile_screenplay" else "Narrated"), text
     return state
 
 
