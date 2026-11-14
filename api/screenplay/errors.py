@@ -29,7 +29,9 @@ def error_message(
     """``<head>: <who> cannot <do> "<what>"; <reason>`` and its shorter forms.
 
     The head is ``shot <id>, t=<t>``, ``shot <id>`` when ``t`` is None, or ``screenplay`` when
-    ``shot`` is None (``t`` is then ignored).
+    ``shot`` is None (``t`` is then ignored). ``who`` and ``do`` count when they are not None;
+    ``what`` only when it is non-empty. validate.py builds its messages here too, so every step
+    of the compiler shares one grammar.
     """
     if shot is None:
         head = "screenplay"
@@ -38,9 +40,9 @@ def error_message(
     else:
         head = f"shot {shot}, t={fmt_t(t)}"
     obj = f' "{what}"' if what else ""
-    if do and who:
+    if do is not None and who is not None:
         return f"{head}: {who} cannot {do}{obj}; {reason}"
-    if do:
+    if do is not None:
         return f"{head}: cannot {do}{obj}; {reason}"
     return f"{head}: {reason}"
 

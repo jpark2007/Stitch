@@ -114,3 +114,10 @@ def test_error_helper():
     err = error("unsupported_verb", "the compiler does not support drop yet", "s1", a)
     assert err.message == 'shot s1, t=3: mom cannot drop "cup"; the compiler does not support drop yet'
     assert (err.t, err.who, err.do) == (3.0, "mom", "drop")
+
+
+def test_who_and_do_count_when_not_none_and_what_when_not_empty():
+    # validate.py builds every message here; these are the edge cases its old formatter defined
+    assert error_message("s1", 1, "", "wave", None, "r") == "shot s1, t=1:  cannot wave; r"
+    assert error_message("s1", 1, None, "", None, "r") == "shot s1, t=1: cannot ; r"
+    assert error_message("s1", 1, "dad", "drop", "", "r") == "shot s1, t=1: dad cannot drop; r"
