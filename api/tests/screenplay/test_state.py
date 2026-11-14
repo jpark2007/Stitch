@@ -45,7 +45,11 @@ PROPS = [
     prop("crate", "furniture", {"top": [0.5, 0.0]}),
     prop("table", "furniture", {"top": [0.5, 0.0]}, aspect=1.5),
     prop("lamp", "carried", states={"lit": {}, "out": {}}),
+    prop("wagon", "vehicle", {"bed": [0.6, 0.4], "seat": [0.2, 0.5]}, aspect=2.0),
 ]
+
+# Loose props the fixtures stand on stage, so puppets can pick them up and wear them.
+LOOSE = {"cup": {"at": "home"}, "hat": {"at": "home"}, "scarf": {"at": "home"}, "lamp": {"at": "steps_left"}}
 
 MARKS = {
     "steps_left": (-0.6, 0.0, 0.5),
@@ -69,7 +73,8 @@ def opening(world: World) -> World:
     """Mom at the top of the steps holding the books; dad offstage left."""
     world.begin_shot(
         shot(start={"dad": {"at": "offstage_left", "facing": "right"},
-                    "mom": {"at": "steps_top", "holding": "hymn_books", "facing": "left"}}),
+                    "mom": {"at": "steps_top", "holding": "hymn_books", "facing": "left"}},
+             propStart=LOOSE),
         MARKS, same_set_as_previous=False,
     )
     return world
@@ -191,7 +196,8 @@ def test_hand_to_after_drop_is_on_the_ground(world: World):
 def test_not_holding_reasons(world: World):
     opening(world)
     world.move("dad", MARKS["steps_foot"])
-    raises("not_holding", "nobody is holding it", world.hand_to, "dad", "cup", "mom")
+    raises("not_holding", "it is on the ground", world.hand_to, "dad", "cup", "mom")
+    raises("not_holding", "it is not on stage", world.hand_to, "dad", "crate", "mom")
     world.put_on("dad", "hat")
     raises("not_holding", "dad is wearing it", world.hand_to, "dad", "hat", "mom")
     raises("not_holding", "dad is wearing it", world.drop, "mom", "hat", (0, 0, 0.5))
@@ -294,7 +300,8 @@ def test_begin_shot_resets_busy(world: World):
 def parked(world: World) -> World:
     world.begin_shot(
         shot(start={"dad": {"at": "home"}, "mom": {"at": "home"}, "kid": {"at": "home"}},
-             propStart={"sedan": {"at": "curb", "state": "parked"}}),
+             propStart={"sedan": {"at": "curb", "state": "parked"}, **LOOSE,
+                        "chair": {"at": "steps_foot"}, "bench": {"at": "steps_left"}}),
         MARKS, same_set_as_previous=False,
     )
     return world
@@ -333,9 +340,10 @@ def test_get_in_errors(world: World):
 
 
 def test_get_in_without_driver_socket_uses_dict_order(world: World):
-    parked(world)
-    assert world.get_in("dad", "bench") == "back"
-    assert world.get_in("mom", "bench") == "left_seat"
+    world.begin_shot(shot(start={"dad": {"at": "home"}, "mom": {"at": "home"}},
+                          propStart={"wagon": {"at": "curb"}}), MARKS, same_set_as_previous=False)
+    assert world.get_in("dad", "wagon") == "bed"
+    assert world.get_in("mom", "wagon") == "seat"
 
 
 def test_ride_and_drive_checks(world: World):
@@ -562,7 +570,9 @@ def test_begin_shot_new_set_sends_unlisted_cast_offstage(world: World):
     world.begin_shot(shot(id="s2", set="kitchen", start={"kid": {"at": "home"}}), MARKS, same_set_as_previous=False)
     dad, mom = world.people["dad"], world.people["mom"]
     assert dad.pos == pytest.approx(OFFSTAGE_LEFT) and dad.facing == 1 and dad.pose == "stand"
-    assert world.holder("hymn_books") == ("dad", "hand_r")  # carried offstage, not dropped
+    # dad is not in the new shot, so what he carried does not come along to the new set
+    assert world.holder("hymn_books") is None and dad.holding == {}
+    assert world.props["hymn_books"].parent == "ground" and world.props["hymn_books"].world_pos is None
     assert mom.pos == pytest.approx(OFFSTAGE_LEFT) and mom.seat is None and mom.pose == "stand"
     assert world.props["chair"].occupants == {}
     assert world.people["kid"].pos == MARKS["home"]
@@ -665,3 +675,239 @@ def test_deterministic(world: World):
         w.hand_to("dad", "hymn_books", "mom")
         return w.snapshot()
     assert run() == run()
+
+
+# ------------------------------------------------------------- open / close
+
+DOOR = prop("door", "furniture", states={"open": {}, "closed": {}})
+
+
+def door_world() -> World:
+    w = World(PEOPLE, PROPS + [DOOR])
+    w.begin_shot(shot(start={"mom": {"at": "home"}}, propStart={**LOOSE, "door": {"at": "curb", "state": "closed"}}),
+                 MARKS, same_set_as_previous=False)
+    return w
+
+
+def test_open_and_close():
+    w = door_world()
+    w.open("mom", "door")
+    assert w.props["door"].state == "open"
+    raises("already_open", "it is already open", w.open, "mom", "door")
+    w.close("mom", "door")
+    assert w.props["door"].state == "closed"
+    raises("already_closed", "it is already closed", w.close, "mom", "door")
+    # a prop without declared states accepts open / closed (validate.py checks the vocabulary)
+    w.open("mom", "cup")
+    assert w.props["cup"].state == "open"
+    w.close("mom", "cup")
+    assert w.props["cup"].state == "closed"
+
+
+def test_open_close_errors():
+    w = door_world()
+    raises("unknown_state", "lamp has no state open", w.open, "mom", "lamp")
+    raises("unknown_state", "lamp has no state closed", w.close, "mom", "lamp")
+    raises("offstage", "dad is offstage", w.open, "dad", "door")
+    raises("not_on_stage", "crate is not on stage", w.open, "mom", "crate")
+    raises("unknown_id", "ghost is not in the cast", w.open, "ghost", "door")
+    raises("unknown_id", "anvil is not a known prop", w.close, "mom", "anvil")
+    w.pick_up("mom", "cup")
+    w.open("mom", "cup")  # a held prop is on stage
+    assert w.props["cup"].state == "open"
+
+
+# --------------------------------------------- a set change clears the stage
+
+def test_new_set_clears_props_left_behind(world: World):
+    """Regression: a prop dropped on set A stayed at its coordinates on set B."""
+    opening(world)
+    world.drop("mom", "hymn_books", (0.12, 0.3, 0.5))
+    world.begin_shot(shot(id="s2", set="kitchen", start={"mom": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    books = world.props["hymn_books"]
+    assert books.parent == "ground" and books.world_pos is None and world.is_unplaced("hymn_books")
+    for what in LOOSE:
+        assert world.is_unplaced(what), what
+    raises("not_on_stage", "hymn_books is not on stage", world.pick_up, "mom", "hymn_books")
+    raises("not_holding", "it is not on stage", world.hold, "mom", "hymn_books")
+
+
+def test_same_set_keeps_props_where_they_were(world: World):
+    opening(world)
+    world.drop("mom", "hymn_books", (0.12, 0.3, 0.5))
+    world.begin_shot(shot(id="s2", start={"mom": {"at": "home"}}), MARKS, same_set_as_previous=True)
+    assert world.props["hymn_books"].world_pos == (0.12, 0.3, 0.5)
+    assert world.props["cup"].world_pos == MARKS["home"]
+
+
+def test_new_set_clears_surfaces_seats_and_what_unlisted_cast_carried(world: World):
+    world.begin_shot(shot(start={"dad": {"at": "home", "holding": "cup"}, "mom": {"at": "home", "in": "sedan.driver"},
+                                 "kid": {"at": "home", "in": "chair.seat"}},
+                          propStart={"sedan": {"at": "curb"}, "chair": {"at": "home"}, "table": {"at": "steps_foot"},
+                                     "lamp": {"on": "table.top"}}),
+                     MARKS, same_set_as_previous=False)
+    world.begin_shot(shot(id="s2", set="kitchen", start={"kid": {"at": "steps_left"}}), MARKS, same_set_as_previous=False)
+    for what in ("sedan", "chair", "table", "lamp", "cup"):
+        st = world.props[what]
+        assert st.parent == "ground" and st.world_pos is None and st.occupants == {}, what
+    assert world.people["mom"].seat is None and world.people["kid"].seat is None
+    assert world.people["dad"].holding == {}
+
+
+def test_new_set_keeps_what_the_shot_brings(world: World):
+    world.begin_shot(shot(start={"dad": {"at": "home", "holding": "crate"}, "mom": {"at": "home", "holding": "lamp"}},
+                          propStart={"cup": {"on": "crate.top"}, "table": {"at": "curb"}, "hat": {"on": "table.top"},
+                                     "scarf": {"at": "curb"}}),
+                     MARKS, same_set_as_previous=False)
+    world.begin_shot(
+        shot(id="s2", set="kitchen",
+             start={"dad": {"at": "steps_left"}, "kid": {"at": "home", "holding": "scarf"}},
+             propStart={"hat": {"state": "worn"}, "bench": {"at": "home"}}),
+        MARKS, same_set_as_previous=False,
+    )
+    # carried in by a listed puppet, with what rides on it
+    assert world.holder("crate") == ("dad", "hand_r")
+    assert world.props["cup"].parent == "prop:crate.top"
+    # start.holding takes it from the old set
+    assert world.holder("scarf") == ("kid", "hand_r")
+    # in prop_start: kept, but the stale table it rested on is gone, so it is loose
+    assert world.is_unplaced("hat") and world.props["hat"].state == "worn"
+    assert world.props["table"].occupants == {}
+    assert world.props["bench"].world_pos == MARKS["home"]
+    # mom is not in s2, so the lamp she carried stays behind
+    assert world.is_unplaced("lamp") and world.people["mom"].holding == {}
+
+
+def test_held_prop_carries_from_shot_one_to_shot_two(world: World):
+    opening(world)
+    # shot 2 on a new set lists mom without `holding`: she still has the books
+    world.begin_shot(shot(id="s2", set="kitchen", start={"mom": {"at": "home"}, "dad": {"at": "curb"}}),
+                     MARKS, same_set_as_previous=False)
+    assert world.holder("hymn_books") == ("mom", "hand_r")
+    assert world.props["hymn_books"].parent == "puppet:mom.hand_r"
+    assert world.hold("mom", "hymn_books") == "hand_r"
+    raises("not_holding", "mom is holding it", world.hand_to, "dad", "hymn_books", "mom")
+
+
+def test_seat_conflict_across_shots(world: World):
+    opening(world)
+    world.begin_shot(shot(id="s1b", start={"mom": {"at": "home", "in": "chair.seat"}},
+                          propStart={"chair": {"at": "home"}}), MARKS, same_set_as_previous=True)
+    assert world.props["chair"].occupants == {"seat": "puppet:mom"}
+    # same set, mom unlisted so she stays seated; dad cannot start in her seat
+    raises("socket_taken", "chair.seat is taken by mom", world.begin_shot,
+           shot(id="s2", start={"dad": {"at": "home", "in": "chair.seat"}}), MARKS, True)
+    world.move("dad", MARKS["home"])
+    raises("socket_taken", "chair.seat is taken by mom", world.sit_on, "dad", "chair")
+
+
+def test_hand_to_a_prop_mom_holds_exact_reason(world: World):
+    """The ARCHITECTURE.md example: shot s1, t=5: dad cannot hand_to "hymn_books"; mom is holding it."""
+    opening(world)
+    world.move("dad", MARKS["steps_foot"])
+    err = raises("not_holding", "mom is holding it", world.hand_to, "dad", "hymn_books", "mom")
+    assert str(err) == "mom is holding it"
+
+
+# ----------------------------------------------- start seats must be on stage
+
+def test_start_seat_must_be_on_stage(world: World):
+    opening(world)
+    raises("not_on_stage", "chair is not on stage in shot s2; place it with propStart", world.begin_shot,
+           shot(id="s2", start={"mom": {"at": "home", "in": "chair.seat"}}), MARKS, True)
+    raises("not_on_stage", "sedan is not on stage in shot s2; place it with propStart", world.begin_shot,
+           shot(id="s2", start={"mom": {"at": "home", "in": "sedan.driver"}}), MARKS, False)
+    # a seat on a carried prop is not on stage either
+    world.move("dad", MARKS["home"])
+    raises("not_on_stage", "chair is not on stage in shot s2; place it with propStart", world.begin_shot,
+           shot(id="s2", start={"dad": {"at": "home", "holding": "chair"}, "mom": {"at": "home", "in": "chair.seat"}}),
+           MARKS, True)
+    # prop_start is applied before seats, so placing it in the same shot works
+    world.begin_shot(shot(id="s2", start={"mom": {"at": "home", "in": "chair.seat"}},
+                          propStart={"chair": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    assert world.people["mom"].seat == ("chair", "seat")
+
+
+def test_prop_start_on_a_prop_that_is_not_on_stage(world: World):
+    opening(world)
+    raises("not_on_stage", "table is not on stage in shot s2; place it with propStart", world.begin_shot,
+           shot(id="s2", propStart={"cup": {"on": "table.top"}}), MARKS, True)
+    # order inside prop_start does not matter
+    world.begin_shot(shot(id="s2", propStart={"cup": {"on": "table.top"}, "table": {"at": "curb"}}), MARKS, True)
+    assert world.props["cup"].world_pos == pytest.approx((0.8, 0.4, 0.5))
+
+
+def test_prop_start_state_must_exist(world: World):
+    opening(world)
+    raises("unknown_state", "lamp has no state broken", world.begin_shot,
+           shot(id="s2", propStart={"lamp": {"state": "broken"}}), MARKS, True)
+
+
+def test_start_holding_a_prop_someone_sits_on(world: World):
+    parked(world)
+    world.sit_on("mom", "chair")
+    raises("occupied", "mom is sitting on chair", world.begin_shot,
+           shot(id="s2", start={"dad": {"at": "home", "holding": "chair"}}), MARKS, True)
+
+
+# ------------------------------------------------------- props must be on stage
+
+def test_pick_up_and_put_on_an_unplaced_prop(world: World):
+    world.begin_shot(shot(start={"dad": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    raises("not_on_stage", "cup is not on stage", world.pick_up, "dad", "cup")
+    raises("not_on_stage", "hat is not on stage", world.put_on, "dad", "hat")
+    raises("not_holding", "it is not on stage", world.hand_to, "dad", "cup", "mom")
+    raises("not_holding", "it is not on stage", world.drop, "dad", "cup", (0, 0, 0.5))
+
+
+def test_offstage_puppets_cannot_handle_props(world: World):
+    opening(world)
+    raises("offstage", "dad is offstage", world.pick_up, "dad", "cup")
+    raises("offstage", "dad is offstage", world.put_on, "dad", "hat")
+    world.exit("mom")
+    raises("offstage", "mom is offstage", world.hold, "mom", "hymn_books")
+    raises("offstage", "mom is offstage", world.drop, "mom", "hymn_books", (0, 0, 0.5))
+    raises("offstage", "mom is offstage", world.put_on, "mom", "hymn_books")
+    raises("offstage", "mom is offstage", world.place_on, "mom", "hymn_books", "ground", (0, 0, 0.5))
+
+
+def test_put_on_from_the_ground_needs_a_free_hand(world: World):
+    opening(world)
+    world.move("dad", MARKS["home"])
+    world.pick_up("dad", "cup")
+    world.pick_up("dad", "lamp")
+    raises("hands_full", "dad's hands are full (hand_r: cup, hand_l: lamp)", world.put_on, "dad", "hat")
+    world.put_on("dad", "lamp")  # from a hand is fine
+    assert world.holder("lamp") == ("dad", "head")
+
+
+# ---------------------------------------------------------- vehicles vs seats
+
+def test_get_in_needs_a_vehicle_and_sit_on_refuses_one(world: World):
+    parked(world)
+    raises("not_a_vehicle", "chair is not a vehicle", world.get_in, "dad", "chair")
+    raises("vehicle_seat", "sedan is a vehicle; use get_in", world.sit_on, "dad", "sedan")
+    raises("vehicle_seat", "sedan is a vehicle; use get_in", world.sit_on, "dad", "sedan", "driver")
+
+
+def test_move_vehicle_carries_puppets_seated_on_stacked_props(world: World):
+    world.begin_shot(shot(start={"kid": {"at": "curb", "in": "chair.seat"}},
+                          propStart={"wagon": {"at": "curb"}, "chair": {"on": "wagon.bed"}}),
+                     MARKS, same_set_as_previous=False)
+    chair_before = world.props["chair"].world_pos
+    world.move_vehicle("wagon", (0.5, 0.0, 0.5))
+    assert world.people["kid"].pos == pytest.approx((0.5, 0.0, 0.5))  # moved by the same -0.3
+    assert world.props["chair"].world_pos == pytest.approx((chair_before[0] - 0.3, chair_before[1], 0.5))
+
+
+def test_move_vehicle_that_is_not_on_stage(world: World):
+    raises("not_on_stage", "sedan is not on stage", world.move_vehicle, "sedan", (0, 0, 0.5))
+
+
+def test_exit_while_seated_or_kneeling(world: World):
+    parked(world)
+    world.sit_on("dad", "chair")
+    raises("seated", "dad is seated in chair.seat", world.exit, "dad")
+    world.kneel("mom")
+    world.exit("mom")
+    assert world.people["mom"].pose == "stand" and not world.on_stage("mom")

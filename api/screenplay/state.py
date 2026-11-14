@@ -35,6 +35,7 @@ HEAD = "head"
 PUPPET_SOCKETS = (*HANDS, HEAD)
 SEATED_POSES = ("sit", "kneel")
 GROUND = "ground"
+OPEN, CLOSED = "open", "closed"  # the states the open / close verbs set
 TIME_EPS = 1e-6  # an action may start this close before the previous one ends
 
 
@@ -175,6 +176,35 @@ class World:
         d = self.catalog.get(what)
         return d is not None and d.size == "vehicle"
 
+    def is_unplaced(self, what: str) -> bool:
+        """True when the prop is nowhere on stage: not held, not on a socket, not on the ground."""
+        st = self._prop(what)
+        return st.parent == GROUND and st.world_pos is None
+
+    def _placed(self, what: str) -> bool:
+        """On stage somehow: on the ground, held or worn, or resting on something that is."""
+        seen: set[str] = set()
+        cur: str | None = what
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            parsed = parse_parent(self.props[cur].parent)
+            if parsed is None:
+                return self.props[cur].world_pos is not None
+            if parsed[0] == "puppet":
+                return True
+            cur = parsed[1]
+        return False
+
+    def _riders(self, what: str) -> list[str]:
+        """Puppets seated on `what` or on anything stacked on it."""
+        out: list[str] = []
+        for pid in (what, *self._descendants(what)):
+            for occ in self.props[pid].occupants.values():
+                kind, _, oid = occ.partition(":")
+                if kind == "puppet":
+                    out.append(oid)
+        return out
+
     def socket_world(self, what: str, socket: str) -> Vec3 | None:
         """World position of a prop's socket, or None if the prop is held / not placed."""
         st = self._prop(what)
@@ -215,7 +245,7 @@ class World:
         st = self.props[what]
         parsed = parse_parent(st.parent)
         if parsed is None:
-            return "it is on the ground" if st.world_pos is not None else "nobody is holding it"
+            return "it is on the ground" if st.world_pos is not None else "it is not on stage"
         kind, pid, socket = parsed
         if kind == "puppet":
             return f"{pid} is {'wearing' if socket == HEAD else 'holding'} it"
@@ -240,6 +270,10 @@ class World:
         for w in who:
             if not self.on_stage(w):
                 raise StateError("offstage", f"{w} is offstage")
+
+    def _require_placed(self, what: str) -> None:
+        if self.is_unplaced(what):
+            raise StateError("not_on_stage", f"{what} is not on stage")
 
     # ----------------------------------------------------- low-level mutations
 
@@ -341,16 +375,20 @@ class World:
                 if (prop, sock) in seats:
                     raise StateError("socket_taken", f"{seats[(prop, sock)]} and {who} both start in {prop}.{sock}")
                 seats[(prop, sock)] = who
-        for what in shot.prop_start:
+        for what, ps in shot.prop_start.items():
             self._prop(what)
+            states = self.catalog[what].states
+            if ps.state is not None and states and ps.state not in states:
+                raise StateError("unknown_state", f"{what} has no state {ps.state}")
 
         self.now = 0.0
         for p in self.people.values():
             p.busy_until = 0.0
             p.activity = None
 
-        # Cast not listed in start.
+        # A new set: props nobody brings along leave the stage, and unlisted cast go offstage.
         if not same_set:
+            self._clear_stale_props(shot, held_by)
             for who, p in self.people.items():
                 if who not in shot.start:
                     self._unseat(who)
@@ -358,7 +396,8 @@ class World:
                     p.pos = OFFSTAGE_LEFT
                     p.facing = 1
 
-        # Listed cast: position, facing, pose, seat.
+        # Listed cast: position, facing, pose. Everyone listed is unseated first, so seat
+        # swaps between shots work.
         for who, s in shot.start.items():
             p = self.people[who]
             self._unseat(who)
@@ -366,8 +405,26 @@ class World:
             if s.facing is not None:
                 p.facing = -1 if s.facing == "left" else 1
             p.pose = "stand"
-        # Seats after everyone is unseated, so swaps between shots work.
+
+        # Holdings: take the prop from any previous holder.
+        for what, who in held_by.items():
+            h = self.holder(what)
+            if h is not None and h[0] == who and h[1] in HANDS:
+                continue
+            riders = self._riders(what)
+            if riders:
+                raise StateError("occupied", f"{riders[0]} is sitting on {what}")
+            hand = self.free_hand(who)
+            if hand is None:
+                raise StateError("hands_full", self._hands_full_reason(who))
+            self._attach_puppet(what, who, hand)
+
+        self._apply_prop_start(shot, mark)
+
+        # Seats last, so a seat can be on a prop that prop_start just placed.
         for (prop, sock), who in seats.items():
+            if self.props[prop].world_pos is None:
+                raise StateError("not_on_stage", f"{prop} is not on stage in shot {shot.id}; place it with propStart")
             occ = self.props[prop].occupants.get(sock)
             if occ is not None and occ != f"puppet:{who}":
                 raise StateError("socket_taken", f"{prop}.{sock} is taken by {occ.partition(':')[2]}")
@@ -376,17 +433,31 @@ class World:
             if s.pose is not None:
                 self.people[who].pose = s.pose
 
-        # Holdings: take the prop from any previous holder.
-        for what, who in held_by.items():
-            h = self.holder(what)
-            if h is not None and h[0] == who and h[1] in HANDS:
-                continue
-            hand = self.free_hand(who)
-            if hand is None:
-                raise StateError("hands_full", self._hands_full_reason(who))
-            self._attach_puppet(what, who, hand)
+    def _clear_stale_props(self, shot: Shot, held_by: dict[str, str]) -> None:
+        """On a set change, every prop that is not carried in by a listed puppet, not in
+        prop_start and not in a start `holding` leaves the stage (parent ground, world_pos None),
+        and anything seated on it is unseated. Props riding on a carried prop come along."""
+        keep = set(shot.prop_start) | set(held_by)
+        carried = [what for who in shot.start for what in self.people[who].holding.values()]
+        for what in carried:
+            keep.add(what)
+            keep.update(self._descendants(what))
+        stale = [what for what in self.props if what not in keep]
+        for what in stale:
+            st = self.props[what]
+            for occ in list(st.occupants.values()):
+                kind, _, oid = occ.partition(":")
+                if kind == "puppet":
+                    self._unseat(oid)
+            st.occupants.clear()
+            self._detach(what)
+        # A kept prop that rested on a stale one is set loose (prop_start may place it again).
+        for what in self.props:
+            parsed = parse_parent(self.props[what].parent)
+            if what in keep and parsed is not None and parsed[0] == "prop" and parsed[1] not in keep:
+                self._detach(what)
 
-        # Prop starts.
+    def _apply_prop_start(self, shot: Shot, mark) -> None:
         for what, ps in shot.prop_start.items():
             if ps.on is not None:
                 base, _, sock = ps.on.partition(".")
@@ -405,6 +476,12 @@ class World:
                 self._to_ground(what, mark(ps.at))
             if ps.state is not None:
                 self.props[what].state = ps.state
+        # Checked after every prop_start is applied, so their order in the shot does not matter.
+        for what, ps in shot.prop_start.items():
+            if ps.on is not None:
+                base = ps.on.partition(".")[0]
+                if not self._placed(base):
+                    raise StateError("not_on_stage", f"{base} is not on stage in shot {shot.id}; place it with propStart")
 
     def _check_socket_for_prop(self, base: str, socket: str, what: str) -> None:
         if socket not in self.catalog[base].sockets:
@@ -476,6 +553,8 @@ class World:
                 verb = "wearing" if h[1] == HEAD else "holding"
                 raise StateError("already_held", f"{who} is already {verb} it")
             raise StateError("already_held", self._where(what, who))
+        self._require_on_stage(who)
+        self._require_placed(what)
         riders = [o.partition(":")[2] for o in st.occupants.values() if o.startswith("puppet:")]
         if riders:
             raise StateError("occupied", f"{riders[0]} is sitting on it")
@@ -509,12 +588,15 @@ class World:
         """Raise a prop already in hand into the hold pose. Returns its hand."""
         self._person(who)
         self._prop(what)
-        return self._require_in_hand(who, what)
+        hand = self._require_in_hand(who, what)
+        self._require_on_stage(who)
+        return hand
 
     def drop(self, who: str, what: str, landing: Vec3) -> None:
         self._person(who)
         self._prop(what)
         self._require_in_hand(who, what)
+        self._require_on_stage(who)
         self._to_ground(what, landing)
 
     def hand_to(self, who: str, what: str, to: str) -> str:
@@ -533,7 +615,10 @@ class World:
         return hand
 
     def put_on(self, who: str, what: str, target: str | None = None) -> None:
-        """Wear a prop in the head socket of `target` (default: who)."""
+        """Wear a prop in the head socket of `target` (default: who).
+
+        The prop comes from one of who's hands, or straight off the ground (which needs a free hand).
+        """
         self._person(who)
         st = self._prop(what)
         target = who if target is None else target
@@ -545,10 +630,15 @@ class World:
             raise StateError("not_holding", self._where(what, who))
         if h is None and st.parent != GROUND:
             raise StateError("not_holding", self._where(what, who))
+        self._require_on_stage(who)
+        if h is None:
+            self._require_placed(what)
+            if self.free_hand(who) is None:
+                raise StateError("hands_full", self._hands_full_reason(who))
         if HEAD in t.holding:
             raise StateError("head_full", f"{target} is already wearing {t.holding[HEAD]}")
         if target != who:
-            self._require_on_stage(who, target)
+            self._require_on_stage(target)
         self._attach_puppet(what, target, HEAD)
 
     def place_on(self, who: str, what: str, parent: str, pos: Vec3) -> None:
@@ -556,6 +646,7 @@ class World:
         self._person(who)
         self._prop(what)
         self._require_in_hand(who, what)
+        self._require_on_stage(who)
         parsed = parse_parent(parent)
         if parsed is None:
             self._to_ground(what, pos)
@@ -576,11 +667,33 @@ class World:
             raise StateError("unknown_state", f"{what} has no state {state}")
         self.props[what].state = state
 
+    def open(self, who: str, what: str) -> None:
+        """`open` verb: the prop's state becomes "open"."""
+        self._open_close(who, what, OPEN)
+
+    def close(self, who: str, what: str) -> None:
+        """`close` verb: the prop's state becomes "closed"."""
+        self._open_close(who, what, CLOSED)
+
+    def _open_close(self, who: str, what: str, state: str) -> None:
+        self._person(who)
+        st = self._prop(what)
+        self._require_on_stage(who)
+        self._require_placed(what)
+        states = self.catalog[what].states
+        if states and state not in states:
+            raise StateError("unknown_state", f"{what} has no state {state}")
+        if st.state == state:
+            raise StateError(f"already_{state}", f"it is already {state}")
+        st.state = state
+
     # --------------------------------------------------------------- seating
 
     def sit_on(self, who: str, what: str, socket: str | None = None) -> str:
         p = self._person(who)
         self._prop(what)
+        if self.is_vehicle(what):
+            raise StateError("vehicle_seat", f"{what} is a vehicle; use get_in")
         if p.seat is not None:
             raise StateError("already_seated", self._seat_reason(who))
         sockets = self.catalog[what].sockets
@@ -618,6 +731,8 @@ class World:
     def get_in(self, who: str, what: str, socket: str | None = None) -> str:
         p = self._person(who)
         self._prop(what)
+        if not self.is_vehicle(what):
+            raise StateError("not_a_vehicle", f"{what} is not a vehicle")
         if p.seat is not None:
             raise StateError("already_seated", self._seat_reason(who))
         sockets = self.catalog[what].sockets
@@ -657,20 +772,20 @@ class World:
             raise StateError("no_driver", f"nobody is driving {what}")
 
     def move_vehicle(self, what: str, pos: Vec3) -> None:
-        """Move a prop on the ground; seated puppets and stacked props follow."""
+        """Move a prop on the ground; stacked props and puppets seated on it, or on anything
+        stacked on it, follow."""
         st = self._prop(what)
         if st.parent != GROUND:
             raise StateError("not_on_ground", self._where(what))
+        self._require_placed(what)
         pos = _vec(pos)
         old = st.pos
         delta = (pos[0] - old[0], pos[1] - old[1], pos[2] - old[2])
         st.pos = pos
         st.world_pos = pos
-        for occ in st.occupants.values():
-            kind, _, oid = occ.partition(":")
-            if kind == "puppet":
-                q = self.people[oid]
-                q.pos = (q.pos[0] + delta[0], q.pos[1] + delta[1], q.pos[2] + delta[2])
+        for oid in self._riders(what):
+            q = self.people[oid]
+            q.pos = (q.pos[0] + delta[0], q.pos[1] + delta[1], q.pos[2] + delta[2])
         self._refresh_world(what)
 
     # ----------------------------------------------------------------- people
