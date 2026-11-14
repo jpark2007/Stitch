@@ -4,6 +4,7 @@
 // The family-tree home replaces this page.
 
 import { Canvas, useThree } from "@react-three/fiber";
+import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { preloadPaperTextures, type DeckledMaskOptions } from "@/components/paper/materials";
 import { Photo, Snapshot } from "@/components/paper/Photo";
@@ -186,15 +187,22 @@ function SwatchCanvas() {
   }, []);
   if (!ready) return null;
   return (
-    <Canvas
-      shadows="percentage"
-      dpr={[1, 2]}
-      frameloop="demand"
-      camera={{ position: [0, 5.2, 5.4], fov: 30, near: 0.1, far: 60 }}
-      gl={{ antialias: true }}
+    <motion.div
+      className="absolute inset-0"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
     >
-      <SwatchScene />
-    </Canvas>
+      <Canvas
+        shadows="percentage"
+        dpr={[1, 2]}
+        frameloop="demand"
+        camera={{ position: [0, 5.2, 5.4], fov: 30, near: 0.1, far: 60 }}
+        gl={{ antialias: true }}
+      >
+        <SwatchScene />
+      </Canvas>
+    </motion.div>
   );
 }
 
