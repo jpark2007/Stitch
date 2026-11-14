@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   RUN_GONE_MESSAGE,
   TELLING_KEY_PREFIX,
+  familyChoice,
   loadTelling,
   momentFromMemory,
   questionForMemory,
@@ -16,6 +17,7 @@ import {
   tellingFromSubmit,
   withRunGone,
 } from "../addPage.ts";
+import { pickFamily } from "../session.ts";
 
 /** A Map-backed Storage stand-in. */
 function memoryStorage() {
@@ -75,6 +77,65 @@ describe("readAddQuery", () => {
 
   test("the first of repeated params wins", () => {
     assert.equal(readAddQuery("?run=a&run=b").runId, "a");
+  });
+});
+
+// ---- familyChoice ---------------------------------------------------------------
+
+describe("familyChoice", () => {
+  const lees = { id: "fam_lees", name: "The Lees", role: "admin", personId: "p_1" };
+  const parks = { id: "fam_parks", name: "The Parks", role: "member", personId: "p_2" };
+  const kims = { id: "fam_kims", name: "The Kims", role: "member", personId: null };
+
+  test("no families: nothing current, nothing to show", () => {
+    assert.deepEqual(familyChoice([], null), { current: null, others: [], show: false });
+    assert.deepEqual(familyChoice([], "fam_lees"), { current: null, others: [], show: false });
+  });
+
+  test("one family is current and not shown", () => {
+    assert.deepEqual(familyChoice([lees], "fam_lees"), { current: lees, others: [], show: false });
+    assert.deepEqual(familyChoice([lees], null), { current: lees, others: [], show: false });
+    assert.deepEqual(familyChoice([lees], "fam_other"), { current: lees, others: [], show: false });
+  });
+
+  test("two families with the current one set", () => {
+    assert.deepEqual(familyChoice([lees, parks], "fam_parks"), {
+      current: parks,
+      others: [lees],
+      show: true,
+    });
+    assert.deepEqual(familyChoice([lees, parks], "fam_lees"), {
+      current: lees,
+      others: [parks],
+      show: true,
+    });
+  });
+
+  test("a missing or unknown id falls back the way pickFamily does", () => {
+    const families = [parks, lees, kims];
+    for (const id of [null, undefined, "", "fam_gone"]) {
+      const choice = familyChoice(families, id);
+      assert.equal(choice.current, pickFamily(families, id), String(id));
+      assert.equal(choice.current, parks);
+      assert.deepEqual(choice.others, [lees, kims]);
+      assert.equal(choice.show, true);
+    }
+    for (const f of families) {
+      assert.equal(familyChoice(families, f.id).current, pickFamily(families, f.id));
+    }
+  });
+
+  test("the others keep the session's order", () => {
+    assert.deepEqual(familyChoice([lees, parks, kims], "fam_parks").others, [lees, kims]);
+    assert.deepEqual(familyChoice([kims, lees, parks], "fam_kims").others, [lees, parks]);
+    assert.deepEqual(familyChoice([kims, lees, parks], "fam_parks").others, [kims, lees]);
+  });
+
+  test("does not change the list it is given", () => {
+    const families = [lees, parks];
+    const choice = familyChoice(families, "fam_lees");
+    choice.others.push(kims);
+    assert.deepEqual(families, [lees, parks]);
   });
 });
 

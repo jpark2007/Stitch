@@ -6,7 +6,7 @@
 // file directly. Tests: components/flow/__tests__/addPage.test.mjs.
 import type { RunSource } from "@/components/agent/useAgentRun";
 import type { RunEventMessage } from "@/components/agent/runState";
-import type { MemoryResponse, Question, SubmitMemoryFields } from "@/lib/types";
+import type { FamilySummary, MemoryResponse, Question, SubmitMemoryFields } from "../../lib/types";
 import type { MemoryRunTelling } from "./MemoryRun";
 
 /** What /add reads from its query string. Missing or empty values are null. */
@@ -35,6 +35,32 @@ export function readAddQuery(search: string | URLSearchParams | null): AddQuery 
 /** Where a run of family `familyId` lives: reloading it reattaches to the run. */
 export function runHref(q: { familyId: string; runId: string }): string {
   return `/add?family=${encodeURIComponent(q.familyId)}&run=${encodeURIComponent(q.runId)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Which family the memory goes into
+
+/** The family /add is adding to, the others it could add to, and whether to say so. */
+export interface FamilyChoice {
+  /** The family the memory goes into; null only for someone with no family. */
+  current: FamilySummary | null;
+  /** Every other family, in the order the session lists them. */
+  others: FamilySummary[];
+  /** True only for someone in two or more families: one family needs no naming. */
+  show: boolean;
+}
+
+/**
+ * The family choice on /add. `current` falls back exactly as pickFamily does
+ * (the matching family, else the first one), so the page and this agree.
+ */
+export function familyChoice(
+  families: readonly FamilySummary[],
+  currentId: string | null | undefined,
+): FamilyChoice {
+  const current = (currentId ? families.find((f) => f.id === currentId) : undefined) ?? families[0] ?? null;
+  const others = current ? families.filter((f) => f.id !== current.id) : [];
+  return { current, others, show: families.length >= 2 };
 }
 
 /** The slip MemoryRun shows above the feed, from what was just sent. */
