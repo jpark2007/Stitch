@@ -36,7 +36,7 @@ import type { PlaybackController } from "@/components/stage/playback";
 import { drawLeverFace, pullTabGeometry } from "../labelArt";
 import { PAGE_H, PAGE_W } from "../leafShape";
 import { PAGE_PX_W } from "../pageArt";
-import { pageHeightAt, usePageSurface } from "../pagePrint";
+import { holdPageControl, pageHeightAt, usePageSurface } from "../pagePrint";
 import { paperLift } from "../sound";
 import { STAGE_SLOT } from "../StoryPage";
 import type { BookPullTab } from "../types";
@@ -143,7 +143,17 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
   const flapPivot = useRef<Group>(null);
 
   /** Lever state: how far out (0..1 of travel), held or springing back. */
-  const st = useRef({ value: 0, vel: 0, held: false, hover: false, nudgeT0: -1, nudged: false, lastY: Number.NaN });
+  const st = useRef({
+    value: 0,
+    vel: 0,
+    held: false,
+    hover: false,
+    nudgeT0: -1,
+    nudged: false,
+    lastY: Number.NaN,
+    /** Lets the book have the pointer back (set while held). */
+    release: () => {},
+  });
 
   // The scene ending invites a pull: one small nudge out of the slit.
   useEffect(
@@ -244,6 +254,8 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     s.nudgeT0 = -1;
     s.nudged = true;
     paperLift();
+    s.release();
+    s.release = holdPageControl();
     document.body.style.cursor = "grabbing";
     const id = e.pointerId;
     const hold = (v: number) => {
@@ -264,6 +276,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
       s.held = false;
+      s.release();
       document.body.style.cursor = "";
       // Let go: the targets return to the scene's time; the lever springs home.
       controller.releaseInteraction(tab.id, { settle: "return" });
@@ -301,6 +314,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
   useEffect(
     () => () => {
       if (st.current.held) controller.releaseInteraction(tab.id, { settle: "return" });
+      st.current.release();
       document.body.style.cursor = "";
     },
     [controller, tab.id],
