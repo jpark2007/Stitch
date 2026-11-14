@@ -6,11 +6,9 @@
  *
  * Each frame the leaf reads its commanded turn from the shared BookRuntime,
  * computes a target angle per bone (leafShape.turnTargets) and springs each
- * bone toward it. Springs are stiff at the hinge and softer toward the free
- * edge, so the edge trails a turn, swings past by a hair and settles, which
- * is what makes it read as paper rather than a rotating board. A twist about
- * the head edge lifts the bottom corner first, like a page peeled by its
- * corner.
+ * bone toward it (leafSprings.ts): the free edge trails a turn, swings past
+ * by a hair and settles. A twist about the head edge lifts the bottom corner
+ * first, like a page peeled by its corner.
  */
 
 import { useFrame } from "@react-three/fiber";
@@ -27,6 +25,7 @@ import {
   type Texture,
 } from "three";
 import { BONES, PAGE_H, PAGE_W, SEG, turnTargets, turnTwist } from "./leafShape";
+import { LeafSprings, twistTargets } from "./leafSprings";
 import type { BookRuntime } from "./runtime";
 import { FRONT_OFFSET } from "./stacking";
 
@@ -121,21 +120,11 @@ function pageMaterial(map: Texture, alphaMap: Texture, t: LeafTextures) {
   return m;
 }
 
-/* Springs: natural frequency (rad/s) at the hinge and at the free edge. */
-const W_ROOT = 24;
-const W_TIP = 13.5;
-const ZETA = 0.7;
-const W_TWIST = 15;
-const MAX_STEP = 1 / 240;
-
 /** The skinned sheet and its per-bone springs. */
 export class LeafBody {
   readonly mesh: SkinnedMesh;
   private bones: Bone[] = [];
-  private phi = new Float32Array(BONES);
-  private vel = new Float32Array(BONES);
-  private tw = new Float32Array(BONES);
-  private twv = new Float32Array(BONES);
+  private springs = new LeafSprings(BONES);
   private target = new Float32Array(BONES);
   private twTarget = new Float32Array(BONES);
   private started = false;
@@ -175,7 +164,7 @@ export class LeafBody {
   /** Pose for this frame. Returns true while the sheet is still moving. */
   update(rt: BookRuntime, delta: number): boolean {
     const leaf = rt.leaves[this.index];
-    const { mesh, phi, vel, tw, twv, target, twTarget } = this;
+    const { mesh, springs, target, twTarget } = this;
     mesh.visible = leaf.visible;
     mesh.position.set(0, rt.hinge, -PAGE_H / 2);
     // A moving sheet can lie exactly on a stack's top sheet (same hinge, same
@@ -192,61 +181,24 @@ export class LeafBody {
 
     turnTargets(leaf, rt.restR, rt.restL, target);
     const twist = turnTwist(leaf);
-    // Twist builds toward the free edge.
-    const norm = ((BONES - 1) * BONES) / 2;
-    for (let i = 0; i < BONES; i++) twTarget[i] = (twist * i) / norm;
+    twistTargets(twist, twTarget);
 
     const key = `${leaf.p.toFixed(5)}|${leaf.mode}|${leaf.dir}|${rt.restVersion}|${twist.toFixed(5)}`;
     if (this.settled && key === this.key) return false;
     this.key = key;
 
     if (leaf.mode === "frozen" || !this.started) {
-      phi.set(target);
-      tw.set(twTarget);
-      vel.fill(0);
-      twv.fill(0);
+      springs.snap(target, twTarget);
       this.started = true;
     } else {
-      const dt = Math.min(delta, 1 / 20);
-      const steps = Math.max(1, Math.ceil(dt / MAX_STEP));
-      const h = dt / steps;
-      const stiff = leaf.stiff;
-      const wt = W_TWIST * stiff;
-      for (let s = 0; s < steps; s++) {
-        for (let i = 0; i < BONES; i++) {
-          const w = (W_ROOT + ((W_TIP - W_ROOT) * i) / (BONES - 1)) * stiff;
-          vel[i] += (w * w * (target[i] - phi[i]) - 2 * ZETA * w * vel[i]) * h;
-          phi[i] += vel[i] * h;
-          twv[i] += (wt * wt * (twTarget[i] - tw[i]) - 2 * 0.85 * wt * twv[i]) * h;
-          tw[i] += twv[i] * h;
-        }
-      }
-      // Never sink into the stacks: clamp to the rest shapes on either side.
-      for (let i = 0; i < BONES; i++) {
-        const lo = rt.restR[i];
-        const hi = Math.PI - rt.restL[i];
-        if (phi[i] < lo) {
-          phi[i] = lo;
-          if (vel[i] < 0) vel[i] = 0;
-        } else if (phi[i] > hi) {
-          phi[i] = hi;
-          if (vel[i] > 0) vel[i] = 0;
-        }
-      }
+      springs.step(target, twTarget, leaf.stiff, delta, rt.restR, rt.restL);
     }
 
-    let err = 0;
-    for (let i = 0; i < BONES; i++) {
-      err = Math.max(err, Math.abs(target[i] - phi[i]), Math.abs(vel[i]) * 0.05);
-      err = Math.max(err, Math.abs(twTarget[i] - tw[i]), Math.abs(twv[i]) * 0.05);
-    }
     // Settled leaves skip all work until their command (the key) changes.
-    this.settled = err < 2e-4;
-    if (this.settled) {
-      phi.set(target);
-      tw.set(twTarget);
-    }
+    this.settled = springs.error(target, twTarget) < 2e-4;
+    if (this.settled) springs.snap(target, twTarget);
 
+    const { phi, tw } = springs;
     let prev = 0;
     for (let i = 0; i < BONES; i++) {
       this.bones[i].rotation.set(tw[i], 0, phi[i] - prev);
