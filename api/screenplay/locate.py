@@ -118,6 +118,12 @@ class Locator:
         self.tracks = tracks
         self.marks = {k: _v3(v) for k, v in marks.items()}
         self.shot_id = shot_id
+        # Props off the stage when the shot starts (the compiler builds the Locator after the
+        # start block). One a previous set left behind still has tracks (the start block parks
+        # it at offstage_left), so the tracks alone would place it offstage. A snapshot, not a
+        # live check, so a prop that was on stage at the start and left later still resolves
+        # from its tracks for the end-of-shot camera pass.
+        self._unplaced_at_start = frozenset(p for p in world.props if world.is_unplaced(p))
 
     def __call__(self, name: str, t: float) -> Vec3:
         if name in self.world.people:
@@ -138,6 +144,8 @@ class Locator:
         if what in _seen:
             raise StateError("cycle", f"{what} rests on itself")
         seen = _seen | {what}
+        if what in self._unplaced_at_start and self.world.is_unplaced(what):
+            raise StateError("not_on_stage", f"{what} is not on stage")
         target = f"prop:{what}"
         parent = self.tracks.value_at(target, "parent", t)
         if parent is None:

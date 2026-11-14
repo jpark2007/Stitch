@@ -155,6 +155,100 @@ def test_unplaced_prop_is_not_on_stage(scene):
     assert (e.value.code, e.value.reason) == ("not_on_stage", "ghost is not on stage")
 
 
+def _new_set(world, tracks):
+    """What compile() does at a cut to a set that does not bring the table along: state.py
+    takes it off the stage, and the start block parks its tracks at offstage_left."""
+    tracks.add("prop:table", "parent", 0.0, "ground")
+    tracks.add("prop:table", "position", 0.0, [0.8, 0.0, 0.3])
+    tracks.add("prop:table", "position", 5.0, [0.8, 0.0, 0.3])
+    tracks.add("prop:table", "position", 5.0, [-1.3, 0.0, 0.5])
+    shot = Shot.model_validate({"id": "s2", "set": "y", "start": {"dad": {"at": "steps_foot"}}})
+    world.begin_shot(shot, MARKS, False)
+    assert world.is_unplaced("table")
+
+
+def test_a_prop_the_previous_set_left_behind_is_not_on_stage(scene):
+    world, tracks = scene
+    _new_set(world, tracks)
+    loc = make_locate(world, tracks, MARKS, "s2")
+    for t in (5.0, 6.0, 9.0):  # its parked tracks would say offstage_left
+        with pytest.raises(StateError) as e:
+            loc("table", t)
+        assert (e.value.code, e.value.reason) == ("not_on_stage", "table is not on stage")
+    with pytest.raises(StateError) as e:
+        loc.prop("table", 6.0)
+    assert e.value.code == "not_on_stage"
+
+
+def test_a_prop_on_stage_at_the_shot_start_still_resolves_from_its_tracks(scene):
+    """The not-on-stage check is a snapshot at the shot's start: a prop that was on stage then
+    and left later is still placed from its tracks (the end-of-shot camera pass looks back)."""
+    world, tracks = scene
+    tracks.add("prop:table", "parent", 0.0, "ground")
+    tracks.add("prop:table", "position", 0.0, [0.8, 0.0, 0.3])
+    loc = make_locate(world, tracks, MARKS, "s1")
+    st = world.props["table"]
+    st.world_pos = None  # it leaves the stage during the shot
+    assert world.is_unplaced("table")
+    assert loc("table", 1.0) == pytest.approx((0.8, 0.0, 0.3))
+
+
+def test_a_left_behind_prop_placed_again_resolves_normally(scene):
+    world, tracks = scene
+    _new_set(world, tracks)
+    world.begin_shot(Shot.model_validate({"id": "s3", "set": "z", "propStart": {"table": {"at": "steps_foot"}}}),
+                     MARKS, False)
+    tracks.add("prop:table", "position", 10.0, [0.0, 0.0, 0.5])
+    loc = make_locate(world, tracks, MARKS, "s3")
+    assert loc("table", 11.0) == pytest.approx((0.0, 0.0, 0.5))
+
+
+# ------------------------------------------------------- through compile(): set changes
+
+def _compile_two_sets(s2_actions=(), s2_camera=(), s2_prop_start=None):
+    from verb_cases import base_scene
+
+    from screenplay.compiler import compile as compile_screenplay
+    from screenplay.schema import Screenplay
+
+    sp = Screenplay.model_validate({"memoryId": "m", "cast": ["dad", "mom"], "props": ["hymn_books"], "shots": [
+        {"id": "s1", "set": "yard", "start": {"dad": {"at": "door"}}, "propStart": {"hymn_books": {"at": "bench_spot"}},
+         "actions": [{"t": 0, "do": "turn_to", "who": "dad", "target": "hymn_books"}]},
+        {"id": "s2", "set": "street", "start": {"dad": {"at": "garage"}}, "propStart": s2_prop_start or {},
+         "camera": list(s2_camera), "actions": list(s2_actions)},
+    ]})
+    sc = base_scene()
+    return compile_screenplay(sp, sets=sc.sets, props=sc.props, people=sc.people)
+
+
+def test_turn_to_a_prop_the_previous_set_left_behind_is_an_exact_error():
+    res = _compile_two_sets([{"t": 0, "do": "turn_to", "who": "dad", "target": "hymn_books"}])
+    assert not res.ok
+    assert [(e.code, e.message) for e in res.errors] == [
+        ("not_on_stage", "shot s2, t=0: dad cannot turn_to; hymn_books is not on stage"),
+    ]
+
+
+def test_point_at_a_prop_the_previous_set_left_behind_is_an_exact_error():
+    res = _compile_two_sets([{"t": 0, "do": "point_at", "who": "dad", "target": "hymn_books"}])
+    assert [e.message for e in res.errors] == ["shot s2, t=0: dad cannot point_at; hymn_books is not on stage"]
+
+
+def test_camera_close_up_on_a_prop_the_previous_set_left_behind_is_an_exact_error():
+    res = _compile_two_sets(s2_camera=[{"t": 0, "move": "close_up", "target": "hymn_books"}])
+    assert not res.ok
+    assert [(e.code, e.message) for e in res.errors] == [
+        ("bad_camera", 'shot s2, t=0: cannot close_up "hymn_books"; hymn_books is not on stage'),
+    ]
+
+
+def test_a_prop_the_new_shot_places_resolves_normally():
+    res = _compile_two_sets([{"t": 0, "do": "turn_to", "who": "dad", "target": "hymn_books"}],
+                            [{"t": 0, "move": "close_up", "target": "hymn_books"}],
+                            {"hymn_books": {"at": "corner"}})
+    assert res.ok, [e.message for e in res.errors]
+
+
 def test_mark_of_works_with_a_plain_callable():
     assert mark_of(lambda name, t: (1.0, 2.0, 3.0), "anything", 0) == (1.0, 2.0, 3.0)
 
