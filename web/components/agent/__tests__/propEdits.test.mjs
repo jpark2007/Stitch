@@ -5,6 +5,9 @@ import {
   initialPropDecisions,
   validatePropDecisions,
   toPropEdits,
+  propSizeLabel,
+  PROP_SIZE_LABELS,
+  REUSED_PROP_LABEL,
 } from "../propEdits.ts";
 
 const chips = [
@@ -123,4 +126,44 @@ test("toPropEdits throws when validation fails", () => {
   };
   assert.deepEqual(Object.keys(validatePropDecisions(chips, d)).sort(), ["car", "pew"]);
   assert.throws(() => toPropEdits(chips, d), /pew/);
+});
+
+test("every prop size reads as a plain size word", () => {
+  assert.equal(propSizeLabel("tiny"), "Tiny");
+  assert.equal(propSizeLabel("hand"), "Hand-sized");
+  assert.equal(propSizeLabel("carried"), "Armful");
+  assert.equal(propSizeLabel("furniture"), "Furniture-sized");
+  assert.equal(propSizeLabel("vehicle"), "Car-sized");
+  assert.equal(propSizeLabel("building"), "Building-sized");
+  // "Carried" describes an action, not a size.
+  assert.notEqual(propSizeLabel("carried"), "Carried");
+  // The table covers exactly the PropChip sizes, and each one ends in "-sized"
+  // or is one of the plain size words.
+  assert.deepEqual(Object.keys(PROP_SIZE_LABELS).sort(), [
+    "building",
+    "carried",
+    "furniture",
+    "hand",
+    "tiny",
+    "vehicle",
+  ]);
+  for (const label of Object.values(PROP_SIZE_LABELS)) {
+    assert.ok(label.endsWith("-sized") || ["Tiny", "Armful"].includes(label), label);
+  }
+});
+
+test("unknown sizes are humanized, never shown raw", () => {
+  assert.equal(propSizeLabel("big_box"), "Big box");
+  assert.equal(propSizeLabel("room-sized"), "Room sized");
+  assert.equal(propSizeLabel("  WALL__HANGING "), "Wall hanging");
+  assert.equal(propSizeLabel("handHeld"), "Hand held");
+  assert.equal(propSizeLabel(""), "");
+  // Object prototype keys are not sizes.
+  assert.equal(propSizeLabel("toString"), "To string");
+  assert.ok(!propSizeLabel("big_box").includes("_"));
+});
+
+test("the reused pill says the prop is already the family's, not 'saved'", () => {
+  assert.equal(REUSED_PROP_LABEL, "used before");
+  assert.notEqual(REUSED_PROP_LABEL.toLowerCase(), "saved");
 });

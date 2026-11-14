@@ -10,6 +10,39 @@ export type PropDecision =
 
 export const MAX_PROP_NAME = 60;
 
+/**
+ * The quiet pill on a prop the family already has (PropChip.reused): the agent
+ * found it among the family's things instead of drawing a new one.
+ */
+export const REUSED_PROP_LABEL = "used before";
+
+/** A plain size word for every known PropChip size. */
+export const PROP_SIZE_LABELS: Readonly<Record<PropChip["size"], string>> = {
+  tiny: "Tiny",
+  hand: "Hand-sized",
+  carried: "Armful",
+  furniture: "Furniture-sized",
+  vehicle: "Car-sized",
+  building: "Building-sized",
+};
+
+/**
+ * The label shown under a prop's name. Known sizes get their size word;
+ * anything else is humanized ("big_box" -> "Big box") rather than shown raw.
+ */
+export function propSizeLabel(size: PropChip["size"] | string): string {
+  if (Object.prototype.hasOwnProperty.call(PROP_SIZE_LABELS, size)) {
+    return PROP_SIZE_LABELS[size as PropChip["size"]];
+  }
+  const words = String(size ?? "")
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+  return words ? words[0].toUpperCase() + words.slice(1) : "";
+}
+
 /** Every chip starts as "keep". */
 export function initialPropDecisions(chips: PropChip[]): Record<string, PropDecision> {
   const out: Record<string, PropDecision> = {};
