@@ -90,7 +90,7 @@ test("validateSignup: bad email", () => {
 
 test("validateSignup: short password", () => {
   const e = validateSignup({ name: "Rosa", email: "rosa@maos.family", password: "1234567" });
-  assert.deepEqual(e, { password: "Use at least 8 characters." });
+  assert.deepEqual(e, { password: "That’s too short. Use at least 8 characters." });
 });
 
 test("validateSignup: eight characters, spaces counted, is enough", () => {
@@ -109,9 +109,13 @@ test("validateSignup: blank and overlong names", () => {
   );
 });
 
-test("PASSWORD_HINT: the signup rule, straight from validatePassword", () => {
-  assert.equal(PASSWORD_HINT, "Use at least 8 characters.");
-  assert.equal(PASSWORD_HINT, validatePassword("short"));
+test("PASSWORD_HINT: the signup rule, the same minimum validatePassword checks", () => {
+  assert.equal(PASSWORD_HINT, "At least 8 characters.");
+  // Worded apart from the error, so a short password never shows one line twice.
+  assert.notEqual(PASSWORD_HINT, validatePassword("short"));
+  assert.ok(validatePassword("short").includes("at least 8 characters"));
+  assert.equal(validatePassword("12345678"), null);
+  assert.notEqual(validatePassword("1234567"), null);
 });
 
 // ---- validateFamily -------------------------------------------------------
@@ -205,11 +209,32 @@ test("serverErrorState: field errors land on fields; detail still shown", () => 
 
 test("serverErrorState: unknown keys join the detail, without repeats", () => {
   const s = serverErrorState(
-    { detail: "Please check the highlighted fields.", fieldErrors: { captcha: "Try again.", other: "Try again." } },
+    { detail: "That didn't work.", fieldErrors: { captcha: "Try again.", other: "Try again." } },
     LOGIN_FIELDS,
   );
   assert.deepEqual(s.fields, {});
-  assert.equal(s.formError, "Please check the highlighted fields. Try again.");
+  assert.equal(s.formError, "That didn't work. Try again.");
+});
+
+test("serverErrorState: 'check the highlighted fields' is dropped when nothing is highlighted", () => {
+  // A 422 about a field this form does not have: its own message, not a pointer at nothing.
+  const s = serverErrorState(
+    { detail: "Please check the highlighted fields.", fieldErrors: { email: "Enter a valid email" } },
+    FAMILY_FIELDS,
+  );
+  assert.deepEqual(s.fields, {});
+  assert.equal(s.formError, "Enter a valid email");
+});
+
+test("serverErrorState: a 422 with nothing usable still says something plain", () => {
+  const none = serverErrorState({ detail: "Please check the highlighted fields.", fieldErrors: {} }, LOGIN_FIELDS);
+  assert.deepEqual(none, { fields: {}, formError: "Something in that form isn't quite right. Check it and try again." });
+  // When a field is highlighted, the pointer is right and stays.
+  const some = serverErrorState(
+    { detail: "Please check the highlighted fields.", fieldErrors: { password: "Too short." } },
+    LOGIN_FIELDS,
+  );
+  assert.deepEqual(some, { fields: { password: "Too short." }, formError: "Please check the highlighted fields." });
 });
 
 test("serverErrorState: blank detail and nothing left over gives null", () => {

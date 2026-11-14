@@ -18,6 +18,7 @@ import {
   api,
 } from "../../../lib/api.ts";
 import * as apiModule from "../../../lib/api.ts";
+import { CHECK_FIELDS_MESSAGE } from "../validation.ts";
 
 const BASE = "http://api.test";
 
@@ -578,7 +579,7 @@ describe("uploadMedia", () => {
       createApiClient({ baseUrl: BASE, fetch }).uploadMedia("f", new Blob(["x"], { type: "image/png" })),
       (e) => {
         assert.equal(e.status, 413);
-        assert.equal(e.detail, "That file is too large.");
+        assert.equal(e.detail, "That file is too large to send. Try a smaller one.");
       },
     );
   });
@@ -640,7 +641,11 @@ describe("errors", () => {
 
   test("non-JSON and empty error bodies fall back to per-status messages", async () => {
     const cases = [
-      [new Response("<html>Bad Gateway</html>", { status: 502 }), 502, "Something went wrong on our side. Please try again."],
+      [new Response("<html>Bad Gateway</html>", { status: 502 }), 502, "Stitch didn't answer properly just now. Please try again in a moment."],
+      [new Response("Service Unavailable", { status: 503 }), 503, "Stitch is busy or restarting. Please try again in a minute."],
+      [new Response("", { status: 504 }), 504, "Stitch took too long to answer. Please try again."],
+      [new Response("<html>oops</html>", { status: 507 }), 507, "Something went wrong on our side. Please try again."],
+      [new Response("{not json", { status: 422 }), 422, "Please check the highlighted fields."],
       [new Response("Internal Server Error", { status: 500 }), 500, "Something went wrong on our side. Please try again."],
       [new Response(null, { status: 404 }), 404, "We couldn't find that."],
       [new Response("[]", { status: 403 }), 403, "You don't have permission to do that."],
@@ -689,10 +694,10 @@ describe("errors", () => {
       const client = createApiClient({ baseUrl: BASE, fetch: async () => make() });
       await rejectsWith(client.me(), (e) => {
         assert.ok(isApiError(e));
-        assert.equal(e.detail, "The server sent an empty response.");
+        assert.equal(e.detail, "Stitch sent back an empty answer. Please try again.");
       });
       await rejectsWith(client.submitMemory("f", { text: "t", year: 2000 }), (e) => {
-        assert.equal(e.detail, "The server sent an empty response.");
+        assert.equal(e.detail, "Stitch sent back an empty answer. Please try again.");
       });
     }
   });
@@ -701,7 +706,7 @@ describe("errors", () => {
     const client = createApiClient({ baseUrl: BASE, fetch: async () => new Response("<html>", { status: 200 }) });
     await rejectsWith(client.getTree("f"), (e) => {
       assert.equal(e.status, 200);
-      assert.equal(e.detail, "The server sent a response we couldn't read.");
+      assert.equal(e.detail, "Stitch sent back something we couldn't read. Please try again.");
     });
   });
 
@@ -709,9 +714,26 @@ describe("errors", () => {
     assert.equal(new ApiError(0).detail, NETWORK_ERROR_MESSAGE);
     assert.equal(new ApiError(401).detail, "Please log in to continue.");
     assert.equal(new ApiError(404, "   ").detail, "We couldn't find that.");
-    assert.equal(new ApiError(503).detail, "Something went wrong on our side. Please try again.");
+    assert.equal(new ApiError(503).detail, "Stitch is busy or restarting. Please try again in a minute.");
+    assert.equal(new ApiError(500).detail, "Something went wrong on our side. Please try again.");
     assert.equal(apiErrorFromBody(400, "nope").detail, "Something in that form isn't quite right.");
     assert.equal(isApiError(new Error("x")), false);
+  });
+
+  test("the 422 default is the one the flow forms recognise", () => {
+    // validation.ts CHECK_FIELDS_MESSAGE: dropped when a form highlights nothing.
+    assert.equal(new ApiError(422).detail, CHECK_FIELDS_MESSAGE);
+  });
+
+  test("5xx statuses each get their own calm sentence, never raw text", () => {
+    const seen = new Set();
+    for (const status of [500, 502, 503, 504]) {
+      const d = new ApiError(status).detail;
+      assert.match(d, /^[A-Z].*[.]$/);
+      assert.doesNotMatch(d, /[{}<>]/);
+      seen.add(d);
+    }
+    assert.equal(seen.size, 4);
   });
 });
 

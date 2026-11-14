@@ -62,8 +62,10 @@ export function isMockMode(): boolean {
 export const NETWORK_ERROR_MESSAGE =
   "We can't reach Stitch right now. Check your connection and try again.";
 
-const EMPTY_RESPONSE_MESSAGE = "The server sent an empty response.";
-const UNREADABLE_RESPONSE_MESSAGE = "The server sent a response we couldn't read.";
+/** A success with no body on a route that must answer with one. */
+const EMPTY_RESPONSE_MESSAGE = "Stitch sent back an empty answer. Please try again.";
+/** A success whose body is not the JSON we asked for. */
+const UNREADABLE_RESPONSE_MESSAGE = "Stitch sent back something we couldn't read. Please try again.";
 
 const STATUS_MESSAGES: Record<number, string> = {
   400: "Something in that form isn't quite right.",
@@ -72,9 +74,14 @@ const STATUS_MESSAGES: Record<number, string> = {
   404: "We couldn't find that.",
   409: "That conflicts with something that already exists.",
   410: "That link is no longer available.",
-  413: "That file is too large.",
+  413: "That file is too large to send. Try a smaller one.",
+  // components/flow/validation.ts CHECK_FIELDS_MESSAGE must stay equal to this.
   422: "Please check the highlighted fields.",
   429: "That's a lot of requests. Wait a moment and try again.",
+  500: "Something went wrong on our side. Please try again.",
+  502: "Stitch didn't answer properly just now. Please try again in a moment.",
+  503: "Stitch is busy or restarting. Please try again in a minute.",
+  504: "Stitch took too long to answer. Please try again.",
 };
 
 function defaultMessage(status: number): string {
