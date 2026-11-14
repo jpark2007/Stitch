@@ -16,6 +16,7 @@ dependencies = [
     "pydantic-settings>=2.16.3",
     "pyjwt>=2.15.1",
     "pymongo>=4.20.0",
+    "python-dotenv>=1.2.4",
     "python-multipart>=0.0.33",
     "uvicorn[standard]>=0.54.0",
 ]

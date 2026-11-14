@@ -2,11 +2,25 @@
 
 Run it from api/:
 
-    uv run uvicorn main:app --env-file ../.env            # real MongoDB (MONGODB_URI)
+    uv run uvicorn main:app --reload                      # real MongoDB (MONGODB_URI from api/.env)
     STITCH_FAKE_DB=1 uv run uvicorn main:app --reload     # in-memory, seeded demo family, scripted runs
+
+.env files: importing this module loads api/.env, then the repo-root .env, before anything
+else reads the environment (db.client reads EMBEDDING_DIM and MONGODB_URI on import).
+Neither overrides a variable that is already set, so the real environment wins, and so
+does `uvicorn --env-file` (applied before the import). Startup logs which files were
+loaded, by path only. Skipped under pytest and with STITCH_NO_DOTENV=1, so tests never
+read a developer's keys.
 
 Environment:
 
+- VOYAGE_API_KEY (and VOYAGE_MODEL, default voyage-3.5): on a real database, startup installs
+  db.embeddings.embedder_from_env() as db.search's embedder, so "ask the family" and prop
+  and set matching use Atlas Vector Search and saved props and sets get a vector. Unset or
+  blank, or with STITCH_FAKE_DB on, there is no embedder and both use keyword search.
+  Startup logs whether embeddings are on (never the key). EMBEDDING_DIM (default 1024) is
+  the vector length and must match the Atlas vector indexes.
+- STITCH_NO_DOTENV=1: do not load the .env files.
 - STITCH_CORS_ORIGINS: comma-separated browser origins allowed to call the API with cookies.
   Defaults to http://localhost:3000 and http://127.0.0.1:3000. Read when create_app() runs.
 - STITCH_FAKE_DB=1: use an in-memory mongomock database seeded with the demo family
@@ -45,22 +59,59 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pymongo.errors import ConnectionFailure
-from starlette.concurrency import run_in_threadpool
+from dotenv import load_dotenv
 
-import routes.ask
-import routes.auth
-import routes.families
-import routes.memories
-import routes.props
-import routes.tree
-from db import client
+_TRUTHY = frozenset({"1", "true", "yes"})
+
+API_DIR = Path(__file__).resolve().parent
+# api/.env first, then the repo-root .env. Neither overrides a variable already set.
+ENV_FILES: tuple[Path, ...] = (API_DIR / ".env", API_DIR.parent / ".env")
+
+
+def load_env_files(paths: list[Path]) -> list[Path]:
+    """Load each existing file into os.environ, in order, never overriding a set variable.
+
+    So the real environment (and uvicorn's --env-file, applied before this module is
+    imported) always wins, then the first file that sets a name. Missing files are
+    skipped. Returns the files that were loaded.
+    """
+    loaded: list[Path] = []
+    for path in paths:
+        if path.is_file():
+            load_dotenv(path, override=False)
+            loaded.append(path)
+    return loaded
+
+
+def dotenv_enabled() -> bool:
+    """False under pytest (tests never read a developer's keys) or with STITCH_NO_DOTENV=1."""
+    if "pytest" in sys.modules:
+        return False
+    return (os.environ.get("STITCH_NO_DOTENV") or "").strip().lower() not in _TRUTHY
+
+
+# Before anything below reads the environment: db.client reads EMBEDDING_DIM and
+# MONGODB_URI when imported, and create_app() reads STITCH_CORS_ORIGINS.
+LOADED_ENV_FILES: list[Path] = load_env_files(list(ENV_FILES)) if dotenv_enabled() else []
+
+from fastapi import APIRouter, FastAPI, Request  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from pymongo.errors import ConnectionFailure  # noqa: E402
+from starlette.concurrency import run_in_threadpool  # noqa: E402
+
+import routes.ask  # noqa: E402
+import routes.auth  # noqa: E402
+import routes.families  # noqa: E402
+import routes.memories  # noqa: E402
+import routes.props  # noqa: E402
+import routes.tree  # noqa: E402
+from db import client, search  # noqa: E402
+from db.embeddings import embedder_from_env  # noqa: E402
 
 # A child of uvicorn's error logger, so startup lines show in the uvicorn console.
 log = logging.getLogger("uvicorn.error").getChild("stitch")
@@ -78,8 +129,6 @@ DEFAULT_CORS_ORIGINS: tuple[str, ...] = ("http://localhost:3000", "http://127.0.
 
 AGENT_MODES: tuple[str, ...] = ("off", "fake", "real")
 DEFAULT_FAKE_RUN_STEP = 0.6
-
-_TRUTHY = frozenset({"1", "true", "yes"})
 
 
 def cors_origins() -> list[str]:
@@ -173,6 +222,33 @@ def _ensure_indexes() -> None:
         log.warning("Vector search indexes not created: %r", exc)
 
 
+def _log_env_files() -> None:
+    """One line naming the .env files loaded at import (paths only, never values)."""
+    if LOADED_ENV_FILES:
+        log.info("Environment loaded from %s (variables already set win)",
+                 ", ".join(str(p) for p in LOADED_ENV_FILES))
+    elif dotenv_enabled():
+        log.info("No .env file found (looked for %s)", ", ".join(str(p) for p in ENV_FILES))
+
+
+def _configure_embeddings() -> None:
+    """Install the Voyage embedder from the environment, or none. One log line, never the key."""
+    try:
+        embedder = embedder_from_env()
+    except Exception as exc:  # noqa: BLE001 - search falls back to keywords
+        log.warning("Vector search embeddings off: the embedder could not be built (%s)", type(exc).__name__)
+        embedder = None
+    search.set_embedder(embedder)
+    if embedder is None:
+        log.info("Vector search embeddings off (VOYAGE_API_KEY not set): ask and prop matching use keywords")
+        return
+    log.info(
+        "Vector search embeddings on: Voyage AI %s, %s dimensions",
+        getattr(embedder, "model", "?"),
+        getattr(embedder, "dimensions", client.VECTOR_DIM),
+    )
+
+
 def _install_agent_fake() -> bool:
     """Scripted runs (seed/fake_runs.py) behind agent.runs. True when a manager was installed."""
     from seed.fake_runs import install_fake_runs
@@ -249,12 +325,19 @@ async def _start_agent(mode: str) -> bool:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    _log_env_files()
     installed_fake = False
+    # Read on purpose (db.search has no getter): shutdown puts back whatever was there.
+    previous_embedder = getattr(search, "_embedder", None)
     if fake_db_enabled():
         await run_in_threadpool(_install_fake_db)
         installed_fake = True
+        # mongomock has no $vectorSearch, and the fake mode makes no network calls.
+        if (os.environ.get("VOYAGE_API_KEY") or "").strip():
+            log.info("Vector search embeddings off: STITCH_FAKE_DB ignores VOYAGE_API_KEY")
     else:
         await run_in_threadpool(_ensure_indexes)
+        _configure_embeddings()
     mode = agent_mode()
     # The run routes refuse with 503 when this is "off" (routes.memories._agent_off).
     setattr(application.state, routes.memories.AGENT_OFF_STATE, mode)
@@ -266,6 +349,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             await run_in_threadpool(_shutdown_agent)
         if installed_fake:
             client.set_db(None)
+        else:
+            search.set_embedder(previous_embedder)
 
 
 # ----------------------------------------------------------------------------- errors
