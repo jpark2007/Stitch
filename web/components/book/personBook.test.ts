@@ -261,10 +261,11 @@ describe("the demo family's books", () => {
   it("a moment with no hand-made page gets a short line from its year and tellers", () => {
     const book = pb.demoPersonBook("david")!;
     const sedan = book.spreads[0];
-    assert.equal(sedan.text, "It was 1968. This is how Rosa & David remember it.");
+    assert.equal(sedan.text, "It was 1968. Here is how it went, just as it was told.");
+    // The tellers are printed under it ("as told by Rosa & David").
     assert.deepEqual(sedan.tellers, ["Rosa", "David"]);
     assert.equal(sedan.stage, undefined);
-    assert.equal(pb.demoLine({ year: 1990, tellers: ["ana"] }), "It was 1990. This is how Ana remembers it.");
+    assert.equal(pb.demoLine({ year: 1990, tellers: [] }), "It was 1990, and it went just like this.");
     // Without the sample the church steps are paper only.
     assert.equal(book.spreads[1].stage, undefined);
   });

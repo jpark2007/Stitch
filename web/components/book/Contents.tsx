@@ -46,6 +46,13 @@ interface ContentsProps {
 }
 
 const EASE = [0.22, 1, 0.36, 1] as const;
+/**
+ * A card's opacity at rest. Just under 1 on purpose: a list that scrolls
+ * (a phone's long contents) over the book's canvas otherwise leaves a dark
+ * ghost of itself on the canvas below it in Chromium's compositor (seen in
+ * headless captures); a translucent card is composited whole and does not.
+ */
+const SHOWN = 0.999;
 
 /** The book turns pages on the wheel; a list that scrolls keeps its own. */
 const keepWheel = (e: WheelEvent) => e.stopPropagation();
@@ -109,7 +116,7 @@ export function ContentsCard({ spreads, view, onPick }: ContentsProps) {
         onWheel={keepWheel}
         className="max-h-[inherit] w-full touch-pan-y overflow-y-auto overscroll-contain rounded-[3px] bg-[#f7f0e1] px-3 pb-3 pt-2.5 text-ink shadow-[0_1px_1px_rgb(0_0_0/0.25),0_14px_32px_-10px_rgb(0_0_0/0.75)]"
         initial={false}
-        animate={{ opacity: shown ? 1 : 0, y: shown ? 0 : 6 }}
+        animate={{ opacity: shown ? SHOWN : 0, y: shown ? 0 : 6 }}
         transition={{ duration: shown ? 0.7 : 0.45, delay: shown ? 0.25 : 0, ease: EASE }}
         style={{ pointerEvents: shown ? "auto" : "none" }}
       >
@@ -123,11 +130,16 @@ export function ContentsCard({ spreads, view, onPick }: ContentsProps) {
 // Placement by the shape of the screen, as the book's camera frames it:
 // a wide screen leaves room on the table beside the closed book; a phone or
 // a squarer screen does not, so the card becomes a strip above it.
+// The strip stops above the closed book's top edge, which sits lower on a
+// tall phone (about 26% down) than on a squarer screen (about 22%).
 const CARD_CSS = `
-.contents-card { left: 1rem; right: 1rem; top: 4.25rem; max-height: max(5.5rem, calc(26dvh - 4.75rem)); }
+.contents-card { left: 1rem; right: 1rem; top: 4.25rem; max-height: max(4.5rem, calc(26dvh - 4.75rem)); }
+.contents-card > div { padding-bottom: 1.4rem; mask-image: linear-gradient(to bottom, #000 calc(100% - 1.4rem), transparent); }
+@media (min-aspect-ratio: 3/5) { .contents-card { max-height: max(4.5rem, calc(21.5dvh - 4.75rem)); } }
 @media (min-width: 640px) { .contents-card { left: 50%; right: auto; width: min(26rem, calc(100vw - 2rem)); transform: translateX(-50%); } }
-@media (min-width: 1100px) and (min-aspect-ratio: 7/5) {
-  .contents-card { left: max(1.5rem, calc(50% - 41rem)); top: 50%; width: 17.5rem; max-height: min(30rem, 70dvh); transform: translateY(-50%) rotate(-1.2deg); }
+@media (min-width: 1000px) and (min-aspect-ratio: 5/4) {
+  .contents-card { left: max(1rem, calc(50% - 41rem)); top: 50%; width: clamp(14rem, 22vw - 2rem, 17.5rem); max-height: min(30rem, 70dvh); transform: translateY(-50%) rotate(-1.2deg); }
+  .contents-card > div { padding-bottom: 0.75rem; mask-image: none; }
 }
 `;
 
@@ -180,7 +192,7 @@ export function ContentsTab({ spreads, view, onPick }: ContentsProps) {
         onWheel={keepWheel}
         className="absolute right-0 top-full z-20 mt-2 max-h-[min(26rem,calc(100dvh-6rem))] w-[min(19rem,calc(100vw-2rem))] origin-top-right touch-pan-y overflow-y-auto overscroll-contain rounded-[3px] bg-[#f7f0e1] px-2.5 py-2.5 text-ink shadow-[0_1px_1px_rgb(0_0_0/0.25),0_14px_32px_-10px_rgb(0_0_0/0.75)]"
         initial={false}
-        animate={{ opacity: open ? 1 : 0, y: open ? 0 : -6, scale: open ? 1 : 0.98 }}
+        animate={{ opacity: open ? SHOWN : 0, y: open ? 0 : -6, scale: open ? 1 : 0.98 }}
         transition={{ duration: 0.3, ease: EASE }}
         style={{ pointerEvents: open ? "auto" : "none" }}
       >

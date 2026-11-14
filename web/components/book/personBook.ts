@@ -19,7 +19,7 @@
 import type { BookResponse, Memory, MemoryResponse, Person, Prop, SetDef } from "@/lib/types";
 import { demoFamily, demoMoments, demoMomentsFor, getDemoPerson, type DemoMoment } from "@/components/tree/demoFamily";
 import { demoSpreads } from "./demoSpreads";
-import { joinNames, momentCover, momentEnd, momentSpread, type MomentSpreadOptions } from "./moment";
+import { momentCover, momentEnd, momentSpread, type MomentSpreadOptions } from "./moment";
 import type { BookCover, BookSpread, BookTeller } from "./types";
 
 /** A person's thread when their character has no colour. */
@@ -227,11 +227,14 @@ const demoSpreadById = new Map(demoSpreads.map((s) => [s.id, s]));
 
 const demoName = (id: string) => getDemoPerson(id)?.name ?? id;
 
-/** A short storybook line for a demo moment with no hand-made page: its year, and who remembers it. */
+/**
+ * A short storybook line for a demo moment with no hand-made page, under
+ * its title: the year, and that it is told as its tellers told it (the page
+ * names them just below, "as told by Luis & Rosa").
+ */
 export function demoLine(m: Pick<DemoMoment, "year" | "tellers">): string {
-  const names = (m.tellers ?? []).map(demoName);
-  if (names.length === 0) return `It was ${m.year}, and it went just like this.`;
-  return `It was ${m.year}. This is how ${joinNames(names)} ${names.length > 1 ? "remember" : "remembers"} it.`;
+  const told = (m.tellers ?? []).length > 0;
+  return told ? `It was ${m.year}. Here is how it went, just as it was told.` : `It was ${m.year}, and it went just like this.`;
 }
 
 /**

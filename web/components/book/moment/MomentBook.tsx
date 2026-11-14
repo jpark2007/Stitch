@@ -193,6 +193,11 @@ export function MomentBook({
   // Narration elements and mute while the page is shown (an Activity hides it on navigation).
   useEffect(() => players.activate(), [players]);
 
+  // The tab says whose book (or which moment) this is.
+  useEffect(() => {
+    document.title = `${cover.title} · Stitch`;
+  }, [cover.title]);
+
   // The book is on another spread: the players follow at once (from the
   // book's own call, not an effect later), and so do the test hooks.
   const readyIds = useRef(new Set<string>());
