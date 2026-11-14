@@ -81,6 +81,7 @@ ALLOWED_WORDS: dict[str, str] = {
     "steps_left": "example mark name; the sample set's mark",
     "curb": "example mark name in set_designer.md",
     "church_steps_2": "example suffixed set id (agent.tools.sets: never overwrite a saved place)",
+    "also_named": "interviewer return-shape key: people named in the story but not in the tree (never cast)",
 }
 
 # --------------------------------------------------------------------------- what is audited
