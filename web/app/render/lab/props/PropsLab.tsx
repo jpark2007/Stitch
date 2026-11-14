@@ -121,10 +121,10 @@ export default function PropsLab() {
 
       {chrome && (
         <>
-          <header className="pointer-events-none absolute left-[var(--gutter)] top-6 max-w-md">
+          <header className="pointer-events-none absolute left-[var(--gutter)] top-6 max-w-sm rounded-[var(--radius-card)] bg-paper-light/92 px-5 py-4 shadow-paper">
             <p className="kicker">Stitch · stage lab</p>
-            <h1 className="mt-2 text-3xl sm:text-4xl">Props</h1>
-            <p className="mt-2 text-sm text-ink-soft">{demo.note}</p>
+            <h1 className="mt-1 text-2xl sm:text-3xl">Props</h1>
+            <p className="mt-1.5 text-sm leading-snug text-ink-soft">{demo.note}</p>
           </header>
 
           <nav className="absolute bottom-6 left-1/2 flex -translate-x-1/2 gap-1.5 rounded-[var(--radius-soft)] bg-paper-light/90 p-1.5 shadow-lift">

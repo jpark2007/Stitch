@@ -50,8 +50,11 @@ function Marks() {
 
 export function LabStage() {
   const wood = useWoodMaterial({ repeat: [2, 2] });
-  // Fine grain at the props' scale: about 2.5 tiles per stage unit.
-  const floor = useCardBoxMaterials({ color: "#f3ead8", repeat: [8, 4], grain: 0.55 });
+  // Fine grain at the props' scale: about 2.5 tiles per stage unit. The floor
+  // is drawing paper (card grain streaks when seen at a low angle), laid on a
+  // card board for its edge.
+  const board = useCardBoxMaterials({ color: "#e6d9bf", repeat: [8, 4], grain: 0.5 });
+  const floor = usePaperMaterial({ color: "#f3ead8", repeat: [8, 4], grain: 0.7 });
   const page = useCardBoxMaterials({ color: "#efe5d1", repeat: [8, 5], grain: 0.5 });
 
   return (
@@ -81,8 +84,11 @@ export function LabStage() {
         <planeGeometry args={[12, 8]} />
       </mesh>
       {/* The floor sheet: the lower page, from the fold toward the viewer. */}
-      <mesh position={[0, -0.006, 0.78]} receiveShadow castShadow material={floor}>
+      <mesh position={[0, -0.0065, 0.78]} receiveShadow castShadow material={board}>
         <boxGeometry args={[3.2, 0.012, 1.56]} />
+      </mesh>
+      <mesh position={[0, 0, 0.78]} rotation-x={-Math.PI / 2} receiveShadow material={floor}>
+        <planeGeometry args={[3.2, 1.56]} />
       </mesh>
       {/* The facing page, standing at the fold. */}
       <mesh position={[0, 1.0, -0.006]} rotation-x={Math.PI / 2} receiveShadow castShadow material={page}>
