@@ -267,13 +267,14 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     const s = st.current;
     const dt = Math.min(delta, 0.05);
     let moving = false;
-    // Out of the slit while its shot is on stage, home in it otherwise.
-    const gt = gateNow(controller, shot, reveal, s);
-    const away = stepTabAway(s.away, gt.out, dt);
+    // Out of the slit while its shot is on stage, home in it otherwise; it
+    // takes a pull from where it has slid to this frame (the card drawn).
+    const away = stepTabAway(s.away, gateNow(controller, shot, reveal, s).out, dt);
     if (away !== s.away) {
       s.away = away;
       moving = true;
     }
+    const gt = gateNow(controller, shot, reveal, s);
     s.grabbable = gt.grabbable;
     // Only the grab area takes the pointer, and only while it pulls.
     const hit = hitMesh.current;
