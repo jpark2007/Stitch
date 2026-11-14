@@ -27,6 +27,7 @@ from collections.abc import Mapping
 
 from screenplay import body as gen
 from screenplay import motion
+from screenplay.effects import STAGE_EDGE
 from screenplay.ik import RIG, Body
 from screenplay.locate import Locate, bones_at, gesture_arm, held_arm_bones, puppet_root, puppet_target
 from screenplay.schema import Action
@@ -44,9 +45,13 @@ LEAN_SECONDS = 1.0
 SEAT_WALK_EPS = 0.05  # walk to a seat first when the root is farther than this from it
 HUG_GAP = 0.18        # stage units between two hugging roots
 HUG_SLACK = 0.02      # no walk when already within HUG_GAP + HUG_SLACK
+# A puppet that gets up from a seat (stand_up) or out of a vehicle (get_out) whose spot lies past
+# the stage edge (|x| > STAGE_EDGE) steps inward to this far inside the edge (dismount_step).
+DISMOUNT_EDGE_MARGIN = 0.05
 
 __all__ = [
     "BONES",
+    "DISMOUNT_EDGE_MARGIN",
     "HANDLERS",
     "HUG_GAP",
     "HUG_SLACK",
@@ -60,6 +65,9 @@ __all__ = [
     "apply_sit_on",
     "apply_stand_up",
     "apply_wave",
+    "dismount_step",
+    "require_gesture_on_stage",
+    "seated_world_pos",
 ]
 
 
@@ -116,6 +124,53 @@ def _after_walk(rots: Mapping[str, float], keys: list[Key], who: str) -> dict[st
     return out
 
 
+def dismount_step(world: World, who: str, t: float, stand_at: Vec3, seat_x: float,
+                  facing: int) -> tuple[list[Key], float, Vec3, int]:
+    """The short step inward after getting up from a seat (or out of a vehicle) by the edge.
+
+    ``stand_at`` is where the puppet stands once up, at timeline time ``t``; ``seat_x`` is the x
+    of the seat's prop (its anchor). When ``stand_at`` lies past the stage edge (|x| >
+    STAGE_EDGE) while the prop stands on stage (|seat_x| <= STAGE_EDGE), the puppet walks
+    (motion.locomotion_keys, so foot planting covers it; held arms keep the hold pose) to
+    ``DISMOUNT_EDGE_MARGIN`` inside that edge, on the same surface height and z. A prop that is
+    itself offstage (a car driven off) leaves its puppet offstage: getting out there is not an
+    entrance. Returns (keys, when the step ends, where it ends, facing after); with no step,
+    ([], t, stand_at, facing). Pure: reads ``world``, changes nothing.
+    """
+    x = stand_at[0]
+    if abs(x) <= STAGE_EDGE or abs(seat_x) > STAGE_EDGE:
+        return [], t, stand_at, facing
+    goal: Vec3 = (math.copysign(STAGE_EDGE - DISMOUNT_EDGE_MARGIN, x), stand_at[1], stand_at[2])
+    keys, end, facing = _walk(world, who, t, stand_at, goal, facing)
+    return keys, end, goal, facing
+
+
+def seated_world_pos(pos: Vec3, seat_x: float) -> Vec3:
+    """The world position ``World`` records for a puppet seated at ``pos`` on a prop whose
+    anchor is at ``seat_x``.
+
+    A seat that overhangs the stage edge (the aisle end of a pew at the gate, the far door of a
+    car parked by the edge) puts ``pos`` past |x| = STAGE_EDGE while the prop stands on stage.
+    The puppet is on stage with its seat, as when a start block seats it there (that records
+    the start mark), so its recorded x is held at the edge; its root keys stay on the seat. A
+    seat inside the band, or a prop that is itself offstage, returns ``pos`` unchanged."""
+    if abs(pos[0]) <= STAGE_EDGE or abs(seat_x) > STAGE_EDGE:
+        return pos
+    return (math.copysign(STAGE_EDGE, pos[0]), pos[1], pos[2])
+
+
+def require_gesture_on_stage(world: World, who: str) -> None:
+    """verb_helpers.require_on_stage for wave, point_at and lean_toward, except that a puppet
+    seated in a vehicle driven offstage is told to bring the vehicle back: enter would fail
+    there (it is seated). ``offstage``: "dad is offstage in sedan.driver; drive_to or ride_to a
+    mark on stage first"."""
+    p = world.people[who]
+    if p.seat is not None and world.is_vehicle(p.seat[0]) and not world.on_stage(who):
+        what, sock = p.seat
+        raise StateError("offstage", f"{who} is offstage in {what}.{sock}; drive_to or ride_to a mark on stage first")
+    require_on_stage(world, who)
+
+
 def _commit_facing(world: World, keys: list[Key], *bodies: Body) -> None:
     for b in bodies:
         facing = _final_facing(keys, b.id, b.facing)
@@ -129,7 +184,7 @@ def apply_wave(world: World, tracks: TrackSet, action: Action, t: float, action_
                locate: Locate) -> float:
     """wave(target?, dur=1.2): raise an arm and wave; turn first to face ``target`` if behind."""
     who = require_person(world, action.who)
-    require_on_stage(world, who)
+    require_gesture_on_stage(world, who)
     dur = _dur(action, WAVE_SECONDS)
     toward_x = None if action.target is None else locate(action.target, t)[0]
     me = _body(world, tracks, who, t)
@@ -143,7 +198,7 @@ def apply_point_at(world: World, tracks: TrackSet, action: Action, t: float, act
                    locate: Locate) -> float:
     """point_at(target, dur=1.0): aim the point pose at the target's stage position."""
     who = require_person(world, action.who)
-    require_on_stage(world, who)
+    require_gesture_on_stage(world, who)
     target = require_param(action, "target")
     dur = _dur(action, POINT_SECONDS)
     at = locate(target, t)
@@ -158,7 +213,7 @@ def apply_lean_toward(world: World, tracks: TrackSet, action: Action, t: float, 
                       locate: Locate) -> float:
     """lean_toward(target, dur=1.0): face the target and lean the torso toward it."""
     who = require_person(world, action.who)
-    require_on_stage(world, who)
+    require_gesture_on_stage(world, who)
     target = require_param(action, "target")
     dur = _dur(action, LEAN_SECONDS)
     x = locate(target, t)[0]
@@ -212,7 +267,7 @@ def apply_sit_on(world: World, tracks: TrackSet, action: Action, t: float, actio
     me = Body(who, ground, facing, p.build)
     keys += gen.sit_keys(me, t_sit, rots, (seat[0], seat[1]), z=seat[2])
 
-    world.move(who, stand_at, facing=facing)
+    world.move(who, seated_world_pos(stand_at, anchor[0]), facing=facing)
     world.sit_on(who, what, socket)
     tracks.extend(keys)
     return t_sit + gen.POSE_SECONDS
@@ -220,25 +275,35 @@ def apply_sit_on(world: World, tracks: TrackSet, action: Action, t: float, actio
 
 def apply_stand_up(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                    locate: Locate) -> float:
-    """stand_up: from a seat onto the floor in front of it, or up from kneeling / the floor."""
+    """stand_up: from a seat onto the floor in front of it, or up from kneeling / the floor.
+
+    A seat past the stage edge (a pew whose aisle end overhangs it) is followed by a short step
+    back on stage (dismount_step)."""
     who = require_person(world, action.who)
     world.copy().stand_up(who)  # validates: not_sitting, seated_vehicle
     p = world.people[who]
     stand_at: Vec3 = p.pos
+    seat_x: float | None = None
     if p.seat is not None:
         what, sock = p.seat
         seat = world.socket_world(what, sock)
         anchor = world.props[what].world_pos
         if seat is not None and anchor is not None:
             stand_at = (seat[0], anchor[1], seat[2])
+            seat_x = anchor[0]
     me = _body(world, tracks, who, t)
     current = _settle_rots(world, bones_at(tracks, who, t, all_bones=True), who)
     keys = gen.stand_keys(me, t, current, (stand_at[0], stand_at[1]), z=stand_at[2])
+    end = t + gen.POSE_SECONDS
+    facing = p.facing
+    if seat_x is not None:
+        step, end, stand_at, facing = dismount_step(world, who, end, stand_at, seat_x, facing)
+        keys += step
 
     world.stand_up(who)
-    world.move(who, stand_at)
+    world.move(who, stand_at, facing=facing)
     tracks.extend(keys)
-    return t + gen.POSE_SECONDS
+    return end
 
 
 def apply_kneel(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,

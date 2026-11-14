@@ -42,6 +42,7 @@ from screenplay.verb_helpers import (
     stand_up_keys,
     vec3,
 )
+from screenplay.verbs_body import DISMOUNT_EDGE_MARGIN, dismount_step, seated_world_pos
 
 ACTING_Z = motion.ACTING_Z
 WHEEL_RADIUS_FRACTION = 0.15  # wheel radius as a fraction of the vehicle's height
@@ -177,7 +178,7 @@ def apply_get_in(world: World, tracks: TrackSet, action: Action, t: float, actio
     ro = _sit_root_offset(p.build)
     sit_root: Vec3 = (seat[0] + ro[0], seat[1] + ro[1], seat[2])
 
-    world.move(who, sit_root, facing)
+    world.move(who, seated_world_pos(sit_root, anchor[0]), facing)
     world.get_in(who, what, socket)
     tracks.extend(keys)
     return t_sit + POSE_SECONDS
@@ -188,7 +189,9 @@ def apply_get_in(world: World, tracks: TrackSet, action: Action, t: float, actio
 def apply_get_out(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                   locate: Locate) -> float:
     """Stand up out of the seat onto the ground beside it, at the acting plane. Arms holding
-    props keep the hold pose."""
+    props keep the hold pose. A seat past the stage edge (the far door of a car parked by it)
+    is followed by a short step back on stage, to DISMOUNT_EDGE_MARGIN inside the edge
+    (verbs_body.dismount_step); a car that is itself offstage leaves its puppet offstage."""
     who = require_param(action, "who")
     what = require_param(action, "what")
     require_person(world, who)
@@ -211,10 +214,14 @@ def apply_get_out(world: World, tracks: TrackSet, action: Action, t: float, acti
     keys = [(tg, ch, kt, [root[0], root[1], root[2]]) if ch == "root.position" and kt == t else (tg, ch, kt, v)
             for tg, ch, kt, v in keys]
 
+    step, end, landed, facing = dismount_step(world, who, t + POSE_SECONDS, (stand_at[0], stand_at[1], ACTING_Z),
+                                              anchor[0], p.facing)
+    keys += step
+
     world.get_out(who, what)
-    world.move(who, (stand_at[0], stand_at[1], ACTING_Z))
+    world.move(who, landed, facing)
     tracks.extend(keys)
-    return t + POSE_SECONDS
+    return end
 
 
 # -------------------------------------------------------------- drive_to / ride_to
@@ -275,6 +282,16 @@ def _carried_root_keys(who: str, root: Vec3, start: Vec3, path: Iterable[tuple[f
             for kt, a in path]
 
 
+def _keep_riders_on_stage(world: World, what: str, end: Vec3) -> None:
+    """After ``World.move_vehicle``: a rider whose seat overhangs the stage edge while the
+    vehicle stands on stage stays on stage with it (verbs_body.seated_world_pos), as after
+    get_in. ``World.move`` refuses seated puppets, so the recorded position is set directly;
+    no key changes."""
+    for _, _, rider in world.riders(what):
+        p = world.people[rider]
+        p.pos = seated_world_pos(p.pos, end[0])
+
+
 def apply_drive_to(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                    locate: Locate) -> float:
     """The driver drives the vehicle to a mark; everyone seated rides along."""
@@ -287,6 +304,7 @@ def apply_drive_to(world: World, tracks: TrackSet, action: Action, t: float, act
     keys, arrival, end = _drive(world, tracks, what, to, t, action_start, locate)
 
     world.move_vehicle(what, end)
+    _keep_riders_on_stage(world, what, end)
     tracks.extend(keys)
     return arrival
 
@@ -311,6 +329,7 @@ def apply_ride_to(world: World, tracks: TrackSet, action: Action, t: float, acti
     keys, arrival, end = _drive(world, tracks, what, to, t, action_start, locate)
 
     world.move_vehicle(what, end)
+    _keep_riders_on_stage(world, what, end)
     until = round(arrival - action_start, 6)
     for other in others:
         world.occupy(other, until, DRIVING if other == driver else RIDING, at=world.now)
@@ -326,6 +345,6 @@ HANDLERS: dict[str, Handler] = {
 }
 
 __all__ = [
-    "HANDLERS", "Handler", "Locate", "WHEEL_RADIUS_FRACTION",
+    "DISMOUNT_EDGE_MARGIN", "HANDLERS", "Handler", "Locate", "WHEEL_RADIUS_FRACTION",
     "apply_drive_to", "apply_get_in", "apply_get_out", "apply_ride_to",
 ]
