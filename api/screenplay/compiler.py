@@ -710,6 +710,7 @@ def compile(
         try:
             interactions = N.convert_interactions(
                 sp.interactions, action_start_by_shot, sp.shots[0].id, retimed_by_shot=retimed_by_shot,
+                end_by_shot={s.id: s.end for s in timeline_shots},
             )
         except N.NarrationError as e:
             errors.add(E.from_narration_error(e), len(sp.shots))

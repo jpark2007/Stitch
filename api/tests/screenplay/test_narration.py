@@ -565,20 +565,56 @@ def test_scrub_follows_a_drop_cued_later(sp, dt):
 
 
 def test_scrub_output_without_retimed_by_shot_is_unchanged(sp, tl):
+    """Without retiming, written ends only shift by the shot's action_start. A missing ``from``
+    is the shot's t=0 and a missing ``to`` the shot's end (``end_by_shot``), so the timeline
+    never carries None; without an end for the shot, a missing ``to`` is an error."""
     scrubs = [*sp.interactions, _scrub("b", 1.0, 2.0, shot="s2"), _scrub("c", None, 2.0), _scrub("d", 0.5, None)]
     starts = {"s1": ACTION_START, "s2": 12.0}
-    plain = convert_interactions(scrubs, starts, "s1")
+    ends = {"s1": 11.5, "s2": 20.0}
+    plain = convert_interactions(scrubs, starts, "s1", end_by_shot=ends)
     assert [i.model_dump_json() for i in plain] == [
-        i.model_dump_json() for i in convert_interactions(scrubs, starts, "s1", retimed_by_shot=None)
+        i.model_dump_json() for i in convert_interactions(scrubs, starts, "s1", retimed_by_shot=None, end_by_shot=ends)
     ]
     assert [dump(i) for i in plain[:1]] == [dump(i) for i in tl.interactions]
-    assert [(i.drives.from_, i.drives.to) for i in plain] == [(4.45, 4.75), (13.0, 14.0), (None, 3.2), (1.7, None)]
-    # Identity retiming, or retiming for another shot only, changes nothing either.
+    assert [(i.drives.from_, i.drives.to) for i in plain] == [(4.45, 4.75), (13.0, 14.0), (ACTION_START, 3.2), (1.7, 11.5)]
+    # Written ends need no shot end: the sample converts the same without end_by_shot.
+    assert [dump(i) for i in convert_interactions(scrubs[:3], starts, "s1")] == [dump(i) for i in plain[:3]]
+    # A missing "to" with no end for its shot cannot be filled in.
+    for kwargs in ({}, {"end_by_shot": {"s2": 20.0}}):
+        e = _err(convert_interactions, scrubs, starts, "s1", **kwargs)
+        assert (e.code, e.shot, e.line_index) == ("interaction_missing_to", "s1", 3)
+        assert e.reason == 'interaction "d" in shot "s1" needs to: the shot time its scrub ends'
+    # Identity retiming, or retiming for another shot only, changes nothing for s1's scrubs.
     shot = sp.shots[0]
     same = [a.t for a in shot.actions]
+    in_s1 = [scrubs[0], *scrubs[2:]]
     for timing in ({"s1": (same, same)}, {"s2": ([0.0], [5.0])}):
-        got = convert_interactions(scrubs[:1], starts, "s1", retimed_by_shot=timing)
-        assert [i.model_dump_json() for i in got] == [i.model_dump_json() for i in plain[:1]]
+        got = convert_interactions(in_s1, starts, "s1", retimed_by_shot=timing, end_by_shot=ends)
+        assert [i.model_dump_json() for i in got] == [i.model_dump_json() for i in [plain[0], *plain[2:]]]
+
+
+def test_scrub_missing_bounds_are_its_own_shot_bounds():
+    out = convert_interactions(
+        [_scrub("a", None, None, shot="s2"), _scrub("b", None, 1.0, shot="s2"), _scrub("c", 2.0, None, shot="s2"),
+         _scrub("d", None, None)],
+        {"s1": 1.2, "s2": 11.85},
+        "s1",
+        end_by_shot={"s1": 10.0, "s2": 16.0},
+    )
+    assert [(i.drives.from_, i.drives.to) for i in out] == [(11.85, 16.0), (11.85, 12.85), (13.85, 16.0), (1.2, 10.0)]
+    assert all(i.drives.from_ is not None and i.drives.to is not None for i in out)
+
+
+def test_scrub_from_past_its_shot_end_is_a_bad_range():
+    e = _err(convert_interactions, [_scrub("late", 5.0, None)], {"s1": 1.0}, "s1", end_by_shot={"s1": 4.0})
+    assert (e.code, e.shot, e.line_index) == ("interaction_bad_range", "s1", 0)
+    assert e.reason == (
+        'interaction "late" would scrub from shot t=5.00 back to t=3.00, where shot "s1" ends; '
+        'give it a "to" after its "from"'
+    )
+    # Ending exactly where the shot ends is a point, which is allowed.
+    out = convert_interactions([_scrub("edge", 3.0, None)], {"s1": 1.0}, "s1", end_by_shot={"s1": 4.0})
+    assert (out[0].drives.from_, out[0].drives.to) == (4.0, 4.0)
 
 
 def test_scrub_retiming_maps_each_present_end_and_only_its_own_shot():
@@ -589,8 +625,33 @@ def test_scrub_retiming_maps_each_present_end_and_only_its_own_shot():
         {"s1": 1.0, "s2": 10.0},
         "s1",
         retimed_by_shot=timing,
+        end_by_shot={"s1": 9.0, "s2": 18.0},
     )
-    assert [(i.drives.from_, i.drives.to) for i in out] == [(2.0, 3.0), (11.7, 13.5), (None, 13.5), (10.5, None)]
+    # Filled-in defaults (s2's t=0 and its end) are not retimed; written ends are.
+    assert [(i.drives.from_, i.drives.to) for i in out] == [(2.0, 3.0), (11.7, 13.5), (10.0, 13.5), (10.5, 18.0)]
+
+
+def test_scrub_retimed_from_past_the_filled_in_end_is_a_bad_range():
+    # "from" 2.0 follows its action to 3.0; the shot ends at shot t=2.5.
+    e = _err(
+        convert_interactions, [_scrub("x", 2.0, None)], {"s1": 1.0}, "s1",
+        retimed_by_shot={"s1": ([2.0], [3.0])}, end_by_shot={"s1": 3.5},
+    )
+    assert (e.code, e.line_index) == ("interaction_bad_range", 0)
+    assert "from shot t=3.00 back to t=2.50" in e.reason
+
+
+def test_scrub_retimed_to_before_the_filled_in_from_is_a_bad_range():
+    # "to" 1.0 follows its action to shot t=-0.5, before the shot's t=0 where "from" defaults.
+    e = _err(
+        convert_interactions, [_scrub("y", None, 1.0)], {"s1": 1.0}, "s1",
+        retimed_by_shot={"s1": ([1.0], [-0.5])}, end_by_shot={"s1": 9.0},
+    )
+    assert (e.code, e.line_index) == ("interaction_bad_range", 0)
+    assert e.reason == (
+        'interaction "y" would scrub from shot t=0.00, where shot "s1" starts, back to t=-0.50; '
+        'give it a "from" before its "to"'
+    )
 
 
 def _crossed_cues_shot() -> Shot:
