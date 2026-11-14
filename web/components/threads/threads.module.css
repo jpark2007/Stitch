@@ -1,0 +1,82 @@
+/* Overlay pieces of the threads screen: moment links, titles, zoom buttons. */
+
+.moment {
+  color: var(--ink);
+  will-change: transform;
+}
+
+/* Invisible until focused with the keyboard: then a stitched ring marks the knot. */
+.ring {
+  outline: none;
+}
+
+.moment:focus-visible {
+  outline: none;
+}
+
+.moment:focus-visible .ring {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+}
+
+.moment:focus-visible .title {
+  opacity: 1 !important;
+}
+
+.title {
+  font-family: var(--font-hand);
+  font-weight: 500;
+  line-height: 1.15;
+  color: var(--ink);
+  transition: opacity 220ms var(--ease-paper);
+  /* A paper-coloured halo keeps titles legible where threads pass behind. */
+  text-shadow:
+    0 0 2px var(--paper),
+    0 0 4px var(--paper),
+    0 0 8px var(--paper),
+    0 0 12px var(--paper);
+}
+
+.zoom {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 999px;
+  background: var(--paper-light);
+  color: var(--ink-soft);
+  font-family: var(--font-sans);
+  font-size: 1.25rem;
+  line-height: 1;
+  box-shadow: var(--shadow-paper);
+  cursor: pointer;
+  transition:
+    transform 160ms var(--ease-paper),
+    box-shadow 160ms var(--ease-paper),
+    color 160ms;
+}
+
+.zoom:hover {
+  color: var(--ink);
+  box-shadow: var(--shadow-lift);
+  transform: translateY(-1px);
+}
+
+.zoom:active {
+  transform: translateY(0);
+  box-shadow: var(--shadow-paper);
+}
+
+/* Stitched ring inside the button, like a sewn-on patch. */
+.zoom::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 999px;
+  border: 1px dashed var(--rule);
+  pointer-events: none;
+}
+
+.zoom {
+  position: relative;
+}
