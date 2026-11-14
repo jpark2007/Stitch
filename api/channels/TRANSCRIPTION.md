@@ -1,10 +1,10 @@
 # Opt-in transcription adapter
 
-This module is a bounded HTTP adapter, **not a working voice-note feature**. It
-does not register a route, download attachments, check consent, save a memory,
-or start a worker. Integration must reserve a durable inbox item and verify
-current contact consent before calling it, and recheck consent before saving.
-Uncertain results need reconciliation rather than automatic replay.
+This module is a bounded HTTP adapter. The separate signed voice inbox and manual
+worker now handle receipt storage, consent, reservations and draft integration;
+this adapter itself registers no route and starts no worker. Only invoke it after
+reserving a durable inbox item and checking current consent. Uncertain results
+need reconciliation rather than automatic replay.
 
 Server-only configuration (never expose these in frontend environment variables):
 
@@ -54,5 +54,49 @@ provider credentials in caller code.
 The existing API environment supplies `httpx`; no dependencies are added here.
 Run offline tests from `api/`: `uv run pytest tests/channels/test_transcription.py`.
 Tests inject `httpx.MockTransport`, use synthetic bytes and never call a live
-provider. Real voice ingestion, durable job/outbox integration, audio container
-validation and consent race handling remain future integration work.
+provider. The inbox/worker tests separately cover signed audio storage, durable
+transcription state, outbox behavior and consent races. Actual provider accounts,
+real phone delivery, recording playback and production Mongo crash recovery still
+need qualification.
+
+## Native CAF conversion before transcription
+
+The Stable iMessage SDK labels native Apple voice notes `audio/x-caf`. The bridge
+preserves that MIME and the original signed bytes. OpenAI's adapter allowlist is
+unchanged: CAF must never be mislabeled and uploaded directly as WAV.
+
+`channels.audio.convert_caf(bytes)` validates a bounded CAF container, then uses
+macOS `/usr/bin/afconvert` when available, or an installed `ffmpeg` on other POSIX
+hosts. There is no automatic install or Python dependency change. Windows and
+hosts without either converter fail with `missing_converter`; the worker blocks
+for operator review before any transcription request. Only CAF takes this path.
+
+Conversion happens after the worker's durable transcription reservation and
+consent check. It uses fixed argument arrays, no shell, private temporary input
+and output files, a 15-second wall deadline and 15-second child CPU limit. A fresh
+isolated Python wrapper sets a 20 MiB output-file resource limit before execing
+the converter under the same owned PID; this avoids `preexec_fn` in API threads.
+The child environment contains no provider/shared-secret variables, stderr is
+discarded, and ffmpeg is restricted to local file input. Only this owned process
+is killed on timeout/cancellation, then reaped before temporary-file cleanup.
+
+No duration-truncating converter option is used. Output must be complete PCM WAV,
+mono, 16-bit, 16 kHz, at most 20 MiB and at most five minutes according to its
+verified decoded frame count. Oversized, overlong, malformed or failed conversion
+is rejected rather than silently clipped. This five-minute bound applies only to
+converted CAF; other compressed formats still have no proven duration/billing cap.
+Original family-scoped CAF media and its audioId stay unchanged. The worker
+rechecks consent after decoding, then passes only verified WAV bytes with
+`content_type="audio/wav"` to transcription. Converted files are not persisted.
+
+Conversion failures leave the receipt held for manual reconciliation and set the
+worker reason to `audio_conversion_<stable-code>`. Those conversion-specific
+failures made no transcription request. A subsequent provider failure may still
+be uncertain and potentially billed; the adapter never retries it automatically.
+Raw decoder output, filenames, audio and credentials are not included in errors.
+
+`tests/channels/test_audio.py` generates synthetic CAF using the real local
+`afconvert`, checks its decoded WAV and worker integration, and exercises missing
+tools, invalid inputs, output limits, timeout, cancellation, cleanup and STOP.
+The real macOS round-trip tests skip elsewhere; ffmpeg support still needs a real
+Linux deployment check. No actual voice recording or provider upload is used.
