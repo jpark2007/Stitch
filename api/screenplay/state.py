@@ -581,14 +581,19 @@ class World:
 
     def _clear_stale_props(self, shot: Shot, held_by: dict[str, str]) -> None:
         """On a set change, every prop that is not carried in by a listed puppet, not worn on
-        anyone's head, not in prop_start and not in a start `holding` leaves the stage (parent
-        ground, world_pos None), and anything seated on it is unseated. Props riding on a carried
-        prop come along.
+        anyone's head, not placed by prop_start (``at`` or ``on``) and not in a start `holding`
+        leaves the stage (parent ground, world_pos None), and anything seated on it is unseated.
+        Props riding on a carried prop come along.
+
+        A prop_start entry that only sets a state does not keep the prop: it says nothing about
+        where the prop is on the new set, so it must not stay at the old set's coordinates (or
+        in the hand of someone waiting offstage).
 
         Head items (a signature item, or a hat put on with put_on) stay on the head even for
         unlisted cast, who wait offstage still wearing them; only their hand-held props stay behind.
         """
-        keep = set(shot.prop_start) | set(held_by)
+        placed = {what for what, ps in shot.prop_start.items() if ps.at is not None or ps.on is not None}
+        keep = placed | set(held_by)
         carried = [what for who in shot.start for what in self.people[who].holding.values()]
         carried += [p.holding[HEAD] for who, p in self.people.items() if who not in shot.start and HEAD in p.holding]
         for what in carried:
