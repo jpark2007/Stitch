@@ -76,6 +76,11 @@ export function unlockAudio() {
   comp.threshold.value = -18;
   comp.ratio.value = 3;
   master.connect(comp).connect(ctx.destination);
+  // Warm the graph with a silent blip, so the first real sound starts nothing new.
+  const blip = ctx.createBufferSource();
+  blip.buffer = ctx.createBuffer(1, 128, ctx.sampleRate);
+  blip.connect(ctx.createStereoPanner()).connect(master);
+  blip.start();
   void renderBank(ctx.sampleRate);
 }
 
