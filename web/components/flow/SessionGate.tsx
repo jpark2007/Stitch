@@ -28,7 +28,11 @@ export interface SessionValue {
   api: StitchApi;
   /** Ask the server again (after joining or creating a family, say). */
   refresh(): Promise<void>;
-  /** Log out, forget the remembered family and go to the login page. */
+  /**
+   * Log out, forget the remembered family and load the login page afresh (a
+   * full document load, so no page of this session lingers). Resolves as the
+   * browser starts leaving; rejects, staying put, when logging out fails.
+   */
   signOut(): Promise<void>;
 }
 
@@ -151,9 +155,14 @@ export function SessionGate(props: {
       if (!(isApiError(e) && e.status === 401)) throw e;
     }
     forgetFamily();
+    // A full document load, not router.replace: with cacheComponents on, the
+    // pages visited this session stay mounted in hidden Activity trees with
+    // their state (a sent log in form, a half-written memory). Reloading
+    // drops every one of them, so the next person at this browser starts
+    // clean. "leaving" keeps the placeholder up until the new page arrives.
     setStatus({ kind: "leaving" });
-    router.replace(hrefs.login());
-  }, [api, router]);
+    window.location.replace(hrefs.login());
+  }, [api]);
 
   const me = status.kind === "ready" ? status.me : null;
   const value = useMemo<SessionValue | null>(
