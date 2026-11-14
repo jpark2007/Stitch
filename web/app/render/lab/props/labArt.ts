@@ -195,16 +195,16 @@ function caseClosed(): string {
   });
 }
 
-/** A paper tag tied to the right of the handle. It makes the case
+/** A paper tag tied on at (tieU, tieV), right of centre. It makes the case
  *  asymmetric, so the held demo shows the case never mirrors. */
-function luggageTag(ctx: Ctx, S: number) {
+function luggageTag(ctx: Ctx, S: number, tieU = 0.6, tieV = 0.4) {
   ctx.save();
   ctx.strokeStyle = TAN_DEEP;
   ctx.lineWidth = S * 0.008;
   ctx.lineCap = "round";
   ctx.beginPath();
-  ctx.moveTo(S * 0.6, S * 0.4);
-  ctx.quadraticCurveTo(S * 0.68, S * 0.43, S * 0.75, S * 0.47);
+  ctx.moveTo(S * tieU, S * tieV);
+  ctx.quadraticCurveTo((S * (tieU + 0.75)) / 2, S * Math.max(tieV, 0.43), S * 0.75, S * 0.47);
   ctx.stroke();
   ctx.translate(S * 0.79, S * 0.55);
   ctx.rotate(-0.22);
@@ -239,6 +239,8 @@ function caseOpen(): string {
     glue(ctx, CREAM, 0.6);
     rr(ctx, S * 0.06, S * 0.44, S * 0.88, S * 0.06, 2);
     glue(ctx, TAN_DARK, 0.5);
+    // Tied to the rim: an open case's handle is on the lid, out of sight.
+    luggageTag(ctx, S, 0.7, 0.46);
   });
 }
 
