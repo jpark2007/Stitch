@@ -273,12 +273,13 @@ for (const n of [9, 18, 24, 30]) {
         const { geom, layout } = frame(model, W, H, cam);
         assertClean(geom.names, W, `${n} people, ${W}px, ${label}`);
         assert.ok(nameFontPx(layout) >= NAME_MIN_PX, "names never shrink below legible");
-        // Each name is written over its own thread: not before it begins, nor past its end.
+        // Each name is written by its own thread: at most leading in to where it
+        // begins, never past its end.
         for (const b of geom.names as (NameBox & { strand: number })[]) {
           const pts = geom.strands[b.strand];
           const end = pts[(geom.strandLens[b.strand] - 1) * 2];
           const who = `${n} people, ${W}px, ${label}: ${model.strands[b.strand].person.name}`;
-          assert.ok(b.x0 >= Math.max(pts[0], NAME_GUTTER) - 0.5, `${who} starts before its thread`);
+          assert.ok(b.x1 >= pts[0] - 14, `${who} is wholly before its thread`);
           assert.ok(b.x1 <= end + 0.5, `${who} runs past its thread's end`);
         }
         total += geom.names.length;

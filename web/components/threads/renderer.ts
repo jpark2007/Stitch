@@ -596,12 +596,22 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
       const px = Math.min(pts[k * 2], right) - w;
       let k0 = k;
       while (k0 > 0 && pts[k0 * 2] > px) k0--;
-      // Never before the thread begins, nor back over the spots found above.
-      if (px < startX + lead || px < from - w - 18) break;
+      // It may reach back over where the thread begins (not on a parted
+      // thread, though), but not wholly before it, nor back over the spots
+      // found above.
+      if (px < (inline ? startX + lead : startX + 12 - w) || px < from - w - 18) break;
       if (fits(k0, px)) {
         spots.push({ x: px, y: baseline(k0) });
         break;
       }
+    }
+    // Written on the thread, a name can also lead in to it: just before the
+    // knot it starts with (a thread born late in the view, near the edge).
+    if (inline && startX >= margin) {
+      // Far enough out that the parted-yarn band stops short of the knot.
+      const lx = startX - 13 - w;
+      const ly = pts[1] + drop;
+      if (lx >= margin && !crossedBy(geom, i, lx - 6, startX - 6, ly - size, ly + 3)) spots.push({ x: lx, y: ly });
     }
     // Nowhere level (a thread still swinging as it ends): sign its end, if
     // no other thread runs through the name there.
