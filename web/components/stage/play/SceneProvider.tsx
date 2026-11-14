@@ -44,7 +44,18 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { Matrix4, Plane, Vector3, type Group, type Material, type Mesh, type Object3D } from "three";
+import {
+  Matrix4,
+  Plane,
+  Vector3,
+  type Camera,
+  type Group,
+  type Material,
+  type Mesh,
+  type Object3D,
+  type Scene,
+  type WebGLRenderer,
+} from "three";
 import { api, bareMediaId } from "@/lib/api";
 import type { Person } from "@/lib/types";
 import { markShadowsDirty, StageClock } from "../clock";
@@ -177,6 +188,9 @@ export interface SceneProviderProps {
    * Tick the controller from the render loop (default true), so every frame
    * is sampled right before it is drawn. Harmless alongside
    * useTimelinePlayer's own loop: a second tick in the same frame is a no-op.
+   * With useTimelinePlayer({ clock: "manual" }) this is the only clock, and
+   * a frameloop="demand" Canvas idles while the scene is paused: the
+   * provider invalidates on every player change and every frame it plays.
    */
   tick?: boolean;
   /**
@@ -262,17 +276,39 @@ export function SceneProvider({
   useEffect(() => {
     readyRef.current = onReady;
   }, [onReady]);
-  const ready = useRef({ frames: 0, since: 0, done: false });
+  const ready = useRef({ frames: 0, since: 0, done: false, compiled: false });
 
-  // Readiness: a few frames drawn with every piece of art in.
-  useFrame(() => {
+  // A frameloop="demand" Canvas (the book) draws only when asked: ask on
+  // every status change (play, pause, seek, teller) and every new frame.
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    const offStatus = controller.subscribe(() => invalidate());
+    const offFrame = controller.onFrame(() => invalidate());
+    invalidate();
+    return () => {
+      offStatus();
+      offFrame();
+    };
+  }, [controller, invalidate]);
+
+  // Readiness: a few frames drawn with every piece of art in. After the
+  // first such frame (materials have their wing planes by then) every
+  // program the scene will need is compiled, so nothing hitches mid-scene
+  // the moment a hidden set, puppet or prop first shows.
+  useFrame((state) => {
     const r = ready.current;
     if (r.done) return;
     if (r.since === 0) r.since = performance.now();
     if (!runtime.loaded && performance.now() - r.since < READY_TIMEOUT) {
       r.frames = 0;
+      state.invalidate();
       return;
     }
+    if (!r.compiled && r.frames > 0) {
+      r.compiled = true;
+      precompile(state.gl, state.scene, state.camera, rootRef.current);
+    }
+    state.invalidate();
     if (++r.frames < READY_FRAMES) return;
     r.done = true;
     readyRef.current?.();
@@ -280,6 +316,8 @@ export function SceneProvider({
 
   useFrame((state) => {
     if (tick) controller.tick(performance.now());
+    // Keep a demand-driven Canvas drawing while the scene plays.
+    if (controller.getStatus().playing) state.invalidate();
     const r = reveal === undefined ? 1 : readOpen(reveal, controller.time);
     if (controller.frameVersion !== lastVersion.current || r !== lastReveal.current) {
       lastVersion.current = controller.frameVersion;
@@ -299,6 +337,25 @@ export function SceneProvider({
       </StageClock>
     </SceneContext.Provider>
   );
+}
+
+/**
+ * Compiles every shader program `scene` needs, with everything under `root`
+ * shown for the moment (sets of later shots, cast waiting offstage, folded
+ * pieces), then puts their visibility back. Nothing is drawn in between.
+ */
+function precompile(gl: WebGLRenderer, scene: Scene, camera: Camera, root: Object3D | null): void {
+  const hidden: Object3D[] = [];
+  root?.traverse((o) => {
+    if (o.visible) return;
+    hidden.push(o);
+    o.visible = true;
+  });
+  try {
+    gl.compile(scene, camera);
+  } finally {
+    for (const o of hidden) o.visible = false;
+  }
 }
 
 /**

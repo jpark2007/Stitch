@@ -18,7 +18,15 @@ import { useTimelinePlayer } from "@/components/stage/playback";
 import { TimelineScene, loadSampleScene, preloadScene, sceneTellers, type SceneData } from "@/components/stage/play";
 
 function SpreadStage({ scene, args, time }: { scene: SceneData; args: StageSlotArgs; time: number | null }) {
-  const { controller } = useTimelinePlayer(scene.timeline, { autoplay: time === null, loop: true, freezeAt: time, audio: false });
+  // The book's Canvas draws on demand: the scene ticks the clock in its own
+  // render loop and keeps it drawing only while it plays.
+  const { controller } = useTimelinePlayer(scene.timeline, {
+    autoplay: time === null,
+    loop: true,
+    freezeAt: time,
+    audio: false,
+    clock: "manual",
+  });
   const size = useMemo<[number, number]>(() => [args.width, args.depth], [args.width, args.depth]);
   return <TimelineScene controller={controller} scene={scene} size={size} reveal={args.reveal} />;
 }

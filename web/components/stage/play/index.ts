@@ -3,8 +3,12 @@
  *
  * Inside your own Canvas (the book's right-page slot):
  *
- *   const { controller } = useTimelinePlayer(scene.timeline, { narrator, autoplay: true });
- *   <TimelineScene controller={controller} scene={scene} size={[slot.width, slot.depth]} />
+ *   const { controller } = useTimelinePlayer(scene.timeline, { narrator, autoplay: true, clock: "manual" });
+ *   <TimelineScene controller={controller} scene={scene} size={[slot.width, slot.depth]} reveal={reveal} />
+ *
+ * clock: "manual" lets the scene tick the player in r3f's loop, and the
+ * scene invalidates on every player change and while it plays, so a
+ * frameloop="demand" Canvas (the book) idles at zero cost when paused.
  *
  * Standalone (the render route): <TimelineStage controller={…} scene={…} />,
  * a Canvas with the book, table, lamp and the timeline's camera.
