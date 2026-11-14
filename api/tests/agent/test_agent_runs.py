@@ -79,11 +79,17 @@ def read_drafts(state: Annotated[dict, InjectedState]) -> str:
 
 @tool
 def voice_mom(state: Annotated[dict, InjectedState], tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
-    """Stand-in for the voice pass: add mom's narration track to /timeline.json."""
+    """Stand-in for the voice pass: add mom's lines to /screenplay.json (narrations['mom'])
+    and the matching narration track to /timeline.json, as a second telling does."""
+    screenplay = json.loads(file_data_to_string(state["files"]["/screenplay.json"]))
+    screenplay.setdefault("narrations", {})["mom"] = SAMPLE_RAW["memory"]["screenplay"]["narrations"]["mom"]
     timeline = json.loads(file_data_to_string(state["files"]["/timeline.json"]))
     timeline["narrations"]["mom"] = SAMPLE_RAW["memory"]["timeline"]["narrations"]["mom"]
     return Command(update={
-        "files": {"/timeline.json": create_file_data(json.dumps(timeline))},
+        "files": {
+            "/screenplay.json": create_file_data(json.dumps(screenplay)),
+            "/timeline.json": create_file_data(json.dumps(timeline)),
+        },
         "messages": [ToolMessage(content="voiced mom", tool_call_id=tool_call_id, name="voice_mom")],
     })
 
@@ -649,6 +655,7 @@ def test_second_telling_starts_with_the_scene_and_adds_a_narration(harnesses: li
     assert after is not None and after.version == before.version + 1
     assert [t.author_id for t in after.tellings] == ["dad", "mom"]
     assert sorted(after.timeline.narrations) == ["dad", "mom"]
+    assert after.screenplay.narrations is not None and "mom" in after.screenplay.narrations
     assert after.timeline.tracks == before.timeline.tracks  # the shared action is untouched
     assert len(h.repo.find_memories(FAMILY)) == 1  # no new memory
 

@@ -643,6 +643,25 @@ def test_save_memory_refuses_an_unvoiced_timeline() -> None:
     assert repo.find_memories(FAM) == []
 
 
+def test_a_silent_narration_track_counts_as_voiced() -> None:
+    """When the speech service fails the voice pass falls back to silent narration: no
+    audio anywhere, but the teller's lines (with word timings) are on the timeline. The
+    guard reads the narration track, not the audio, so that run still saves."""
+    repo = make_repo()
+    screenplay, timeline = sample_scene()
+    silent = timeline.model_copy(deep=True)
+    silent.audio = None
+    assert silent.narrations is not None and silent.narrations["dad"].lines
+    for track in silent.narrations.values():
+        track.audio = None
+    assert any(line.words for line in silent.narrations["dad"].lines)
+    content, events = _run_save_memory(repo, dad_run(), _files(screenplay, silent))
+    assert content == "saved memory_1 v1"
+    assert [e["event"] for e in events] == ["scene_ready"]
+    saved = repo.get_memory(FAM, "memory_1")
+    assert saved is not None and saved.timeline is not None and saved.timeline.audio is None
+
+
 def test_save_scene_refuses_an_unvoiced_new_memory() -> None:
     repo = make_repo()
     screenplay, timeline = sample_scene()
