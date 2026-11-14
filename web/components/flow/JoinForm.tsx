@@ -14,7 +14,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } fr
 import { isApiError } from "@/lib/api";
 import type { JoinRequest, PersonSummary } from "@/lib/types";
 import { Button } from "./Button";
-import { OptionalMark, TextField } from "./Field";
+import { FIELD_ERROR_CLASS, OptionalMark, TextField } from "./Field";
 import { FormError, focusFirstError } from "./FormError";
 import {
   JOIN_FIELDS,
@@ -230,52 +230,61 @@ export function JoinForm(props: {
               Someone may have added you already. Pick your name, or add yourself.
             </p>
 
-            <ul className="mt-4 grid list-none gap-2.5 p-0 sm:grid-cols-2">
-              {people.map((p) => (
-                <li key={p.id} className="min-w-0">
+            {/* A choice error marks the group once, with the same red rule down its
+                left edge that FormError has, rather than a red border on every card.
+                The rule sits in the card's padding, so nothing moves when it shows. */}
+            <div className="relative mt-4">
+              {errors.personId ? (
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-y-0 -left-3.5 w-[3px] rounded-full bg-[#9c3b2a] sm:-left-4"
+                />
+              ) : null}
+              <ul className="grid list-none gap-2.5 p-0 sm:grid-cols-2">
+                {people.map((p) => (
+                  <li key={p.id} className="min-w-0">
+                    <ChoiceCard
+                      name={groupName}
+                      value={p.id}
+                      checked={effectiveMode === "claim" && livePersonId === p.id}
+                      onPick={pick}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="size-3 shrink-0 rounded-full ring-1 ring-rule"
+                        style={{ backgroundColor: p.color || FALLBACK_DOT }}
+                      />
+                      <span className="min-w-0 flex-1 break-words font-semibold text-ink">{p.name}</span>
+                      {Number.isFinite(p.born) ? (
+                        <span className="shrink-0 text-sm text-ink-faint tabular-nums">born {p.born}</span>
+                      ) : null}
+                    </ChoiceCard>
+                  </li>
+                ))}
+                <li className="min-w-0 sm:col-span-2">
                   <ChoiceCard
                     name={groupName}
-                    value={p.id}
-                    checked={effectiveMode === "claim" && livePersonId === p.id}
-                    invalid={Boolean(errors.personId)}
+                    value={ADD}
+                    checked={effectiveMode === "add"}
                     onPick={pick}
+                    dashed
                   >
-                    <span
-                      aria-hidden="true"
-                      className="size-3 shrink-0 rounded-full ring-1 ring-rule"
-                      style={{ backgroundColor: p.color || FALLBACK_DOT }}
-                    />
-                    <span className="min-w-0 flex-1 break-words font-semibold text-ink">{p.name}</span>
-                    {Number.isFinite(p.born) ? (
-                      <span className="shrink-0 text-sm text-ink-faint tabular-nums">born {p.born}</span>
-                    ) : null}
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-semibold text-ink">I&rsquo;m not on the tree yet</span>
+                      <span className="block text-sm leading-snug text-ink-soft">
+                        Add yourself as someone new.
+                      </span>
+                    </span>
                   </ChoiceCard>
                 </li>
-              ))}
-              <li className="min-w-0 sm:col-span-2">
-                <ChoiceCard
-                  name={groupName}
-                  value={ADD}
-                  checked={effectiveMode === "add"}
-                  invalid={Boolean(errors.personId)}
-                  onPick={pick}
-                  dashed
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-semibold text-ink">I&rsquo;m not on the tree yet</span>
-                    <span className="block text-sm leading-snug text-ink-soft">
-                      Add yourself as someone new.
-                    </span>
-                  </span>
-                </ChoiceCard>
-              </li>
-            </ul>
+              </ul>
 
-            {errors.personId ? (
-              <p id={choiceErrorId} className="mt-2 text-sm leading-snug font-medium text-[#9c3b2a]">
-                {errors.personId}
-              </p>
-            ) : null}
+              {errors.personId ? (
+                <p id={choiceErrorId} className={`mt-2 ${FIELD_ERROR_CLASS}`}>
+                  {errors.personId}
+                </p>
+              ) : null}
+            </div>
           </fieldset>
         ) : (
           <div>
@@ -316,12 +325,11 @@ function ChoiceCard(props: {
   name: string;
   value: string;
   checked: boolean;
-  invalid: boolean;
   dashed?: boolean;
   onPick(value: string): void;
   children: ReactNode;
 }) {
-  const { name, value, checked, invalid, dashed = false, onPick, children } = props;
+  const { name, value, checked, dashed = false, onPick, children } = props;
   return (
     <label
       className={[
@@ -331,9 +339,7 @@ function ChoiceCard(props: {
         dashed ? "border-dashed" : "",
         checked
           ? "border-accent-deep bg-paper shadow-[inset_0_0_0_1px_var(--accent-deep)]"
-          : invalid
-            ? "border-[#9c3b2a]/70 bg-paper-light"
-            : "border-ink-faint/60 bg-paper-light shadow-paper hover:border-ink-soft",
+          : "border-ink-faint/60 bg-paper-light shadow-paper hover:border-ink-soft",
       ].join(" ")}
     >
       <input
