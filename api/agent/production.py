@@ -4,7 +4,8 @@
 the agent, so the API needs no startup hook. Each service is picked from env vars:
 
     ANTHROPIC_API_KEY      required: the studio model (studio.make_model, STITCH_MODEL)
-                           and Claude vision for describe_photo and inspect_frames
+                           and Claude vision for describe_photo and inspect_frames; unset:
+                           RuntimeError (no model, no studio)
     STITCH_SUBAGENT_MODEL  optional model id for the eight sub-agents
     MONGODB_URI            checkpoints, /memories/ and the run records on MongoDB
                            (studio.mongo_persistence), so runs survive a restart; unset, or
@@ -15,6 +16,27 @@ the agent, so the API needs no startup hook. Each service is picked from env var
                            Playwright; unset: the Pillow diagram renderer (FakeFrameRenderer),
                            whose labelled diagrams the critic is told are not the real stage
                            (a warning is logged)
+
+Fallbacks: a missing or failing service degrades a run, never fails it or stops the API
+(tests/agent/test_agent_fallbacks.py drives each case end to end):
+
+    MongoDB fails          MONGODB_URI is set but studio.mongo_persistence raises (no server,
+                           bad credentials, bad URI): an error names the exception type only
+                           (never the URI or password), the in-memory warning is logged once,
+                           and persistence is InMemorySaver/InMemoryStore (label "memory")
+    image API fails        the prop or set layer gets placeholder art (null art + color);
+                           STITCH_MAX_IMAGES_PER_RUN=0 does the same without calling the model
+    cutout fails           placeholder art for props and the middle and front layers (the back
+                           layer is never cut out); cut_out answers "use a placeholder"
+    speech API fails       the voice pass retries once, then narrates silently with estimated
+                           word timings and a "warning:" line (agent.tools.narration)
+    photo vision fails     describe_photo answers "could not describe photo ..."; the run goes on
+    frame critic fails     inspect_frames answers "could not inspect frames ..."; the checker
+                           passes without a critique
+    render page fails      PlaywrightFrameRenderer draws labelled diagrams instead
+
+Every real adapter has a bounded request timeout and retry count (agent/adapters), so a hung
+provider cannot hold a run past STITCH_RUN_TIMEOUT_S.
 
 Time and cost limits (agent.guards.RunLimits; a bad value warns and keeps the default):
 
@@ -45,7 +67,9 @@ import threading
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Checkpointer
 
 from agent import studio
 from agent.adapters import AlphaAwareRemover, AnthropicVision, ElevenLabsTTS, OpenAIImageModel
@@ -119,6 +143,32 @@ def with_server_timeout(uri: str, timeout_ms: int = SERVER_SELECTION_TIMEOUT_MS)
     return urlunsplit(parts._replace(path=parts.path or "/", query=query))
 
 
+def _persistence() -> tuple[Checkpointer, BaseStore, str]:
+    """(checkpointer, store, persistence label): MongoDB when MONGODB_URI is set and reachable.
+
+    A MongoDB that cannot be reached or refuses the credentials does not stop the API: one
+    error is logged naming only the cause's exception type (never the URI, which carries the
+    password, nor the driver's message, which can echo hosts and user names), and runs fall
+    back to in memory with the once-per-process warning that they do not survive a restart.
+    """
+    uri = _env("MONGODB_URI")
+    if not uri or _fake_db():
+        _warn_memory_persistence("STITCH_FAKE_DB is set" if _fake_db() else "MONGODB_URI is not set")
+        return InMemorySaver(), InMemoryStore(), "memory"
+    try:
+        checkpointer, store = studio.mongo_persistence(with_server_timeout(uri), db_name=db_client.MONGODB_DB)
+    except Exception as exc:  # noqa: BLE001 - unreachable, auth failure, bad URI: degrade, never stop the API
+        cause = type(exc).__name__
+        logger.error(
+            "agent persistence: MongoDB at MONGODB_URI could not be used (%s); falling back to in-memory "
+            "persistence. Check that the server is reachable from the API and the credentials are right.",
+            cause,
+        )
+        _warn_memory_persistence(f"MongoDB at MONGODB_URI failed with {cause}")
+        return InMemorySaver(), InMemoryStore(), "memory"
+    return checkpointer, store, "mongo"
+
+
 def production_services() -> Services:
     """The real services, chosen from os.environ (see the module docstring).
 
@@ -145,14 +195,7 @@ def production_services() -> Services:
     repo = MongoRepo(db_client.get_db())
     labels["repo"] = "mongo"
 
-    uri = _env("MONGODB_URI")
-    if uri and not _fake_db():
-        checkpointer, store = studio.mongo_persistence(with_server_timeout(uri), db_name=db_client.MONGODB_DB)
-        labels["persistence"] = "mongo"
-    else:
-        _warn_memory_persistence("STITCH_FAKE_DB is set" if _fake_db() else "MONGODB_URI is not set")
-        checkpointer, store = InMemorySaver(), InMemoryStore()
-        labels["persistence"] = "memory"
+    checkpointer, store, labels["persistence"] = _persistence()
 
     remover = AlphaAwareRemover()
     if _env("IMAGE_API_KEY"):

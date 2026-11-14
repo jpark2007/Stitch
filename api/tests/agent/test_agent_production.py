@@ -13,6 +13,9 @@ from typing import Any
 
 import mongomock
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
+from pymongo.errors import ConfigurationError, OperationFailure, ServerSelectionTimeoutError
 
 import schemas
 from agent import production, runs, studio, wiring
@@ -154,6 +157,109 @@ def test_mongodb_uri_uses_mongo_persistence(monkeypatch: pytest.MonkeyPatch) -> 
     assert svc.labels["persistence"] == "mongo"
     assert (svc.checkpointer, svc.store) == sentinel
     assert calls == [("mongodb://db.example:27017/?retryWrites=true&serverSelectionTimeoutMS=5000", db_client.MONGODB_DB)]
+
+
+MONGO_PASSWORD = "s3cr3t-Pa55word"
+MONGO_URI = f"mongodb+srv://stitch_app:{MONGO_PASSWORD}@cluster0.example.mongodb.net/stitch?retryWrites=true"
+
+
+def _unreachable(error: Exception) -> Any:
+    calls: list[str | None] = []
+
+    def fake_persistence(uri: str | None = None, db_name: str = "stitch") -> Any:
+        calls.append(uri)
+        raise error
+
+    fake_persistence.calls = calls  # type: ignore[attr-defined]
+    return fake_persistence
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        # What pymongo raises when the server is down or the credentials are refused; the
+        # messages echo hosts, user names and (for a mangled URI) the URI itself.
+        pytest.param(
+            ServerSelectionTimeoutError(f"cluster0.example.mongodb.net:27017: timed out ({MONGO_URI})"),
+            id="unreachable",
+        ),
+        pytest.param(
+            OperationFailure(f"bad auth : authentication failed for stitch_app:{MONGO_PASSWORD}", code=8000),
+            id="auth-failure",
+        ),
+        pytest.param(ConfigurationError(f"The DNS query name does not exist: {MONGO_URI}"), id="bad-uri"),
+    ],
+)
+def test_mongodb_that_cannot_be_used_falls_back_to_memory_and_never_logs_the_uri(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, no_network: list[Any], error: Exception
+) -> None:
+    dummy_keys(monkeypatch)
+    monkeypatch.delenv("STITCH_FAKE_DB")
+    monkeypatch.setenv("MONGODB_URI", MONGO_URI)
+    monkeypatch.setattr(production, "_memory_warned", False)
+    persistence = _unreachable(error)
+    monkeypatch.setattr(studio, "mongo_persistence", persistence)
+    caplog.set_level("DEBUG")
+
+    svc = production.production_services()
+
+    assert persistence.calls and persistence.calls[0].startswith(MONGO_URI)  # it did try MongoDB
+    assert svc.labels["persistence"] == "memory"
+    assert isinstance(svc.checkpointer, InMemorySaver) and isinstance(svc.store, InMemoryStore)
+    errors = [r for r in caplog.records if r.levelname == "ERROR" and r.name == "agent.production"]
+    assert len(errors) == 1
+    assert type(error).__name__ in errors[0].getMessage() and "in-memory" in errors[0].getMessage()
+    warned = [r.getMessage() for r in caplog.records if "do not survive" in r.getMessage()]
+    assert len(warned) == 1 and type(error).__name__ in warned[0]
+    # Nothing logged anywhere carries the URI, the password, the user or the host.
+    logged = "\n".join(
+        [r.getMessage() for r in caplog.records]
+        + [caplog.text]
+        + [str(r.exc_info[1]) for r in caplog.records if r.exc_info]
+    )
+    for secret in (MONGO_URI, MONGO_PASSWORD, "stitch_app", "cluster0.example"):
+        assert secret not in logged
+    assert all(r.exc_info is None for r in caplog.records if r.name == "agent.production")
+    # The rest of production is untouched, and the label keys are the usual ones.
+    assert set(svc.labels) == set(production.LABEL_ORDER)
+    assert "MONGODB" not in production.describe(svc) and MONGO_PASSWORD not in production.describe(svc)
+    assert no_network == []
+
+
+def test_mongodb_unreachable_warns_about_memory_once_per_process(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    dummy_keys(monkeypatch)
+    monkeypatch.delenv("STITCH_FAKE_DB")
+    monkeypatch.setenv("MONGODB_URI", MONGO_URI)
+    monkeypatch.setattr(production, "_memory_warned", False)
+    monkeypatch.setattr(studio, "mongo_persistence", _unreachable(ServerSelectionTimeoutError("down")))
+    caplog.set_level("WARNING", logger="agent.production")
+    for _ in range(3):
+        assert production.production_services().labels["persistence"] == "memory"
+    assert len([r for r in caplog.records if "do not survive" in r.getMessage()]) == 1
+    # Each attempt to build the services says MongoDB failed (the manager is only cached once built).
+    assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 3
+
+
+def test_mongodb_unreachable_still_builds_a_manager_that_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    dummy_keys(monkeypatch)
+    monkeypatch.delenv("STITCH_FAKE_DB")
+    monkeypatch.setenv("MONGODB_URI", MONGO_URI)
+    monkeypatch.setattr(studio, "mongo_persistence", _unreachable(ServerSelectionTimeoutError("down")))
+    manager = production.production_manager(max_workers=1)
+    try:
+        assert isinstance(manager, runs.RunManager)
+        assert isinstance(manager._store, InMemoryStore)
+    finally:
+        manager.shutdown()
+
+
+def test_missing_anthropic_key_is_still_an_error_with_mongodb_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MONGODB_URI", MONGO_URI)
+    monkeypatch.setattr(studio, "mongo_persistence", lambda *a, **k: pytest.fail("persistence built without a model"))
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        production.production_services()
 
 
 @pytest.mark.parametrize("flag", ["1", "true", "YES"])
