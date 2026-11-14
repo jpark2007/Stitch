@@ -7,7 +7,9 @@ POST /families/{fid}/ask takes a natural-language question and points at one mem
    person: "grandpa and grandma" are the caller's grandparents). Deterministic.
 2. `best` is the top candidate (None when nothing matches, with the NO_STORY answer);
    `confident` per db.search.Ranking.confident. `quotes` are the top candidates' best
-   sentences and `answer` is composed from them; `mode` is "search".
+   sentences (best first). `answer` is db.search.best_answer: a short paragraph about the
+   best memory only (title, year, who tells it, one or two of its sentences), phrased as
+   "the closest page" when not confident; `mode` is "search".
 3. When asking.py has an answerer installed (main.py, from ANTHROPIC_API_KEY), the
    question, the caller, the relatives it named and the top candidates (this family's only)
    go to the model, which picks one candidate and writes the answer. A valid pick replaces
@@ -61,7 +63,9 @@ def ask_family(
     ranking = search_db.rank_memories(db, fid, query, people=people, asker_id=me.id if me else None)
     quotes = ranking.quotes()
     response = schemas.AskResponse(
-        answer=search_db.compose_answer(query, quotes, names),
+        answer=search_db.best_answer(
+            query, ranking.candidates[0] if ranking.candidates else None, ranking.confident(), names
+        ),
         quotes=quotes,
         best=ranking.best(),
         mode="search",
