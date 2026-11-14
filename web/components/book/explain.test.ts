@@ -391,6 +391,26 @@ describe("placeNote", () => {
     assert.ok(Math.abs(byMean.h - 200 / Math.sqrt(200 * 400)) < 1e-6, String(byMean.h));
   });
 
+  it("sizes a note for a cutout near the page's edge as for any other", () => {
+    // As the stage does: a card hanging off the page (|x| + half its width past
+    // 1.2) is answered as everywhere, off screen. A unit-tall card at x -0.67
+    // would hang off; the note itself, smaller, need not.
+    const cam = camera(desktop.k, desktop.floor, desktop.cx, 1.5);
+    const page = (sx: number, h: number, d: number, out: Parameters<Explain["placeNote"]>[1]["rect"]) => {
+      if (Math.abs(sx) + (h * 1.5) / 2 > 1.2) {
+        out.x0 = out.y0 = -1e6;
+        out.x1 = out.y1 = 1e6;
+        return out;
+      }
+      return cam(sx, h, d, out);
+    };
+    const target = x.rect(340, 380, 400, 590);
+    const p = x.placeNote(base({ rectAt: page, target, targetX: -0.67, xMin: -1.2, xMax: 1.2 }), x.placement());
+    assert.equal(p.fits, true);
+    assert.ok(Math.abs(p.rect.y1 - p.rect.y0 - 200) < 1e-6, JSON.stringify(p.rect));
+    assert.ok(inside(p.rect, desktop.view));
+  });
+
   it("stays where it was while that still works", () => {
     const first = x.placeNote(base(), x.placement());
     const again = x.placeNote(base({ prevX: first.x, target: x.rect(602, 380, 682, 590) }), x.placement());

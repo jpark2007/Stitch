@@ -417,7 +417,8 @@ export interface PlaceInput {
    * tall, at depth slot `d` (0 the nearest the set; later slots stand
    * further toward the reader), written into `out`. The note stands on the
    * page, so this is the whole of the camera and the page as far as
-   * placement needs.
+   * placement needs: where it may not stand (hanging off the page) it may
+   * answer a vast rect, as good as off screen.
    */
   rectAt(x: number, h: number, d: number, out: Rect): Rect;
   /** How many depth slots there are. Default 1. */
@@ -472,6 +473,10 @@ const PASSES = 8;
 
 /** Any overlap with an avoided rect up to this many px² still counts as clear (an antialiased corner). */
 const CLEAR_SLACK = 24;
+/** The card height (stage units) placement reads the screen's scale off. */
+const PROBE_H = 0.1;
+/** A rect the size of a card on screen: not rectAt's "anywhere, as good as off screen". */
+const sized = (r: Rect) => r.x1 - r.x0 < 1e5 && r.y1 - r.y0 < 1e5 && r.x1 >= r.x0 && r.y1 >= r.y0;
 
 /**
  * Where the note stands: beside its target, wholly on screen, clear of the
@@ -500,10 +505,13 @@ function searchNote(p: PlaceInput, out: Placement, clear: boolean): boolean {
   const depths = Math.max(1, p.depths ?? 1);
   const others = p.others ?? [];
   const r = out.rect;
-  // Screen px per stage unit of height, where the target stands.
-  p.rectAt(p.targetX, 1, 0, r);
-  const tall = Math.max(1e-6, r.y1 - r.y0);
-  const perUnit = p.aspect ? Math.sqrt(tall * Math.max(1e-6, (r.x1 - r.x0) / p.aspect)) : tall;
+  // Screen px per stage unit of height, where the target stands, read off a
+  // small card there: a unit-tall one beside a cutout near the page's edge
+  // would hang off the page, which rectAt may answer as off screen at any size.
+  p.rectAt(p.targetX, PROBE_H, 0, r);
+  if (!sized(r)) p.rectAt(0, PROBE_H, 0, r);
+  const tall = Math.max(1e-6, (r.y1 - r.y0) / PROBE_H);
+  const perUnit = p.aspect ? Math.sqrt(tall * Math.max(1e-6, (r.x1 - r.x0) / PROBE_H / p.aspect)) : tall;
   // maxH caps the wanted size, but never below the smallest that still
   // reads (a long note on a phone's small stage would set its words too small).
   const hRead = p.minPx / perUnit;
