@@ -4,11 +4,13 @@ import { mkdtempSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import { connect } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { Webhook } from "standardwebhooks";
 import { betaConfig, BetaApi, BetaBridge, createBetaWebhook, parseBetaEvent, type BetaConfig } from "../src/beta.ts";
-import { BetaStore } from "../src/beta-store.ts";
+import { BetaStore, EVENT_RETENTION_MS, ROUTE_RETENTION_MS, MAX_EVENT_ATTEMPTS } from "../src/beta-store.ts";
 import { ApiClient, createSendServer } from "../src/bridge.ts";
-import { Authenticator, signedHeaders } from "../src/protocol.ts";
+import { Authenticator, signedHeaders, ProtocolError } from "../src/protocol.ts";
 
 const ident = (prefix: string, n = 1) => `pho_${prefix}_${String(n).padStart(26, "0")}`;
 const projectId = ident("prj"), agentHandle = "+15555550123";
@@ -18,10 +20,10 @@ const human = { id: ident("usr"), projectId, platform: "imessage", kind: "human"
 const agent = { ...human, id: ident("usr", 2), kind: "agent", handle: agentHandle };
 const dm = { id: ident("spc"), projectId, platform: "imessage", kind: "direct", participantIds: [human.id, agent.id] };
 function event() { return { id: ident("evt"), apiVersion: "2026-07-01", type: "message.received", source: "imessage.photon", timestamp: new Date().toISOString(), data: { projectId, object: { id: ident("msg"), projectId, platform: "imessage", status: "received", sentBy: { ...human }, receivedBy: { ...agent }, space: { ...dm, participantIds: [...dm.participantIds] }, content: { type: "text", format: "plain", text: "Grandma taught me to bake." } as any } } }; }
-function fixture(t: any) {
-  const dir = mkdtempSync(join(tmpdir(), "stitch-beta-")); let store = new BetaStore(join(dir, "state.sqlite"), projectId);
+function fixture(t: any, now: () => number = Date.now) {
+  const dir = mkdtempSync(join(tmpdir(), "stitch-beta-")); let store = new BetaStore(join(dir, "state.sqlite"), projectId, now);
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { dir, get store() { return store; }, restart() { store.close(); store = new BetaStore(join(dir, "state.sqlite"), projectId); return store; } };
+  return { dir, get store() { return store; }, restart() { store.close(); store = new BetaStore(join(dir, "state.sqlite"), projectId, now); return store; } };
 }
 function apiFixture() {
   const calls: { url: string; init: RequestInit }[] = [];
@@ -241,4 +243,151 @@ test("Beta rejects unsupported binary MIME while cancelling the response body", 
   await assert.rejects(api.request(`/attachments/${ident("att")}/content`, { binary: true }), /Unsupported photo/);
   assert.ok(performance.now() - started < 500);
   assert.equal(cancelled, true);
+});
+
+test("STOP survives transient verification and idempotent inbox failures with durable backoff", async t => {
+  let now = Date.now();
+  const f = fixture(t, () => now), a = apiFixture(), e = event(); e.data.object.content.text = "STOP";
+  let failures = 1, posts = 0;
+  const api = new BetaApi(config, async (url, init) => failures-- > 0 ? new Response("", { status: 500 }) : a.fetcher(url, init));
+  const client = { post: async () => { posts++; if (posts === 1) throw new ProtocolError(503, "temporary"); return { status: 202, body: { accepted: true } }; } };
+  const raw = JSON.stringify(e); f.store.accept(e.id, raw);
+  await new BetaBridge(f.store, api, client).drain(projectId, agentHandle);
+  assert.equal(posts, 0); assert.equal(f.store.next(), undefined);
+  assert.equal(f.restart().accept(e.id, raw), false);
+  now += 1000;
+  await new BetaBridge(f.store, api, client).drain(projectId, agentHandle);
+  assert.equal(posts, 1); assert.equal(f.store.next(), undefined);
+  now += 2000;
+  await new BetaBridge(f.restart(), api, client).drain(projectId, agentHandle);
+  assert.equal(posts, 2);
+  assert.equal(f.store.counts().find(row => row.state === "done")?.count, 1);
+});
+
+test("retry exhaustion remains blocked and deduped across restart", async t => {
+  let now = Date.now(); const f = fixture(t, () => now), e = event(); e.data.object.content.text = "STOP";
+  f.store.accept(e.id, JSON.stringify(e)); let calls = 0;
+  const api = new BetaApi(config, async () => { calls++; throw new TypeError("network unavailable"); });
+  const client = { post: async () => { throw new Error("must not forward"); } };
+  for (let i = 0; i < MAX_EVENT_ATTEMPTS + 2; i++) {
+    await new BetaBridge(f.store, api, client).drain(projectId, agentHandle); now += 60_000;
+  }
+  assert.equal(calls, MAX_EVENT_ATTEMPTS);
+  assert.equal(f.restart().next(), undefined);
+  assert.equal(f.store.counts().find(row => row.state === "blocked")?.count, 1);
+});
+
+test("completed parts are checkpointed before retrying a later idempotent text", async t => {
+  let now = Date.now(); const f = fixture(t, () => now), a = apiFixture(), e = event();
+  e.data.object.content = { type: "group", parts: [{ type: "attachment", attachmentId: ident("att") }, { type: "text", format: "plain", text: "STOP" }] };
+  f.store.accept(e.id, JSON.stringify(e)); const calls: string[] = []; let textFailures = 1;
+  const client = { post: async (path: any) => { calls.push(path); if (path.endsWith("authorize")) return { status: 200, body: { allowed: true } };
+    if (path.endsWith("/inbound") && textFailures-- > 0) throw new ProtocolError(502, "lost ACK");
+    return { status: 202, body: { accepted: true } }; } };
+  await new BetaBridge(f.store, a.api, client).drain(projectId, agentHandle);
+  now += 1000;
+  await new BetaBridge(f.restart(), a.api, client).drain(projectId, agentHandle);
+  assert.equal(calls.filter(path => path.endsWith("inbound-photo")).length, 1);
+  assert.equal(calls.filter(path => path.endsWith("/inbound")).length, 2);
+  assert.equal(f.store.counts().find(row => row.state === "done")?.count, 1);
+});
+
+test("full route cache cannot prevent STOP or LINK from completing", async t => {
+  const f = fixture(t), a = apiFixture();
+  for (let i = 0; i < 1000; i++) f.store.saveRoute(`old-${i}`, { synthetic: i });
+  const paths: string[] = [];
+  const client = { post: async (path: any) => { paths.push(path); return path.endsWith("enroll") ? { status: 200, body: { status: "active" } } : { status: 202, body: { accepted: true } }; } };
+  for (const [i, text] of ["STOP", "LINK " + "a".repeat(43)].entries()) {
+    const e = event(); e.id = ident("evt", i + 1); e.data.object.content.text = text;
+    f.store.accept(e.id, JSON.stringify(e)); await new BetaBridge(f.store, a.api, client).drain(projectId, agentHandle);
+  }
+  assert.deepEqual(paths, ["/internal/channels/inbound", "/internal/channels/enroll"]);
+  assert.equal(f.store.counts().find(row => row.state === "done")?.count, 2);
+  assert.equal(f.store.route(dm.id), undefined);
+});
+
+test("event capacity counts active work; done hashes survive retry horizon then prune", t => {
+  let now = Date.now(); const f = fixture(t, () => now); f.store.close();
+  const db = new DatabaseSync(join(f.dir, "state.sqlite"));
+  db.exec("BEGIN"); const insert = db.prepare("INSERT INTO events (id,hash,body,state,created,updated) VALUES (?,?,'','done',?,?)");
+  for (let i = 0; i < 10_000; i++) insert.run(`old-${i}`, "hash", now, now);
+  db.exec("COMMIT"); db.close(); f.restart();
+  assert.equal(f.store.accept("fresh", "synthetic"), true);
+  assert.equal(f.store.counts().find(row => row.state === "done")?.count, 10_000);
+  now += EVENT_RETENTION_MS - 1; f.store.prune();
+  assert.equal(f.store.counts().find(row => row.state === "done")?.count, 10_000);
+  now += 2; f.store.prune();
+  assert.equal(f.store.counts().some(row => row.state === "done"), false);
+  assert.equal(f.store.next(), undefined, "expired queued bodies cannot run");
+  assert.equal(f.store.accept("fresh", "synthetic"), false, "uncertainty identity retained");
+});
+
+test("active queue still fails closed at capacity, without deleting uncertain rows", t => {
+  const f = fixture(t); f.store.close(); const db = new DatabaseSync(join(f.dir, "state.sqlite"));
+  db.exec("BEGIN"); const insert = db.prepare("INSERT INTO events (id,hash,body,state,created,updated) VALUES (?,?,'','blocked',?,?)");
+  for (let i = 0; i < 10_000; i++) insert.run(`uncertain-${i}`, "hash", Date.now(), Date.now());
+  db.exec("COMMIT"); db.close(); f.restart();
+  assert.throws(() => f.store.accept("new", "STOP"), /maintenance/);
+  assert.equal(f.store.counts().find(row => row.state === "blocked")?.count, 10_000);
+});
+
+test("legacy ledger migration preserves crashed processing and reply uncertainty", t => {
+  const dir = mkdtempSync(join(tmpdir(), "stitch-beta-legacy-")), path = join(dir, "state.sqlite");
+  const db = new DatabaseSync(path); chmodSync(path, 0o600);
+  db.exec("CREATE TABLE config (project TEXT PRIMARY KEY); CREATE TABLE events (id TEXT PRIMARY KEY,hash TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL); CREATE TABLE replies (id TEXT PRIMARY KEY,hash TEXT NOT NULL,state TEXT NOT NULL); CREATE TABLE routes (id TEXT PRIMARY KEY,proof TEXT NOT NULL);");
+  db.prepare("INSERT INTO config VALUES (?)").run(projectId);
+  db.exec("INSERT INTO events VALUES ('old','hash','private','processing'); INSERT INTO replies VALUES ('reply','hash','sending'); INSERT INTO routes VALUES ('route','{}');"); db.close();
+  const store = new BetaStore(path, projectId); t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  assert.equal(store.next(), undefined);
+  assert.throws(() => store.reserveReply("reply", "hash"), /uncertain/);
+  assert.deepEqual(store.route("route"), {});
+  assert.equal(store.accept("new", "synthetic"), true);
+});
+
+test("403/404 remove refused payloads immediately; blocked payloads and routes expire", async t => {
+  let now = Date.now(); const f = fixture(t, () => now), a = apiFixture();
+  for (const [i, status] of [403, 404, 422].entries()) {
+    const e = event(); e.id = ident("evt", i + 1); f.store.accept(e.id, JSON.stringify(e));
+    await new BetaBridge(f.store, a.api, { post: async () => { throw new ProtocolError(status, "refused"); } }).drain(projectId, agentHandle);
+  }
+  f.store.saveRoute(dm.id, parseBetaEvent(event(), projectId, ident("evt"), agentHandle).proof);
+  f.store.close(); let db = new DatabaseSync(join(f.dir, "state.sqlite"));
+  assert.equal(db.prepare("SELECT count(*) AS n FROM events WHERE body!=''").get()!.n, 1); db.close(); f.restart();
+  now += ROUTE_RETENTION_MS + 1; f.store.prune(); assert.equal(f.store.route(dm.id), undefined);
+  f.store.close(); db = new DatabaseSync(join(f.dir, "state.sqlite"));
+  assert.equal(db.prepare("SELECT body,state FROM events").get()!.body, "");
+  assert.equal(db.prepare("SELECT state FROM events").get()!.state, "blocked"); db.close();
+});
+
+test("consent refusal before outbound send leaves no uncertain reservation", async t => {
+  const f = fixture(t), a = apiFixture(); f.store.saveRoute(dm.id, parseBetaEvent(event(), projectId, ident("evt"), agentHandle).proof);
+  const message = { messageId: "before-send", provider: "imessage" as const, spaceId: dm.id, text: "Question" };
+  await assert.rejects(new BetaBridge(f.store, a.api, { post: async () => { throw new ProtocolError(403, "stopped"); } }).send(message));
+  assert.equal(a.calls.some(call => call.url.endsWith("/messages")), false);
+  await new BetaBridge(f.store, a.api, { post: async () => ({ status: 200, body: { allowed: true } }) }).send(message);
+  assert.equal(a.calls.filter(call => call.url.endsWith("/messages")).length, 1);
+});
+
+test("webhook secret enforces 24 decoded bytes and rejects noncanonical base64", () => {
+  const env = { CHANNELS_PHOTON_VERSION: "beta", PHOTON_PROJECT_ID: projectId, PHOTON_API_KEY: "pho_sk_test", PHOTON_AGENT_HANDLE: agentHandle };
+  for (const bytes of [1, 23]) assert.throws(() => betaConfig({ ...env, PHOTON_WEBHOOK_SECRET: "whsec_" + Buffer.alloc(bytes).toString("base64") }));
+  assert.equal(betaConfig({ ...env, PHOTON_WEBHOOK_SECRET: "whsec_" + Buffer.alloc(24).toString("base64") }).projectId, projectId);
+  assert.throws(() => betaConfig({ ...env, PHOTON_WEBHOOK_SECRET: secret.replace(/=$/, "") }));
+});
+
+test("webhook bounds simultaneous connections and absolute slow upload duration", async t => {
+  const f = fixture(t), server = createBetaWebhook(config, f.store);
+  assert.equal(server.maxConnections, 64);
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); t.after(() => server.close());
+  const started = performance.now();
+  await new Promise<void>((resolve, reject) => {
+    const socket = connect((server.address() as any).port, "127.0.0.1");
+    const bound = setTimeout(() => { socket.destroy(); reject(new Error("upload exceeded absolute bound")); }, 12_500);
+    const trickle = setInterval(() => socket.write(" "), 500);
+    socket.once("connect", () => socket.write("POST /photon/webhook HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 60000\r\n\r\n"));
+    socket.on("data", () => {}); socket.on("error", () => {});
+    socket.once("close", () => { clearTimeout(bound); clearInterval(trickle); resolve(); });
+  });
+  assert.ok(performance.now() - started < 12_000);
+  assert.deepEqual(f.store.counts(), []);
 });
