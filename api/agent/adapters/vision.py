@@ -175,7 +175,8 @@ def _asked_wait_s(headers: Mapping[str, str] | None) -> float | None:
 def retry_wait_s(attempt: int, headers: Mapping[str, str] | None = None) -> float:
     """Seconds to wait before retry ``attempt + 1``: what the provider asked, else exponential; capped."""
     asked = _asked_wait_s(headers)
-    wait = RETRY_BACKOFF_S * (2**attempt) if asked is None else asked
+    # min(attempt, 16): past the cap anyway, and 2**attempt never overflows a float.
+    wait = RETRY_BACKOFF_S * (2 ** min(attempt, 16)) if asked is None else asked
     return min(MAX_BACKOFF_S, wait)
 
 

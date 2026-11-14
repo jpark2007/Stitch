@@ -986,6 +986,13 @@ def test_vision_retries_a_failed_connection_but_not_a_timeout(sdk_never_sleeps: 
     assert len(api.requests) == 1 and sleeps == []
 
 
+def test_vision_retry_waits_double_up_to_the_cap() -> None:
+    assert [vision_mod.retry_wait_s(a) for a in range(6)] == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0]
+    assert vision_mod.retry_wait_s(5000) == vision_mod.MAX_BACKOFF_S  # no float overflow on a huge retry count
+    assert vision_mod.retry_wait_s(0, {"retry-after-ms": "-1", "retry-after": "2"}) == 2.0
+    assert vision_mod.retry_wait_s(0, {"retry-after": "inf"}) == 0.5
+
+
 def test_vision_with_an_injected_client_uses_the_same_bounded_retries(clean_env: pytest.MonkeyPatch) -> None:
     """A non-SDK error is never retried; an SDK error from an injected client is, with the cap."""
     request = sdk_httpx.Request("POST", "https://api.anthropic.com/v1/messages")
