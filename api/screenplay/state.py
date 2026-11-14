@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import schemas
+from screenplay import character
 from screenplay.schema import Shot
 
 Vec3 = tuple[float, float, float]
@@ -84,6 +85,8 @@ class PuppetState:
     seat: tuple[str, str] | None = None  # (prop id, socket)
     busy_until: float = 0.0
     activity: str | None = None
+    speed_scale: float = 1.0  # walk/run speed factor from the sheet's notes (character.speed_scale)
+    item: str | None = None  # signature item this puppet starts the story wearing on its head, if any
 
 
 @dataclass
@@ -109,14 +112,28 @@ class World:
     """The logical state of every puppet and prop. Deterministic and copyable."""
 
     def __init__(self, people: Iterable[schemas.Person], props: Iterable[schemas.Prop]):
-        self.people: dict[str, PuppetState] = {}
-        for p in people:
-            self.people[p.id] = PuppetState(id=p.id, build=p.character.build, pos=OFFSTAGE_LEFT, facing=1)
+        """Everyone starts offstage left facing right; every prop starts unplaced.
+
+        A person's signature item (character.item_prop_id) starts worn on their head when that
+        prop is passed in and its size is wearable (character.WEARABLE_SIZES). If two people name
+        the same item, only the first in cast order wears it; the other's ``item`` stays None.
+        """
         self.catalog: dict[str, schemas.Prop] = {}
         self.props: dict[str, PropState] = {}
         for pr in props:
             self.catalog[pr.id] = pr
             self.props[pr.id] = PropState(id=pr.id)
+        self.people: dict[str, PuppetState] = {}
+        for p in people:
+            self.people[p.id] = PuppetState(
+                id=p.id, build=p.character.build, pos=OFFSTAGE_LEFT, facing=1,
+                speed_scale=character.speed_scale(p.character.notes),
+            )
+            item = character.signature_item(p)
+            if (item is not None and item in self.catalog and self.catalog[item].size in character.WEARABLE_SIZES
+                    and self.holder(item) is None):
+                self.people[p.id].item = item
+                self._attach_puppet(item, p.id, HEAD)
         self.now: float = 0.0  # shot time; the compiler may set it before calling occupy()
 
     # ------------------------------------------------------------------ basics
@@ -406,7 +423,9 @@ class World:
                 p.facing = -1 if s.facing == "left" else 1
             p.pose = "stand"
 
-        # Holdings: take the prop from any previous holder.
+        # Holdings: take the prop from any previous holder. A worn head item (a signature item or
+        # a hat) leaves the head silently, for another puppet's hand or the wearer's own; the head
+        # never counts as a busy hand. prop_start below likewise takes a worn item off the head.
         for what, who in held_by.items():
             h = self.holder(what)
             if h is not None and h[0] == who and h[1] in HANDS:
@@ -434,11 +453,17 @@ class World:
                 self.people[who].pose = s.pose
 
     def _clear_stale_props(self, shot: Shot, held_by: dict[str, str]) -> None:
-        """On a set change, every prop that is not carried in by a listed puppet, not in
-        prop_start and not in a start `holding` leaves the stage (parent ground, world_pos None),
-        and anything seated on it is unseated. Props riding on a carried prop come along."""
+        """On a set change, every prop that is not carried in by a listed puppet, not worn on
+        anyone's head, not in prop_start and not in a start `holding` leaves the stage (parent
+        ground, world_pos None), and anything seated on it is unseated. Props riding on a carried
+        prop come along.
+
+        Head items (a signature item, or a hat put on with put_on) stay on the head even for
+        unlisted cast, who wait offstage still wearing them; only their hand-held props stay behind.
+        """
         keep = set(shot.prop_start) | set(held_by)
         carried = [what for who in shot.start for what in self.people[who].holding.values()]
+        carried += [p.holding[HEAD] for who, p in self.people.items() if who not in shot.start and HEAD in p.holding]
         for what in carried:
             keep.add(what)
             keep.update(self._descendants(what))
