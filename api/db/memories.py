@@ -34,6 +34,13 @@ _SCENE_FIELDS = ("screenplay", "timeline")
 _QUESTION_STATUSES = frozenset(get_args(schemas.QuestionStatus))
 
 
+class VersionConflict(Exception):
+    """`save_scene(expected_version=n)`: the stored memory is no longer at version n.
+
+    Someone saved the scene since it was read; nothing was written. Re-read and retry.
+    """
+
+
 # ------------------------------------------------------------------------------ helpers
 
 def era_for_year(year: int) -> str | None:
@@ -304,11 +311,20 @@ def save_scene(
     prop_ids: list[str],
     set_ids: list[str],
     title: str | None = None,
+    expected_version: int | None = None,
 ) -> schemas.Memory | None:
     """Store the screenplay and compiled timeline.
 
     The first save on a memory that has no timeline yet keeps version 1; every later save
-    increments the version. A None screenplay or timeline clears the stored one.
+    increments the version. A None screenplay or timeline clears the stored one. None when
+    the memory is not in this family.
+
+    `expected_version` makes the write conditional (optimistic concurrency): with an int, the
+    write lands only while the stored version still equals it (the first save, too, which
+    keeps that version), otherwise `VersionConflict` is raised and nothing is written. Use it
+    when the new scene was built from a read of the memory, so a scene saved in between
+    (another teller's narration track) is never silently overwritten. With None (the
+    default) the save is unconditional, as it always was.
     """
     to_set: dict[str, Any] = {"propIds": _dedupe(prop_ids), "setIds": _dedupe(set_ids)}
     to_unset: dict[str, Any] = {}
@@ -325,7 +341,13 @@ def save_scene(
     update: dict[str, Any] = {"$set": to_set}
     if to_unset:
         update["$unset"] = to_unset
-    base = {"_id": memory_id, "familyId": family_id}
+    base: dict[str, Any] = {"_id": memory_id, "familyId": family_id}
+    later: dict[str, Any] = dict(base)
+    if expected_version is not None:
+        if not isinstance(expected_version, int) or isinstance(expected_version, bool):
+            raise ValueError("expected_version must be an int")
+        base["version"] = expected_version
+        later = {**base, "timeline": {"$ne": None}}
     memories = db["memories"]
 
     # `timeline: None` matches a missing or null timeline: the first save, no version bump.
@@ -334,11 +356,17 @@ def save_scene(
     )
     if updated is None:
         updated = memories.find_one_and_update(
-            base,
+            later,
             {**update, "$inc": {"version": 1}},
             projection={"embedding": 0},
             return_document=ReturnDocument.AFTER,
         )
+    if updated is None and expected_version is not None:
+        current = memories.find_one({"_id": memory_id, "familyId": family_id}, {"version": 1})
+        if current is not None:
+            raise VersionConflict(
+                f"memory {memory_id} is at version {current.get('version')}, not {expected_version}"
+            )
     return _to_memory(updated)
 
 
