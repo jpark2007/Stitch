@@ -1,7 +1,8 @@
 """Password hashing (argon2), session JWTs, and the current-user / family-member dependencies.
 
 ARCHITECTURE.md section 4 (Access control):
-- `current_user` decodes the session cookie (401 if absent, invalid, or the user is gone).
+- `current_user` decodes the session cookie (401 if absent, invalid, revoked by logout,
+  or the user is gone).
 - `family_member(fid)` checks membership. A non-member gets 404, never 403, so another
   family's ids are indistinguishable from ids that do not exist.
 - `family_admin` additionally requires the admin role (403 for a plain member, who
@@ -23,6 +24,7 @@ from pymongo.database import Database
 
 import schemas
 from db import families as families_db
+from db import sessions as sessions_db
 from db import users as users_db
 from db.client import get_db
 
@@ -70,7 +72,11 @@ def _secret() -> str:
 
 
 def create_session_token(user_id: str, *, now: datetime | None = None) -> str:
-    """A signed HS256 JWT with sub (user id), iat and exp (SESSION_DAYS later)."""
+    """A signed HS256 JWT with sub (user id), iat, exp (SESSION_DAYS later) and a random jti.
+
+    The jti names this one session, so logout can revoke it without ending the user's
+    other sessions (db/sessions.py).
+    """
     if not isinstance(user_id, str) or not user_id:
         raise ValueError("user_id is required")
     issued = now or datetime.now(UTC)
@@ -78,12 +84,18 @@ def create_session_token(user_id: str, *, now: datetime | None = None) -> str:
         "sub": user_id,
         "iat": int(issued.timestamp()),
         "exp": int((issued + timedelta(days=SESSION_DAYS)).timestamp()),
+        "jti": secrets.token_urlsafe(16),
     }
     return jwt.encode(claims, _secret(), algorithm=JWT_ALGORITHM)
 
 
-def decode_session_token(token: str) -> str | None:
-    """The user id in a valid token. None if it is expired, tampered, or malformed."""
+def decode_session_claims(token: str) -> dict | None:
+    """The verified claims of a valid token. None if it is expired, tampered, or malformed.
+
+    A valid token has a non-empty string sub and jti, and int iat and exp. This only
+    checks the signature and claims; revocation is checked against the database by
+    the dependencies below.
+    """
     if not isinstance(token, str) or not token:
         return None
     try:
@@ -91,12 +103,27 @@ def decode_session_token(token: str) -> str | None:
             token,
             _secret(),
             algorithms=[JWT_ALGORITHM],
-            options={"require": ["sub", "iat", "exp"]},
+            options={"require": ["sub", "iat", "exp", "jti"]},
         )
     except jwt.PyJWTError:
         return None
-    sub = claims.get("sub")
-    return sub if isinstance(sub, str) and sub else None
+    sub, jti, exp = claims.get("sub"), claims.get("jti"), claims.get("exp")
+    if not (isinstance(sub, str) and sub and isinstance(jti, str) and jti):
+        return None
+    if not isinstance(exp, int) or isinstance(exp, bool):
+        return None
+    return claims
+
+
+def decode_session_token(token: str) -> str | None:
+    """The user id in a valid token. None if it is expired, tampered, or malformed."""
+    claims = decode_session_claims(token)
+    return claims["sub"] if claims else None
+
+
+def session_expiry(claims: dict) -> datetime:
+    """The exp claim of verified claims as an aware UTC datetime."""
+    return datetime.fromtimestamp(claims["exp"], UTC)
 
 
 # ---------------------------------------------------------------- cookies
@@ -132,10 +159,12 @@ def clear_session_cookie(response: Response) -> None:
 # ---------------------------------------------------------------- dependencies
 
 def _user_from_cookie(session: str | None, db: Database) -> schemas.User | None:
-    user_id = decode_session_token(session) if session else None
-    if user_id is None:
+    claims = decode_session_claims(session) if session else None
+    if claims is None:
         return None
-    return users_db.get_user(db, user_id)
+    if sessions_db.is_revoked(db, claims["jti"]):  # logged out
+        return None
+    return users_db.get_user(db, claims["sub"])
 
 
 def current_user(

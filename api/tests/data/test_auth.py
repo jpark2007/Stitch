@@ -14,6 +14,7 @@ import auth
 import schemas
 from db import client as db_client
 from db import families as families_db
+from db import sessions as sessions_db
 from db import users as users_db
 from db.client import get_db
 
@@ -45,8 +46,31 @@ def test_token_round_trip():
     token = auth.create_session_token("user-1")
     assert auth.decode_session_token(token) == "user-1"
     claims = jwt.decode(token, options={"verify_signature": False})
-    assert set(claims) == {"sub", "iat", "exp"}
+    assert set(claims) == {"sub", "iat", "exp", "jti"}
     assert claims["exp"] - claims["iat"] == auth.SESSION_DAYS * 86400
+    assert isinstance(claims["jti"], str) and len(claims["jti"]) >= 16
+
+
+def test_each_token_has_its_own_jti():
+    now = datetime.now(UTC)
+    first = auth.decode_session_claims(auth.create_session_token("user-1", now=now))
+    second = auth.decode_session_claims(auth.create_session_token("user-1", now=now))
+    assert first and second
+    assert first["sub"] == second["sub"] == "user-1"
+    assert first["jti"] != second["jti"]
+
+
+def test_decode_session_claims():
+    token = auth.create_session_token("user-1")
+    claims = auth.decode_session_claims(token)
+    assert claims is not None
+    assert set(claims) == {"sub", "iat", "exp", "jti"}
+    assert claims["sub"] == "user-1"
+    expiry = auth.session_expiry(claims)
+    assert expiry.tzinfo is not None
+    assert int(expiry.timestamp()) == claims["exp"]
+    for bad in ["", "abc", "a.b.c", None]:
+        assert auth.decode_session_claims(bad) is None  # type: ignore[arg-type]
 
 
 def test_token_expiry_via_now():
@@ -70,14 +94,16 @@ def test_tampered_token():
 
 def test_token_signed_with_wrong_secret():
     now = int(datetime.now(UTC).timestamp())
-    claims = {"sub": "user-1", "iat": now, "exp": now + 3600}
+    claims = {"sub": "user-1", "iat": now, "exp": now + 3600, "jti": "j1"}
     other = jwt.encode(claims, "some-other-secret-0123456789abcdef0123", algorithm="HS256")
     assert auth.decode_session_token(other) is None
 
 
 def test_unsigned_and_malformed_tokens():
     now = int(datetime.now(UTC).timestamp())
-    unsigned = jwt.encode({"sub": "user-1", "iat": now, "exp": now + 3600}, None, algorithm="none")
+    unsigned = jwt.encode(
+        {"sub": "user-1", "iat": now, "exp": now + 3600, "jti": "j1"}, None, algorithm="none"
+    )
     assert auth.decode_session_token(unsigned) is None
     for bad in ["", "abc", "a.b.c", "....", None]:
         assert auth.decode_session_token(bad) is None  # type: ignore[arg-type]
@@ -86,12 +112,27 @@ def test_unsigned_and_malformed_tokens():
 def test_token_missing_claims():
     secret = auth._secret()
     now = int(datetime.now(UTC).timestamp())
-    no_exp = jwt.encode({"sub": "user-1", "iat": now}, secret, algorithm="HS256")
-    no_sub = jwt.encode({"iat": now, "exp": now + 3600}, secret, algorithm="HS256")
-    empty_sub = jwt.encode({"sub": "", "iat": now, "exp": now + 3600}, secret, algorithm="HS256")
-    assert auth.decode_session_token(no_exp) is None
-    assert auth.decode_session_token(no_sub) is None
-    assert auth.decode_session_token(empty_sub) is None
+    valid = jwt.encode({"sub": "user-1", "iat": now, "exp": now + 3600, "jti": "j1"}, secret, algorithm="HS256")
+    no_exp = jwt.encode({"sub": "user-1", "iat": now, "jti": "j1"}, secret, algorithm="HS256")
+    no_iat = jwt.encode({"sub": "user-1", "exp": now + 3600, "jti": "j1"}, secret, algorithm="HS256")
+    no_sub = jwt.encode({"iat": now, "exp": now + 3600, "jti": "j1"}, secret, algorithm="HS256")
+    empty_sub = jwt.encode({"sub": "", "iat": now, "exp": now + 3600, "jti": "j1"}, secret, algorithm="HS256")
+    assert auth.decode_session_token(valid) == "user-1"  # the control: only the missing claim differs
+    for token in [no_exp, no_iat, no_sub, empty_sub]:
+        assert auth.decode_session_token(token) is None
+        assert auth.decode_session_claims(token) is None
+
+
+def test_token_without_jti_is_rejected():
+    """A pre-revocation token (right secret, no jti) cannot be revoked, so it is not accepted."""
+    secret = auth._secret()
+    now = int(datetime.now(UTC).timestamp())
+    no_jti = jwt.encode({"sub": "user-1", "iat": now, "exp": now + 3600}, secret, algorithm="HS256")
+    empty_jti = jwt.encode({"sub": "user-1", "iat": now, "exp": now + 3600, "jti": ""}, secret, algorithm="HS256")
+    non_str_jti = jwt.encode({"sub": "user-1", "iat": now, "exp": now + 3600, "jti": 7}, secret, algorithm="HS256")
+    for token in [no_jti, empty_jti, non_str_jti]:
+        assert auth.decode_session_token(token) is None
+        assert auth.decode_session_claims(token) is None
 
 
 def test_fallback_secret_when_unset(monkeypatch, caplog):
@@ -111,6 +152,41 @@ def test_token_from_one_secret_fails_under_another(monkeypatch):
     token = auth.create_session_token("user-1")
     monkeypatch.setenv("JWT_SECRET", "rotated-secret-0123456789abcdef0123456789")
     assert auth.decode_session_token(token) is None
+
+
+# ---------------------------------------------------------------- revoked sessions (db/sessions.py)
+
+
+def test_revoke_session_and_is_revoked(mdb):
+    expires = (datetime.now(UTC) + timedelta(days=1)).replace(microsecond=0)  # BSON keeps ms
+    assert sessions_db.is_revoked(mdb, "j1") is False
+    sessions_db.revoke_session(mdb, "j1", expires)
+    assert sessions_db.is_revoked(mdb, "j1") is True
+    assert sessions_db.is_revoked(mdb, "j2") is False
+    doc = mdb.revoked_sessions.find_one({"_id": "j1"})
+    assert doc["expiresAt"] == expires
+
+
+def test_revoke_session_is_idempotent(mdb):
+    first = datetime.now(UTC) + timedelta(days=1)
+    sessions_db.revoke_session(mdb, "j1", first)
+    sessions_db.revoke_session(mdb, "j1", first)
+    assert mdb.revoked_sessions.count_documents({}) == 1
+
+
+def test_revoke_session_stores_naive_times_as_utc(mdb):
+    naive = datetime(2030, 1, 2, 3, 4, 5)
+    sessions_db.revoke_session(mdb, "j1", naive)
+    assert mdb.revoked_sessions.find_one({"_id": "j1"})["expiresAt"] == naive.replace(tzinfo=UTC)
+
+
+def test_revoke_session_validates_input(mdb):
+    with pytest.raises(ValueError):
+        sessions_db.revoke_session(mdb, "", datetime.now(UTC))
+    with pytest.raises(ValueError):
+        sessions_db.revoke_session(mdb, "j1", 123)  # type: ignore[arg-type]
+    assert sessions_db.is_revoked(mdb, "") is False
+    assert sessions_db.is_revoked(mdb, None) is False  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------- dependencies on a tiny app
@@ -228,6 +304,35 @@ def test_current_user_with_expired_cookie(env):
     old = datetime.now(UTC) - timedelta(days=auth.SESSION_DAYS + 1)
     tc.cookies.set(auth.COOKIE_NAME, auth.create_session_token(alice.id, now=old))
     assert tc.get("/me").status_code == 401
+
+
+def test_current_user_rejects_a_token_without_jti(env):
+    tc, alice, _ = env
+    now = int(datetime.now(UTC).timestamp())
+    legacy = jwt.encode({"sub": alice.id, "iat": now, "exp": now + 3600}, auth._secret(), algorithm="HS256")
+    tc.cookies.set(auth.COOKIE_NAME, legacy)
+    assert tc.get("/me").status_code == 401
+    assert tc.get("/maybe").json() == {"id": None}
+
+
+def test_revoked_session_is_rejected_by_current_and_optional_user(env, mdb):
+    tc, alice, _ = env
+    token = auth.create_session_token(alice.id)
+    other = auth.create_session_token(alice.id)
+    tc.cookies.set(auth.COOKIE_NAME, token)
+    assert tc.get("/me").status_code == 200
+
+    claims = auth.decode_session_claims(token)
+    sessions_db.revoke_session(mdb, claims["jti"], auth.session_expiry(claims))
+
+    resp = tc.get("/me")
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Not signed in"}
+    assert tc.get("/maybe").json() == {"id": None}
+    assert tc.get("/families/famA/tree").status_code == 401
+    # The same user's other session is still good.
+    tc.cookies.set(auth.COOKIE_NAME, other)
+    assert tc.get("/me").json()["id"] == alice.id
 
 
 def test_current_user_deleted_user(env, mdb):
