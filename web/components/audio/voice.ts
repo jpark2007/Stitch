@@ -41,6 +41,7 @@ export class EraVoice {
   /** No notes start at or after this (set when the voice is told to end). */
   private stopAt = Infinity;
   private warm: [string, number][];
+  private fresh = true;
   disposed = false;
 
   constructor(
@@ -125,9 +126,12 @@ export class EraVoice {
   /** Schedule every note that starts before `now + horizon`. Returns notes made. */
   schedule(now: number, horizon: number): number {
     if (this.disposed) return 0;
-    // Build strings ahead of need in small slices (always at least one).
+    // Build strings ahead of need in small slices (at least one a pass), but
+    // not in the pass that built the voice: that one has done enough.
     const t0 = clock();
-    while (this.warm.length) {
+    const fresh = this.fresh;
+    this.fresh = false;
+    while (this.warm.length && !fresh) {
       const [inst, midi] = this.warm[0];
       if (!this.kit.hasString(inst, midi)) {
         if (clock() - t0 > WARM_BUDGET_MS) break;

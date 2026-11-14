@@ -37,7 +37,10 @@ export interface EraMusicStats {
   /** Scheduler passes run, and their main-thread cost. */
   ticks: number;
   busyMs: number;
+  /** Worst pass after the first. */
   maxTickMs: number;
+  /** The first pass (cold: the JIT compiles the engine). */
+  firstTickMs: number;
   notes: number;
   voices: number;
   phase: Phase["kind"];
@@ -70,7 +73,7 @@ export function createEraMusic(opts: { active?: boolean } = {}): EraMusic {
   /** The last change's reason, for the transport's fade length. */
   let why: "mute" | "active" | "era" | null = null;
   const owner = {};
-  const st = { ticks: 0, busyMs: 0, maxTickMs: 0, notes: 0 };
+  const st = { ticks: 0, busyMs: 0, maxTickMs: 0, firstTickMs: 0, notes: 0 };
 
   const input = () => ({ muted, active, sounding: era !== null || (core?.sounding ?? false) });
 
@@ -108,9 +111,11 @@ export function createEraMusic(opts: { active?: boolean } = {}): EraMusic {
       run(r.actions, now);
     }
     const ms = performance.now() - t0;
+    // The very first pass compiles everything (JIT); keep it apart from the steady worst.
+    if (st.ticks === 0) st.firstTickMs = ms;
+    else if (ms > st.maxTickMs) st.maxTickMs = ms;
     st.ticks++;
     st.busyMs += ms;
-    if (ms > st.maxTickMs) st.maxTickMs = ms;
     if (phase.kind !== "asleep") timer = setTimeout(tick, TICK_MS);
   }
 

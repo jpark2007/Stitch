@@ -71,19 +71,19 @@ export function MusicLab() {
   };
 
   return (
-    <main className="relative min-h-dvh w-full px-[var(--gutter)] pb-10 pt-6 sm:pt-8">
-      <div className="mx-auto flex w-full max-w-[76rem] flex-col gap-6 sm:gap-8">
-        <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
+    <main className="relative min-h-dvh w-full px-[var(--gutter)] pb-8 pt-5 sm:pb-10 sm:pt-8">
+      <div className="mx-auto flex w-full max-w-[76rem] flex-col gap-4 sm:gap-8">
+        <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-1">
           <div>
             <p className="kicker">Stitch · lab</p>
-            <h1 className="mt-1 text-[2rem] sm:text-[2.75rem]">Era music</h1>
+            <h1 className="mt-1 text-[1.85rem] sm:text-[2.75rem]">Era music</h1>
           </div>
-          <p className="caption max-w-[30ch] text-[1.2rem] sm:text-right">
+          <p className="caption max-w-[30ch] text-[1.15rem] sm:text-right sm:text-[1.2rem]">
             {era ? `${eraLabel(era)} · ${PALETTES[era].name.toLowerCase()}` : "tap an era to start the music"}
           </p>
         </header>
 
-        <ol aria-label="Eras" className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-4 lg:grid-cols-5">
+        <ol aria-label="Eras" className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-5">
           {ERAS.map((e, i) => (
             <li key={e.id}>
               <EraCard id={e.id} index={i} playing={e.id === era} onPick={() => setYear(eraMidYear(e.id))} />
@@ -93,7 +93,7 @@ export function MusicLab() {
 
         <section
           aria-label="Playback"
-          className="relative grid gap-5 rounded-paper border border-rule bg-paper-light p-4 shadow-lift sm:p-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] lg:gap-10"
+          className="relative grid gap-3 rounded-paper border border-rule bg-paper-light px-4 py-3.5 shadow-lift sm:gap-5 sm:p-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] lg:gap-10"
         >
           <YearSlider year={year} onYear={setYear} onStep={step} />
           <div className="flex min-w-0 flex-col gap-4">
@@ -118,7 +118,7 @@ function EraCard({ id, index, playing, onPick }: { id: EraId; index: number; pla
       type="button"
       onClick={onPick}
       aria-pressed={playing}
-      className={`group relative flex h-full w-full flex-col items-start gap-1 rounded-paper border bg-paper-light px-3.5 pb-3 pt-3 text-left transition-[transform,box-shadow,border-color] duration-300 ease-[var(--ease-paper)] sm:px-4 sm:pb-4 sm:pt-4 ${
+      className={`group relative flex h-full w-full flex-col items-start gap-0.5 rounded-paper border bg-paper-light px-3 pb-2 pt-2 text-left transition-[transform,box-shadow,border-color] duration-300 ease-[var(--ease-paper)] sm:gap-1 sm:px-4 sm:pb-4 sm:pt-4 ${
         playing ? "border-accent/50 shadow-float" : "border-rule shadow-paper hover:-translate-y-0.5 hover:shadow-lift"
       }`}
       style={{ transform: playing ? `translateY(-4px) rotate(${tilt * 0.35}deg)` : undefined }}
@@ -135,10 +135,10 @@ function EraCard({ id, index, playing, onPick }: { id: EraId; index: number; pla
         />
       )}
       <span className="flex w-full items-center justify-between gap-2">
-        <span className="font-display text-[1.35rem] leading-tight text-ink sm:text-[1.6rem]">{eraLabel(id)}</span>
-        <span aria-hidden className="size-2.5 shrink-0 rounded-full" style={{ background: ERA_COLOR[id], opacity: playing ? 1 : 0.55 }} />
+        <span className="font-display text-[1.2rem] leading-tight text-ink sm:text-[1.6rem]">{eraLabel(id)}</span>
+        <span aria-hidden className="size-2 shrink-0 rounded-full sm:size-2.5" style={{ background: ERA_COLOR[id], opacity: playing ? 1 : 0.55 }} />
       </span>
-      <span className="text-[0.9rem] font-semibold text-ink-soft">{p.name}</span>
+      <span className="text-[0.8rem] font-semibold text-ink-soft sm:text-[0.9rem]">{p.name}</span>
       <span className="caption hidden text-[1.05rem] leading-snug sm:block">{p.character}</span>
       <span className="kicker mt-auto hidden pt-2 text-[0.62rem] sm:block">{meta(id)}</span>
       {playing && <span className="sr-only">(playing)</span>}
@@ -151,11 +151,11 @@ function YearSlider({ year, onYear, onStep }: { year: number | null; onYear: (y:
   const era = eraForYear(year);
   const pct = (y: number) => ((y - MIN_YEAR) / (MAX_YEAR - MIN_YEAR)) * 100;
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div className="flex min-w-0 flex-col gap-2 sm:gap-3">
       <div className="flex items-end justify-between gap-3">
         <div>
           <p className="kicker">The spread’s year</p>
-          <p className="font-display text-[2.4rem] leading-none tabular-nums text-ink sm:text-[2.8rem]" aria-live="polite">
+          <p className="mt-0.5 font-display text-[2rem] leading-none tabular-nums text-ink sm:text-[2.8rem]" aria-live="polite">
             {year ?? "—"}
           </p>
         </div>
@@ -188,7 +188,7 @@ function YearSlider({ year, onYear, onStep }: { year: number | null; onYear: (y:
             <li key={e.id} className="absolute -translate-x-1/2" style={{ left: `${pct(e.from)}%` }}>
               <span className="mx-auto block h-1.5 w-px bg-ink-faint/50" />
               <span
-                className={`kicker hidden text-[0.58rem] tracking-[0.08em] sm:block ${e.id === era ? "text-accent-deep" : ""}`}
+                className={`kicker block text-[0.56rem] tracking-[0.04em] sm:text-[0.58rem] sm:tracking-[0.08em] ${e.id === era ? "text-accent-deep" : ""}`}
               >
                 {e.id === "pre1940" ? "" : `’${String(e.from).slice(2)}`}
               </span>
@@ -207,7 +207,7 @@ function TurnButton({ dir, onClick, disabled }: { dir: 1 | -1; onClick: () => vo
       onClick={onClick}
       disabled={disabled}
       aria-label={dir === 1 ? "Next era" : "Previous era"}
-      className="grid size-10 place-items-center rounded-full border border-rule bg-paper text-ink-soft shadow-paper transition-[transform,opacity] duration-200 hover:-translate-y-0.5 hover:text-ink active:scale-95 disabled:pointer-events-none disabled:opacity-35"
+      className="grid size-11 place-items-center rounded-full border border-rule bg-paper text-ink-soft shadow-paper transition-[transform,opacity] duration-200 hover:-translate-y-0.5 hover:text-ink active:scale-95 disabled:pointer-events-none disabled:opacity-35"
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
         {dir === 1 ? <path d="M9 5.5 15.5 12 9 18.5" /> : <path d="M15 5.5 8.5 12 15 18.5" />}
@@ -288,7 +288,7 @@ function LevelMeter({ music }: { music: RefObject<EraMusic | null> }) {
       const perSec = ((s.busyMs - last.busyMs) / (now - last.at)) * 1000;
       last = { ticks: s.ticks, busyMs: s.busyMs, at: now };
       const state = s.context === "none" ? "waiting for a tap" : s.phase === "asleep" ? `asleep (${s.context})` : s.context;
-      stats.current.textContent = `scheduler ${perSec.toFixed(2)} ms/s · worst pass ${s.maxTickMs.toFixed(1)} ms · ${s.voices} voice${s.voices === 1 ? "" : "s"} · ${state}`;
+      stats.current.textContent = `scheduler ${perSec.toFixed(2)} ms/s · worst pass ${s.maxTickMs.toFixed(1)} ms (first ${s.firstTickMs.toFixed(1)}) · ${s.voices} voice${s.voices === 1 ? "" : "s"} · ${state}`;
     }, 1000);
     return () => {
       cancelAnimationFrame(raf);
