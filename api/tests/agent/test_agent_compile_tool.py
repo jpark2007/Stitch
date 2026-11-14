@@ -206,6 +206,96 @@ def test_tool_good_draft_writes_timeline():
     assert events == []
 
 
+def test_tool_good_draft_writes_an_empty_scene_review():
+    graph = _graph()
+    state, _ = _call(graph, "clean", 1, files={"/screenplay.json": create_file_data(SAMPLE_TEXT)})
+    assert "\n" not in _last_tool_message(state).content
+    assert _text(state, "/scene_review.txt") == ""
+
+
+NO_PAGE_TEXT = copy.deepcopy(SAMPLE)
+del NO_PAGE_TEXT["shots"][0]["pageText"]
+NO_PAGE_TEXT_WARNING = "shot s1: no pageText; add one or two short storybook sentences (at most 30 words)"
+
+
+def test_tool_success_appends_scene_review_warnings_without_using_a_round():
+    graph = _graph()
+    state, events = _call(graph, "review", 1, files={"/screenplay.json": create_file_data(json.dumps(NO_PAGE_TEXT))})
+    tl = Timeline.model_validate_json(_text(state, "/timeline.json"))
+    lines = _last_tool_message(state).content.splitlines()
+    assert lines == [
+        f"ok: 1 shots, {round(tl.duration, 2):g}s, {len(tl.tracks)} tracks",
+        "warnings (fix in /screenplay.json, then compile again; these do not use a compile round):",
+        f"- {NO_PAGE_TEXT_WARNING}",
+    ]
+    assert _text(state, "/scene_review.txt") == NO_PAGE_TEXT_WARNING + "\n"
+    assert json.loads(_text(state, "/compile_log.json")) == {"rounds": 0}
+    assert _text(state, "/compile_errors.txt") == ""
+    assert events == []
+
+    # fixing the draft clears the review file
+    state, events = _call(graph, "review", 2, files={"/screenplay.json": create_file_data(SAMPLE_TEXT)})
+    assert _text(state, "/scene_review.txt") == ""
+    assert events == []
+
+
+def test_tool_scene_review_gets_the_scene_props():
+    car = schemas.Prop(
+        id="car", name="car", size="vehicle", art={"body": None}, color="#335",
+        parts={"wheel": schemas.PropPart(art="body", at=[0.2, 0.9])},
+    )
+    scene = SceneInputs(sets=SCENE.sets, props={**SCENE.props, "car": car}, people=SCENE.people)
+    data = copy.deepcopy(SAMPLE)
+    data["props"].append("car")
+    data["explanations"].append({"target": "prop:car", "text": "the car"})
+    del data["interactions"]
+
+    def accept_all(screenplay, _scene):
+        assert _scene is scene
+        return FakeCompiler()(screenplay, SCENE)
+
+    tool = make_compile_tool(accept_all, lambda _: scene)
+    builder = StateGraph(FilesystemState)
+    builder.add_node("tools", ToolNode([tool]))
+    builder.add_edge(START, "tools")
+    builder.add_edge("tools", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+    state, events = _call(graph, "props", 1, files={"/screenplay.json": create_file_data(json.dumps(data))})
+    assert _text(state, "/scene_review.txt") == (
+        "interactions: none, but car can move or change; "
+        "add a pull_tab that drives one of them (prop_part or prop_state)\n"
+    )
+    assert events == []
+
+
+def test_tool_scene_review_crash_does_not_fail_the_compile(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("review bug")
+
+    monkeypatch.setattr(compile_mod, "review_scene", boom)
+    graph = _graph()
+    state, events = _call(graph, "boom", 1, files={"/screenplay.json": create_file_data(json.dumps(NO_PAGE_TEXT))})
+    content = _last_tool_message(state).content
+    assert content.startswith("ok: ") and "\n" not in content
+    assert _text(state, "/scene_review.txt") == ""
+    assert events == []
+
+
+def test_tool_failure_output_is_unchanged_and_writes_no_scene_review():
+    graph = _graph()
+    state, _ = _call(graph, "fail", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
+    assert _last_tool_message(state).content == (
+        f"{BAD_MESSAGE}\nround 1 of 3\nFix /screenplay.json and call compile_screenplay again."
+    )
+    assert "/scene_review.txt" not in state["files"]
+    state, _ = _call(graph, "fail", 2)
+    state, _ = _call(graph, "fail", 3)
+    assert _last_tool_message(state).content == (
+        f"{BAD_MESSAGE}\nround 3 of 3\nSTOP: 3 compile rounds have failed. Do not edit or recompile again; "
+        "report these errors as your final answer."
+    )
+
+
 def test_tool_reads_a_custom_path():
     graph = _graph()
     state, _ = _call(graph, "path", 1, files={"/drafts/v2.json": create_file_data(SAMPLE_TEXT)}, args={"path": "/drafts/v2.json"})
