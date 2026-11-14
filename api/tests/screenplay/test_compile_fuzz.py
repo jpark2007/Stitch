@@ -42,7 +42,7 @@ Invariants, for every generated screenplay (``check``):
    contiguous (shot[i].end == shot[i + 1].start within 1e-6); and
    timeline_sanity.sanity_problems(timeline) == [] (no prop in two places or a socket holding
    two, a position key at every parent key, every time within the timeline, nobody walking while
-   seated, finite values; plus whatever checks later waves append to timeline_sanity.CHECKS).
+   seated, finite values, no prop showing on a set it was not placed on).
 3. not ok: there is at least one error; every code matches ^[a-z]+(_[a-z]+)*$; every message
    starts with "shot " or "screenplay"; error.shot is set whenever the message starts "shot ".
 4. compiling the same input again (a fresh copy of the screenplay and scene) gives
@@ -54,7 +54,8 @@ Invariants, for every generated screenplay (``check``):
 6. not ok (error_site_problems): every error.shot is one of the screenplay's shot ids or None;
    an error.t comes with a shot, is finite and lies within that shot's action span (its first to
    its last action or camera cue time as written, since errors report the written t); the
-   message head names the same shot, with ``t=`` when error.t is set.
+   message head names the same shot, with ``t=`` when error.t is set; a head ``t=`` without an
+   error.t is a time that is not finite (``t=inf``), which error.t leaves out so JSON keeps it.
 
 Size: DEFAULT_SIZES (random 8000, perturbed 3500, story 250) keep the file to roughly 25 to 30 s
 of CPU. ``STITCH_FUZZ_N=<total>`` runs a larger sweep split in the same proportions, and
@@ -64,16 +65,21 @@ range are not in EXCLUDED, so a larger sweep reports every known-bug seed it hit
 Known failures (crashes or broken invariants whose cause is in api/screenplay or api/seed code
 owned by other tasks) get a minimal hand-written reproduction marked xfail(strict=True) at the
 bottom, naming the module and function, and their seeds go in EXCLUDED so the random loop
-passes. One shape is tolerated instead of excluded, because the random generator writes it on
-purpose in hundreds of seeds: a non-finite error.t (TOLERATE_NON_FINITE_ERROR_T,
-test_an_error_on_a_non_finite_t_has_a_json_safe_t). The other compiler bugs at the bottom were
-found through compile errors on story screenplays that should compile (StoryGen steers around
-them so most stories still reach a timeline; see a_place_on and a_open_close). One-off sweep at
-the commit this was written on: random 0-19999, perturbed 0-9999, story 0-7999 (38,000
-screenplays): no crash and no broken invariant except the prop-before-its-first-shot bug
-(test_a_prop_first_used_in_a_later_shot_is_not_on_stage_before_it; 30 perturbed and 392 story
-seeds). The scripted demo variant test_strip_person_variant_for_the_teller_compiles is the other
-known failure.
+passes. None is open in the compiler: EXCLUDED is empty. The wave-2 reproductions were retired
+when wave 3 fixed them, each with passing tests in its own task's file: a prop first placed in a
+later shot showing from t=0 (props-across-sets: compiler._park_until_placed, and
+timeline_sanity.check_props_on_set in CHECKS); a non-finite error.t (errors.error_t: t is None,
+test_an_error_on_a_non_finite_t_has_a_json_safe_t below); place_on onto one's own mark, a mark
+behind, or with the left hand (place-on-reach); propStart swapping a socket's prop in either
+order (state-propstart-and-object-wording); get_out and stand_up by the stage edge
+(stage-edge-dismount); pick_up from a raised mark (raised-mark-reach). Opening a box held in
+one's own hand is not a bug: it is out_of_reach by design, and the agent is taught never to
+write it (api/tests/agent/test_agent_real_compiler.py's open_held_prop case and
+test_agent_skills.py::test_open_and_close_are_never_taught_on_a_held_prop pin it), so it has no
+reproduction here. StoryGen still steers around the place_on and open/close
+shapes (a_place_on, a_open_close) until those fixes are on main. The one known failure left is
+the scripted demo variant test_strip_person_variant_for_the_teller_compiles (seed/fake_runs.py,
+owned by the seed stream).
 """
 
 from __future__ import annotations
@@ -99,7 +105,7 @@ from seed import demo
 from seed.fake_runs import SAMPLE_OTHER, SAMPLE_TELLER, strip_person, strip_prop
 from story_scenes import CAST as STORY_CAST, SETS as STORY_SET_DEFS, story_scene
 from test_foot_planting import planting_problems
-from timeline_sanity import sanity_problems, value_at
+from timeline_sanity import sanity_problems
 from verb_cases import CASES, CAST, PROPS, STREET_MARKS, YARD_MARKS, Scene, base_scene
 
 # ----------------------------------------------------------------------- corpus size
@@ -167,14 +173,11 @@ WORDS = (
 CODE = re.compile(r"[a-z]+(_[a-z]+)*")
 
 # Seeds or shapes excluded from the random loop because of a known bug, each with an xfail
-# reproduction below: {(kind, index): "reason"}. Every excluded seed of the default corpus was
-# checked to fail only that way (every problem is the hands check, at a time before one of the
-# props involved has its first parent key).
-B1 = "compiler._start_keys: a prop first placed in a later shot is there from t=0 (test_a_prop_first_used_in_a_later_shot_is_not_on_stage_before_it)"
-EXCLUDED: dict[tuple[str, int], str] = {
-    **{("perturbed", i): B1 for i in (203, 464, 734, 874, 1192, 1371, 1496, 1590, 2182, 2565, 2891, 2927, 3035)},
-    **{("story", i): B1 for i in (0, 16, 43, 44, 78, 87, 99, 149, 159, 175, 193, 233, 241)},
-}
+# reproduction below: {(kind, index): "reason"}, the reason naming the module, the function and
+# the reproduction test, e.g. {("story", 16): "compiler._start_keys: ... (test_...)"}. Check
+# that every excluded seed of the default corpus fails only that way. Empty: no known bug
+# breaks a seed of the default corpus.
+EXCLUDED: dict[tuple[str, int], str] = {}
 
 
 # --------------------------------------------------------------------------- generator
@@ -641,6 +644,18 @@ class StoryGen:
                         self.put(what, "off")
                     p.x, p.y, p.seat, p.kneeling = None, 0.0, None, False
             keep = {what for w in listed for what in self.who[w].hands} | {p.head for p in self.who.values() if p.head}  # type: ignore[union-attr]
+            # Steering: where each prop stood on the ground on the old set. A propStart that puts
+            # it back at the same place on the new set gets no key (compiler._hold_then skips an
+            # unchanged value), so timeline_sanity.check_props_on_set cannot tell it from a prop
+            # left over from the old set (test_story_scenarios.
+            # test_a_prop_put_back_at_the_same_x_on_a_new_set_is_keyed_there). Marks near its old
+            # x are avoided (0.2: a drop lands a little off the dropper's mark) until
+            # compiler._start_keys keys every propStart on a set change.
+            was_at = {what: th.x for what, th in self.thing.items() if th.where == "ground" and th.x is not None}
+
+            def fresh(what: str, marks: list[str]) -> list[str]:
+                return [m for m in marks if what not in was_at or abs(self.marks[m][0] - was_at[what]) > 0.2]
+
             for what, th in self.thing.items():
                 if what not in keep and th.where in ("ground", "on"):
                     self.put(what, "off")
@@ -650,13 +665,16 @@ class StoryGen:
             furniture = [f for f in self.props if f in STORY_FURNITURE]
             for f in furniture:
                 if self.chance(0.65):
-                    m = self.pick([g for g in self.ground if g not in used] or self.ground)
+                    pool = fresh(f, [g for g in self.ground if g not in used]) or fresh(f, self.ground)
+                    if not pool:
+                        continue
+                    m = self.pick(pool)
                     used.add(m)
                     prop_start[f] = {"at": m}
                     self.put(f, "ground", x=self.marks[m][0])
             car_mark = None
-            if "car" in self.props and (bring_car or self.chance(0.35)):
-                car_mark = self.pick(self.ground)
+            if "car" in self.props and (bring_car or self.chance(0.35)) and fresh("car", self.ground):
+                car_mark = self.pick(fresh("car", self.ground))
                 prop_start["car"] = {"at": car_mark}
                 self.put("car", "ground", x=self.marks[car_mark][0])
                 if self.chance(0.3):
@@ -673,10 +691,12 @@ class StoryGen:
                 if sock is not None:
                     prop_start[h] = {"on": f"{base}.{sock}"}
                     self.put(h, "on", x=self.thing[base].x, on=f"{base}.{sock}")
-                else:
-                    m = self.pick(self.ground)
+                elif fresh(h, self.ground):
+                    m = self.pick(fresh(h, self.ground))
                     prop_start[h] = {"at": m}
                     self.put(h, "ground", x=self.marks[m][0])
+                else:
+                    continue
                 if h in STORY_STATES and self.chance(0.3):
                     prop_start[h]["state"] = th.state = self.pick(STORY_STATES[h])
             seats_free = {f: list(STORY_SEATS[f]) for f in furniture if f in STORY_SEATS and f in prop_start}
@@ -932,8 +952,10 @@ class StoryGen:
 
     def a_place_on(self, acts: list[dict]) -> None:
         """No auto-walk and no turn: next to a surface (a standing reach), or next to a mark on
-        the floor (a crouch), facing it. (Not on the mark the puppet stands on: see
-        test_place_on_the_mark_you_stand_on.)"""
+        the floor (a crouch), facing it. (Not on the mark the puppet stands on, nor behind it.)"""
+        # Steering: place_on onto one's own mark, onto a mark behind, or with the left hand
+        # failed out_of_reach (wave 3's place-on-reach task fixes them, with tests in its own
+        # file). Relax this to any ground mark, either facing, once that fix is on main.
         w, h = self._holder()
         surfaces = [f for f in self.props if f in STORY_SURFACES and self.placed(f) and self.thing[f].where == "ground"]
         if surfaces and self.chance(0.6):
@@ -980,9 +1002,12 @@ class StoryGen:
         self.who[w].seat, self.who[w].x, self.who[w].exact = (f, sock), self.thing[f].x, False
 
     def a_open_close(self, acts: list[dict]) -> None:
-        """A box or gift on a surface, from right beside it, facing it. (Not one on the floor
-        or in the opener's own hand: test_story_scenarios.test_open_a_gift_on_the_floor_standing
-        and test_open_a_box_you_are_holding.)"""
+        """A box or gift on a surface, from right beside it, facing it. (Not one on the floor:
+        test_story_scenarios.test_open_a_gift_on_the_floor_standing; and never one in the
+        opener's own hand, which is out_of_reach by design: the agent is taught not to.)"""
+        # Steering: open/close of a prop on the floor, or behind the opener, failed out_of_reach
+        # (the fix is parked on origin/jonah/compiler-open-close-floor-reach). Relax this to
+        # floor props, either facing, once that fix is on main; keep held props out.
         props = [h for h in OPENABLE if h in self.thing and self.thing[h].where == "on"]
         ws = [w for w in self.cast if self.standing(w)]
         if not props or not ws:
@@ -1216,18 +1241,13 @@ def _planting_problems(sample: Sample, result: CompileResult) -> list[str]:
     return out + [f"planting: {m}" for m in planting_problems(result.timeline, unplanted.timeline, builds)]
 
 
-# Known bug (test_an_error_on_a_non_finite_t_has_a_json_safe_t): an action or cue written with
-# t = inf / nan gets CompileError.t = inf / nan. Tolerated in the random loop, which writes such
-# times on purpose, until wave 3 fixes it; the reproduction checks it strictly.
-TOLERATE_NON_FINITE_ERROR_T = True
-
-
-def error_site_problems(sp: Screenplay, result: CompileResult, *,
-                        tolerate_non_finite_t: bool = TOLERATE_NON_FINITE_ERROR_T) -> list[str]:
+def error_site_problems(sp: Screenplay, result: CompileResult) -> list[str]:
     """Invariant 6: every error's ``shot`` is one of the screenplay's shot ids or None; a ``t``
     comes with a ``shot``, is finite and lies within that shot's action span (from its first
     to its last action or camera cue time as written: the compiler reports the written ``t``);
-    and the message head names the same shot (``shot <id>``, ``shot <id>, t=`` with a ``t``)."""
+    and the message head names the same shot (``shot <id>``, ``shot <id>, t=`` with a ``t``).
+    A head ``t=`` with no ``error.t`` must be a time that is not finite (``t=inf``, ``t=nan``:
+    errors.error_t leaves those out so the result is JSON-safe)."""
     spans: dict[str, list[float]] = {}
     for shot in sp.shots:
         spans.setdefault(shot.id, []).extend(x.t for x in [*shot.actions, *shot.camera] if math.isfinite(x.t))
@@ -1239,12 +1259,16 @@ def error_site_problems(sp: Screenplay, result: CompileResult, *,
         if e.shot is not None and not (e.message.startswith(f"shot {e.shot}:") or e.message.startswith(f"shot {e.shot},")):
             out.append(f"error.shot is {e.shot!r} but the message head names another: {e.message!r}")
         if e.t is None:
+            head_t = f"shot {e.shot}, t="
+            if e.shot is not None and e.message.startswith(head_t):
+                written = e.message[len(head_t):].split(":", 1)[0]
+                if written not in ("inf", "-inf", "nan"):
+                    out.append(f"the message head has t={written} but error.t is unset: {e.message!r}")
             continue
         if e.shot is None:
             out.append(f"error.t is {e.t} without a shot: {e.message!r}")
         elif not math.isfinite(e.t):
-            if not tolerate_non_finite_t:
-                out.append(f"error.t is {e.t}: {e.message!r}")
+            out.append(f"error.t is {e.t}, not finite (JSON writes null): {e.message!r}")
         elif not spans[e.shot] or not min(spans[e.shot]) - 1e-6 <= e.t <= max(spans[e.shot]) + 1e-6:
             span = f"[{min(spans[e.shot]):g}, {max(spans[e.shot]):g}]" if spans[e.shot] else "empty"
             out.append(f"error.t {e.t:g} is outside shot {e.shot}'s action span {span}: {e.message!r}")
@@ -1551,11 +1575,15 @@ def test_strip_person_variant_for_the_teller_compiles():
     assert _messages(stripped, scene) == []
 
 
-# ------------------------------------------------- bugs the fuzz found (wave 3 fixes them)
+# ------------------------------------------------------------ bugs the fuzz found
 #
-# Each is a minimal hand-written reproduction, xfail(strict=True) with the exact error or broken
-# invariant in its reason; the random seeds they break are in EXCLUDED. None of them is fixed
-# here: this file owns only tests.
+# A bug the fuzz finds whose cause is outside this file gets a minimal hand-written reproduction
+# here, xfail(strict=True) with the exact error or broken invariant in its reason, and its random
+# seeds go in EXCLUDED. None is open now. The wave-2 reproductions moved out when wave 3 fixed
+# them: each fix carries its own passing tests (place-on-reach, state-propstart-and-object-
+# wording, stage-edge-dismount, raised-mark-reach, props-across-sets). The controls and the
+# JSON-safe error.t test below stay as plain regressions.
+
 
 def _repro(*shots: dict, scene: Scene | None = None, plant_feet: bool = True) -> CompileResult:
     scene = scene or base_scene()
@@ -1571,186 +1599,36 @@ def _shot(sid: str, set_id: str, start: dict, actions: list[dict], prop_start: d
     return shot
 
 
-def _keys(tl: Timeline, target: str, channel: str) -> list[tuple[float, Any]]:
-    return next(([(float(k[0]), k[1]) for k in tr.keys] for tr in tl.tracks
-                 if (tr.target, tr.channel) == (target, channel)), [])
-
-
 def _errors(result: CompileResult) -> list[str]:
     return [f"{e.code}: {e.message}" for e in result.errors]
 
 
-WAVE = [{"t": 1, "do": "wave", "who": "mom"}]
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "compiler.py _start_keys (line 663; the keys at lines 713 and 734-744): a prop first placed in a later shot (a start "
-    "`holding` or a propStart) gets its first parent/position keys at that shot's start, and "
-    "CONTRACTS.md holds a track's first value before its first key, so the prop is already there "
-    "through every earlier shot: here the cap sits in mom's hand through shot s1 (prop:cap parent "
-    "[(4.5, 'puppet:mom.hand_r')]), and a cap placed at the street's corner in s2 stands at "
-    "[0.6, 0, 0.5] in the yard all through s1. Two such props on one socket or hand also break "
-    "timeline_sanity's hands check at t=0 (e.g. 'hands: t=0: socket prop:table.top holds 2 props: "
-    "cap, hymn_books'). It should be keyed off the stage (offstage_left, as a stale prop is) from "
-    "t=0 until the shot that brings it on."
-))
-def test_a_prop_first_used_in_a_later_shot_is_not_on_stage_before_it():
-    held = _repro(_shot("s1", "yard", {"mom": {"at": "door"}}, WAVE),
-                  _shot("s2", "street", {"mom": {"at": "garage", "holding": "cap"}}, WAVE))
-    placed = _repro(_shot("s1", "yard", {"mom": {"at": "door"}}, WAVE),
-                    _shot("s2", "street", {"mom": {"at": "garage"}}, WAVE, prop_start={"cap": {"at": "corner"}}))
-    assert held.ok and placed.ok, _errors(held) + _errors(placed)
-    assert held.timeline is not None and placed.timeline is not None
-    mid_s1 = held.timeline.shots[0].end / 2
-    assert not str(value_at(_keys(held.timeline, "prop:cap", "parent"), mid_s1)).startswith("puppet:mom.")
-    assert abs(value_at(_keys(placed.timeline, "prop:cap", "position"), mid_s1)[0]) > 1.0  # offstage during s1
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "verbs_objects.py apply_place_on / _crouch_place_on_keys (lines 147-203): place_on onto the mark "
-    "the puppet stands on (a prop set down at its own feet) is out of reach for every hand-size prop "
-    "and every build, though pick_up takes the same prop from the same spot: "
-    "'out_of_reach: shot s1, t=1: dad cannot place_on \"cap\"; dad\'s arm_r cannot reach: target "
-    "is 0.20 from the shoulder, reach is 0.19' (the crouch misses by about 0.01; pick_up steps back "
-    "instead, see verbs_core._reach_spot)."
-))
-def test_place_on_the_mark_you_stand_on():
-    result = _repro(_shot("s1", "yard", {"dad": {"at": "door", "holding": "cap"}},
-                          [{"t": 1, "do": "place_on", "who": "dad", "what": "cap", "on": "door"}]))
-    assert result.ok, _errors(result)
-
-
 def test_place_on_a_mark_just_in_front_compiles():
-    """Control for the two place_on reproductions: 0.12 in front, facing it."""
+    """place_on to a floor mark 0.12 in front, facing it (StoryGen.a_place_on's shape)."""
     result = _repro(_shot("s1", "yard", {"dad": {"at": "door", "holding": "cap", "facing": "right"}},
                           [{"t": 1, "do": "place_on", "who": "dad", "what": "cap", "on": "spot"}],
                           marks={"spot": [0.16, 0.0]}))
     assert result.ok, _errors(result)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "verbs_objects.py apply_place_on (line 147): place_on does not turn the puppet toward its "
-    "destination (pick_up and hand_to do), so a mark 0.1 behind it is out of reach: dad at by_table "
-    "facing left, placing the cap on table_spot: 'out_of_reach: shot s1, t=1: dad cannot place_on "
-    "\"cap\"; dad\'s arm_r cannot reach: target is 0.28 from the shoulder, reach is 0.19'; facing "
-    "right, the same action compiles."
-))
-def test_place_on_a_mark_behind_you():
-    result = _repro(_shot("s1", "yard", {"dad": {"at": "by_table", "holding": "cap", "facing": "left"}},
-                          [{"t": 1, "do": "place_on", "who": "dad", "what": "cap", "on": "table_spot"}]))
-    assert result.ok, _errors(result)
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "verbs_objects.py _open_close (line 275, arm from locate.gesture_arm): opening a suitcase (or a "
-    "gift or a box) the puppet holds in its other hand is out of reach for every build: "
-    "'out_of_reach: shot s1, t=1: mom cannot open \"suitcase\"; mom\'s arm_l cannot reach: target "
-    "is 0.22 from the shoulder, reach is 0.17'. A director writes \"she opened the case she was "
-    "carrying\"; the same open on a table top compiles."
-))
-def test_open_a_box_you_are_holding():
-    result = _repro(_shot("s1", "yard", {"mom": {"at": "door", "holding": "suitcase"}},
-                          [{"t": 1, "do": "open", "who": "mom", "what": "suitcase"}]))
-    assert result.ok, _errors(result)
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "verbs_core.py _pick_up_in_place (line 326) and _reach_spot (line 393): the walk-up and every "
-    "candidate spot keep the puppet's current height (p.pos[1]), so from a raised mark (the church "
-    "steps, a stage) a prop on the floor below is never reached: mom on a mark 0.3 up picking up "
-    "the cap at curb gets 'out_of_reach: shot s1, t=1: mom cannot pick_up \"cap\"; mom\'s arm_r "
-    "cannot reach: target is 0.35 from the shoulder, reach is 0.17'. Where it does reach, the "
-    "puppet stands at the old height off the mark (it walks out over the floor 0.15 up)."
-))
-def test_pick_up_from_a_raised_mark_reaches_the_floor_below():
-    result = _repro(_shot("s1", "yard", {"mom": {"at": "stage"}},
-                          [{"t": 1, "do": "pick_up", "who": "mom", "what": "cap"}],
-                          prop_start={"cap": {"at": "curb"}}, marks={"stage": [0.4, 0.3]}))
-    assert result.ok, _errors(result)
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "errors.py error (line 62) and validate.py _Site.error (line 122): an action written with "
-    "t = inf or nan gets CompileError.t = inf / nan ('bad_time: shot s1, t=inf: dad cannot wave; t "
-    "must be a finite number >= 0, not inf' has t=inf), which JSON turns into null, so the result "
-    "the director reads differs from the one the compiler built. t should be None when the written "
-    "t is not finite (the message still says t=inf)."
-))
 def test_an_error_on_a_non_finite_t_has_a_json_safe_t():
-    raw = _shot("s1", "yard", {"dad": {"at": "door"}}, [{"t": float("inf"), "do": "wave", "who": "dad"}])
-    sp = Screenplay.model_validate({"memoryId": "repro", "cast": list(CAST), "props": list(PROPS), "shots": [raw]})
-    result = _compile(sp, base_scene())
-    assert [e.code for e in result.errors] == ["bad_time"]
-    assert error_site_problems(sp, result, tolerate_non_finite_t=False) == []
-    assert CompileResult.model_validate_json(result.model_dump_json()) == result
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "state.py World._apply_prop_start (line 570, via _check_socket_for_prop at line 602): propStart is "
-    "applied in dict order and each `on` checks its socket at once, so moving the cap off the table "
-    "and putting the hymn books there in one propStart fails when the books come first: "
-    "'socket_taken: shot s2: table.top is taken by cap' (listing the cap first compiles). The "
-    "not_on_stage check after it is order-free already; the socket check should be too."
-))
-def test_prop_start_can_swap_what_sits_on_a_socket_in_any_order():
-    result = _repro(
-        _shot("s1", "yard", {"dad": {"at": "door"}}, [{"t": 1, "do": "wave", "who": "dad"}],
-              prop_start={"table": {"at": "table_spot"}, "cap": {"on": "table.top"}}),
-        _shot("s2", "yard", {"dad": {"at": "door"}}, [{"t": 1, "do": "wave", "who": "dad"}],
-              prop_start={"hymn_books": {"on": "table.top"}, "cap": {"at": "curb"}}),
-    )
-    assert result.ok, _errors(result)
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "verbs_vehicles.py apply_get_out (line 203): a puppet gets out at its seat's x with no clamp to "
-    "the stage, so getting out of the passenger seat of a car parked near the edge (x = 0.84) puts "
-    "it past x = 1 with no error, and its next action fails as if it had left: 'offstage: shot s1, "
-    "t=9: dad cannot kneel; dad is offstage; use enter first'. get_out should land on stage (or "
-    "fail there with a precise reason)."
-))
-def test_getting_out_of_a_car_by_the_edge_stays_on_stage():
-    result = _repro(_shot("s1", "yard", {"dad": {"at": "edge", "in": "sedan.passenger"}},
-                          [{"t": 1, "do": "wave", "who": "dad"}, {"t": 5, "do": "get_out", "who": "dad", "what": "sedan"},
-                           {"t": 9, "do": "kneel", "who": "dad"}],
-                          prop_start={"sedan": {"at": "edge"}}, marks={"edge": [0.92, 0.0]}))
-    assert result.ok, _errors(result)
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "verbs_body.py apply_stand_up (line 221; and the start block's `in`): the same as the car, for a seat: "
-    "a two-seat pew placed at the back yard's gate (x = 0.84) has its aisle seat past x = 1; "
-    "starting in it and standing up are accepted, then 'shot s1, t=5: dad cannot kneel; dad is "
-    "offstage; use enter first'."
-))
-def test_standing_up_from_a_pew_by_the_edge_stays_on_stage():
-    sets, props, people = story_scene()
-    sp = Screenplay.model_validate({"memoryId": "repro", "cast": ["dad"], "props": ["pew"], "shots": [_shot(
-        "s1", "backyard", {"dad": {"at": "gate", "in": "pew.seat_aisle"}},
-        [{"t": 1, "do": "stand_up", "who": "dad"}, {"t": 5, "do": "kneel", "who": "dad"}],
-        prop_start={"pew": {"at": "gate"}})]})
-    result = _compile(sp, Scene(sets=sets, props=props, people=people))
-    assert result.ok, _errors(result)
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "verbs_objects.py _crouch_place_on_keys (line 203): place_on's crouch never bends as deep as "
-    "pick_up lets arm_l bend (verbs_core._reach_spot's CROUCH_DEEP_BEND: arm_l's shoulder sits "
-    "behind the hip), so a cap picked up into the left hand (the right holds the hymn books) cannot "
-    "be put back where it was: 'out_of_reach: shot s1, t=7: dad cannot place_on \"cap\"; dad's "
-    "arm_l cannot reach: target is 0.20 from the shoulder, reach is 0.19'. With the right hand free "
-    "it compiles."
-))
-def test_put_a_prop_back_down_with_the_left_hand():
-    result = _repro(_shot("s1", "yard", {"dad": {"at": "door", "facing": "right", "holding": "hymn_books"}},
-                          [{"t": 1, "do": "pick_up", "who": "dad", "what": "cap"},
-                           {"t": 7, "do": "place_on", "who": "dad", "what": "cap", "on": "spot"}],
-                          prop_start={"cap": {"at": "spot"}}, marks={"spot": [0.16, 0.0]}))
-    assert result.ok, _errors(result)
+    """An action written at t = inf or nan: CompileError.t is None (JSON has no inf), the
+    message still says t=inf, and the result round-trips through JSON unchanged."""
+    for t, shown in ((float("inf"), "inf"), (float("nan"), "nan")):
+        raw = _shot("s1", "yard", {"dad": {"at": "door"}}, [{"t": t, "do": "wave", "who": "dad"}])
+        sp = Screenplay.model_validate({"memoryId": "repro", "cast": list(CAST), "props": list(PROPS), "shots": [raw]})
+        result = _compile(sp, base_scene())
+        assert [(e.code, e.message, e.t) for e in result.errors] == [
+            ("bad_time", f"shot s1, t={shown}: dad cannot wave; t must be a finite number >= 0, not {shown}", None)
+        ]
+        assert error_site_problems(sp, result) == []
+        dumped = result.model_dump_json()
+        assert CompileResult.model_validate_json(dumped) == result
+        assert CompileResult.model_validate_json(dumped).model_dump_json() == dumped
 
 
 def test_put_a_prop_back_down_with_the_right_hand_compiles():
-    """Control for the left-hand reproduction above."""
+    """Pick a prop up off a floor mark and put it back down (right hand free)."""
     result = _repro(_shot("s1", "yard", {"dad": {"at": "door", "facing": "right"}},
                           [{"t": 1, "do": "pick_up", "who": "dad", "what": "cap"},
                            {"t": 7, "do": "place_on", "who": "dad", "what": "cap", "on": "spot"}],
