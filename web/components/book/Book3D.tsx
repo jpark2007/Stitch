@@ -58,6 +58,8 @@ export interface BookInitial {
   spread?: number;
   /** Freeze the next leaf mid-turn at this progress (0..1). */
   turn?: number | null;
+  /** Start looking closely at one page: -1 left (story), 1 right (stage). */
+  focus?: -1 | 0 | 1;
 }
 
 export interface Book3DProps {
@@ -72,7 +74,11 @@ export interface BookControls {
   open(): void;
   next(): void;
   prev(): void;
+  /** Page on as a reader would: on a phone, pan to the stage page before turning. */
+  step(dir: 1 | -1): void;
   goTo(spread: number): void;
+  /** Look closely at one page (-1 left, 1 right) or the whole spread (0). */
+  setFocus(side: -1 | 0 | 1): void;
 }
 
 function resolveStart(initial: BookInitial | undefined, n: number): BookStart {
@@ -80,7 +86,8 @@ function resolveStart(initial: BookInitial | undefined, n: number): BookStart {
   const spread = Math.min(Math.max(1, Math.round(initial?.spread ?? 1)), Math.max(1, n));
   const t = initial?.turn;
   const turn = opened && t != null && Number.isFinite(t) ? Math.min(1, Math.max(0, t)) : null;
-  return { opened, spread, turn };
+  const focus = opened && (initial?.focus === -1 || initial?.focus === 1) ? initial.focus : 0;
+  return { opened, spread, turn, focus };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -131,8 +138,9 @@ export function Book3D({ spreads, cover, initial, renderStage }: Book3DProps) {
       if (e.target instanceof HTMLElement && e.target.closest("input, textarea, select")) return;
       const c = controls.current;
       if (!c) return;
-      if (e.key === "ArrowRight" || e.key === "PageDown") c.next();
-      else if (e.key === "ArrowLeft" || e.key === "PageUp") c.prev();
+      if (e.key === "ArrowRight" || e.key === "PageDown") c.step(1);
+      else if (e.key === "ArrowLeft" || e.key === "PageUp") c.step(-1);
+      else if (e.key === "Escape") c.setFocus(0);
       else if ((e.key === "Enter" || e.key === " ") && e.target === document.body) c.open();
       else return;
       e.preventDefault();
@@ -441,7 +449,9 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage }: Sce
       open: () => ctl.openBook(),
       next: () => ctl.next(),
       prev: () => ctl.prev(),
+      step: (d) => ctl.step(d),
       goTo: (s) => ctl.goTo(s),
+      setFocus: (f) => ctl.setFocus(f),
     };
     onControls(api);
     // Test hook for the self-testing loop (FPS probe, scripted turns).
@@ -449,6 +459,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage }: Sce
     w.__stitchBook = {
       ...api,
       frames: () => ctl.rt.frames,
+      focus: () => ctl.focus,
       leaves: () => ctl.rt.leaves.map((l) => `${l.mode}:${l.p.toFixed(3)}${l.visible ? "" : "(hidden)"}`),
     };
     invalidate();
@@ -501,14 +512,14 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage }: Sce
     const move = (ev: PointerEvent) => {
       if (ev.pointerId !== id) return;
       ctl.dragMove(ev.clientX, ev.clientY);
-      setCursor("grabbing");
+      if (ctl.dragging) setCursor("grabbing");
     };
     const up = (ev: PointerEvent) => {
       if (ev.pointerId !== id) return;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
-      ctl.dragEnd();
+      ctl.dragEnd(ev.clientX, ev.clientY);
       setCursor("");
     };
     window.addEventListener("pointermove", move);

@@ -15,7 +15,17 @@ type Search = Record<string, string | string[] | undefined>;
 
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
-/** Reads ?state=closed|open, ?spread=<n>, ?turn=<0..1> for deterministic views. */
+/** -1|left, 1|right; anything else is the whole spread. */
+function readFocus(v: string | undefined): -1 | 0 | 1 {
+  if (v === "-1" || v === "left") return -1;
+  if (v === "1" || v === "right") return 1;
+  return 0;
+}
+
+/**
+ * Reads ?state=closed|open, ?spread=<n>, ?turn=<0..1> (freeze mid-turn) and
+ * ?focus=left|right (close-up on one page) for deterministic views.
+ */
 function readInitial(q: Search) {
   const state = one(q.state);
   const spread = Number(one(q.spread));
@@ -24,6 +34,7 @@ function readInitial(q: Search) {
     state: state === "open" || state === "closed" ? state : undefined,
     spread: Number.isFinite(spread) && spread > 0 ? spread : undefined,
     turn: one(q.turn) != null && Number.isFinite(turn) ? turn : null,
+    focus: readFocus(one(q.focus)),
   } as const;
 }
 

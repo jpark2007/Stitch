@@ -52,7 +52,12 @@ export interface BookStart {
   opened: boolean;
   spread: number;
   turn: number | null;
+  /** Page to look at closely: -1 left, 1 right, 0 the whole spread. */
+  focus: -1 | 0 | 1;
 }
+
+/** Below this aspect (portrait phones) the camera reads one page at a time. */
+const PHONE_ASPECT = 0.9;
 
 /** Scene objects the controller poses each frame. */
 export interface BookParts {
@@ -73,6 +78,13 @@ export interface FrameContext {
   width: number;
   height: number;
   parts: BookParts;
+}
+
+/** A press on the page away from the turn zones: a tap or a swipe. */
+interface Tap {
+  side: -1 | 1;
+  startX: number;
+  startY: number;
 }
 
 interface Drag {
@@ -118,6 +130,13 @@ export class BookController {
   /** Eased 0..1: how far a leaf stands up; the camera eases back for it. */
   private lift = 0;
   private lastFrameT = 0;
+  /** Page the camera reads: -1 left, 1 right, 0 the whole spread. */
+  private focusGoal: -1 | 0 | 1;
+  private focusE: number;
+  /** Eased 0..1: how much the camera frames a single page. */
+  private single: number;
+  private phone = false;
+  private tap: Tap | null = null;
   private tmpAngles: Float32Array;
   private tmpV = new Vector3();
   private camera: PerspectiveCamera | null = null;
@@ -137,6 +156,9 @@ export class BookController {
     this.pos = start.opened ? start.spread : 0;
     this.stageSpread = start.opened && start.turn == null ? start.spread : 0;
     this.reveal.current = this.stageSpread ? 1 : 0;
+    this.focusGoal = start.focus;
+    this.focusE = start.focus;
+    this.single = Math.abs(start.focus);
     if (start.opened && start.turn != null) {
       const j = start.spread;
       if (j < spreads) this.freeze(this.rt.leaves[j], start.turn, 1);
@@ -195,11 +217,39 @@ export class BookController {
 
   goTo(spread: number) {
     if (!this.isOpen) this.openBook();
+    if (this.phone) this.setFocus(-1);
     const target = Math.min(Math.max(1, Math.round(spread)), this.n);
     const pending = this.queue.reduce((s, d) => s + d, this.pos);
     const diff = target - pending;
     for (let i = 0; i < Math.abs(diff); i++) this.queue.push(diff > 0 ? 1 : -1);
     this.invalidate();
+  }
+
+  /** Look closely at one page (-1 left, 1 right), or at the whole spread (0). */
+  setFocus(side: -1 | 0 | 1) {
+    // A phone always reads one page; it pans between them.
+    const goal = this.phone && side === 0 ? this.focusGoal || -1 : side;
+    if (goal === this.focusGoal) return;
+    this.focusGoal = goal;
+    this.invalidate();
+  }
+
+  get focus() {
+    return this.focusGoal;
+  }
+
+  /**
+   * One step through the book, as a reader would page it: on a phone the
+   * camera pans from the story page to the stage page before a leaf turns.
+   */
+  step(dir: 1 | -1) {
+    if (!this.isOpen) return dir > 0 ? this.openBook() : undefined;
+    if (this.phone && !this.busy()) {
+      if (dir > 0 && this.focusGoal < 0) return this.setFocus(1);
+      if (dir < 0 && this.focusGoal > 0) return this.setFocus(-1);
+    }
+    if (dir > 0) this.next();
+    else this.prev();
   }
 
   private startTurn(dir: 1 | -1, dur: number) {
@@ -210,9 +260,16 @@ export class BookController {
     if (this.hoverLeaf === k) this.hoverLeaf = -1;
     Object.assign(leaf, { mode: "auto", dir, from: leaf.p, to: dir > 0 ? 1 : 0, t0: now(), dur, curl: 0.42, corner: 0.55, stiff: 1 });
     this.pos += dir;
+    this.afterTurn(dir);
     pageTurn(dur, dir);
     this.invalidate();
     return true;
+  }
+
+  /** On a phone a new spread opens on its story page (or, paging back, its stage). */
+  private afterTurn(dir: 1 | -1) {
+    if (this.phone) this.focusGoal = dir > 0 ? -1 : 1;
+    else if (this.focusGoal !== 0) this.focusGoal = 0;
   }
 
   private busy() {
@@ -232,8 +289,10 @@ export class BookController {
 
   private zone(pt: PagePoint) {
     const corner = 0.3 + 0.7 * clamp01((pt.z + PAGE_H / 2) / PAGE_H);
-    if (pt.x > PAGE_W * 0.55 && this.pos < this.n) return { dir: 1 as const, leaf: this.pos, corner };
-    if (pt.x < -PAGE_W * 0.55 && this.pos > 1) return { dir: -1 as const, leaf: this.pos - 1, corner };
+    // On a phone the page fills the screen: only its outer edge turns it.
+    const edge = PAGE_W * (this.phone ? 0.72 : 0.55);
+    if (pt.x > edge && this.pos < this.n) return { dir: 1 as const, leaf: this.pos, corner };
+    if (pt.x < -edge && this.pos > 1) return { dir: -1 as const, leaf: this.pos - 1, corner };
     return null;
   }
 
@@ -244,7 +303,9 @@ export class BookController {
     const z = this.zone(pt);
     if (z && !this.busy()) this.setHover(z.leaf, z.dir, z.corner);
     else this.clearHover();
-    return z ? "grab" : "";
+    if (z) return "grab";
+    if (this.phone) return "";
+    return this.focusGoal === (pt.x < 0 ? -1 : 1) ? "zoom-out" : "zoom-in";
   }
 
   pageLeave() {
@@ -272,11 +333,18 @@ export class BookController {
     this.invalidate();
   }
 
-  /** Pointer down on the pages. Returns true if it starts a turn gesture. */
+  /**
+   * Pointer down on the pages. Returns true if it starts a gesture (a turn
+   * from the edge, or a tap or swipe elsewhere on the page); the caller then
+   * forwards moves to `dragMove` and the release to `dragEnd`.
+   */
   pageDown(pt: PagePoint, clientX: number, clientY: number): boolean {
-    if (this.frozen || this.open < 1 || this.drag || this.busy()) return false;
-    const z = this.zone(pt);
-    if (!z) return false;
+    if (this.frozen || this.open < 1 || this.drag || this.tap) return false;
+    const z = this.busy() ? null : this.zone(pt);
+    if (!z) {
+      this.tap = { side: pt.x < 0 ? -1 : 1, startX: clientX, startY: clientY };
+      return true;
+    }
     this.drag = {
       leaf: z.leaf,
       dir: z.dir,
@@ -289,6 +357,11 @@ export class BookController {
       vel: 0,
     };
     return true;
+  }
+
+  /** A page is held by the pointer (not just pressed). */
+  get dragging() {
+    return !!this.drag?.active;
   }
 
   dragMove(clientX: number, clientY: number) {
@@ -312,7 +385,22 @@ export class BookController {
     this.invalidate();
   }
 
-  dragEnd() {
+  dragEnd(clientX = 0, clientY = 0) {
+    const tap = this.tap;
+    if (tap) {
+      this.tap = null;
+      const dx = clientX - tap.startX;
+      const dy = clientY - tap.startY;
+      if (Math.abs(dx) > 40 && Math.abs(dx) > 1.3 * Math.abs(dy)) {
+        // A swipe: the page follows the finger, so a swipe left reads on.
+        this.step(dx < 0 ? 1 : -1);
+      } else if (Math.hypot(dx, dy) < 8) {
+        // A tap: look closer at that page (a phone pans to it), or back out.
+        if (this.phone) this.setFocus(tap.side);
+        else this.setFocus(this.focusGoal === tap.side ? 0 : tap.side);
+      }
+      return;
+    }
     const d = this.drag;
     if (!d) return;
     this.drag = null;
@@ -332,6 +420,7 @@ export class BookController {
     Object.assign(leaf, { mode: "auto", from: leaf.p, to, t0: now(), dur: 0.3 + 0.75 * Math.abs(to - leaf.p), stiff: 1.15 });
     if (complete) {
       this.pos += d.dir;
+      this.afterTurn(d.dir);
       pageLand(d.dir);
     } else if (along > 0.04) pageLand(d.dir);
     this.invalidate();
@@ -505,10 +594,26 @@ export class BookController {
     else this.lift = liftGoal;
 
     const aspect = ctx.width / Math.max(1, ctx.height);
-    const key = `${o.toFixed(4)}|${aspect.toFixed(3)}|${this.lift.toFixed(4)}`;
+    const phone = aspect < PHONE_ASPECT;
+    if (phone !== this.phone) {
+      this.phone = phone;
+      // A phone reads one page at a time, starting with the story.
+      if (phone && this.focusGoal === 0) this.focusGoal = -1;
+    }
+    const singleGoal = this.phone ? 1 : Math.abs(this.focusGoal);
+    const ease = dt === 0 ? 1 : 1 - Math.exp(-dt * 4.5);
+    this.focusE += (this.focusGoal - this.focusE) * ease;
+    this.single += (singleGoal - this.single) * ease;
+    if (Math.abs(this.focusGoal - this.focusE) > 1e-3 || Math.abs(singleGoal - this.single) > 1e-3) moving = true;
+    else {
+      this.focusE = this.focusGoal;
+      this.single = singleGoal;
+    }
+    const key = `${o.toFixed(4)}|${aspect.toFixed(3)}|${this.lift.toFixed(4)}|${this.focusE.toFixed(4)}|${this.single.toFixed(4)}`;
     if (key !== this.camKey) {
       this.camKey = key;
-      frameCamera({ open: o, lift: this.lift }, aspect, ctx.camera.fov, this.camPos, this.camTarget);
+      const pose = { open: o, lift: this.lift, focus: this.focusE, single: this.single };
+      frameCamera(pose, aspect, ctx.camera.fov, this.camPos, this.camTarget);
       ctx.camera.position.copy(this.camPos);
       ctx.camera.lookAt(this.camTarget);
       const fog = ctx.scene.fog;
@@ -564,11 +669,17 @@ export interface CameraPose {
   open: number;
   /** 0..1: a leaf standing up mid-turn. */
   lift: number;
+  /** -1..1: which page the camera looks at (eased). */
+  focus: number;
+  /** 0..1: framing one page rather than the spread (eased). */
+  single: number;
 }
 
 /** Camera: a 3/4 view of the closed book, a reading view when open. */
 export function frameCamera(pose: CameraPose, aspect: number, fov: number, pos: Vector3, target: Vector3) {
   const { open, lift } = pose;
+  // A standing leaf needs the whole spread in view.
+  const one = pose.single * (1 - lift);
   const tanV = Math.tan((fov * DEG) / 2);
   const tanH = tanV * aspect;
   const portrait = aspect < 1;
@@ -576,12 +687,14 @@ export function frameCamera(pose: CameraPose, aspect: number, fov: number, pos: 
   const eO = (portrait ? 66 : 58) * DEG;
   const halfDO = BOARD_D / 2 + 0.05;
   // (The near edge is closer than the spine, so it reads wider: pad for it.)
-  const halfW = BOARD_W + (portrait ? 0.06 : 0.33);
-  const dO = Math.max(halfW / tanH, (halfDO * Math.sin(eO) + 0.16) / tanV);
+  // One page: that page, with a sliver of the other to tap.
+  const halfW = lerp(BOARD_W + (portrait ? 0.06 : 0.33), BOARD_W * (portrait ? 0.6 : 0.62), one);
+  const dO = Math.max(halfW / tanH, (halfDO * Math.sin(eO) + lerp(0.16, portrait ? 0.16 : 0.07, one)) / tanV);
   // Closed: a 3/4 view from the left so the stitched spine shows.
   const eC = (portrait ? 62 : 50) * DEG;
   const halfDC = BOARD_D / 2 + 0.2;
-  const halfWC = BOARD_W / 2 + (portrait ? 0.24 : 0.85);
+  // Phones see the closed book large; the spine still shows.
+  const halfWC = BOARD_W / 2 + (portrait ? 0.17 : 0.85);
   const dC = Math.max(halfWC / tanH, (halfDC * Math.sin(eC) + 0.42) / tanV);
   // A standing leaf (about a page tall over the spine): back off and look up a little.
   const l = lift * open;
@@ -589,7 +702,8 @@ export function frameCamera(pose: CameraPose, aspect: number, fov: number, pos: 
   const e = lerp(eC, eO, open);
   const az = lerp(portrait ? -10 : -16, 0, open) * DEG;
   // Aim a touch nearer the reader than the spine, so the dots have room below.
-  target.set(0, lerp(0.1, 0.03, open) + 0.26 * l, lerp(0.04, portrait ? 0 : 0.07, open) - 0.1 * l);
+  const focusX = pose.focus * (BOARD_W / 2) * one * open;
+  target.set(focusX, lerp(0.1, 0.03, open) + 0.26 * l, lerp(0.04, portrait ? 0 : 0.07, open) - 0.1 * l);
   pos.set(
     target.x + d * Math.cos(e) * Math.sin(az),
     target.y + d * Math.sin(e),
