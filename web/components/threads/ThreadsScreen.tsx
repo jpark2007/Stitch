@@ -187,6 +187,7 @@ function FamilyThreads(props: {
     <ThreadsView
       key={fid}
       familyId={fid}
+      addHref={hrefs.add({ familyId: fid })}
       familyName={familyName}
       people={data.people}
       moments={data.moments}
