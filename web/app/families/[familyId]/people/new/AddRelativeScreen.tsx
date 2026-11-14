@@ -161,7 +161,19 @@ function AddRelative(props: { fid: string; next: string | null }) {
     async (body: NewPerson, childIds: string[]) => {
       if (!people) return;
       // A failure here rejects, and the form shows it: nothing was saved.
-      const person = await api.addPerson(fid, body);
+      let person: Person;
+      try {
+        person = await api.addPerson(fid, body);
+      } catch (err) {
+        if (isApiError(err) && err.status === 404) {
+          // The family is gone, or the viewer was taken out of it: say so.
+          setLoad({ kind: "not-found" });
+        } else if (isApiError(err) && err.status === 401) {
+          // Signed out meanwhile: refresh() sends us to log in.
+          await refresh().catch(() => undefined);
+        }
+        throw err;
+      }
 
       // The person exists now. Link each child in turn; a link that fails is
       // reported, not undone, and the others still go ahead.
@@ -183,7 +195,7 @@ function AddRelative(props: { fid: string; next: string | null }) {
       }
       setDone({ person, childNames: linked, failed });
     },
-    [api, fid, next, people, router],
+    [api, fid, next, people, refresh, router],
   );
 
   const back = next ? { href: next, label: "Back" } : { href: hrefs.settings(fid), label: "Family settings" };
@@ -273,8 +285,8 @@ function DoneCard(props: {
       ` ${person.name} is saved all the same.`
     : null;
 
-  // The add page reads `added` and preselects them.
-  const addHref = next ? withAddedParam(next, person.id) : hrefs.add({ familyId: fid });
+  // The add page reads `added` and preselects them, here too.
+  const addHref = withAddedParam(next ?? hrefs.add({ familyId: fid }), person.id);
 
   return (
     <PaperCard className="flex flex-col gap-6">

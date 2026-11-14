@@ -71,6 +71,26 @@ export function signedInLabel(user: { name?: string | null; email: string }): st
   return email ? `${name} (${email})` : name;
 }
 
+/**
+ * After a failed change on the page, what to fetch again so nothing stale
+ * stays on screen. A 403, 404 or 409 means the page was out of date (someone
+ * changed roles, left, or turned the link off elsewhere): fetch the family.
+ * A 403 also means the viewer's own role changed, and a 401 that they were
+ * signed out: ask for the session too. A 5xx, a 422 or no connection changed
+ * nothing, so nothing is fetched.
+ */
+export function resyncAfter(err: unknown): { family: boolean; session: boolean } {
+  const status = isApiError(err) ? err.status : undefined;
+  return {
+    family: status === 403 || status === 404 || status === 409,
+    session: status === 401 || status === 403,
+  };
+}
+
+/** Shown on the page when the viewer turns out not to be an admin any more. */
+export const NO_LONGER_ADMIN =
+  "You’re not an admin of this family any more, so the invite link and the member controls are for the admins now.";
+
 /** What the page shows when loading the family failed. */
 export type SettingsLoad = { kind: "not-found" } | { kind: "error"; message: string };
 

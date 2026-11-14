@@ -3,33 +3,30 @@
 // The invite link card on family settings. Presentational: the page passes
 // the live invite (pickActiveInvite) and the create and revoke calls, and
 // this card shows the link, copies it, says how long it has left and turns it
-// off after an inline confirm. A rejected call shows its message in the card.
+// off (with every other link that still works) after an inline confirm. A rejected call shows its message in the card.
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Button, FOCUS_RING } from "./Button";
 import { TextField } from "./Field";
 import { FormError } from "./FormError";
 import { PaperCard } from "./PaperCard";
-import { describeExpiry, inviteUrl } from "./invites";
+import { describeExpiry, inviteActionOutcome, inviteUrl, turnOffQuestion } from "./invites";
 
 type FocusTarget = "create" | "link" | "turnOff" | "confirm";
 
 const COPIED = "Link copied";
 const COPY_BY_HAND = "Press Ctrl+C / ⌘C to copy";
 
-function messageOf(err: unknown): string {
-  if (err instanceof Error && err.message.trim()) return err.message;
-  return "Something went wrong. Please try again.";
-}
-
 export function InviteLinkCard(props: {
   invite: { code: string; expiresAt: string } | null;
   origin: string;
   now?: Date;
   onCreate: () => Promise<void>;
+  /** How many other links still work; turning this one off turns them off too. */
+  otherActive?: number;
   onRevoke: (code: string) => Promise<void>;
 }) {
-  const { invite, origin, now, onCreate, onRevoke } = props;
+  const { invite, origin, now, otherActive = 0, onCreate, onRevoke } = props;
   const uid = useId();
   const headingId = `${uid}heading`;
   const questionId = `${uid}question`;
@@ -38,6 +35,8 @@ export function InviteLinkCard(props: {
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [copyMessage, setCopyMessage] = useState("");
+  // A calm word that isn't an error, like a link that was already off.
+  const [notice, setNotice] = useState("");
 
   const createRef = useRef<HTMLButtonElement>(null);
   const linkRef = useRef<HTMLInputElement>(null);
@@ -77,12 +76,13 @@ export function InviteLinkCard(props: {
   async function create() {
     if (busy) return;
     setError(null);
+    setNotice("");
     setBusy("create");
     try {
       await onCreate();
       pendingFocus.current = "link";
     } catch (err) {
-      setError(messageOf(err));
+      setError(inviteActionOutcome(err, "create").message);
       pendingFocus.current = "create";
     } finally {
       setBusy(null);
@@ -92,6 +92,7 @@ export function InviteLinkCard(props: {
   async function revoke() {
     if (busy || !code) return;
     setError(null);
+    setNotice("");
     setBusy("revoke");
     try {
       await onRevoke(code);
@@ -99,9 +100,17 @@ export function InviteLinkCard(props: {
       setCopyMessage("");
       pendingFocus.current = "create";
     } catch (err) {
-      setError(messageOf(err));
+      const outcome = inviteActionOutcome(err, "revoke");
       setConfirming(false);
-      pendingFocus.current = "turnOff";
+      if (outcome.done) {
+        // The server had no such link any more; the page has fetched the family again.
+        setCopyMessage("");
+        setNotice(outcome.message);
+        pendingFocus.current = "create";
+      } else {
+        setError(outcome.message);
+        pendingFocus.current = "turnOff";
+      }
     } finally {
       setBusy(null);
     }
@@ -159,10 +168,13 @@ export function InviteLinkCard(props: {
         {error ? <FormError message={error} /> : null}
 
         {!invite ? (
-          <div>
+          <div className="flex flex-col items-start gap-3">
             <Button ref={createRef} busy={busy === "create"} busyLabel="Making a link…" onClick={create}>
               Make an invite link
             </Button>
+            <p role="status" aria-live="polite" className="text-[0.9375rem] leading-snug text-ink-soft empty:hidden">
+              {notice}
+            </p>
           </div>
         ) : (
           <>
@@ -220,7 +232,7 @@ export function InviteLinkCard(props: {
                   className={`rounded-paper bg-paper px-4 py-3 ${FOCUS_RING}`}
                 >
                   <p id={questionId} className="text-[0.9375rem] leading-relaxed text-ink">
-                    Turn it off? People who haven&rsquo;t joined yet won&rsquo;t be able to use it.
+                    {turnOffQuestion(otherActive)}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button variant="danger" busy={busy === "revoke"} onClick={revoke}>

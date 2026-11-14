@@ -21,6 +21,7 @@ import {
   RELATIVE_FIELDS,
   RELATIVE_YEAR_MIN,
   childCandidates,
+  duplicateNameHint,
   emptyRelative,
   relativeServerError,
   toNewPerson,
@@ -109,6 +110,8 @@ export function AddRelativeForm(props: {
     setErrors((e) => (key === "born" ? without(e, "born", "died") : without(e, key)));
   }
 
+  // Born is checked against the parents and children picked, so changing
+  // either settles a message on Born too.
   function setRelationships(r: Relationships) {
     setDraft((d) => {
       const picked = new Set([...r.parentIds, ...r.spouseIds]);
@@ -117,12 +120,12 @@ export function AddRelativeForm(props: {
       const childIds = d.childIds.filter((id) => !picked.has(id));
       return { ...d, parentIds: r.parentIds, spouseIds: r.spouseIds, childIds };
     });
-    setErrors((e) => without(e, "parentIds", "spouseIds"));
+    setErrors((e) => without(e, "parentIds", "spouseIds", "born"));
   }
 
   function setChildren(ids: string[]) {
     setDraft((d) => ({ ...d, childIds: ids }));
-    setErrors((e) => without(e, "childIds"));
+    setErrors((e) => without(e, "childIds", "born"));
   }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -152,7 +155,8 @@ export function AddRelativeForm(props: {
           const merged = mergeServerErrors<RelativeField>({}, err.fieldErrors, RELATIVE_FIELDS);
           fields = merged.fields;
           message = merged.rest;
-        } else if (err.status === 400) {
+        } else if (err.status === 400 || err.status === 422) {
+          // A 400 rule or a 422 limit sentence ("A name must be at most 100 characters").
           const mapped = relativeServerError(err.detail);
           if (mapped.field) fields = { [mapped.field]: mapped.message };
           else message = mapped.message;
@@ -183,7 +187,8 @@ export function AddRelativeForm(props: {
           <TextField
             label="Their name"
             // A non-breaking hyphen keeps the example in one piece on phones.
-            hint={"The name the family uses, like “Great\u2011grandma Inés”."}
+            // Someone with this name already in the tree swaps the example for a gentle check.
+            hint={duplicateNameHint(draft.name, people) ?? "The name the family uses, like “Great\u2011grandma Inés”."}
             name="name"
             autoComplete="off"
             required

@@ -147,6 +147,33 @@ const MSG = {
   diedBeforeBorn: "The year they died can’t be before the year they were born.",
 } as const;
 
+/** "Rosa (born 1938)": a name with the year the server's year rules quote. */
+function withBorn(name: string, born: number): string {
+  return `${name} (born ${born})`;
+}
+
+/**
+ * The API's year rules (api/db/people.py): nobody is born before a parent,
+ * so the new person's year must not be before a picked parent's, nor after a
+ * picked child's. Unknown years pass. Returns a message for Born, or null.
+ */
+function bornAgainstFamily(
+  born: number | null,
+  parents: TreePersonLite[],
+  children: TreePersonLite[],
+): string | null {
+  if (born === null) return null;
+  const known = (list: TreePersonLite[]) =>
+    list
+      .filter((p): p is TreePersonLite & { born: number } => typeof p.born === "number")
+      .sort((a, b) => a.born - b.born || a.name.localeCompare(b.name));
+  const parent = known(parents).find((p) => born < p.born);
+  if (parent) return `They can’t be born before their parent ${withBorn(parent.name.trim() || "Someone", parent.born)}.`;
+  const child = known(children).find((c) => c.born < born);
+  if (child) return `They can’t be born after their child ${withBorn(child.name.trim() || "Someone", child.born)}.`;
+  return null;
+}
+
 /**
  * Checks the draft against the family as the page last saw it. Returns one
  * message per field that has a problem; an empty object means it can be sent.
@@ -219,11 +246,47 @@ export function validateRelative(d: RelativeDraft, people: TreePersonLite[]): Fi
           loop.length === 1
             ? `${names} is already one of their ancestors, so ${names} can’t also be their child.`
             : `${names} are already their ancestors, so they can’t also be their children.`;
+      } else {
+        // A child's new ancestors are the new person, their parents and
+        // everyone above: none of them may be the child's own spouse.
+        const newLine = new Set([...parents, ...above]);
+        for (const id of children) {
+          const spouse = (byId.get(id)?.spouseIds ?? []).find((s) => newLine.has(s));
+          if (spouse) {
+            errors.childIds = `${nameOf(id)} can’t be their child: ${nameOf(id)} is married to ${nameOf(spouse)}, who would then be one of ${nameOf(id)}’s ancestors too.`;
+            break;
+          }
+        }
       }
     }
   }
 
+  // Years against the people picked, once both are otherwise fine (the API's rule).
+  if (!errors.born && !errors.parentIds && !errors.childIds) {
+    const pick = (ids: string[]) => ids.map((id) => byId.get(id)).filter((p): p is TreePersonLite => Boolean(p));
+    const msg = bornAgainstFamily(parseYear(d.born), pick(parents), pick(children));
+    if (msg) errors.born = msg;
+  }
+
   return errors;
+}
+
+/**
+ * When someone with this name (ignoring case and spaces) is already in the
+ * tree: a gentle hint naming them, so nobody adds Grandma Rosa twice. Null
+ * when the name is new or blank. Adding them anyway is allowed (two cousins
+ * can share a name).
+ */
+export function duplicateNameHint(name: string, people: TreePersonLite[]): string | null {
+  const key = name.trim().replace(/\s+/g, " ").toLowerCase();
+  if (!key) return null;
+  const same = people.filter((p) => p && (p.name ?? "").trim().replace(/\s+/g, " ").toLowerCase() === key);
+  if (!same.length) return null;
+  const who = same[0];
+  const shown = typeof who.born === "number" ? withBorn(who.name.trim(), who.born) : who.name.trim();
+  return same.length === 1
+    ? `${shown} is already in the tree. Only add them again if this is someone else.`
+    : `${same.length} people called ${who.name.trim()} are already in the tree. Only add one more if this is someone else.`;
 }
 
 /** The POST /families/{fid}/people body. Children are linked afterwards (childPatches). */
@@ -274,7 +337,8 @@ export function withAddedParam(next: string, personId: string): string {
 
 /**
  * The server's 400 details for people (api/db/people.py InvalidRelation and
- * the blank-name check in api/routes/families.py), in friendlier words and on
+ * the blank-name check in api/routes/families.py) and its 422 name-length
+ * limit, in friendlier words and on
  * the field they belong to. Anything else comes back as is, on no field.
  */
 export function relativeServerError(detail: string): { field: RelativeField | null; message: string } {
@@ -304,5 +368,18 @@ export function relativeServerError(detail: string): { field: RelativeField | nu
     };
   }
   if (key === "a person needs a name") return { field: "name", message: "Enter their name." };
+  // The route's 422 size limit (api/routes/families.py _check_length).
+  const tooLong = /^a name must be at most ([\d,]+) characters$/.exec(key);
+  if (tooLong) return { field: "name", message: `Keep their name to ${tooLong[1]} characters or fewer.` };
+  if (key === "a person cannot die before they were born") return { field: "died", message: MSG.diedBeforeBorn };
+  // "a person cannot be born before their parent (David, born 1962)", and after a child.
+  const years = /^a person cannot be born (before their parent|after their child) \((.+), born (-?\d+)\)$/.exec(key);
+  if (years) {
+    const original = /\((.+), born (-?\d+)\)$/.exec(d);
+    const who = original ? withBorn(original[1], Number(original[2])) : "someone";
+    return years[1].startsWith("before")
+      ? { field: "born", message: `They can’t be born before their parent ${who}.` }
+      : { field: "born", message: `They can’t be born after their child ${who}.` };
+  }
   return { field: null, message: d };
 }
