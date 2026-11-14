@@ -254,7 +254,7 @@ export function MomentStage({
       <group position-x={CENTRE_X}>
         <TimelineScene controller={controller} scene={scene} size={layout.stage} reveal={reveal} onReady={onSceneReady}>
           <ShotFeed shot={shot} keep={keep} />
-          {explain && <ExplainLayer session={notes} fonts={fonts} reveal={reveal} caption={caption} enabled={ready} />}
+          {explain && <ExplainLayer session={notes} fonts={fonts} reveal={reveal} caption={caption} enabled={ready} gate={gate} />}
         </TimelineScene>
       </group>
       <group ref={keep} position={[CENTRE_X, 0, keepZ]} />

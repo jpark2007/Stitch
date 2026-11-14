@@ -11,6 +11,7 @@
  *   placeNote(input, out)                     where the note stands: on screen, clear of the words
  *   explainStep(open, event)                  which note is open after a click, key or turn
  *   resumesAfter(reason)                      whether closing hands the scene back to play
+ *   mayExplain(gate) / turnedAway(gate)       when cutouts may be clicked, and when a turning page shuts the note
  *   noteRise(ms) / noteFold(ms) / sewAt(...)  the pop-up's motion over time
  *
  * The 3D half (moment/ExplainNote.tsx) hit-tests the cutouts, raises the
@@ -640,6 +641,39 @@ export function explainStep(open: string | null, ev: ExplainEvent, can: (target:
  */
 export function resumesAfter(reason: CloseReason): boolean {
   return reason !== "turn" && reason !== "telling";
+}
+
+/** The play gate's state the stage's clicks follow (playGate.ts), and its two reveal thresholds. */
+export interface ExplainGate {
+  /** The scene is drawn. */
+  ready: boolean;
+  /** The gate waits to start the telling (the page not yet open, or folding away). */
+  armed: boolean;
+  /** The spread's reveal, 0 folded .. 1 open and still. */
+  reveal: number;
+  /** The gate starts the telling at this reveal (OPEN_TO_PLAY), and re-arms below this (OPEN_TO_REARM). */
+  openAt: number;
+  rearmAt: number;
+}
+
+/**
+ * Whether the stage's cutouts may be clicked now: exactly when the telling
+ * may play (the gate open, the page open enough to start it), so a note can
+ * open from the telling's first frame, mid-play, in the end hold and at a
+ * screenshot's frozen time alike.
+ */
+export function mayExplain(g: ExplainGate): boolean {
+  return g.ready && !g.armed && g.reveal >= g.openAt;
+}
+
+/**
+ * Whether an open note shuts because the page is turning away: once the
+ * reveal falls halfway from where clicks open to where the gate re-arms, so
+ * a note opened as the page still settles in is not shut at once, and the
+ * note has folded before the set does.
+ */
+export function turnedAway(g: Pick<ExplainGate, "reveal" | "openAt" | "rearmAt">): boolean {
+  return g.reveal < (g.openAt + g.rearmAt) / 2;
 }
 
 /* ------------------------------------------------------------------------ */

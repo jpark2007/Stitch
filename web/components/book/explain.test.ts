@@ -13,8 +13,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 type Explain = typeof import("./explain");
-const paths = ["./explain.ts"];
+type Gate = typeof import("./playGate");
+const paths = ["./explain.ts", "./playGate.ts"];
 const x: Explain = await import(paths[0]);
+const gate: Gate = await import(paths[1]);
 
 const people = [
   { id: "dad", name: "David", character: { color: "#5b82a6", build: "average" as const } },
@@ -437,6 +439,48 @@ describe("explainStep", () => {
     for (const r of ["toggle", "note", "elsewhere", "escape", "gone", "probe"] as const) assert.equal(x.resumesAfter(r), true, r);
     assert.equal(x.resumesAfter("turn"), false);
     assert.equal(x.resumesAfter("telling"), false);
+  });
+});
+
+describe("when cutouts may be clicked", () => {
+  const g = (over: Partial<Parameters<typeof x.mayExplain>[0]> = {}) => ({
+    ready: true,
+    armed: false,
+    reveal: 1,
+    openAt: gate.OPEN_TO_PLAY,
+    rearmAt: gate.OPEN_TO_REARM,
+    ...over,
+  });
+
+  it("follows the play gate: clickable from the reveal the telling starts at", () => {
+    assert.equal(x.mayExplain(g()), true);
+    assert.equal(x.mayExplain(g({ reveal: gate.OPEN_TO_PLAY })), true);
+    assert.equal(x.mayExplain(g({ reveal: gate.OPEN_TO_PLAY - 0.01 })), false);
+    assert.equal(x.mayExplain(g({ armed: true })), false);
+    assert.equal(x.mayExplain(g({ ready: false })), false);
+  });
+
+  it("is clickable on every frame the gate lets the telling play, as the page settles in", () => {
+    // The book eases reveal up from where the gate starts the telling; a slow
+    // frame (dt clamped) settles it in large steps: every step past the gate is clickable.
+    const state = gate.createPlayGate();
+    state.ready = true;
+    let started = false;
+    for (let i = 0; i <= 10; i++) {
+      const r = 0.5 + i * 0.05;
+      const step = gate.stepPlayGate(state, { reveal: r, view: 1, ended: false, playing: started, now: i * 16 });
+      if (step.action === "start") started = true;
+      assert.equal(x.mayExplain(g({ armed: state.armed, reveal: r })), started, String(r));
+    }
+    assert.ok(started);
+  });
+
+  it("does not shut a note opened just as the gate opens, but does before the gate re-arms", () => {
+    assert.equal(x.turnedAway(g({ reveal: gate.OPEN_TO_PLAY })), false);
+    assert.equal(x.turnedAway(g({ reveal: 1 })), false);
+    assert.equal(x.turnedAway(g({ reveal: gate.OPEN_TO_REARM + 0.01 })), true);
+    // Opening and shutting never overlap: an open note can always be shut by turning.
+    for (let r = 0; r <= 1; r += 0.01) assert.ok(!(x.mayExplain(g({ reveal: r })) && x.turnedAway(g({ reveal: r }))), String(r));
   });
 });
 

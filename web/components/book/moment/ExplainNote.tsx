@@ -12,7 +12,7 @@
  *   const notes = useMemo(() => new ExplainSession(controller), [controller]);
  *   useEffect(() => notes.attach(), [notes]);
  *   <TimelineScene …>
- *     <ExplainLayer session={notes} fonts={fonts} reveal={reveal} caption={…} enabled={ready} />
+ *     <ExplainLayer session={notes} fonts={fonts} reveal={reveal} caption={…} enabled={ready} gate={gate} />
  *   </TimelineScene>
  *
  * ExplainSession is the open note and what it did to the scene: opening
@@ -91,6 +91,7 @@ import {
   explainItems,
   explainStep,
   layoutNote,
+  mayExplain,
   noteFold,
   noteRise,
   onSet,
@@ -100,11 +101,13 @@ import {
   resumesAfter,
   sewAt,
   stepLift,
+  turnedAway,
   underlineEnd,
   writeAt,
   writePlan,
   type CloseReason,
   type ExplainEvent,
+  type ExplainGate,
   type ExplainItem,
   type Measure,
   type NoteLayout,
@@ -113,6 +116,7 @@ import {
   type WritePlan,
 } from "../explain";
 import { PAGE_W } from "../leafShape";
+import { OPEN_TO_PLAY, OPEN_TO_REARM } from "../playGate";
 import { INK, INK_SOFT, canvas, drawStitchLine, paper, rng, type PageFonts } from "../paperArt";
 import { paperLift } from "../sound";
 import { registerExplainProbe, type ExplainNoteBox, type ExplainPoint } from "./explainProbe";
@@ -843,6 +847,7 @@ interface LayerInputs {
   reveal: { readonly current: number };
   caption: Caption | null;
   enabled: boolean;
+  gate: { readonly current: { readonly armed: boolean } | null } | null;
 }
 
 const setCursor = (c: string) => {
@@ -889,6 +894,8 @@ class ExplainStage {
   private rigs: NoteRig[] = [];
   private layer: Group | null = null;
   private inputs: LayerInputs | null = null;
+  /** The play gate's state as the clicks read it, refilled per read (no allocation). */
+  private readonly gateNow: ExplainGate = { ready: false, armed: false, reveal: 0, openAt: OPEN_TO_PLAY, rearmAt: OPEN_TO_REARM };
   private hover: string | null = null;
   /** The press our own targets took, so the book-wide listener leaves it be. */
   private took: Event | null = null;
@@ -1136,9 +1143,21 @@ class ExplainStage {
     return onSet(v.x);
   }
 
-  private get clickable(): boolean {
+  /** The play gate now, or null before the layer is configured. */
+  private gateState(): ExplainGate | null {
     const i = this.inputs;
-    return !!i && i.enabled && i.reveal.current >= 0.98;
+    if (!i) return null;
+    const g = this.gateNow;
+    g.ready = i.enabled;
+    g.armed = i.gate?.current?.armed ?? false;
+    g.reveal = i.reveal.current;
+    return g;
+  }
+
+  /** Cutouts may be clicked whenever the telling may play (../explain.ts mayExplain). */
+  private get clickable(): boolean {
+    const g = this.gateState();
+    return !!g && mayExplain(g);
   }
 
   canOpen(target: string): boolean {
@@ -1673,11 +1692,13 @@ class ExplainStage {
   /* ---------- per frame ---------- */
 
   frame(state: RootState) {
-    const inputs = this.inputs;
     const now = performance.now();
     const dt = this.lastT > 0 ? Math.min(64, now - this.lastT) : 16;
     this.lastT = now;
-    if (this.session.open !== null && inputs && inputs.reveal.current < 0.92) this.session.dispatch({ type: "turn" });
+    if (this.session.open !== null) {
+      const g = this.gateState();
+      if (g && turnedAway(g)) this.session.dispatch({ type: "turn" });
+    }
     let moving = false;
     // Only the words writing themselves in: a redraw, but the shadows stay as they are.
     let inking = false;
@@ -1751,9 +1772,14 @@ export interface ExplainLayerProps {
   caption?: Caption | null;
   /** The scene is drawn and may be clicked. */
   enabled: boolean;
+  /**
+   * The stage's play gate (../playGate.ts): cutouts are clickable exactly
+   * while it lets the telling play. Without one, from OPEN_TO_PLAY on.
+   */
+  gate?: { readonly current: { readonly armed: boolean } | null } | null;
 }
 
-export function ExplainLayer({ session, fonts, reveal, caption = null, enabled }: ExplainLayerProps) {
+export function ExplainLayer({ session, fonts, reveal, caption = null, enabled, gate = null }: ExplainLayerProps) {
   const { scene, cast, runtime } = useScene();
   const get = useThree((s) => s.get);
   const [stage] = useState(() => new ExplainStage(session, runtime, get));
@@ -1768,7 +1794,7 @@ export function ExplainLayer({ session, fonts, reveal, caption = null, enabled }
   );
   const targets = useMemo(() => stage.setItems(items), [stage, items]);
 
-  useEffect(() => stage.configure({ fonts, reveal, caption, enabled }), [stage, fonts, reveal, caption, enabled]);
+  useEffect(() => stage.configure({ fonts, reveal, caption, enabled, gate }), [stage, fonts, reveal, caption, enabled, gate]);
   useEffect(() => stage.mount(), [stage]);
   useEffect(() => stage.warm(), [stage, items]);
   useFrame((state) => stage.frame(state));
