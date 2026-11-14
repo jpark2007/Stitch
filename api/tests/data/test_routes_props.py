@@ -326,6 +326,27 @@ def test_upload_heif_is_201_and_stored_as_heif(env):
     assert stored.content_type == "image/heif"
 
 
+def test_upload_is_typed_as_media_upload_response(env):
+    """The 201 response is schemas.MediaUploadResponse in the OpenAPI document and on the wire."""
+    route = next(
+        r for r in props_routes.router.routes
+        if getattr(r, "path", None) == "/families/{fid}/media" and "POST" in getattr(r, "methods", ())
+    )
+    assert route.response_model is schemas.MediaUploadResponse
+    assert route.status_code == 201
+
+    openapi = env["tc"].get("/openapi.json").json()
+    created = openapi["paths"]["/families/{fid}/media"]["post"]["responses"]["201"]
+    assert created["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/MediaUploadResponse"}
+    assert openapi["components"]["schemas"]["MediaUploadResponse"]["required"] == ["id"]
+
+    resp = _upload(env["tc"], FAM_A)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert list(body) == ["id"] and isinstance(body["id"], str) and body["id"]
+    assert schemas.MediaUploadResponse.model_validate(body).id == body["id"]
+
+
 def test_allowed_types_match_memory_submit():
     # The prop-art upload and the memory photo upload must accept the same formats.
     from routes import memories as memories_routes

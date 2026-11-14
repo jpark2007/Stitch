@@ -101,12 +101,16 @@ def _size_label(n: int) -> str:
     return f"{n // mb} MB" if n >= mb and n % mb == 0 else f"{n} bytes"
 
 
-@router.post("/families/{fid}/media", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/families/{fid}/media",
+    status_code=status.HTTP_201_CREATED,
+    response_model=schemas.MediaUploadResponse,
+)
 async def upload_media(
     file: UploadFile = File(...),
     access: auth.FamilyAccess = Depends(auth.family_member),
     db: Database = Depends(get_db),
-) -> dict[str, str]:
+) -> schemas.MediaUploadResponse:
     """Upload a photo for this family. Returns {"id": <bare media id>}.
 
     415 for anything but a JPEG, PNG, WebP, GIF or HEIC/HEIF image; 413 over db.media.MAX_BYTES;
@@ -140,4 +144,4 @@ async def upload_media(
         filename=file.filename,
         kind="photo",
     )
-    return {"id": media_id}
+    return schemas.MediaUploadResponse(id=media_id)
