@@ -202,7 +202,7 @@ export function newRunBook(answers: AnsweredRecord[] = []): RunBook {
 // keeps the answers this tab gave in sessionStorage, per run, and a reload in
 // the same tab re-applies them at the point they were given. Another tab or
 // device still sees the pause until the run moves on; answering it there
-// gets a 409, which closes it quietly (sendAnswer).
+// gets a 409 NOT_WAITING, which closes it quietly (sendAnswer).
 
 /** Most answers kept per run; a run pauses a handful of times at most. */
 export const MAX_SAVED_ANSWERS = 50;
@@ -274,12 +274,38 @@ export function answerBody(kind: AnswerKind, value: string | PropEdit[] | boolea
 }
 
 /**
- * True for a rejection that says the run is not waiting for this answer
- * (HTTP 409 from the answer route). Duck-typed on `status`, so this module
- * needs no runtime import of the API client's error class.
+ * The answer route's 409 detail when the run has moved past the pause
+ * (api/routes/memories.py NOT_WAITING). Other 409s from that route say the
+ * answer itself did not fit (ANSWER_CONFLICT, a wrong kind, an empty text).
+ */
+export const NOT_WAITING_DETAIL = "This run is not waiting for an answer";
+
+/** Older servers and the mock backend word it differently ("isn't waiting for that"). */
+const NOT_WAITING_PATTERN = /\b(?:not|isn['’]?t)\s+waiting\b/i;
+
+/** The 409 detail for "An answer needs text". */
+const NEEDS_TEXT_PATTERN = /needs\s+text/i;
+
+/** The server's sentence on an API client error: `detail`, else `message`. */
+function detailOf(error: unknown): string {
+  if (typeof error !== "object" || error === null) return "";
+  const { detail, message } = error as { detail?: unknown; message?: unknown };
+  if (typeof detail === "string" && detail.trim()) return detail.trim();
+  return typeof message === "string" ? message.trim() : "";
+}
+
+/**
+ * True for a rejection that says the run is not waiting for an answer any
+ * more: HTTP 409 with the NOT_WAITING detail (or, from an older server or the
+ * mock, a detail that says "not waiting"). Only that closes a card quietly;
+ * any other 409 means the answer did not fit and the card stays. Duck-typed
+ * on `status` and `detail`/`message`, so this module needs no runtime import
+ * of the API client's error class.
  */
 export function isNotWaiting(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { status?: unknown }).status === 409;
+  if (statusOf(error) !== 409) return false;
+  const detail = detailOf(error);
+  return detail === NOT_WAITING_DETAIL || NOT_WAITING_PATTERN.test(detail);
 }
 
 /** What the family is sending, in the words of a failed-send message. */
@@ -287,6 +313,13 @@ const ANSWER_THING: Record<AnswerKind, string> = {
   answer: "answer",
   props: "changes",
   merge: "choice",
+};
+
+/** The same, pointed at: "Stitch couldn’t take that answer." */
+const ANSWER_THAT: Record<AnswerKind, string> = {
+  answer: "that answer",
+  props: "those changes",
+  merge: "that choice",
 };
 
 function statusOf(error: unknown): number | null {
@@ -305,6 +338,10 @@ function statusOf(error: unknown): number | null {
  *   can carry internals.
  * - 401: the sign-in ran out. 403: the server only takes answers from the
  *   person who started the run. 404: the run is gone.
+ * - 409 (other than NOT_WAITING, which sendAnswer never shows): the answer
+ *   did not fit what the run is waiting for. An empty text asks for a few
+ *   words; anything else (ANSWER_CONFLICT, a wrong kind, a missing props
+ *   list) asks to try again, never in the server's wording.
  * - Any other 4xx: the API client's message, which is already a fixed,
  *   user-safe sentence (or the generic one when it has none).
  */
@@ -320,6 +357,10 @@ export function answerErrorMessage(error: unknown, kind: AnswerKind): string {
   if (status === 401) return "You’ve been signed out. Sign in again in another tab, then send this again.";
   if (status === 403) return "Only the person who started this memory can answer the studio here.";
   if (status === 404) return `This run isn’t there any more, so your ${thing} couldn’t be saved.`;
+  if (status === 409) {
+    if (kind === "answer" && NEEDS_TEXT_PATTERN.test(detailOf(error))) return "Write a few words first.";
+    return `Stitch couldn’t take ${ANSWER_THAT[kind] ?? "that answer"}. Please try again.`;
+  }
   const message = error instanceof Error ? error.message.trim() : "";
   return message || `That didn’t go through. Try sending your ${thing} again.`;
 }
@@ -341,12 +382,14 @@ export function answerFailure(error: unknown, kind: AnswerKind): Error & { statu
  * dispatches `answered`, unless the run was swapped out meanwhile
  * (`currentBook` then returns null).
  *
- * A 409 means the run has already moved past this pause (it was answered
- * before a reload, or in another tab): the pause is closed with a neutral
- * `answered` (summary null), recorded so a replay closes it again, and the
- * call resolves so the card simply goes away. The server's wording is never
- * logged. Any other failure rejects with answerFailure (a calm, specific
- * sentence for the card) and dispatches nothing.
+ * A 409 NOT_WAITING (isNotWaiting) means the run has already moved past
+ * this pause (it was answered before a reload, or in another tab): the pause
+ * is closed with a neutral `answered` (summary null), recorded so a replay
+ * closes it again, and the call resolves so the card simply goes away. The
+ * server's wording is never logged. Any other failure, including every other
+ * 409 (the answer did not fit the pause), rejects with answerFailure (a calm,
+ * specific sentence for the card), dispatches nothing and records nothing, so
+ * the card stays open with what the family entered.
  */
 export async function sendAnswer(o: {
   answer: (body: AnswerRequest) => Promise<void>;
