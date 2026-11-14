@@ -22,6 +22,7 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import InjectedState
+from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 from pydantic import BaseModel
@@ -197,18 +198,37 @@ STRAIGHT_STUDIO = script(
 
 class Harness:
     def __init__(self, responder: Responder, *, extra_tools: list[BaseTool] | None = None,
-                 subagents: list[dict[str, Any]] | None = None) -> None:
+                 subagents: list[dict[str, Any]] | None = None, keep_runs: bool = False,
+                 store: BaseStore | None = None) -> None:
         self.repo = InMemoryRepo()
         load_sample_family(self.repo, FAMILY)
         load_sample_family(self.repo, OTHER_FAMILY)
         self.saver = InMemorySaver()
-        self.store = InMemoryStore()
+        self.store = store if store is not None else InMemoryStore()
         self.model = ScriptedChatModel(responder=responder)
         self.extra_tools = extra_tools or []
         self.subagents = subagents if subagents is not None else [INTERVIEWER]
         self.built: list[RunInfo] = []
         self.graphs: list[Any] = []
-        self.manager = runs.RunManager(repo=self.repo, build_graph=self.build)
+        # keep_runs: the manager writes its run records into the same store the studio uses.
+        self.keep_runs = keep_runs
+        self.manager = self.new_manager()
+        self.retired: list[runs.RunManager] = []
+
+    def new_manager(self) -> runs.RunManager:
+        if self.keep_runs:
+            return runs.RunManager(repo=self.repo, build_graph=self.build, store=self.store)
+        return runs.RunManager(repo=self.repo, build_graph=self.build)
+
+    def restart(self) -> runs.RunManager:
+        """Simulate an API restart: a new RunManager over the same checkpointer, store and repo.
+
+        The old manager's workers finish first (a crash test's worker ends with the crash),
+        so it never writes to the thread or the record again."""
+        self.manager.shutdown(wait=True)
+        self.retired.append(self.manager)
+        self.manager = self.new_manager()
+        return self.manager
 
     def build(self, run: RunInfo):
         self.built.append(run)
@@ -248,6 +268,8 @@ def harnesses() -> Iterator[list[Harness]]:
     yield made
     for h in made:
         h.manager.shutdown(wait=True)
+        for old in h.retired:
+            old.shutdown(wait=True)
 
 
 def collect(manager: runs.RunManager, run_id: str, family_id: str = FAMILY) -> list[tuple[str, BaseModel]]:
@@ -727,6 +749,314 @@ def test_start_run_inside_a_running_loop_returns_at_once(harnesses: list[Harness
     took, events = asyncio.run(asyncio.wait_for(main(), WAIT))
     assert took < 1.0
     assert [n for n, _ in events] == ["plan", "scene_ready", "done"]
+
+
+# ------------------------------------------------------------------ surviving a restart
+
+
+class ProcessDied(BaseException):
+    """Stands in for the API process dying mid-step: not an Exception, so nothing in the run catches it."""
+
+
+def crash_once(step: Callable[[list[BaseMessage]], AIMessage], when: Callable[[list[BaseMessage]], bool]):
+    """`step`, except that the first call matching `when` kills the 'process' instead."""
+    crashed = threading.Event()
+
+    def play(messages: list[BaseMessage]) -> AIMessage:
+        if not crashed.is_set() and when(messages):
+            crashed.set()
+            raise ProcessDied("the API process stopped")
+        return step(messages)
+
+    play.crashed = crashed  # type: ignore[attr-defined]
+    return play
+
+
+def stored(h: Harness, run_id: str, family_id: str = FAMILY) -> dict[str, Any] | None:
+    item = h.store.get(runs.run_namespace(family_id), run_id)
+    return None if item is None else dict(item.value)
+
+
+def wait_stored_status(h: Harness, run_id: str, status: str) -> dict[str, Any]:
+    deadline = time.monotonic() + WAIT
+    while time.monotonic() < deadline:
+        record = stored(h, run_id)
+        if record is not None and record["status"] == status:
+            return record
+        time.sleep(0.01)
+    raise AssertionError(f"the record of {run_id} never reached {status}: {stored(h, run_id)}")
+
+
+QUESTION_RUN = ["plan", "subagent_start", "question", "subagent_end", "plan", "scene_ready", "done"]
+
+
+def mongo_store() -> Iterator[BaseStore]:
+    """A MongoDBStore on the MongoDB at MONGODB_URI_TEST, in a throwaway collection."""
+    import os
+    import uuid
+
+    uri = os.environ.get("MONGODB_URI_TEST")
+    if not uri:
+        # studio.mongo_persistence has no mongomock path, and MongoDBStore cannot run on
+        # mongomock (it calls create_index with arguments mongomock does not take).
+        pytest.skip("MONGODB_URI_TEST is not set")
+    from langgraph.store.mongodb import MongoDBStore
+    from pymongo import MongoClient
+
+    client: MongoClient = MongoClient(uri, serverSelectionTimeoutMS=3000)
+    collection = client["stitch_test"][f"agent_store_{uuid.uuid4().hex[:12]}"]
+    try:
+        yield MongoDBStore(collection=collection)
+    finally:
+        collection.drop()
+        client.close()
+
+
+@pytest.fixture(params=["memory", "mongo"])
+def run_store(request: pytest.FixtureRequest) -> Iterator[BaseStore]:
+    if request.param == "memory":
+        yield InMemoryStore()
+    else:
+        yield from mongo_store()
+
+
+def test_a_run_waiting_on_a_question_survives_a_restart(harnesses: list[Harness], run_store: BaseStore) -> None:
+    h = Harness(make_responder(NEW_MEMORY_STUDIO, interviewer=script(ask("Which church was it?"), report)),
+                keep_runs=True, store=run_store)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "waiting"
+    before = dumped(h.manager.events(FAMILY, run_id))
+    assert [n for n, _ in before] == ["plan", "subagent_start", "question"]
+
+    record = stored(h, run_id)
+    assert record is not None
+    assert record["status"] == "waiting" and record["user_id"] == USER and record["author_id"] == "dad"
+    assert record["family_id"] == FAMILY and record["photo_ids"] == ["photo_1"]
+    assert json.loads(record["fields"])["text"] == "Dad passed the hymn books down the pew."
+    assert [[n, json.loads(p)] for n, p in record["events"]] == [[n, p] for n, p in before]
+
+    manager = h.restart()
+    assert manager.status(FAMILY, run_id) == "waiting"
+    assert len(h.graphs) == 2  # the studio was rebuilt for the restored run
+
+    refused: list[BaseException] = []
+
+    async def follow_and_answer() -> list[tuple[str, BaseModel]]:
+        seen: list[tuple[str, BaseModel]] = []
+        async for name, model in manager.stream_run(FAMILY, run_id):
+            seen.append((name, model))
+            if name == "question":
+                try:
+                    manager.answer_run(FAMILY, run_id, OTHER_USER,
+                                       schemas.AnswerRequest(kind="answer", text="Not my run."))
+                except runs.NotRunOwner as exc:
+                    refused.append(exc)
+                manager.answer_run(FAMILY, run_id, USER,
+                                   schemas.AnswerRequest(kind="answer", text="St. Mark's, in Trenton."))
+        return seen
+
+    seen = asyncio.run(asyncio.wait_for(follow_and_answer(), WAIT))
+    assert len(refused) == 1
+    assert_typed(seen)
+    assert dumped(seen)[:3] == before  # replayed first
+    assert [n for n, _ in seen] == QUESTION_RUN
+    assert dumped(seen) == dumped(manager.events(FAMILY, run_id))
+    end = seen[3][1]
+    assert end.name == "interviewer"  # the sub-agent's name came back with the record
+    assert "St. Mark's, in Trenton." in (end.summary or "")
+
+    done = seen[-1][1]
+    memory = h.repo.get_memory(FAMILY, done.memory_id)
+    assert memory is not None and memory.timeline == SAMPLE.memory.timeline
+
+    # The answer resumed the same thread the first process started.
+    values = h.graphs[1].get_state(studio.thread_config(run_id)).values
+    tool_names = [m.name for m in values["messages"] if isinstance(m, ToolMessage)]
+    assert tool_names.count("task") == 1 and "save_memory" in tool_names
+    assert stored(h, run_id)["status"] == "done"
+
+
+def test_a_finished_run_replays_from_the_store_after_a_restart(harnesses: list[Harness]) -> None:
+    h = Harness(make_responder(STRAIGHT_STUDIO), keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "done"
+    original = dumped(h.manager.events(FAMILY, run_id))
+    assert [n for n, _ in original] == ["plan", "scene_ready", "done"]
+
+    # The process forgetting a finished run keeps its record.
+    h.manager.finished_run_ttl = 0
+    other = h.start()
+    assert run_id not in h.manager._runs
+    assert dumped(collect(h.manager, run_id)) == original
+    assert h.wait(other) == "done"
+
+    manager = h.restart()
+    graphs = len(h.graphs)
+    assert dumped(collect(manager, run_id)) == original
+    assert manager.status(FAMILY, run_id) == "done"
+    assert len(h.graphs) == graphs  # a replay builds no studio
+    with pytest.raises(runs.RunNotWaiting):
+        h.answer(run_id, "anything")
+    assert [n for n, _ in collect(manager, other)] == ["plan", "scene_ready", "done"]
+
+
+def test_an_errored_run_replays_its_error_after_a_restart(harnesses: list[Harness]) -> None:
+    h = Harness(make_responder(script(todos(("Break", "in_progress")), tool_call("explode", {}), say("never"))),
+                extra_tools=[explode], keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "error"
+    original = dumped(h.manager.events(FAMILY, run_id))
+    manager = h.restart()
+    replay = collect(manager, run_id)
+    assert dumped(replay) == original and replay[-1][0] == "error"
+    assert "the paper tore" in replay[-1][1].message
+
+
+def test_run_records_are_isolated_per_family(harnesses: list[Harness]) -> None:
+    h = Harness(make_responder(NEW_MEMORY_STUDIO, interviewer=script(ask("Which church?"), report)), keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "waiting"
+    assert stored(h, run_id) is not None
+    assert stored(h, run_id, OTHER_FAMILY) is None
+
+    manager = h.restart()
+    good = schemas.AnswerRequest(kind="answer", text="St. Mark's.")
+    with pytest.raises(runs.RunNotFound):
+        manager.answer_run(OTHER_FAMILY, run_id, USER, good)
+    for call in (manager.status, manager.events):
+        with pytest.raises(runs.RunNotFound):
+            call(OTHER_FAMILY, run_id)
+    yielded: list[Any] = []
+
+    async def iterate() -> None:
+        async for event in manager.stream_run(OTHER_FAMILY, run_id):
+            yielded.append(event)
+
+    with pytest.raises(runs.RunNotFound):
+        asyncio.run(iterate())
+    assert yielded == []
+    assert len(h.graphs) == 1  # nothing was restored for the other family
+
+    # Its own family still finds it, and it finishes.
+    assert manager.status(FAMILY, run_id) == "waiting"
+    manager.answer_run(FAMILY, run_id, USER, good)
+    assert h.wait(run_id) == "done"
+    # Once this process holds it, the other family still cannot see it.
+    with pytest.raises(runs.RunNotFound):
+        manager.status(OTHER_FAMILY, run_id)
+
+
+def test_a_run_cut_short_mid_step_is_driven_on_after_a_restart(
+    harnesses: list[Harness], caplog: pytest.LogCaptureFixture
+) -> None:
+    # The first process dies while the studio is writing the timeline (after the plan).
+    studio_script = crash_once(STRAIGHT_STUDIO, lambda messages: tool_results(messages) == 2)
+    h = Harness(make_responder(studio_script), keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert studio_script.crashed.wait(WAIT)
+    record = wait_stored_status(h, run_id, "running")
+    assert [n for n, _ in record["events"]] == ["plan"]
+
+    caplog.set_level("WARNING", logger="agent.runs")
+    manager = h.restart()
+    events = collect(manager, run_id)
+    assert_typed(events)
+    assert [n for n, _ in events] == ["plan", "scene_ready", "done"]  # no event says it resumed
+    assert any("resuming it from its last checkpoint" in r.getMessage() for r in caplog.records)
+    memory = h.repo.get_memory(FAMILY, events[-1][1].memory_id)
+    assert memory is not None and memory.timeline == SAMPLE.memory.timeline
+    # Same thread: the screenplay write from before the restart was not repeated.
+    values = h.graphs[-1].get_state(studio.thread_config(run_id)).values
+    writes = [m for m in values["messages"] if isinstance(m, ToolMessage) and m.name == "write_file"]
+    assert len(writes) == 2
+    assert stored(h, run_id)["status"] == "done"
+
+
+def test_an_accepted_answer_is_not_lost_when_the_process_dies_resuming(harnesses: list[Harness]) -> None:
+    # The interviewer has the teller's answer, then the process dies before it can report.
+    interviewer = crash_once(script(ask("Which church?"), report), lambda messages: tool_results(messages) == 1)
+    h = Harness(make_responder(NEW_MEMORY_STUDIO, interviewer=interviewer), keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "waiting"
+    h.answer(run_id, "St. Mark's, in Trenton.")
+    assert interviewer.crashed.wait(WAIT)
+    record = wait_stored_status(h, run_id, "running")
+    assert record["answered"] is not None
+
+    manager = h.restart()
+    events = collect(manager, run_id)
+    assert [n for n, _ in events] == QUESTION_RUN  # not asked twice
+    end = events[3][1]
+    assert end.name == "interviewer" and "St. Mark's, in Trenton." in (end.summary or "")
+
+
+def test_a_question_recorded_before_its_checkpoint_is_not_asked_twice(harnesses: list[Harness]) -> None:
+    # The record says waiting, but the process died before the step's writes (the
+    # interrupt) reached the checkpointer: the restored run drives on, the thread asks
+    # the same question again, and the log keeps one question.
+    h = Harness(make_responder(NEW_MEMORY_STUDIO, interviewer=script(ask("Which church?"), report)), keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "waiting"
+    h.manager.shutdown(wait=True)
+    before = dumped(h.manager.events(FAMILY, run_id))
+    # Lose the interrupt the last root step wrote (InMemorySaver keeps pending writes per
+    # (thread, namespace, checkpoint id)); the sub-agent's own checkpoints stay.
+    config = studio.thread_config(run_id)
+    latest = h.graphs[0].get_state(config).config["configurable"]["checkpoint_id"]
+    pending = h.saver.writes[(run_id, "", latest)]
+    lost = [key for key, write in pending.items() if write[1] == "__interrupt__"]
+    assert lost
+    for key in lost:
+        del pending[key]
+    assert h.graphs[0].get_state(config).interrupts == ()
+
+    manager = h.restart()
+    assert manager.wait(FAMILY, run_id, timeout=WAIT) == "waiting"
+    assert dumped(manager.events(FAMILY, run_id)) == before
+    h.answer(run_id, "St. Mark's.")
+    assert h.wait(run_id) == "done"
+    assert h.names(run_id) == QUESTION_RUN
+
+
+def test_unreadable_or_misfiled_records_are_not_found(harnesses: list[Harness]) -> None:
+    h = Harness(make_responder(STRAIGHT_STUDIO), keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "done"
+    record = stored(h, run_id)
+    assert record is not None
+    # A copy of the record filed under the other family still names this family: not found there.
+    h.store.put(runs.run_namespace(OTHER_FAMILY), run_id, record)
+    h.store.put(runs.run_namespace(FAMILY), "garbled", {"run_id": "garbled", "status": "done"})
+    h.store.put(runs.run_namespace(FAMILY), "odd_status", {**record, "run_id": "odd_status", "status": "paused"})
+
+    manager = h.restart()
+    with pytest.raises(runs.RunNotFound):
+        manager.status(OTHER_FAMILY, run_id)
+    for bad in ("garbled", "odd_status"):
+        with pytest.raises(runs.RunNotFound):
+            manager.status(FAMILY, bad)
+    assert manager.status(FAMILY, run_id) == "done"
+
+
+def test_a_manager_without_a_store_keeps_runs_in_process(harnesses: list[Harness]) -> None:
+    h = Harness(make_responder(NEW_MEMORY_STUDIO, interviewer=script(ask("Which church?"), report)))
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "waiting"
+    assert h.store.search((runs.RUNS_NAMESPACE,)) == []  # nothing written anywhere
+    manager = h.restart()
+    with pytest.raises(runs.RunNotFound):
+        manager.status(FAMILY, run_id)
+    with pytest.raises(runs.RunNotFound):
+        h.answer(run_id, "St. Mark's.")
 
 
 # ------------------------------------------------------------------ module seam
