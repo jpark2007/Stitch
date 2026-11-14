@@ -15,11 +15,12 @@
  * How far each piece has risen comes from the nearest <PopUp>:
  *   open: number   scrubbed, e.g. by a page-turn angle. Pieces rise in a depth
  *                  stagger (back first), no springs, so any value is a pose.
- *   open: boolean  played. Each flip schedules critically damped springs per
- *                  piece (back first when opening, front first when closing),
- *                  with a velocity kick that gives one small overshoot and
- *                  settle. Evaluated in closed form from stage time, so frozen
- *                  frames are exact.
+ *   open: boolean  played. Each flip schedules, per piece (back first when
+ *                  opening, front first when closing), an accelerating ramp
+ *                  that a critically damped hinge spring follows: it carries
+ *                  the ramp's final speed into one small overshoot and settles.
+ *                  Evaluated in closed form from stage time, so frozen frames
+ *                  are exact.
  *
  * Folded flat, back pieces lie on top of front ones (they fold forwards over
  * them), which is why they must rise first.
@@ -39,7 +40,7 @@ import {
 import { createCardEdgeMaterial, createPaperMaterial, getPaperTextures } from "@/components/paper/materials";
 import { useStageTime } from "./clock";
 import type { Cutout } from "./cutout";
-import { clamp, smootherstep, smoothstep, springAt, type SpringEvent } from "./timeline";
+import { clamp, followAt, linearAt, smootherstep, smoothstep, type LinearKeys } from "./timeline";
 
 /* ------------------------------------------------------------------------ */
 /* Pop-up controller                                                         */
@@ -50,15 +51,56 @@ export interface PopUpTiming {
   openStagger: number;
   /** Seconds between pieces when closing (front first). */
   closeStagger: number;
+  /** Seconds a unit-height piece takes to rise / fold down (taller is slower). */
+  openTime: number;
+  closeTime: number;
+  /** Hinge spring speed (rad/s): lower is looser, with a bigger pop. */
+  omega: number;
   /** For scrubbed `open`: share of the 0..1 range between piece starts. */
   scrubStagger: number;
 }
 
-const DEFAULT_TIMING: PopUpTiming = { openStagger: 0.17, closeStagger: 0.09, scrubStagger: 0.16 };
+const DEFAULT_TIMING: PopUpTiming = {
+  openStagger: 0.2,
+  closeStagger: 0.1,
+  openTime: 0.72,
+  closeTime: 0.55,
+  omega: 11,
+  scrubStagger: 0.16,
+};
 
 interface PopUpValue {
-  /** Rise of a piece, 0 flat .. 1 upright (briefly above 1 on overshoot). */
-  rise(order: number, count: number, t: number, omega: number): number;
+  /**
+   * Rise of a piece, 0 flat .. 1 upright (briefly above 1 on the pop).
+   * `size` stretches the motion: ~sqrt(height), so tall cards move slower.
+   */
+  rise(order: number, count: number, t: number, size: number): number;
+}
+
+/**
+ * The hinge's target path for one piece: for each flip, a ramp from wherever
+ * the target is towards 1 (open) or 0 (closed) that starts slowly and speeds
+ * up, as a page opening drives a real mechanism. The spring following it
+ * carries the final speed into one small overshoot (opening) or a soft landing
+ * (closing, clamped at the page).
+ */
+function hingePath(flips: readonly Flip[], order: number, count: number, size: number, t: PopUpTiming): LinearKeys {
+  const timed = flips
+    .map((f) => ({ ...f, at: f.at + (f.open ? order * t.openStagger : (count - 1 - order) * t.closeStagger) }))
+    .sort((a, b) => a.at - b.at);
+  let keys: LinearKeys = [];
+  for (const f of timed) {
+    const from = linearAt(keys, f.at, 0);
+    keys = keys.filter((k) => k[0] < f.at);
+    keys.push([f.at, from]);
+    const to = f.open ? 1 : 0;
+    const dist = Math.abs(to - from);
+    if (dist < 1e-3) continue;
+    const dur = (f.open ? t.openTime : t.closeTime) * size * (0.35 + 0.65 * dist);
+    keys.push([f.at + dur * 0.6, from + (to - from) * 0.3]);
+    keys.push([f.at + dur, to]);
+  }
+  return keys;
 }
 
 const PopUpContext = createContext<PopUpValue>({ rise: () => 1 });
@@ -80,8 +122,11 @@ export interface PopUpProps {
 }
 
 export function PopUp({ open = true, openAt = 0.4, closeAt = null, timing, children }: PopUpProps) {
-  const t = { ...DEFAULT_TIMING, ...timing };
-  const { openStagger, closeStagger, scrubStagger } = t;
+  const { openStagger, closeStagger, openTime, closeTime, omega, scrubStagger } = { ...DEFAULT_TIMING, ...timing };
+  const timingRef = useMemo<PopUpTiming>(
+    () => ({ openStagger, closeStagger, openTime, closeTime, omega, scrubStagger }),
+    [openStagger, closeStagger, openTime, closeTime, omega, scrubStagger],
+  );
   const now = useStageTime();
   const get = useThree((s) => s.get);
 
@@ -113,27 +158,20 @@ export function PopUp({ open = true, openAt = 0.4, closeAt = null, timing, child
         },
       };
     }
-    // Each piece's spring events, rebuilt only when the flips change.
-    const cache = new Map<string, { v: number; evs: SpringEvent[] }>();
+    // Each piece's hinge path, rebuilt only when the flips change.
+    const cache = new Map<string, { v: number; keys: LinearKeys }>();
     return {
-      rise(order, count, time, omega) {
-        const key = `${order}|${count}|${omega}`;
+      rise(order, count, time, size) {
+        const key = `${order}|${count}|${size}`;
         let hit = cache.get(key);
         if (!hit || hit.v !== version.current) {
-          const evs: SpringEvent[] = [...scheduled, ...live.current].map((f) => ({
-            at: f.at + (f.open ? order * openStagger : (count - 1 - order) * closeStagger),
-            target: f.open ? 1 : 0,
-            kick: f.open ? 1.75 * omega : 0,
-          }));
-          // Staggers can reorder events; keep them in time order.
-          evs.sort((a, b) => a.at - b.at);
-          hit = { v: version.current, evs };
+          hit = { v: version.current, keys: hingePath([...scheduled, ...live.current], order, count, size, timingRef) };
           cache.set(key, hit);
         }
-        return Math.max(0, springAt(hit.evs, time, omega, 0));
+        return Math.max(0, followAt(hit.keys, time, timingRef.omega / Math.sqrt(size), 0));
       },
     };
-  }, [open, scheduled, openStagger, closeStagger, scrubStagger]);
+  }, [open, scheduled, timingRef, scrubStagger]);
 
   return <PopUpContext.Provider value={value}>{children}</PopUpContext.Provider>;
 }
@@ -160,8 +198,8 @@ export interface SetPieceProps {
   thickness?: number;
   /** Colour of the card's back and cut edge. */
   backColor?: string;
-  /** Spring speed (rad/s). Default scales with height: tall cards are slower. */
-  omega?: number;
+  /** Motion scale: >1 is slower. Default sqrt(height), so tall cards are slower. */
+  size?: number;
 }
 
 const TAB_DEPTH = 0.06;
@@ -191,14 +229,14 @@ export function SetPiece({
   vfold = 0,
   thickness = 0.007,
   backColor = "#e9dfcb",
-  omega,
+  size,
 }: SetPieceProps) {
   const { rise } = useContext(PopUpContext);
   const now = useStageTime();
   const hinge = useRef<Group>(null);
   const halvesRef = useRef<(Group | null)[]>([]);
   const w = cutout.aspect * height;
-  const springOmega = omega ?? 6.4 / Math.sqrt(Math.max(0.2, height));
+  const motion = size ?? Math.sqrt(Math.max(0.25, height));
 
   const halves = useMemo<Half[]>(
     () =>
@@ -246,7 +284,7 @@ export function SetPiece({
   const stackY = thickness / 2 + 0.0012 + (count - 1 - order) * (thickness + 0.0018);
 
   useFrame((state) => {
-    const r = rise(order, count, now(state), springOmega);
+    const r = rise(order, count, now(state), motion);
     const g = hinge.current;
     if (!g) return;
     g.rotation.x = Math.min(1, 1 - r) * (Math.PI / 2);
