@@ -188,6 +188,8 @@ export class BookController {
    * own angle while it hovers, eased back flat once a turn takes the leaf over.
    */
   private stageTilt = 0;
+  /** The stage group (BookParts.stage), as last posed. */
+  private stageGroup: Group | null = null;
   private frozen = false;
   private camKey = "";
   private viewKey = "";
@@ -511,8 +513,7 @@ export class BookController {
     // A pop-up page still tilting back down can be taken up again where it is.
     const tilting = l.mode === "hover" && l.tilt;
     if (l.mode !== "rest" && !tilting) return;
-    const staged = dir > 0 && (this.reveals[leaf - 1]?.current ?? 0) > 0.01;
-    if (staged) {
+    if (dir > 0 && this.popUp(leaf - 1)) {
       if (this.shotW > 0.01) return;
       Object.assign(l, { mode: "hover", dir, tilt: true, p: tilting ? l.p : 0, curl: 0, corner: 0, stiff: 1 });
     } else {
@@ -521,6 +522,22 @@ export class BookController {
     }
     this.hoverLeaf = leaf;
     this.invalidate();
+  }
+
+  /**
+   * A pop-up stands (or is rising or folding) in spread j's slot. Every
+   * spread's reveal runs, pop-up or not; Book3D mounts one slot group per
+   * mounted stage, in `stages` order, and a spread without a pop-up leaves
+   * its slot group empty.
+   */
+  private popUp(j: number): boolean {
+    if (!((this.reveals[j]?.current ?? 0) > 0.01)) return false;
+    const slots = this.stageGroup?.children;
+    if (!slots) return false;
+    const k = this.stages.indexOf(j);
+    // Mid-render the slots may not match `stages` yet: then any filled slot counts.
+    if (slots.length !== this.stages.length || k < 0) return slots.some((s) => s.children.length > 0);
+    return slots[k].children.length > 0;
   }
 
   private clearHover() {
@@ -836,11 +853,13 @@ export class BookController {
     // one rigid motion; once a turn takes the leaf over, it settles flat.
     const page = rt.leaves[this.pos];
     if (page && page.mode === "hover" && page.tilt) this.stageTilt = page.p * Math.PI;
+    else if (!page || page.mode === "rest") this.stageTilt = 0;
     else if (this.stageTilt !== 0) {
       this.stageTilt *= dt === 0 || this.frozen ? 0 : Math.exp(-dt * STAGE_UNTILT_RATE);
       if (this.stageTilt < 1e-5) this.stageTilt = 0;
       else moving = true;
     }
+    this.stageGroup = parts.stage;
     if (parts.stage) {
       const y0 = rt.hinge + pageProfile(PAGE_W / 2, rt.depthR, rt.bow) + LEAF_REST_GAP;
       const [sx, sy] = tiltAbout(0, y0, 0, rt.hinge, this.stageTilt);
