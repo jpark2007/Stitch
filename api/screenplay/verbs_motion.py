@@ -169,7 +169,8 @@ def apply_follow(world: World, tracks: TrackSet, action: Action, t: float, actio
     """Walk behind another puppet along the path its root.position keys already describe.
 
     Uses ``motion.follow_keys`` (spacing, lag, never overtaking); ``dur`` clips it. Errors:
-    ``self_target``, ``bad_target`` (not a person), ``bad_time`` (dur <= 0), ``seated`` (world
+    ``self_target``, ``bad_target`` (not a person), ``bad_time`` (dur <= 0, or shorter than the
+    ``POSE_SECONDS`` a kneeling / floor-sitting follower needs to stand up), ``seated`` (world
     rule), ``nothing_to_follow`` (the leader does not move after t), and locate's
     ``unknown_target``. Run it after the shot's other actions (see the module docstring).
     Returns the time the follower stops.
@@ -193,6 +194,13 @@ def apply_follow(world: World, tracks: TrackSet, action: Action, t: float, actio
 
     skip = _skip_bones(world, who)
     keys, t_go, start = _stand_first(world, tracks, who, t, skip)
+    if action.dur is not None and t_go - t > action.dur + _EPS:
+        # Standing up cannot be clipped, so a shorter dur would keep the puppet busy past it.
+        raise StateError(
+            "bad_time",
+            f"{who} needs {fmt_t(t_go - t)}s to stand up before following; follow dur "
+            f"{action.dur:g} is shorter than that",
+        )
     dur = None if action.dur is None else action.dur - (t_go - t)
     walk, stop, facing = motion.follow_keys(who, p.build, t_go, start, p.facing, path, dur, skip_bones=skip)
     keys += walk

@@ -342,6 +342,36 @@ def test_follow_while_kneeling_stands_up_first(world, tracks):
     assert end > 2.0 + POSE_SECONDS
 
 
+def _kneeling_kid(world, tracks):
+    lead_dad(tracks, world, to=(0.9, 0.0, 0.5))
+    world.move("kid", (-0.9, 0.0, 0.5))
+    tracks.extend(kneel_keys(Body(id="kid", ground=(-0.9, 0.0), facing=1, build="small"), 1.2, {}))
+    world.kneel("kid")
+
+
+def test_follow_dur_shorter_than_standing_up_is_an_error(world, tracks):
+    # Standing up takes POSE_SECONDS and cannot be clipped, so a shorter dur would leave the
+    # kid busy past it: refuse, atomically.
+    _kneeling_kid(world, tracks)
+    expect_error("bad_time", f"kid needs {POSE_SECONDS:g}s to stand up before following; follow dur 0.3 "
+                 "is shorter than that",
+                 apply_follow, world, tracks, 2.0, do="follow", who="kid", target="dad", dur=0.3)
+
+
+def test_follow_dur_while_kneeling_never_ends_after_dur(world, tracks):
+    _kneeling_kid(world, tracks)
+    end = run(apply_follow, world, tracks, 2.0, do="follow", who="kid", target="dad", dur=POSE_SECONDS)
+    assert end == pytest.approx(2.0 + POSE_SECONDS)
+    assert world.people["kid"].pose == "stand"
+    assert world.people["kid"].pos == pytest.approx((-0.9, 0.0, 0.5))
+
+
+def test_follow_dur_while_kneeling_clips_the_walk(world, tracks):
+    _kneeling_kid(world, tracks)
+    end = run(apply_follow, world, tracks, 2.0, do="follow", who="kid", target="dad", dur=1.0)
+    assert 2.0 + POSE_SECONDS < end <= 3.0 + 1e-9
+
+
 def test_follow_holding_a_prop_keeps_the_arm(world, tracks):
     # Mom (holding the books, facing left on the steps) follows dad as he walks off left.
     keys, _, _ = motion.locomotion_keys("dad", "tall", 2.0, MARKS["steps_left"], OFFSTAGE_LEFT, 1)

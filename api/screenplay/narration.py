@@ -244,8 +244,9 @@ def retime_actions(shot: Shot, action_start: float, *, author: str | None = None
     the same delta (deltas accumulate). An action that is cued later still lands exactly on
     its own word, so uncued actions after it keep their spacing from it.
 
-    Raises ``cue_before_start`` when a cue word, or an uncued action carried along by the
-    ripples, would land before the shot's t=0.
+    Raises ``cue_before_start`` when a cue word, or an uncued action carried earlier by the
+    ripples, would land before the shot's t=0. An uncued action written with a negative ``t``
+    is returned as written unless a ripple moves it earlier still.
     """
     original = [a.t for a in shot.actions]
     current = list(original)
@@ -287,9 +288,11 @@ def retime_actions(shot: Shot, action_start: float, *, author: str | None = None
                     moved_by[j] = (li, idx)
     # Ripples can push an uncued action before t=0: when a later line cues an earlier action
     # back after an even later action was already pinned, the uncued actions after both get
-    # both deltas.
+    # both deltas. Only a ripple that moved an action earlier and below t=0 is a retiming
+    # error: an action written with a negative t (no contract forbids it here; validation
+    # owns that rule) passes through unchanged when no ripple moves it earlier.
     for j, t_new in enumerate(current):
-        if j not in pinned and t_new < 0:
+        if j in moved_by and t_new < 0 and t_new < original[j]:
             li, idx = moved_by[j]
             raise NarrationError(
                 "cue_before_start",
