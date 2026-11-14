@@ -130,7 +130,7 @@ function Player({
 }) {
   const music = useEraMusic(year, { active, ducked });
   useEffect(() => {
-    onEngine(music.current);
+    onEngine(music.engine());
     return () => onEngine(null);
   }, [music, onEngine]);
   return null;

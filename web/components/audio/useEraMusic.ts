@@ -4,28 +4,40 @@
  * Era music for a component: play the music of `year`'s era while `active`
  * (the book is open), ducked under narration while `ducked`.
  *
- *   useEraMusic(spread?.year ?? null, { active: view.opened, ducked: narrating });
+ *   const music = useEraMusic(spread?.year ?? null, { active: view.opened, ducked: narrating });
+ *   useEffect(() => music.prefetchYear(nextSpread?.year ?? null), [music, nextSpread]);
  *
  * The engine lives in a ref and is driven from effects, so audio never
- * causes a React render; StrictMode's double mount creates and disposes a
- * first engine that never made a sound (engines are lazy). Returns the ref
- * for diagnostics (meter, stats).
+ * causes a React render, and the returned handle is stable (safe in effect
+ * dependencies). The engine is created with the latest era, activity and
+ * ducking; StrictMode's double mount creates and disposes a first engine
+ * that never made a sound (engines are lazy).
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { createEraMusic, type EraMusic } from "./engine";
 import { eraForYear } from "./eras";
 
-export function useEraMusic(year: number | null, opts: { active: boolean; ducked?: boolean }) {
+export interface EraMusicHandle {
+  /** Make the era of an upcoming year (the next spread's) ready to start instantly. */
+  prefetchYear(year: number | null): void;
+  /** The engine, for meters and stats; null before mount and after unmount. */
+  engine(): EraMusic | null;
+}
+
+export function useEraMusic(year: number | null, opts: { active: boolean; ducked?: boolean }): EraMusicHandle {
   const music = useRef<EraMusic | null>(null);
   const era = eraForYear(year);
   const { active } = opts;
   const ducked = opts.ducked ?? false;
-
-  // Declared first, so on every mount the engine exists before the effects
-  // below hand it the current era, activity and ducking.
+  // The latest values, for the engine made on mount (effects run in order).
+  const latest = useRef({ era, active, ducked });
   useEffect(() => {
-    const m = createEraMusic({ active: false });
+    latest.current = { era, active, ducked };
+  });
+
+  useEffect(() => {
+    const m = createEraMusic(latest.current);
     music.current = m;
     return () => {
       m.dispose();
@@ -45,5 +57,11 @@ export function useEraMusic(year: number | null, opts: { active: boolean; ducked
     music.current?.setDucked(ducked);
   }, [ducked]);
 
-  return music;
+  return useMemo<EraMusicHandle>(
+    () => ({
+      prefetchYear: (y) => music.current?.prefetch(eraForYear(y)),
+      engine: () => music.current,
+    }),
+    [],
+  );
 }
