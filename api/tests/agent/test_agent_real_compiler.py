@@ -2,8 +2,9 @@
 
 The real compiler (`screenplay.compiler.compile`) lands one PR at a time. Every test that needs
 it takes the `real` fixture, which skips while `agent.tools.compile.load_compiler()` returns
-FakeCompiler, so these switch on by themselves as the compiler lands. A case or example that uses
-a verb the real compiler has no handler for yet (`unsupported_verb`) skips and names the verb.
+FakeCompiler, so these switch on by themselves as the compiler lands. On main every verb in
+shared/vocabulary.json compiles, the effects (confetti, steam, rain, smoke, time_of_day) included,
+so nothing here skips for a missing verb: every effect case is a plain parity check.
 The corpus and the doc snippets are stored here; the fake-only checks at the bottom always run.
 
 Scene inputs are built the way production builds them: the sample family seeded into an
@@ -327,12 +328,21 @@ def _with_confetti(data: dict) -> None:
     _actions(data).append({"t": 8.5, "do": "confetti", "at": "steps_top", "dur": 2})
 
 
+EFFECT_VERBS = frozenset(json.loads((REPO / "shared" / "vocabulary.json").read_text())["effects"])
+EFFECT_SAMPLES: dict[str, dict] = {
+    "confetti": {"do": "confetti", "at": "steps_top", "dur": 2},
+    "steam": {"do": "steam", "at": "steps_top", "dur": 2},
+    "rain": {"do": "rain", "dur": 2},
+    "smoke": {"do": "smoke", "at": "steps_top", "dur": 2},
+    "time_of_day": {"do": "time_of_day", "value": "dusk", "dur": 2},
+}
+
+
 @dataclass(frozen=True)
 class Case:
     screenplay: dict
     ok: bool  # what the real compiler should say (and the fake must agree)
     codes: tuple[str, ...] = ()  # error codes expected from the fake, in order (not-ok cases)
-    exclude: str | None = None  # why this case is outside the fake/real parity assertion
 
 
 def _corpus() -> dict[str, Case]:
@@ -388,6 +398,9 @@ def _corpus() -> dict[str, Case]:
         "unknown_prop_listed": Case(_sample(lambda d: (d["props"].append("umbrella"),
                                                        _actions(d)[3].update(what="umbrella"))),
                                     False, ("unknown_prop",)),
+        # listed in props, used by nothing, missing from the scene inputs: still unknown_prop
+        "unused_prop_missing_from_the_scene": Case(_sample(lambda d: d["props"].append("umbrella")),
+                                                   False, ("unknown_prop",)),
         "hand_to_receiver_out_of_reach": Case(_base(
             [{"t": 1, "who": "mom", "do": "hand_to", "what": "hymn_books", "to": "dad"}],
             start={"dad": {"at": "steps_left", "facing": "right"},
@@ -454,13 +467,14 @@ def _corpus() -> dict[str, Case]:
         "open_out_of_reach": Case(_suitcase(
             [{"t": 0, "who": "mom", "do": "open", "what": "suitcase"}],
             start={"mom": {"at": "steps_left", "facing": "right"}}), False, ("out_of_reach",)),
-        # ------------------------------------------------------- exclusions
-        "effect_confetti": Case(
-            _sample(_with_confetti), True,
-            exclude="the real compiler (#60, #66, #70) has screenplay/effects.py but no handler for effect verbs, "
-                    "so it rejects every one as unsupported_verb; shared/CONTRACTS.md and the vocabulary allow "
-                    "them, so the fake accepts them",
-        ),
+        # ---------------------------------------------------------- effects
+        # every effect verb compiles on both compilers (screenplay/effects.py, wired in #125)
+        "effect_confetti": Case(_sample(_with_confetti), True),
+        **{f"effect_{verb}": Case(_sample(lambda d, a=action: _actions(d).append({"t": 8.5, **a})), True)
+           for verb, action in EFFECT_SAMPLES.items() if verb != "confetti"},
+        # an effect occupies nobody: Mom bows her head while the confetti falls on her
+        "effect_at_a_busy_person": Case(_sample(lambda d: _actions(d).append(
+            {"t": 7.7, "do": "confetti", "at": "mom"})), True),
     }
     return c
 
@@ -526,6 +540,8 @@ def screenplay_for_snippet(obj: dict) -> dict:
     if "do" in obj or "move" in obj:  # an action or camera cue from the worked example
         data = _sample()
         key = "actions" if "do" in obj else "camera"
+        if key == "actions" and obj not in _actions(data):  # an extra action: added to the worked example
+            _actions(data).append(obj)
         assert obj in _shot(data)[key], f"{obj} is not in the worked example"
         return data
     raise AssertionError(f"no rule to compile doc snippet {obj}")
@@ -571,24 +587,23 @@ def test_skill_sample_compiles_cleanly_and_its_timeline_validates(real, lookup):
 @pytest.mark.parametrize("where, snippet", doc_snippets(), ids=[w for w, _ in doc_snippets()])
 def test_doc_snippets_compile_cleanly(real, lookup, where, snippet):
     res = compile_text(json.dumps(screenplay_for_snippet(snippet)), real, lookup)
-    _skip_unsupported(res)
     assert res.ok and res.errors == [], (where, [e.message for e in res.errors])
 
 
-def _skip_unsupported(res: CompileResult) -> None:
-    """A verb the real compiler has no handler for yet (its verb modules land one PR at a time)
-    is a compiler gap, not a parity failure: skip, naming the verbs."""
-    verbs = sorted({e.do for e in res.errors if e.code == "unsupported_verb" and e.do})
-    if verbs:
-        pytest.skip(f"the real compiler on this branch has no handler for {', '.join(verbs)} yet (unsupported_verb)")
+def test_every_effect_compiles_on_the_real_compiler(real, lookup):
+    """Effects are wired into compile() on main: each one compiles on the worked example with no
+    error and lands in Timeline.effects, so the directing skill teaches them as working verbs
+    (test_agent_skills.py pins that text)."""
+    assert set(EFFECT_SAMPLES) == EFFECT_VERBS
+    for verb, action in EFFECT_SAMPLES.items():
+        data = _sample()
+        _actions(data).append({"t": 8.5, **action})
+        res = compile_text(json.dumps(data), real, lookup)
+        assert res.ok and res.errors == [], (verb, [f"{e.code}: {e.message}" for e in res.errors])
+        assert [e.kind for e in res.timeline.effects] == [verb]
 
 
-def _parity_cases() -> list:
-    return [pytest.param(name, id=name, marks=pytest.mark.skip(reason=f"parity exclusion: {case.exclude}"))
-            if case.exclude else pytest.param(name, id=name) for name, case in CORPUS.items()]
-
-
-@pytest.mark.parametrize("name", _parity_cases())
+@pytest.mark.parametrize("name", list(CORPUS))
 def test_fake_and_real_agree_on_ok_versus_not_ok(real, lookup, name):
     case = CORPUS[name]
     text = json.dumps(case.screenplay)
@@ -596,7 +611,6 @@ def test_fake_and_real_agree_on_ok_versus_not_ok(real, lookup, name):
     got_fake = compile_text(text, FakeCompiler(), lookup)
     real_msgs = [f"{e.code}: {e.message}" for e in got_real.errors]
     fake_msgs = [f"{e.code}: {e.message}" for e in got_fake.errors]
-    _skip_unsupported(got_real)
     assert got_real.ok == case.ok, (name, real_msgs)
     assert got_fake.ok == got_real.ok, (name, {"real": real_msgs, "fake": fake_msgs})
     if not got_real.ok:
@@ -699,7 +713,7 @@ def test_doc_snippets_compile_with_the_fake(lookup, where, snippet):
 
 @pytest.mark.parametrize("name", list(CORPUS))
 def test_corpus_fake_verdict(lookup, name):
-    """The fake's own answer for every corpus case, including exclusions (no real compiler needed)."""
+    """The fake's own answer for every corpus case, effects included (no real compiler needed)."""
     case = CORPUS[name]
     res = compile_text(json.dumps(case.screenplay), FakeCompiler(), lookup)
     msgs = [f"{e.code}: {e.message}" for e in res.errors]

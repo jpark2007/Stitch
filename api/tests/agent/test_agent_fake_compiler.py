@@ -272,7 +272,7 @@ def test_hand_to_when_nobody_holds_it(scene):
             ],
         )
     )
-    assert err.message == 'shot s1, t=5: dad cannot hand_to "hymn_books"; nobody is holding it'
+    assert err.message == 'shot s1, t=5: dad cannot hand_to "hymn_books"; it is on the ground'
 
 
 def test_holding_is_simulated_in_time_order(scene):
@@ -286,7 +286,7 @@ def test_holding_is_simulated_in_time_order(scene):
             ],
         )
     )
-    assert err.message == 'shot s1, t=2: mom cannot hand_to "hymn_books"; nobody is holding it'
+    assert err.message == 'shot s1, t=2: mom cannot hand_to "hymn_books"; it is on the ground'
 
 
 def test_pick_up_of_a_held_prop(scene):
@@ -379,7 +379,7 @@ def test_holding_carries_between_shots(scene):
         }
     )
     err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
-    assert err.message == 'shot s2, t=2: mom cannot hand_to "hymn_books"; nobody is holding it'
+    assert err.message == 'shot s2, t=2: mom cannot hand_to "hymn_books"; it is on the ground'
 
 
 def test_all_errors_are_reported_together(scene):
@@ -488,14 +488,14 @@ def test_camera_target_must_be_on_stage(scene):
                                        'shot s1, t=1: cannot close_up "hymn_books"; hymn_books is not on stage')
 
 
-def test_not_holding_on_the_ground_keeps_its_old_wording(scene):
-    """The real compiler says "it is on the ground"; the fake keeps "nobody is holding it" (see
-    LEGACY_REASONS) because tests/agent/test_agent_compile_tool.py pins that text."""
+def test_not_holding_on_the_ground_says_so(scene):
+    """The real compiler's reason (screenplay.state.World): "it is on the ground"."""
     err = _only_error(_compile(scene, [
         {"t": 0, "who": "mom", "do": "drop", "what": "hymn_books"},
         {"t": 1, "who": "mom", "do": "hold", "what": "hymn_books"},
     ]))
-    assert err.message == 'shot s1, t=1: mom cannot hold "hymn_books"; nobody is holding it'
+    assert err.code == "not_holding"
+    assert err.message == 'shot s1, t=1: mom cannot hold "hymn_books"; it is on the ground'
 
 
 def test_static_errors_stop_before_the_simulation(scene):
@@ -507,13 +507,14 @@ def test_static_errors_stop_before_the_simulation(scene):
     assert [e.code for e in res.errors] == ["unknown_mark"]
 
 
-def test_unused_prop_missing_from_the_scene_passes(scene):
-    """Documented gap: a listed prop the scene lacks and nothing uses passes in the fake (the
-    studio's scene_for reports it first); a used one is unknown_prop, as in the real compiler."""
+@pytest.mark.parametrize("used", [False, True], ids=["unused", "used"])
+def test_prop_missing_from_the_scene_is_unknown_prop(scene, used):
+    """A listed prop the scene inputs lack is unknown_prop whether or not anything uses it, as in
+    the real compiler (parity case in tests/agent/test_agent_real_compiler.py)."""
     data = copy.deepcopy(BASE)
     data["props"].append("car")
-    assert FakeCompiler()(Screenplay.model_validate(data), scene).ok
-    data["shots"][0]["camera"] = [{"t": 0, "move": "close_up", "target": "car"}]
+    if used:
+        data["shots"][0]["camera"] = [{"t": 0, "move": "close_up", "target": "car"}]
     err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
     assert err.code == "unknown_prop" and err.message.startswith('screenplay: prop "car" is not a known prop')
 
@@ -596,3 +597,54 @@ def test_pick_up_above_the_shoulder_still_needs_reach(scene):
     assert (res.errors[0].code, res.errors[0].message) == (
         "out_of_reach", 'shot s1, t=0.5: dad cannot pick_up "hymn_books"; dad\'s arm_r cannot reach: '
                         "target is 0.57 from the shoulder, reach is 0.19")
+
+
+# ------------------------------------------- what the directing skill teaches, as the real compiler
+
+
+def _both(scene, data: dict) -> tuple[CompileResult, CompileResult]:
+    """(fake, real) on one screenplay, so each fake behaviour below is pinned to the real one."""
+    from screenplay.compiler import compile as real_compile
+
+    sp = Screenplay.model_validate(data)
+    return FakeCompiler()(sp, scene), real_compile(sp, sets=scene.sets, props=scene.props, people=scene.people)
+
+
+def _base(actions, **shot) -> dict:
+    data = copy.deepcopy(BASE)
+    data["shots"][0]["actions"] = actions
+    data["shots"][0].update(shot)
+    return data
+
+
+def test_place_on_bends_down_to_the_floor_as_the_real_compiler(scene):
+    """place_on reaches a low spot (#141): it bends down to a mark on the floor close by, taking
+    POSE + REACH + POSE (1.2 s) instead of 2 x REACH; one too far is still out_of_reach."""
+    start = {"dad": {"at": "steps_foot", "holding": "hymn_books", "facing": "right"},
+             "mom": {"at": "curb", "facing": "left"}}
+    for du, ok in ((0.1, True), (0.4, False)):
+        data = _base([{"t": 0, "who": "dad", "do": "place_on", "what": "hymn_books", "on": "spot"},
+                      {"t": 1.25, "who": "dad", "do": "wave"}],
+                     start=start, marks={"spot": [0.5 + du, 0.0]})
+        fake, real = _both(scene, data)
+        assert fake.ok == real.ok == ok, ([e.message for e in fake.errors], [e.message for e in real.errors])
+    data["shots"][0]["marks"] = {"spot": [0.6, 0.0]}
+    data["shots"][0]["actions"][1]["t"] = 1.1  # still bending back up
+    fake, real = _both(scene, data)
+    assert [e.code for e in fake.errors] == [e.code for e in real.errors] == ["busy"]
+
+
+def test_movement_notes_slow_the_walk_as_the_real_compiler(scene):
+    """character.speed_scale: "walks slowly with a cane" is x 0.6 in both compilers."""
+    people = dict(scene.people)
+    mom = people["mom"]
+    people["mom"] = mom.model_copy(update={"character": mom.character.model_copy(update={"notes": "walks with a cane"})})
+    slow = SceneInputs(sets=scene.sets, props=scene.props, people=people)
+    start = {"dad": {"at": "steps_left", "facing": "right"}, "mom": {"at": "curb", "facing": "left"}}
+    walk = 0.8 / (0.35 * 0.6)  # curb (x 0.8) to steps_foot (x 0.0)
+    for t, ok in ((walk + 0.05, True), (walk - 0.05, False)):
+        data = _base([{"t": 0, "who": "mom", "do": "walk_to", "to": "steps_foot"},
+                      {"t": round(t, 3), "who": "mom", "do": "wave"}], start=start)
+        data["props"] = []
+        fake, real = _both(slow, data)
+        assert fake.ok == real.ok == ok, ([e.message for e in fake.errors], [e.message for e in real.errors])
