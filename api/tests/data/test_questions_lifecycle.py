@@ -288,7 +288,13 @@ def test_each_demo_account_answers_a_seeded_question_about_a_moment_they_were_in
     )
     assert person in [t.author_id for t in after.memory.tellings]
     assert len(after.memory.tellings) == len(moment.memory.tellings) + 1
-    assert after.memory.timeline == moment.memory.timeline, "a second telling keeps the compiled scene"
+    # A second telling keeps the compiled scene: the shared action is untouched. (The studio
+    # may also give the new teller a narration track, so only the action is compared.)
+    assert after.memory.screenplay is not None and after.memory.timeline is not None
+    assert after.memory.screenplay.shots == moment.memory.screenplay.shots
+    assert after.memory.timeline.tracks == moment.memory.timeline.tracks
+    assert after.memory.timeline.effects == moment.memory.timeline.effects
+    assert set(moment.memory.timeline.narrations or {}) <= set(after.memory.timeline.narrations or {})
     book = schemas.BookResponse.model_validate(
         _ok(app.client.get(f"/families/{FID}/people/{person}/book")), by_alias=True, by_name=False
     )
