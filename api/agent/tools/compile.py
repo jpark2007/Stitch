@@ -7,8 +7,10 @@ event, and returns the same lines so the director can fix the draft and try agai
 `MAX_COMPILE_ROUNDS` consecutive failures the tool tells the director to stop and report.
 
 After a successful compile the tool also runs `scene_review.review_scene` (pageText,
-explanations, pull tabs, narration sources) and appends its warnings under the `ok:` summary,
-writing them to `/scene_review.txt`. Warnings never fail a compile and never use a round.
+explanations, pull tabs, narration sources) and `scene_review.review_timeline` (scrub ranges,
+explanation targets, pageText windows and narration cues against the compiled timeline), and
+appends their warnings under the `ok:` summary, writing them to `/scene_review.txt`. Warnings
+never fail a compile and never use a round.
 
 The compiler seam
 -----------------
@@ -49,7 +51,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, ValidationError
 
 import schemas
-from agent.tools.scene_review import review_scene
+from agent.tools.scene_review import review_scene, review_timeline
 from screenplay.schema import CompileError, CompileResult, Screenplay
 
 log = logging.getLogger(__name__)
@@ -224,15 +226,27 @@ def parse_and_compile(
 
 
 def _review(compiled: _Compiled) -> list[str]:
-    """Scene review warnings for a successful compile; a review bug never breaks the tool."""
+    """Scene and timeline review warnings for a successful compile, scene first, duplicates dropped.
+
+    Each review runs on its own: a bug in one never hides the other's warnings and never breaks
+    the tool.
+    """
     if compiled.screenplay is None:
         return []
+    screenplay = compiled.screenplay
     props = compiled.scene.props if compiled.scene is not None else None
+    timeline = compiled.result.timeline
+    warnings: list[str] = []
     try:
-        return review_scene(compiled.screenplay, props=props)
+        warnings += review_scene(screenplay, props=props)
     except Exception:  # noqa: BLE001 - warnings are advice; a crash here must not fail a good compile
         log.exception("scene review crashed")
-        return []
+    if timeline is not None:
+        try:
+            warnings += review_timeline(screenplay, timeline, props=props)
+        except Exception:  # noqa: BLE001 - same: advice only
+            log.exception("timeline review crashed")
+    return list(dict.fromkeys(warnings))
 
 
 # ----------------------------------------------------------------------------- events
@@ -314,9 +328,9 @@ def make_compile_tool(
 
         Reads the screenplay JSON at `path` (default /screenplay.json). On success writes
         /timeline.json and returns "ok: <shots> shots, <duration>s, <tracks> tracks", followed by
-        any scene review warnings (missing pageText, explanations, pull tabs, narration sources;
-        also in /scene_review.txt). Fix those in the draft and compile again; they do not use a
-        round. On failure writes /compile_errors.txt and returns the exact errors, one per line,
+        any scene review warnings (missing pageText, explanations, pull tabs, narration sources,
+        and timing problems in the compiled timeline; also in /scene_review.txt). Fix those in
+        the draft and compile again; they do not use a round. On failure writes /compile_errors.txt and returns the exact errors, one per line,
         plus the round number; fix the draft and call again. After 3 failed rounds it tells you
         to stop.
         """
