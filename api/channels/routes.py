@@ -19,10 +19,15 @@ def _receive(message: InboundMessage) -> dict:
             rows = contacts.matching_contacts(db, message.provider, message.senderId)
             if not rows:
                 raise LookupError("Unknown contact")
-            duplicates = [conversations.save_inbound(db, row, data, stopped=True) for row in rows]
-            # A colliding message ID fails before changing consent. Repeating an
-            # accepted STOP re-applies this idempotent update after a partial failure.
             contacts.stop_contacts(db, message.provider, message.senderId, rows)
+            duplicates = []
+            for row in rows:
+                try:
+                    duplicates.append(conversations.save_inbound(db, row, data, stopped=True))
+                except Exception:
+                    # Consent revocation must not depend on receipt identity or
+                    # availability after the contact update has succeeded.
+                    duplicates.append(False)
             return {"accepted": True, "duplicate": all(duplicates), "stopped": True}
         contact = contacts.resolve_contact(db, message.provider, message.senderId)
         return {"accepted": True, "duplicate": conversations.save_inbound(db, contact, data)}
