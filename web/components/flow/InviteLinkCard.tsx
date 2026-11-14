@@ -6,7 +6,7 @@
 // off after an inline confirm. A rejected call shows its message in the card.
 import { useEffect, useId, useRef, useState } from "react";
 
-import { Button } from "./Button";
+import { Button, FOCUS_RING } from "./Button";
 import { TextField } from "./Field";
 import { FormError } from "./FormError";
 import { PaperCard } from "./PaperCard";
@@ -148,10 +148,10 @@ export function InviteLinkCard(props: {
 
   return (
     <PaperCard aria-labelledby={headingId}>
-      <h2 id={headingId} className="font-serif text-[1.5rem] leading-tight text-[var(--ink,#2f2620)]">
+      <h2 id={headingId} className="font-display text-[1.5rem] leading-tight text-ink">
         Invite your family
       </h2>
-      <p className="mt-2 text-[0.9375rem] leading-relaxed text-pretty text-[var(--ink-soft,#5c4e43)]">
+      <p className="mt-2 text-[0.9375rem] leading-relaxed text-pretty text-ink-soft">
         Anyone with the link can join the family for 14 days, and you can turn it off at any time.
       </p>
 
@@ -190,7 +190,7 @@ export function InviteLinkCard(props: {
                 <p
                   role="status"
                   aria-live="polite"
-                  className="min-h-[1.5em] text-[0.9375rem] leading-snug text-[var(--ink-soft,#5c4e43)]"
+                  className="min-h-[1.5em] text-[0.9375rem] leading-snug text-ink-soft"
                 >
                   {copyMessage === COPIED ? (
                     <span className="inline-flex items-center gap-1.5">
@@ -204,7 +204,7 @@ export function InviteLinkCard(props: {
               </div>
             </div>
 
-            <div className="border-t border-dashed border-[var(--rule,#2f262024)] pt-5">
+            <div className="border-t border-dashed border-rule pt-5">
               {confirming ? (
                 <div
                   ref={confirmRef}
@@ -217,9 +217,9 @@ export function InviteLinkCard(props: {
                       cancelConfirm();
                     }
                   }}
-                  className="rounded-[var(--radius-paper,2px)] bg-[var(--paper,#f5eee1)] px-4 py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent,#b9573d)]"
+                  className={`rounded-paper bg-paper px-4 py-3 ${FOCUS_RING}`}
                 >
-                  <p id={questionId} className="text-[0.9375rem] leading-relaxed text-[var(--ink,#2f2620)]">
+                  <p id={questionId} className="text-[0.9375rem] leading-relaxed text-ink">
                     Turn it off? People who haven&rsquo;t joined yet won&rsquo;t be able to use it.
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -247,11 +247,11 @@ export function InviteLinkCard(props: {
 /** A small stitched tick beside "Link copied". */
 function Tick() {
   return (
-    <svg aria-hidden="true" viewBox="0 0 12 12" className="size-3 shrink-0">
+    <svg aria-hidden="true" viewBox="0 0 12 12" className="size-3 shrink-0 text-accent-deep">
       <path
         d="M2 6.5 4.8 9 10 3"
         fill="none"
-        stroke="var(--accent-deep, #8f3f2a)"
+        stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"

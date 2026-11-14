@@ -6,8 +6,7 @@
 // the full text stays in the DOM, so screen readers always read all of it,
 // and "Show all" opens it for sighted readers.
 import { useEffect, useId, useRef, useState } from "react";
-
-const HAND = "font-[family-name:var(--font-hand,var(--font-caveat,'Bradley_Hand'),cursive)]";
+import { FOCUS_RING } from "./Button";
 
 function photoLabel(n: number): string | null {
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -47,12 +46,12 @@ export function TellingNote(props: {
   return (
     <section
       aria-labelledby={headingId}
-      className="relative min-w-0 rounded-[var(--radius-paper,2px)] border border-[var(--rule,#2f262024)] bg-[var(--paper-light,#fbf8f1)] px-5 pt-4 pb-4 text-[var(--ink,#2f2620)] shadow-[var(--shadow-paper,0_1px_1px_rgb(74_47_29/0.08),0_2px_6px_rgb(74_47_29/0.08))] sm:px-6"
+      className="relative min-w-0 rounded-paper border border-rule bg-paper-light px-5 pt-4 pb-4 text-ink shadow-paper sm:px-6"
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h2
           id={headingId}
-          className="text-xs font-semibold tracking-[0.08em] text-[var(--ink-soft,#5c4e43)] uppercase"
+          className="text-xs font-semibold tracking-[0.08em] text-ink-soft uppercase"
         >
           {secondTellingOf ? (
             <>
@@ -62,18 +61,18 @@ export function TellingNote(props: {
             "Your telling"
           )}
         </h2>
-        <p className="text-sm text-[var(--ink-faint,#8f8173)] tabular-nums">{meta}</p>
+        <p className="text-sm text-ink-faint tabular-nums">{meta}</p>
       </div>
 
       {q ? (
-        <p className={`mt-2 text-[1.375rem] leading-[1.2] text-pretty break-words ${HAND}`}>{q}</p>
+        <p className="mt-2 font-hand text-[1.375rem] leading-[1.2] text-pretty break-words">{q}</p>
       ) : null}
 
       <p
         ref={textRef}
         id={textId}
         className={[
-          "mt-2 text-[0.9375rem] leading-relaxed break-words whitespace-pre-line text-[var(--ink-soft,#5c4e43)]",
+          "mt-2 text-[0.9375rem] leading-relaxed break-words whitespace-pre-line text-ink-soft",
           expanded ? "" : "line-clamp-4",
         ].join(" ")}
       >
@@ -86,7 +85,7 @@ export function TellingNote(props: {
           aria-expanded={expanded}
           aria-controls={textId}
           onClick={() => setExpanded((v) => !v)}
-          className="-ml-1 mt-1 inline-flex min-h-11 items-center rounded-[var(--radius-paper,2px)] px-1 text-sm font-semibold text-[var(--accent-deep,#8f3f2a)] underline-offset-[0.2em] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent,#b9573d)]"
+          className={`-ml-1 mt-1 inline-flex min-h-11 items-center rounded-paper px-1 text-sm font-semibold text-accent-deep underline-offset-[0.2em] hover:underline ${FOCUS_RING}`}
         >
           {expanded ? "Show less" : "Show all"}
         </button>

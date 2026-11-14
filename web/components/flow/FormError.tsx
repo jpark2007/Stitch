@@ -1,6 +1,10 @@
 // The form-level message ("That email and password don't match", network
 // errors, server messages that belong to no single field) and a helper that
 // moves focus to the first problem after a failed submit.
+import { FOCUS_RING } from "./Button";
+
+// The error red (#9c3b2a) and its wash (#f7e4dc) have no tokens in
+// globals.css yet, so they stay literal here, in Field and in Button.
 
 /**
  * A role="alert" box, announced when it appears. Renders nothing when
@@ -14,7 +18,7 @@ export function FormError(props: { message?: string | null; title?: string }) {
       role="alert"
       tabIndex={-1}
       data-form-error=""
-      className="min-w-0 break-words rounded-[var(--radius-paper,2px)] border border-[#9c3b2a]/35 border-l-[3px] border-l-[#9c3b2a] bg-[#f7e4dc] px-4 py-3 text-[0.9375rem] leading-snug text-[#9c3b2a] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent,#b9573d)]"
+      className={`min-w-0 break-words rounded-paper border border-[#9c3b2a]/35 border-l-[3px] border-l-[#9c3b2a] bg-[#f7e4dc] px-4 py-3 text-[0.9375rem] leading-snug text-[#9c3b2a] ${FOCUS_RING}`}
     >
       {title ? <p className="font-semibold">{title}</p> : null}
       <p className={title ? "mt-0.5" : undefined}>{message}</p>
