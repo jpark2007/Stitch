@@ -13,10 +13,18 @@ docstring has the details):
 
     adapter            request timeout                          retries
     -----------------  ---------------------------------------  ------------------------------
-    AnthropicVision    STITCH_MODEL_TIMEOUT_S (120 s)           STITCH_MODEL_MAX_RETRIES (2), by the SDK
+    AnthropicVision    STITCH_MODEL_TIMEOUT_S (120 s)           STITCH_MODEL_MAX_RETRIES (2), by the
+                                                                adapter (SDK max_retries=0): a failed
+                                                                connection, HTTP 408/409/429/5xx;
+                                                                never a timeout
     OpenAIImageModel   120 s read/write, 10 s connect           1, only for no connection or
                                                                 HTTP 408/429/5xx
     ElevenLabsTTS      30 s read/write, 10 s connect            2, same rules
+
+Every wait before a retry is capped at ``images.MAX_BACKOFF_S`` (8 s), whatever the provider's
+``Retry-After`` asks. The anthropic SDK alone would obey any ``Retry-After`` uncapped, which is
+why ``AnthropicVision`` retries itself; its worst case per call is
+``vision.worst_case_s(timeout, max_retries)``, 376 s with the defaults.
 
 A call that still fails raises, and the tool that made it degrades instead of failing the
 run: placeholder art (``agent.tools.art.ArtService``), silent narration with estimated word

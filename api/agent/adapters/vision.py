@@ -17,26 +17,52 @@ Images are prepared with Pillow before they are sent:
 Env: ``ANTHROPIC_API_KEY`` (read by the SDK) and ``STITCH_VISION_MODEL`` (default
 ``agent.studio.DEFAULT_MODEL``). Tests inject a fake ``client`` with a ``messages.create``.
 
-Bounded like the studio model, so a hung vision call cannot stall a run: the SDK client is
-built with ``timeout`` seconds per request and ``max_retries`` retries (the SDK retries
-connection errors, timeouts and HTTP 408/409/429/5xx with backoff). Both default to the run
-limits for Claude requests, ``agent.guards.RunLimits.model_timeout_s`` and
-``model_max_retries`` (env ``STITCH_MODEL_TIMEOUT_S``, default 120, and
-``STITCH_MODEL_MAX_RETRIES``, default 2). An injected ``client`` keeps its own settings.
+Bounded, so a hung or overloaded vision provider cannot stall a run. ``timeout`` (seconds per
+request) and ``max_retries`` default to the run limits for Claude requests,
+``agent.guards.RunLimits.model_timeout_s`` and ``model_max_retries`` (env
+``STITCH_MODEL_TIMEOUT_S``, default 120, and ``STITCH_MODEL_MAX_RETRIES``, default 2).
+
+The retries are made here, not by the SDK. The pinned SDK (anthropic 2.8.0,
+``anthropic._base_client.BaseClient._calculate_retry_timeout``) obeys any positive
+``retry-after-ms`` / ``Retry-After`` with no cap (only ``time.sleep``'s platform limit, about
+49 days), so one ``Retry-After: 3600`` from an overloaded API would hold a run for an hour. So
+the SDK client is built with ``max_retries=0`` and ``describe`` retries itself:
+
+- Retried, at most ``max_retries`` times: a connection that failed
+  (``anthropic.APIConnectionError``), and HTTP 408, 409, 429 and 5xx (529 overloaded
+  included), the statuses the SDK retries. An ``x-should-retry: true|false`` header wins, as
+  in the SDK.
+- Not retried: a request that timed out (``anthropic.APITimeoutError``; the provider is hung,
+  and waiting again would double the worst case), any other HTTP error (400, 401, 403, 404,
+  413, ...), and any non-SDK exception.
+- Each retry waits ``RETRY_BACKOFF_S`` doubling per attempt, or the response's numeric
+  ``retry-after-ms`` / ``Retry-After``, never more than ``MAX_BACKOFF_S`` (8 s, the same cap
+  as ``agent.adapters.images``).
+
+So one ``describe`` takes at most ``worst_case_s(timeout, max_retries)`` =
+``(1 + max_retries) * timeout + max_retries * MAX_BACKOFF_S`` seconds (376 s with the
+defaults), pinned by tests through the SDK over a fake transport. An injected ``client``
+keeps its own SDK settings, but its errors go through the same bounded retry loop.
 """
 
 from __future__ import annotations
 
 import base64
 import io
+import logging
 import math
 import os
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+import anthropic
 from PIL import Image, ImageOps
 
+from agent.adapters.images import MAX_BACKOFF_S, RETRY_BACKOFF_S
 from agent.guards import RunLimits
+
+log = logging.getLogger(__name__)
 
 MAX_EDGE = 1568
 """Long edge (px) above which an image is downscaled before it is sent."""
@@ -112,6 +138,64 @@ def _text_of(response: Any) -> str:
     return "\n".join(parts).strip()
 
 
+RETRY_STATUSES = frozenset({408, 409, 429})
+"""Statuses retried besides every 5xx: the ones the SDK itself retries."""
+
+
+def worst_case_s(timeout: float, max_retries: int) -> float:
+    """The longest one ``describe`` can take: every attempt times out, every wait is capped."""
+    return (1 + max_retries) * float(timeout) + max_retries * MAX_BACKOFF_S
+
+
+def _header(headers: Mapping[str, str] | None, name: str) -> str | None:
+    if headers is None:
+        return None
+    try:
+        value = headers.get(name)
+    except Exception:  # noqa: BLE001 - an odd fake response; treat as no header
+        return None
+    return value.strip() if isinstance(value, str) else None
+
+
+def _asked_wait_s(headers: Mapping[str, str] | None) -> float | None:
+    """Seconds the provider asked to wait (``retry-after-ms``, then a numeric ``Retry-After``)."""
+    for name, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+        raw = _header(headers, name)
+        if raw is None:
+            continue
+        try:
+            asked = float(raw) / scale
+        except ValueError:
+            continue  # e.g. an HTTP date: the exponential backoff applies
+        if math.isfinite(asked) and asked >= 0:
+            return asked
+    return None
+
+
+def retry_wait_s(attempt: int, headers: Mapping[str, str] | None = None) -> float:
+    """Seconds to wait before retry ``attempt + 1``: what the provider asked, else exponential; capped."""
+    asked = _asked_wait_s(headers)
+    wait = RETRY_BACKOFF_S * (2**attempt) if asked is None else asked
+    return min(MAX_BACKOFF_S, wait)
+
+
+def retryable(exc: BaseException) -> tuple[bool, Mapping[str, str] | None]:
+    """(retry this failure?, the response headers behind it) under the module's retry rules."""
+    if isinstance(exc, anthropic.APITimeoutError):
+        return False, None
+    if isinstance(exc, anthropic.APIConnectionError):
+        return True, None
+    if isinstance(exc, anthropic.APIStatusError):
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        should = (_header(headers, "x-should-retry") or "").lower()
+        if should in ("true", "false"):
+            return should == "true", headers
+        status = exc.status_code
+        return status in RETRY_STATUSES or status >= 500, headers
+    return False, None
+
+
 class AnthropicVision:
     """``photos.VisionModel`` over the Anthropic Messages API."""
 
@@ -123,7 +207,11 @@ class AnthropicVision:
         max_tokens: int = 1500,
         timeout: float | None = None,
         max_retries: int | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        http_client: Any | None = None,
     ) -> None:
+        """``http_client`` (an ``httpx2.Client``, what the SDK speaks) is for tests that drive the
+        real SDK over a fake transport; ``sleep`` lets them record the retry waits."""
         if model is None:
             model = os.environ.get(MODEL_ENV)
         if not model:
@@ -142,13 +230,34 @@ class AnthropicVision:
             raise ValueError(f"max_retries must be a whole number >= 0, got {max_retries!r}")
         self.timeout = float(timeout)
         self.max_retries = max_retries
+        self._sleep = sleep
         if client is None:
             if not os.environ.get(API_KEY_ENV):
                 raise RuntimeError(f"{API_KEY_ENV} is not set; AnthropicVision needs it (or an injected client)")
-            import anthropic
-
-            client = anthropic.Anthropic(timeout=self.timeout, max_retries=self.max_retries)
+            # max_retries=0: the SDK would obey any Retry-After uncapped; describe retries instead.
+            extra: dict[str, Any] = {"http_client": http_client} if http_client is not None else {}
+            client = anthropic.Anthropic(timeout=self.timeout, max_retries=0, **extra)
         self.client = client
+
+    @property
+    def worst_case_s(self) -> float:
+        """The longest one ``describe`` call can take (see the module docstring)."""
+        return worst_case_s(self.timeout, self.max_retries)
+
+    def _create(self, **request: Any) -> Any:
+        """``client.messages.create`` under the bounded retry rules of the module docstring."""
+        attempt = 0
+        while True:
+            try:
+                return self.client.messages.create(**request)
+            except Exception as exc:
+                retry, headers = retryable(exc)
+                if not retry or attempt >= self.max_retries:
+                    raise
+                wait = retry_wait_s(attempt, headers)
+                log.info("vision request failed (%s); retry %d in %.2fs", type(exc).__name__, attempt + 1, wait)
+                self._sleep(wait)
+                attempt += 1
 
     def describe(self, images: Sequence[bytes], prompt: str) -> str:
         if not images:
@@ -167,7 +276,7 @@ class AnthropicVision:
                 }
             )
         content.append({"type": "text", "text": prompt})
-        response = self.client.messages.create(
+        response = self._create(
             model=self.model,
             max_tokens=self.max_tokens,
             messages=[{"role": "user", "content": content}],
@@ -175,4 +284,12 @@ class AnthropicVision:
         return _text_of(response)
 
 
-__all__ = ["MAX_EDGE", "AnthropicVision", "prepare_image"]
+__all__ = [
+    "MAX_EDGE",
+    "RETRY_STATUSES",
+    "AnthropicVision",
+    "prepare_image",
+    "retry_wait_s",
+    "retryable",
+    "worst_case_s",
+]

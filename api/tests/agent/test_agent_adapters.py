@@ -15,6 +15,8 @@ import wave
 from collections.abc import Callable
 from types import SimpleNamespace
 
+import anthropic
+import anthropic._base_client as sdk_base
 import httpx
 import pytest
 from PIL import Image, ImageDraw
@@ -49,6 +51,9 @@ ENV_VARS = (
 )
 
 LIVE = {name: os.environ.get(name) for name in ("ANTHROPIC_API_KEY", "IMAGE_API_KEY", "ELEVENLABS_API_KEY")}
+
+sdk_httpx = getattr(sdk_base, "httpx2", None) or sdk_base.httpx
+"""The anthropic SDK speaks httpx2 (a separate package), so its fake transport is httpx2's."""
 
 
 @pytest.fixture
@@ -823,44 +828,191 @@ def test_vision_client_is_built_with_the_run_limits(clean_env: pytest.MonkeyPatc
         clean_env.delenv(name, raising=False)
     vision = AnthropicVision()
     assert (vision.timeout, vision.max_retries) == (120.0, 2)
-    assert vision.client.timeout == 120.0 and vision.client.max_retries == 2
+    # The SDK never retries on its own: it would obey any Retry-After uncapped.
+    assert vision.client.timeout == 120.0 and vision.client.max_retries == 0
 
     clean_env.setenv("STITCH_MODEL_TIMEOUT_S", "45")
     clean_env.setenv("STITCH_MODEL_MAX_RETRIES", "1")
     vision = AnthropicVision()
-    assert vision.client.timeout == 45.0 and vision.client.max_retries == 1
+    assert (vision.timeout, vision.max_retries) == (45.0, 1)
+    assert vision.client.timeout == 45.0 and vision.client.max_retries == 0
 
     vision = AnthropicVision(timeout=9, max_retries=0)  # explicit values win over the env
+    assert (vision.timeout, vision.max_retries) == (9.0, 0)
     assert vision.client.timeout == 9.0 and vision.client.max_retries == 0
 
 
-def test_vision_stops_after_its_retries_over_the_wire(clean_env: pytest.MonkeyPatch) -> None:
-    """The SDK client AnthropicVision builds gives up after 1 + max_retries requests, each with the bounded timeout."""
-    import anthropic
-    import anthropic._base_client as sdk_base
+VISION_OK = {
+    "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-test",
+    "content": [{"type": "text", "text": "a red square"}],
+    "stop_reason": "end_turn", "stop_sequence": None,
+    "usage": {"input_tokens": 1, "output_tokens": 1},
+}
 
-    sdk_httpx = getattr(sdk_base, "httpx2", None) or sdk_base.httpx
+
+class FakeAnthropicApi:
+    """httpx2 MockTransport handler for the Messages API: answers each request with the next
+    step of `script` (then the last one forever). A step is an int status (200 is VISION_OK),
+    a (status, headers) pair, or an httpx2 exception class to raise."""
+
+    def __init__(self, script: list) -> None:
+        self.script = list(script)
+        self.requests: list = []
+
+    def __call__(self, request):  # noqa: ANN001, ANN204 - httpx2 types
+        self.requests.append(request)
+        step = self.script[min(len(self.requests), len(self.script)) - 1]
+        if isinstance(step, type) and issubclass(step, Exception):
+            raise step("simulated", request=request)
+        status, headers = step if isinstance(step, tuple) else (step, {})
+        if status == 200:
+            return sdk_httpx.Response(200, json=VISION_OK)
+        kind = {429: "rate_limit_error", 529: "overloaded_error"}.get(status, "api_error")
+        return sdk_httpx.Response(status, headers=headers, json={"type": "error", "error": {"type": kind, "message": "busy"}})
+
+
+def wired_vision(script: list, sleeps: list[float], **kwargs) -> tuple[AnthropicVision, FakeAnthropicApi]:
+    """A real AnthropicVision on the real SDK client it builds, over a fake transport."""
+    api = FakeAnthropicApi(script)
+    http_client = sdk_httpx.Client(transport=sdk_httpx.MockTransport(api))
+    return AnthropicVision(http_client=http_client, sleep=sleeps.append, **kwargs), api
+
+
+@pytest.fixture
+def sdk_never_sleeps(clean_env: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """The key is set, and any sleep inside the SDK fails the test: every wait must be the adapter's."""
     clean_env.setenv("ANTHROPIC_API_KEY", SECRET)
-    seen: list[object] = []
 
-    def overloaded(request: object) -> object:
-        seen.append(request)
-        return sdk_httpx.Response(
-            529, headers={"retry-after-ms": "1"},
-            json={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
-        )
+    def forbidden(seconds: float) -> None:
+        raise AssertionError(f"the SDK slept {seconds}s on its own")
 
-    real = anthropic.Anthropic
+    clean_env.setattr(sdk_base.time, "sleep", forbidden)
+    return clean_env
 
-    def wired(**kwargs: object) -> object:
-        return real(http_client=sdk_httpx.Client(transport=sdk_httpx.MockTransport(overloaded)), **kwargs)
 
-    clean_env.setattr(anthropic, "Anthropic", wired)
-    vision = AnthropicVision(timeout=7, max_retries=2)
+def describe_red(vision: AnthropicVision) -> str:
+    return vision.describe([make_image((10, 10))], "what is this?")
+
+
+def test_vision_stops_after_its_retries_over_the_wire(sdk_never_sleeps: pytest.MonkeyPatch) -> None:
+    """Gives up after 1 + max_retries requests, each with the bounded timeout, waiting only in the adapter."""
+    sleeps: list[float] = []
+    vision, api = wired_vision([(529, {"retry-after-ms": "1"})], sleeps, timeout=7, max_retries=2)
+    with pytest.raises(anthropic.APIStatusError) as info:
+        describe_red(vision)
+    assert info.value.status_code == 529
+    assert len(api.requests) == 3 and sleeps == [0.001, 0.001]
+    assert all(dict(r.extensions["timeout"])["read"] == 7.0 for r in api.requests)
+    assert all(r.headers.get("x-stainless-retry-count") in (None, "0") for r in api.requests)
+
+
+@pytest.mark.parametrize(
+    ("headers", "waited"),
+    [
+        ({"retry-after": "3600"}, vision_mod.MAX_BACKOFF_S),  # the SDK alone would sleep an hour
+        ({"retry-after-ms": "86400000"}, vision_mod.MAX_BACKOFF_S),  # ... or a day
+        ({"retry-after": "3"}, 3.0),
+        ({"retry-after-ms": "250"}, 0.25),
+        ({"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"}, 0.5),  # a date: plain backoff
+        ({"retry-after": "-5"}, 0.5),
+        ({}, 0.5),
+    ],
+)
+def test_vision_caps_retry_after_through_the_sdk(
+    sdk_never_sleeps: pytest.MonkeyPatch, headers: dict, waited: float
+) -> None:
+    sleeps: list[float] = []
+    vision, api = wired_vision([(429, headers), 200], sleeps, timeout=5, max_retries=2)
+    assert describe_red(vision) == "a red square"
+    assert len(api.requests) == 2 and sleeps == [waited]
+
+
+def test_vision_worst_case_wait_is_bounded(sdk_never_sleeps: pytest.MonkeyPatch) -> None:
+    """An API that answers 'overloaded, come back tomorrow' forever costs at most max_retries capped waits."""
+    sleeps: list[float] = []
+    vision, api = wired_vision([(529, {"retry-after": "86400"})], sleeps, timeout=30, max_retries=3)
     with pytest.raises(anthropic.APIStatusError):
-        vision.describe([make_image((10, 10))], "what is this?")
-    assert len(seen) == 3
-    assert all(dict(r.extensions["timeout"])["read"] == 7.0 for r in seen)  # type: ignore[attr-defined]
+        describe_red(vision)
+    assert len(api.requests) == 4
+    assert sleeps == [vision_mod.MAX_BACKOFF_S] * 3
+    assert sum(sleeps) <= vision.worst_case_s - 4 * vision.timeout
+    assert vision.worst_case_s == 4 * 30 + 3 * vision_mod.MAX_BACKOFF_S
+    # With the run limits' defaults: three 120 s attempts and two capped waits.
+    assert vision_mod.worst_case_s(120, 2) == 376.0
+
+
+@pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 504, 529])
+def test_vision_retries_what_the_sdk_would(sdk_never_sleeps: pytest.MonkeyPatch, status: int) -> None:
+    sleeps: list[float] = []
+    vision, api = wired_vision([status, status, 200], sleeps, max_retries=2)
+    assert describe_red(vision) == "a red square"
+    assert len(api.requests) == 3 and sleeps == [0.5, 1.0]
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422])
+def test_vision_never_retries_a_refusal(sdk_never_sleeps: pytest.MonkeyPatch, status: int) -> None:
+    sleeps: list[float] = []
+    vision, api = wired_vision([status, 200], sleeps, max_retries=3)
+    with pytest.raises(anthropic.APIStatusError) as info:
+        describe_red(vision)
+    assert info.value.status_code == status
+    assert len(api.requests) == 1 and sleeps == []
+    assert SECRET not in str(info.value)
+
+
+def test_vision_obeys_x_should_retry(sdk_never_sleeps: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    vision, api = wired_vision([(503, {"x-should-retry": "false"}), 200], sleeps, max_retries=2)
+    with pytest.raises(anthropic.APIStatusError):
+        describe_red(vision)
+    assert len(api.requests) == 1
+
+    vision, api = wired_vision([(400, {"x-should-retry": "true"}), 200], sleeps, max_retries=2)
+    assert describe_red(vision) == "a red square"
+    assert len(api.requests) == 2 and sleeps == [0.5]
+
+
+def test_vision_retries_a_failed_connection_but_not_a_timeout(sdk_never_sleeps: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    vision, api = wired_vision([sdk_httpx.ConnectError, 200], sleeps, max_retries=2)
+    assert describe_red(vision) == "a red square"
+    assert len(api.requests) == 2 and sleeps == [0.5]
+
+    # A provider that hung once is not waited on again: that would double the worst case.
+    sleeps.clear()
+    vision, api = wired_vision([sdk_httpx.ReadTimeout, 200], sleeps, max_retries=2)
+    with pytest.raises(anthropic.APITimeoutError):
+        describe_red(vision)
+    assert len(api.requests) == 1 and sleeps == []
+
+
+def test_vision_with_an_injected_client_uses_the_same_bounded_retries(clean_env: pytest.MonkeyPatch) -> None:
+    """A non-SDK error is never retried; an SDK error from an injected client is, with the cap."""
+    request = sdk_httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    overloaded = sdk_httpx.Response(529, headers={"retry-after": "900"}, request=request)
+
+    class Messages:
+        def __init__(self, errors: list[Exception]) -> None:
+            self.errors = errors
+            self.calls = 0
+
+        def create(self, **kwargs: object) -> dict:
+            self.calls += 1
+            if self.errors:
+                raise self.errors.pop(0)
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+    sleeps: list[float] = []
+    messages = Messages([anthropic.APIStatusError("overloaded", response=overloaded, body=None)])
+    vision = AnthropicVision(client=SimpleNamespace(messages=messages), sleep=sleeps.append, timeout=5, max_retries=1)
+    assert describe_red(vision) == "ok"
+    assert messages.calls == 2 and sleeps == [vision_mod.MAX_BACKOFF_S]
+
+    messages = Messages([RuntimeError("boom"), RuntimeError("boom")])
+    vision = AnthropicVision(client=SimpleNamespace(messages=messages), sleep=sleeps.append, timeout=5, max_retries=3)
+    with pytest.raises(RuntimeError):
+        describe_red(vision)
+    assert messages.calls == 1
 
 
 def test_worst_case_adapter_call_fits_well_inside_a_run() -> None:
@@ -872,8 +1024,11 @@ def test_worst_case_adapter_call_fits_well_inside_a_run() -> None:
         + images_mod.DEFAULT_MAX_RETRIES * images_mod.MAX_BACKOFF_S
     tts_worst = (1 + tts_mod.DEFAULT_MAX_RETRIES) * (images_mod.CONNECT_TIMEOUT_S + tts_mod.DEFAULT_TIMEOUT_S) \
         + tts_mod.DEFAULT_MAX_RETRIES * images_mod.MAX_BACKOFF_S
+    limits = RunLimits()
+    vision_worst = vision_mod.worst_case_s(limits.model_timeout_s, limits.model_max_retries)
     assert image_worst <= run_timeout / 4
     assert tts_worst <= run_timeout / 8
+    assert vision_worst <= run_timeout / 3
 
 
 # --------------------------------------------------------------------------- live (opt-in)
