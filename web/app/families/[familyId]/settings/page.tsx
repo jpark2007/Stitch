@@ -2,10 +2,15 @@
 // signing out. Everything here depends on who is signed in, so the page is a
 // client screen; the Suspense boundary lets the static shell prerender while
 // the screen reads the URL (useParams, useSearchParams) in the browser.
+import type { Metadata } from "next";
 import { Suspense } from "react";
 
 import { SettingsPlaceholder } from "./SettingsPlaceholder";
 import { SettingsScreen } from "./SettingsScreen";
+
+export const metadata: Metadata = {
+  title: "Family settings · Stitch",
+};
 
 export default function FamilySettingsPage() {
   return (

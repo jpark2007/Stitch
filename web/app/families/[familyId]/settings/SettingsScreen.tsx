@@ -26,6 +26,7 @@ import {
   inviteAskLine,
   isWelcome,
   settingsLoadError,
+  signedInLabel,
   type SettingsLoad,
 } from "@/components/flow/settingsPage";
 import { isApiError } from "@/lib/api";
@@ -69,18 +70,27 @@ function FamilySettingsGate(props: { fid: string; welcome: boolean }) {
   return <FamilySettings key={summary.id} summary={summary} welcome={props.welcome} />;
 }
 
+/** A centred sheet, like the join page's dead-end states, with one way out. */
 function FamilyNotFound() {
   return (
-    <FlowPage
-      title="We couldn’t find that family"
-      lede="It may have been removed, or this link is for a family you haven’t joined."
-    >
-      <div>
-        <ButtonLink href={hrefs.home()} variant="secondary">
-          Go home
-        </ButtonLink>
+    <main className="w-full min-w-0 overflow-x-clip px-4 pt-10 pb-20 font-sans text-ink sm:px-6 sm:pt-16">
+      <div className="mx-auto w-full min-w-0 max-w-[30rem]">
+        <PaperCard className="flex flex-col items-center gap-4 text-center">
+          <h1 className="text-[1.875rem] text-balance break-words text-ink sm:text-[2.25rem]">
+            We couldn’t find that family
+          </h1>
+          <p className="max-w-[24rem] text-[1.0625rem] leading-relaxed text-pretty text-ink-soft">
+            It may have been removed, or this link is for a family you haven’t joined.
+          </p>
+          <hr aria-hidden="true" className="stitch-rule mt-3 w-24" />
+          <div className="mt-3">
+            <ButtonLink href={hrefs.home()} variant="secondary">
+              Go home
+            </ButtonLink>
+          </div>
+        </PaperCard>
       </div>
-    </FlowPage>
+    </main>
   );
 }
 
@@ -278,9 +288,8 @@ function SettingsFooter(props: { fid: string; role: FamilySummary["role"] }) {
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
             <p className="min-w-0 text-[0.9375rem] leading-relaxed text-ink-soft">
-              Signed in as <span className="font-medium text-ink">{me.user.name || me.user.email}</span>
               {/* overflow-wrap:anywhere breaks a long email only when it can't fit, never mid-word by default. */}
-              {me.user.name ? <span className="[overflow-wrap:anywhere]"> ({me.user.email})</span> : null},{" "}
+              Signed in as <span className="font-medium text-ink [overflow-wrap:anywhere]">{signedInLabel(me.user)}</span>,{" "}
               {roleLabel(role).toLowerCase()} of this family.
             </p>
             <button

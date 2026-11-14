@@ -25,6 +25,7 @@ const {
   isWelcome,
   listOfNames,
   settingsLoadError,
+  signedInLabel,
 } = await import("../settingsPage.ts");
 // The same module settingsPage.ts resolves to, so instanceof agrees.
 const { ApiError, NETWORK_ERROR_MESSAGE } = await import("../../../lib/api.ts");
@@ -136,6 +137,26 @@ describe("inviteAskLine", () => {
   test("falls back to 'an admin' when there is nobody to name", () => {
     assert.equal(inviteAskLine([]), "Ask an admin to send them the invite link.");
     assert.equal(inviteAskLine([row("Ana", "admin", { isYou: true })]), "Ask an admin to send them the invite link.");
+  });
+});
+
+// ---- signedInLabel ----------------------------------------------------------
+
+describe("signedInLabel", () => {
+  test("name and email when the account has a name", () => {
+    assert.equal(signedInLabel({ name: "Maya", email: "m@x.org" }), "Maya (m@x.org)");
+    assert.equal(signedInLabel({ name: "  Maya Park ", email: "m@x.org" }), "Maya Park (m@x.org)", "name trimmed");
+  });
+
+  test("just the email when the name is blank, null or missing", () => {
+    assert.equal(signedInLabel({ name: "  ", email: "m@x.org" }), "m@x.org");
+    assert.equal(signedInLabel({ name: "", email: "m@x.org" }), "m@x.org");
+    assert.equal(signedInLabel({ name: null, email: "m@x.org" }), "m@x.org");
+    assert.equal(signedInLabel({ email: "m@x.org" }), "m@x.org");
+  });
+
+  test("never leaves empty brackets when the email is missing", () => {
+    assert.equal(signedInLabel({ name: "Maya", email: "" }), "Maya");
   });
 });
 
