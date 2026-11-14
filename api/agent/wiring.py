@@ -40,7 +40,7 @@ from agent.tools.narration import TTS, FakeTTS, make_narration_tool
 from agent.tools.photos import FakeVision, VisionModel, make_photo_tools
 from agent.tools.props import make_prop_tools
 from agent.tools.sets import make_set_tools
-from screenplay.schema import Screenplay
+from screenplay.schema import Screenplay, Timeline
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -135,7 +135,9 @@ def build_run_tools(run: RunInfo, services: Services) -> dict[str, BaseTool]:
 
     describe_photo only reads `run.photo_ids`; media the tools write (cutouts, narration
     audio) goes into the run's family. render_frames and inspect_frames are present when
-    both a renderer and a critic are configured.
+    both a renderer and a critic are configured. synthesize_narration recompiles with the
+    spoken word timings through the same compiler and scene lookup as compile_screenplay,
+    and a second telling lays its track over the saved memory's timeline.
     """
     repo = services.repo
     family_id = run.family_id
@@ -152,6 +154,15 @@ def build_run_tools(run: RunInfo, services: Services) -> dict[str, BaseTool]:
     lookup = scene_for(repo, family_id)
     teller = repo.get_person(family_id, run.author_id)
 
+    saved_timeline: Callable[[], Timeline | None] | None = None
+    if run.is_second_telling:
+        memory_id = run.fields.memory_id or ""
+
+        def saved_timeline() -> Timeline | None:
+            """The timeline of the memory this second telling adds to: its saved action."""
+            memory = repo.get_memory(family_id, memory_id)
+            return memory.timeline if memory is not None else None
+
     built: list[BaseTool] = [
         *make_family_tools(repo, run),
         ask.ask_teller,
@@ -167,6 +178,9 @@ def build_run_tools(run: RunInfo, services: Services) -> dict[str, BaseTool]:
             author_id=run.author_id,
             voice=narration.voice_for(teller),
             second_telling=run.is_second_telling,
+            compiler=services.compiler,
+            scene_for=lookup,
+            base_timeline=saved_timeline,
         ),
     ]
 
