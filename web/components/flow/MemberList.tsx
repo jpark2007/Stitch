@@ -1,16 +1,25 @@
 "use client";
 
 // Who has joined the family, on family settings. Presentational: the page
-// builds the rows with memberRows() and passes the remove call. Roles are
-// shown as text and are read-only (there is no role-change route). Rows the
-// viewer may remove get a quiet "Remove" with an inline confirm; a failed
-// removal shows its message on that row.
+// builds the rows with memberRows() and passes the remove and role-change
+// calls. Roles are shown as text tags. For an admin, each row they may change
+// gets a quiet "Make admin" or "Make member" (on their own row "Step down as
+// admin", only while another admin remains), and each row they may remove a
+// quiet "Remove". Every action opens an inline confirm; a failed one shows
+// its message on that row, and one that worked is announced.
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Button, FOCUS_RING } from "./Button";
 import { FormError } from "./FormError";
 import { PaperCard } from "./PaperCard";
-import type { MemberRow } from "./members";
+import {
+  roleAfter,
+  roleChangeCopy,
+  roleChangeError,
+  type MemberRow,
+  type RoleAction,
+  type RoleChangeCopy,
+} from "./members";
 
 function messageOf(err: unknown): string {
   if (err instanceof Error && err.message.trim()) return err.message;
@@ -22,23 +31,39 @@ function whoOf(row: MemberRow): string {
   return row.personId ? row.name : "this family member";
 }
 
+/**
+ * Which inline confirm is open: removing the member, or changing their role.
+ * A role change keeps the row as it was when the confirm opened, so the
+ * prompt doesn't shift while the page catches up with the new role.
+ */
+type Confirming =
+  | { userId: string; action: "remove" }
+  | { userId: string; action: "role"; row: MemberRow; roleAction: RoleAction; copy: RoleChangeCopy };
+
 type Pending =
   | { kind: "remove"; userId: string } // back on this row's Remove button
+  | { kind: "role"; userId: string } // back on this row's role button, else the heading
   | { kind: "confirm"; userId: string } // the row's confirm prompt
   | { kind: "afterRemoval"; userId: string; index: number }; // once the row is gone
 
-export function MemberList(props: { rows: MemberRow[]; onRemove: (userId: string) => Promise<void> }) {
-  const { rows, onRemove } = props;
+export function MemberList(props: {
+  rows: MemberRow[];
+  onRemove: (userId: string) => Promise<void>;
+  /** Resolves once the page shows the new role (and, after stepping down, the new session). */
+  onChangeRole: (userId: string, role: MemberRow["role"]) => Promise<void>;
+}) {
+  const { rows, onRemove, onChangeRole } = props;
   const uid = useId();
   const headingId = `${uid}heading`;
 
-  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [announcement, setAnnouncement] = useState("");
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const removeRefs = useRef(new Map<string, HTMLButtonElement>());
+  const roleRefs = useRef(new Map<string, HTMLButtonElement>());
   const confirmRefs = useRef(new Map<string, HTMLDivElement>());
   const pendingFocus = useRef<Pending | null>(null);
 
@@ -47,7 +72,11 @@ export function MemberList(props: { rows: MemberRow[]; onRemove: (userId: string
     if (!pending) return;
     let el: HTMLElement | null | undefined = null;
     if (pending.kind === "remove") el = removeRefs.current.get(pending.userId);
-    else if (pending.kind === "confirm") el = confirmRefs.current.get(pending.userId);
+    else if (pending.kind === "role") {
+      // After a change the row may have moved, or (after stepping down) lost
+      // its controls; then the list's heading takes focus.
+      el = roleRefs.current.get(pending.userId) || headingRef.current;
+    } else if (pending.kind === "confirm") el = confirmRefs.current.get(pending.userId);
     else {
       // Wait until the page has dropped the removed row.
       if (rows.some((r) => r.userId === pending.userId)) return;
@@ -72,16 +101,22 @@ export function MemberList(props: { rows: MemberRow[]; onRemove: (userId: string
     });
   }
 
-  function openConfirm(row: MemberRow) {
+  function openConfirm(row: MemberRow, action: Confirming["action"]) {
+    if (action === "role" && !row.roleAction) return;
     clearError(row.userId);
     setAnnouncement("");
-    setConfirmingId(row.userId);
+    setConfirming(
+      action === "role" && row.roleAction
+        ? { userId: row.userId, action, row, roleAction: row.roleAction, copy: roleChangeCopy(row, row.roleAction) }
+        : { userId: row.userId, action: "remove" },
+    );
     pendingFocus.current = { kind: "confirm", userId: row.userId };
   }
 
-  function cancelConfirm(userId: string) {
-    setConfirmingId(null);
-    pendingFocus.current = { kind: "remove", userId };
+  /** Close the confirm and go back to the button that opened it. */
+  function cancelConfirm(open: Confirming) {
+    setConfirming(null);
+    pendingFocus.current = { kind: open.action, userId: open.userId };
   }
 
   async function remove(row: MemberRow) {
@@ -91,15 +126,32 @@ export function MemberList(props: { rows: MemberRow[]; onRemove: (userId: string
     setBusyId(row.userId);
     try {
       await onRemove(row.userId);
-      setConfirmingId(null);
+      setConfirming(null);
       setAnnouncement(`${row.personId ? row.name : "The family member"} was removed from the family.`);
       pendingFocus.current = { kind: "afterRemoval", userId: row.userId, index: Math.max(0, index) };
     } catch (err) {
       setErrors((prev) => ({ ...prev, [row.userId]: messageOf(err) }));
-      setConfirmingId(null);
+      setConfirming(null);
       pendingFocus.current = { kind: "remove", userId: row.userId };
     } finally {
       setBusyId(null);
+    }
+  }
+
+  async function changeRole(open: Extract<Confirming, { action: "role" }>) {
+    if (busyId) return;
+    const { row, roleAction, copy } = open;
+    clearError(row.userId);
+    setBusyId(row.userId);
+    try {
+      await onChangeRole(row.userId, roleAfter(roleAction));
+      setAnnouncement(copy.done);
+    } catch (err) {
+      setErrors((prev) => ({ ...prev, [row.userId]: roleChangeError(err, row) }));
+    } finally {
+      setConfirming(null);
+      setBusyId(null);
+      pendingFocus.current = { kind: "role", userId: row.userId };
     }
   }
 
@@ -119,10 +171,12 @@ export function MemberList(props: { rows: MemberRow[]; onRemove: (userId: string
       ) : (
         <ul className="mt-4 list-none p-0" aria-labelledby={headingId}>
           {rows.map((row) => {
-            const confirming = confirmingId === row.userId;
+            const open = confirming?.userId === row.userId ? confirming : null;
             const busy = busyId === row.userId;
             const error = errors[row.userId];
             const questionId = `${uid}q-${row.userId}`;
+            const detailId = `${uid}d-${row.userId}`;
+            const role = row.roleAction ? roleChangeCopy(row, row.roleAction) : null;
             return (
               <li
                 key={row.userId}
@@ -142,22 +196,41 @@ export function MemberList(props: { rows: MemberRow[]; onRemove: (userId: string
                     <span className="sr-only">, </span>
                     <RoleLabel role={row.role} />
                   </span>
-                  {row.removable && !confirming ? (
-                    <Button
-                      ref={(el) => {
-                        if (el) removeRefs.current.set(row.userId, el);
-                        else removeRefs.current.delete(row.userId);
-                      }}
-                      variant="quiet"
-                      className="-mr-3 shrink-0"
-                      onClick={() => openConfirm(row)}
-                    >
-                      Remove<span className="sr-only"> {whoOf(row)}</span>
-                    </Button>
+                  {(role || row.removable) && !open ? (
+                    <div className="-mr-3 flex shrink-0 flex-wrap items-center">
+                      {role ? (
+                        <Button
+                          ref={(el) => {
+                            if (el) roleRefs.current.set(row.userId, el);
+                            else roleRefs.current.delete(row.userId);
+                          }}
+                          variant="quiet"
+                          disabled={busyId !== null}
+                          onClick={() => openConfirm(row, "role")}
+                        >
+                          {role.labelBefore}
+                          {role.labelHidden ? <span className="sr-only">{role.labelHidden}</span> : null}
+                          {role.labelAfter}
+                        </Button>
+                      ) : null}
+                      {row.removable ? (
+                        <Button
+                          ref={(el) => {
+                            if (el) removeRefs.current.set(row.userId, el);
+                            else removeRefs.current.delete(row.userId);
+                          }}
+                          variant="quiet"
+                          disabled={busyId !== null}
+                          onClick={() => openConfirm(row, "remove")}
+                        >
+                          Remove<span className="sr-only"> {whoOf(row)}</span>
+                        </Button>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
 
-                {confirming ? (
+                {open ? (
                   <div
                     ref={(el) => {
                       if (el) confirmRefs.current.set(row.userId, el);
@@ -165,23 +238,46 @@ export function MemberList(props: { rows: MemberRow[]; onRemove: (userId: string
                     }}
                     role="group"
                     aria-labelledby={questionId}
+                    aria-describedby={open.action === "role" ? detailId : undefined}
                     tabIndex={-1}
                     onKeyDown={(e) => {
                       if (e.key === "Escape" && !busy) {
                         e.stopPropagation();
-                        cancelConfirm(row.userId);
+                        cancelConfirm(open);
                       }
                     }}
                     className={`mt-2 rounded-paper bg-paper px-4 py-3 ${FOCUS_RING}`}
                   >
-                    <p id={questionId} className="text-[0.9375rem] leading-relaxed text-ink">
-                      Remove {whoOf(row)} from the family? Their place in the tree stays.
-                    </p>
+                    {open.action === "role" ? (
+                      <>
+                        <p id={questionId} className="text-[0.9375rem] leading-relaxed text-ink">
+                          {open.copy.question}
+                        </p>
+                        <p id={detailId} className="mt-1 text-[0.9375rem] leading-relaxed text-pretty text-ink-soft">
+                          {open.copy.detail}
+                        </p>
+                      </>
+                    ) : (
+                      <p id={questionId} className="text-[0.9375rem] leading-relaxed text-ink">
+                        Remove {whoOf(row)} from the family? Their place in the tree stays.
+                      </p>
+                    )}
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <Button variant="danger" busy={busy} onClick={() => remove(row)}>
-                        Confirm
-                      </Button>
-                      <Button variant="quiet" disabled={busy} onClick={() => cancelConfirm(row.userId)}>
+                      {open.action === "role" ? (
+                        <Button
+                          variant="secondary"
+                          busy={busy}
+                          busyLabel={open.copy.busy}
+                          onClick={() => changeRole(open)}
+                        >
+                          {open.copy.confirm}
+                        </Button>
+                      ) : (
+                        <Button variant="danger" busy={busy} onClick={() => remove(row)}>
+                          Confirm
+                        </Button>
+                      )}
+                      <Button variant="quiet" disabled={busy} onClick={() => cancelConfirm(open)}>
                         Cancel
                       </Button>
                     </div>

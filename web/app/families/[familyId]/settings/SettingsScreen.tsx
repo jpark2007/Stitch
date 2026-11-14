@@ -2,9 +2,10 @@
 
 // Family settings: who is in the family and their roles, the invite link
 // (admins only), switching families, and signing out. ARCHITECTURE.md
-// section 4 (roles, invite links, admins remove members) over the section 6
-// routes GET /families/{fid}, GET /families/{fid}/tree, POST and DELETE
-// /families/{fid}/invites and DELETE /families/{fid}/members/{userId}.
+// section 4 (roles, invite links, admins remove members and change roles)
+// over the section 6 routes GET /families/{fid}, GET /families/{fid}/tree,
+// POST and DELETE /families/{fid}/invites, and PATCH and DELETE
+// /families/{fid}/members/{userId}.
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -30,7 +31,7 @@ import {
   type SettingsLoad,
 } from "@/components/flow/settingsPage";
 import { isApiError } from "@/lib/api";
-import type { Family, FamilySummary, TreeResponse } from "@/lib/types";
+import type { Family, FamilySummary, Member, TreeResponse } from "@/lib/types";
 
 import { SettingsPlaceholder } from "./SettingsPlaceholder";
 
@@ -104,7 +105,6 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
   const { summary, welcome } = props;
   const fid = summary.id;
   const { me, api, refresh } = useSession();
-  const isAdmin = summary.role === "admin";
 
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
@@ -183,7 +183,30 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
     [api, fid, reloadFamily],
   );
 
+  const changeRole = useCallback(
+    async (userId: string, role: Member["role"]) => {
+      const family = await api.setMemberRole(fid, userId, { role });
+      const now = new Date();
+      setLoad((prev) => (prev.kind === "ready" ? { ...prev, family, now } : prev));
+      if (userId === me.user.id && role === "member") {
+        // Stepped down: ask for the session again so the family's role reads
+        // "member" everywhere (the switcher, the footer). The change itself
+        // worked, and the family above already shows it, so a failed refresh
+        // only leaves those lines stale until the next load.
+        await refresh().catch(() => undefined);
+      }
+    },
+    [api, fid, me.user.id, refresh],
+  );
+
   if (load.kind === "not-found") return <FamilyNotFound />;
+
+  // The loaded family is the freshest word on the viewer's role (after
+  // stepping down it changes before the session catches up); until it loads,
+  // the session's.
+  const ownRole =
+    load.kind === "ready" ? load.family.members?.find((m) => m.userId === me.user.id)?.role : undefined;
+  const isAdmin = (ownRole ?? summary.role) === "admin";
 
   const name = load.kind === "ready" ? load.family.name || summary.name : summary.name;
   const lede = welcome
@@ -219,7 +242,7 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
             onRevoke={revokeInvite}
           />
         ) : null}
-        <MemberList rows={rows} onRemove={removeMember} />
+        <MemberList rows={rows} onRemove={removeMember} onChangeRole={changeRole} />
         {isAdmin ? null : <InviteNote rows={rows} />}
       </div>
     );
