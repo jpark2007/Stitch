@@ -1,21 +1,30 @@
 "use client";
 
-// The add-a-memory screen. Reads ?family, ?memoryId and ?run, waits for the
-// session, picks the family, then shows either the form (AddForm) or a run
-// under way (AddRun). Sending the form swaps it for the run at once and puts
-// the run in the URL, so a reload comes back to the same run.
+// The add-a-memory screen. Reads ?family, ?memoryId, ?run and ?retry, waits
+// for the session, picks the family, then shows either the form (AddForm) or a
+// run under way (AddRun). Sending the form swaps it for the run at once and
+// puts the run in the URL, so a reload comes back to the same run. A run that
+// fails with its own error offers "Tell it again": ?retry=<run> brings the
+// form back filled in with what that run was sent.
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ButtonLink } from "@/components/flow/Button";
 import { FlowPage } from "@/components/flow/FlowPage";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { SessionGate, type SessionValue } from "@/components/flow/SessionGate";
-import { familyChoice, loadTelling, readAddQuery, runHref } from "@/components/flow/addPage";
+import {
+  familyChoice,
+  loadSentDraft,
+  loadTelling,
+  readAddQuery,
+  retryHref,
+  runHref,
+} from "@/components/flow/addPage";
 import type { MemoryRunTelling } from "@/components/flow/MemoryRun";
 import { hrefs, recallFamily, rememberFamily } from "@/components/flow/session";
 
-import { AddForm } from "./AddForm";
+import { AddForm, type StartedRun } from "./AddForm";
 import { AddRun } from "./AddRun";
 import { FamilyLine, LoadingSheet, sessionStore } from "./parts";
 
@@ -32,11 +41,17 @@ export function AddLoading() {
 
 export function AddScreen() {
   const params = useSearchParams();
-  const { familyId, memoryId, runId } = readAddQuery(params);
+  const { familyId, memoryId, runId, retryOf } = readAddQuery(params);
   return (
     <SessionGate requireFamily loading={<AddLoading />}>
       {(session) => (
-        <AddFlow session={session} familyId={familyId} memoryId={memoryId} runId={runId} />
+        <AddFlow
+          session={session}
+          familyId={familyId}
+          memoryId={memoryId}
+          runId={runId}
+          retryOf={retryOf}
+        />
       )}
     </SessionGate>
   );
@@ -59,8 +74,9 @@ function AddFlow(props: {
   familyId: string | null;
   memoryId: string | null;
   runId: string | null;
+  retryOf: string | null;
 }) {
-  const { session, familyId, memoryId, runId } = props;
+  const { session, familyId, memoryId, runId, retryOf } = props;
   const { me, api } = session;
   const router = useRouter();
 
@@ -87,11 +103,41 @@ function AddFlow(props: {
     else if (run?.runId !== runId) setRun(reattach(runId));
   }
 
+  // The photo files sent with each run on this page, so "Tell it again" can
+  // put them back. Files cannot go in storage: after a reload they are gone.
+  const photosRef = useRef(new Map<string, File[]>());
+
   const onStarted = useCallback(
-    (started: { runId: string; telling: MemoryRunTelling }) => {
+    (started: StartedRun) => {
       if (!fid) return;
+      photosRef.current.set(started.runId, started.photos);
       setRun({ runId: started.runId, telling: started.telling, fresh: true });
       router.replace(runHref({ familyId: fid, runId: started.runId }), { scroll: false });
+    },
+    [fid, router],
+  );
+
+  // After the run's own error: back to the form, filled in with what it was
+  // sent. The form shows at once (tellingAgain), before ?retry= catches up.
+  const [tellingAgain, setTellingAgain] = useState<string | null>(null);
+  // The photos handed back to the form, read from photosRef when "Tell it
+  // again" is pressed (a ref is not read while rendering).
+  const [backPhotos, setBackPhotos] = useState<{ runId: string; photos: File[] } | null>(null);
+  const [seenRetryOf, setSeenRetryOf] = useState(retryOf);
+  if (seenRetryOf !== retryOf) {
+    setSeenRetryOf(retryOf);
+    setTellingAgain(null);
+  }
+  const retryId = retryOf ?? tellingAgain;
+
+  const onTellAgain = useCallback(
+    (failedRunId: string) => {
+      if (!fid) return;
+      setTellingAgain(failedRunId);
+      const photos = photosRef.current.get(failedRunId);
+      setBackPhotos(photos ? { runId: failedRunId, photos } : null);
+      setRun(null);
+      router.replace(retryHref({ familyId: fid, runId: failedRunId }), { scroll: false });
     },
     [fid, router],
   );
@@ -119,6 +165,7 @@ function AddFlow(props: {
         fid={fid}
         run={run}
         lede={choice.show ? <FamilyLine choice={choice} switchable={false} /> : undefined}
+        onTellAgain={() => onTellAgain(run.runId)}
       />
     );
   }
@@ -144,6 +191,24 @@ function AddFlow(props: {
           </ButtonLink>
         </PaperCard>
       </FlowPage>
+    );
+  }
+
+  // ?retry=<run>: the form again with what that run was sent. Without the
+  // saved draft (another tab, blocked storage) it is the plain form.
+  const draft = retryId ? loadSentDraft(sessionStore(), retryId) : null;
+  if (retryId && draft) {
+    return (
+      <AddForm
+        key={`${fid}:retry:${retryId}`}
+        api={api}
+        fid={fid}
+        selfPersonId={family.personId}
+        memoryId={memoryId ?? draft.memoryId}
+        choice={choice}
+        onStarted={onStarted}
+        restore={{ runId: retryId, draft, photos: backPhotos?.runId === retryId ? backPhotos.photos : null }}
+      />
     );
   }
 

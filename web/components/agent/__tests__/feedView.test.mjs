@@ -8,11 +8,13 @@ import assert from "node:assert/strict";
 import {
   answeredLine,
   compileNote,
+  errorRecovery,
   finishedHeading,
   finishedNote,
   hiddenEntryCount,
   pauseLine,
   phaseLine,
+  startOverNote,
   stepDetail,
   toggleLabel,
   visibleEntries,
@@ -302,4 +304,37 @@ test("stepDetail: task while running, summary when done, all closed when the run
   assert.equal(stepDetail(e, e.steps[0]), "Blocked");
   const d = runReducer(s, ev("done", { memoryId: "m" }));
   assert.equal(stepDetail(d, d.steps[0]), "Block it", "done without a summary keeps the task");
+});
+
+// ---------------------------------------------------------------------------
+// errorRecovery: Retry for a dropped connection, "start over" for the run's own error
+
+test("errorRecovery: nothing to recover unless the run has failed", () => {
+  for (const phase of ["connecting", "running", "waiting", "scene_ready", "done"]) {
+    assert.equal(errorRecovery({ phase, errorFrom: null }), null, phase);
+    assert.equal(errorRecovery({ phase, errorFrom: "run" }), null, phase);
+  }
+});
+
+test("errorRecovery: the run's own error starts over, a connection error reconnects", () => {
+  assert.equal(errorRecovery({ phase: "error", errorFrom: "run" }), "start_over");
+  assert.equal(errorRecovery({ phase: "error", errorFrom: "connection" }), "reconnect");
+  assert.equal(errorRecovery({ phase: "error", errorFrom: null }), "reconnect", "unknown origin falls back to reconnect");
+});
+
+test("errorRecovery on reducer states: error event, give-up, and a wake after the error", () => {
+  const failed = run(ev("plan", { todos: [] }), ev("error", { message: "The studio stopped." }));
+  assert.equal(errorRecovery(failed), "start_over");
+  const dropped = run(ev("plan", { todos: [] }), { type: "connection_error", message: "Lost" });
+  assert.equal(errorRecovery(dropped), "reconnect");
+  const woke = runReducer(failed, ev("subagent_start", { name: "director" }));
+  assert.equal(errorRecovery(woke), null, "a run that wakes shows no recovery");
+});
+
+test("startOverNote: mentions sending again only when that is offered", () => {
+  assert.equal(
+    startOverNote(true),
+    "The studio couldn’t finish this one. Your story is kept, so you can send it again.",
+  );
+  assert.equal(startOverNote(false), "The studio couldn’t finish this one.");
 });

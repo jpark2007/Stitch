@@ -13,8 +13,11 @@ import PropChips from "@/components/agent/PropChips";
 import { useAgentRun, type RunSource, type UseAgentRunOptions } from "@/components/agent/useAgentRun";
 import type { PendingInput } from "@/components/agent/runState";
 
-import { ButtonLink } from "./Button";
-import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor } from "./memoryRunState";
+import { errorRecovery } from "@/components/agent/feedView";
+
+import { Button, ButtonLink } from "./Button";
+import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor, tellAgainFor } from "./memoryRunState";
+import { hrefs } from "./session";
 import { TellingNote } from "./TellingNote";
 
 export interface MemoryRunTelling {
@@ -57,8 +60,13 @@ export function MemoryRun(props: {
   sceneHref?: (memoryId: string) => string;
   onUploadPhoto?: (file: File) => Promise<string>;
   addAnotherHref?: string;
+  /**
+   * Brings the form back with what was sent, after the run ended with its own
+   * error (a reconnect would only replay that error).
+   */
+  onTellAgain?: () => void;
 }) {
-  const { source, options, runKey, telling, mediaUrl, sceneHref, onUploadPhoto, addAnotherHref } = props;
+  const { source, options, runKey, telling, mediaUrl, sceneHref, onUploadPhoto, addAnotherHref, onTellAgain } = props;
   const runOptions = useMemo(() => (runKey ? { ...options, runKey } : options), [options, runKey]);
   const { state, answerQuestion, reviewProps, decideMerge, retry } = useAgentRun(source, runOptions);
 
@@ -121,6 +129,18 @@ export function MemoryRun(props: {
   }
 
   const another = addAnotherHrefFor(state, addAnotherHref);
+  // After the run's own error: send the story again, or go back to the tree,
+  // so the failed state is never a dead end.
+  const tellAgain = tellAgainFor(state, onTellAgain);
+  const startOver =
+    errorRecovery(state) === "start_over" ? (
+      <div className="flex flex-wrap gap-3">
+        {tellAgain ? <Button onClick={tellAgain}>Tell it again</Button> : null}
+        <ButtonLink variant={tellAgain ? "quiet" : "secondary"} href={hrefs.home()}>
+          Family tree
+        </ButtonLink>
+      </div>
+    ) : undefined;
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-6">
@@ -134,6 +154,7 @@ export function MemoryRun(props: {
           state={state}
           mediaUrl={mediaUrl}
           onRetry={retry}
+          startOver={startOver}
           sceneHref={sceneHrefFor(state, sceneHref)}
           // After a reload the telling is unknown (null): call it a memory.
           subject={telling?.secondTellingOf ? "telling" : "memory"}

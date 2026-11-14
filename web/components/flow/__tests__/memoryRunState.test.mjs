@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { initialRunState, runReducer } from "../../agent/runState.ts";
-import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor } from "../memoryRunState.ts";
+import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor, tellAgainFor } from "../memoryRunState.ts";
 
 const ev = (event, data) => ({ type: "event", message: { event, data } });
 const answered = (kind, summary = "ok") => ({ type: "answered", kind, summary });
@@ -141,4 +141,27 @@ test("addAnotherHrefFor: only when done and given somewhere to go", () => {
     assert.equal(addAnotherHrefFor({ phase }, undefined), undefined, phase);
     assert.equal(addAnotherHrefFor({ phase }, ""), undefined, phase);
   }
+});
+
+test("tellAgainFor: only after the run's own error", () => {
+  const action = () => {};
+  const failed = run(ev("plan", { todos: [] }), ev("error", { message: "The studio stopped." }));
+  assert.equal(tellAgainFor(failed, action), action);
+  assert.equal(tellAgainFor({ phase: "error", errorFrom: "run" }, "go"), "go");
+  // No action given: nothing to offer.
+  assert.equal(tellAgainFor(failed, undefined), undefined);
+  assert.equal(tellAgainFor(failed), undefined);
+});
+
+test("tellAgainFor: not for a connection error, a finished run or one still going", () => {
+  const action = () => {};
+  const dropped = run(ev("plan", { todos: [] }), { type: "connection_error", message: "Lost" });
+  assert.equal(tellAgainFor(dropped, action), undefined);
+  assert.equal(tellAgainFor({ phase: "error", errorFrom: null }, action), undefined);
+  assert.equal(tellAgainFor(run(ev("done", { memoryId: "m1" })), action), undefined);
+  assert.equal(tellAgainFor(run(ev("plan", { todos: [] })), action), undefined);
+  assert.equal(tellAgainFor(run(QUESTION), action), undefined);
+  // An error, then a wake on a reconnect: the run is going again.
+  const woke = run(ev("error", { message: "boom" }), ev("subagent_start", { name: "director" }));
+  assert.equal(tellAgainFor(woke, action), undefined);
 });

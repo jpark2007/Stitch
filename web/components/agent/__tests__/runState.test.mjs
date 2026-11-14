@@ -472,3 +472,76 @@ test("steps note where they ended", () => {
   const lone = run(ev("subagent_end", { name: "checker" }));
   assert.equal(lone.steps[0].endSeq, lone.log[0].seq);
 });
+
+// ---------------------------------------------------------------------------
+// errorFrom: where an error came from (the run itself, or the connection)
+
+test("initial state has no error origin", () => {
+  assert.equal(initialRunState.errorFrom, null);
+});
+
+test("regression: the run's own error event marks the error as the run's", () => {
+  const s = run(ev("plan", { todos: [{ text: "Listen", status: "in_progress" }] }), ev("error", { message: "The studio stopped." }));
+  assert.equal(s.phase, "error");
+  assert.equal(s.error, "The studio stopped.");
+  assert.equal(s.errorFrom, "run");
+});
+
+test("a connection that gives up marks the error as the connection's", () => {
+  const s = run(ev("plan", { todos: [] }), { type: "connection_error", message: "Lost connection" });
+  assert.equal(s.phase, "error");
+  assert.equal(s.errorFrom, "connection");
+});
+
+test("an informational event after an error wakes the run and clears where the error came from", () => {
+  for (const wakeEvent of [
+    ev("plan", { todos: [] }),
+    ev("subagent_start", { name: "director" }),
+    ev("subagent_end", { name: "director" }),
+    ev("compile_error", { errors: [], round: 1 }),
+    ev("frames", { frames: [] }),
+  ]) {
+    const fromRun = run(ev("error", { message: "boom" }), wakeEvent);
+    assert.equal(fromRun.phase, "running", wakeEvent.message.event);
+    assert.equal(fromRun.error, null, wakeEvent.message.event);
+    assert.equal(fromRun.errorFrom, null, wakeEvent.message.event);
+    const fromConnection = run({ type: "connection_error", message: "lost" }, wakeEvent);
+    assert.equal(fromConnection.errorFrom, null, wakeEvent.message.event);
+  }
+});
+
+test("a new pause after an error clears where it came from", () => {
+  const s = run(ev("error", { message: "boom" }), ev("question", { text: "Who?" }));
+  assert.equal(s.phase, "waiting");
+  assert.equal(s.error, null);
+  assert.equal(s.errorFrom, null);
+});
+
+test("answering a pause after an error clears where it came from", () => {
+  const s = run(
+    ev("question", { text: "Who?" }),
+    { type: "connection_error", message: "lost" },
+    { type: "answered", kind: "answer", summary: "Grandpa" },
+  );
+  assert.equal(s.phase, "running");
+  assert.equal(s.error, null);
+  assert.equal(s.errorFrom, null);
+});
+
+test("done and reset leave no error origin", () => {
+  const done = run(ev("error", { message: "boom" }), ev("done", { memoryId: "m1" }));
+  assert.equal(done.phase, "done");
+  assert.equal(done.errorFrom, null);
+  const reset = runReducer(run(ev("error", { message: "boom" })), { type: "reset" });
+  assert.equal(reset, initialRunState);
+  assert.equal(reset.errorFrom, null);
+  const resetConn = runReducer(run({ type: "connection_error", message: "lost" }), { type: "reset" });
+  assert.equal(resetConn.errorFrom, null);
+});
+
+test("a later error keeps the latest origin", () => {
+  const s = run(ev("error", { message: "boom" }), { type: "connection_error", message: "lost" });
+  assert.equal(s.errorFrom, "connection");
+  const t = run({ type: "connection_error", message: "lost" }, ev("error", { message: "boom" }));
+  assert.equal(t.errorFrom, "run");
+});

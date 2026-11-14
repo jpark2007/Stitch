@@ -49,6 +49,26 @@ export function phaseLine(state: Pick<RunState, "phase" | "pending">): string | 
   }
 }
 
+/**
+ * How a failed run can go on: "reconnect" when the page gave up on the
+ * connection (the run may still be going, so Retry can reach it), or
+ * "start_over" when the run ended with its own error. Every backend replays
+ * the whole run on a new connection, so Retry would only bring that same
+ * error back: the family sends the story again instead. An error of unknown
+ * origin falls back to "reconnect". null unless the run has failed.
+ */
+export function errorRecovery(s: Pick<RunState, "phase" | "errorFrom">): "reconnect" | "start_over" | null {
+  if (s.phase !== "error") return null;
+  return s.errorFrom === "run" ? "start_over" : "reconnect";
+}
+
+/** The calm sentence under a run's own error; it mentions sending again only when that is offered. */
+export function startOverNote(canStartOver: boolean): string {
+  return canStartOver
+    ? "The studio couldn’t finish this one. Your story is kept, so you can send it again."
+    : "The studio couldn’t finish this one.";
+}
+
 /** The heading once the run is done. */
 export function finishedHeading(subject: FeedSubject = "memory"): string {
   return subject === "telling" ? "Your telling is stitched in" : "Your memory is stitched in";

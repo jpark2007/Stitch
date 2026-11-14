@@ -5,15 +5,22 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  DRAFT_KEY_PREFIX,
   RUN_GONE_MESSAGE,
   TELLING_KEY_PREFIX,
+  draftFromSent,
   familyChoice,
+  loadSentDraft,
   loadTelling,
   momentFromMemory,
   questionForMemory,
   readAddQuery,
+  restoreNotice,
+  retryHref,
   runHref,
+  saveSentDraft,
   saveTelling,
+  sentDraftFromSubmit,
   tellingFromSubmit,
   withRunGone,
 } from "../addPage.ts";
@@ -46,17 +53,18 @@ describe("readAddQuery", () => {
       familyId: "fam_1",
       memoryId: "m_2",
       runId: "run_3",
+      retryOf: null,
     });
   });
 
   test("works without the leading ?", () => {
-    assert.deepEqual(readAddQuery("family=f&run=r"), { familyId: "f", memoryId: null, runId: "r" });
+    assert.deepEqual(readAddQuery("family=f&run=r"), { familyId: "f", memoryId: null, runId: "r", retryOf: null });
   });
 
   test("missing params are null", () => {
-    assert.deepEqual(readAddQuery(""), { familyId: null, memoryId: null, runId: null });
-    assert.deepEqual(readAddQuery("?other=1"), { familyId: null, memoryId: null, runId: null });
-    assert.deepEqual(readAddQuery(null), { familyId: null, memoryId: null, runId: null });
+    assert.deepEqual(readAddQuery(""), { familyId: null, memoryId: null, runId: null, retryOf: null });
+    assert.deepEqual(readAddQuery("?other=1"), { familyId: null, memoryId: null, runId: null, retryOf: null });
+    assert.deepEqual(readAddQuery(null), { familyId: null, memoryId: null, runId: null, retryOf: null });
   });
 
   test("empty values are null", () => {
@@ -64,19 +72,29 @@ describe("readAddQuery", () => {
       familyId: null,
       memoryId: null,
       runId: null,
+      retryOf: null,
     });
-    assert.deepEqual(readAddQuery("?family&run"), { familyId: null, memoryId: null, runId: null });
+    assert.deepEqual(readAddQuery("?family&run"), { familyId: null, memoryId: null, runId: null, retryOf: null });
   });
 
   test("takes a URLSearchParams and decodes values", () => {
     const params = new URLSearchParams();
     params.set("family", "fam a/b");
     params.set("memoryId", "m&1");
-    assert.deepEqual(readAddQuery(params), { familyId: "fam a/b", memoryId: "m&1", runId: null });
+    assert.deepEqual(readAddQuery(params), { familyId: "fam a/b", memoryId: "m&1", runId: null, retryOf: null });
   });
 
   test("the first of repeated params wins", () => {
     assert.equal(readAddQuery("?run=a&run=b").runId, "a");
+  });
+
+  test("reads ?retry= into retryOf; missing or empty is null", () => {
+    assert.equal(readAddQuery("?family=f&retry=run_9").retryOf, "run_9");
+    assert.equal(readAddQuery(new URLSearchParams("retry=r%2F1")).retryOf, "r/1");
+    assert.equal(readAddQuery("?family=f").retryOf, null);
+    assert.equal(readAddQuery("?retry=").retryOf, null);
+    assert.equal(readAddQuery("?retry").retryOf, null);
+    assert.equal(readAddQuery(null).retryOf, null);
   });
 });
 
@@ -150,7 +168,22 @@ describe("runHref", () => {
     const href = runHref({ familyId: "a&b=c", runId: "r/1 ?#" });
     assert.equal(href, "/add?family=a%26b%3Dc&run=r%2F1%20%3F%23");
     const q = readAddQuery(href.slice(href.indexOf("?")));
-    assert.deepEqual(q, { familyId: "a&b=c", memoryId: null, runId: "r/1 ?#" });
+    assert.deepEqual(q, { familyId: "a&b=c", memoryId: null, runId: "r/1 ?#", retryOf: null });
+  });
+});
+
+// ---- retryHref ------------------------------------------------------------------
+
+describe("retryHref", () => {
+  test("plain ids", () => {
+    assert.equal(retryHref({ familyId: "fam_1", runId: "run_9" }), "/add?family=fam_1&retry=run_9");
+  });
+
+  test("URL-encodes both ids and round-trips through readAddQuery", () => {
+    const href = retryHref({ familyId: "a&b=c", runId: "r/1 ?#" });
+    assert.equal(href, "/add?family=a%26b%3Dc&retry=r%2F1%20%3F%23");
+    const q = readAddQuery(href.slice(href.indexOf("?")));
+    assert.deepEqual(q, { familyId: "a&b=c", memoryId: null, runId: null, retryOf: "r/1 ?#" });
   });
 });
 
@@ -426,5 +459,168 @@ describe("withRunGone", () => {
       });
       assert.equal(seen.length, 1);
     }
+  });
+});
+
+// ---- the sent draft ("Tell it again") ---------------------------------------------
+
+/** A copy of `o` without `keys`. */
+function withoutKeys(o, keys) {
+  return Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)));
+}
+
+const SENT = {
+  text: "We met at the dance hall.",
+  year: 1987,
+  question: "How did you two meet?",
+  memoryId: null,
+  participantIds: ["p_me", "p_rose"],
+  photoCount: 2,
+};
+
+describe("sentDraftFromSubmit", () => {
+  test("keeps what was sent", () => {
+    assert.deepEqual(
+      sentDraftFromSubmit(
+        { text: "We met at the dance hall.", year: 1987, question: "How did you two meet?", participantIds: ["p_me", "p_rose"] },
+        2,
+      ),
+      SENT,
+    );
+  });
+
+  test("trims the question to null when blank, and keeps a second telling's moment", () => {
+    assert.equal(sentDraftFromSubmit({ text: "t", year: 1990, question: "   " }, 0).question, null);
+    assert.equal(sentDraftFromSubmit({ text: "t", year: 1990, question: null }, 0).question, null);
+    assert.equal(sentDraftFromSubmit({ text: "t", year: 1990 }, 0).question, null);
+    assert.equal(sentDraftFromSubmit({ text: "t", year: 1990, question: "  Who? " }, 0).question, "Who?");
+    const second = sentDraftFromSubmit({ text: "t", year: 1990, memoryId: "m_1" }, 0);
+    assert.equal(second.memoryId, "m_1");
+    assert.deepEqual(second.participantIds, []);
+    assert.equal(sentDraftFromSubmit({ text: "t", year: 1990, memoryId: "  " }, 0).memoryId, null);
+  });
+
+  test("dedupes participants, dropping blanks", () => {
+    const d = sentDraftFromSubmit({ text: "t", year: 1990, participantIds: ["a", "b", "a", "", "b", "c"] }, 0);
+    assert.deepEqual(d.participantIds, ["a", "b", "c"]);
+  });
+
+  test("floors the photo count and never goes below zero", () => {
+    assert.equal(sentDraftFromSubmit({ text: "t", year: 1990 }, 2.7).photoCount, 2);
+    assert.equal(sentDraftFromSubmit({ text: "t", year: 1990 }, -3).photoCount, 0);
+    assert.equal(sentDraftFromSubmit({ text: "t", year: 1990 }, Number.NaN).photoCount, 0);
+    assert.equal(sentDraftFromSubmit({ text: "t", year: 1990 }, Number.POSITIVE_INFINITY).photoCount, 0);
+  });
+});
+
+describe("saveSentDraft and loadSentDraft", () => {
+  test("round trip under the run's key", () => {
+    const s = memoryStorage();
+    saveSentDraft(s, "run_1", SENT);
+    assert.deepEqual([...s.map.keys()], [DRAFT_KEY_PREFIX + "run_1"]);
+    assert.equal(DRAFT_KEY_PREFIX, "stitch.draft.");
+    assert.deepEqual(loadSentDraft(s, "run_1"), SENT);
+    assert.equal(loadSentDraft(s, "run_2"), null);
+  });
+
+  test("a second telling round-trips", () => {
+    const s = memoryStorage();
+    const d = { ...SENT, memoryId: "m_1", participantIds: [], question: null, photoCount: 0 };
+    saveSentDraft(s, "r", d);
+    assert.deepEqual(loadSentDraft(s, "r"), d);
+  });
+
+  test("no storage, no run id, or a missing key: nothing", () => {
+    assert.equal(loadSentDraft(null, "run_1"), null);
+    saveSentDraft(null, "run_1", SENT); // does not throw
+    const s = memoryStorage();
+    saveSentDraft(s, "", SENT);
+    assert.equal(s.map.size, 0);
+    assert.equal(loadSentDraft(s, ""), null);
+    assert.equal(loadSentDraft(memoryStorage(), "nope"), null);
+  });
+
+  test("a storage that throws never throws here", () => {
+    assert.doesNotThrow(() => saveSentDraft(throwing, "run_1", SENT));
+    assert.equal(loadSentDraft(throwing, "run_1"), null);
+  });
+
+  test("anything malformed is null", () => {
+    const bad = [
+      "not json",
+      "{",
+      "null",
+      "[]",
+      "42",
+      JSON.stringify({ ...SENT, text: 5 }),
+      JSON.stringify({ ...SENT, year: "1987" }),
+      JSON.stringify({ ...SENT, year: null }),
+      // JSON has no Infinity: it arrives as null, and a non-finite year is refused.
+      JSON.stringify({ ...SENT, year: Number.POSITIVE_INFINITY }),
+      JSON.stringify({ ...SENT, photoCount: -1 }),
+      JSON.stringify({ ...SENT, photoCount: "2" }),
+      JSON.stringify({ ...SENT, question: 3 }),
+      JSON.stringify({ ...SENT, memoryId: {} }),
+      JSON.stringify({ ...SENT, participantIds: "p_me" }),
+      JSON.stringify({ ...SENT, participantIds: ["p_me", 7] }),
+      JSON.stringify({ ...SENT, participantIds: [null] }),
+      JSON.stringify(withoutKeys(SENT, ["participantIds"])),
+    ];
+    for (const raw of bad) {
+      const s = memoryStorage();
+      s.map.set(DRAFT_KEY_PREFIX + "r", raw);
+      assert.equal(loadSentDraft(s, "r"), null, raw);
+    }
+  });
+
+  test("a missing question or moment reads as null", () => {
+    const s = memoryStorage();
+    const rest = withoutKeys(SENT, ["question", "memoryId"]);
+    s.map.set(DRAFT_KEY_PREFIX + "r", JSON.stringify(rest));
+    assert.deepEqual(loadSentDraft(s, "r"), { ...rest, question: null, memoryId: null });
+  });
+});
+
+describe("draftFromSent", () => {
+  test("year becomes a string and a null question an empty one", () => {
+    assert.deepEqual(draftFromSent({ ...SENT, question: null }), {
+      text: "We met at the dance hall.",
+      year: "1987",
+      question: "",
+      memoryId: null,
+      participantIds: ["p_me", "p_rose"],
+    });
+    assert.deepEqual(draftFromSent({ ...SENT, memoryId: "m_1" }), {
+      text: "We met at the dance hall.",
+      year: "1987",
+      question: "How did you two meet?",
+      memoryId: "m_1",
+      participantIds: ["p_me", "p_rose"],
+    });
+  });
+
+  test("hands back its own participant list", () => {
+    const d = { ...SENT, participantIds: ["a"] };
+    const out = draftFromSent(d);
+    out.participantIds.push("b");
+    assert.deepEqual(d.participantIds, ["a"]);
+  });
+});
+
+describe("restoreNotice", () => {
+  const LEAD = "The studio couldn't finish your last one, so here it is again. Change anything you like and send it.";
+
+  test("no photos sent, or all of them back: just the lead", () => {
+    assert.equal(restoreNotice(0, null), LEAD);
+    assert.equal(restoreNotice(0, 0), LEAD);
+    assert.equal(restoreNotice(2, 2), LEAD);
+    assert.equal(restoreNotice(1, 1), LEAD);
+  });
+
+  test("photos that did not come back are asked for again", () => {
+    assert.equal(restoreNotice(2, null), `${LEAD} Your photos didn't come along; add them again.`);
+    assert.equal(restoreNotice(3, 1), `${LEAD} Your photos didn't come along; add them again.`);
+    assert.equal(restoreNotice(1, null), `${LEAD} Your photo didn't come along; add it again.`);
+    assert.equal(restoreNotice(1, 0), `${LEAD} Your photo didn't come along; add it again.`);
   });
 });
