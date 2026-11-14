@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import os
@@ -420,6 +421,57 @@ def test_inspect_frames_truncates_a_long_critique():
     msg, _, events = call(graph, "i6", 2, "inspect_frames", {})
     assert len(msg.content) == 2000
     assert events[0]["data"]["critique"] == msg.content
+
+
+class _FakeAnthropicMessages:
+    """Stands in for `anthropic.Anthropic().messages`: records calls, never touches the network."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"content": [{"type": "text", "text": self.text}]}
+
+
+def test_inspect_frames_with_anthropic_vision_on_a_fake_client():
+    from agent.adapters.vision import AnthropicVision
+
+    critique = "verdict: fix\n1. shot s1, t=7.50: dad is facing away from mom"
+    messages = _FakeAnthropicMessages(f"  {critique}\n")
+    vision = AnthropicVision(model="claude-test-vision", client=types.SimpleNamespace(messages=messages))
+    graph, repo, _ = build(vision=vision)
+    _, state, _ = call(graph, "i7", 1, "render_frames", {"times": [3.2, 7.5]}, files=sample_files())
+    listed = frames_file(state)
+    msg, _, events = call(graph, "i7", 2, "inspect_frames", {"focus": "is dad facing mom?"})
+
+    assert msg.content == critique
+    (event,) = events
+    assert event["event"] == "frames"
+    payload = schemas.FramesEvent.model_validate(event["data"])
+    assert payload.critique == critique
+    assert [(s.t, s.media_id) for s in payload.frames] == [(f["t"], f["mediaId"]) for f in listed]
+
+    # One request: both stored frames as PNG image blocks, then FRAME_PROMPT with the focus.
+    (request,) = messages.calls
+    assert request["model"] == "claude-test-vision"
+    (user,) = request["messages"]
+    assert user["role"] == "user"
+    *images, text = user["content"]
+    assert [b["type"] for b in images] == ["image", "image"]
+    assert all(b["source"]["media_type"] == "image/png" for b in images)
+    stored = [repo.get_media(FAM, f["mediaId"])[0] for f in listed]
+    assert [base64.b64decode(b["source"]["data"]) for b in images] == stored
+    assert text["type"] == "text" and text["text"].startswith(FRAME_PROMPT)
+    assert json.dumps("is dad facing mom?") in text["text"]
+
+
+def test_frame_is_a_db_media_kind():
+    """MongoRepo.put_media(kind="frame") stores frames as kind "frame", not "other"."""
+    from db.media import MEDIA_KINDS
+
+    assert "frame" in MEDIA_KINDS
 
 
 # ------------------------------------------------------------------- Playwright renderer

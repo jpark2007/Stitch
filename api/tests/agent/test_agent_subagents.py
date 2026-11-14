@@ -129,6 +129,7 @@ def test_missing_optional_tools_are_skipped_with_a_warning(all_tools, caplog):
     assert _tool_names(specs["interviewer"]) == ["get_person", "find_memories", "merge_people"]
     assert _tool_names(specs["checker"]) == ["inspect_frames"]
     assert _tool_names(specs["prop_master"]) == ["find_prop", "generate_prop", "confirm_props", "describe_photo"]
+    assert _tool_names(specs["set_designer"]) == ["find_set", "generate_set_layer", "describe_photo"]
     assert _tool_names(specs["director"]) == ["get_person", "compile_screenplay"]
     warned = caplog.text
     for name in ("ask_teller", "render_frames", "cut_out"):
@@ -292,6 +293,13 @@ def test_set_designer_prompt():
     assert "back" in lowered and "middle" in lowered and "front" in lowered
     assert "marks" in lowered
     assert text.index("find_set") < text.index("generate_set_layer")
+    # make_layer already removes the background of middle and front layers.
+    assert "cut_out" not in text
+
+
+def test_set_designer_tools_have_no_cut_out_but_the_prop_master_keeps_it():
+    assert SUBAGENT_TOOLS["set_designer"] == ["find_set", "generate_set_layer", "describe_photo"]
+    assert "cut_out" in SUBAGENT_TOOLS["prop_master"]
 
 
 def test_director_prompt():
