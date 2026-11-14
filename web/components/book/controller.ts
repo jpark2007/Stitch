@@ -541,9 +541,9 @@ function frameCamera(open: number, aspect: number, fov: number, pos: Vector3, ta
   const halfD = BOARD_D / 2 + 0.2;
   // Open: fit the whole spread with a little table around it.
   // Steep enough that a page standing up mid-turn stays in frame.
-  const eO = (portrait ? 66 : 59) * DEG;
-  const halfW = BOARD_W + (portrait ? 0.06 : 0.36);
-  const dO = Math.max(halfW / tanH, (halfD * Math.sin(eO) + 0.36) / tanV);
+  const eO = (portrait ? 66 : 60) * DEG;
+  const halfW = BOARD_W + (portrait ? 0.06 : 0.26);
+  const dO = Math.max(halfW / tanH, (halfD * Math.sin(eO) + 0.27) / tanV);
   // Closed: a 3/4 view from the left so the stitched spine shows.
   const eC = (portrait ? 62 : 50) * DEG;
   const halfWC = BOARD_W / 2 + (portrait ? 0.24 : 0.85);
@@ -553,7 +553,7 @@ function frameCamera(open: number, aspect: number, fov: number, pos: Vector3, ta
   const az = lerp(portrait ? -10 : -16, 0, open) * DEG;
   // Open, aim a little beyond the book so it sits low, leaving headroom for a
   // page standing up mid-turn.
-  target.set(0, lerp(0.1, 0.06, open), lerp(0.04, portrait ? -0.02 : -0.17, open));
+  target.set(0, lerp(0.1, 0.06, open), lerp(0.04, portrait ? -0.02 : -0.15, open));
   pos.set(
     target.x + d * Math.cos(e) * Math.sin(az),
     target.y + d * Math.sin(e),
