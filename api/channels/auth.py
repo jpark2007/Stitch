@@ -11,7 +11,7 @@ from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from db import client, conversations
-from .models import MAX_BODY_BYTES, MAX_PHOTO_BODY_BYTES
+from .models import MAX_BODY_BYTES, MAX_PHOTO_BODY_BYTES, WHITESPACE
 
 MAX_SKEW_SECONDS = 300
 
@@ -39,7 +39,15 @@ def verify_signature(method: str, path: str, timestamp: str, nonce: str,
 async def authenticated_body(request: Request) -> bytes:
     if os.getenv("STITCH_CHANNELS") != "1":
         raise HTTPException(404, "Not found")
-    secret = os.getenv("CHANNELS_SHARED_SECRET", "").encode()
+    secret_text = os.getenv("CHANNELS_SHARED_SECRET", "")
+    # Fail closed instead of silently trimming deployment mistakes: both peers
+    # must sign with the exact same nonblank secret, including interior bytes.
+    if not secret_text or secret_text != secret_text.strip(WHITESPACE):
+        raise HTTPException(503, "Channels is not configured")
+    try:
+        secret = secret_text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HTTPException(503, "Channels is not configured") from None
     if len(secret) < 32:
         raise HTTPException(503, "Channels is not configured")
     # Query strings are not part of this protocol and must not acquire unsigned meaning.
