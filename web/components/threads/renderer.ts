@@ -8,7 +8,7 @@
  *  - close: + sheen, loose fibres, moment titles (placed by the UI)
  */
 
-import { toX, type Camera } from "./camera";
+import { toT, toX, type Camera } from "./camera";
 import { relax, strandAt, type Knot, type Shape, type Strand, type ThreadsModel } from "./model";
 import { NAME_GUTTER, NAME_MIN_PX, placeNames, type NameBox, type NameRequest, type NameSpot } from "./names";
 import { paperAt } from "./titles";
@@ -57,6 +57,12 @@ export interface FrameState {
   highlight?: number;
   /** Per strand: 1 when its name was written last frame (names.ts keeps it, so names do not flicker). */
   nameShown?: Uint8Array;
+  /**
+   * Per strand: the year under its name's left edge last frame, NaN when not
+   * written. Kept in years so a pan does not move it: the name holds its
+   * place on its thread instead of hopping between spots. Updated in place.
+   */
+  nameAt?: Float64Array;
 }
 
 export interface KnotHit {
@@ -576,6 +582,10 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
     };
     const spots: NameSpot[] = [];
     const baseline = (k: number) => pts[k * 2 + 1] + drop;
+    // Where the name was last frame, moved with the pan, so names.ts can keep
+    // it there (or nudge it along) instead of hopping between spots.
+    const heldT = st.nameAt ? st.nameAt[i] : NaN;
+    const held = Number.isFinite(heldT) ? toX(heldT, st.cam, layout.width) : NaN;
     // Walking forward from the start: the first clean spot, then a couple
     // more a name's width further on, for when a neighbour has the first.
     // Clear of the knot the thread starts with (more when the yarn is parted under the name).
@@ -627,13 +637,26 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
       while (k < n - 1 && pts[k * 2] < margin) k++;
       spots.push({ x: Math.max(margin, pts[k * 2] + lead), y: baseline(k), forced: true });
     }
-    if (!spots.length) continue;
+    // A clean spot at any x on the thread, past the knot it starts with, as the forward spots are.
+    const step = pts[2] - pts[0] || 1;
+    const fit = Number.isFinite(held)
+      ? (x: number) => {
+          if (x < startX + lead) return NaN;
+          const k = Math.min(n - 1, Math.floor((x - startX) / step));
+          return fits(k, x) ? baseline(k) : NaN;
+        }
+      : undefined;
+    if (!spots.length && !fit) continue;
     // Lit threads first, then the hovered one, then whoever is in the most moments.
     const rank = (st.dim[i] < 0.5 ? 1000 : 0) + st.lift[i] * 200 + strand.momentIds.length;
-    requests.push({ strand: i, width: w, spots, rank, pinned });
+    requests.push({ strand: i, width: w, spots, rank, pinned, held, fit });
   }
 
   const placed = placeNames(requests, { width: layout.width, size, shown: st.nameShown });
+  if (st.nameAt) {
+    st.nameAt.fill(NaN);
+    for (const p of placed) st.nameAt[p.strand] = toT(p.x, st.cam, layout.width);
+  }
   ctx.lineJoin = "round";
   ctx.lineWidth = 4;
   for (const p of placed) {

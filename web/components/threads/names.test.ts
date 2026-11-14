@@ -38,7 +38,7 @@ const cameraPath = "./camera.ts";
 const { NAME_GUTTER, NAME_MIN_PX, insideGutter, nameBox, placeNames }: typeof import("./names") = await import(namesPath);
 const { drawFrame, makeLayout, nameFontPx, namesInline }: typeof import("./renderer") = await import(rendererPath);
 const { buildModel }: typeof import("./model") = await import(modelPath);
-const { initialCamera }: typeof import("./camera") = await import(cameraPath);
+const { clampCam, initialCamera }: typeof import("./camera") = await import(cameraPath);
 type ThreadPerson = import("./model").ThreadPerson;
 type ThreadMoment = import("./model").ThreadMoment;
 type NameBox = import("./names").NameBox;
@@ -139,6 +139,82 @@ test("a name shown last frame keeps its place against a slightly higher rank", (
     [1],
   );
 });
+
+/** A level thread from x 0 to `end` at baseline y: clean anywhere along it. */
+const levelFit = (y: number, end = 1e9, w = 80) => (x: number) => (x + w <= end ? y : NaN);
+
+test("a name holding a place stays there, rather than hopping to its best spot", () => {
+  const placed = placeNames(
+    [{ strand: 0, width: 80, rank: 1, spots: [{ x: 20, y: 100 }, { x: 140, y: 100 }], held: 97.5, fit: levelFit(100) }],
+    { width: 390, size: SIZE },
+  );
+  assert.deepEqual(
+    placed.map((p) => [p.x, p.y]),
+    [[97.5, 100]],
+  );
+});
+
+test("held past the left gutter, a name rides the margin", () => {
+  const placed = placeNames(
+    [{ strand: 0, width: 80, rank: 1, spots: [{ x: 140, y: 100 }], held: 9, fit: levelFit(100) }],
+    { width: 390, size: SIZE },
+  );
+  assert.equal(placed[0].x, NAME_GUTTER);
+});
+
+test("a held name another name runs into is nudged along behind it, not sent elsewhere", () => {
+  const placed = placeNames(
+    [
+      // Riding the margin, and higher priority.
+      { strand: 0, width: 60, rank: 9, spots: [{ x: NAME_GUTTER, y: 100 }], held: NAME_GUTTER - 1, fit: levelFit(100) },
+      // Was at 80; the rider's box now reaches 76, plus the clear space.
+      { strand: 1, width: 80, rank: 1, spots: [{ x: 16, y: 100 }, { x: 200, y: 100 }], held: 80, fit: levelFit(100) },
+    ],
+    { width: 390, size: SIZE },
+  );
+  const b = placed.find((p) => p.strand === 1)!;
+  assert.ok(b.x > 80 && b.x < 90, `nudged to ${b.x}`);
+  assertNoOverlap(placed);
+});
+
+test("a held name whose place is gone takes the free spot nearest it, within a name's width", () => {
+  const reqs = (held: number) => [
+    {
+      strand: 0,
+      width: 80,
+      rank: 1,
+      spots: [{ x: 20, y: 100 }, { x: 150, y: 100 }, { x: 260, y: 100 }],
+      held,
+      fit: () => NaN,
+    },
+  ];
+  assert.equal(placeNames(reqs(170), { width: 390, size: SIZE })[0].x, 150);
+  // Nothing near: the best spot, as for a name not shown before.
+  assert.equal(placeNames(reqs(370), { width: 390, size: SIZE })[0].x, 20);
+});
+
+test("a name that can stay is not pushed out by a higher-ranked one that has to move", () => {
+  const placed = placeNames(
+    [
+      { strand: 0, width: 80, rank: 1, spots: [{ x: 120, y: 100 }], held: 120, fit: levelFit(100) },
+      // Its own place is gone; its next spot is where strand 0 sits.
+      { strand: 1, width: 80, rank: 9, spots: [{ x: 120, y: 102 }, { x: 260, y: 102 }], held: 30, fit: () => NaN },
+    ],
+    { width: 390, size: SIZE },
+  );
+  assert.deepEqual(
+    placed.map((p) => [p.strand, p.x]).sort((a, b) => a[0] - b[0]),
+    [
+      [0, 120],
+      [1, 260],
+    ],
+  );
+});
+
+function assertNoOverlap(names: NameBox[]) {
+  for (let i = 0; i < names.length; i++)
+    for (let j = i + 1; j < names.length; j++) assert.ok(!overlap(names[i], names[j]), `names ${i} and ${j} overlap`);
+}
 
 test("a name box covers the text from cap height to descender", () => {
   const b = nameBox(10, 100, 50, 20);
@@ -348,3 +424,80 @@ test("9 people on a laptop, zoomed out: everyone's name is written", () => {
   const { geom } = frame(model, 1440, 900, initialCamera(1, null, b, []));
   assert.equal(geom.names.length, 9);
 });
+
+/* ---------------- while panning ---------------- */
+
+type Placed = NameBox & { strand: number; x: number; y: number };
+
+/**
+ * A slow drag: the view panned 1px a frame (content moving left), through
+ * the real renderer with the engine's per-strand memory. Each frame's names.
+ */
+function pan(n: number, W: number, H: number, skip: number, frames: number): Map<number, Placed>[] {
+  const { people, moments } = family(n);
+  const model = buildModel(people, moments, NOW);
+  const b = { tMin: model.tMin, tMax: model.tMax, width: W };
+  const s = initialCamera("year", null, b, model.knots.map((k) => k.t)).s;
+  let cam = clampCam({ s, cx: -1e9 }, b);
+  cam = { s, cx: cam.cx + skip / s };
+  const layout = makeLayout(W, H, model.strands.length);
+  const st = {
+    cam,
+    layout,
+    dim: model.strands.map(() => 0),
+    lift: model.strands.map(() => 0),
+    hoverKnot: -1,
+    swell: model.knots.map(() => 0),
+    reveal: model.tNow + 2,
+    pop: model.knots.map(() => 1),
+    fonts: { hand: "hand", sans: "sans", serif: "serif" },
+    highlight: -1,
+    nameShown: new Uint8Array(model.strands.length),
+    nameAt: new Float64Array(model.strands.length).fill(NaN),
+  };
+  const ctx = stubContext();
+  const out: Map<number, Placed>[] = [];
+  for (let f = 0; f < frames; f++) {
+    st.cam = { s, cx: cam.cx + f / s };
+    const names = drawFrame(ctx, model, st).names as Placed[];
+    out.push(new Map(names.map((p) => [p.strand, p])));
+  }
+  return out;
+}
+
+// Stretches of the pan (frames from the far left) where names used to hop most.
+for (const [n, W, H, skip, FRAMES] of [
+  [30, 390, 844, 3500, 1500],
+  [24, 390, 844, 5000, 1000],
+  [30, 1440, 900, 4000, 800],
+] as const) {
+  test(`${n} people at ${W}px, panned 1px a frame: names stay put on their threads, not hopping between spots`, () => {
+    const seq = pan(n, W, H, skip, FRAMES);
+    let moves = 0;
+    let shown = 0;
+    // Per strand: the frame it last moved, and where (in pan-free px) it moved from.
+    const left = new Map<number, { f: number; x: number; y: number }>();
+    for (let f = 1; f < FRAMES; f++) {
+      for (const [i, c] of seq[f]) {
+        shown++;
+        const a = seq[f - 1].get(i);
+        if (!a) continue;
+        // Held in place it moves exactly with the pan (-1px), riding a margin
+        // or behind a rider it stays still: anything else is a move.
+        const dx = c.x - a.x;
+        if (Math.abs(dx + 1) <= 3 && Math.abs(c.y - a.y) <= 4) continue;
+        moves++;
+        // Never back to the spot it just left.
+        const prev = left.get(i);
+        if (prev && f - prev.f <= 30) {
+          const back = Math.abs(c.x + f - prev.x) < 3 && Math.abs(c.y - prev.y) < 3;
+          assert.ok(!back, `strand ${i} went back to the spot it left at frame ${prev.f} (${f})`);
+        }
+        left.set(i, { f, x: a.x + f - 1, y: a.y });
+      }
+    }
+    // A name moves only when its spot is taken or gone: rarely. (Before names
+    // kept their places, about 20 in every 1000 name-frames on a phone hopped.)
+    assert.ok(moves * 1000 <= shown * 5, `${moves} moves in ${shown} name-frames`);
+  });
+}

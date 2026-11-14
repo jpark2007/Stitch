@@ -17,6 +17,12 @@
  * Priority is the caller's `rank` (lit, hovered, how many moments...), with
  * a small bonus for names shown last frame so they do not flicker while
  * panning.
+ *
+ * A name also keeps its place: given where it was written last frame
+ * (`held`, already moved with the pan), it takes the free spot nearest
+ * there, so while the view pans it stays put on its thread (or rides the
+ * margin) rather than hopping between spots. It moves to another spot only
+ * once its own is taken or gone.
  */
 
 /** Side gutter (px) no name may enter, as in the page's --gutter. */
@@ -47,6 +53,18 @@ export interface NameRequest {
   rank: number;
   /** The followed person: always written, before everyone else. */
   pinned?: boolean;
+  /**
+   * Where this name's left edge was last frame, in this frame's px (moved
+   * with the pan); absent or NaN when it was not written. The free spot
+   * nearest it is taken over the best one, when within a name's width.
+   */
+  held?: number;
+  /**
+   * With `held`: the baseline for a clean spot with the name's left edge at
+   * x (over level thread, clear of knots and other threads), NaN where there
+   * is none. Lets the name stay exactly where it was, or be nudged along.
+   */
+  fit?: (x: number) => number;
 }
 
 export interface NameBox {
@@ -96,30 +114,84 @@ export function placeNames(requests: NameRequest[], o: NameLayoutOptions): Place
     return score(b) - score(a) || a.strand - b.strand;
   });
   const placed: PlacedName[] = [];
-  const clashes = (b: NameBox) => {
-    for (let i = 0; i < placed.length; i++) if (namesClash(placed[i], b)) return true;
-    return false;
+  /** The first name already placed that a box clashes with, or null. */
+  const clashWith = (b: NameBox) => {
+    for (let i = 0; i < placed.length; i++) if (namesClash(placed[i], b)) return placed[i];
+    return null;
   };
-  for (const r of order) {
-    let hit: PlacedName | null = null;
+  /**
+   * Holding a place: the name stays where it was, held inside the gutter (so
+   * it rides the margin) and nudged along by a name in its way (so it rides
+   * behind that one), never further than its own width. Null when it cannot.
+   */
+  const keep = (r: NameRequest, held: number, fit: (x: number) => number): NameSpot | null => {
+    let x = held;
+    let dir = 0;
+    for (let tries = 0; tries < 4; tries++) {
+      x = Math.max(NAME_GUTTER, Math.min(W - NAME_GUTTER - r.width, x));
+      if (Math.abs(x - held) > r.width) return null;
+      const y = fit(x);
+      if (!Number.isFinite(y)) return null;
+      const c = clashWith(nameBox(x, y, r.width, size));
+      if (!c) return { x, y };
+      // Pushed away from it, one way only.
+      const d = c.x0 + c.x1 < 2 * x + r.width ? 1 : -1;
+      if (dir && d !== dir) return null;
+      dir = d;
+      x = d > 0 ? c.x1 + PAD_X + 1e-3 : c.x0 - PAD_X - r.width - 1e-3;
+    }
+    return null;
+  };
+  const put = (r: NameRequest, sp: NameSpot, forced = false) => {
+    placed.push({ ...nameBox(sp.x, sp.y, r.width, size), strand: r.strand, x: sp.x, y: sp.y, forced });
+  };
+  /** Holding a place and able to stay there (or be nudged along): placed. */
+  const stay = (r: NameRequest) => {
+    const held = r.held ?? NaN;
+    const sp = Number.isFinite(held) && r.fit ? keep(r, held, r.fit) : null;
+    if (sp) put(r, sp);
+    return !!sp;
+  };
+  /** The free spot nearest where it was (within a name's width), else the best free spot. */
+  const move = (r: NameRequest) => {
+    const held = r.held ?? NaN;
+    const holding = Number.isFinite(held);
+    let best: NameSpot | null = null;
+    let near: NameSpot | null = null;
+    let nearD = r.width;
     for (const sp of r.spots) {
       if (sp.forced) continue;
+      const d = holding ? Math.abs(sp.x - held) : Infinity;
+      if (best && !(d < nearD)) continue;
       const box = nameBox(sp.x, sp.y, r.width, size);
-      if (!insideGutter(box, W) || clashes(box)) continue;
-      hit = { ...box, strand: r.strand, x: sp.x, y: sp.y, forced: false };
-      break;
+      if (!insideGutter(box, W) || clashWith(box)) continue;
+      best ??= sp;
+      if (d < nearD) {
+        near = sp;
+        nearD = d;
+      }
+      if (!holding || d === 0) break;
     }
-    if (!hit && r.pinned) {
+    const pick = near ?? best;
+    if (pick) put(r, pick);
+    else if (r.pinned) {
       // The followed name goes first, so nothing is in its way: take the first
       // spot (clean or forced), held inside the gutter.
       const sp = r.spots.find((s) => s.forced) ?? r.spots[0];
-      if (sp) {
-        const x = Math.max(NAME_GUTTER, Math.min(W - NAME_GUTTER - r.width, sp.x));
-        hit = { ...nameBox(x, sp.y, r.width, size), strand: r.strand, x, y: sp.y, forced: true };
-      }
+      if (sp) put(r, { x: Math.max(NAME_GUTTER, Math.min(W - NAME_GUTTER - r.width, sp.x)), y: sp.y }, true);
     }
-    if (hit) placed.push(hit);
+  };
+  // The followed name first. Then every name that can stay where it was
+  // does, before any that must move, so a name that has to find a new spot
+  // never pushes out one that need not. Then the rest, by priority.
+  let i0 = 0;
+  if (order.length && order[0].pinned) {
+    if (!stay(order[0])) move(order[0]);
+    i0 = 1;
   }
+  const kept = new Uint8Array(order.length);
+  for (let i = i0; i < order.length; i++) kept[i] = stay(order[i]) ? 1 : 0;
+  for (let i = i0; i < order.length; i++) if (!kept[i]) move(order[i]);
   if (shown) {
     shown.fill(0);
     for (const p of placed) shown[p.strand] = 1;
