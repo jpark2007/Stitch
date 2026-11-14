@@ -146,6 +146,8 @@ export interface SetPieceProps {
   omega?: number;
 }
 
+const TAB_DEPTH = 0.06;
+
 type Half = { key: string; plane: BufferGeometry; edge: BufferGeometry; sign: number };
 
 function halfPlane(aspect: number, side: -1 | 0 | 1) {
@@ -216,7 +218,8 @@ export function SetPiece({
     back.alphaTest = 0.5;
     back.alphaToCoverage = true;
     const edge = createCardEdgeMaterial({ color: backColor, darken: 0.12 });
-    return { front, back, edge };
+    const tab = createPaperMaterial({ color: backColor, kind: "card", grain: 0.6 });
+    return { front, back, edge, tab };
   }, [cutout, w, height, backColor]);
   useEffect(() => () => Object.values(materials).forEach((m) => m.dispose()), [materials]);
 
@@ -239,8 +242,32 @@ export function SetPiece({
     }
   });
 
+  // Glue tabs: card strips stuck to the page behind each foot of the piece,
+  // the visible half of the hinge. V-folds get one per panel, set at the
+  // panel's open angle.
+  const tabs = useMemo(() => {
+    const out: { key: string; x: number; w: number; yaw: number; pivot: number }[] = [];
+    for (const [a, b] of cutout.feet) {
+      const parts: [number, number, number][] =
+        vfold > 0 ? ([[a, Math.min(b, 0), -1], [Math.max(a, 0), b, 1]] as [number, number, number][]) : [[a, b, 0]];
+      for (const [p, q, side] of parts) {
+        const width = (q - p) * height - 0.01;
+        if (width <= 0.01) continue;
+        out.push({ key: `${p}:${side}`, x: ((p + q) / 2) * height, w: width, yaw: side * vfold, pivot: side });
+      }
+    }
+    return out;
+  }, [cutout, vfold, height]);
+
   return (
     <group position={[x, 0, z]} rotation-y={yaw}>
+      {tabs.map((t) => (
+        <group key={t.key} rotation-y={t.yaw}>
+          <mesh position={[t.x, 0.0011, -TAB_DEPTH / 2 - thickness * 0.5]} material={materials.tab} receiveShadow>
+            <boxGeometry args={[t.w, 0.002, TAB_DEPTH]} />
+          </mesh>
+        </group>
+      ))}
       <group ref={hinge}>
         {halves.map((h, i) => (
           // V-fold panels pivot on the crease line of the printed face, so

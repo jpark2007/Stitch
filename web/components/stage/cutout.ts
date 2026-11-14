@@ -76,6 +76,9 @@ export interface Cutout {
   /** The walls split at the centre crease, for V-fold pieces. */
   edgeLeft: BufferGeometry;
   edgeRight: BufferGeometry;
+  /** Where the cutout touches the fold, as [from, to] runs in piece units
+   *  (x centred on the piece). Glue tabs go behind these. */
+  feet: [number, number][];
 }
 
 const cache = new Map<string, Cutout>();
@@ -391,6 +394,16 @@ export function getCutout(spec: CutoutSpec): Cutout {
   col.ctx.putImageData(img, 0, 0);
 
   const [edge, edgeLeft, edgeRight] = buildEdges(A, W, H, aspect);
+  const feet: [number, number][] = [];
+  const row = (H - 1) * W;
+  for (let x = 0, from = -1; x <= W; x++) {
+    const solid = x < W && A[row + x] > 0.5;
+    if (solid && from < 0) from = x;
+    if (!solid && from >= 0) {
+      if (x - from > 2) feet.push([(from / (W - 1) - 0.5) * aspect, ((x - 1) / (W - 1) - 0.5) * aspect]);
+      from = -1;
+    }
+  }
   const cut: Cutout = {
     key: spec.key,
     aspect,
@@ -399,6 +412,7 @@ export function getCutout(spec: CutoutSpec): Cutout {
     edge,
     edgeLeft,
     edgeRight,
+    feet,
   };
   cache.set(spec.key, cut);
   return cut;
