@@ -96,7 +96,11 @@ export function createEraMusic(opts: EraMusicOptions = {}): EraMusic {
     for (const a of actions) {
       if (a.kind === "resume") wakeMusic(owner);
       else if (a.kind === "level") core?.setLevel(a.to, a.dur, now);
-      else sleepMusic(owner);
+      else {
+        // Silent now: a voice that was fading out need not wait for the wake.
+        core?.retireEnding(now);
+        sleepMusic(owner);
+      }
     }
   }
 
@@ -213,7 +217,7 @@ export function createEraMusic(opts: EraMusicOptions = {}): EraMusic {
         voices: core?.voiceCount ?? 0,
         phase: phase.kind,
         context: ctx ? ctx.state : "none",
-        warming: prefetches.length > 0 || (core?.warmingUp ?? false),
+        warming: core !== null && (prefetches.length > 0 || core.warmingUp),
       };
     },
   };

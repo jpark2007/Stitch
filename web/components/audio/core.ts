@@ -201,6 +201,19 @@ export class MusicCore {
     return made;
   }
 
+  /**
+   * Free the voices that are fading out. Called as the engine goes to sleep,
+   * with the transport level already at 0, so cutting them cannot click.
+   */
+  retireEnding(now: number) {
+    if (!this.voices.some((v) => v.ending)) return;
+    this.voices = this.voices.filter((v) => {
+      if (!v.ending) return true;
+      v.dispose(now);
+      return false;
+    });
+  }
+
   /** The output level, for the lab's meter (the analyser is made on first use). */
   meter(): MeterReading {
     if (!this.analyser) {
