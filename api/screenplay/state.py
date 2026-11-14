@@ -546,7 +546,7 @@ class World:
 
     def pick_up(self, who: str, what: str, socket: str | None = None) -> str:
         p = self._person(who)
-        st = self._prop(what)
+        self._prop(what)
         h = self.holder(what)
         if h is not None:
             if h[0] == who:
@@ -555,13 +555,7 @@ class World:
             raise StateError("already_held", self._where(what, who))
         self._require_on_stage(who)
         self._require_placed(what)
-        riders = [o.partition(":")[2] for o in st.occupants.values() if o.startswith("puppet:")]
-        if riders:
-            raise StateError("occupied", f"{riders[0]} is sitting on it")
-        if p.seat is not None and self.is_vehicle(p.seat[0]):
-            raise StateError("seated_vehicle", f"{who} is seated in {p.seat[0]}")
-        if what in self._ancestors_of_puppet_seat(who):
-            raise StateError("occupied", f"{who} is sitting on it")
+        self._check_takeable(who, what)
         if socket is not None:
             if socket not in HANDS:
                 raise StateError("bad_socket", f"{socket} is not a hand")
@@ -574,15 +568,24 @@ class World:
         self._attach_puppet(what, who, socket)
         return socket
 
-    def _ancestors_of_puppet_seat(self, who: str) -> set[str]:
-        seat = self.people[who].seat
-        out: set[str] = set()
-        cur = seat[0] if seat else None
-        while cur is not None and cur not in out:
-            out.add(cur)
-            parsed = parse_parent(self.props[cur].parent)
-            cur = parsed[1] if parsed and parsed[0] == "prop" else None
-        return out
+    def _check_takeable(self, who: str, what: str) -> None:
+        """Seat rules for taking a prop off the ground or a surface (pick_up, put_on).
+
+        Nobody may sit on it or on anything stacked on it (the taker included), and a puppet
+        seated in a vehicle cannot reach it.
+        """
+        st = self.props[what]
+        direct = [o.partition(":")[2] for o in st.occupants.values() if o.startswith("puppet:")]
+        if direct:
+            raise StateError("occupied", f"{direct[0]} is sitting on it")
+        for sub in self._descendants(what):
+            for occ in self.props[sub].occupants.values():
+                kind, _, oid = occ.partition(":")
+                if kind == "puppet":
+                    raise StateError("occupied", f"{oid} is sitting on {sub}, which rests on it")
+        p = self.people[who]
+        if p.seat is not None and self.is_vehicle(p.seat[0]):
+            raise StateError("seated_vehicle", f"{who} is seated in {p.seat[0]}")
 
     def hold(self, who: str, what: str) -> str:
         """Raise a prop already in hand into the hold pose. Returns its hand."""
@@ -633,6 +636,7 @@ class World:
         self._require_on_stage(who)
         if h is None:
             self._require_placed(what)
+            self._check_takeable(who, what)
             if self.free_hand(who) is None:
                 raise StateError("hands_full", self._hands_full_reason(who))
         if HEAD in t.holding:

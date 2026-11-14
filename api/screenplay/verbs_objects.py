@@ -27,7 +27,7 @@ from screenplay.body import (
 )
 from screenplay.ik import Body, arm_bones, solve_body_arm
 from screenplay.schema import Action
-from screenplay.state import CLOSED, GROUND, OPEN, Z_ACTING, StateError, World
+from screenplay.state import CLOSED, GROUND, OPEN, Z_ACTING, StateError, World, parse_parent
 from screenplay.tracks import TrackSet
 
 Vec3 = tuple[float, float, float]
@@ -152,6 +152,23 @@ def _first_free_socket(world: World, on: str) -> str:
     return free[0]
 
 
+def _surface_off_ground(world: World, on: str) -> StateError:
+    """Why a surface has no world position: someone carries it (``held``), or it is not on stage."""
+    cur, seen = on, set()
+    while cur not in seen:
+        seen.add(cur)
+        h = world.holder(cur)
+        if h is not None:
+            if cur == on:
+                return StateError("held", f"{h[0]} is holding {on}")
+            return StateError("held", f"{on} is on {cur}, which {h[0]} is holding")
+        parsed = parse_parent(world.props[cur].parent)
+        if parsed is None or parsed[0] != "prop":
+            break
+        cur = parsed[1]
+    return StateError("not_on_stage", f"{on} is not on stage")
+
+
 def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Set a held prop down on a prop's socket (``on`` = prop id) or on a mark (``on`` = mark).
 
@@ -167,8 +184,7 @@ def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, act
         world.copy().place_on(who, what, parent, (0.0, 0.0, 0.0))  # socket exists and is free, no cycle
         dest = world.socket_world(on, socket)
         if dest is None:
-            h = world.holder(on)
-            raise StateError("not_on_stage", f"{h[0]} is holding {on}" if h else f"{on} is not on stage")
+            raise _surface_off_ground(world, on)
         pos: Vec3 = (0.0, 0.0, 0.0)
     elif on in world.people:
         raise StateError("bad_target", f"{on} is a person; place_on needs a prop or a mark")
@@ -191,17 +207,48 @@ def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, act
 
 # ------------------------------------------------------------------ open / close
 
-def _handle_point(world: World, what: str, locate: Locate, t: float) -> tuple[float, float]:
-    """Where a hand goes to open or close a prop: its grip, else the middle of its height."""
+def _anchor_and_mirror(world: World, what: str, locate: Locate, t: float) -> tuple[tuple[float, float], int]:
+    """A prop's world anchor and the x-mirror it is drawn with.
+
+    On the ground (or on a ground prop's socket): its world anchor, mirror 1. Held: its grip is
+    on the holder's hand socket (locate), and it is mirrored with the holder (mirror = facing).
+    Riding on a socket of a held prop: the base's anchor plus the socket offset, in the base's
+    mirror, plus the prop's own offset from the socket.
+    """
     st = world.props[what]
-    if st.world_pos is None:  # held (or riding on something held): the grip is at the hand
+    if st.world_pos is not None:
+        return (st.world_pos[0], st.world_pos[1]), 1
+    parsed = parse_parent(st.parent)
+    if parsed is None:  # world.open / world.close reject an unplaced prop first
+        raise StateError("not_on_stage", f"{what} is not on stage")
+    kind, base, sock = parsed
+    geom = _geom(world, what)
+    if kind == "puppet":
+        mirror = world.people[base].facing
+        gx, gy = (float(c) for c in locate(what, t)[:2])
+        return (gx + mirror * (geom.anchor[0] - geom.grip[0]) * geom.width,
+                gy + (geom.grip[1] - geom.anchor[1]) * geom.height), mirror
+    (bx, by), mirror = _anchor_and_mirror(world, base, locate, t)
+    bgeom = _geom(world, base)
+    su, sv = world.catalog[base].sockets[sock][0], world.catalog[base].sockets[sock][1]
+    return (bx + mirror * ((su - bgeom.anchor[0]) * bgeom.width + st.pos[0]),
+            by + (bgeom.anchor[1] - sv) * bgeom.height + st.pos[1]), mirror
+
+
+def _handle_point(world: World, what: str, locate: Locate, t: float) -> tuple[float, float]:
+    """Where a hand goes to open or close a prop: its grip, else the middle of its height.
+
+    A prop held in a hand is opened at that hand.
+    """
+    if world.holder(what) is not None:
         p = locate(what, t)
         return (float(p[0]), float(p[1]))
-    d = world.catalog[what]
+    (ax, ay), mirror = _anchor_and_mirror(world, what, locate, t)
     geom = _geom(world, what)
-    if d.grip is not None:
-        return grip_from_anchor(geom, st.world_pos)
-    return (st.world_pos[0], st.world_pos[1] + geom.height / 2)
+    if world.catalog[what].grip is not None:
+        return (ax - mirror * (geom.anchor[0] - geom.grip[0]) * geom.width,
+                ay - (geom.grip[1] - geom.anchor[1]) * geom.height)
+    return (ax, ay + geom.height / 2)
 
 
 def _open_close(world: World, tracks: TrackSet, action: Action, t: float, locate: Locate, state: str) -> float:

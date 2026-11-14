@@ -56,6 +56,9 @@ PROPS = [
     prop("far_table", "furniture", {"top": [0.5, 0.0]}, aspect=1.5),
     prop("shelf", "furniture", {"low": [0.5, 0.5], "high": [0.5, 0.0]}),
     prop("stool", "furniture"),
+    prop("cushion", sockets={"seat": [0.5, 0.3]}),
+    prop("tray", "carried", {"top": [0.3, 0.0]}, aspect=1.5),
+    prop("bowl", sockets={"rim": [0.5, 0.0]}),
 ]
 MARKS = {
     "home": (0.0, 0.0, 0.5),
@@ -63,6 +66,7 @@ MARKS = {
     "beside": (0.1, 0.0, 0.5),
     "far": (0.8, 0.0, 0.5),
     "ledge": (0.12, 0.35, 0.5),  # a raised surface within dad's reach
+    "behind": (-0.2, 0.0, 0.5),
 }
 GEOM = {p.id: PropGeom.from_prop(p) for p in PROPS}
 DAD = Body("dad", (0.0, 0.0), 1, "tall")
@@ -229,6 +233,16 @@ def test_put_on_errors():
             target="mom")
 
 
+def test_put_on_a_prop_someone_sits_on():
+    """Regression: put_on straight off the ground skipped pick_up's seat checks."""
+    tracks = TrackSet()
+    w = make_world({"dad": {"at": "home"}, "kid": {"at": "beside", "in": "cushion.seat"}}, {"cushion": {"at": "ledge"}})
+    rejects("occupied", "kid is sitting on it", apply_put_on, w, tracks, do="put_on", who="dad", what="cushion")
+    assert w.people["kid"].seat == ("cushion", "seat") and w.props["cushion"].parent == "ground"
+    w2 = make_world({"dad": {"at": "home", "in": "cushion.seat"}}, {"cushion": {"at": "ledge"}})
+    rejects("occupied", "dad is sitting on it", apply_put_on, w2, tracks, do="put_on", who="dad", what="cushion")
+
+
 def test_put_on_someone_out_of_reach():
     tracks = TrackSet()
     w = holding_hat(tracks)
@@ -300,8 +314,13 @@ def test_place_on_errors():
 def test_place_on_a_carried_surface_or_itself():
     tracks = TrackSet()
     w = make_world({"dad": {"at": "home", "holding": "hat"}, "mom": {"at": "beside", "holding": "shelf"}})
-    rejects("not_on_stage", "mom is holding shelf", apply_place_on, w, tracks,
+    # the code says why the surface has no place on stage: someone carries it
+    rejects("held", "mom is holding shelf", apply_place_on, w, tracks,
             do="place_on", who="dad", what="hat", on="shelf")
+    w1 = make_world({"dad": {"at": "home", "holding": "hat"}, "mom": {"at": "beside", "holding": "tray"}},
+                    {"bowl": {"on": "tray.top"}})
+    rejects("held", "bowl is on tray, which mom is holding", apply_place_on, w1, tracks,
+            do="place_on", who="dad", what="hat", on="bowl")
     w2 = make_world({"dad": {"at": "home", "holding": "shelf"}})
     rejects("cycle", "shelf cannot rest on shelf", apply_place_on, w2, tracks,
             do="place_on", who="dad", what="shelf", on="shelf", socket="high")
@@ -364,6 +383,35 @@ def test_open_a_prop_in_ones_own_hand():
     assert hand_at(tracks, DAD, "arm_r", T + R) == pytest.approx(hand_l, abs=2e-3)
     assert arm_at(tracks, "dad", "arm_l", T + R) == pytest.approx(HOLD)  # the holding arm stays put
     assert w.props["jar"].state == "open"
+
+
+def tray_anchor(holder: Body, rots: dict) -> tuple[float, float]:
+    """The tray's anchor when its grip is on the holder's right hand, mirrored with the holder."""
+    gx, gy = body_socket(holder, "hand_r", rots)
+    g = GEOM["tray"]
+    return (gx + holder.facing * (g.anchor[0] - g.grip[0]) * g.width, gy + (g.grip[1] - g.anchor[1]) * g.height)
+
+
+@pytest.mark.parametrize("dad_facing, mom_at, mom_facing", [("right", "beside", "left"), ("left", "behind", "right")])
+def test_open_a_prop_on_a_tray_someone_holds(dad_facing, mom_at, mom_facing):
+    """Regression: a jar riding on a held tray failed with unknown_target. The hand now goes to
+    the jar's grip: tray anchor (grip on dad's hand) + top socket offset, mirrored with dad."""
+    tracks = TrackSet()
+    tracks.extend([("puppet:dad", "arm_r.upper.rot", 0.0, HOLD[0]), ("puppet:dad", "arm_r.lower.rot", 0.0, HOLD[1])])
+    w = make_world({"dad": {"at": "home", "holding": "tray", "facing": dad_facing},
+                    "mom": {"at": mom_at, "facing": mom_facing}},
+                   {"jar": {"on": "tray.top", "state": "closed"}})
+    dad = Body("dad", (0.0, 0.0), 1 if dad_facing == "right" else -1, "tall")
+    ax, ay = tray_anchor(dad, {"arm_r.upper": HOLD[0], "arm_r.lower": HOLD[1]})
+    g = GEOM["tray"]
+    top = (ax + dad.facing * (0.3 - g.anchor[0]) * g.width, ay + (g.anchor[1] - 0.0) * g.height)
+    j = GEOM["jar"]
+    grip = (top[0] - dad.facing * (j.anchor[0] - j.grip[0]) * j.width, top[1] - (j.grip[1] - j.anchor[1]) * j.height)
+    end = run(apply_open, w, tracks, do="open", who="mom", what="jar")
+    assert end == pytest.approx(T + 2 * R)
+    mom = Body("mom", MARKS[mom_at][:2], 1 if mom_facing == "right" else -1, "average")
+    assert hand_at(tracks, mom, "arm_r", T + R) == pytest.approx(grip, abs=2e-3)
+    assert at(tracks, "prop:jar", "state", T + R) == "open" and w.props["jar"].state == "open"
 
 
 def test_open_errors():

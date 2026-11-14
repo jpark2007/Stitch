@@ -911,3 +911,33 @@ def test_exit_while_seated_or_kneeling(world: World):
     world.kneel("mom")
     world.exit("mom")
     assert world.people["mom"].pose == "stand" and not world.on_stage("mom")
+
+
+# ------------------------------------------- put_on keeps pick_up's seat rules
+
+def test_put_on_a_prop_someone_sits_on(world: World):
+    """Regression: put_on straight off the ground skipped the seat checks pick_up has."""
+    parked(world)
+    world.sit_on("dad", "chair")
+    raises("occupied", "dad is sitting on it", world.put_on, "mom", "chair")
+    raises("occupied", "dad is sitting on it", world.put_on, "dad", "chair")
+    assert world.people["dad"].seat == ("chair", "seat") and world.props["chair"].occupants == {"seat": "puppet:dad"}
+
+
+def test_put_on_from_the_ground_while_seated_in_a_vehicle(world: World):
+    parked(world)
+    world.get_in("dad", "sedan")
+    raises("seated_vehicle", "dad is seated in sedan", world.put_on, "dad", "hat")
+    raises("seated_vehicle", "dad is seated in sedan", world.pick_up, "dad", "hat")
+
+
+def test_cannot_take_a_prop_someone_sits_on_through_a_stacked_prop(world: World):
+    """Regression: only direct occupants were checked, so taking the crate under the chair kid
+    sat on carried kid's chair away while kid stayed seated."""
+    world.begin_shot(shot(start={"mom": {"at": "curb"}, "kid": {"at": "curb", "in": "chair.seat"}},
+                          propStart={"crate": {"at": "curb"}, "chair": {"on": "crate.top"}}),
+                     MARKS, same_set_as_previous=False)
+    raises("occupied", "kid is sitting on chair, which rests on it", world.pick_up, "mom", "crate")
+    raises("occupied", "kid is sitting on chair, which rests on it", world.put_on, "mom", "crate")
+    # the sitter is told the same way about what is under their own seat
+    raises("occupied", "kid is sitting on chair, which rests on it", world.pick_up, "kid", "crate")
