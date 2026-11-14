@@ -2,10 +2,15 @@
 
 // Start a family: its name, your name (you become its first person) and,
 // optionally, the year you were born. Presentational: the page owns the API
-// call and passes it in as onSubmit, then navigates away when it resolves (so
-// nothing is reset here). A rejected ApiError comes back as field messages
-// and its detail in the form-level alert; anything else gets a plain message.
-// What was typed is never cleared by an error.
+// call and passes it in as onSubmit, then navigates away when it resolves. A
+// rejected ApiError comes back as field messages and its detail in the
+// form-level alert; anything else gets a plain message. What was typed is
+// never cleared by an error.
+//
+// Nothing is reset here after a successful submit. With cacheComponents on,
+// the page it navigated from stays mounted (hidden) with this form's state,
+// so the page clears it: NewFamilyScreen remounts this form with a new `key`
+// when it is shown again after a family was made (see freshForm.ts).
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { CreateFamilyRequest } from "@/lib/types";
 import { isApiError } from "@/lib/api";
