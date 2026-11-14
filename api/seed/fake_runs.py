@@ -45,10 +45,20 @@ Script for a new memory (`fields.memory_id is None`), one step every `step_secon
    arm reach holds for every build. The sample's prop and set are created in the run's
    family when missing (keeping the sample ids when free, otherwise
    `<sampleId>_<familyId>`), and the scene points at the family's copies.
+   The sample's prose is its own people's story ("One Sunday in 1988...", "Dad was 26..."),
+   so `recast_prose` rewrites it for this telling: each shot's `page_text` is the first
+   sentence of that shot's slice of the telling (spread over the shots like the narration,
+   at most PAGE_TEXT_WORDS words, cut at a word boundary with "..."), or the memory's title
+   for a shot with no sentence; and `explanations` is rebuilt with exactly one per cast
+   member and one per prop of the scene: "<Teller> is telling this story, from <year>.",
+   "<Teller first>'s spouse|parent|child <Name> was there." (the tree's relation to the
+   teller) or "<Name> was there with <Teller first>.", and "The <prop> from <Teller
+   first>'s story." with the family's saved prop name, so a rename in the review shows.
    The sample's narration (its people's words) is then replaced by the TELLER's, in their
    own words (`narrate_as_teller`): one line per sentence of the telling as saved (the
    submitted text plus the follow-up answer), sources "telling:<teller>:s<n>", every action
-   pinned where the sample's narration put it. The teller is the default narrator and the
+   pinned where the sample's narration put it (and every pull tab's scrub window with it,
+   see "Pinned actions" below). The teller is the default narrator and the
    only narration track; the recast `dad` is a puppet and a participant but narrates
    nothing, since they have no telling. Cued lines are tried first, uncued if they do not
    compile. The sample is timed for its own people: when the recast scene fails only
@@ -88,6 +98,28 @@ participants who are new to the moment are linked and each is asked for their ve
 (never the teller, and never someone who already told it). Then plan, scene_ready with the
 new version, done. No question, no prop review. A recompile that fails emits compile_error,
 then a plain error event, and writes nothing.
+
+Tellings that overlap on one memory: the first read only checks the memory and plans the
+run. Everything from the narration to the save happens under a per-memory lock
+(`_memory_lock(family_id, memory_id)`, separate from the family lock): the memory is READ
+AGAIN, the teller's narration is written over that fresh screenplay and compiled, then
+add_telling, link_participants([teller]), keep_audio against the fresh timeline and
+`save_scene(..., expected_version=<the version read>)`; the linker's newcomers come from the
+same fresh read. The lock is never held across a step's sleep (the narrator's events are
+emitted around it), so two runs on one memory (two tellers, or one teller twice) each build
+on the other's saved scene: every teller keeps a track, the version goes up once per run,
+and one teller's stored telling and track always come from the same run. A VersionConflict
+(a writer outside this manager saved in between) retries from the fresh read, at most
+SECOND_TELLING_ATTEMPTS times in all; add_telling replaces the teller's own telling, so a
+retry never duplicates it. After the last conflict the run ends with one plain error event.
+
+Pinned actions: when the default narration is replaced (a new memory's teller, or the
+default narrator's own retelling), every action is pinned at the time the old narration
+cued it. Scrub interactions are written in the shot's pre-cue time and the compiler maps
+them onto the cued actions (`narration.retime_point`), so each scrub of a pinned shot (its
+`shot`, or the first shot when `shot` is None) has its from/to rewritten through the same
+`retime_point` (a None end stays None); the pull tab keeps scrubbing the same action.
+`pace` stretches scrub windows with the actions for the same reason.
 
 Second-telling edge cases (tests/data/test_demo_second_tellings.py runs each one on the
 seeded demo moments):
@@ -154,6 +186,7 @@ from screenplay import narration as narration_timing
 from screenplay.schema import (
     CompileError,
     CompileResult,
+    Explanation,
     NarrationLine,
     NarrationTrack,
     Screenplay,
@@ -278,6 +311,23 @@ class _Staged:
     participants: list[str]
     prop_ids: list[str]
     set_ids: list[str]
+
+
+@dataclass
+class _Told:
+    """What a second telling's locked block did: the compile, the teller's line count, the
+    saved memory (None when nothing was written), and, from the same fresh read, the linker's
+    newcomers and who had already told the moment."""
+
+    result: CompileResult
+    lines: int
+    saved: schemas.Memory | None
+    newcomers: list[str]
+    told: set[str]
+
+
+SECOND_TELLING_ATTEMPTS = 3
+"""How often a second telling re-reads and re-saves when the memory changed under it (VersionConflict)."""
 
 
 # --------------------------------------------------------------------- scene recasting
@@ -540,6 +590,98 @@ def short_title(text: str, words: int = TITLE_WORDS) -> str:
     return title or "A memory"
 
 
+# --------------------------------------------------------------------------- prose
+
+PAGE_TEXT_WORDS = 16
+"""A shot's storybook text is at most this many words of its first sentence (then "...")."""
+EXPLANATION_CHARS = 200
+"""Every click-to-explain text is kept under this many characters."""
+
+
+def _clip_words(text: str, words: int) -> str:
+    """`text` cut to at most `words` words at a word boundary, with "..." when it was cut."""
+    tokens = text.split()
+    if len(tokens) <= words:
+        return " ".join(tokens)
+    return " ".join(tokens[:words]).rstrip(",;:-–—") + "..."
+
+
+def _clip_chars(text: str, limit: int = EXPLANATION_CHARS) -> str:
+    """`text` shorter than `limit` characters, cut at a word boundary with "..." when needed."""
+    if len(text) < limit:
+        return text
+    cut = text[: limit - 4].rsplit(" ", 1)[0].rstrip(",;:-–—.")
+    return (cut or text[: limit - 4]) + "..."
+
+
+def _relation(teller: schemas.Person, other: schemas.Person) -> str | None:
+    """What `other` is to `teller` by the tree: "spouse", "parent", "child", or None."""
+    if other.id in teller.spouse_ids or teller.id in other.spouse_ids:
+        return "spouse"
+    if other.id in teller.parent_ids:
+        return "parent"
+    if teller.id in other.parent_ids:
+        return "child"
+    return None
+
+
+def recast_prose(
+    screenplay: Screenplay,
+    *,
+    teller: schemas.Person,
+    people: dict[str, schemas.Person],
+    props: dict[str, schemas.Prop],
+    text: str,
+    title: str,
+    year: int | None,
+) -> Screenplay:
+    """The screenplay with storybook text and click-to-explain texts written for THIS telling. Pure.
+
+    The staged sample keeps its own prose through the recast ("One Sunday in 1988...", "Dad
+    was 26..."), which would put another family's story on this family's page. DESIGN.md
+    wants a short storybook text per shot and a "why this matters" per cast member and prop:
+
+    - every shot's `page_text` is the first sentence of its slice of the telling
+      (`split_sentences`, spread over the shots in order like the narration), at most
+      PAGE_TEXT_WORDS words, cut at a word boundary with "..."; a shot with no sentence gets
+      `title` (never empty);
+    - `explanations` is rebuilt: one per cast member ("puppet:<id>") and one per prop of the
+      scene ("prop:<id>"), nothing else. The teller "is telling this story" (", from <year>"
+      when known); everyone else "was there", named by their place in the tree relative to
+      the teller when it gives one (spouse, parent, child); a prop is "The <name> from
+      <teller>'s story.", by the family's saved prop, so a rename in the prop review shows.
+      Each is under EXPLANATION_CHARS characters.
+    """
+    sp = screenplay.model_copy(deep=True)
+    fallback = (title or "").strip() or "A memory"
+    sentences = split_sentences(text)
+    for shot, idx in zip(sp.shots, _spread(len(sentences), len(sp.shots)), strict=True):
+        page = _clip_words(sentences[idx[0]], PAGE_TEXT_WORDS) if len(idx) else ""
+        shot.page_text = page or _clip_words(fallback, PAGE_TEXT_WORDS)
+
+    teller_name = teller.name.strip() or "Someone"
+    first = _first_name(teller_name) or teller_name
+    explanations: list[Explanation] = []
+    for person_id in _dedupe(sp.cast):
+        person = teller if person_id == teller.id else people.get(person_id)
+        if person_id == teller.id:
+            line = f"{teller_name} is telling this story" + (f", from {year}" if year is not None else "") + "."
+        elif person is None:
+            line = f"Someone who was there with {first}."
+        else:
+            name = person.name.strip() or "Someone"
+            relation = _relation(teller, person)
+            line = f"{first}'s {relation} {name} was there." if relation else f"{name} was there with {first}."
+        explanations.append(Explanation(target=f"puppet:{person_id}", text=_clip_chars(line)))
+    for prop_id in _dedupe(sp.props):
+        prop = props.get(prop_id)
+        name = (prop.name.strip() if prop is not None else "") or "thing"
+        line = f"The {name} from {first}'s story."
+        explanations.append(Explanation(target=f"prop:{prop_id}", text=_clip_chars(line)))
+    sp.explanations = explanations
+    return sp
+
+
 # ------------------------------------------------------------------------ staging
 
 _MOVES_TO = frozenset({"enter", "walk_to", "run_to"})
@@ -600,8 +742,9 @@ def stage_handoffs(screenplay: dict, sets: dict[str, dict[str, list[float]]]) ->
 
 
 def pace(screenplay: Screenplay, factor: float) -> Screenplay:
-    """The screenplay with every start time stretched by `factor`: actions, camera cues and every
-    narration line, in every shot. Durations are kept. Pure.
+    """The screenplay with every start time stretched by `factor`: actions, camera cues, every
+    narration line and every scrub window (from/to, so a pull tab keeps scrubbing the action it
+    was written for), in every shot. Durations are kept. Pure.
 
     The sample scene is timed for its own people. A slower recast (Grandpa Joseph "walks
     slowly with a cane") cannot reach the books in the sample's time, so the director gives
@@ -614,6 +757,11 @@ def pace(screenplay: Screenplay, factor: float) -> Screenplay:
         for by_shot in (sp.narrations or {}).values():
             for line in by_shot.get(shot.id, []):
                 line.t = round(line.t * factor, 6)
+        for it in _scrubs_of(sp, shot):
+            if it.drives.from_ is not None:
+                it.drives.from_ = round(it.drives.from_ * factor, 6)
+            if it.drives.to is not None:
+                it.drives.to = round(it.drives.to * factor, 6)
     return sp
 
 
@@ -742,10 +890,37 @@ def telling_narration(screenplay: Screenplay, author_id: str, text: str, *, cued
     return sp
 
 
+def _scrubs_of(sp: Screenplay, shot: Any) -> list[Any]:
+    """The scrub interactions of `shot` (one with no `shot` belongs to the first shot)."""
+    first = sp.shots[0].id if sp.shots else None
+    return [
+        it for it in sp.interactions or []
+        if it.drives.type == "scrub" and (it.shot == shot.id or (it.shot is None and shot.id == first))
+    ]
+
+
+def _retime_scrubs(sp: Screenplay, shot: Any, original: list[float], retimed: list[float]) -> None:
+    """Move `shot`'s scrub windows (mutated in place) with its pinned actions.
+
+    A scrub's from/to are written in the shot's pre-cue time, and the compiler maps them
+    through `narration.retime_point(value, original, retimed)` from the actions' written times
+    to their cued ones. Once the actions are pinned at their cued times, the written times
+    ARE the cued ones, so the window must be written in them too, or the tab drifts. A None
+    end stays None (the compiler fills it in, never retimed).
+    """
+    for it in _scrubs_of(sp, shot):
+        if it.drives.from_ is not None:
+            it.drives.from_ = narration_timing.retime_point(it.drives.from_, original, retimed)
+        if it.drives.to is not None:
+            it.drives.to = narration_timing.retime_point(it.drives.to, original, retimed)
+
+
 def _lines_over(sp: Screenplay, author_id: str, text: str, *, cued: bool, pin: bool) -> dict[str, list[NarrationLine]]:
     """`author_id`'s lines for `text`, by shot id, over `sp`'s action as its CURRENT default
     narration times it. With `pin`, every action of `sp` (mutated in place) is pinned at that
-    time, so the action stays put once the default narration is replaced."""
+    time, so the action stays put once the default narration is replaced, and every scrub
+    window of the shot moves with the actions (`_retime_scrubs`), so a pull tab still scrubs
+    the action it was written for."""
     default = narration_timing.default_author(sp)
     sentences = split_sentences(text)
     slices = _spread(len(sentences), len(sp.shots))
@@ -756,8 +931,10 @@ def _lines_over(sp: Screenplay, author_id: str, text: str, *, cued: bool, pin: b
         except narration_timing.NarrationError:
             retimed = [a.t for a in shot.actions]
         if pin:  # pin the action where the old narration put it
+            original = [a.t for a in shot.actions]
             for action, t in zip(shot.actions, retimed, strict=True):
                 action.t = t
+            _retime_scrubs(sp, shot, original, retimed)
         cue = _cue_for(shot, retimed) if cued else None
         lines: list[NarrationLine] = []
         t = cue[1] if cue is not None else 0.0
@@ -839,6 +1016,12 @@ def keep_audio(old: Timeline, new: Timeline, author_id: str) -> Timeline:
 def _askees(teller_id: str, participant_ids: list[str]) -> list[str]:
     """Named participants other than the teller, in order, once each."""
     return [pid for pid in _dedupe(participant_ids) if pid != teller_id]
+
+
+def _newcomers(memory: schemas.Memory, teller_id: str, participant_ids: list[str]) -> list[str]:
+    """The linker's people for a second telling (agent/prompts/studio.md): named participants
+    new to the moment. All of them are linked; those who already told it are not asked."""
+    return [pid for pid in _askees(teller_id, participant_ids) if pid not in memory.participant_ids]
 
 
 def _first_name(name: str) -> str:
@@ -960,6 +1143,7 @@ class ScriptedRunManager:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._family_locks: dict[str, threading.Lock] = {}
+        self._memory_locks: dict[tuple[str, str], threading.Lock] = {}
 
     # ------------------------------------------------------------------ public API
 
@@ -1080,6 +1264,14 @@ class ScriptedRunManager:
         """Held while a run looks up and creates the family's copies of the sample's set and prop."""
         with self._lock:
             return self._family_locks.setdefault(family_id, threading.Lock())
+
+    def _memory_lock(self, family_id: str, memory_id: str) -> threading.Lock:
+        """Held while a second telling re-reads a memory, narrates over it and saves it, so two
+        tellings of one memory never build on the same snapshot (the later save would drop the
+        earlier teller's track). Never held across a step's sleep, and separate from the
+        family lock, which only guards set and prop creation."""
+        with self._lock:
+            return self._memory_locks.setdefault((family_id, memory_id), threading.Lock())
 
     def _get(self, family_id: str, run_id: str) -> _Run:
         with self._lock:
@@ -1300,12 +1492,11 @@ class ScriptedRunManager:
         existing = memories_db.get_memory(db, fid, memory_id)
         if existing is None or existing.screenplay is None or existing.timeline is None:
             raise MemoryNotFound(f"memory {memory_id!r} not found, or it has no scene yet")
-        told = {t.author_id for t in existing.tellings}
-        # The linker's people (agent/prompts/studio.md, second telling): named participants
-        # new to the moment. All of them are linked; those who already told it are not asked.
-        newcomers = [pid for pid in _askees(teller, fields.participant_ids) if pid not in existing.participant_ids]
+        # Only the plan comes from this first read; the narration, the save and the linker's
+        # people all come from the fresh read under the memory's lock (`_tell_scene`).
+        planned_newcomers = _newcomers(existing, teller, fields.participant_ids)
         todos = ["Read the telling", "Write the narration", "Add it to the moment"]
-        if newcomers:
+        if planned_newcomers:
             todos.append(ASK_OTHERS)
         at = {name: i for i, name in enumerate(todos)}
 
@@ -1318,14 +1509,21 @@ class ScriptedRunManager:
             name="interviewer", summary="The telling is ready to narrate."))
         self._step()
 
-        # The narrator writes this teller's lines over the shared action; the scene is recompiled.
+        # The narrator writes this teller's lines over the shared action; the scene is recompiled
+        # and, when it compiles, saved, all from a fresh read under the memory's lock.
         self._emit(run, "plan", self._plan(todos, at["Write the narration"]))
         self._step()
         self._emit(run, "subagent_start", schemas.SubagentStartEvent(
             name="narrator", task="Write the new teller's narration over the scene"))
         self._step()
-        screenplay, result = self._narrate(db, fid, existing.screenplay, teller, fields.text)
-        lines = sum(len(by_shot) for by_shot in self._lines_of(screenplay, teller).values())
+        telling = schemas.Telling(
+            author_id=teller,
+            question=fields.question,
+            text=fields.text,
+            photo_ids=list(run.photo_ids),
+        )
+        told_scene = self._tell_scene(db, fid, memory_id, teller, telling, fields.participant_ids)
+        result, lines, saved = told_scene.result, told_scene.lines, told_scene.saved
         if lines == 0:
             # Nothing to narrate (a blank text): never a telling without its track.
             logger.error("scripted run %s: the second telling has nothing to narrate", run.run_id)
@@ -1344,47 +1542,86 @@ class ScriptedRunManager:
                 name="narrator", summary=f"The narration did not compile: {errors[0].message}"))
             self._emit(run, "error", schemas.ErrorEvent(message=TELLING_FAILED_MESSAGE))
             return
+        assert saved is not None
         self._emit(run, "subagent_end", schemas.SubagentEndEvent(
             name="narrator", summary=f"{lines} line{'' if lines == 1 else 's'}, compiled without errors."))
         self._step()
 
         self._emit(run, "plan", self._plan(todos, at["Add it to the moment"]))
         self._step()
-        telling = schemas.Telling(
-            author_id=teller,
-            question=fields.question,
-            text=fields.text,
-            photo_ids=list(run.photo_ids),
-        )
-        if memories_db.add_telling(db, fid, memory_id, telling) is None:
-            raise MemoryNotFound(f"memory {memory_id!r} not found")
-        # agent/tools/family.py _add_telling: the teller joins the moment.
-        memories_db.link_participants(db, fid, memory_id, [teller])
-        timeline = keep_audio(existing.timeline, result.timeline, teller)
-        saved = memories_db.save_scene(
-            db, fid, memory_id,
-            screenplay=screenplay, timeline=timeline,
-            prop_ids=existing.prop_ids, set_ids=existing.set_ids,
-        )
-        if saved is None:
-            raise MemoryNotFound(f"memory {memory_id!r} vanished before its scene was saved")
 
-        if newcomers:
+        if ASK_OTHERS in at:
             # The linker: add the named newcomers to the moment and ask each for their version.
+            # Participants only ever grow, so the fresh read's newcomers are a subset of the
+            # planned ones; when another run linked them all meanwhile, nothing is left to do.
             self._emit(run, "plan", self._plan(todos, at[ASK_OTHERS]))
             self._step()
-            try:
-                linked = memories_db.link_participants(db, fid, memory_id, newcomers)
-                ask_participants(db, fid, linked or saved, teller, [p for p in newcomers if p not in told])
-            except Exception:  # noqa: BLE001 - the linker never fails the run
-                logger.exception("run %s: the linker failed; no one new was added", run.run_id)
-            saved = memories_db.get_memory(db, fid, memory_id) or saved
+            newcomers, told = told_scene.newcomers, told_scene.told
+            if newcomers:
+                try:
+                    linked = memories_db.link_participants(db, fid, memory_id, newcomers)
+                    ask_participants(db, fid, linked or saved, teller, [p for p in newcomers if p not in told])
+                except Exception:  # noqa: BLE001 - the linker never fails the run
+                    logger.exception("run %s: the linker failed; no one new was added", run.run_id)
+                saved = memories_db.get_memory(db, fid, memory_id) or saved
 
         self._emit(run, "plan", self._plan(todos, len(todos)))
         self._step()
         self._emit(run, "scene_ready", schemas.SceneReadyEvent(memory_id=memory_id, version=saved.version))
         self._step()
         self._emit(run, "done", schemas.DoneEvent(memory_id=memory_id))
+
+    def _tell_scene(
+        self,
+        db: Database,
+        fid: str,
+        memory_id: str,
+        teller: str,
+        telling: schemas.Telling,
+        participant_ids: list[str],
+    ) -> _Told:
+        """Narrate `telling` over the memory as it is NOW and save it, under the memory's lock.
+
+        Re-reads the memory (MemoryNotFound when it is gone or has lost its scene), writes the
+        teller's narration over that fresh screenplay and compiles it. Nothing is written when
+        there is nothing to narrate or the compile fails (`saved` is None then). Otherwise the
+        telling is added (replacing the teller's own, so a retry is idempotent), the teller
+        joins the moment, and the scene is saved with `expected_version` = the version read.
+        A VersionConflict (someone outside this manager saved in between) retries from the
+        fresh read, at most SECOND_TELLING_ATTEMPTS times, then propagates. Never sleeps.
+        """
+        for attempt in range(1, SECOND_TELLING_ATTEMPTS + 1):
+            with self._memory_lock(fid, memory_id):
+                fresh = memories_db.get_memory(db, fid, memory_id)
+                if fresh is None or fresh.screenplay is None or fresh.timeline is None:
+                    raise MemoryNotFound(f"memory {memory_id!r} not found, or it has no scene any more")
+                told = {t.author_id for t in fresh.tellings}
+                newcomers = _newcomers(fresh, teller, participant_ids)
+                screenplay, result = self._narrate(db, fid, fresh.screenplay, teller, telling.text)
+                lines = sum(len(by_shot) for by_shot in self._lines_of(screenplay, teller).values())
+                if lines == 0 or not result.ok or result.timeline is None:
+                    return _Told(result=result, lines=lines, saved=None, newcomers=newcomers, told=told)
+                if memories_db.add_telling(db, fid, memory_id, telling) is None:
+                    raise MemoryNotFound(f"memory {memory_id!r} not found")
+                # agent/tools/family.py _add_telling: the teller joins the moment.
+                memories_db.link_participants(db, fid, memory_id, [teller])
+                timeline = keep_audio(fresh.timeline, result.timeline, teller)
+                try:
+                    saved = memories_db.save_scene(
+                        db, fid, memory_id,
+                        screenplay=screenplay, timeline=timeline,
+                        prop_ids=fresh.prop_ids, set_ids=fresh.set_ids,
+                        expected_version=fresh.version,
+                    )
+                except memories_db.VersionConflict:
+                    if attempt == SECOND_TELLING_ATTEMPTS:
+                        raise
+                    logger.warning("memory %s changed while %s's telling was saved; retrying", memory_id, teller)
+                    continue
+                if saved is None:
+                    raise MemoryNotFound(f"memory {memory_id!r} vanished before its scene was saved")
+                return _Told(result=result, lines=lines, saved=saved, newcomers=newcomers, told=told)
+        raise AssertionError("unreachable")  # pragma: no cover - the loop returns or raises
 
     def _merge(self, run: _Run, db: Database, named: list[str], text: str) -> schemas.Person | None:
         """Ask whether a "<title> <Name>" of the telling is someone in the tree (`merge_candidate`).
@@ -1551,6 +1788,24 @@ class ScriptedRunManager:
         # and nobody else has a track (the recast other person has not told this memory).
         # The sample is timed for its own people: a slower cast gets a slower pace.
         recast = Screenplay.model_validate(screenplay)
+        # The sample's storybook text and explanations are its people's story ("One Sunday in
+        # 1988...", "Dad was 26..."): this telling and this family's people and props replace them.
+        teller = people_db.get_person(db, fid, run.person_id)
+        if teller is None:
+            raise LookupError(f"teller {run.person_id!r} is not in family {fid!r}")
+        cast_people = {p.id: p for p in people_db.get_people(db, fid, list(recast.cast))}
+        scene_props = {
+            pid: prop for pid in recast.props if (prop := props_db.get_prop(db, fid, pid)) is not None
+        }
+        recast = recast_prose(
+            recast,
+            teller=teller,
+            people=cast_people,
+            props=scene_props,
+            text=text,
+            title=run.fields.title or short_title(run.fields.text),
+            year=run.fields.year,
+        )
         tries: list[tuple[Screenplay, CompileResult]] = []
         for factor in PACE_FACTORS:
             tries.append(self._narrate(db, fid, pace(recast, factor), run.person_id, text, write=narrate_as_teller))
@@ -1652,6 +1907,7 @@ __all__ = [
     "keep_audio",
     "merge_candidate",
     "narrate_as_teller",
+    "recast_prose",
     "remap_ids",
     "scene_inputs",
     "short_title",
