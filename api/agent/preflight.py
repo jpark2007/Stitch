@@ -22,7 +22,10 @@ cut to DETAIL_CHARS.
 
 - Anthropic: models.retrieve for each distinct model id (studio, sub-agents, vision) and one
   messages.create with max_tokens=1 on the studio model (so billing and credit are checked).
-- Image API: GET {IMAGE_API_URL}/models/{IMAGE_MODEL} (no generation, no cost).
+- Image API, by the provider agent.production picks (IMAGE_PROVIDER, agent.adapters.image_provider):
+  Higgsfield: POST {HIGGSFIELD_API_URL}/estimate/{HIGGSFIELD_IMAGE_MODEL} with a minimal body (a
+  price estimate: no image is generated); OpenAI-compatible: GET {IMAGE_API_URL}/models/{IMAGE_MODEL}
+  (no generation, no cost).
 - ElevenLabs: GET /v1/voices/{id} for the default voice and each mapped voice.
 - MongoDB: a ping with serverSelectionTimeoutMS=5000 (the family database, unless STITCH_FAKE_DB).
 - Render page (STITCH_WEB_URL set): agent.tools.frames.probe_render_page. 'contract' passes;
@@ -56,6 +59,8 @@ import httpx
 from dotenv import load_dotenv
 
 from agent import guards
+from agent.adapters import higgsfield as hf_adapter
+from agent.adapters import image_provider
 from agent.adapters import images as images_adapter
 from agent.adapters import tts as tts_adapter
 from agent.adapters import vision as vision_adapter
@@ -93,6 +98,8 @@ WEB_URL_ENV = "STITCH_WEB_URL"
 SECRET_ENVS: tuple[str, ...] = (
     vision_adapter.API_KEY_ENV,
     images_adapter.API_KEY_ENV,
+    hf_adapter.API_KEY_ENV,
+    hf_adapter.API_SECRET_ENV,
     tts_adapter.API_KEY_ENV,
     "MONGODB_URI",
     "MONGODB_URI_TEST",
@@ -123,6 +130,13 @@ ENV_NAMES: tuple[str, ...] = (
     "MONGODB_URI",
     "MONGODB_DB",
     "STITCH_FAKE_DB",
+    image_provider.PROVIDER_ENV,
+    hf_adapter.API_KEY_ENV,
+    hf_adapter.API_SECRET_ENV,
+    hf_adapter.URL_ENV,
+    hf_adapter.MODEL_ENV,
+    hf_adapter.STYLE_ENV,
+    hf_adapter.RESULT_HOSTS_ENV,
     images_adapter.API_KEY_ENV,
     images_adapter.URL_ENV,
     images_adapter.MODEL_ENV,
@@ -628,6 +642,14 @@ def _image_url(env: Mapping[str, str]) -> str:
     return (guards.env_value(env, images_adapter.URL_ENV) or images_adapter.DEFAULT_URL).rstrip("/")
 
 
+def art_label(env: Mapping[str, str]) -> str:
+    """agent.production's art label: 'higgsfield', 'openai' or 'placeholder' (same rule)."""
+    choice = image_provider.choose_image_provider(env)
+    if choice.provider == "higgsfield" and hf_adapter.config_problem(env):
+        return "placeholder"
+    return choice.provider
+
+
 def _compiler_label() -> str:
     from agent.tools.compile import load_compiler
     from agent.wiring import compiler_label
@@ -649,7 +671,7 @@ def modes(env: Mapping[str, str] | None = None, *, compiler: str | None = None) 
         "subagent_model": _stripped(env, SUBAGENT_MODEL_ENV) or "studio",
         "repo": "mongo",
         "persistence": "mongo" if _stripped(env, "MONGODB_URI") and not fake_db(env) else "memory",
-        "art": "real" if _stripped(env, images_adapter.API_KEY_ENV) else "placeholder",
+        "art": art_label(env),
         "tts": "real" if _stripped(env, tts_adapter.API_KEY_ENV) else "fake",
         "vision": "real" if has_key else "missing",
         "critic": "real" if has_key else "missing",
@@ -783,7 +805,60 @@ def _persistence_report(env: Mapping[str, str], labels: Mapping[str, str]) -> Se
     return report
 
 
-def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceReport:
+def _provider_var(env: Mapping[str, str], choice: image_provider.ImageProviderChoice) -> VarReport:
+    name = image_provider.PROVIDER_ENV
+    raw = env.get(name)
+    if raw is None or not raw.strip():
+        return VarReport(name, False, _unset(raw, f"{choice.provider}, because {choice.reason}"))
+    var = VarReport(name, True, _cut(raw.strip(), 40))
+    if choice.warning:
+        var.problem, var.severity = choice.warning, "warning"
+    return var
+
+
+def _hf_vars(env: Mapping[str, str], selected: bool) -> list[VarReport]:
+    """The Higgsfield variables: key and secret as length and format only, the rest shown."""
+    severity = "error" if selected else "warning"
+    key = _secret_var(env, hf_adapter.API_KEY_ENV)
+    secret = _secret_var(env, hf_adapter.API_SECRET_ENV)
+    key_value = _stripped(env, hf_adapter.API_KEY_ENV)
+    if key_value and not key.problem:
+        if hf_adapter.credentials(env) is None:
+            key.problem = (
+                f"no secret: set {hf_adapter.API_SECRET_ENV}, or write the key as id:secret "
+                "(both from https://console.higgsfield.ai)"
+            )
+            key.severity = severity
+            key.shown = key.shown.replace(", format ok", "")
+        elif ":" in key_value and secret.set:
+            key.problem = (
+                f"looks like id:secret but {hf_adapter.API_SECRET_ENV} is set too; "
+                "the whole value is used as the key ID"
+            )
+            key.severity = "warning"
+            key.shown = key.shown.replace(", format ok", "")
+    model = _model_var(env, hf_adapter.MODEL_ENV, hf_adapter.DEFAULT_MODEL)
+    model_id = hf_adapter.configured_model(env)
+    if model.set and not model.problem and model_id not in hf_adapter.MODELS:
+        model.problem = f"not a supported endpoint; use one of: {', '.join(hf_adapter.MODELS)}"
+        model.severity = severity
+    style_raw = env.get(hf_adapter.STYLE_ENV)
+    if style_raw is None or not style_raw.strip():
+        style = VarReport(hf_adapter.STYLE_ENV, False, _unset(style_raw, repr(hf_adapter.DEFAULT_STYLE_SUFFIX)))
+    else:
+        suffix = hf_adapter.configured_style_suffix(env)
+        style = VarReport(hf_adapter.STYLE_ENV, True, repr(_cut(suffix, 120)) if suffix else "none (no suffix)")
+    hosts_raw = env.get(hf_adapter.RESULT_HOSTS_ENV)
+    hosts = ", ".join(hf_adapter.configured_result_hosts(env))
+    hosts_var = VarReport(
+        hf_adapter.RESULT_HOSTS_ENV,
+        bool(hosts_raw and hosts_raw.strip()),
+        f"allowed result hosts: {hosts} (and their subdomains)",
+    )
+    return [key, secret, _url_var(env, hf_adapter.URL_ENV, hf_adapter.DEFAULT_URL), model, style, hosts_var]
+
+
+def _openai_vars(env: Mapping[str, str]) -> list[VarReport]:
     effective_url = _image_url(env)
     openai_default = effective_url == images_adapter.DEFAULT_URL.rstrip("/")
     key = _secret_var(
@@ -793,30 +868,56 @@ def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceRep
         if openai_default
         else None,
     )
+    return [
+        key,
+        _url_var(env, images_adapter.URL_ENV, images_adapter.DEFAULT_URL),
+        _model_var(env, images_adapter.MODEL_ENV, images_adapter.DEFAULT_MODEL),
+    ]
+
+
+def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceReport:
+    choice = image_provider.choose_image_provider(env)
+    hf_selected = choice.provider == "higgsfield"
     report = ServiceReport(
         "art",
         labels["art"],
-        [
-            key,
-            _url_var(env, images_adapter.URL_ENV, images_adapter.DEFAULT_URL),
-            _model_var(env, images_adapter.MODEL_ENV, images_adapter.DEFAULT_MODEL),
-        ],
+        [_provider_var(env, choice), *_hf_vars(env, hf_selected), *_openai_vars(env)],
     )
     budget = RunLimits.from_env(env).max_images_per_run
-    if labels["art"] == "real":
+    budget_fallback = (
+        f"{FALLBACKS['art']}, for one prop or layer when its generation fails, and for the rest of a run once "
+        f"it has used its image budget ({guards.ENV_MAX_IMAGES_PER_RUN}={budget})"
+    )
+    if labels["art"] == "higgsfield":
+        model = hf_adapter.configured_model(env)
+        url = redact_url(hf_adapter.configured_base_url(env))
+        report.summary = (
+            f"generated prop and set art on Higgsfield ({model} at {url}), at most {budget} image(s) a run"
+        )
+        report.fallback = budget_fallback
+        report.notes.append(
+            f"{model} takes no reference image: references are ignored and art is drawn from the prompt alone"
+        )
+        report.notes.append(
+            "the docs do not name the host results are served from: a result on a host outside "
+            f"{hf_adapter.RESULT_HOSTS_ENV}'s list is refused (the error names the host to add)"
+        )
+    elif labels["art"] == "openai":
         model = _image_model(env)
         report.summary = (
-            f"generated prop and set art ({model} at {redact_url(effective_url)}), at most {budget} image(s) a run"
+            f"generated prop and set art ({model} at {redact_url(_image_url(env))}), at most {budget} image(s) a run"
         )
-        report.fallback = (
-            f"{FALLBACKS['art']}, for one prop or layer when its generation fails, and for the rest of a run once "
-            f"it has used its image budget ({guards.ENV_MAX_IMAGES_PER_RUN}={budget})"
-        )
-        if budget == 0:
-            report.problems.append(("warning", f"{guards.ENV_MAX_IMAGES_PER_RUN}=0: every run gets placeholder art"))
-    else:
-        report.summary = "IMAGE_API_KEY is unset: placeholder art"
+        report.fallback = budget_fallback
+    elif hf_selected:
+        # The key or model variable above carries the error.
+        problem = hf_adapter.config_problem(env)
+        report.summary = f"Higgsfield is selected ({choice.reason}) but {problem}: placeholder art"
         report.fallback = FALLBACKS["art"]
+    else:
+        report.summary = f"placeholder art ({choice.reason})"
+        report.fallback = FALLBACKS["art"]
+    if labels["art"] != "placeholder" and budget == 0:
+        report.problems.append(("warning", f"{guards.ENV_MAX_IMAGES_PER_RUN}=0: every run gets placeholder art"))
     return report
 
 
@@ -1071,6 +1172,44 @@ def _live_anthropic(by_name: dict[str, ServiceReport], env: Mapping[str, str], s
     by_name["vision"].live = _combine([retrieve(vision_model)])
 
 
+def art_label_reason(env: Mapping[str, str]) -> str:
+    """Why art is placeholder, in a short clause."""
+    choice = image_provider.choose_image_provider(env)
+    if choice.provider == "higgsfield":
+        return hf_adapter.config_problem(env) or choice.reason
+    return choice.reason
+
+
+def _live_higgsfield(http: httpx.Client, env: Mapping[str, str], guarded: Any) -> LiveResult:
+    """POST /estimate/{model}: proves the key and the model with no generation (the price doc's
+    estimate endpoint answers {"usd": ...} for the same body a generation would send)."""
+    creds = hf_adapter.credentials(env)
+    model = hf_adapter.configured_model(env)
+    if creds is None or model not in hf_adapter.MODELS:
+        return LiveResult("skipped", "fix the Higgsfield errors above first")
+    base = hf_adapter.configured_base_url(env)
+
+    def estimate() -> str:
+        response = http.post(
+            f"{base}/estimate/{model}", json=hf_adapter.estimate_body(model), headers=hf_adapter.authorization(*creds)
+        )
+        if response.status_code != 200:
+            try:
+                body = response.text
+            except Exception:  # noqa: BLE001 - a body that cannot be read is just not shown
+                body = ""
+            raise _HTTPFail(f"HTTP {response.status_code}: {body}")
+        try:
+            usd = response.json().get("usd")
+        except Exception:  # noqa: BLE001
+            usd = None
+        price = f", about ${_cut(str(usd), 20)} per image" if usd is not None else ""
+        return f"200{price} (an estimate: no image generated)"
+
+    ok, text = guarded(estimate)
+    return _combine([(ok, f"POST /estimate/{model}: {text}")])
+
+
 def _live_http(by_name: dict[str, ServiceReport], env: Mapping[str, str], seams: LiveSeams, guarded: Any) -> None:
     def get(http: httpx.Client, url: str, headers: dict[str, str]) -> httpx.Response:
         response = http.get(url, headers=headers)
@@ -1084,8 +1223,11 @@ def _live_http(by_name: dict[str, ServiceReport], env: Mapping[str, str], seams:
 
     with httpx.Client(transport=seams.http_transport, timeout=seams.timeout_s, follow_redirects=True) as http:
         art_key = _stripped(env, images_adapter.API_KEY_ENV)
-        if art_key is None:
-            by_name["art"].live = LiveResult("skipped", "placeholder art (IMAGE_API_KEY is not set)")
+        art_mode = by_name["art"].mode
+        if art_mode == "higgsfield":
+            by_name["art"].live = _live_higgsfield(http, env, guarded)
+        elif art_mode != "openai" or art_key is None:
+            by_name["art"].live = LiveResult("skipped", f"placeholder art ({art_label_reason(env)})")
         else:
             base = _image_url(env)
             model = _image_model(env)
