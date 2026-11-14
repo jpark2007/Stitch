@@ -912,3 +912,80 @@ def test_a_voice_warning_is_success(unit):
     assert "`warning:`" in text
     assert "warning: the speech service failed ..." in text
     assert re.search(r"succeeded|success", text)
+
+
+def test_narrator_places_cues_on_the_written_action_with_an_early_word():
+    """narrator.md step 5: word time = t + 0.25 x the words before it (screenplay.narration's
+    estimate), an early cue word, an earlier one rather than a line before t = 0; and the 1.2 s
+    a second telling's shifted line may lead t = 0 by (layout.RISE)."""
+    from screenplay.layout import RISE
+    from screenplay.narration import WORD_SECONDS
+
+    step = _flat(load_prompt("narrator").split("5. **Cue at most one action per line.**", 1)[1].split("\n6. ", 1)[0])
+    assert WORD_SECONDS == 0.25 and RISE == 1.2
+    assert "**Place a cued line's `t` so its `cueWord` falls where the action is already written**" in step
+    assert "word time = `t` + 0.25 × the words before it" in step
+    assert "starts at t = 3.25 − 0.75 = 2.5" in step  # the worked example's drop line
+    drop_line = SAMPLE_SCREENPLAY["shots"][0]["narration"][1]
+    assert drop_line["t"] == 2.5 and drop_line["cueWord"] == "dropped"
+    assert "**Prefer a cue word early in the line**, because the real voice is slower than the estimate" in step
+    assert "cue an earlier word of the line rather than starting the line before t = 0" in step
+    assert "may start at most 1.2 s before the shot's t = 0" in step
+
+
+def test_director_mirrors_the_cue_placement_where_narration_is_rewritten():
+    director = _flat(_section(load_prompt("director"), "## Second-telling mode"))
+    assert "**Where a rewritten cued line goes**" in director
+    assert "word time = `t` + 0.25 × the words before it" in director
+    assert "so the shared action does not move" in director
+    assert "Prefer a cue word early in the line, because the real voice is slower than the estimate" in director
+    assert "cue an earlier word rather than starting the line before t = 0" in director
+    assert "may start at most 1.2 s before t = 0" in director
+    rules = _flat(load_prompt("director"))
+    assert "**Put each shot's first named beat about 2.5 s or more in**" in rules
+    assert "The camera cues after a moved action move with it, and `compile_screenplay` says so in a `note:` line" in rules
+
+
+def test_storyboarder_and_skill_set_up_the_quality_bar_the_corpus_asserts():
+    """tests/agent/test_agent_stories.py checks every saved memory for pageText on every shot, an
+    explanation for every cast member and prop, a pull tab, and camera moves; the storyboarder
+    sets each of them up for the director."""
+    board = _flat(load_prompt("storyboarder"))
+    assert "The director tells that beat in the shot's page text" in board  # pageText per shot
+    assert "moves the camera in on it" in board  # camera
+    assert "puts the memory's pull tab on the main beat of the story" in board  # a pull tab
+    assert "which shot holds the story's main beat (the memory's pull tab goes there)" in board
+    assert "every person and object on stage gets a click-to-explain note" in board  # explanations
+    assert "what the telling says about it, for its click-to-explain note" in board
+    skill = _flat((SKILLS_DIR / "storyboarding" / "SKILL.md").read_text(encoding="utf-8"))
+    assert "Every shot gets `pageText`" in skill
+    assert "every person and prop on stage gets a click-to-explain note" in skill
+    assert "the memory's pull tab plays the story's main beat" in skill
+    assert "The director moves the camera in on that beat" in skill
+
+
+def test_prop_master_gives_seats_and_surfaces_their_sockets():
+    """prop_master.md: a driver socket and one seat per rider for a vehicle, a "top" for a table
+    and a "burner" for a stove, checked against the defaults generate_prop applies and the
+    examples it accepts."""
+    from agent.tools.props import DEFAULT_SOCKETS, resolve_sockets
+
+    text = _flat(load_prompt("prop_master"))
+    assert "a tabletop, a stove burner" in text
+    assert "a vehicle gets driver and passenger, furniture gets a seat, other sizes get none" in text
+    assert set(DEFAULT_SOCKETS["vehicle"]) == {"driver", "passenger"} and set(DEFAULT_SOCKETS["furniture"]) == {"seat"}
+    assert resolve_sockets(None, "hand") == ({}, None)
+    assert 'A vehicle must have a socket named "driver"' in text
+    assert "one seat per person who rides in it: a car carrying three needs a third seat" in text
+    assert 'pass a "top" or "burner" socket' in text
+    examples = []
+    for raw in re.findall(r"`(\{\"[^`]*\})`", load_prompt("prop_master")):
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue  # a template with <placeholders>, not an example
+        if value and all(isinstance(v, list) and len(v) == 2 for v in value.values()):
+            examples.append(value)
+            assert resolve_sockets(value, "furniture")[1] is None, raw
+    assert {"top"} in [set(e) for e in examples] and {"burner"} in [set(e) for e in examples]
+    assert {"driver", "passenger", "back_seat"} in [set(e) for e in examples]
