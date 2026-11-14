@@ -29,6 +29,9 @@ public so other verb modules can get a puppet up the same way.
 ``follow`` reads the leader's path from the ``puppet:<target>`` ``root.position`` keys already
 in ``tracks``. **The compiler must therefore run every ``follow`` after the shot's other
 actions**, so the leader's movement for the whole shot is known (wave 2 wires that order).
+The follower walks on the surface the leader stands on, never at its root height while it is
+seated in a prop (a car seat, a chair) or kneeling / sitting on the floor: each path key's y
+is moved onto that surface first (``_standing_y``), keeping its x, z and time.
 """
 
 from __future__ import annotations
@@ -38,9 +41,10 @@ from itertools import pairwise
 
 from screenplay import motion
 from screenplay.body import POSE_SECONDS, last_values, stand_keys
-from screenplay.ik import RIG, Body, arm_bones
+from screenplay.ik import POSES, RIG, Body, arm_bones, scale
+from screenplay.motion import prop_socket_offset
 from screenplay.schema import Action
-from screenplay.state import HANDS, SEATED_POSES, StateError, World, fmt_t
+from screenplay.state import GROUND, HANDS, SEATED_POSES, StateError, World, fmt_t
 from screenplay.tracks import Key, TrackSet
 
 Vec3 = tuple[float, float, float]
@@ -50,6 +54,8 @@ Handler = Callable[[World, TrackSet, Action, float, float, Locate], float]
 EXIT_SIDES = ("offstage_left", "offstage_right")
 
 _EPS = 1e-9
+_POS_TOL = 2e-3  # track values are rounded to 3 dp (tracks.DECIMALS)
+_ROT_TOL = 2e-3
 _ROOT = "root.position"
 # Hand socket -> the arm bones that hold it ("hand_r" -> ("arm_r.upper", "arm_r.lower")).
 _HAND_BONES: dict[str, tuple[str, str]] = {RIG["ik"][arm]["socket"]: arm_bones(arm) for arm in RIG["ik"]}
@@ -121,6 +127,76 @@ def _leader_path(tracks: TrackSet, target: str) -> list[tuple[float, Vec3]]:
     return []
 
 
+def _close(a: Vec3, b: Vec3, tol: float = _POS_TOL) -> bool:
+    return all(abs(a[i] - b[i]) <= tol for i in range(3))
+
+
+def _prop_anchor(world: World, tracks: TrackSet, locate: Locate, what: str, t: float) -> Vec3 | None:
+    """A prop's world anchor at timeline t, or None when it is not on stage.
+
+    On the ground its anchor is its ``position`` track (a vehicle on the move), else the world's
+    position; resting on something else, ``locate`` resolves it.
+    """
+    target = f"prop:{what}"
+    parent = tracks.value_at(target, "parent", t)
+    if parent is None:
+        parent = world.props[what].parent
+    if parent == GROUND:
+        v = tracks.value_at(target, "position", t)
+        if v is not None:
+            return (float(v[0]), float(v[1]), float(v[2]))
+        if world.props[what].world_pos is not None:
+            return world.props[what].world_pos
+    try:
+        v = locate(what, t)
+    except StateError:
+        return None
+    return (float(v[0]), float(v[1]), float(v[2]))
+
+
+def _standing_y(world: World, tracks: TrackSet, locate: Locate, who: str, t: float, root: Vec3) -> float:
+    """The height of the surface ``who`` stands on at timeline t, given its root there.
+
+    - Seated on a prop's socket (a car seat, a chair): the root is the seat minus
+      ``hipHeight * scale`` (``body.sit_keys``), so it is matched against every socket of every
+      prop on stage, and the standing surface is that prop's anchor height: its anchor is at its
+      bottom, so that is the ground the prop stands on.
+    - Kneeling or sitting on the floor (its legs hold the ``kneel`` / ``sit`` pose): the root
+      is lowered by the pose's ``rootOffset * scale``, which is added back.
+    - Otherwise the root already is on the standing surface.
+    """
+    s = scale(world.people[who].build)
+    hip = RIG["hipHeight"] * s
+    for what, prop in world.catalog.items():
+        if not prop.sockets or what not in world.props:
+            continue
+        anchor = _prop_anchor(world, tracks, locate, what, t)
+        if anchor is None:
+            continue
+        for socket in prop.sockets:
+            off = prop_socket_offset(prop, socket)
+            seat_root = (anchor[0] + off[0], anchor[1] + off[1] - hip, anchor[2] + off[2])
+            if _close(root, seat_root):
+                return anchor[1]
+    for pose in SEATED_POSES:
+        values = POSES["poses"][pose]
+        legs = {b: float(v) for b, v in values.items() if b != "rootOffset" and b.startswith("leg_")}
+        if legs and all(abs(_bone(tracks, who, b, t) - v) <= _ROT_TOL for b, v in legs.items()):
+            return root[1] - float(values.get("rootOffset", [0.0, 0.0])[1]) * s
+    return root[1]
+
+
+def _standing_path(
+    world: World, tracks: TrackSet, locate: Locate, who: str, path: list[tuple[float, Vec3]]
+) -> list[tuple[float, Vec3]]:
+    """The leader's path with every key's y on the surface it stands on (see ``_standing_y``).
+
+    x, z and the key times are unchanged, so a follower walks the same route on the ground
+    instead of at a seated or kneeling leader's lowered or raised root height.
+    """
+    return [(kt, (p[0], _standing_y(world, tracks, locate, who, kt, p), p[2])) for kt, p in path]
+
+
 def _moves_after(path: list[tuple[float, Vec3]], t: float) -> bool:
     """True when some move of the path (two keys at different positions) ends after t."""
     for (_, pa), (tb, pb) in pairwise(path):
@@ -187,7 +263,9 @@ def apply_follow(world: World, tracks: TrackSet, action: Action, t: float, actio
     ``POSE_SECONDS`` a kneeling / floor-sitting follower needs to stand up), ``seated`` (world
     rule), ``nothing_to_follow`` (the leader does not move after t), and locate's
     ``unknown_target``. Run it after the shot's other actions (see the module docstring).
-    Returns the time the follower stops.
+    The follower's keys and the standing position it ends at are at standing-surface height:
+    a seated leader's path is followed on the ground under its seat, a kneeling leader's at
+    the height it knelt from (``_standing_path``). Returns the time the follower stops.
     """
     who = _require_person(world, action.who)
     target = action.target
@@ -216,8 +294,10 @@ def apply_follow(world: World, tracks: TrackSet, action: Action, t: float, actio
             f"{action.dur:g} is shorter than that",
         )
     dur = None if action.dur is None else action.dur - (t_go - t)
+    # Walk on the ground under the leader, never at its seat or kneeling height.
+    ground_path = _standing_path(world, tracks, locate, target, path)
     walk, stop, facing = motion.follow_keys(
-        who, p.build, t_go, start, p.facing, path, dur, skip_bones=skip, speed_scale=p.speed_scale
+        who, p.build, t_go, start, p.facing, ground_path, dur, skip_bones=skip, speed_scale=p.speed_scale
     )
     keys += walk
     final = last_values(walk).get((_puppet(who), _ROOT))  # None: the follower holds where it stands

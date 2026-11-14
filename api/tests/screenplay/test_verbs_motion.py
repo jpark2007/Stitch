@@ -16,8 +16,10 @@ from screenplay.tracks import TrackSet
 from screenplay.compiler import HANDLER_PROBLEMS
 from screenplay.compiler import HANDLERS as COMPILER_HANDLERS
 from screenplay.compiler import compile as compile_screenplay
+from screenplay.locate import make_locate as make_shot_locate
 from screenplay.verbs_motion import HANDLERS, apply_exit, apply_follow, apply_turn_to, stand_up_first
-from verb_cases import cases_for
+from screenplay.verbs_vehicles import HANDLERS as VEHICLE_HANDLERS
+from verb_cases import STREET_MARKS, _a, _at, _one, base_scene, cases_for
 
 ACTION_START = 1.2
 WALK = motion.SPEEDS["walk"]
@@ -391,6 +393,147 @@ def test_follow_holding_a_prop_keeps_the_arm(world, tracks):
     assert "root.position" in mom and "leg_l.upper.rot" in mom and "arm_r.upper.rot" not in mom
     assert world.people["mom"].pos[0] == pytest.approx(-1.1)
     assert world.people["mom"].pos[1] == pytest.approx(0.0)
+
+
+def test_follow_onto_a_raised_mark_keeps_its_height(world, tracks):
+    # Standing surfaces are kept: dad climbs onto the steps (y 0.3), and kid ends up there too.
+    lead_dad(tracks, world, to=MARKS["steps_top"])
+    run(apply_follow, world, tracks, 2.0, do="follow", who="kid", target="dad")
+    assert world.people["kid"].pos == pytest.approx((0.0, 0.3, 0.5))
+    assert keys_of(tracks, "puppet:kid", "root.position")[-1][1] == pytest.approx([0.0, 0.3, 0.5])
+
+
+# ------------------------------------------- follow: on the ground, not at seat/pose height
+#
+# The leader's root.position is its standing spot only while it stands: seated in a prop it is
+# the seat minus hipHeight * scale, kneeling or sitting on the floor it is lowered by the pose's
+# rootOffset. A follower walks on the ground under that path, never at those heights.
+
+STREET = "street"
+IN_SEDAN = {"in": "sedan.driver"}
+
+
+def compile_case(sp):
+    scene = base_scene()
+    res = compile_screenplay(sp, sets=scene.sets, props=scene.props, people=scene.people)
+    assert res.ok, [e.message for e in res.errors]
+    return res.timeline
+
+
+def root_keys(timeline, who: str) -> list[tuple[float, list[float]]]:
+    for tr in timeline.tracks:
+        if (tr.target, tr.channel) == (f"puppet:{who}", "root.position"):
+            return [(float(k[0]), [float(v) for v in k[1]]) for k in tr.keys]
+    return []
+
+
+def test_follow_a_driver_walks_on_the_street_not_at_seat_height():
+    # Regression: kid used to copy dad's seated root (y 0.141 in the sedan) and walk in the air.
+    tl = compile_case(_one(
+        _a(0, "drive_to", who="dad", what="sedan", to="corner"),
+        _a(0, "follow", who="kid", target="dad"),
+        set=STREET, start={"dad": _at("garage", **IN_SEDAN), "kid": _at("garage")},
+        prop_start={"sedan": {"at": "garage"}},
+    ))
+    dad, kid = root_keys(tl, "dad"), root_keys(tl, "kid")
+    assert dad[-1][1][1] > 0.1  # dad really is seated above the street
+    assert kid and all(v[1] == 0.0 for _, v in kid)
+    garage_x, corner_x = 2 * STREET_MARKS["garage"][0] - 1, 2 * STREET_MARKS["corner"][0] - 1
+    # kid stops `spacing` (0.2) behind dad's seat, which is a little left of the sedan's anchor
+    assert kid[-1][1][0] == pytest.approx(dad[-1][1][0] - 0.2, abs=1e-3)
+    assert garage_x < kid[-1][1][0] and kid[-1][1][0] == pytest.approx(corner_x, abs=0.4)
+
+
+def _street_world() -> tuple[World, TrackSet, object]:
+    scene = base_scene()
+    marks = {k: (2 * v[0] - 1, v[1], 0.5) for k, v in STREET_MARKS.items()}
+    w = World(scene.people.values(), scene.props.values())
+    w.begin_shot(Shot.model_validate({
+        "id": "s1", "set": STREET,
+        "start": {"dad": {"at": "garage", "in": "sedan.driver"}, "kid": {"at": "garage"}},
+        "prop_start": {"sedan": {"at": "garage"}},
+    }), marks, same_set_as_previous=False)
+    ts = TrackSet()
+    return w, ts, make_shot_locate(w, ts, {**BUILTIN_MARKS, **marks}, "s1")
+
+
+def test_follow_a_driver_stores_a_ground_level_standing_position():
+    # The end position the world keeps (where later verbs start from) is on the street too.
+    w, ts, locate = _street_world()
+    w.now = 0.0
+    VEHICLE_HANDLERS["drive_to"](w, ts, act(t=0, do="drive_to", who="dad", what="sedan", to="corner"),
+                                 ACTION_START, ACTION_START, locate)
+    end = apply_follow(w, ts, act(t=0, do="follow", who="kid", target="dad"), ACTION_START, ACTION_START, locate)
+    dad_end = keys_of(ts, "puppet:dad", "root.position")[-1][1]
+    assert dad_end[1] > 0.1  # dad's root rides at seat height
+    kid = w.people["kid"]
+    assert kid.pos[1] == 0.0 and kid.pose == "stand"
+    assert kid.pos[0] == pytest.approx(dad_end[0] - 0.2, abs=1e-3)
+    assert all(k[1][1] == 0.0 for k in keys_of(ts, "puppet:kid", "root.position"))
+    assert end > ACTION_START
+
+
+def test_follow_a_leader_who_walks_then_kneels_stays_on_the_ground():
+    # Documents (this already held before the fix): the kneel is a height-only move with no
+    # ground distance, so the follower walks only to the walk's standing end.
+    tl = compile_case(_one(
+        _a(0, "walk_to", who="dad", to="table_spot"),
+        _a(4, "kneel", who="dad"),
+        _a(0, "follow", who="kid", target="dad"),
+        start={"dad": _at("door"), "kid": _at("offstage_left")},
+    ))
+    dad, kid = root_keys(tl, "dad"), root_keys(tl, "kid")
+    assert dad[-1][1][1] < -0.1  # dad ends kneeling, root lowered
+    assert all(v[1] == 0.0 for _, v in kid)
+    assert kid[-1][1][0] == pytest.approx(0.0)  # table_spot (x 0.2) less spacing
+
+
+@pytest.mark.parametrize("kneel", [{}, {"dur": 1}], ids=["kneels", "kneels_and_stands"])
+def test_follow_a_standing_leader_who_then_kneels_stays_on_the_ground(kneel):
+    # Regression: dad's only movement after t is kneeling, a height-only move; kid used to walk
+    # to it and end at the lowered kneeling root height (y -0.132), even after dad stood up.
+    tl = compile_case(_one(
+        _a(1, "kneel", who="dad", **kneel),
+        _a(0, "follow", who="kid", target="dad"),
+        start={"dad": _at("table_spot"), "kid": _at("door")},
+    ))
+    kid = root_keys(tl, "kid")
+    assert kid and all(v[1] == 0.0 for _, v in kid)
+    assert kid[-1][1][0] == pytest.approx(0.0)  # walked up to spacing short of dad (x 0.2)
+
+
+def test_follow_a_leader_who_sits_on_a_chair_stays_on_the_ground():
+    tl = compile_case(_one(
+        _a(1, "sit_on", who="dad", what="chair"),
+        _a(0, "follow", who="kid", target="dad"),
+        start={"dad": _at("table_spot"), "kid": _at("curb")}, prop_start={"chair": {"at": "bench_spot"}},
+    ))
+    assert root_keys(tl, "dad")[-1][1][1] != 0.0
+    kid = root_keys(tl, "kid")
+    assert kid and all(v[1] == 0.0 for _, v in kid)
+
+
+def test_follow_a_leader_who_gets_in_a_car_stays_on_the_ground():
+    tl = compile_case(_one(
+        _a(0, "get_in", who="dad", what="sedan"),
+        _a(0, "follow", who="kid", target="dad"),
+        start={"dad": _at("door"), "kid": _at("offstage_left")}, prop_start={"sedan": {"at": "curb"}},
+    ))
+    assert root_keys(tl, "dad")[-1][1][1] > 0.1
+    kid = root_keys(tl, "kid")
+    assert kid and all(v[1] == 0.0 for _, v in kid)
+
+
+def test_follow_a_leader_who_gets_out_and_walks_stays_on_the_ground():
+    tl = compile_case(_one(
+        _a(0, "get_out", who="dad", what="sedan"),
+        _a(3, "walk_to", who="dad", to="door"),
+        _a(0, "follow", who="kid", target="dad"),
+        start={"dad": _at("curb", **IN_SEDAN), "kid": _at("offstage_right")}, prop_start={"sedan": {"at": "curb"}},
+    ))
+    kid = root_keys(tl, "kid")
+    assert kid and all(v[1] == 0.0 for _, v in kid)
+    assert kid[-1][1][0] == pytest.approx(-0.6)  # door (x -0.8) less spacing, walking left
 
 
 # ------------------------------------------------------------ stand_up_first
