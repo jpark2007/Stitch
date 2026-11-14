@@ -1,6 +1,83 @@
 {
-  "$comment": "Allowed screenplay verbs, camera moves, and effects (see ARCHITECTURE.md section 3)",
-  "actions": {},
-  "camera": [],
-  "effects": []
+  "$comment": "Allowed screenplay verbs, camera moves, effects, transitions, sizes and eras. Single source for the compiler, the agent's directing skill and the stage. See shared/CONTRACTS.md. Additive only.",
+  "actions": {
+    "walk_to":     { "kind": "movement", "required": ["who", "to"],            "optional": [],                 "note": "to = mark" },
+    "run_to":      { "kind": "movement", "required": ["who", "to"],            "optional": [],                 "note": "to = mark" },
+    "enter":       { "kind": "movement", "required": ["who", "to"],            "optional": ["from"],           "note": "from = offstage_left | offstage_right (default: nearest side); to = mark" },
+    "exit":        { "kind": "movement", "required": ["who"],                  "optional": ["to"],             "note": "to = offstage_left | offstage_right (default: nearest side)" },
+    "turn_to":     { "kind": "movement", "required": ["who", "target"],        "optional": [],                 "note": "target = person, prop or mark" },
+    "follow":      { "kind": "movement", "required": ["who", "target"],        "optional": ["dur"],            "note": "target = person" },
+
+    "pose":        { "kind": "body",     "required": ["who", "pose"],          "optional": ["dur"],            "note": "pose = any name in shared/rig/poses.json" },
+    "wave":        { "kind": "body",     "required": ["who"],                  "optional": ["target", "dur"] },
+    "point_at":    { "kind": "body",     "required": ["who", "target"],        "optional": ["dur"] },
+    "sit_on":      { "kind": "body",     "required": ["who", "what"],          "optional": ["socket"],         "note": "what = prop with a seat socket" },
+    "stand_up":    { "kind": "body",     "required": ["who"],                  "optional": [] },
+    "kneel":       { "kind": "body",     "required": ["who"],                  "optional": ["dur"] },
+    "hug":         { "kind": "body",     "required": ["who", "target"],        "optional": ["dur"],            "note": "target = person; both puppets hug" },
+    "lean_toward": { "kind": "body",     "required": ["who", "target"],        "optional": ["dur"] },
+
+    "pick_up":     { "kind": "prop",     "required": ["who", "what"],          "optional": [],                 "note": "prop must not be held by anyone; who must be within reach or walks to it first" },
+    "hold":        { "kind": "prop",     "required": ["who", "what"],          "optional": [],                 "note": "who must already be holding it; raises it into the hold pose" },
+    "drop":        { "kind": "prop",     "required": ["who", "what"],          "optional": [],                 "note": "who must be holding it" },
+    "hand_to":     { "kind": "prop",     "required": ["who", "what", "to"],    "optional": [],                 "note": "to = person; who must be holding it" },
+    "put_on":      { "kind": "prop",     "required": ["who", "what"],          "optional": ["target"],         "note": "wear a prop (head socket); target = person, default self" },
+    "place_on":    { "kind": "prop",     "required": ["who", "what", "on"],    "optional": ["socket"],         "note": "on = prop with a surface socket, or a mark" },
+    "open":        { "kind": "prop",     "required": ["who", "what"],          "optional": [],                 "note": "sets prop state to open" },
+    "close":       { "kind": "prop",     "required": ["who", "what"],          "optional": [],                 "note": "sets prop state to closed" },
+    "set_state":   { "kind": "prop",     "required": ["what", "state"],        "optional": ["who"] },
+
+    "get_in":      { "kind": "vehicle",  "required": ["who", "what"],          "optional": ["socket"],         "note": "socket default: driver if free, else next free seat" },
+    "get_out":     { "kind": "vehicle",  "required": ["who", "what"],          "optional": [] },
+    "drive_to":    { "kind": "vehicle",  "required": ["who", "what", "to"],    "optional": [],                 "note": "who must be in the driver socket; to = mark" },
+    "ride_to":     { "kind": "vehicle",  "required": ["who", "what", "to"],    "optional": [],                 "note": "who must be in any socket and someone in driver; to = mark" },
+
+    "confetti":    { "kind": "effect",   "required": [],                       "optional": ["at", "dur"],      "note": "at = mark, person or prop" },
+    "steam":       { "kind": "effect",   "required": [],                       "optional": ["at", "dur"] },
+    "rain":        { "kind": "effect",   "required": [],                       "optional": ["dur"] },
+    "smoke":       { "kind": "effect",   "required": [],                       "optional": ["at", "dur"] },
+    "time_of_day": { "kind": "effect",   "required": ["value"],                "optional": ["dur"],            "note": "value = dawn | day | dusk | night" }
+  },
+  "camera": {
+    "wide":      { "required": [],         "optional": ["dur"] },
+    "dolly_to":  { "required": ["target"], "optional": ["dur"] },
+    "pan_to":    { "required": ["target"], "optional": ["dur"] },
+    "close_up":  { "required": ["target"], "optional": ["dur"] },
+    "pull_back": { "required": [],         "optional": ["dur"] }
+  },
+  "effects": ["confetti", "steam", "rain", "smoke", "time_of_day"],
+  "timesOfDay": ["dawn", "day", "dusk", "night"],
+  "transitions": ["fold", "none"],
+  "builtinMarks": {
+    "offstage_left":  [-0.15, 0.0],
+    "offstage_right": [1.15, 0.0]
+  },
+  "sizes": {
+    "tiny":      0.03,
+    "hand":      0.08,
+    "carried":   0.2,
+    "furniture": 0.4,
+    "vehicle":   0.9,
+    "building":  1.5
+  },
+  "builds": {
+    "small":   0.8,
+    "short":   0.9,
+    "average": 1.0,
+    "tall":    1.1
+  },
+  "speeds": { "walk": 0.35, "run": 0.8, "drive": 0.9 },
+  "interactionKinds": ["pull_tab", "slider"],
+  "eras": [
+    { "id": "pre1940", "from": 0,    "to": 1939, "music": null },
+    { "id": "1940s",   "from": 1940, "to": 1949, "music": null },
+    { "id": "1950s",   "from": 1950, "to": 1959, "music": null },
+    { "id": "1960s",   "from": 1960, "to": 1969, "music": null },
+    { "id": "1970s",   "from": 1970, "to": 1979, "music": null },
+    { "id": "1980s",   "from": 1980, "to": 1989, "music": null },
+    { "id": "1990s",   "from": 1990, "to": 1999, "music": null },
+    { "id": "2000s",   "from": 2000, "to": 2009, "music": null },
+    { "id": "2010s",   "from": 2010, "to": 2019, "music": null },
+    { "id": "2020s",   "from": 2020, "to": 9999, "music": null }
+  ]
 }
