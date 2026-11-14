@@ -14,18 +14,9 @@
 import { useEffect, useMemo, type ReactNode } from "react";
 import { CanvasTexture, ClampToEdgeWrapping, RepeatWrapping, SRGBColorSpace } from "three";
 import { COVER_OVERHANG, PAGE_H, PAGE_W } from "./leafShape";
-import {
-  drawBlankPage,
-  drawContactShadow,
-  drawCoverArt,
-  drawEndpaper,
-  drawPageEdges,
-  drawSpineCloth,
-  drawStagePage,
-  drawStoryPage,
-  drawTitlePage,
-  loadPageFonts,
-} from "./pageArt";
+import { drawContactShadow, drawCoverArt, drawEndpaper, drawPageEdges, drawSpineCloth } from "./coverArt";
+import { drawBlankPage, drawStagePage, drawStoryPage, drawTitlePage } from "./pageArt";
+import { loadPageFonts } from "./paperArt";
 import type { BookCover, BookSpread } from "./types";
 
 export interface BookArt {

@@ -9,7 +9,7 @@
 
 import { BufferAttribute, BufferGeometry } from "three";
 import { BLOCK_T, COVER_T, PAGE_H, PAGE_W, pageProfile } from "./leafShape";
-import { rng } from "./pageArt";
+import { rng } from "./paperArt";
 
 const NX = 28;
 const NZ = 14;
