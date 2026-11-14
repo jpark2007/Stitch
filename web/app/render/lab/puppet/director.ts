@@ -25,9 +25,20 @@ const WALK_Z = 0.68;
 
 type Frames = ReturnType<typeof createFrames>;
 
-/** Walk a puppet back and forth between xa and xb, feet planted on the page. */
-function walkBetween(d: Driver["current"], scale: number, dist: number, xa: number, xb: number, z: number, frames: Frames) {
-  const cycle = getCycle("walk");
+export type Gait = "walk" | "run";
+
+/** Walk (or run) a puppet back and forth between xa and xb, feet planted on the page. */
+function walkBetween(
+  d: Driver["current"],
+  scale: number,
+  dist: number,
+  xa: number,
+  xb: number,
+  z: number,
+  frames: Frames,
+  gait: Gait = "walk",
+) {
+  const cycle = getCycle(gait);
   const span = xb - xa;
   const u = ((dist % (2 * span)) + 2 * span) % (2 * span);
   const out = u < span;
@@ -42,7 +53,8 @@ function walkBetween(d: Driver["current"], scale: number, dist: number, xa: numb
 
 export interface LineupSettings {
   pose: string;
-  walk: boolean;
+  /** The first puppet walks or runs back and forth (null: stands in line). */
+  gait: Gait | null;
   reach: boolean;
   freeze: number | null;
 }
@@ -59,10 +71,16 @@ export class LineupDirector {
   private readonly frames = createFrames(RIG);
   private readonly hip = { x: 0, y: 0 };
   private readonly ik = { upper: 0, lower: 0, reachable: true };
+  private reaching = false;
 
   constructor(private readonly scales: readonly number[]) {
     this.drivers = scales.map((_, i) => makeDriver(SLOT_X[i], ACTING_Z, SLOT_FACING[i]));
     this.yOff = scales.map(() => 0);
+  }
+
+  /** The IK target this frame when the hand can reach it (for self-checks). */
+  get reachTarget(): Vector3 | null {
+    return this.reaching && this.ik.reachable && this.ball ? this.ball.position : null;
   }
 
   attachBall(o: Object3D | null) {
@@ -87,8 +105,8 @@ export class LineupDirector {
     for (let i = 0; i < this.drivers.length; i++) {
       const d = this.drivers[i].current;
       const sc = this.scales[i];
-      if (i === 0 && s.walk) {
-        walkBetween(d, sc, this.time * SPEEDS.walk + 0.35, -1.02, 1.02, WALK_Z, this.frames);
+      if (i === 0 && s.gait) {
+        walkBetween(d, sc, this.time * SPEEDS[s.gait] + 0.35, -1.02, 1.02, WALK_Z, this.frames, s.gait);
         this.yOff[i] = d.position[1];
         continue;
       }
@@ -102,6 +120,7 @@ export class LineupDirector {
 
     // Reach: the IK puppet's right hand follows the yarn ball.
     const g = this.ball;
+    this.reaching = !!g && s.reach;
     if (!g) return;
     g.visible = s.reach;
     if (!s.reach) return;

@@ -11,7 +11,7 @@ export const metadata: Metadata = {
  * /render/lab/puppet — the paper puppet on a plain paper stage.
  *
  *   ?pose=<name>   start in a pose from shared/rig/poses.json (default stand)
- *   ?walk=0|1      walk the first puppet back and forth (default 0)
+ *   ?walk=1        walk the first puppet back and forth (?run=1 runs)
  *   ?reach=0|1     the right-hand puppet's hand follows the yarn ball (default 1)
  *   ?t=<seconds>   freeze time (walk phase, idle target) for screenshots
  *   ?crowd=<n>     n puppets walking, for the frame-rate check

@@ -5,14 +5,14 @@ import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { Plane, Raycaster, Vector2, Vector3, type Mesh } from "three";
 import type { DeckledMaskOptions } from "@/components/paper/materials";
 import { useCardBoxMaterials, useCutoutMaterial, usePaperMaterial } from "@/components/paper/usePaper";
-import { Puppet } from "@/components/stage/Puppet";
+import { Puppet, type PuppetHandle } from "@/components/stage/Puppet";
 import { RIG, scaleForBuild } from "@/components/stage/puppet/rig";
 import type { CharacterSheet } from "@/lib/types";
-import { ACTING_Z, CrowdDirector, FpsCounter, LineupDirector, SLOT_FACING, SLOT_X } from "./director";
+import { ACTING_Z, CrowdDirector, FpsCounter, IK_PUPPET, LineupDirector, SLOT_FACING, SLOT_X, type Gait } from "./director";
 
 export interface LabSettings {
   pose: string;
-  walk: boolean;
+  gait: Gait | null;
   reach: boolean;
   /** Frozen time in seconds, or null to run. */
   freeze: number | null;
@@ -126,17 +126,28 @@ function Lineup({ settings }: { settings: LabSettings }) {
     latest.current = settings;
   });
   const ballHit = useRef<Mesh>(null);
+  const reacher = useRef<PuppetHandle>(null);
+  const check = useMemo(() => new ReachCheck(), []);
   useYarnDrag(ballHit, director);
-  useFrame((_, delta) => director.step(delta, latest.current));
+  useFrame((_, delta) => {
+    director.step(delta, latest.current);
+    check.sample(reacher.current, director.reachTarget);
+  });
 
   return (
     <>
       {LINEUP.map((c, i) => (
-        <Puppet key={c.id} personId={c.id} character={c.character} driver={director.drivers[i]} />
+        <Puppet
+          key={c.id}
+          ref={i === IK_PUPPET ? reacher : undefined}
+          personId={c.id}
+          character={c.character}
+          driver={director.drivers[i]}
+        />
       ))}
       {settings.pose === "sit" &&
         LINEUP.map((c, i) =>
-          i === 0 && settings.walk ? null : (
+          i === 0 && settings.gait ? null : (
             <Stool key={c.id} x={SLOT_X[i]} facing={SLOT_FACING[i]} scale={scales[i]} />
           ),
         )}
@@ -145,6 +156,25 @@ function Lineup({ settings }: { settings: LabSettings }) {
       </group>
     </>
   );
+}
+
+/**
+ * Self-check that the rendered rig and the pure IK agree: the hand_r socket's
+ * world position (from the three.js tree) should sit on the IK target. The
+ * worst gap so far, in stage units, goes to <html data-reach-error>.
+ */
+class ReachCheck {
+  private readonly v = new Vector3();
+  private worst = 0;
+  private frames = 0;
+
+  sample(handle: PuppetHandle | null, target: Vector3 | null) {
+    if (!handle || !target) return;
+    handle.socketWorldPosition("hand_r", this.v);
+    const err = Math.hypot(this.v.x - target.x, this.v.y - target.y);
+    if (err > this.worst) this.worst = err;
+    if (++this.frames % 30 === 0) document.documentElement.dataset.reachError = this.worst.toExponential(2);
+  }
 }
 
 /** A little card stool under a sitting puppet's thighs. */

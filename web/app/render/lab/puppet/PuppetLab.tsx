@@ -5,8 +5,13 @@ import { motion } from "framer-motion";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { preloadPaperTextures } from "@/components/paper/materials";
+import { preloadPuppetKit } from "@/components/stage/puppet/kit";
+import type { ItemKind } from "@/components/stage/puppet/items";
 import { POSE_NAMES } from "@/components/stage/puppet/rig";
+import type { Gait } from "./director";
 import { BACKDROP_MASK, LabScene, type LabSettings } from "./LabScene";
+
+const LAB_ITEMS: ItemKind[] = ["flat_cap", "scarf", "glasses", "hat"];
 
 const label = (pose: string) => pose.replace(/_/g, " ");
 
@@ -20,7 +25,10 @@ export function PuppetLab() {
   const params = useSearchParams();
   const initialPose = params.get("pose");
   const [pose, setPose] = useState(initialPose && POSE_NAMES.includes(initialPose) ? initialPose : "stand");
-  const [walk, setWalk] = useState(params.get("walk") === "1");
+  const [gait, setGait] = useState<Gait | null>(
+    params.get("run") === "1" ? "run" : params.get("walk") === "1" ? "walk" : null,
+  );
+  const toggleGait = (g: Gait) => setGait((cur) => (cur === g ? null : g));
   const [reach, setReach] = useState(params.get("reach") !== "0");
   const freeze = num(params.get("t"));
   const crowd = Math.max(0, Math.min(24, Math.round(num(params.get("crowd")) ?? 0)));
@@ -30,15 +38,16 @@ export function PuppetLab() {
   const [ready, setReady] = useState(false);
   useEffect(() => {
     let live = true;
-    preloadPaperTextures({ kinds: ["paper", "card"], wood: false, masks: [BACKDROP_MASK] }).then(
-      () => live && setReady(true),
-    );
+    Promise.all([
+      preloadPaperTextures({ kinds: ["paper", "card"], wood: false, masks: [BACKDROP_MASK] }),
+      preloadPuppetKit(LAB_ITEMS),
+    ]).then(() => live && setReady(true));
     return () => {
       live = false;
     };
   }, []);
 
-  const settings: LabSettings = { pose, walk, reach, freeze, crowd, focus };
+  const settings: LabSettings = { pose, gait, reach, freeze, crowd, focus };
 
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-paper">
@@ -90,8 +99,11 @@ export function PuppetLab() {
               </Chip>
             ))}
             <span aria-hidden className="mx-2 h-5 w-px border-l border-dashed border-ink-faint/50" />
-            <Chip active={walk} onClick={() => setWalk((w) => !w)} pressed>
+            <Chip active={gait === "walk"} onClick={() => toggleGait("walk")} pressed>
               walk
+            </Chip>
+            <Chip active={gait === "run"} onClick={() => toggleGait("run")} pressed>
+              run
             </Chip>
             <Chip active={reach} onClick={() => setReach((r) => !r)} pressed>
               reach
