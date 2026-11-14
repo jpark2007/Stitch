@@ -32,6 +32,11 @@ ENV_VARS = (
     "STITCH_WEB_URL",
     "STITCH_SUBAGENT_MODEL",
     "STITCH_MODEL",
+    "STITCH_MAX_IMAGES_PER_RUN",
+    "STITCH_MAX_GRAPH_STEPS",
+    "STITCH_MODEL_TIMEOUT_S",
+    "STITCH_MODEL_MAX_RETRIES",
+    "STITCH_RUN_TIMEOUT_S",
 )
 
 
@@ -221,6 +226,50 @@ def test_describe_is_one_line_in_a_stable_order(monkeypatch: pytest.MonkeyPatch)
     assert line.startswith("studio services: model=real subagent_model=studio repo=mongo persistence=memory ")
     assert "art=placeholder tts=real" in line
     assert "sk-ant" not in line and "dummy" not in line
+    assert line.endswith(" limits=images=24 steps=1000 model_timeout=120s model_retries=2")
+    assert production.LABEL_ORDER[-2:] == ("compiler", "limits")
+
+
+def test_the_image_cap_and_the_limits_label(monkeypatch: pytest.MonkeyPatch, no_network: list[Any]) -> None:
+    dummy_keys(monkeypatch)
+    svc = production.production_services()
+    assert svc.art.max_images_per_run == 24
+    assert svc.labels["limits"] == "images=24 steps=1000 model_timeout=120s model_retries=2"
+
+    monkeypatch.setenv("STITCH_MAX_IMAGES_PER_RUN", "3")
+    monkeypatch.setenv("STITCH_MAX_GRAPH_STEPS", "400")
+    monkeypatch.setenv("STITCH_MODEL_TIMEOUT_S", "60")
+    monkeypatch.setenv("STITCH_MODEL_MAX_RETRIES", "1")
+    svc = production.production_services()
+    assert isinstance(svc.art.image_model, OpenAIImageModel)
+    assert svc.art.max_images_per_run == 3 and svc.art.images_left("any_run") == 3
+    assert svc.labels["limits"] == "images=3 steps=400 model_timeout=60s model_retries=1"
+    assert svc.model.default_request_timeout == 60.0 and svc.model.max_retries == 1
+    assert no_network == []
+
+
+def test_the_limits_leave_every_other_label_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    dummy_keys(monkeypatch, art=False, tts=False)
+    monkeypatch.setenv("STITCH_MAX_IMAGES_PER_RUN", "0")
+    svc = production.production_services()
+    assert {k: v for k, v in svc.labels.items() if k not in {"compiler", "limits"}} == {
+        "model": "real", "subagent_model": "studio", "repo": "mongo", "persistence": "memory",
+        "art": "placeholder", "tts": "fake", "vision": "real", "critic": "real", "renderer": "diagram",
+    }
+    assert svc.labels["limits"].startswith("images=0 ")
+    assert svc.art.image_model is None  # no key: placeholder art whatever the cap
+
+
+def test_a_bad_limit_does_not_stop_production(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    from agent import guards
+
+    monkeypatch.setattr(guards, "_warned", set())
+    dummy_keys(monkeypatch)
+    monkeypatch.setenv("STITCH_MAX_IMAGES_PER_RUN", "plenty")
+    caplog.set_level("WARNING", logger="agent.guards")
+    svc = production.production_services()
+    assert svc.art.max_images_per_run == 24
+    assert [r.getMessage() for r in caplog.records if "STITCH_MAX_IMAGES_PER_RUN" in r.getMessage()]
 
 
 @pytest.mark.parametrize(

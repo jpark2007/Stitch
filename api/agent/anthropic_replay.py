@@ -574,18 +574,22 @@ def replay_chat_model(
 ) -> tuple[ChatAnthropic, ReplayTransport]:
     """A real ChatAnthropic whose sync and async SDK clients send through a ReplayTransport.
 
-    Configured like `studio.make_model` (model id, max_tokens=16000, timeout=None, no stop
-    sequences) with a dummy API key and the default base URL. The model's cached
+    Configured like `studio.make_model` (model id, max_tokens=16000, the request timeout and
+    retries of `agent.guards.RunLimits`, no stop sequences) with a dummy API key and the
+    default base URL. The model's cached
     `_client` / `_async_client` are set to anthropic clients over `httpx2.Client` /
     `httpx2.AsyncClient` with the transport, so every request it makes, streamed or not,
     sync or async, is answered in process.
     """
+    from agent.guards import RunLimits
     from agent.studio import DEFAULT_MODEL
 
+    limits = RunLimits.from_env()
     chat = ChatAnthropic(
         model_name=model or DEFAULT_MODEL,
         max_tokens=MAX_TOKENS,
-        timeout=None,
+        timeout=limits.model_timeout_s,
+        max_retries=limits.model_max_retries,
         stop=None,
         api_key=SecretStr(DUMMY_API_KEY),
         base_url=BASE_URL,

@@ -68,12 +68,12 @@ class BarrierArt(ArtService):
         self.barrier = barrier
 
     def make_layer(self, prompt: str, *, layer: Any, reference_images: Sequence[bytes] = (),
-                   size: tuple[int, int] = (2048, 1024)) -> Cutout | None:
+                   size: tuple[int, int] = (2048, 1024), run_id: str | None = None) -> Cutout | None:
         self.barrier.wait(timeout=WAIT)
         return None
 
     def make_cutout(self, prompt: str, *, reference_images: Sequence[bytes] = (),
-                    size: tuple[int, int] = (1024, 1024)) -> Cutout | None:
+                    size: tuple[int, int] = (1024, 1024), run_id: str | None = None) -> Cutout | None:
         self.barrier.wait(timeout=WAIT)
         return None
 
@@ -282,7 +282,7 @@ class IntruderArt(ArtService):
         self.intruded = False
 
     def make_layer(self, prompt: str, *, layer: Any, reference_images: Sequence[bytes] = (),
-                   size: tuple[int, int] = (2048, 1024)) -> Cutout | None:
+                   size: tuple[int, int] = (2048, 1024), run_id: str | None = None) -> Cutout | None:
         if not self.intruded:
             self.intruded = True
             self.repo.save_set(FAM, SetDef(

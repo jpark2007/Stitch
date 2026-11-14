@@ -28,6 +28,11 @@ not save itself: should one appear at the reserved id anyway (a writer outside t
 registry, such as another API process; see the claims module on the single-process
 assumption), the layer is saved under a freshly claimed id, with a warning in the log,
 and the tool result reports the id actually used.
+
+Image budget: each layer drawn counts against the run's image budget
+(`ArtService.max_images_per_run`, keyed by the run id). Once it is spent the layer is saved
+with placeholder art (null art + color), the call still succeeds, and the result carries a
+`note` saying the budget is used up.
 """
 
 from __future__ import annotations
@@ -46,7 +51,7 @@ from langchain_core.tools import BaseTool, tool
 
 from agent.repo import AgentRepo
 from agent.run_info import RunInfo
-from agent.tools.art import ArtService, build_art_prompt, placeholder_color
+from agent.tools.art import ArtService, budget_note, build_art_prompt, placeholder_color
 from agent.tools.claims import claim_id, owner_of, release_claim
 from agent.tools.family import era_for_year
 from schemas import SetDef, SetLayer
@@ -280,7 +285,9 @@ def make_set_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[BaseT
         depth = LAYER_DEPTH[layer]
         height = LAYER_HEIGHT[layer]
         prompt = build_art_prompt(description, kind="set_layer", layer=layer, era=era)
-        cutout = art.make_layer(prompt, layer=layer, reference_images=references, size=layer_size(height))
+        cutout = art.make_layer(
+            prompt, layer=layer, reference_images=references, size=layer_size(height), run_id=run.run_id
+        )
         art_ref: str | None = None
         if cutout is not None:
             try:
@@ -327,16 +334,17 @@ def make_set_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[BaseT
             # Saved: the repo now guards the id, and state.saved keeps it this run's.
             release_claim(family_id, "set", run.run_id, saved.id)
 
-        return json.dumps(
-            {
-                "setId": saved.id,
-                "name": saved.name,
-                "layers": [_layer_brief(la) for la in saved.layers],
-                "marks": saved.marks,
-                "art": "generated" if art_ref is not None else "placeholder",
-            },
-            ensure_ascii=False,
-        )
+        result: dict[str, Any] = {
+            "setId": saved.id,
+            "name": saved.name,
+            "layers": [_layer_brief(la) for la in saved.layers],
+            "marks": saved.marks,
+            "art": "generated" if art_ref is not None else "placeholder",
+        }
+        if cutout is None and art.images_left(run.run_id) == 0:
+            # The run's image budget is spent (not a failed call): say so, so the agent does not retry.
+            result["note"] = budget_note(art.max_images_per_run or 0, f"the {layer} layer of {saved.name}")
+        return json.dumps(result, ensure_ascii=False)
 
     return [find_set, generate_set_layer]
 
