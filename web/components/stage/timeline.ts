@@ -118,6 +118,53 @@ export function springAt(events: readonly SpringEvent[], t: number, omega: numbe
   return tmp[0];
 }
 
+/** A piecewise-linear target path: [time, value] keys, sorted by time. */
+export type LinearKeys = [number, number][];
+
+/** The target path's value at `t` (held flat before the first and after the last key). */
+export function linearAt(keys: readonly (readonly [number, number])[], t: number, rest = 0): number {
+  if (keys.length === 0) return rest;
+  if (t <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) {
+    const [t1, v1] = keys[i];
+    if (t < t1) {
+      const [t0, v0] = keys[i - 1];
+      return v0 + ((v1 - v0) * (t - t0)) / (t1 - t0);
+    }
+  }
+  return keys[keys.length - 1][1];
+}
+
+const err: [number, number] = [0, 0];
+
+/**
+ * A critically damped follower of a piecewise-linear target, evaluated in
+ * closed form at time `t` (no integration, so any time gives the same pose).
+ * The damping acts on the velocity relative to the target, so it tracks a
+ * steady ramp with no lag; when a ramp stops, the follower carries its speed
+ * past the end and settles back, overshooting by about rate / (omega * e).
+ * An accelerating ramp therefore ends in one soft overshoot: a paper pop.
+ */
+export function followAt(keys: readonly (readonly [number, number])[], t: number, omega: number, rest = 0): number {
+  if (keys.length === 0) return rest;
+  let x = keys[0][1];
+  let v = 0;
+  if (t <= keys[0][0]) return x;
+  for (let i = 0; i < keys.length; i++) {
+    const [t0, r0] = keys[i];
+    const last = i === keys.length - 1;
+    const t1 = last ? Infinity : keys[i + 1][0];
+    const b = last || t1 - t0 < 1e-6 ? 0 : (keys[i + 1][1] - r0) / (t1 - t0);
+    const dt = Math.min(t, t1) - t0;
+    // Error dynamics are a free critically damped spring around zero.
+    springStep(err, x - r0, v - b, 0, omega, dt);
+    x = r0 + b * dt + err[0];
+    v = b + err[1];
+    if (t <= t1) return x;
+  }
+  return x;
+}
+
 /**
  * Per-frame critically damped smoothing of a value towards a moving target
  * (the "SmoothDamp" from game engines). `state` holds [value, velocity] and is
