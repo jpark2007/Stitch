@@ -8,11 +8,11 @@
       "set": "mao_driveway_1972",
       "marks": {},
       "start": {
-        "grandpa_joseph": {"at": "front_walk", "facing": "right"},
-        "grandma_rosa": {"at": "porch", "facing": "right"},
+        "grandpa_joseph": {"at": "driveway", "facing": "right"},
+        "grandma_rosa": {"at": "front_walk", "facing": "right"},
         "dad": {"at": "porch", "holding": "road_map", "facing": "right"}
       },
-      "propStart": {"green_sedan": {"at": "car_spot"}},
+      "propStart": {"green_sedan": {"at": "car_spot"}, "fruit_crate": {"at": "offstage_right"}, "peaches": {"at": "offstage_right"}},
       "camera": [
         {"t": 0, "move": "wide"},
         {"t": 5.4, "move": "close_up", "target": "road_map", "dur": 1.2},
@@ -66,7 +66,7 @@
     {
       "id": "s2",
       "set": "coast_road_1972",
-      "marks": {"beside_crate": [0.78, 0.0]},
+      "marks": {"beside_crate": [0.77, 0.0]},
       "start": {
         "grandpa_joseph": {"at": "road_in", "in": "green_sedan.driver"},
         "grandma_rosa": {"at": "road_in", "in": "green_sedan.passenger"},
@@ -91,15 +91,19 @@
         {"t": 2.6, "who": "grandpa_joseph", "do": "get_out", "what": "green_sedan"},
         {"t": 2.8, "who": "grandma_rosa", "do": "get_out", "what": "green_sedan"},
         {"t": 3.0, "who": "dad", "do": "get_out", "what": "green_sedan"},
-        {"t": 4.0, "who": "grandpa_joseph", "do": "kneel", "dur": 2.5, "id": "fix"},
+        {"t": 3.0, "who": "grandpa_joseph", "do": "walk_to", "to": "tire_spot"},
+        {"t": 5.7, "who": "grandpa_joseph", "do": "turn_to", "target": "green_sedan"},
+        {"t": 5.8, "who": "grandpa_joseph", "do": "kneel", "dur": 6.5, "id": "fix"},
         {"t": 4.2, "who": "dad", "do": "sit_on", "what": "fruit_crate", "id": "crate"},
         {"t": 3.8, "who": "grandma_rosa", "do": "pick_up", "what": "peaches"},
-        {"t": 7.6, "who": "grandma_rosa", "do": "walk_to", "to": "beside_crate"},
-        {"t": 9.5, "who": "grandma_rosa", "do": "hand_to", "what": "peaches", "to": "dad", "id": "peaches"}
+        {"t": 8.2, "who": "grandma_rosa", "do": "walk_to", "to": "beside_crate"},
+        {"t": 9.5, "who": "grandma_rosa", "do": "hand_to", "what": "peaches", "to": "dad", "id": "peaches"},
+        {"t": 11.0, "who": "dad", "do": "hold", "what": "peaches", "id": "eat"},
+        {"t": 11.6, "who": "grandma_rosa", "do": "lean_toward", "target": "dad", "dur": 1.4}
       ],
       "narration": [
         {
-          "t": 3.4,
+          "t": 5.2,
           "text": "We got a flat tire outside a peach stand.",
           "source": "telling:dad:s3",
           "cue": "fix",

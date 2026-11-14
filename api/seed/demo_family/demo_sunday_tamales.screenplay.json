@@ -6,10 +6,11 @@
     {
       "id": "s1",
       "set": "carmen_kitchen_1970",
-      "marks": {"at_table": [0.45, 0.0]},
+      "marks": {},
       "start": {
         "grandma_carmen": {"at": "by_stove", "holding": "tamale_pot", "facing": "right"},
-        "mom": {"at": "table_right", "holding": "lumpy_tamale", "facing": "left"}
+        "mom": {"at": "table_right", "holding": "lumpy_tamale", "facing": "left"},
+        "grandpa_luis": {"at": "offstage_right", "facing": "left"}
       },
       "propStart": {
         "kitchen_table": {"at": "table_spot"},
@@ -34,7 +35,7 @@
           "id": "pot_down"
         },
         {"t": 5.2, "who": "mom", "do": "hold", "what": "lumpy_tamale", "id": "masa"},
-        {"t": 6.4, "who": "grandma_carmen", "do": "lean_toward", "target": "mom", "dur": 1.2},
+        {"t": 4.4, "who": "grandma_carmen", "do": "lean_toward", "target": "mom", "dur": 1.6},
         {"t": 7.4, "who": "grandpa_luis", "do": "enter", "from": "offstage_right", "to": "back_door", "id": "luis_in"},
         {"t": 9.8, "who": "grandpa_luis", "do": "sit_on", "what": "kitchen_chair", "id": "sit"}
       ],
@@ -60,11 +61,11 @@
     {
       "id": "s2",
       "set": "carmen_kitchen_1970",
-      "marks": {"by_chair": [0.64, 0.0]},
+      "marks": {},
       "start": {
         "grandpa_luis": {"at": "chair_spot", "in": "kitchen_chair.seat", "facing": "left"},
-        "mom": {"at": "by_chair", "holding": "lumpy_tamale", "facing": "right"},
-        "grandma_carmen": {"at": "by_stove", "facing": "right"}
+        "mom": {"at": "table_right", "holding": "lumpy_tamale", "facing": "left"},
+        "grandma_carmen": {"at": "at_table", "facing": "right"}
       },
       "propStart": {},
       "camera": [
@@ -74,6 +75,7 @@
       ],
       "actions": [
         {"t": 0, "do": "steam", "at": "tamale_pot", "dur": 6},
+        {"t": 0.1, "who": "mom", "do": "walk_to", "to": "by_chair", "id": "to_papa"},
         {
           "t": 1.4,
           "who": "mom",
@@ -83,7 +85,9 @@
           "id": "tamale"
         },
         {"t": 3.0, "who": "grandpa_luis", "do": "hold", "what": "lumpy_tamale", "id": "best"},
+        {"t": 3.0, "who": "grandma_carmen", "do": "walk_to", "to": "table_right"},
         {"t": 3.6, "who": "mom", "do": "sit_on", "what": "kitchen_stool", "id": "ana_sits"},
+        {"t": 4.4, "who": "mom", "do": "turn_to", "target": "grandpa_luis"},
         {"t": 4.6, "who": "grandpa_luis", "do": "pose", "pose": "arms_raised", "dur": 1.4, "id": "cheer"},
         {"t": 5.0, "who": "grandma_carmen", "do": "lean_toward", "target": "grandpa_luis", "dur": 1.4}
       ],
