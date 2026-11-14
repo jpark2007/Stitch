@@ -611,6 +611,62 @@ def test_default_telling_lines_overlap():
         "start line 1 later or shorten line 0"
     )
     assert str(e).startswith("shot s1, dad's narration line 1: line 1 starts")
+    # narrate_shot reports it for a shot with no other tellings too.
+    sp = Screenplay.model_validate({"memoryId": "m", "cast": ["dad"], "shots": [shot.model_dump(by_alias=True)]})
+    e = _err(narrate_shot, sp, sp.shots[0], ACTION_START, "dad")
+    assert (e.code, e.author, e.line_index) == ("lines_overlap", "dad", 1)
+
+
+def _overlapping_default_shot() -> Shot:
+    return Shot(
+        id="s1",
+        set="x",
+        actions=[Action(t=0.3, do="drop", who="mom", what="b", id="drop")],
+        narration=[line(0.0, "one two three four"), line(0.3, "Dropped.", cue="drop")],
+    )
+
+
+def test_a_default_overlap_never_hides_a_tellers_own_errors():
+    shot = _overlapping_default_shot()
+    retimed = retime_actions(shot, 0.0)
+    kid = [line(0.0, "a b c d"), line(0.2, "e")]
+    e = _err(build_shot_narration, shot, 0.0, retimed, {"kid": kid}, "dad")
+    assert (e.code, e.author, e.line_index) == ("lines_overlap", "kid", 1)
+    early = [line(0.0, "a b c d e f g h", cue="drop", cue_word="h")]  # would start at -1.45
+    e = _err(build_shot_narration, shot, 0.0, retimed, {"kid": early}, "dad")
+    assert (e.code, e.author, e.line_index) == ("cue_before_start", "kid", 0)
+    # With clean tellers, the default overlap is reported.
+    e = _err(build_shot_narration, shot, 0.0, retimed, {"kid": [line(0.0, "Kid says")]}, "dad")
+    assert (e.code, e.author, e.line_index) == ("lines_overlap", "dad", 1)
+
+
+def test_check_default_false_reports_a_default_overlap_once_per_shot():
+    # One teller per call (as validation does): check_default=False on those calls and a
+    # single default-only call give each problem once.
+    shot = _overlapping_default_shot()
+    retimed = retime_actions(shot, 0.0)
+    for author in ("mom", "kid"):
+        built = build_shot_narration(shot, 0.0, retimed, {author: [line(0.0, "says")]}, "dad", check_default=False)
+        assert list(built) == ["dad", author]
+    e = _err(build_shot_narration, shot, 0.0, retimed, {}, "dad")
+    assert (e.code, e.author, e.line_index) == ("lines_overlap", "dad", 1)
+    # check_default=False still checks the other tellers.
+    kid = [line(0.0, "a b c d"), line(0.2, "e")]
+    e = _err(build_shot_narration, shot, 0.0, retimed, {"kid": kid}, "dad", check_default=False)
+    assert (e.code, e.author) == ("lines_overlap", "kid")
+
+
+def test_each_teller_is_checked_before_the_next():
+    shot = _rise_shot(0.5)
+    retimed = retime_actions(shot, ACTION_START)
+    other = {
+        "mom": [line(0.0, "a b c d"), line(0.2, "e")],  # overlaps
+        "kid": [line(0.0, "a b c d e f g h", cue="drop", cue_word="h")],  # before the shot starts
+    }
+    e = _err(build_shot_narration, shot, ACTION_START, retimed, other, "dad")
+    assert (e.code, e.author) == ("lines_overlap", "mom")
+    e = _err(build_shot_narration, shot, ACTION_START, retimed, dict(reversed(other.items())), "dad")
+    assert (e.code, e.author) == ("cue_before_start", "kid")
 
 
 def test_lines_may_follow_back_to_back():
@@ -618,6 +674,8 @@ def test_lines_may_follow_back_to_back():
     shot = Shot(id="s1", set="x", narration=[line(0.0, "one two three four"), line(1.0, "five six")])
     built = build_shot_narration(shot, ACTION_START, [], {}, "dad")
     assert [ln.t for ln in built["dad"]] == [1.2, 2.2]
+    mom = [line(0.0, "one two three four"), line(1.0, "five six")]
+    assert [ln.t for ln in build_shot_narration(shot, ACTION_START, [], {"mom": mom}, "dad")["mom"]] == [1.2, 2.2]
 
 
 def test_overlap_uses_tts_word_times_and_skips_silent_lines():
@@ -686,7 +744,9 @@ def test_other_telling_before_the_set_rises_is_an_error():
     mom = [line(0.0, "a b c d e f g h", cue="drop", cue_word="h")]
     e = _err(build_shot_narration, shot, ACTION_START, retime_actions(shot, ACTION_START), {"mom": mom}, "dad")
     assert (e.code, e.author, e.shot, e.line_index) == ("cue_before_start", "mom", "s1", 0)
+    # The shot starts (TimelineShot.start) when its set starts rising, RISE before t=0. The
+    # wording matches what validation reports (tests/screenplay/test_validate.py).
     assert e.reason == (
-        'to land its cue word on the action, "a b c d e f g h" would start at shot t=-1.25, before the set '
-        "starts rising at shot t=-1.20; shorten the words before the cue word or move the action later"
+        'to land its cue word on the action, "a b c d e f g h" would start at shot t=-1.25, before the '
+        "shot starts; shorten the words before the cue word or move the action later"
     )
