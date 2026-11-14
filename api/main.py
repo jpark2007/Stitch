@@ -116,6 +116,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send  # noqa: E402
 import routes.ask  # noqa: E402
 import routes.auth  # noqa: E402
 import routes.families  # noqa: E402
+import routes.films  # noqa: E402
 import routes.memories  # noqa: E402
 import routes.props  # noqa: E402
 import routes.traditions  # noqa: E402
@@ -137,6 +138,7 @@ ROUTERS: tuple[APIRouter, ...] = (
     routes.ask.router,
     routes.memories.router,
     routes.traditions.router,
+    routes.films.router,
 )
 
 DEFAULT_CORS_ORIGINS: tuple[str, ...] = ("http://localhost:3000", "http://127.0.0.1:3000")
