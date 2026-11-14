@@ -41,7 +41,6 @@ export function FilmPhotoPicker(props: {
   const uid = useId();
   const inputId = `${uid}-input`;
   const countId = `${uid}-count`;
-  const errorId = `${uid}-error`;
   const notesId = `${uid}-notes`;
   const [dragging, setDragging] = useState(false);
 
@@ -77,7 +76,8 @@ export function FilmPhotoPicker(props: {
     onAdd(Array.from(e.dataTransfer.files));
   }
 
-  const describedBy = [countId, notes.length ? notesId : null, error ? errorId : null].filter(Boolean).join(" ");
+  // The count line carries the photos' error too (see below).
+  const describedBy = [countId, notes.length ? notesId : null].filter(Boolean).join(" ");
   // The meter: filled up to the count out of 40, with a notch at 8.
   const fill = Math.min(1, count / MAX_FILM_PHOTOS);
   const notch = MIN_FILM_PHOTOS / MAX_FILM_PHOTOS;
@@ -140,8 +140,13 @@ export function FilmPhotoPicker(props: {
       </label>
 
       <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-5">
-        <p id={countId} aria-live="polite" className={`text-[0.9375rem] ${line.ready ? "text-ink" : "text-ink-soft"}`}>
-          {line.text}
+        {/* After a send with too few photos the error says it; the count line would only repeat it. */}
+        <p
+          id={countId}
+          aria-live="polite"
+          className={error ? FIELD_ERROR_CLASS : `text-[0.9375rem] ${line.ready ? "text-ink" : "text-ink-soft"}`}
+        >
+          {error ?? line.text}
         </p>
         <div aria-hidden="true" className="relative h-1 w-full max-w-[12rem] shrink-0 rounded-full bg-paper-deep sm:ml-auto">
           <div
@@ -161,12 +166,6 @@ export function FilmPhotoPicker(props: {
           ))}
         </div>
       ) : null}
-      {error ? (
-        <p id={errorId} className={`mt-2 ${FIELD_ERROR_CLASS}`}>
-          {error}
-        </p>
-      ) : null}
-
       {count > 0 ? (
         <ul
           aria-label="Photos picked"
