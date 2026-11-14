@@ -116,7 +116,8 @@ def test_the_same_bad_value_warns_once_per_process(caplog: pytest.LogCaptureFixt
 
 
 def test_label() -> None:
-    assert DEFAULTS.label() == "images=24 steps=1000 model_timeout=120s model_retries=2"
+    assert DEFAULTS.label() == "images=24 steps=1000 model_timeout=120s model_retries=2 run_timeout=1200s"
+    assert RunLimits(run_timeout_s=90.5).label().endswith(" model_retries=2 run_timeout=90.5s")
     assert RunLimits(max_images_per_run=0, model_timeout_s=30.5).label().startswith("images=0 steps=1000 model_timeout=30.5s")
 
 

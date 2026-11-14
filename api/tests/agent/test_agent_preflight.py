@@ -8,10 +8,12 @@ built, and no test launches a browser.
 from __future__ import annotations
 
 import contextlib
+import importlib
 import io
 import json
 import logging
 import os
+import re
 import socket
 from collections.abc import Iterator
 from pathlib import Path
@@ -669,36 +671,26 @@ def test_limits_section_shows_each_variable_and_the_value_in_force(monkeypatch: 
         "problem": None,
         "severity": None,
     }
-    assert (
-        limits["mode"]
-        == RunLimits.from_env(os.environ).label()
-        == "images=6 steps=1000 model_timeout=120s model_retries=2"
-    )
-    assert "900 s per run" in limits["summary"]
+    expected = RunLimits(max_images_per_run=6, run_timeout_s=900.0).label()
+    assert limits["mode"] == RunLimits.from_env(os.environ).label() == expected
+    assert "run_timeout=900s" in expected
+    assert "900 s of running time per run" in limits["summary"]
 
 
-def test_the_run_timeout_is_flagged_while_the_run_manager_does_not_enforce_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_run_timeout_is_a_rule_not_a_caveat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """runs.py enforces STITCH_RUN_TIMEOUT_S: preflight states the rule and never warns it is unenforced."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
     monkeypatch.setenv("STITCH_FAKE_DB", "1")
-    monkeypatch.delattr(runs, "RUN_TIMEOUT_ERROR", raising=False)
+    assert hasattr(runs, "RUN_TIMEOUT_ERROR")
+    assert not hasattr(preflight, "run_timeout_enforced")
     code, out = run(["--json"])
     limits = by_service(out)["limits"]
-    assert "(not enforced yet" in limits["summary"]
-    assert any(p["severity"] == "warning" and "not enforced in this checkout" in p["text"] for p in limits["problems"])
-    assert not any("never while it waits on the teller" in n for n in limits["notes"])
-    assert code == 0  # a warning, not a failure
-
-    monkeypatch.setattr(runs, "RUN_TIMEOUT_ERROR", "the studio took too long", raising=False)
-    _, out = run(["--json"])
-    limits = by_service(out)["limits"]
-    assert "not enforced" not in limits["summary"] and limits["problems"] == []
+    assert limits["problems"] == []
     assert any("never while it waits on the teller" in n for n in limits["notes"])
-
-
-def test_run_timeout_enforced_reads_the_run_manager_in_this_checkout() -> None:
-    assert preflight.run_timeout_enforced() is hasattr(runs, "RUN_TIMEOUT_ERROR")
+    assert "not enforced" not in out
+    assert code == 0
+    _, text = run([])
+    assert "not enforced" not in text and "never while it waits on the teller" in text
 
 
 @pytest.mark.parametrize(
@@ -1197,5 +1189,174 @@ def test_readme_documents_every_var_the_limits_the_fallbacks_and_the_commands() 
         "its one retry failing too",
         "never while it waits on the teller",
         "| Service |",  # the fallback table
+        "agent.demo --fake --auto --weekend",
     ):
         assert needle in readme, needle
+
+
+README = Path(preflight.__file__).parent / "README.md"
+_TABLE_VAR = re.compile(r"^\|\s*`([A-Z][A-Z0-9_]+)`\s*\|", re.MULTILINE)
+"""The first cell of a README table row, when it is one env var in backticks."""
+
+
+def readme_table_vars(text: str) -> set[str]:
+    return set(_TABLE_VAR.findall(text))
+
+
+def test_readme_tables_name_exactly_the_variables_preflight_reads() -> None:
+    """Doc drift: every env var a README table lists is one preflight reports, and the other way round."""
+    documented = readme_table_vars(README.read_text())
+    reported = set(preflight.ENV_NAMES) | {name for name, _ in preflight.LIMIT_ENVS}
+    assert documented, "no variable tables found in the README"
+    assert documented - reported == set(), "in the README but not in preflight.ENV_NAMES/LIMIT_ENVS"
+    assert reported - documented == set(), "in preflight.ENV_NAMES/LIMIT_ENVS but not in a README table"
+
+
+def test_readme_table_parser_sees_rows_and_skips_prose() -> None:
+    sample = "| `FOO_BAR` | x |\n| `STITCH_X_1` | `1` |\n| model | `real` |\nsee `NOT_A_ROW` here\n"
+    assert readme_table_vars(sample) == {"FOO_BAR", "STITCH_X_1"}
+
+
+_MODULE_COMMAND = re.compile(r"python -m (agent\.[a-z_]+)")
+
+
+def test_every_agent_module_the_readme_runs_is_importable_with_a_main() -> None:
+    modules = set(_MODULE_COMMAND.findall(README.read_text()))
+    assert {"agent.preflight", "agent.demo"} <= modules
+    for name in sorted(modules):
+        module = importlib.import_module(name)
+        assert callable(getattr(module, "main", None)), f"{name} has no main()"
+
+
+def test_the_runbook_has_no_transitional_caveats() -> None:
+    """runs.py enforces the run timeout and TTS degrades mid-run: no 'until then' notes remain."""
+    text = README.read_text()
+    for stale in (
+        "not enforced",
+        "once the run-timeout change",
+        "Until then",
+        "Depends on your checkout",
+        "ends the run",
+        "fails the run",
+    ):
+        assert stale not in text, stale
+    assert "never while it waits on the teller" in text
+
+
+def test_a_set_mongodb_uri_names_its_in_memory_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
+    monkeypatch.setenv("MONGODB_URI", MONGO_URI)
+    code, out = run(["--json"])
+    persistence = by_service(out)["persistence"]
+    assert persistence["mode"] == "mongo"
+    assert "unreachable" in persistence["fallback"] and "persistence=memory" in persistence["fallback"]
+    assert "lost when the API restarts" in persistence["fallback"]
+    assert code == 0
+
+
+# --------------------------------------------------------------- secrecy, every secret variable
+
+
+SENTINELS: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "sk-ant-api03-SENTINELanthropic0101",
+    images_adapter.API_KEY_ENV: "sk-proj-SENTINELimage0102",
+    tts_adapter.API_KEY_ENV: "sk_SENTINELelevenlabs0103",
+    "JWT_SECRET": "SENTINELjwtSECRET0104",
+    "VOYAGE_API_KEY": "pa-SENTINELvoyage0105",
+}
+SENTINEL_MONGO_USER = "SENTINELmongoUSER0106"
+SENTINEL_MONGO_PASSWORD = "SENTINELmongoPASS0107"
+SENTINEL_TEST_USER = "SENTINELtestUSER0108"
+SENTINEL_TEST_PASSWORD = "SENTINELtestPASS0109"
+SENTINEL_WEB_TOKEN = "SENTINELwebTOKEN0110"
+SENTINEL_URI = (
+    f"mongodb+srv://{SENTINEL_MONGO_USER}:{SENTINEL_MONGO_PASSWORD}@cluster0.example.mongodb.net/stitch"
+    "?retryWrites=true"
+)
+SENTINEL_TEST_URI = f"mongodb://{SENTINEL_TEST_USER}:{SENTINEL_TEST_PASSWORD}@test.example.com/stitch_test"
+
+
+def every_sentinel() -> list[str]:
+    return [
+        *SENTINELS.values(),
+        SENTINEL_MONGO_USER,
+        SENTINEL_MONGO_PASSWORD,
+        SENTINEL_TEST_USER,
+        SENTINEL_TEST_PASSWORD,
+        SENTINEL_WEB_TOKEN,
+        SENTINEL_URI,
+        SENTINEL_TEST_URI,
+    ]
+
+
+def set_sentinels(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in SENTINELS.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("MONGODB_URI", SENTINEL_URI)
+    monkeypatch.setenv("MONGODB_URI_TEST", SENTINEL_TEST_URI)
+    monkeypatch.setenv("STITCH_WEB_URL", f"https://web.example.com/?token={SENTINEL_WEB_TOKEN}")
+
+
+def sentinel_echoing_seams() -> preflight.LiveSeams:
+    """Every live seam fails with an error that echoes every key, both URIs and the web token back."""
+    echo = " ".join(form for s in every_sentinel() for form in sorted(all_forms(s)))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text=f"{request.url} {request.headers} rejected: {echo}")
+
+    claude = FakeAnthropic(
+        error=anthropic.AuthenticationError(
+            message=f"invalid x-api-key {echo}",
+            response=httpx.Response(401, request=httpx.Request("GET", "https://api.anthropic.com/v1/models")),
+            body={"error": {"message": echo}},
+        )
+    )
+    mongo = FakeMongo(error=OperationFailure(f"bad auth for {SENTINEL_URI}: {echo}"))
+    return seams(handler=handler, claude=claude, mongo=mongo, browser=FakeBrowser("down", echo=echo))
+
+
+def test_the_secret_list_covers_every_secret_variable_preflight_reads() -> None:
+    """A new key-shaped variable in ENV_NAMES must be in SECRET_ENVS, or this sweep would miss it."""
+    keyish = {n for n in preflight.ENV_NAMES if re.search(r"KEY|SECRET|TOKEN|PASSWORD|URI", n)}
+    assert keyish <= set(preflight.SECRET_ENVS)
+    assert set(SENTINELS) | {"MONGODB_URI", "MONGODB_URI_TEST"} == set(preflight.SECRET_ENVS)
+
+
+@pytest.mark.parametrize("argv", [[], ["--json"], ["--live"], ["--live", "--json"]])
+def test_no_sentinel_reaches_stdout_or_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    set_sentinels(monkeypatch)
+    caplog.set_level(logging.DEBUG)
+    out = io.StringIO()
+    s = sentinel_echoing_seams()
+    code = preflight.main(argv, out=out, seams=s)
+    text = out.getvalue()
+    captured = capsys.readouterr()
+    assert text.strip(), "preflight wrote nothing"
+    if "--json" in argv:
+        by_service(text)  # still valid JSON
+    if "--live" in argv:
+        assert code == 1  # every provider failed
+        assert "[redacted]" in text
+        assert any("render page probe" in r.getMessage() for r in caplog.records)
+    else:
+        assert code == 0, text
+    for sentinel in every_sentinel():
+        for form in all_forms(sentinel):
+            for where, blob in (
+                ("stdout", text),
+                ("process stdout", captured.out),
+                ("process stderr", captured.err),
+                ("log text", caplog.text),
+                ("log messages", "\n".join(r.getMessage() for r in caplog.records)),
+            ):
+                assert form not in blob, f"{sentinel!r} in {where}"
+    # Every key shows only its length and format.
+    if "--json" not in argv:
+        for name in SENTINELS:
+            if name in preflight.ENV_NAMES:
+                assert re.search(rf"{name}\s+set \(\d+ chars\)", text), name
