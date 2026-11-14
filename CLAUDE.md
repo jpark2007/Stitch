@@ -4,7 +4,7 @@ HackPrinceton Fall 2026 project, due Sunday 2026-11-15. Repo: https://github.com
 
 Priorities for all work: **quality > speed > cost.**
 
-Read `README.md` for the product and the relevant section of `ARCHITECTURE.md` before building any part. `web/AGENTS.md` applies to everything under `web/` (this Next.js version has breaking changes; read its bundled docs before writing code).
+Read `README.md` for the product and the relevant section of `ARCHITECTURE.md` before building any part. `DESIGN.md` is the look, feel and interaction spec and the quality bar: read your area's section before building or reviewing any UI, and run its self-testing loop (headless browser, console errors, screenshots, at least two improvement passes) before calling UI work done. `web/AGENTS.md` applies to everything under `web/` (this Next.js version has breaking changes; read its bundled docs before writing code).
 
 ## Ownership
 
@@ -34,6 +34,8 @@ This split is the default proposed on Issue #1. To swap areas, agree on the issu
 - Rebase on `origin/main` before every push.
 - **Never push to `main`.** Merge through a PR once checks pass and a reviewer has passed it (see "Working agentically").
 - Checks: `web/` → `npx tsc --noEmit && npm run lint`; `api/` → `uv run pytest`.
+- **Commits and PRs are authored by the human owner only.** No `Co-Authored-By` trailers and no "Generated with" lines for Claude or any other AI tool, in commit messages or PR descriptions. `.claude/settings.json` turns the automatic ones off.
+- Commit as the same GitHub account you push with. Before your first commit, check that `git config user.email` belongs to the account `gh api user -q .login` prints; if not, fix it for this repo with `git config --local user.name` / `user.email`.
 - Lockfiles (`web/package-lock.json`, `api/uv.lock`): on conflict take `main`'s version and regenerate (`npm install` / `uv lock`). Never hand-merge.
 - Build steps from `ARCHITECTURE.md` section 8 are tracked as GitHub issues labeled `web` / `api`. Reference the issue in your PR.
 
@@ -107,6 +109,13 @@ Use a workflow (many agents orchestrated by a script) when a build step splits i
 Rules for unattended (overnight) runs:
 
 - Only work inside your own area. Contract changes are additive only and always posted.
-- Stop the run when the backlog is empty, when two waves in a row fail review, or when a `BLOCKED:` or `REQUEST` needs a human. Post the reason.
+- **Never be stagnant.** An overnight run does not idle, wait on a person, or end early. There is always a next thing to do:
+  - Blocked on a human decision or a teammate's `REQUEST`? Post `BLOCKED:` and switch to another task straight away. Come back when it is answered.
+  - A task was sent back twice? Park it with a note and start a different one. Do not retry the same approach a third time.
+  - Waiting on checks, a merge or another agent? Start the next task in the meantime.
+  - Backlog empty? Start quality passes on what is already built, in this order: (1) the `DESIGN.md` self-testing loop on every screen in your area, (2) missing tests and edge cases, (3) a bug hunt by fresh reviewers on merged code, (4) performance against the 60 FPS bar, (5) pre-rendering and checking the seeded demo family, (6) docs and the README's "Using the app" list.
+  - Each quality pass must end in a concrete change or a written finding. Re-running the same check with no new result does not count as work.
+- Being busy is not a reason to widen scope. Do not invent features, and do not leave your area to find work; improve what is in `README.md`, `ARCHITECTURE.md` and `DESIGN.md`.
+- The only things that pause a run are a usage limit (it resumes on reset) and `main` being broken (fix or revert first).
 - `main` must stay demoable. If a merge breaks checks on `main`, the next action is to revert it, before anything else.
 - End with a short morning report on Issue #1: what merged, what was sent back and why, what is blocked.
