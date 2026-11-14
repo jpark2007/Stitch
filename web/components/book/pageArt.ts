@@ -112,10 +112,11 @@ function paper(ctx: Ctx, w: number, h: number, o: PaperOptions) {
   for (let i = 0; i < 9; i++) {
     const x = r() * w;
     const y = r() * h;
-    const rad = (0.2 + r() * 0.35) * Math.max(w, h);
+    const rad = (0.3 + r() * 0.4) * Math.max(w, h);
     const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
     const light = r() > 0.4;
-    g.addColorStop(0, light ? "rgba(255,252,244,0.2)" : "rgba(196,163,122,0.045)");
+    // Barely there: any stronger and it reads as stains under the lamp.
+    g.addColorStop(0, light ? "rgba(255,252,244,0.07)" : "rgba(196,163,122,0.025)");
     g.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
