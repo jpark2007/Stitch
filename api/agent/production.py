@@ -6,12 +6,13 @@ the agent, so the API needs no startup hook. Each service is picked from env var
     ANTHROPIC_API_KEY      required: the studio model (studio.make_model, STITCH_MODEL)
                            and Claude vision for describe_photo and inspect_frames
     STITCH_SUBAGENT_MODEL  optional model id for the eight sub-agents
-    MONGODB_URI            checkpoints and /memories/ on MongoDB (studio.mongo_persistence);
-                           unset, or STITCH_FAKE_DB truthy: in-memory, lost on restart
+    MONGODB_URI            checkpoints, /memories/ and the run records on MongoDB
+                           (studio.mongo_persistence), so runs survive a restart; unset, or
+                           STITCH_FAKE_DB truthy: in memory, and runs are lost on restart
     IMAGE_API_KEY          real prop and set art; unset: placeholder art (null art + color)
     ELEVENLABS_API_KEY     real narration voices; unset: FakeTTS (silent audio, real timings)
     STITCH_WEB_URL         render_frames screenshots the web /render/[memoryId] page with
-                           Playwright; unset: the Pillow diagram renderer
+                           Playwright; unset: the Pillow diagram renderer (FakeFrameRenderer)
 
 The family data goes through `MongoRepo(db.client.get_db())`, so it follows whatever
 database the API uses, including the STITCH_FAKE_DB mongomock override.
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -38,8 +40,9 @@ from agent.mongo_repo import MongoRepo
 from agent.runs import RunManager
 from agent.tools.art import ArtService
 from agent.tools.compile import load_compiler
+from agent.tools.frames import FakeFrameRenderer, FrameRenderer, PlaywrightFrameRenderer
 from agent.tools.narration import FakeTTS
-from agent.wiring import Services, compiler_label, frames_attr, make_manager
+from agent.wiring import Services, compiler_label, make_manager
 from db import client as db_client
 
 logger = logging.getLogger(__name__)
@@ -61,6 +64,24 @@ LABEL_ORDER: tuple[str, ...] = (
     "renderer",
     "compiler",
 )
+
+
+_memory_warning_lock = threading.Lock()
+_memory_warned = False
+
+
+def _warn_memory_persistence(reason: str) -> None:
+    """Warn, once per process, that in-memory persistence loses runs on a restart."""
+    global _memory_warned  # noqa: PLW0603
+    with _memory_warning_lock:
+        if _memory_warned:
+            return
+        _memory_warned = True
+    logger.warning(
+        "agent persistence is in memory (%s): runs, their checkpoints and /memories/ notes "
+        "do not survive an API restart; set MONGODB_URI to keep them",
+        reason,
+    )
 
 
 def _env(name: str) -> str | None:
@@ -113,10 +134,7 @@ def production_services() -> Services:
         checkpointer, store = studio.mongo_persistence(with_server_timeout(uri), db_name=db_client.MONGODB_DB)
         labels["persistence"] = "mongo"
     else:
-        logger.warning(
-            "agent persistence is in memory (%s): paused runs and /memories/ notes are lost on restart",
-            "STITCH_FAKE_DB is set" if _fake_db() else "MONGODB_URI is not set",
-        )
+        _warn_memory_persistence("STITCH_FAKE_DB is set" if _fake_db() else "MONGODB_URI is not set")
         checkpointer, store = InMemorySaver(), InMemoryStore()
         labels["persistence"] = "memory"
 
@@ -140,18 +158,14 @@ def production_services() -> Services:
     labels["critic"] = "real"
 
     web_url = _env("STITCH_WEB_URL")
-    playwright_cls = frames_attr("PlaywrightFrameRenderer")
-    diagram_cls = frames_attr("FakeFrameRenderer")
-    if web_url and playwright_cls is not None:
-        renderer = playwright_cls(web_url)
+    renderer: FrameRenderer
+    if web_url:
+        renderer = PlaywrightFrameRenderer(web_url)
         labels["renderer"] = "playwright"
-    elif diagram_cls is not None:
-        # The web /render page is not ready yet, so the checker sees Pillow diagrams.
-        renderer = diagram_cls()
-        labels["renderer"] = "diagram"
     else:
-        renderer = None
-        labels["renderer"] = "missing"
+        # No web app to screenshot: the checker sees Pillow diagrams of the stage.
+        renderer = FakeFrameRenderer()
+        labels["renderer"] = "diagram"
 
     compiler = load_compiler()
     labels["compiler"] = compiler_label(compiler)

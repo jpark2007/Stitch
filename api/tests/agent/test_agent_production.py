@@ -16,6 +16,7 @@ import schemas
 from agent import production, runs, studio, wiring
 from agent.adapters import AlphaAwareRemover, AnthropicVision, ElevenLabsTTS, OpenAIImageModel
 from agent.mongo_repo import MongoRepo
+from agent.tools.frames import FakeFrameRenderer, PlaywrightFrameRenderer
 from agent.run_info import RunInfo
 from agent.tools.narration import FakeTTS
 from db import client as db_client
@@ -30,8 +31,6 @@ ENV_VARS = (
     "STITCH_SUBAGENT_MODEL",
     "STITCH_MODEL",
 )
-
-needs_frames = pytest.mark.skipif(not wiring.frames_available(), reason="agent.tools.frames has no make_frame_tools yet")
 
 
 @pytest.fixture(autouse=True)
@@ -112,11 +111,8 @@ def test_production_services_with_every_key_and_the_fake_db(
     assert svc.labels["vision"] == "real" and isinstance(svc.vision, AnthropicVision)
     assert svc.critic is svc.vision
     assert svc.labels["compiler"] in {"FakeCompiler", "screenplay.compiler"}
-    if wiring.frames_available():
-        assert svc.labels["renderer"] == "diagram"
-        assert type(svc.renderer).__name__ == "FakeFrameRenderer"
-    else:
-        assert svc.labels["renderer"] == "missing" and svc.renderer is None
+    assert svc.labels["renderer"] == "diagram"
+    assert isinstance(svc.renderer, FakeFrameRenderer)
 
     graph = wiring.build_run_graph(run_info(), svc)
     assert graph is not None
@@ -179,13 +175,12 @@ def test_subagent_model_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert svc.labels["subagent_model"] == "claude-sonnet-test"
 
 
-@needs_frames
 def test_web_url_selects_the_playwright_renderer(monkeypatch: pytest.MonkeyPatch, no_network: list[Any]) -> None:
     dummy_keys(monkeypatch)
     monkeypatch.setenv("STITCH_WEB_URL", "http://localhost:3999/")
     svc = production.production_services()
     assert svc.labels["renderer"] == "playwright"
-    assert type(svc.renderer).__name__ == "PlaywrightFrameRenderer"
+    assert isinstance(svc.renderer, PlaywrightFrameRenderer)
     assert svc.renderer.base_url == "http://localhost:3999"
     assert no_network == []
 
@@ -215,12 +210,45 @@ def test_with_server_timeout(uri: str, expected: str) -> None:
 def test_production_manager_logs_its_services(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     dummy_keys(monkeypatch)
     caplog.set_level("INFO", logger="agent.production")
+    built: list[wiring.Services] = []
+    real_services = production.production_services
+
+    def spy() -> wiring.Services:
+        built.append(real_services())
+        return built[-1]
+
+    monkeypatch.setattr(production, "production_services", spy)
     manager = production.production_manager(max_workers=1)
     try:
         assert isinstance(manager, runs.RunManager)
         assert any(r.getMessage().startswith("studio services: ") for r in caplog.records)
+        assert manager._store is built[0].store  # run records live in the persistence store
     finally:
         manager.shutdown()
+
+
+def test_in_memory_persistence_warns_once_that_runs_do_not_survive(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    dummy_keys(monkeypatch)
+    monkeypatch.setattr(production, "_memory_warned", False)
+    caplog.set_level("WARNING", logger="agent.production")
+    for _ in range(3):
+        assert production.production_services().labels["persistence"] == "memory"
+    warnings = [r.getMessage() for r in caplog.records if "do not survive" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "STITCH_FAKE_DB is set" in warnings[0]
+
+
+def test_mongo_persistence_does_not_warn(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    dummy_keys(monkeypatch)
+    monkeypatch.delenv("STITCH_FAKE_DB")
+    monkeypatch.setenv("MONGODB_URI", "mongodb://db.example:27017")
+    monkeypatch.setattr(production, "_memory_warned", False)
+    monkeypatch.setattr(studio, "mongo_persistence", lambda *a, **k: (object(), object()))
+    caplog.set_level("WARNING", logger="agent.production")
+    production.production_services()
+    assert not [r for r in caplog.records if "do not survive" in r.getMessage()]
 
 
 # ------------------------------------------------------------------ runs.get_manager

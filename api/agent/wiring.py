@@ -10,18 +10,16 @@ the chat model, persistence, art, speech, vision, frame rendering and the compil
 art, FakeTTS, FakeVision, the Pillow frame diagram, the deterministic compiler) used by
 tests; `agent.production.production_services` is the real one.
 
-Frames: `agent.tools.frames` (render_frames, inspect_frames) is landed by another task.
-Until it exports `make_frame_tools`, those two tools are left out and `build_subagents`
-warns that the checker is missing them; every other tool works without it.
+The manager keeps its run records in `services.store` (the studio's long-term store), so
+with a persistent store and checkpointer (MongoDB in production) runs survive a restart.
 """
 
 from __future__ import annotations
 
-import importlib
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
@@ -37,6 +35,7 @@ from agent.tools import ask, narration
 from agent.tools.art import ArtService, make_cut_out_tool
 from agent.tools.compile import Compiler, SceneInputs, SceneLookupError, load_compiler, make_compile_tool
 from agent.tools.family import make_family_tools
+from agent.tools.frames import FakeFrameCritic, FakeFrameRenderer, FrameRenderer, make_frame_tools
 from agent.tools.narration import TTS, FakeTTS, make_narration_tool
 from agent.tools.photos import FakeVision, VisionModel, make_photo_tools
 from agent.tools.props import make_prop_tools
@@ -47,8 +46,6 @@ if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
 logger = logging.getLogger(__name__)
-
-FRAMES_MODULE = "agent.tools.frames"
 
 STUDIO_TOOL_NAMES: tuple[str, ...] = (
     "get_person",
@@ -83,29 +80,11 @@ class Services:
     tts: TTS
     vision: VisionModel  # describe_photo
     critic: VisionModel | None  # inspect_frames
-    renderer: Any  # agent.tools.frames.FrameRenderer, or None while frames is unavailable
+    renderer: FrameRenderer | None  # render_frames; None leaves render_frames and inspect_frames out
     compiler: Compiler
     subagent_model: BaseChatModel | None = None
     labels: Mapping[str, str] = field(default_factory=dict)
     """What each service is, for logs: e.g. {'art': 'placeholder', 'tts': 'fake', 'renderer': 'diagram'}."""
-
-
-# --------------------------------------------------------------------------- frames guard
-
-
-def frames_attr(name: str) -> Any:
-    """`agent.tools.frames.<name>`, or None while the frames module does not provide it yet."""
-    try:
-        module = importlib.import_module(FRAMES_MODULE)
-    except ImportError as exc:
-        logger.warning("%s is not importable: %s", FRAMES_MODULE, exc)
-        return None
-    return getattr(module, name, None)
-
-
-def frames_available() -> bool:
-    """True once agent.tools.frames exports make_frame_tools."""
-    return callable(frames_attr("make_frame_tools"))
 
 
 # --------------------------------------------------------------------------- scene lookup
@@ -155,8 +134,8 @@ def build_run_tools(run: RunInfo, services: Services) -> dict[str, BaseTool]:
     """Every tool for one run, by name, each bound to `run.family_id` (never to an id the model gives).
 
     describe_photo only reads `run.photo_ids`; media the tools write (cutouts, narration
-    audio) goes into the run's family. render_frames and inspect_frames are present once
-    agent.tools.frames provides them and a renderer is configured.
+    audio) goes into the run's family. render_frames and inspect_frames are present when
+    both a renderer and a critic are configured.
     """
     repo = services.repo
     family_id = run.family_id
@@ -191,8 +170,7 @@ def build_run_tools(run: RunInfo, services: Services) -> dict[str, BaseTool]:
         ),
     ]
 
-    make_frame_tools = frames_attr("make_frame_tools")
-    if callable(make_frame_tools) and services.renderer is not None and services.critic is not None:
+    if services.renderer is not None and services.critic is not None:
         built.extend(make_frame_tools(repo, run, services.renderer, services.critic, lookup))
 
     tools: dict[str, BaseTool] = {}
@@ -222,11 +200,13 @@ def build_run_graph(run: RunInfo, services: Services) -> CompiledStateGraph:
 
 
 def make_manager(services: Services, *, max_workers: int = 4) -> RunManager:
-    """A RunManager that builds a fresh studio per run from `services`."""
+    """A RunManager that builds a fresh studio per run from `services` and keeps its run
+    records in `services.store`, so runs outlive the process when the store does."""
     return RunManager(
         repo=services.repo,
         build_graph=lambda run: build_run_graph(run, services),
         max_workers=max_workers,
+        store=services.store,
     )
 
 
@@ -250,15 +230,13 @@ def fake_services(
 
     InMemoryRepo (unless `repo` is given), InMemorySaver and InMemoryStore, placeholder
     art (`ArtService(None, None)`: props and set layers get null art and a color) unless
-    `art` is given, FakeTTS, FakeVision, and the frames module's FakeFrameRenderer and
-    FakeFrameCritic when it has them. The compiler is `load_compiler()`: the real,
-    deterministic `screenplay.compiler` once it exists, the FakeCompiler until then.
+    `art` is given, FakeTTS, FakeVision, FakeFrameRenderer (the Pillow diagram) and
+    FakeFrameCritic. The compiler is `load_compiler()`: the real, deterministic
+    `screenplay.compiler` once it exists, the FakeCompiler until then.
     """
     from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.store.memory import InMemoryStore
 
-    renderer_cls = frames_attr("FakeFrameRenderer")
-    critic_cls = frames_attr("FakeFrameCritic")
     art = art if art is not None else ArtService(None, None)
     compiler = load_compiler()
     labels = {
@@ -269,7 +247,7 @@ def fake_services(
         "tts": "fake",
         "vision": "fake",
         "critic": "fake",
-        "renderer": "fake" if renderer_cls is not None else "missing",
+        "renderer": "fake",
         "compiler": "fake" if compiler_label(compiler) == "FakeCompiler" else "screenplay.compiler",
     }
     return Services(
@@ -280,8 +258,8 @@ def fake_services(
         art=art,
         tts=FakeTTS(),
         vision=FakeVision(),
-        critic=critic_cls() if critic_cls is not None else FakeVision(),
-        renderer=renderer_cls() if renderer_cls is not None else None,
+        critic=FakeFrameCritic(),
+        renderer=FakeFrameRenderer(),
         compiler=compiler,
         labels=labels,
     )
@@ -294,8 +272,6 @@ __all__ = [
     "build_run_tools",
     "compiler_label",
     "fake_services",
-    "frames_attr",
-    "frames_available",
     "make_manager",
     "scene_for",
 ]
