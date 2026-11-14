@@ -11,7 +11,7 @@ The stage demo starts with a full tree and books. `seed/demo.py` creates the dem
   and Ana's books open on a playable scene.
 - Five more memories without scenes, from 1958 to 2015, with one or two tellings each
   and two placeholder photos on the 1972 road trip.
-- Two open questions, one for Ana and one for Sam.
+- Two open questions: Sam's asks for his version of the hymn-book memory (it has a scene, so answering it adds a telling with either studio), and Ana's is a general prompt about the day Lily was born.
 
 ## Demo accounts
 
@@ -26,12 +26,13 @@ All three use the password **`stitch-demo`**.
 ## Seed a real MongoDB
 
 From `api/`, with `MONGODB_URI` and `MONGODB_DB` set (defaults: `mongodb://localhost:27017`
-and `stitch`):
+and `stitch`). The seed CLI does not read `.env` files itself, so pass yours to `uv run`:
 
 ```sh
 cd api
-uv run python -m seed.demo           # creates the indexes, then seeds; a no-op if the family exists
-uv run python -m seed.demo --reset   # deletes the demo data and rebuilds it
+uv run --env-file .env python -m seed.demo           # creates the indexes, then seeds; a no-op if the family exists
+uv run --env-file .env python -m seed.demo --reset   # deletes the demo data and rebuilds it
+# or --env-file ../.env if you keep it at the repo root
 ```
 
 Seeding is idempotent. `--reset` deletes only demo data: the three demo users (by email),
@@ -51,8 +52,9 @@ mongomock database with the indexes created and the demo family seeded.
 cd api && uv sync && STITCH_FAKE_DB=1 uv run uvicorn main:app --reload --port 8000
 ```
 
-Startup logs two lines confirming it: the demo accounts and password, and the agent mode
-(scripted runs, see [Agent runs](#agent-runs-stitch_agent)):
+Startup logs two lines confirming it, after a line naming the `.env` files it loaded (see
+[Run the API on a real MongoDB](#run-the-api-on-a-real-mongodb)): the demo accounts and
+password, and the agent mode (scripted runs, see [Agent runs](#agent-runs-stitch_agent)):
 
 ```text
 INFO:     STITCH_FAKE_DB: in-memory database with demo family 'demo_family'; sign in as david@demo.stitch, ana@demo.stitch, sam@demo.stitch, password 'stitch-demo'
@@ -277,18 +279,57 @@ Smoke-test a running API end to end: `uv run python -m seed.smoke --base-url htt
 
 ## Run the API on a real MongoDB
 
-Put `MONGODB_URI` (and `JWT_SECRET`, model keys) in the repo-root `.env`, seed once, then
-start the server with that file. Nothing reads `.env` implicitly:
+Put `MONGODB_URI` (and `JWT_SECRET`, model keys) in `api/.env` (`cp .env.example api/.env`
+from the repo root), seed once, then start the server:
 
 ```sh
 cd api
-uv run --env-file ../.env python -m seed.demo
-uv run uvicorn main:app --env-file ../.env
+uv run --env-file .env python -m seed.demo
+uv run uvicorn main:app --reload
 ```
+
+`main.py` loads `api/.env`, then the repo-root `../.env`, when it is imported, before
+anything reads the environment. Neither file overrides a variable that is already set: the
+shell environment wins, then `api/.env`, then `../.env`. `--env-file` is still accepted
+(`uv run uvicorn main:app --env-file ../.env`), and since uvicorn applies it first, its
+values win over both files. Startup logs which files it loaded (paths only, never values):
+
+```text
+INFO:     Environment loaded from /path/to/Stitch/api/.env (variables already set win)
+```
+
+`STITCH_NO_DOTENV=1` turns the loading off, and it never happens under pytest, so tests do
+not read your keys.
 
 On startup the API creates its indexes, then tries the Atlas Vector Search indexes. Neither
 can stop it from starting: if MongoDB is unreachable or is not Atlas, it logs a warning and
 serves anyway (`/health` still answers), and data routes fail until the database is back.
+
+### Vector search (Voyage AI)
+
+"Ask the family" and prop and set matching use Atlas Vector Search when the API has an
+embedder, and keyword search otherwise. The embedder is Voyage AI, configured from:
+
+| Variable | Used for | When unset |
+|---|---|---|
+| `VOYAGE_API_KEY` | Embedding "ask" queries and the name and description of each prop and set saved (`"<name>. <description>"`, stored as `embedding`). | No embedder: keyword search only, no vectors stored. |
+| `VOYAGE_MODEL` | The Voyage model. | `voyage-3.5` |
+| `EMBEDDING_DIM` | The vector length requested from Voyage and the `numDimensions` of the vector indexes (`memories_vector`, `props_vector`, `sets_vector`). voyage-3.5 accepts 256, 512, 1024 or 2048. | `1024` |
+
+Startup logs one line saying whether embeddings are on (never the key):
+
+```text
+INFO:     Vector search embeddings on: Voyage AI voyage-3.5, 1024 dimensions
+INFO:     Vector search embeddings off (VOYAGE_API_KEY not set): ask and prop matching use keywords
+```
+
+A failed Voyage call never fails a request or a save: that query uses keywords, and that
+prop or set is saved without a vector. With `STITCH_FAKE_DB` on there is never an embedder
+(mongomock has no `$vectorSearch`, and the fake mode makes no network calls), even with
+`VOYAGE_API_KEY` set. Changing `EMBEDDING_DIM` after the indexes exist needs the vector
+indexes dropped and recreated. Props and sets seeded by `seed.demo` have no vectors (the
+CLI installs no embedder); keyword matching still finds them, and a later save of one adds
+its vector.
 
 With `ANTHROPIC_API_KEY` in that `.env`, adding a memory uses the model studio:
 `STITCH_AGENT` defaults to `real`, and startup builds the studio through
