@@ -50,6 +50,16 @@ export function gutterProfile(x: number, depth: number): number {
   return depth * (1 - Math.pow(1 - u, 2.4));
 }
 
+/**
+ * How much of a sheet at progress `p` counts toward each page block: it leaves
+ * its stack as it lifts and joins the other as it lands.
+ */
+export const shareLeft = (p: number) => smoothstep(0.82, 1, p);
+export const shareRight = (p: number) => 1 - smoothstep(0, 0.18, p);
+
+/** Flat top (book space) of a page block holding `count` of `leaves` sheets. */
+export const stackTop = (count: number, leaves: number) => COVER_T + (count * BLOCK_T) / leaves;
+
 /** Rise of the gentle bow an open page makes across its width. */
 export const BOW = 0.012;
 
