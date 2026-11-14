@@ -9,10 +9,14 @@ or change another family's props or media.
 - ``generate_prop`` draws a new prop in the locked style, cuts it out, auto-rigs it
   (anchor from the shape, grip hint snapped to the shape's edge, sockets from the model or
   the size class's defaults), optionally draws separate moving parts and state images, and
-  saves it. With no art service, when a call fails, or once the run has used its image
-  budget (``ArtService.max_images_per_run``), it saves a placeholder card (``art: null``
-  plus a ``color``) so the story can always be staged; a spent budget adds a ``note`` line
-  to the result.
+  saves it. With no art service, when a call fails, when the media store cannot keep the
+  drawing, or once the run has used its image budget (``ArtService.max_images_per_run``), it
+  saves a placeholder card (``art: null`` plus a ``color``) so the story can always be
+  staged; a spent budget adds a ``note`` line to the result.
+
+The family store failing mid-run never ends the run either: a failed search, photo read or
+save answers ``error: ... (<ExceptionType>); try again ...`` (the exception's message goes to
+the server log only).
 - ``confirm_props`` is the family's review. The studio gates it with
   ``ask.INTERRUPT_ON``, so the run pauses before it executes; runs.py turns that pause
   into the ``props_found`` event and the family's answer into an ``edit`` decision whose
@@ -361,8 +365,24 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
     # place by the review; any other prop belongs to older memories too and is forked instead.
     generated_ids: set[str] = set()
 
-    def put_png(png: bytes) -> str:
-        return repo.put_media(family_id, png, "image/png", kind="cutout")
+    def put_png(png: bytes) -> str | None:
+        """Store a cutout; None when the media store fails, so the caller uses a placeholder."""
+        try:
+            return repo.put_media(family_id, png, "image/png", kind="cutout")
+        except Exception as exc:  # noqa: BLE001 - a storage failure falls back to a placeholder
+            log.warning("could not store prop art, using placeholder: %s: %s", type(exc).__name__, exc)
+            return None
+
+    def read_photo(photo_id: str) -> tuple[tuple[bytes, str] | None, str | None]:
+        """(stored photo or None, None) or (None, an error answer when the media store fails)."""
+        try:
+            return repo.get_media(family_id, photo_id), None
+        except Exception as exc:  # noqa: BLE001 - the media store failing must not end the run
+            log.warning("could not read photo %r: %s: %s", photo_id, type(exc).__name__, exc)
+            return None, (
+                f"error: could not read photo {photo_id!r} ({type(exc).__name__}); "
+                "try again, or generate the prop without the photo"
+            )
 
     def unique_id(name: str) -> str:
         """A free prop id for ``name`` (``base``, ``base_2``, ...), claimed for this run.
@@ -399,7 +419,10 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
             found = _find(repo, family_id, text, FIND_LIMIT)
         except Exception as exc:  # noqa: BLE001 - a failed search must not end the run
             log.warning("find_prop failed: %s: %s", type(exc).__name__, exc)
-            return "error: the prop search failed; generate the prop instead"
+            return (
+                f"error: could not search the family's props ({type(exc).__name__}); "
+                "try again, and if it fails again generate the prop"
+            )
         if not found:
             return NO_MATCH
         return json.dumps([_summary(p) for p in found])
@@ -470,7 +493,9 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
         if reference_photo_id is not None:
             if reference_photo_id not in allowed_photos:
                 return f"error: unknown photo {reference_photo_id!r}; use one of this story's photo ids or none"
-            stored = repo.get_media(family_id, reference_photo_id)
+            stored, read_error = read_photo(reference_photo_id)
+            if read_error is not None:
+                return read_error
             if stored is None:
                 return f"error: unknown photo {reference_photo_id!r}; use one of this story's photo ids or none"
             data, content_type = stored
@@ -492,8 +517,11 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
         aspect, anchor = 1.0, [0.5, 1.0]
         grip_point: list[float] | None = list(hint) if hint is not None else None
 
+        body_ref = put_png(cutout.png) if cutout is not None else None
+        if body_ref is None:
+            cutout = None  # drawn but not stored: the placeholder card, like a failed drawing
         if cutout is not None:
-            art_map[BODY] = put_png(cutout.png)
+            art_map[BODY] = body_ref
             aspect, anchor = cutout.aspect, list(cutout.anchor)
             if hint is not None:
                 grip_point = snap_grip(cutout.png, hint)
@@ -506,7 +534,7 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
                     run_id=run.run_id,
                 )
                 art_map[part.name] = put_png(piece.png) if piece is not None else None
-                if piece is None:
+                if art_map[part.name] is None:
                     missing_art.append(part.name)
             for state in state_specs:
                 if not state.description.strip():
@@ -517,8 +545,9 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
                     reference_images=related,
                     run_id=run.run_id,
                 )
-                prop_states[state.name] = {BODY: put_png(look.png)} if look is not None else {}
-                if look is None:
+                look_ref = put_png(look.png) if look is not None else None
+                prop_states[state.name] = {BODY: look_ref} if look_ref is not None else {}
+                if look_ref is None:
                     missing_art.append(state.name)
         else:
             # Placeholder card: every part key exists with no art; states change nothing.
@@ -617,8 +646,11 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
         if content_type and not content_type.startswith("image/"):
             return None, f"{prop.id}: {photo_id!r} is not an image; kept the current art"
         cutout = art.cut_out(data)
-        if cutout is not None:
-            body, aspect, anchor = put_png(cutout.png), cutout.aspect, list(cutout.anchor)
+        cut_ref = put_png(cutout.png) if cutout is not None else None
+        if cut_ref is None:
+            cutout = None  # not stored: use the photo as it is, as when it cannot be cut out
+        if cutout is not None and cut_ref is not None:
+            body, aspect, anchor = cut_ref, cutout.aspect, list(cutout.anchor)
         else:
             size_px = _image_size(data)
             if size_px is None:
