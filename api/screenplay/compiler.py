@@ -2,7 +2,8 @@
 
 ``compile(screenplay, sets=..., props=..., people=...)`` runs the whole pipeline:
 
-1. Reference checks: every set, cast member and prop exists (validate.py will widen these).
+1. Static validation (validate.py): every verb, parameter, mark, prop, person, pose, cue and
+   camera move against shared/vocabulary.json and the scene. Any error stops here.
 2. For each shot, in order: apply its start block to the world state, raise the set (unless
    the previous shot used the same set), key where everyone starts, retime cued actions onto
    their narration words, run each action through its verb handler (state + keys), move the
@@ -32,9 +33,8 @@ from screenplay import body, ik, layout, motion, verbs_core
 from screenplay import camera as camera_mod
 from screenplay import errors as E
 from screenplay import narration as N
-from screenplay.locate import BONES, arm_of_hand, make_locate
+from screenplay.locate import BONES, Locate, arm_of_hand, make_locate
 from screenplay.schema import (
-    VOCABULARY,
     Action,
     CompileError,
     CompileResult,
@@ -46,6 +46,7 @@ from screenplay.schema import (
 )
 from screenplay.state import HANDS, OFFSTAGE_LEFT, StateError, World
 from screenplay.tracks import Key, TrackSet, round_value
+from screenplay.validate import validate
 
 Vec3 = tuple[float, float, float]
 
@@ -105,11 +106,7 @@ def _discover_handlers() -> dict[str, verbs_core.Handler]:
 
 HANDLERS: dict[str, verbs_core.Handler] = _discover_handlers()
 
-_ACTIONS: dict[str, dict] = VOCABULARY["actions"]
 _POSES: dict[str, dict] = ik.POSES["poses"]
-_ALWAYS = {"t", "do", "id"}
-_PERSON_PARAMS = {("hand_to", "to"), ("hug", "target"), ("follow", "target")}
-_MARK_TO = {"walk_to", "run_to", "enter", "exit", "drive_to", "ride_to"}
 
 
 # ------------------------------------------------------------------ error bookkeeping
@@ -128,99 +125,6 @@ class _Errors:
 
     def sorted(self) -> list[CompileError]:
         return [e for _, e in sorted(self.items, key=lambda it: it[0])]
-
-
-# ------------------------------------------------------------------- reference checks
-
-def _reference_errors(
-    sp: Screenplay,
-    sets: Mapping[str, schemas.SetDef],
-    props: Mapping[str, schemas.Prop],
-    people: Mapping[str, schemas.Person],
-) -> list[CompileError]:
-    errs: list[CompileError] = []
-    if not sp.shots:
-        errs.append(E.error("no_shots", "there are no shots"))
-    seen_shots: set[str] = set()
-    for shot in sp.shots:
-        if shot.id in seen_shots:
-            errs.append(E.error("duplicate_shot", f"shot id {shot.id} is used twice"))
-        seen_shots.add(shot.id)
-        if shot.set not in sets:
-            errs.append(E.error("unknown_set", f"{shot.set} is not a known set", shot.id))
-    for who in dict.fromkeys(sp.cast):
-        if who not in people:
-            errs.append(E.error("unknown_person", f"{who} is not a known person"))
-    for what in dict.fromkeys(sp.props):
-        if what not in props:
-            errs.append(E.error("unknown_prop", f"{what} is not a known prop"))
-    for author, by_shot in (sp.narrations or {}).items():
-        for shot_id in by_shot:
-            if shot_id not in seen_shots:
-                errs.append(E.error(
-                    "telling_unknown_shot",
-                    f'{author}\'s telling has lines for shot "{shot_id}", which is not in the screenplay',
-                ))
-    for i, ex in enumerate(sp.explanations or []):
-        kind, _, ident = ex.target.partition(":")
-        pool = sp.cast if kind == "puppet" else sp.props if kind == "prop" else None
-        if pool is None:
-            errs.append(E.error(
-                "explanation_bad_target",
-                f'explanation {i} targets "{ex.target}"; a target is "puppet:<personId>" or "prop:<propId>"',
-            ))
-        elif ident not in pool:
-            errs.append(E.error(
-                "explanation_unknown_target",
-                f'explanation {i} targets "{ex.target}", but {ident} is not in the screenplay\'s '
-                f'{"cast" if kind == "puppet" else "props"}',
-            ))
-    return errs
-
-
-def _param_error(action: Action, sp: Screenplay, marks: Mapping[str, Vec3], shot_id: str) -> tuple[str, str] | None:
-    """(code, reason) for the first parameter problem of an action, checked against
-    shared/vocabulary.json, or None."""
-    spec = _ACTIONS[action.do]
-    allowed = _ALWAYS | set(spec["required"]) | set(spec["optional"])
-    given = action.model_dump(by_alias=True, exclude_none=True)
-    for name in given:
-        if name not in allowed:
-            takes = ", ".join(f'"{p}"' for p in [*spec["required"], *spec["optional"]]) or "no parameters"
-            return "unexpected_param", f'"{name}" is not a parameter of {action.do}; it takes {takes}'
-    for name in spec["required"]:
-        if name not in given:
-            return "missing_param", f'it needs "{name}"'
-
-    def is_person(x: str) -> bool:
-        return x in sp.cast
-
-    def is_prop(x: str) -> bool:
-        return x in sp.props
-
-    if action.who is not None and not is_person(action.who):
-        return "unknown_person", f"{action.who} is not in the cast"
-    if action.what is not None and not is_prop(action.what):
-        return "unknown_prop", f"{action.what} is not in the screenplay's props"
-    for name in ("to", "from", "target", "on", "at"):
-        value = given.get(name)
-        if value is None:
-            continue
-        if (action.do, name) in _PERSON_PARAMS:
-            if not is_person(value):
-                return "unknown_person", f"{value} is not in the cast"
-        elif name == "from" or (name == "to" and action.do in _MARK_TO):
-            if value not in marks:
-                return "unknown_mark", f"{value} is not a mark in shot {shot_id}"
-        elif not (is_person(value) or is_prop(value) or value in marks):
-            return "unknown_target", f"{value} is not a person, prop or mark in shot {shot_id}"
-    if action.pose is not None and action.pose not in _POSES:
-        return "unknown_pose", f"{action.pose} is not a pose; poses are: {', '.join(sorted(_POSES))}"
-    if action.do == "time_of_day" and action.value not in VOCABULARY["timesOfDay"]:
-        return "bad_value", f"{action.value} is not a time of day; use {', '.join(VOCABULARY['timesOfDay'])}"
-    if action.dur is not None and action.dur <= 0:
-        return "bad_dur", f"dur must be positive, not {action.dur:g}"
-    return None
 
 
 # ------------------------------------------------------------------------ start keys
@@ -315,9 +219,11 @@ def compile(
 ) -> CompileResult:
     """Compile a screenplay into a timeline. Never raises for a bad screenplay."""
     sp = screenplay
-    ref = _reference_errors(sp, sets, props, people)
-    if ref:
-        return CompileResult(ok=False, errors=ref)
+    static = validate(sp, sets, props, people)
+    if static:  # fix these first: simulating an invalid screenplay only adds knock-on errors
+        return CompileResult(ok=False, errors=static)
+    if not sp.shots:
+        return CompileResult(ok=False, errors=[E.error("no_shots", "there are no shots; a screenplay needs at least one")])
 
     errors = _Errors()
     try:
@@ -366,7 +272,7 @@ def compile(
         order = sorted(range(len(shot.actions)), key=lambda i: (retimed[i], i))
         for ai in order:
             action = shot.actions[ai]
-            err = _run_action(world, tracks, action, retimed[ai], action_start, locate, sp, marks, shot.id)
+            err = _run_action(world, tracks, action, retimed[ai], action_start, locate, shot.id)
             if err is not None:
                 errors.add(err, si, ai)
 
@@ -429,15 +335,10 @@ def _run_action(
     action: Action,
     shot_t: float,
     action_start: float,
-    locate,
-    sp: Screenplay,
-    marks: Mapping[str, Vec3],
+    locate: Locate,
     shot_id: str,
 ) -> CompileError | None:
-    """Check one action's parameters and run its handler. Returns its error, if any."""
-    bad = _param_error(action, sp, marks, shot_id)
-    if bad is not None:
-        return E.error(bad[0], bad[1], shot_id, action)
+    """Run one action through its handler, with the busy check around it. Returns its error."""
     handler = HANDLERS.get(action.do)
     if handler is None:
         return E.error("unsupported_verb", f"the compiler does not support {action.do} yet", shot_id, action)
@@ -465,10 +366,13 @@ def _camera(
     shot_start: float,
     action_start: float,
     prev: camera_mod.CameraPose | None,
-    locate,
+    locate: Locate,
     tracks: TrackSet,
 ) -> tuple[list[CompileError], camera_mod.CameraPose | None]:
-    """The shot's camera keys (added to ``tracks``) and the pose it ends on."""
+    """The shot's camera keys (added to ``tracks``) and the pose it ends on.
+
+    validate.py has checked the cues statically; what is left is a target that cannot be
+    placed when the move happens (a prop that is not on stage)."""
     errs: list[CompileError] = []
     for cue in shot.camera:
         if cue.move in camera_mod.TARGET_MOVES:
@@ -483,7 +387,7 @@ def _camera(
             if reason is not None:
                 errs.append(CompileError(
                     code="bad_camera",
-                    message=E.error_message(shot.id, cue.t, "camera", cue.move, cue.target, reason),
+                    message=E.error_message(shot.id, cue.t, None, cue.move, cue.target, reason),
                     shot=shot.id, t=float(cue.t), do=cue.move,
                 ))
     if errs:

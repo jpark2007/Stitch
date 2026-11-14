@@ -9,10 +9,10 @@ import pytest
 
 import schemas
 from screenplay import compiler as C
-from screenplay import ik
 from screenplay.compiler import compile as compile_screenplay
 from screenplay.schema import VOCABULARY, CompileResult, Screenplay
 from screenplay.tracks import evaluate
+from screenplay.validate import validate
 
 SAMPLES = Path(__file__).resolve().parents[3] / "web" / "public" / "samples"
 
@@ -65,7 +65,7 @@ def messages(result):
     return [e.message for e in result.errors]
 
 
-# ------------------------------------------------------------------- reference checks
+# --------------------------------------------------------- static checks (validate.py)
 
 def test_unknown_set_person_and_prop_are_all_reported():
     data = sample()
@@ -74,29 +74,44 @@ def test_unknown_set_person_and_prop_are_all_reported():
     data["props"].append("piano")
     res = run(data)
     assert not res.ok and res.timeline is None
-    assert [(e.code, e.message, e.shot) for e in res.errors] == [
-        ("unknown_set", "shot s1: nowhere is not a known set", "s1"),
-        ("unknown_person", "screenplay: gran is not a known person", None),
-        ("unknown_prop", "screenplay: piano is not a known prop", None),
+    assert [(e.code, e.shot) for e in res.errors] == [
+        ("unknown_person", None), ("unknown_prop", None), ("unknown_set", "s1"),
     ]
-
-
-def test_other_screenplay_level_checks():
-    data = sample()
-    data["narrations"]["mom"]["s9"] = [{"t": 0, "text": "hello"}]
-    data["explanations"].append({"target": "prop:piano", "text": "x"})
-    data["explanations"].append({"target": "set:church", "text": "x"})
-    res = run(data)
-    assert [e.code for e in res.errors] == ["telling_unknown_shot", "explanation_unknown_target", "explanation_bad_target"]
-    assert res.errors[0].message == 'screenplay: mom\'s telling has lines for shot "s9", which is not in the screenplay'
-    assert res.errors[1].message == (
-        'screenplay: explanation 3 targets "prop:piano", but piano is not in the screenplay\'s props'
+    assert res.errors[2].message == (
+        'shot s1: set "nowhere" is not a known set; known sets: church_steps_1988, kitchen'
     )
-    empty = run({"memoryId": "m", "cast": ["dad"], "shots": []})
-    assert [e.code for e in empty.errors] == ["no_shots"]
-    dup = sample()
-    dup["shots"].append(copy.deepcopy(dup["shots"][0]))
-    assert "duplicate_shot" in [e.code for e in run(dup).errors]
+
+
+def test_static_errors_are_exactly_validates_and_stop_compilation():
+    data = sample()
+    data["shots"][0]["actions"] += [
+        {"t": 9, "who": "dad", "do": "walk_to", "to": "curb", "what": "hymn_books"},
+        {"t": 9, "who": "mom", "do": "hand_to", "what": "hymn_books"},
+        {"t": 9, "who": "gran", "do": "walk_to", "to": "curb"},
+        {"t": 9, "do": "rain", "who": "dad"},
+        {"t": 9, "do": "time_of_day", "value": "noon"},
+        {"t": 9, "who": "dad", "do": "pose", "pose": "wave", "dur": -1},
+        {"t": 9, "who": "dad", "do": "enter", "to": "curb", "from": "attic"},
+        {"t": 1, "who": "dad", "do": "pose", "pose": "wave"},  # a state error (busy), not reported yet
+    ]
+    data["narrations"]["mom"]["s9"] = [{"t": 0, "text": "hello"}]
+    data["explanations"].append({"target": "set:church", "text": "x"})
+    sp = Screenplay.model_validate(data)
+    res = run(data)
+    assert res.errors == validate(sp, SETS, PROPS, PEOPLE)
+    assert [e.code for e in res.errors] == [
+        "telling_unknown_shot", "explanation_bad_target", "unexpected_param", "missing_param", "unknown_person",
+        "unexpected_param", "invalid_value", "bad_time", "unknown_mark",
+    ]
+    assert "busy" not in [e.code for e in res.errors]
+
+
+def test_no_shots():
+    res = run({"memoryId": "m", "cast": ["dad"], "shots": []})
+    assert not res.ok
+    assert [(e.code, e.message) for e in res.errors] == [
+        ("no_shots", "screenplay: there are no shots; a screenplay needs at least one"),
+    ]
 
 
 # ------------------------------------------------------------------------ action errors
@@ -128,40 +143,26 @@ def test_unsupported_verb_is_an_error_not_an_exception(monkeypatch):
 def test_independent_errors_are_all_reported_in_action_order():
     data = sample()
     actions = data["shots"][0]["actions"]
-    actions[5]["pose"] = "moonwalk"
-    actions.append({"t": 1, "who": "mom", "do": "walk_to", "to": "nowhere"})
-    actions.append({"t": 1, "who": "dad", "do": "pose", "pose": "wave"})
+    actions.append({"t": 9, "who": "dad", "do": "hold", "what": "hymn_books"})  # mom has them back by then
+    actions.append({"t": 1, "who": "dad", "do": "pose", "pose": "wave"})  # earlier in time, later in the list
     res = run(data)
-    assert [(e.code, e.t) for e in res.errors] == [("unknown_pose", 7.7), ("unknown_mark", 1.0), ("busy", 1.0)]
-    assert res.errors[0].message.startswith("shot s1, t=7.7: mom cannot pose; moonwalk is not a pose; poses are: ")
-    assert res.errors[1].message == "shot s1, t=1: mom cannot walk_to; nowhere is not a mark in shot s1"
-    assert res.errors[2].message == "shot s1, t=1: dad cannot pose; dad is still entering until t=2"
+    assert [(e.code, e.t) for e in res.errors] == [("not_holding", 9.0), ("busy", 1.0)]
+    assert res.errors[0].message == 'shot s1, t=9: dad cannot hold "hymn_books"; mom is holding it'
+    assert res.errors[1].message == "shot s1, t=1: dad cannot pose; dad is still entering until t=2"
+    # the failed actions changed nothing: the rest of the sample still compiles the same way
+    data["shots"][0]["actions"] = actions[:6]
+    assert run(data).ok
 
 
-def test_parameters_are_checked_against_the_vocabulary():
+def test_errors_carry_the_written_t_not_the_cue_retimed_one():
     data = sample()
-    data["shots"][0]["actions"] += [
-        {"t": 9, "who": "dad", "do": "walk_to", "to": "curb", "what": "hymn_books"},
-        {"t": 9, "who": "mom", "do": "hand_to", "what": "hymn_books"},
-        {"t": 9, "who": "gran", "do": "walk_to", "to": "curb"},
-        {"t": 9, "do": "rain", "who": "dad"},
-        {"t": 9, "do": "time_of_day", "value": "noon"},
-        {"t": 9, "who": "dad", "do": "pose", "pose": "wave", "dur": -1},
-        {"t": 9, "who": "dad", "do": "hug", "target": "curb"},
-        {"t": 9, "who": "dad", "do": "enter", "to": "curb", "from": "attic"},
-    ]
+    actions = data["shots"][0]["actions"]
+    actions[1]["t"] = 3.0  # written at 3.0, but the narration cue moves the drop to 3.25...
+    actions.append({"t": 3.1, "who": "dad", "do": "hold", "what": "hymn_books"})  # ...and this to 3.35
     res = run(data)
-    assert [(e.code, e.message) for e in res.errors] == [
-        ("unexpected_param",
-         'shot s1, t=9: dad cannot walk_to "hymn_books"; "what" is not a parameter of walk_to; it takes "who", "to"'),
-        ("missing_param", 'shot s1, t=9: mom cannot hand_to "hymn_books"; it needs "to"'),
-        ("unknown_person", "shot s1, t=9: gran cannot walk_to; gran is not in the cast"),
-        ("unexpected_param", 'shot s1, t=9: dad cannot rain; "who" is not a parameter of rain; it takes "dur"'),
-        ("bad_value", "shot s1, t=9: cannot time_of_day; noon is not a time of day; use dawn, day, dusk, night"),
-        ("bad_dur", "shot s1, t=9: dad cannot pose; dur must be positive, not -1"),
-        ("unknown_person", "shot s1, t=9: dad cannot hug; curb is not in the cast"),
-        ("unknown_mark", "shot s1, t=9: dad cannot enter; attic is not a mark in shot s1"),
-    ]
+    (err,) = res.errors
+    assert (err.code, err.t) == ("not_holding", 3.1)
+    assert err.message == 'shot s1, t=3.1: dad cannot hold "hymn_books"; it is on the ground'
 
 
 def test_out_of_reach_message():
@@ -175,50 +176,55 @@ def test_out_of_reach_message():
     assert err.message.endswith("from the shoulder, reach is 0.19")
 
 
-def test_shot_start_errors_stop_compilation():
-    data = sample()
-    data["shots"][0]["start"]["mom"]["at"] = "nowhere"
+def test_a_shot_start_the_world_rejects_stops_compilation():
+    # kid sits in the chair in s1; s2 is on the same set, kid is not listed (so stays seated),
+    # and mom is told to start in the same seat: only the simulated world can know that.
+    data = two_shots(second_set="church_steps_1988", second_start={"mom": {"at": "steps_foot", "in": "chair.seat"}})
+    data["cast"].append("kid")
+    data["props"].append("chair")
+    data["shots"][0]["start"]["kid"] = {"at": "steps_left", "in": "chair.seat"}
+    data["shots"][0]["propStart"] = {"chair": {"at": "steps_left"}}
     res = run(data)
     assert [(e.code, e.message, e.shot, e.t) for e in res.errors] == [
-        ("unknown_mark", "shot s1: nowhere is not a mark in shot s1", "s1", None)
+        ("socket_taken", "shot s2: chair.seat is taken by kid", "s2", None)
     ]
 
 
-def test_bad_start_pose_and_unplaced_seat():
+def test_starting_in_a_seat_that_is_not_on_stage():
     data = sample()
     data["cast"].append("kid")
     data["props"].append("chair")
-    data["shots"][0]["start"]["dad"]["pose"] = "moonwalk"
     data["shots"][0]["start"]["kid"] = {"at": "curb", "in": "chair.seat"}
     res = run(data)
     assert [(e.code, e.message, e.shot) for e in res.errors] == [
-        ("bad_start", "shot s1: moonwalk is not a pose; poses are: " + ", ".join(sorted(ik.POSES["poses"])), "s1"),
         ("bad_start", "shot s1: kid starts in chair.seat, but chair is not on stage", "s1"),
     ]
 
 
-def test_camera_errors():
+def test_camera_target_that_is_not_on_stage():
     data = sample()
-    data["shots"][0]["camera"][1]["target"] = "gran"
+    data["props"].append("chair")
+    data["shots"][0]["camera"][1]["target"] = "chair"
     res = run(data)
     (err,) = res.errors
     assert err.code == "bad_camera"
-    assert err.message == 'shot s1, t=5.5: camera cannot dolly_to "gran"; gran is not a person, prop or mark in shot s1'
-    assert (err.shot, err.t, err.do) == ("s1", 5.5, "dolly_to")
-    data["shots"][0]["camera"][1].pop("target")
-    (err,) = run(data).errors
-    assert err.message == "shot s1, t=5.5: camera cannot dolly_to; it needs a target"
+    assert err.message == 'shot s1, t=5.5: cannot dolly_to "chair"; chair is not on stage'
+    assert (err.shot, err.t, err.who, err.do) == ("s1", 5.5, None, "dolly_to")
 
 
-def test_narration_errors_are_reported_with_action_errors():
+def test_narration_timing_errors_are_static():
     data = sample()
-    data["shots"][0]["narration"][1]["cueWord"] = "fell"
-    data["shots"][0]["actions"].append({"t": 1, "who": "mom", "do": "walk_to", "to": "nowhere"})
+    # mom's line would have to start before the shot for "everywhere" to land on the drop
+    data["narrations"]["mom"]["s1"][1]["t"] = 0
+    data["narrations"]["mom"]["s1"][1]["text"] = " ".join(["word"] * 15) + " everywhere"
+    data["shots"][0]["actions"].append({"t": 9, "who": "dad", "do": "hold", "what": "hymn_books"})
     res = run(data)
-    codes = [e.code for e in res.errors]
-    assert "cue_word_missing" in codes and "unknown_mark" in codes
-    cue = next(e for e in res.errors if e.code == "cue_word_missing")
-    assert cue.shot == "s1" and cue.message.startswith('shot s1, dad\'s narration line 1: cueWord "fell" is not a word of')
+    # validate.py times the narration statically, so this stops compilation before any state error
+    assert [e.code for e in res.errors] == ["cue_before_start"]
+    cue = res.errors[0]
+    assert cue.shot == "s1" and cue.message.startswith(
+        "shot s1, mom's narration line 1: to land its cue word on the action, "
+    )
 
 
 # ------------------------------------------------------------------------- start keys
