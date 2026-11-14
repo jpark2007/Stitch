@@ -36,6 +36,7 @@ import {
   LAYERS,
   PROP_SHAPES,
   SLIP_ASPECT,
+  disposeCraftPrints,
   frameTexture,
   layerCutout,
   propCutout,
@@ -189,6 +190,8 @@ export function CraftStage({ scene, cast, fonts, width, depth, reveal, resumed, 
   const keySig = keys.join("|");
 
   const [clock] = useState(() => new CraftClock(scene.fixes, reduced));
+  // The prints are this stage's alone (the cut-outs are the stage kit's shared cache).
+  useEffect(() => () => disposeCraftPrints(), []);
 
   // A new scene: bring the clock up to date (in an effect, never while rendering).
   useEffect(() => {
@@ -326,7 +329,8 @@ function PropPiece(props: {
     }
     const s = slipMesh.current;
     if (s) {
-      const fade = clamp01((p - 0.35) / 0.4);
+      // The name slip comes with its cut-out and goes with it when it is left out.
+      const fade = clamp01((p - 0.35) / 0.4) * c.kept(id, now);
       (s.material as MeshStandardMaterial).opacity = fade;
       s.visible = fade > 0.01;
     }

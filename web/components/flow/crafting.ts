@@ -306,7 +306,7 @@ export function planStage(text: string): WorkStage | null {
   if (/stage|direct|block|screenplay/.test(t)) return "staging";
   if (/check|frames?\b|look over/.test(t)) return "checking";
   if (/books|ask the others|their version|\blink/.test(t)) return "linking";
-  if (/read|telling|follow/.test(t)) return "reading";
+  if (/read|listen|telling|follow/.test(t)) return "reading";
   return null;
 }
 
@@ -496,8 +496,10 @@ function captionFor(
       return "Opening the book at a new page…";
     case "reading":
       return o.second ? "Reading your version…" : STAGE_LINES.reading;
+    // A line that says a step is done only once its sub-agent has ended: the
+    // plan can move on to a step before its sub-agent starts.
     case "storyboard":
-      if (!live) return plainSummary(step?.summary) ?? "The storyboard is sketched.";
+      if (step && !live) return plainSummary(step.summary) ?? "The storyboard is sketched.";
       return STAGE_LINES.storyboard;
     case "props": {
       const kept = props.filter((p) => !p.removed);
@@ -506,8 +508,8 @@ function captionFor(
       return (live && taskLine(step?.task)) || STAGE_LINES.props;
     }
     case "set":
-      if (!live) return plainSummary(step?.summary) ?? "The scenery stands.";
-      return taskLine(step?.task) ?? STAGE_LINES.set;
+      if (step && !live) return plainSummary(step.summary) ?? "The scenery stands.";
+      return (live && taskLine(step?.task)) || STAGE_LINES.set;
     case "staging": {
       const fix = live && run.steps.filter((s) => s.name === "director").length > 1;
       const task = live ? taskLine(step?.task) : null;
@@ -654,6 +656,28 @@ export function castOf(
     out.push({ id, name: p.name, color: p.color || NO_COLOR, item: p.item ?? null, build: p.build ?? null });
   }
   return out;
+}
+
+/**
+ * `next`, or `prev` when it holds the same cast (the same people, looks and
+ * order): the book gets the same array back between edits that do not touch
+ * the cast, so nothing downstream sees a change and the book draws nothing.
+ */
+export function keepCast(prev: readonly CastMember[], next: CastMember[]): readonly CastMember[] {
+  if (prev.length !== next.length) return next;
+  for (let i = 0; i < next.length; i++) {
+    const a = prev[i];
+    const b = next[i];
+    if (a.id !== b.id || a.name !== b.name || a.color !== b.color || (a.item ?? null) !== (b.item ?? null) || (a.build ?? null) !== (b.build ?? null)) {
+      return next;
+    }
+  }
+  return prev;
+}
+
+/** `next`, or `prev` when it has the same items in the same order (by identity). */
+export function keepList<T>(prev: readonly T[], next: readonly T[]): readonly T[] {
+  return prev.length === next.length && prev.every((v, i) => Object.is(v, next[i])) ? prev : next;
 }
 
 /** sessionStorage key for a run's cast, kept so a reload stands the same puppets up. */

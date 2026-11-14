@@ -21,6 +21,8 @@ import {
   holdScene,
   inkSteps,
   inkedLines,
+  keepCast,
+  keepList,
   namesLine,
   openingLines,
   pageTitle,
@@ -394,6 +396,55 @@ test("craftScene: the mock studio's whole run, in order", () => {
   assert.equal(last.checked, 3);
   assert.equal(last.linked, true);
   assert.equal(last.fixes, 1);
+});
+
+// The mock studio's plan moves on to a step a beat before its sub-agent
+// starts: the caption must say the step is under way, never that it is done,
+// and nothing may stand for it yet.
+test("craftScene: a plan item in progress with no sub-agent yet reads as under way, for every stage", () => {
+  const before = [
+    start("interviewer", "Read the telling"),
+    end("interviewer", "One follow-up."),
+  ];
+  const cases = [
+    ["Listen to the story", "reading", "Reading your story…"],
+    ["Sketch the storyboard", "storyboard", "Sketching the storyboard…"],
+    ["Find the props", "props", "Looking for the things in your story…"],
+    ["Build the scenery", "set", "Building the scenery…"],
+    ["Direct the scene", "staging", "Putting everyone on their marks…"],
+    ["Record the narration", "narration", "Inking the words…"],
+    ["Check the pages", "checking", "Checking the pages…"],
+    ["Add it to everyone's books", "linking", "Putting it in everyone’s books…"],
+  ];
+  for (const [text, stage, caption] of cases) {
+    const items = cases.map(([t]) => [t, t === text ? "in_progress" : cases.findIndex(([x]) => x === t) < cases.findIndex(([x]) => x === text) ? "completed" : "pending"]);
+    const s = craftScene(run(...before, plan(...items)));
+    assert.equal(s.stage, stage, text);
+    assert.equal(s.caption, caption, text);
+    assert.doesNotMatch(s.caption, /sketched|stands|done|made/i, text);
+  }
+  const board = craftScene(run(...before, plan(["Sketch the storyboard", "in_progress"])));
+  assert.equal(board.frames, 0, "no frame before the storyboarder starts");
+  const set = craftScene(run(...before, plan(["Build the scenery", "in_progress"])));
+  assert.equal(set.layers, 0, "no layer before the set designer starts");
+  // Once the sub-agent has ended, the line may say so.
+  const sketched = craftScene(run(...before, plan(["Sketch the storyboard", "in_progress"]), start("storyboarder"), end("storyboarder")));
+  assert.equal(sketched.caption, "The storyboard is sketched.");
+  const built = craftScene(run(...before, plan(["Build the scenery", "in_progress"]), start("set_designer"), end("set_designer")));
+  assert.equal(built.caption, "The scenery stands.");
+});
+
+test("keepCast / keepList: the same array back when nothing changed", () => {
+  const a = [{ id: "ana", name: "Ana", color: "#111", item: null, build: null }];
+  const b = [{ id: "ana", name: "Ana", color: "#111" }];
+  assert.equal(keepCast(a, b), a);
+  const c = [{ id: "ana", name: "Ana", color: "#222" }];
+  assert.equal(keepCast(a, c), c);
+  assert.equal(keepCast(a, []).length, 0);
+  const x = {};
+  const l = [x];
+  assert.equal(keepList(l, [x]), l);
+  assert.notEqual(keepList(l, [{}]), l);
 });
 
 test("holdScene: a reconnect replaying from nothing keeps the page as it was", () => {

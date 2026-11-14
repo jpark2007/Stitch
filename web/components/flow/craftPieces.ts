@@ -270,6 +270,12 @@ export function waitCutout(): Cutout {
 
 const prints = new Map<string, Texture>();
 
+/** Free the printed textures (frames, name slips, the tick): the stage that used them has gone. */
+export function disposeCraftPrints(): void {
+  for (const t of prints.values()) t.dispose();
+  prints.clear();
+}
+
 function printTexture(key: string, w: number, h: number, draw: (ctx: CanvasRenderingContext2D) => void): Texture {
   const hit = prints.get(key);
   if (hit) return hit;

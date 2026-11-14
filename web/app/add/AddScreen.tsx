@@ -20,6 +20,8 @@ import {
   bookOf,
   castKey,
   castOf,
+  keepCast,
+  keepList,
   createWatch,
   pageTitle,
   pageYear,
@@ -84,16 +86,20 @@ function AddLoadingPage(props: { kind: "new" | "second" | "run" }) {
   );
 }
 
-/** The story page of the teller's book, from the form as it is now. */
-function pageFromForm(p: FormPreview): DraftPage {
-  const cast = castOf(p.people, p.selfPersonId, p.draft.participantIds);
+/**
+ * The story page of the teller's book, from the form as it is now. The
+ * cast, people and photos come back as the same arrays as `prev` when they
+ * did not change, so a keystroke changes only the text and the book does not
+ * redraw for it.
+ */
+function pageFromForm(p: FormPreview, prev: DraftPage): DraftPage {
   return {
     title: pageTitle({ question: p.draft.question, secondTellingOf: p.secondTellingOf }),
     year: pageYear(p.draft.year),
     text: p.draft.text,
-    cast,
-    participantIds: p.draft.participantIds.filter((id) => id !== p.selfPersonId),
-    photos: p.photos,
+    cast: keepCast(prev.cast, castOf(p.people, p.selfPersonId, p.draft.participantIds)),
+    participantIds: keepList(prev.participantIds, p.draft.participantIds.filter((id) => id !== p.selfPersonId)),
+    photos: keepList(prev.photos, p.photos),
   };
 }
 
@@ -118,7 +124,7 @@ function readStoredCast(runId: string): CastMember[] {
   }
 }
 
-function storeCast(runId: string, cast: CastMember[]): void {
+function storeCast(runId: string, cast: readonly CastMember[]): void {
   try {
     sessionStore()?.setItem(castKey(runId), JSON.stringify(cast));
   } catch {
@@ -252,7 +258,7 @@ function AddFlow(props: {
   // are small values the book reads itself, so the page does not re-render
   // for a keystroke or a run event.
   const [pageWatch] = useState(() => createWatch<DraftPage>(EMPTY_PAGE));
-  const onPreview = useCallback((p: FormPreview) => pageWatch.set(pageFromForm(p)), [pageWatch]);
+  const onPreview = useCallback((p: FormPreview) => pageWatch.set(pageFromForm(p, pageWatch.get())), [pageWatch]);
   const shownRunId = run?.runId ?? null;
   const craftWatch = useMemo(() => (shownRunId ? createWatch<CraftInput | null>(null) : null), [shownRunId]);
   const reattached = run !== null && !run.fresh;
@@ -318,7 +324,6 @@ function AddFlow(props: {
             fresh,
             familyId: fid,
             second,
-            momentHref: (id: string) => hrefs.memory(id, fid),
             // The stage plays saved moments from the real API only.
             loadMoment: isMockMode()
               ? null
