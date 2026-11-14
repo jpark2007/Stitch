@@ -141,10 +141,20 @@ def get_memory(
 # ------------------------------------------------------------------------------ media
 
 _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+# Larger than any stored file. Positions with more digits are read as this, because
+# int() refuses strings over 4300 digits (a ValueError, so a 500, from one header).
+_MAX_POSITION_DIGITS = 18
+_HUGE_POSITION = 10**_MAX_POSITION_DIGITS
 
 
 class _Unsatisfiable(Exception):
     pass
+
+
+def _position(digits: str) -> int:
+    """A Range byte position, capped at _HUGE_POSITION."""
+    stripped = digits.lstrip("0") or "0"
+    return _HUGE_POSITION if len(stripped) > _MAX_POSITION_DIGITS else int(stripped)
 
 
 def _parse_range(header: str | None, length: int) -> tuple[int, int] | None:
@@ -160,8 +170,8 @@ def _parse_range(header: str | None, length: int) -> tuple[int, int] | None:
         return None
     first, last = match.groups()
     if first:
-        start = int(first)
-        end = int(last) if last else length - 1
+        start = _position(first)
+        end = _position(last) if last else length - 1
         if last and end < start:
             return None  # invalid range-spec: ignore the header
         if start >= length:
@@ -169,7 +179,7 @@ def _parse_range(header: str | None, length: int) -> tuple[int, int] | None:
         return start, min(end, length - 1)
     if not last:
         return None  # "bytes=-"
-    suffix = int(last)
+    suffix = _position(last)
     if suffix == 0 or length == 0:
         raise _Unsatisfiable
     return max(0, length - suffix), length - 1
