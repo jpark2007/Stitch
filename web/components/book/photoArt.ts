@@ -306,14 +306,93 @@ export function paintScene(scene: PlaceholderScene, w: number, h: number, seed =
   return c;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Framing an uploaded photo                                                 */
+/* ------------------------------------------------------------------------ */
+
+/** Print shapes (width / height) a photo is framed in, by its orientation. */
+const PORTRAIT = [3 / 4, 4 / 5] as const;
+const LANDSCAPE = [4 / 3, 3 / 2] as const;
+/** Between these a photo is printed square. */
+const SQUARE_FROM = 0.9;
+const SQUARE_TO = 1.12;
+
+const clamp = (v: number, [lo, hi]: readonly [number, number]) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * The print's aspect for a photo `w` x `h` px: its own orientation, in a
+ * print shape a scrapbook would hold (portrait 3:4 to 4:5, landscape 4:3 to
+ * 3:2, else square). Null for a size that is not a size (0, NaN).
+ */
+export function printAspect(w: number, h: number): number | null {
+  if (!(w > 0 && h > 0) || !Number.isFinite(w) || !Number.isFinite(h)) return null;
+  const a = w / h;
+  if (a < SQUARE_FROM) return clamp(a, PORTRAIT);
+  if (a > SQUARE_TO) return clamp(a, LANDSCAPE);
+  return 1;
+}
+
+/** The part of a source image cover-fit into a print, in source px. */
+export interface CropRect {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+}
+
+/**
+ * Cover-fit a `w` x `h` image into a print of `aspect`: the widest part of
+ * it with the print's shape. A portrait photo leans to its upper third, where
+ * faces are; a landscape (or square) one is cut evenly about the middle. The
+ * rect is always inside the image and at least a pixel each way.
+ */
+export function coverCrop(w: number, h: number, aspect: number): CropRect {
+  if (!(w > 0 && h > 0) || !Number.isFinite(w) || !Number.isFinite(h)) return { sx: 0, sy: 0, sw: Math.max(1, w || 1), sh: Math.max(1, h || 1) };
+  const a = aspect > 0 && Number.isFinite(aspect) ? aspect : w / h;
+  const sw = Math.max(1, Math.min(w, h * a));
+  const sh = Math.max(1, Math.min(h, w / a));
+  const lean = h > w ? 1 / 3 : 1 / 2;
+  return { sx: Math.max(0, (w - sw) / 2), sy: Math.max(0, (h - sh) * lean), sw, sh };
+}
+
+/** Images loaded for prints, by URL, so a page drawn again (or laid out first) does not fetch twice. */
+const images = new Map<string, Promise<HTMLImageElement | null>>();
+/** How many loaded images are kept; the oldest go first. */
+const IMAGES_KEPT = 16;
+
 function loadImage(src: string): Promise<HTMLImageElement | null> {
-  return new Promise((resolve) => {
+  const known = images.get(src);
+  if (known) return known;
+  const p = new Promise<HTMLImageElement | null>((resolve) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
+    img.onload = () => resolve(img.width > 0 && img.height > 0 ? img : null);
     img.onerror = () => resolve(null);
     img.src = src;
   });
+  images.set(src, p);
+  // A failed load is tried again next time; the cache stays small.
+  void p.then((img) => {
+    if (!img && images.get(src) === p) images.delete(src);
+  });
+  while (images.size > IMAGES_KEPT) images.delete(images.keys().next().value as string);
+  return p;
+}
+
+/**
+ * The photo with the aspect it is printed at: its own when it has one, else
+ * (an uploaded photo) its image's, framed by printAspect once it loads.
+ * Without either it is returned as is (printed 4:3). Never throws.
+ */
+export async function withPrintAspect(photo: BookPhoto): Promise<BookPhoto> {
+  if (photo.aspect !== undefined || !photo.src) return photo;
+  try {
+    const img = await loadImage(photo.src);
+    const aspect = img ? printAspect(img.naturalWidth || img.width, img.naturalHeight || img.height) : null;
+    return aspect ? { ...photo, aspect } : photo;
+  } catch {
+    return photo;
+  }
 }
 
 /** The smallest print drawn, page px wide; anything narrower is left out. */
@@ -337,7 +416,16 @@ export async function drawPhoto(
 ) {
   if (!(width >= MIN_PRINT_W) || !Number.isFinite(width) || !Number.isFinite(x) || !Number.isFinite(y)) return y;
   if (!Number.isFinite(angle)) angle = 0;
-  const aspect = typeof photo.aspect === "number" && Number.isFinite(photo.aspect) && photo.aspect > 0 ? Math.min(4, Math.max(0.25, photo.aspect)) : 4 / 3;
+  let loaded: HTMLImageElement | null = null;
+  try {
+    if (photo.src) loaded = await loadImage(photo.src);
+  } catch {
+    loaded = null;
+  }
+  // An uploaded photo with no aspect of its own is printed in its own shape.
+  const own = photo.aspect === undefined && loaded ? printAspect(loaded.naturalWidth || loaded.width, loaded.naturalHeight || loaded.height) : null;
+  const want = own ?? photo.aspect;
+  const aspect = typeof want === "number" && Number.isFinite(want) && want > 0 ? Math.min(4, Math.max(0.25, want)) : 4 / 3;
   const pad = Math.round(width * 0.05);
   const imgW = width - pad * 2;
   const imgH = Math.max(1, Math.round(imgW / aspect));
@@ -346,11 +434,7 @@ export async function drawPhoto(
 
   let image: CanvasImageSource;
   try {
-    image = paintScene(photo.scene ?? "hills", imgW * 2, imgH * 2, seed);
-    if (photo.src) {
-      const loaded = await loadImage(photo.src);
-      if (loaded && loaded.width > 0 && loaded.height > 0) image = loaded;
-    }
+    image = loaded ?? paintScene(photo.scene ?? "hills", imgW * 2, imgH * 2, seed);
   } catch {
     return y;
   }
@@ -394,11 +478,9 @@ function printPhoto(
   const ix = -width / 2 + pad;
   const iy = -h / 2 + pad;
   if (image instanceof HTMLImageElement) {
-    // Cover-fit an uploaded photo.
-    const s = Math.max(imgW / image.width, imgH / image.height);
-    const sw = imgW / s;
-    const sh = imgH / s;
-    ctx.drawImage(image, (image.width - sw) / 2, (image.height - sh) / 2, sw, sh, ix, iy, imgW, imgH);
+    // Cover-fit an uploaded photo, a portrait leaning to its faces.
+    const { sx, sy, sw, sh } = coverCrop(image.naturalWidth || image.width, image.naturalHeight || image.height, imgW / imgH);
+    ctx.drawImage(image, sx, sy, sw, sh, ix, iy, imgW, imgH);
   } else {
     ctx.drawImage(image, ix, iy, imgW, imgH);
   }

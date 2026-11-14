@@ -123,8 +123,8 @@ export function momentSpread(res: MemoryResponse, options: MomentSpreadOptions =
     for (const id of new Set(tellings.flatMap((t) => t.photoIds ?? []))) {
       if (photos.length >= MAX_PHOTOS) break;
       const src = options.photoUrl(id);
-      // The first print landscape, the second square, as a scrapbook lays them.
-      if (src) photos.push({ id, src, aspect: photos.length ? 1 : 4 / 3 });
+      // No aspect: each is printed in its own shape once it loads (photoArt.withPrintAspect).
+      if (src) photos.push({ id, src });
     }
   }
 

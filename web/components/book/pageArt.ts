@@ -6,7 +6,7 @@
 
 import { ACCENT, canvas, drawGutterStitches, drawStitchLine, INK, INK_FAINT, INK_SOFT, paper, setSpacing, wrap, type Ctx, type PageFonts } from "./paperArt";
 import { drawLabelsPrompt, drawPullTabPrint, drawPuppetAvatar, drawTellerLabels, layoutTellerLabels, tellerLabelsHeight, type LabelRect } from "./labelArt";
-import { drawPhoto } from "./photoArt";
+import { drawPhoto, withPrintAspect } from "./photoArt";
 import type { BookCover, BookSpread } from "./types";
 
 
@@ -71,13 +71,15 @@ export async function drawStoryPage(
   const titleLines = clampLines(pageCtx, wrap(pageCtx, spread.title ?? "", width), TITLE_MAX_LINES, () => width);
   setSpacing(pageCtx, 0);
   const bodyTop = TITLE_TOP + titleLines.length * TITLE_LEAD + 8 + 58;
+  // An uploaded photo's shape is known once it loads: lay the page out for it.
+  const taped = await Promise.all((spread.photos ?? []).slice(0, 2).map(withPrintAspect));
   const plan = layoutStory(pageCtx, text, fonts, {
     width,
     top: bodyTop,
     tail: storyTailHeight(spread),
-    photos: (spread.photos ?? []).slice(0, 2).map((p) => photoAspect(p.aspect)),
+    photos: taped.map((p) => photoAspect(p.aspect)),
   });
-  const photos = (spread.photos ?? []).slice(0, plan.photos);
+  const photos = taped.slice(0, plan.photos);
   // Without photos the words sit on their own layer, to be set in the
   // page's optical middle rather than hung from its head.
   const layer = photos.length ? null : canvas(W, H);
