@@ -131,6 +131,8 @@ mark; `socket` socket name on a prop; `pose` pose name; `state` state name; `at`
 or prop (effects); `value` time of day; `dur` seconds.
 
 **Effects** (actions with no `who`): `confetti`, `steam`, `rain`, `smoke`, `time_of_day`.
+The compiler does not run effects yet: each one fails with `unsupported_verb`. Leave them out
+and show the moment with people and props. Every other verb in the table compiles.
 **Times of day** (`time_of_day` `value`): `dawn`, `day`, `dusk`, `night`.
 
 ### Poses (`pose` verb and `StartState.pose`)
@@ -330,9 +332,8 @@ story, from the tellings and person records only. No invented ages, names or fac
      `open`/`close` of a held prop, `place_on` it at hand height first and open it there.
    - `offstage`: add an `enter` first; `already_on_stage`: use `walk_to` instead of `enter`.
    - `lines_overlap`, `cue_before_start`, `cue_conflict`: move the line's `t`, not the action.
-   - `unsupported_verb`: the compiler cannot do that verb yet. Delete an effect; replace `exit`
-     with `walk_to` `offstage_left`/`offstage_right`, `follow` with a `walk_to` a beat later;
-     delete a `turn_to`. Keep everything else.
+   - `unsupported_verb`: the compiler cannot do that verb yet. Only effects report it today:
+     delete the effect and keep everything else.
    - an unknown field (`invalid_screenplay`): delete it.
 4. Compile again. **At most 3 rounds** (3 calls to `compile_screenplay`). If the third still
    fails, stop and report the remaining errors exactly as returned. Never loop further.

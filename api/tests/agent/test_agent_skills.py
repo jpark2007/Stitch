@@ -136,6 +136,45 @@ def test_directing_teaches_what_the_compiler_simulates():
     assert "0.15 in u" in text
 
 
+MOTION_VERBS_ONCE_UNSUPPORTED = ("exit", "turn_to", "follow")  # compiled since #101
+
+
+def _unsupported_bullet(text: str) -> str:
+    (bullet,) = re.findall(r"^ *- `unsupported_verb`:.*(?:\n {5,}\S.*)*", text, re.MULTILINE)
+    return " ".join(bullet.split())
+
+
+def test_directing_names_effects_as_the_only_unsupported_family():
+    """On main the compiler has a handler for every verb except the effects. The directing skill
+    says so: its `unsupported_verb` fix is about effects only, and its effects line says they do
+    not compile yet. The non-effect half is checked against the real compiler's handlers."""
+    from screenplay.compiler import HANDLERS
+
+    text = body("directing")
+    bullet = _unsupported_bullet(text)
+    assert re.search(r"only effects report it", bullet, re.IGNORECASE), bullet
+    for verb in MOTION_VERBS_ONCE_UNSUPPORTED + ("walk_to",):
+        assert f"`{verb}`" not in bullet, verb
+    effects_line = " ".join(text.split("**Effects** (actions with no `who`)", 1)[1].split("\n\n", 1)[0].split())
+    assert "`unsupported_verb`" in effects_line and "Every other verb in the table compiles" in effects_line
+    non_effects = set(VOCAB["actions"]) - set(VOCAB["effects"])
+    assert non_effects <= set(HANDLERS), sorted(non_effects - set(HANDLERS))
+
+
+@pytest.mark.parametrize(
+    "path",
+    [*(SKILLS / name / "SKILL.md" for name in SKILL_NAMES),
+     *sorted((REPO / "api" / "agent" / "prompts").glob("*.md"))],
+    ids=lambda p: f"{p.parent.name}/{p.name}",
+)
+def test_no_prompt_or_skill_calls_exit_turn_to_or_follow_unsupported(path):
+    for para in re.split(r"\n\s*\n|\n *- ", path.read_text()):
+        flat = " ".join(para.split())
+        if re.search(r"unsupported|not support|cannot do that verb", flat, re.IGNORECASE):
+            for verb in MOTION_VERBS_ONCE_UNSUPPORTED:
+                assert f"`{verb}`" not in flat, f"{path.name}: {flat}"
+
+
 def test_director_prompt_states_the_compiler_rules():
     text = (REPO / "api" / "agent" / "prompts" / "director.md").read_text()
     for word in ("get_person", "compile_screenplay", "/screenplay.json", "busy", "out_of_reach",
