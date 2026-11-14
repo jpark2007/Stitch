@@ -249,6 +249,14 @@ export function MomentBook({
       open: () => players.openId,
       live: () => players.liveIds,
       tellings: () => players.get(),
+      /** Each live player's scene time and whether it plays: only the open one should move. */
+      clocks: () =>
+        Object.fromEntries(
+          players.liveIds.map((id) => {
+            const c = players.player(id)!;
+            return [id, { t: Math.round(c.time * 100) / 100, playing: c.getStatus().playing }];
+          }),
+        ),
     };
     return () => {
       delete w.__momentBook;
