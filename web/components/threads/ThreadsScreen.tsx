@@ -132,6 +132,7 @@ export default function ThreadsScreen(props: ThreadsScreenProps) {
           people={demoThreadPeople}
           moments={demoThreadMoments}
           note={<DemoNote why={source.why} onRetry={retry} />}
+          traditionsHref={source.why === "offline" ? "/traditions" : "/traditions?demo=1"}
           {...viewSeed}
         />
       );
@@ -188,6 +189,7 @@ function FamilyThreads(props: {
       key={fid}
       familyId={fid}
       addHref={hrefs.add({ familyId: fid })}
+      traditionsHref={`/traditions?family=${encodeURIComponent(fid)}`}
       familyName={familyName}
       people={data.people}
       moments={data.moments}
