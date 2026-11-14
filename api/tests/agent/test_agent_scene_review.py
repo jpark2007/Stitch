@@ -258,6 +258,20 @@ def test_good_prop_part_and_prop_state_tabs():
     assert _review(data, {"car": CAR, **SAMPLE_PROPS}) == []
 
 
+NO_PULL_TAB = (
+    "interactions: no pull_tab; add one on the main beat of the shot list (the drop, the hand-off, "
+    "the arrival) that scrubs over that beat (drives type scrub) or moves a prop (prop_part / prop_state)"
+)
+ONLY_SLIDERS = (
+    "interactions: only sliders, no pull_tab; add one on the main beat of the shot list (the drop, the hand-off, "
+    "the arrival) that scrubs over that beat (drives type scrub) or moves a prop (prop_part / prop_state)"
+)
+
+
+def _slider(**extra) -> dict:
+    return _tab({"type": "scrub", "from": 0, "to": 2}, **{"kind": "slider", "id": "slide", **extra})
+
+
 def test_prop_with_parts_and_no_interactions_asks_for_a_pull_tab():
     data = _with_car(_sample())
     del data["interactions"]
@@ -268,13 +282,49 @@ def test_prop_with_parts_and_no_interactions_asks_for_a_pull_tab():
     ]
     data["interactions"] = []
     assert len(_review(data, props)) == 1
-    assert _review(data) == []  # without the rigs we cannot tell
+    assert _review(data) == [NO_PULL_TAB]  # without the rigs: the generic ask
 
 
-def test_static_props_and_no_interactions_is_fine():
+@pytest.mark.parametrize("props", [SAMPLE_PROPS, None], ids=["flat props", "no rigs"])
+def test_no_interactions_with_static_props_asks_for_a_pull_tab(props):
     data = _sample()
     del data["interactions"]
-    assert _review(data, SAMPLE_PROPS) == []
+    assert _review(data, props) == [NO_PULL_TAB]
+    data["interactions"] = []
+    assert _review(data, props) == [NO_PULL_TAB]
+
+
+@pytest.mark.parametrize("props", [SAMPLE_PROPS, None], ids=["flat props", "no rigs"])
+def test_only_a_slider_asks_for_a_pull_tab(props):
+    data = _sample()
+    data["interactions"] = [_slider()]
+    assert _review(data, props) == [ONLY_SLIDERS]
+
+
+def test_only_a_slider_names_the_props_that_can_move_when_the_rigs_are_known():
+    data = _with_car(_sample())
+    data["interactions"] = [_slider(), _slider(id="slide2")]
+    assert _review(data, {"car": CAR, **SAMPLE_PROPS}) == [
+        "interactions: only sliders, but car can move or change; "
+        "add a pull_tab that drives one of them (prop_part or prop_state)"
+    ]
+    assert _review(data) == [ONLY_SLIDERS]
+
+
+@pytest.mark.parametrize("props", [SAMPLE_PROPS, None], ids=["flat props", "no rigs"])
+def test_one_pull_tab_is_enough(props):
+    data = _sample()
+    assert [it["kind"] for it in data["interactions"]] == ["pull_tab"]
+    assert _review(data, props) == []
+    data["interactions"].append(_slider())  # a slider beside the pull tab is fine too
+    assert _review(data, props) == []
+
+
+def test_a_broken_pull_tab_gets_its_own_warning_not_the_missing_one():
+    data = _sample()
+    data["interactions"] = [_tab({"type": "prop_state"})]
+    warnings = _review(data, SAMPLE_PROPS)
+    assert warnings and NO_PULL_TAB not in warnings and ONLY_SLIDERS not in warnings
 
 
 # ------------------------------------------------------------------------ narration
@@ -303,6 +353,14 @@ def test_every_warning_is_one_line_in_where_problem_fix_form():
     del data["shots"][0]["narration"][0]["source"]
     warnings = _review(data, {"car": CAR, **SAMPLE_PROPS})
     assert len(warnings) >= 10
+    # and every way of asking for a pull tab: none / only sliders, with and without the rigs
+    for interactions in ([], [_slider()]):
+        data["interactions"] = interactions
+        for props in ({"car": CAR, **SAMPLE_PROPS}, None):
+            asks = [w for w in _review(data, props) if w.startswith("interactions: ")]
+            assert len(asks) == 1
+            warnings += asks
+    assert NO_PULL_TAB in warnings and ONLY_SLIDERS in warnings
     for w in warnings:
         assert "\n" not in w
         where, _, rest = w.partition(": ")

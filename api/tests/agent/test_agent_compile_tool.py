@@ -308,6 +308,31 @@ def test_tool_scene_review_gets_the_scene_props(compiler):
     assert events == []
 
 
+NO_TABS = copy.deepcopy(SAMPLE)
+del NO_TABS["interactions"]
+NO_PULL_TAB_WARNING = (
+    "interactions: no pull_tab; add one on the main beat of the shot list (the drop, the hand-off, "
+    "the arrival) that scrubs over that beat (drives type scrub) or moves a prop (prop_part / prop_state)"
+)
+
+
+def test_tool_flat_props_and_no_interactions_compiles_but_asks_for_a_pull_tab(compiler):
+    """Generated props are flat, so a memory with no interactions still gets asked for a pull tab."""
+    assert not any(p.parts or p.states for p in SCENE.props.values())
+    graph = _graph(compiler)
+    state, events = _call(graph, "no_tabs", 1, files={"/screenplay.json": create_file_data(json.dumps(NO_TABS))})
+    tl = Timeline.model_validate_json(_text(state, "/timeline.json"))
+    assert _last_tool_message(state).content.splitlines() == [
+        f"ok: 1 shots, {round(tl.duration, 2):g}s, {len(tl.tracks)} tracks",
+        "warnings (fix in /screenplay.json, then compile again; these do not use a compile round):",
+        f"- {NO_PULL_TAB_WARNING}",
+    ]
+    assert _text(state, "/scene_review.txt") == NO_PULL_TAB_WARNING + "\n"
+    assert json.loads(_text(state, "/compile_log.json")) == {"rounds": 0}
+    assert _text(state, "/compile_errors.txt") == ""
+    assert events == []
+
+
 def test_tool_scene_review_crash_does_not_fail_the_compile(compiler, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("review bug")
