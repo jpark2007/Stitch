@@ -5,9 +5,12 @@
 // sending the form, or straight from a `?run=` URL after a reload.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { initialRunState, type RunState } from "@/components/agent/runState";
 import { ButtonLink } from "@/components/flow/Button";
 import { makeRunSource, RUN_OPTIONS } from "@/components/flow/client";
 import { forgetOpenRun, markRunWaiting, RUN_GONE_MESSAGE, withRunGone } from "@/components/flow/addPage";
+import type { CraftInput } from "@/components/flow/CraftingBook";
+import { applyPropEdits, propsFromChips, tapProps, type CraftProp, type Watch } from "@/components/flow/crafting";
 import { FlowPage } from "@/components/flow/FlowPage";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { MemoryRun, SCRIPT_FOCUS_QUIET, type MemoryRunTelling } from "@/components/flow/MemoryRun";
@@ -29,8 +32,12 @@ export function AddRun(props: {
   lede?: ReactNode;
   /** After the run's own error: bring the form back with what was sent. */
   onTellAgain?: () => void;
+  /** Where the run's state goes for the teller's book (which makes its pop-up from it). */
+  craft?: Watch<CraftInput | null> | null;
+  /** The book as a small picture at the top of the page (narrow windows; wide ones have it beside). */
+  book?: ReactNode;
 }) {
-  const { api, fid, run, lede, onTellAgain } = props;
+  const { api, fid, run, lede, onTellAgain, craft = null, book = null } = props;
   const { runId, telling, fresh } = run;
 
   // A run the server no longer knows (a stale ?run= link) gets its own way
@@ -53,10 +60,29 @@ export function AddRun(props: {
     [runId],
   );
 
+  // The book makes its pop-up from the run: its state as the feed folds it,
+  // and the props the prop master found (which the state forgets once the
+  // review closes), kept here as the stream and the review pass by.
+  const publish = useCallback(
+    (change: { run?: RunState; props?: (before: CraftProp[]) => CraftProp[] }) => {
+      if (!craft) return;
+      const now = craft.get();
+      const props = now?.props ?? [];
+      craft.set({ run: change.run ?? now?.run ?? initialRunState, props: change.props ? change.props(props) : props });
+    },
+    [craft],
+  );
+  const onState = useCallback((state: RunState) => publish({ run: state }), [publish]);
+
   // One source per run: a new object would reset the feed and reconnect.
   const source = useMemo(
-    () => withRunGone(makeRunSource(api, fid, runId), RUN_GONE_MESSAGE, markGone),
-    [api, fid, runId, markGone],
+    () =>
+      tapProps(
+        withRunGone(makeRunSource(api, fid, runId), RUN_GONE_MESSAGE, markGone),
+        (chips) => publish({ props: (before) => propsFromChips(chips, before) }),
+        (edits) => publish({ props: (before) => applyPropEdits(before, edits) }),
+      ),
+    [api, fid, runId, markGone, publish],
   );
   const mediaUrl = useCallback((id: string) => api.mediaUrl(fid, id), [api, fid]);
   const onUploadPhoto = useCallback(async (f: File) => (await api.uploadMedia(fid, f)).id, [api, fid]);
@@ -114,19 +140,23 @@ export function AddRun(props: {
             </div>
           </PaperCard>
         ) : (
-          <MemoryRun
-            source={source}
-            options={RUN_OPTIONS}
-            runKey={`${fid}/${runId}`}
-            telling={telling}
-            mediaUrl={mediaUrl}
-            onUploadPhoto={onUploadPhoto}
-            sceneHref={sceneHref}
-            watchHref={watchHref}
-            addAnotherHref={hrefs.add({ familyId: fid })}
-            onTellAgain={onTellAgain}
-            onProgress={onProgress}
-          />
+          <div className="flex min-w-0 flex-col gap-6">
+            {book}
+            <MemoryRun
+              source={source}
+              options={RUN_OPTIONS}
+              runKey={`${fid}/${runId}`}
+              telling={telling}
+              mediaUrl={mediaUrl}
+              onUploadPhoto={onUploadPhoto}
+              sceneHref={sceneHref}
+              watchHref={watchHref}
+              addAnotherHref={hrefs.add({ familyId: fid })}
+              onTellAgain={onTellAgain}
+              onProgress={onProgress}
+              onState={onState}
+            />
+          </div>
         )}
       </FlowPage>
     </div>

@@ -11,7 +11,7 @@ import FollowUpCard from "@/components/agent/FollowUpCard";
 import MergeCard from "@/components/agent/MergeCard";
 import PropChips from "@/components/agent/PropChips";
 import { useAgentRun, type RunSource, type UseAgentRunOptions } from "@/components/agent/useAgentRun";
-import type { PendingInput } from "@/components/agent/runState";
+import type { PendingInput, RunState } from "@/components/agent/runState";
 
 import { draftPauseKey } from "@/components/agent/answerDraft";
 import { errorRecovery } from "@/components/agent/feedView";
@@ -95,6 +95,8 @@ export function MemoryRun(props: {
    * open runs current.
    */
   onProgress?: (progress: OpenRunProgress) => void;
+  /** Told the run's state each time it changes (the crafting book beside the page draws from it). */
+  onState?: (state: RunState) => void;
 }) {
   const {
     source,
@@ -108,9 +110,13 @@ export function MemoryRun(props: {
     addAnotherHref,
     onTellAgain,
     onProgress,
+    onState,
   } = props;
   const runOptions = useMemo(() => (runKey ? { ...options, runKey } : options), [options, runKey]);
   const { state, answerQuestion, reviewProps, decideMerge, retry } = useAgentRun(source, runOptions);
+  useEffect(() => {
+    onState?.(state);
+  }, [state, onState]);
 
   const progress = openRunProgress(state);
   useEffect(() => {
