@@ -1309,6 +1309,33 @@ def test_telling_narration_spreads_sentences_without_overlap():
     assert plain.narrations["lily"]["s1"][0].t == 0
 
 
+def test_keep_audio_keeps_a_clip_only_while_its_lines_stay_put():
+    """keep_audio: other tellers keep their audio while their lines keep their timeline times;
+    the new teller's track never inherits one, and a moved track loses its clip."""
+    sample = load_sample().memory
+    old = sample.timeline.model_copy(deep=True)
+    for author, track in old.narrations.items():
+        track.audio = f"media/a_{author}"
+    old.audio = f"media/a_{old.default_narrator}"
+    other = next(a for a in old.narrations if a != old.default_narrator)
+    fresh = sample.timeline.model_copy(deep=True)  # the compiler's output: no audio anywhere
+
+    kept = fake_runs.keep_audio(old, fresh, "lily")
+    assert {a: t.audio for a, t in kept.narrations.items()} == {a: t.audio for a, t in old.narrations.items()}
+    assert kept.audio == old.audio
+
+    retold = fake_runs.keep_audio(old, fresh, other)
+    assert retold.narrations[other].audio is None
+    assert retold.audio == old.audio
+
+    moved = fresh.model_copy(deep=True)
+    for line in moved.narrations[old.default_narrator].lines:
+        line.t += 1.0
+    shifted = fake_runs.keep_audio(old, moved, "lily")
+    assert shifted.narrations[old.default_narrator].audio is None and shifted.audio is None
+    assert shifted.narrations[other].audio == old.narrations[other].audio
+
+
 # ------------------------------------------------------------------------------ subscribers
 
 

@@ -72,6 +72,29 @@ participants who are new to the moment are linked and each is asked for their ve
 new version, done. No question, no prop review. A recompile that fails emits compile_error,
 then a plain error event, and writes nothing.
 
+Second-telling edge cases (tests/data/test_demo_second_tellings.py runs each one on the
+seeded demo moments):
+
+- A long telling: the lines of one shot follow each other LINE_GAP apart and never overlap,
+  so they may run past the shot's last action. The compiler contract allows that: a shot
+  ends when its action has settled AND the last word of every telling has been said
+  (screenplay/layout.content_end), so the shot, and the timeline, grow until the telling is
+  heard; the action does not move. Later shots then start later in timeline time (every
+  teller's lines keep their shot time).
+- Narration audio (`keep_audio`): a teller's audio is one clip from timeline t=0, so the
+  other tellers (and the default narrator's top-level `audio`) keep theirs only while their
+  lines are said at exactly the same timeline times. When a longer shot moves their later
+  lines, their audio is dropped (None) rather than left playing out of step. The new
+  teller's track never has audio here (no TTS in scripted runs).
+- The same teller telling again: their telling is replaced (db/memories.add_telling) and
+  so is their whole track; never two tellings or duplicate lines.
+- Text with no spoken word ("...", "?!", emoji only): the telling is saved and the teller
+  gets ONE uncued line of the stripped raw text at the first shot's t=0, with no word
+  timings: a caption, nothing to say. A teller never has a telling without a track. Only a
+  blank text gives no line at all; that run ends with TELLING_FAILED_MESSAGE and writes
+  nothing (the route already refuses a blank text with 422).
+- Photos submitted with a second telling are kept on that telling.
+
 Any exception ends the run with a single error event with a plain message. Every payload is
 an instance of `schemas.RUN_EVENTS[name]`, and every run ends with exactly one done or error.
 
@@ -102,7 +125,14 @@ from db import people as people_db
 from db import props as props_db
 from screenplay import compiler as screenplay_compiler
 from screenplay import narration as narration_timing
-from screenplay.schema import CompileError, CompileResult, NarrationLine, Screenplay, Timeline
+from screenplay.schema import (
+    CompileError,
+    CompileResult,
+    NarrationLine,
+    NarrationTrack,
+    Screenplay,
+    Timeline,
+)
 from seed import demo
 
 logger = logging.getLogger(__name__)
@@ -609,10 +639,17 @@ def telling_narration(screenplay: Screenplay, author_id: str, text: str, *, cued
     any lines they had). The default narrator's retelling replaces the shots' own narration;
     every action is pinned at the time the old narration gave it first, so the shared action
     does not move.
+
+    A text with no spoken word ("...", emoji only) still gives its teller a track: ONE
+    uncued line of the stripped raw text at the first shot's t=0, source
+    "telling:<author>:s1", which compiles with no word timings (a caption, nothing to say).
+    Only a blank text gives no lines at all; the run refuses that (see `_second_telling`).
     """
     sp = screenplay.model_copy(deep=True)
     default = narration_timing.default_author(sp)
     by_shot = _lines_over(sp, author_id, text, cued=cued, pin=author_id == default)
+    if not by_shot and text.strip() and sp.shots:
+        by_shot = {sp.shots[0].id: [NarrationLine(t=0.0, text=text.strip(), source=f"telling:{author_id}:s1")]}
     if author_id == default:
         for shot in sp.shots:
             shot.narration = by_shot.get(shot.id, [])
@@ -680,15 +717,37 @@ def narrate_as_teller(screenplay: Screenplay, teller_id: str, text: str, *, cued
     return sp
 
 
+def _timing(track: NarrationTrack) -> list[tuple]:
+    """Every line's text, timeline time and word timings: what one audio clip is cut to."""
+    return [(line.text, line.t, [(w.word, w.t) for w in line.words or []]) for line in track.lines]
+
+
 def keep_audio(old: Timeline, new: Timeline, author_id: str) -> Timeline:
-    """`new` with the narration audio `old` had for every teller but `author_id` (whose words changed)."""
+    """`new` with the narration audio `old` had for every teller but `author_id` (whose words changed).
+
+    A teller's audio is one clip from timeline t=0 (CONTRACTS clarification 5), so it is kept
+    only while their lines are said at exactly the same timeline times. When the new telling
+    makes an earlier shot longer, every later line moves, and a kept clip would play out of
+    step with the captions and the action: that teller's audio is dropped (None) instead, to
+    be synthesized again.
+    """
     tl = new.model_copy(deep=True)
     old_tracks = old.narrations or {}
     for author, track in (tl.narrations or {}).items():
-        if author != author_id and author in old_tracks and old_tracks[author].audio is not None:
-            track.audio = old_tracks[author].audio
-    if tl.default_narrator == old.default_narrator and tl.default_narrator != author_id and old.audio is not None:
-        tl.audio = old.audio
+        before = old_tracks.get(author)
+        if author != author_id and before is not None and before.audio is not None and _timing(before) == _timing(track):
+            track.audio = before.audio
+    default = tl.default_narrator
+    if default == old.default_narrator and default != author_id and old.audio is not None:
+        new_track = (tl.narrations or {}).get(default) if default else None
+        old_track = old_tracks.get(default) if default else None
+        same = (
+            _timing(old_track) == _timing(new_track)
+            if old_track is not None and new_track is not None
+            else old.captions == tl.captions
+        )
+        if same:
+            tl.audio = old.audio
     return tl
 
 
@@ -1091,6 +1150,14 @@ class ScriptedRunManager:
             name="narrator", task="Write the new teller's narration over the scene"))
         self._step()
         screenplay, result = self._narrate(db, fid, existing.screenplay, teller, fields.text)
+        lines = sum(len(by_shot) for by_shot in self._lines_of(screenplay, teller).values())
+        if lines == 0:
+            # Nothing to narrate (a blank text): never a telling without its track.
+            logger.error("scripted run %s: the second telling has nothing to narrate", run.run_id)
+            self._emit(run, "subagent_end", schemas.SubagentEndEvent(
+                name="narrator", summary="There was nothing to narrate."))
+            self._emit(run, "error", schemas.ErrorEvent(message=TELLING_FAILED_MESSAGE))
+            return
         if not result.ok or result.timeline is None:
             errors = result.errors or [CompileError(code="no_timeline", message="the compiler made no timeline")]
             logger.error(
@@ -1102,7 +1169,6 @@ class ScriptedRunManager:
                 name="narrator", summary=f"The narration did not compile: {errors[0].message}"))
             self._emit(run, "error", schemas.ErrorEvent(message=TELLING_FAILED_MESSAGE))
             return
-        lines = sum(len(by_shot) for by_shot in self._lines_of(screenplay, teller).values())
         self._emit(run, "subagent_end", schemas.SubagentEndEvent(
             name="narrator", summary=f"{lines} line{'' if lines == 1 else 's'}, compiled without errors."))
         self._step()
