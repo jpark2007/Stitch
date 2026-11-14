@@ -189,3 +189,66 @@ The standalone database is disposable and separate from the main web app: its
 completion URL identifies the saved memory, but opening it in a different app
 database will not show that memory. The integration test verifies the actual saved
 telling, photo, compiled result and completion event. This is not a shared-web demo.
+
+## Voice-note intake (explicit opt-in)
+
+Signed `POST /internal/channels/inbound-voice` accepts exactly
+`{messageId,provider,spaceId,senderId,attachmentId,mimeType,dataBase64}`. There is no
+caption, URL, family ID or caller media ID. IDs are capped at 256 UTF-8 bytes;
+canonical base64 decodes to at most 20 MiB and the raw body to 27,978,412 bytes.
+This allowance applies only to the exact photo and voice paths; all other signed
+routes retain their 16,384-byte cap. The API owner's main middleware needs the same
+narrow voice-path allowance. This slice does not change main.py.
+
+Voice requires `STITCH_CHANNELS_TRANSCRIPTION=1`, valid server-side `OPENAI_API_KEY`
+and the approved optional `CHANNELS_TRANSCRIPTION_MODEL` configuration, or a trusted
+injected offline transcriber in tests. Importing/receiving audio never calls a
+provider. The independently reviewed [transcription adapter](TRANSCRIPTION.md)
+defaults to the user-approved `gpt-4o-mini-transcribe` and sends only when the worker
+explicitly invokes it. No secret value is included in responses or logs.
+
+The MIME allowlist is the adapter's `MIME_FILENAMES`: MP3/MPEG/MPGA, MP4/M4A, PCM WAV,
+WebM, Ogg and FLAC, including its documented aliases. PCM WAV frames are checked for
+complete declared data. Compressed formats receive bounded container/header sanity
+checks that reject obvious non-audio and MIME mismatches; these checks do **not**
+prove decodability, authenticity or duration. The opted-in provider performs actual
+decoding. No local decoder, URL fetch, ffprobe or shell converter is invoked.
+**Native iMessage voice notes can arrive as `audio/x-caf`, which is unsupported in
+this checkpoint. A separate bounded CAF conversion slice is still required; this
+is not a complete native iMessage voice feature.**
+
+202 `{accepted:true,duplicate:boolean}` means audio storage completed, not that a
+transcript or story exists. Family-scoped receipts have `receiptType:"voice"`,
+server-generated `audioId`, `audioSha256`, `audioMimeType`, identity snapshots,
+`status:"received"` and `transcriptionStatus:"pending"`. Audio is stored through
+public media APIs as `kind:"audio"`; raw bytes/base64 are never put in the receipt.
+Text/photo/voice share message-ID collision protection. The existing single-writer
+upload reservation and completed-file recovery apply to voice too; uncertain
+partial uploads are never blindly repeated.
+
+The worker processes at most one voice receipt per contact per tick. It holds the
+contact/receipt reservation, rechecks identity and consent, atomically reserves
+`transcriptionStatus:"transcribing"`, and makes one transcription call under a
+60-second total deadline. Consent/mapping is checked before the call, after its
+response, and before draft use. A nonblank transcript of at most 8000 UTF-8 bytes
+is persisted with `transcriptionStatus:"complete"` before it can enter the draft.
+Failure, cancellation or uncertain persistence records `uncertain` (or leaves the
+durable transcribing state if the database is unavailable) and blocks the worker.
+There are no automatic provider retries. Outbound failure cannot cause another
+transcription. Operators must reconcile stored receipt/provider results before
+recovering a blocked operation.
+
+Transcribed words can answer an actual studio text follow-up or be appended to a
+draft. They cannot authorize SUBMIT, KEEP or YES/NO, and spoken YEAR is not parsed as
+a command; type those commands explicitly. The raw recording remains family-scoped
+in media. This slice does not add shared `audioId`/telling fields or recording
+playback: the studio receives transcript text through its existing interface only.
+Those shared contracts and book playback remain Jonah/Ethan work.
+
+The byte and request-time limits do **not** cap audio duration, provider processing
+time after cancellation, or billing. Compressed audio may represent much more than
+its byte size suggests. There is no proven minute estimate or per-account spending
+budget here; contact-frequency/budget policy is deferred. Tests use synthetic PCM
+and structural compressed fixtures with injected transcribers, not real recordings,
+provider accounts or live decoding. Run `uv run pytest tests/channels/test_voice.py
+tests/channels/test_transcription.py -q` from `api/`.

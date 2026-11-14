@@ -194,13 +194,22 @@ class PhotoPending(RuntimeError):
     pass
 
 
-def _photo_contact(db, original: dict, message: dict) -> None:
+def _attachment_contact(db, original: dict, message: dict) -> None:
     current = contacts.resolve_contact(db, message["provider"], message["senderId"])
     if any(current.get(k) != original.get(k) for k in ("_id", "familyId", "personId", "userId")):
         raise PermissionError("Contact identity changed")
 
 
 def save_photo_inbound(db, contact: dict, message: dict, data: bytes) -> bool:
+    return _save_attachment_inbound(db, contact, message, data, receipt_type="photo", kind="photo")
+
+
+def save_voice_inbound(db, contact: dict, message: dict, data: bytes) -> bool:
+    return _save_attachment_inbound(db, contact, message, data, receipt_type="voice", kind="audio")
+
+
+def _save_attachment_inbound(db, contact: dict, message: dict, data: bytes,
+                             *, receipt_type: str, kind: str) -> bool:
     """Reserve one writer; retry can recover a completed identical media write.
 
     An uploading reservation without a readable file is deliberately not stolen:
@@ -208,22 +217,28 @@ def save_photo_inbound(db, contact: dict, message: dict, data: bytes) -> bool:
     state explicitly instead of racing another upload under the same ObjectId.
     """
     family = contact["familyId"]
-    _photo_contact(db, contact, message)
+    _attachment_contact(db, contact, message)
     identity = json.dumps([family, message["provider"], message["messageId"]], separators=(",", ":"))
     key = "inbound:" + hashlib.sha256(identity.encode()).hexdigest()
     content_sha = hashlib.sha256(data).hexdigest()
-    digest = hashlib.sha256(json.dumps({**message, "photoSha256": content_sha}, sort_keys=True,
+    hash_field = "photoSha256" if receipt_type == "photo" else "audioSha256"
+    pending_status = receipt_type + "_pending"
+    digest = hashlib.sha256(json.dumps({**message, hash_field: content_sha}, sort_keys=True,
                                        separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
     media_id = hashlib.sha256((identity + "\n" + message["attachmentId"]).encode()).hexdigest()[:24]
-    record = {"_id": key, "kind": "inbound", "receiptType": "photo", "familyId": family,
+    media_fields = {"photoIds": [media_id]} if receipt_type == "photo" else {"audioId": media_id}
+    record = {"_id": key, "kind": "inbound", "receiptType": receipt_type, "familyId": family,
               "contactId": str(contact["_id"]), "personId": contact["personId"],
               "principal": contact.get("userId") or f"contact:{contact['_id']}",
               "handle": contact["handle"],
               "provider": message["provider"], "messageId": message["messageId"],
               "spaceId": message["spaceId"], "attachmentId": message["attachmentId"],
-              "text": message["caption"], "contentHash": digest, "photoSha256": content_sha,
-              "reservedMediaId": media_id, "status": "photo_pending", "uploadState": "reserved",
+              "text": message.get("caption", ""), "contentHash": digest, hash_field: content_sha,
+              "reservedMediaId": media_id, "status": pending_status, "uploadState": "reserved",
               "createdAt": datetime.now(timezone.utc)}
+    if receipt_type == "voice":
+        record["transcriptionStatus"] = "pending"
+        record["audioMimeType"] = message["mimeType"]
     duplicate = False
     try:
         db.channelMessages.insert_one(record)
@@ -231,14 +246,14 @@ def save_photo_inbound(db, contact: dict, message: dict, data: bytes) -> bool:
         duplicate = True
         previous = db.channelMessages.find_one({"_id": key, "familyId": family})
         if (not previous or previous.get("contentHash") != digest
-                or previous.get("receiptType") != "photo" or previous.get("contactId") != str(contact["_id"])):
+                or previous.get("receiptType") != receipt_type or previous.get("contactId") != str(contact["_id"])):
             raise PhotoConflict("Message content changed") from None
 
     def complete_file():
         found = media.get_media(db, family, media_id)
-        if found is not None and (found.kind != "photo" or found.content_type != message["mimeType"]
+        if found is not None and (found.kind != kind or found.content_type != message["mimeType"]
                                   or hashlib.sha256(found.data).hexdigest() != content_sha):
-            raise PhotoConflict("Stored photo does not match its reservation")
+            raise PhotoConflict("Stored media does not match its reservation")
         return found
 
     if complete_file() is None:
@@ -246,26 +261,54 @@ def save_photo_inbound(db, contact: dict, message: dict, data: bytes) -> bool:
             {"_id": key, "familyId": family, "contentHash": digest, "uploadState": "reserved"},
             {"$set": {"uploadState": "uploading"}})
         if claimed is None:
-            raise PhotoPending("Photo upload is incomplete or in progress")
-        _photo_contact(db, contact, message)
+            raise PhotoPending("Media upload is incomplete or in progress")
+        _attachment_contact(db, contact, message)
         try:
-            media.put_media(db, family, data, content_type=message["mimeType"], kind="photo", media_id=media_id)
+            media.put_media(db, family, data, content_type=message["mimeType"], kind=kind, media_id=media_id)
         except Exception:
-            raise PhotoPending("Photo upload outcome is uncertain") from None
+            raise PhotoPending("Media upload outcome is uncertain") from None
         if complete_file() is None:
-            raise PhotoPending("Photo upload is incomplete")
-    _photo_contact(db, contact, message)
+            raise PhotoPending("Media upload is incomplete")
+    _attachment_contact(db, contact, message)
     try:
         result = db.channelMessages.update_one(
-            {"_id": key, "familyId": family, "contentHash": digest, "status": "photo_pending"},
-            {"$set": {"status": "received", "uploadState": "complete", "photoIds": [media_id]}})
+            {"_id": key, "familyId": family, "contentHash": digest, "status": pending_status},
+            {"$set": {"status": "received", "uploadState": "complete", **media_fields}})
         if result.matched_count != 1:
             # A duplicate must not reset a receipt already consumed by a worker.
             completed = db.channelMessages.find_one({
                 "_id": key, "familyId": family, "contentHash": digest,
-                "uploadState": "complete", "photoIds": [media_id]})
+                "uploadState": "complete", **media_fields})
             if completed is None:
                 raise PhotoPending("Photo receipt disappeared")
     except Exception:
         raise PhotoPending("Photo receipt outcome is uncertain") from None
     return duplicate
+
+
+def reserve_transcription(db, family_id: str, contact_id: str, receipt_id: str) -> dict:
+    query = {"_id": receipt_id, "familyId": family_id, "contactId": contact_id,
+             "receiptType": "voice", "status": "processing", "uploadState": "complete"}
+    row = db.channelMessages.find_one_and_update(
+        {**query, "transcriptionStatus": "pending"}, {"$set": {"transcriptionStatus": "transcribing"}},
+        return_document=ReturnDocument.AFTER)
+    if row is not None:
+        return row
+    row = db.channelMessages.find_one({**query, "transcriptionStatus": "complete"})
+    if row is None:
+        raise RuntimeError("Transcription is reserved or uncertain; reconcile before retry")
+    return row
+
+
+def complete_transcription(db, family_id: str, contact_id: str, receipt_id: str, text: str) -> None:
+    result = db.channelMessages.update_one({"_id": receipt_id, "familyId": family_id,
+        "contactId": contact_id, "receiptType": "voice", "status": "processing",
+        "transcriptionStatus": "transcribing"}, {"$set": {"transcriptionStatus": "complete", "transcript": text}})
+    if result.matched_count != 1:
+        raise RuntimeError("Transcription reservation changed")
+
+
+def uncertain_transcription(db, family_id: str, contact_id: str, receipt_id: str) -> None:
+    db.channelMessages.update_one({"_id": receipt_id, "familyId": family_id,
+        "contactId": contact_id, "receiptType": "voice", "transcriptionStatus": "transcribing"},
+        {"$set": {"transcriptionStatus": "uncertain"}})

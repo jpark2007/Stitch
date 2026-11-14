@@ -12,11 +12,13 @@ from agent.conversation.service import ConversationService
 
 
 class ChannelWorker:
-    def __init__(self, db, *, sender, agent_factory, runs=None, max_contacts: int = 5, web_url=None):
+    def __init__(self, db, *, sender, agent_factory, runs=None, max_contacts: int = 5, web_url=None,
+                 transcriber=None):
         if not 1 <= max_contacts <= 5:
             raise ValueError("Invalid contact batch limit")
         self.db, self.sender, self.agent_factory, self.runs = db, sender, agent_factory, runs
         self.max_contacts = max_contacts
+        self.transcriber = transcriber
         self.web_url = web_url or os.getenv("STITCH_WEB_URL", "http://localhost:3000")
         parsed = urlsplit(self.web_url)
         if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password
@@ -153,6 +155,8 @@ class ChannelWorker:
         receipts = conversations.worker_receipts(self.db, family, contact_id)
         batch, size, photo_ids = [], 0, []
         for receipt in receipts:
+            if batch and (receipt.get("receiptType") == "voice" or batch[0].get("receiptType") == "voice"):
+                break  # One voice provider call per contact per tick.
             # Never combine messages from different provider spaces.
             if batch and receipt["spaceId"] != batch[0]["spaceId"]:
                 break
@@ -179,31 +183,42 @@ class ChannelWorker:
         route(batch[0])
         conversations.reserve_worker_receipts(self.db, family, contact_id, [r["_id"] for r in batch], token)
         check()
+        is_voice = batch[0].get("receiptType") == "voice"
+        voice_text = None
+        if is_voice:
+            from .voice import transcribe_receipt
+            transcriber = self.transcriber
+            if transcriber is None:
+                from .transcription import OpenAITranscriber, TranscriptionConfig
+                transcriber = OpenAITranscriber(TranscriptionConfig.from_env())
+            voice_text = transcribe_receipt(self.db, family, contact_id, batch[0],
+                                           transcriber=transcriber, check=check)
+            check()
         if photo_ids:
             service.attach_photos(photo_ids)
-        text = "\n".join(r["text"] for r in batch if r["text"].strip())
+        text = voice_text if is_voice else "\n".join(r["text"] for r in batch if r["text"].strip())
         state = service._state()
         pending = state.get("pending")
         if pending and text.strip():
             kind = pending["kind"]
             if kind == "answer":
                 service.answer_run_question(kind, text=text)
-            elif kind == "props" and text.strip().upper() == "KEEP":
+            elif kind == "props" and not is_voice and text.strip().upper() == "KEEP":
                 service.answer_run_question(kind)
-            elif kind == "merge" and text.strip().upper() in {"YES", "NO"}:
+            elif kind == "merge" and not is_voice and text.strip().upper() in {"YES", "NO"}:
                 service.answer_run_question(kind, approve=text.strip().upper() == "YES")
             else:
                 queue(["Reply KEEP for the listed props, or YES/NO for the person match. No changes were applied."])
                 deliver()
         elif state["status"] == "draft":
-            year = re.fullmatch(r"YEAR\s+(\d{4})", text.strip(), re.IGNORECASE)
+            year = None if is_voice else re.fullmatch(r"YEAR\s+(\d{4})", text.strip(), re.IGNORECASE)
             if year:
                 try:
                     service.save_story_draft(year=int(year[1]))
                     queue(["Year saved. Reply SUBMIT when your draft is ready."])
                 except ValueError:
                     queue(["Please send YEAR followed by a year between 1800 and next year."])
-            elif text.strip().upper() == "SUBMIT":
+            elif not is_voice and text.strip().upper() == "SUBMIT":
                 if not state["draft"].get("year") or not state["draft"].get("text", "").strip():
                     queue(["Send your story and YEAR followed by its year before SUBMIT."])
                 else:
