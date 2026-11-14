@@ -524,6 +524,14 @@ function crossings(g: FrameGeometry, self: number, x0: number, x1: number, y0: n
   return count;
 }
 
+/** True when a name `w` wide at (x, baseline yb) keeps a few px clear of every knot in view. */
+function clearOfKnots(g: FrameGeometry, x: number, w: number, yb: number, size: number): boolean {
+  for (const h of g.knots) {
+    if (h && h.visible && h.x + h.r + 6 > x - 2 && h.x - h.r - 6 < x + w + 2 && h.y + h.r + 6 > yb - size && h.y - h.r - 6 < yb + 3) return false;
+  }
+  return true;
+}
+
 /**
  * A thread that never settles in view: the left edge x (from x0 to x1) where
  * a name `w` wide spans the flattest stretch of strand `self`, and the
@@ -558,14 +566,7 @@ function swingSpot(
     }
     if (!(hi - lo < bestSpan)) continue;
     const yb = lo + drop;
-    let clear = true;
-    for (const h of g.knots) {
-      if (h && h.visible && h.x + h.r + 6 > x - 2 && h.x - h.r - 6 < x + w + 2 && h.y + h.r + 6 > yb - size && h.y - h.r - 6 < yb + 3) {
-        clear = false;
-        break;
-      }
-    }
-    if (!clear) continue;
+    if (!clearOfKnots(g, x, w, yb, size)) continue;
     bestSpan = hi - lo;
     bestX = x;
     bestY = yb;
@@ -700,8 +701,8 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
       const ly = pts[1] + drop;
       if (lx >= margin && !crossedBy(geom, i, lx - 6, startX - 6, ly - size, ly + 3)) spots.push({ x: lx, y: ly });
     }
-    // Nowhere clean (a thread still swinging as it ends): sign its end.
-    if (!spots.length && endX <= right && endX - w >= margin) {
+    // Nowhere clean (a thread still swinging as it ends): sign its end, clear of knots.
+    if (!spots.length && endX <= right && endX - w >= margin && clearOfKnots(geom, endX - w, w, baseline(n - 1), size)) {
       const ey = baseline(n - 1);
       const c = crossing(endX - w, ey);
       if (!c) spots.push({ x: endX - w, y: ey });

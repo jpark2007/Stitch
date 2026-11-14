@@ -570,6 +570,32 @@ for (const [who, make] of [
   }
 }
 
+test("no name is written over a knot", () => {
+  for (const [who, f] of [
+    ["demo", demo()],
+    ["9", family(9)],
+    ["18", family(18)],
+    ["24", family(24)],
+    ["30", family(30)],
+  ] as const) {
+    const model = buildModel(f.people, f.moments, NOW);
+    for (const [W, H] of SIZES) {
+      for (const [label, cam] of views(model, W)) {
+        const { geom, layout } = frame(model, W, H, cam);
+        // The ink: from cap height (about 3/4 of the size) to the descenders.
+        const cap = nameFontPx(layout) * 0.25;
+        for (const b of geom.names) {
+          for (const h of geom.knots) {
+            if (!h || !h.visible) continue;
+            const over = h.x + h.r > b.x0 && h.x - h.r < b.x1 && h.y + h.r > b.y0 + cap && h.y - h.r < b.y1;
+            assert.ok(!over, `${who} people, ${W}px, ${label}: a name at ${b.x0.toFixed(0)},${b.y0.toFixed(0)} covers the knot at ${h.x.toFixed(0)},${h.y.toFixed(0)}`);
+          }
+        }
+      }
+    }
+  }
+});
+
 for (const n of [9, 18, 24, 30]) {
   for (const [W, H] of SIZES) {
     test(`${n} people at ${W}px: the top-ranked thread in view is always named`, () => {
