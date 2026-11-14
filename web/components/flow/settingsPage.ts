@@ -24,6 +24,41 @@ export function isWelcome(search: string | URLSearchParams | null): boolean {
   return params.get("welcome") === "1";
 }
 
+/**
+ * The page for adding a relative to family `fid` (someone who may never sign
+ * up). Any member may add people, so every member gets this link. Spelled
+ * out here rather than in session.ts's hrefs, which another page owns.
+ */
+export function addRelativeHref(fid: string): string {
+  return `/families/${encodeURIComponent(fid)}/people/new`;
+}
+
+/** "David", "David and Rosa", "David, Rosa and Luis"; "" for none. */
+export function listOfNames(names: string[]): string {
+  const list = (names ?? []).map((n) => (typeof n === "string" ? n.trim() : "")).filter(Boolean);
+  if (list.length <= 1) return list[0] ?? "";
+  return `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
+}
+
+/** Enough of a MemberRow (./members) to name the admins. */
+interface AdminCandidate {
+  role: "admin" | "member";
+  name: string;
+  personId: string | null;
+  isYou: boolean;
+}
+
+/**
+ * For a member, who can share the invite link: "Ask David to send them the
+ * invite link." Names the other admins we know by name (an admin with no
+ * person in the tree has no name to give), else asks "an admin".
+ */
+export function inviteAskLine(rows: AdminCandidate[]): string {
+  const admins = (rows ?? []).filter((r) => r && r.role === "admin" && !r.isYou && r.personId).map((r) => r.name);
+  const who = listOfNames(admins) || "an admin";
+  return `Ask ${who} to send them the invite link.`;
+}
+
 /** What the page shows when loading the family failed. */
 export type SettingsLoad = { kind: "not-found" } | { kind: "error"; message: string };
 

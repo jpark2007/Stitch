@@ -20,9 +20,10 @@ export function FamilySwitcher(props: {
 
   return (
     <nav aria-labelledby={labelId} className="min-w-0">
-      <p id={labelId} className="text-sm font-semibold text-ink-soft">
+      {/* A heading, so the page outline lists it beside the cards' h2s. */}
+      <h2 id={labelId} className="font-sans text-sm leading-normal font-semibold tracking-normal text-ink-soft">
         Your families
-      </p>
+      </h2>
       <ul className="mt-2 list-none space-y-1.5 p-0">
         {families.map((f) => {
           const current = f.id === currentId;
