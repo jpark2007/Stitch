@@ -2,10 +2,11 @@
 // section 6, plus GET /families/{fid}/threads.
 //
 // Request and response types come from ./types (generated from
-// api/schemas.py). `api` here always talks to the real server. Pages call
-// `getApi()` from ./client instead, which returns `api`, or, when
-// `isMockMode()` (NEXT_PUBLIC_API_MOCK=1), a client wired to the in-memory
-// mock backend. Tests call `createApiClient` with an injected fetch.
+// api/schemas.py). `api` here always talks to the real server. The mock is
+// selected by components/flow/client.ts: pages call its `getApi()`, which
+// returns `api`, or, when `isMockMode()` (NEXT_PUBLIC_API_MOCK=1), a client
+// wired to the in-memory mock backend (components/flow/mock). Tests call
+// `createApiClient` with an injected fetch.
 //
 // This file has no runtime imports and uses only erasable TypeScript (no
 // enums, namespaces, parameter properties or decorators), so `node --test`

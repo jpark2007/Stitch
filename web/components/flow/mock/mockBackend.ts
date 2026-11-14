@@ -70,8 +70,8 @@ const MIN_BORN_YEAR = 1800;
 const SHORT_TELLING_WORDS = 25;
 /** Largest photo POST /families/{fid}/media takes (api/db/media.py MAX_BYTES). */
 export const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
-/** What POST /families/{fid}/media takes; anything else is a 415. */
-const UPLOAD_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
+/** What POST /families/{fid}/media takes (api/routes/props.py ALLOWED_IMAGE_TYPES); anything else is a 415. */
+const UPLOAD_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic"];
 
 export const FOLLOW_UP_QUESTION = "Where were you when it happened, and who else was there?";
 export const NOT_WAITING = "The studio isn't waiting for that.";
@@ -1621,13 +1621,13 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
         : requiredString(body, "name", ["body"], errors, { min: 1, blankMsg: "Give the prop a name." });
     const rawPhotoId = optionalString(body, "photoId", ["body"], errors);
     const photoId = rawPhotoId ? bareId(rawPhotoId) : null;
-    if (photoId && media.get(photoId)?.familyId !== fid) {
-      errors.push({ loc: ["body", "photoId"], msg: "We couldn't find that photo.", type: "value_error" });
-    }
     check(errors);
+    // As api/routes/props.py patch_prop: 400 "Unknown photo" for a photo that is not
+    // this family's, and the art keeps the "media/<id>" form whichever form was sent.
+    if (photoId && media.get(photoId)?.familyId !== fid) fail(400, "Unknown photo");
     if (name !== null) prop.name = name.trim();
     if (photoId) {
-      prop.art = { ...prop.art, body: photoId };
+      prop.art = { ...prop.art, body: `media/${photoId}` };
       prop.source = "photo";
     }
     save();
@@ -1835,7 +1835,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
         } else if (edit.action === "rename") {
           run.chips = run.chips.map((c) => (c.id === edit.id ? { ...c, name: (edit.name ?? c.name).trim() } : c));
         } else if (edit.action === "replace_photo" && edit.photoId) {
-          run.chipPhotos[edit.id] = bareId(edit.photoId);
+          run.chipPhotos[edit.id] = `media/${bareId(edit.photoId)}`; // stored art form, as the real API
         }
       }
     } else {

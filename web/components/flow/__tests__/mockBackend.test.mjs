@@ -972,8 +972,46 @@ test("POST /families/{fid}/media stores a photo that mediaUrl and GET media serv
   // The id is good for a prop's replacement photo, with or without the prefix.
   const patched = await call(b, "PATCH", "/families/sample_family/props/hymn_books", { photoId: `media/${id}` });
   assert.equal(patched.status, 200, JSON.stringify(patched.body));
-  assert.equal(patched.body.art.body, id);
+  assert.equal(patched.body.art.body, `media/${id}`, "stored in the media/<id> form, as the real API does");
   assert.equal(patched.body.source, "photo");
+  const bare = await call(b, "PATCH", "/families/sample_family/props/hymn_books", { photoId: id });
+  assert.equal(bare.status, 200, JSON.stringify(bare.body));
+  assert.equal(bare.body.art.body, `media/${id}`);
+  assert.equal(b.mediaUrl("sample_family", bare.body.art.body), url, "the stored art resolves to the upload");
+
+  const unknown = await call(b, "PATCH", "/families/sample_family/props/hymn_books", { photoId: "media/nope" });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.detail, "Unknown photo");
+});
+
+test("an uploaded photo works as a replace_photo edit in the props review", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const png = new File([new Uint8Array([137, 80, 78, 71, 5])], "hymnal.png", { type: "image/png" });
+  const { body } = await upload(b, "sample_family", png);
+  const sub = await submit(b, "sample_family", { text: "Sam learned to swim at the lake that summer.", year: 2001 });
+  assert.equal(sub.status, 201);
+  const { runId } = sub.body;
+  const { events } = await openStream(b, "sample_family", runId);
+  await readUntil(events, "question");
+  assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "At the lake." })).status, 204);
+  await readUntil(events, "props_found");
+  const unknown = await answer(b, "sample_family", runId, {
+    kind: "props",
+    props: [{ id: "hymn_books", action: "replace_photo", photoId: "nope" }],
+  });
+  assert.equal(unknown.status, 422, "a photo that is not this family's is refused");
+  const ok = await answer(b, "sample_family", runId, {
+    kind: "props",
+    props: [{ id: "hymn_books", action: "replace_photo", photoId: body.id }],
+  });
+  assert.equal(ok.status, 204, JSON.stringify(ok.body));
+  for await (const msg of events) if (msg.event === "done" || msg.event === "error") break;
+  const props = await call(b, "GET", "/families/sample_family/props");
+  const hymns = props.body.props.find((p) => p.id === "hymn_books");
+  assert.equal(hymns.art.body, `media/${body.id}`);
+  assert.equal(hymns.source, "photo");
+  assert.ok(b.mediaUrl("sample_family", hymns.art.body).startsWith("blob:"));
 });
 
 test("media upload rules: members only, images only, not empty, not too big", async () => {
@@ -1013,10 +1051,12 @@ test("media upload rules: members only, images only, not empty, not too big", as
   );
   assert.equal(atLimit.status, 201);
 
-  for (const type of ["image/jpeg", "image/webp", "image/gif", "image/heic", "image/heif", "IMAGE/PNG"]) {
+  for (const type of ["image/jpeg", "image/webp", "image/gif", "image/heic", "IMAGE/PNG"]) {
     const ok = await upload(b, "sample_family", new File([new Uint8Array([9])], "x", { type }));
     assert.equal(ok.status, 201, type);
   }
+  // The real API's ALLOWED_IMAGE_TYPES has no image/heif.
+  assert.equal((await upload(b, "sample_family", new File([new Uint8Array([9])], "x", { type: "image/heif" }))).status, 415);
 
   const wrongField = await upload(b, "sample_family", png(), "photo");
   assert.equal(wrongField.status, 422);
