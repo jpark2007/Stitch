@@ -16,7 +16,8 @@
  * narration plays as silent timing).
  *
  * Ready: once every piece of art is in and a few frames are drawn, the page
- * sets `window.__STITCH_READY__ = true` and `<html data-stage-ready="1">`.
+ * sets `window.__STITCH_READY__ = true` and `<html data-stage-ready="1">`,
+ * fades the view in and only then autoplays, so the set's first rise is seen.
  *
  * Keys: Space play / pause, R restart, ← → step half a second.
  */
@@ -153,12 +154,22 @@ function Player({
   const start = narrator && tellers.some((t) => t.id === narrator) ? narrator : null;
   const { controller } = useTimelinePlayer(scene.timeline, {
     narrator: start,
-    autoplay: time === null && autoplay,
+    // Autoplay waits for the stage to be drawn (onStageReady below), so the
+    // set's first rise is seen rather than spent loading.
+    autoplay: false,
     freezeAt: time,
     // The view owns the narration element, so it can mute it.
     audio: false,
     resolveAudio,
   });
+
+  // Drawn: tell capture scripts, fade the view in, and start the telling.
+  const [ready, setReady] = useState(false);
+  const onStageReady = useCallback(() => {
+    markReady();
+    setReady(true);
+    if (autoplay && time === null) controller.play();
+  }, [autoplay, time, controller]);
 
   const [muted, setMuted] = useState(false);
   const audioEl = useRef<HTMLAudioElement | null>(null);
@@ -232,7 +243,8 @@ function Player({
     <motion.div
       className="absolute inset-0"
       initial={{ opacity: time === null ? 0 : 1 }}
-      animate={{ opacity: 1 }}
+      // Fades in once drawn; a frozen frame (?t, the checker) shows at once.
+      animate={{ opacity: ready || time !== null ? 1 : 0 }}
       transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
     >
       {/* Lifted so the caption strip sits under the action, not over it. */}
@@ -240,7 +252,7 @@ function Player({
         className="absolute inset-0"
         controller={controller}
         scene={scene}
-        onReady={markReady}
+        onReady={onStageReady}
         lift={captions ? 0.065 : 0}
       />
       {/* Soft lens vignette: the lamp's pool, falling off into the room. */}
