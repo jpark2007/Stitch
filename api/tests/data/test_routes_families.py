@@ -132,6 +132,7 @@ def test_router_exports_exactly_the_family_routes():
         ("POST", "/invites/{code}/join"): (None, schemas.JoinResponse),
         ("POST", "/families/{fid}/people"): (201, schemas.Person),
         ("PATCH", "/families/{fid}/people/{person_id}"): (None, schemas.Person),
+        ("PATCH", "/families/{fid}/members/{user_id}"): (None, schemas.Family),
         ("DELETE", "/families/{fid}/members/{user_id}"): (204, None),
     }
     assert families_routes.router.tags == ["families"]
@@ -235,6 +236,37 @@ def test_create_family_with_relations_is_400_and_writes_nothing(users, client, m
     assert res.status_code == 400
     assert mdb.families.count_documents({}) == 0
     assert mdb.people.count_documents({}) == 0
+
+
+def test_create_family_died_before_born_is_400_and_writes_nothing(users, client, mdb):
+    res = client(users["a"]).post(
+        "/families", json={"name": "The Maos", "person": {"name": "Ada", "born": 1990, "died": 1980}}
+    )
+    assert res.status_code == 400
+    assert res.json() == {"detail": "a person cannot die before they were born"}
+    assert mdb.families.count_documents({}) == 0
+    assert mdb.people.count_documents({}) == 0
+
+
+def test_create_family_rolls_back_when_create_person_rejects(users, client, mdb, monkeypatch):
+    """Any InvalidRelation from create_person is a 400 and leaves no family behind."""
+    from db import people as people_db
+
+    def reject(*args, **kwargs):
+        raise people_db.InvalidRelation("nope")
+
+    monkeypatch.setattr(people_db, "create_person", reject)
+    res = client(users["a"]).post("/families", json={"name": "The Maos", "person": {"name": "Ada"}})
+    assert res.status_code == 400
+    assert res.json() == {"detail": "nope"}
+    assert mdb.families.count_documents({}) == 0
+    assert mdb.people.count_documents({}) == 0
+
+
+def test_create_family_with_matching_or_unknown_years_is_201(users, client):
+    for i, years in enumerate([{"born": 1990, "died": 1990}, {"born": None, "died": 1980}, {"died": None}]):
+        res = client(users["a"]).post("/families", json={"name": f"F{i}", "person": {"name": "Ada", **years}})
+        assert res.status_code == 201, res.text
 
 
 @pytest.mark.parametrize(
@@ -607,11 +639,12 @@ def test_patch_person(family_a):
     assert body["character"]["build"] == "short"
     assert body["spouseIds"] == [family_a["luis"]["id"]]
 
-    # Make Ada Rosa's parent; then making Rosa Ada's parent would be a cycle.
-    res = ada.patch(f"/families/{fid}/people/{rosa_id}", json={"parentIds": [family_a["ada"]["id"]]})
-    assert res.status_code == 200
+    # Make Rosa (1940) Ada's (1990) parent; then making Ada Rosa's parent would be a cycle.
     res = ada.patch(f"/families/{fid}/people/{family_a['ada']['id']}", json={"parentIds": [rosa_id]})
+    assert res.status_code == 200
+    res = ada.patch(f"/families/{fid}/people/{rosa_id}", json={"parentIds": [family_a["ada"]["id"]]})
     assert res.status_code == 400
+    assert "ancestor" in res.json()["detail"]
     assert ada.patch(f"/families/{fid}/people/{rosa_id}", json={"name": "  "}).status_code == 400
     assert ada.patch(f"/families/{fid}/people/nobody", json={"name": "X"}).status_code == 404
 
@@ -629,7 +662,190 @@ def test_patch_with_relation_from_another_family_is_400(family_a, family_b):
     assert res.status_code == 400
 
 
+# --------------------------------------------------------------------------------- years
+
+
+def test_died_before_born_is_400(family_a):
+    fid, ada = family_a["fid"], family_a["client"]
+    res = ada.post(f"/families/{fid}/people", json={"name": "Mei", "born": 1950, "died": 1940})
+    assert res.status_code == 400
+    assert res.json() == {"detail": "a person cannot die before they were born"}
+    res = ada.patch(f"/families/{fid}/people/{family_a['rosa']['id']}", json={"died": 1939})
+    assert res.status_code == 400
+    assert res.json()["detail"] == "a person cannot die before they were born"
+    # Born and died in the same year is possible.
+    assert ada.post(f"/families/{fid}/people", json={"name": "Baby", "born": 1950, "died": 1950}).status_code == 201
+
+
+def test_child_born_before_a_parent_is_400(family_a, mdb):
+    fid, ada = family_a["fid"], family_a["client"]
+    rosa = family_a["rosa"]
+    before = mdb.people.count_documents({"familyId": fid})
+    res = ada.post(f"/families/{fid}/people", json={"name": "Tom", "born": 1935, "parentIds": [rosa["id"]]})
+    assert res.status_code == 400
+    assert res.json() == {"detail": "a person cannot be born before their parent (Rosa, born 1940)"}
+    assert mdb.people.count_documents({"familyId": fid}) == before
+    # Giving an existing person an older-than-them parent is rejected the same way.
+    luis = family_a["luis"]  # born 1938
+    res = ada.patch(f"/families/{fid}/people/{luis['id']}", json={"parentIds": [rosa["id"]]})
+    assert res.status_code == 400
+    assert people_db.get_person(mdb, fid, luis["id"]).parent_ids == []
+
+
+def test_moving_a_parents_birth_after_a_childs_is_400(family_a, mdb):
+    fid, ada = family_a["fid"], family_a["client"]
+    rosa = family_a["rosa"]  # born 1940
+    _add_person(ada, fid, "Tom", born=1965, parentIds=[rosa["id"]])
+    res = ada.patch(f"/families/{fid}/people/{rosa['id']}", json={"born": 1970})
+    assert res.status_code == 400
+    assert res.json() == {"detail": "a person cannot be born after their child (Tom, born 1965)"}
+    assert people_db.get_person(mdb, fid, rosa["id"]).born == 1940
+    # Moving it to a year that still works is fine, and so is the child's own year.
+    assert ada.patch(f"/families/{fid}/people/{rosa['id']}", json={"born": 1942}).status_code == 200
+
+
+def test_unknown_years_are_accepted(family_a):
+    fid, ada = family_a["fid"], family_a["client"]
+    rosa = family_a["rosa"]
+    unknown_parent = _add_person(ada, fid, "Great-grandpa")
+    kid = _add_person(ada, fid, "Tom", parentIds=[rosa["id"], unknown_parent["id"]], died=1900)
+    assert kid["born"] is None and kid["died"] == 1900
+    late = _add_person(ada, fid, "Lia", born=2001, parentIds=[unknown_parent["id"]])
+    assert late["born"] == 2001
+    # Clearing a year is never a conflict.
+    assert ada.patch(f"/families/{fid}/people/{rosa['id']}", json={"born": None}).status_code == 200
+    assert ada.patch(f"/families/{fid}/people/{kid['id']}", json={"born": 1930, "died": None}).status_code == 200
+
+
 # ------------------------------------------------------------------------------ members
+
+
+def _join_as_member(family_a: dict, user: schemas.User, client) -> TestClient:
+    """`user` joins family A as a plain member by adding themselves; returns their client."""
+    tc = client(user)
+    code = _invite(family_a["client"], family_a["fid"])
+    res = tc.post(f"/invites/{code}/join", json={"person": {"name": user.name}})
+    assert res.status_code == 200, res.text
+    return tc
+
+
+def _roles(tc: TestClient, fid: str) -> dict[str, str]:
+    res = tc.get(f"/families/{fid}")
+    assert res.status_code == 200, res.text
+    return {m["userId"]: m["role"] for m in res.json()["members"]}
+
+
+def test_admin_promotes_and_demotes_a_member(family_a, users, client):
+    fid, ada = family_a["fid"], family_a["client"]
+    _join_as_member(family_a, users["b"], client)
+    ben_id = users["b"].id
+
+    res = ada.patch(f"/families/{fid}/members/{ben_id}", json={"role": "admin"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["id"] == fid and body["name"] == "The Maos"
+    assert {m["userId"]: m["role"] for m in body["members"]} == {users["a"].id: "admin", ben_id: "admin"}
+    assert body["invites"], "an admin's response shows the invites, as GET does"
+    assert _roles(ada, fid)[ben_id] == "admin"
+
+    # Setting the role a member already has is a no-op.
+    again = ada.patch(f"/families/{fid}/members/{ben_id}", json={"role": "admin"})
+    assert again.status_code == 200 and again.json() == body
+
+    res = ada.patch(f"/families/{fid}/members/{ben_id}", json={"role": "member"})
+    assert res.status_code == 200
+    assert _roles(ada, fid)[ben_id] == "member"
+    assert ada.patch(f"/families/{fid}/members/{ben_id}", json={"role": "member"}).status_code == 200
+
+
+def test_a_promoted_member_gains_admin_rights(family_a, users, client):
+    fid = family_a["fid"]
+    ben = _join_as_member(family_a, users["b"], client)
+    assert ben.post(f"/families/{fid}/invites").status_code == 403
+    family_a["client"].patch(f"/families/{fid}/members/{users['b'].id}", json={"role": "admin"})
+    assert ben.post(f"/families/{fid}/invites").status_code == 201
+
+
+def test_non_admin_member_cannot_change_roles(family_a, users, client, mdb):
+    fid = family_a["fid"]
+    ben = _join_as_member(family_a, users["b"], client)
+    for target, role in ((users["b"].id, "admin"), (users["a"].id, "member")):
+        res = ben.patch(f"/families/{fid}/members/{target}", json={"role": role})
+        assert res.status_code == 403
+        assert res.json() == {"detail": "Admins only"}
+    assert families_db.get_member_role(mdb, fid, users["b"].id) == "member"
+    assert families_db.get_member_role(mdb, fid, users["a"].id) == "admin"
+
+
+def test_non_member_caller_gets_404(family_a, users, client, mdb):
+    fid = family_a["fid"]
+    cy = client(users["c"])
+    res = cy.patch(f"/families/{fid}/members/{users['a'].id}", json={"role": "member"})
+    assert res.status_code == 404
+    assert res.json() == cy.get(f"/families/{fid}").json()  # same as any other family route
+    assert families_db.get_member_role(mdb, fid, users["a"].id) == "admin"
+
+
+def test_target_from_another_family_or_unknown_is_404(family_a, family_b, users, mdb):
+    fid, ada = family_a["fid"], family_a["client"]
+    for target in (users["z"].id, users["c"].id, "does-not-exist"):
+        res = ada.patch(f"/families/{fid}/members/{target}", json={"role": "admin"})
+        assert res.status_code == 404, target
+        assert res.json() == {"detail": "Member not found"}
+    assert families_db.get_member_role(mdb, fid, users["z"].id) is None
+    assert families_db.get_member_role(mdb, family_b["fid"], users["z"].id) == "admin"
+
+
+def test_demoting_the_last_admin_is_409(family_a, users, client, mdb):
+    fid, ada = family_a["fid"], family_a["client"]
+    _join_as_member(family_a, users["b"], client)
+    res = ada.patch(f"/families/{fid}/members/{users['a'].id}", json={"role": "member"})
+    assert res.status_code == 409
+    assert res.json() == {"detail": "A family needs at least one admin"}
+    assert families_db.get_member_role(mdb, fid, users["a"].id) == "admin"
+    assert families_db.get_member_role(mdb, fid, users["b"].id) == "member"
+
+
+def test_an_admin_can_demote_themselves_when_another_admin_remains(family_a, users, client, mdb):
+    fid, ada = family_a["fid"], family_a["client"]
+    _join_as_member(family_a, users["b"], client)
+    assert ada.patch(f"/families/{fid}/members/{users['b'].id}", json={"role": "admin"}).status_code == 200
+
+    res = ada.patch(f"/families/{fid}/members/{users['a'].id}", json={"role": "member"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert {m["userId"]: m["role"] for m in body["members"]} == {users["a"].id: "member", users["b"].id: "admin"}
+    assert body["invites"] == [], "Ada is no longer an admin, so she gets the member view"
+    # The next request runs with her new role.
+    assert ada.post(f"/families/{fid}/invites").status_code == 403
+    assert ada.patch(f"/families/{fid}/members/{users['a'].id}", json={"role": "admin"}).status_code == 403
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"role": "owner"}, {"role": "Admin"}, {"role": None}, {}, {"role": "admin", "extra": 1}],
+    ids=["unknown", "wrong case", "null", "missing", "unknown field"],
+)
+def test_invalid_role_body_is_422(family_a, users, client, mdb, body):
+    fid, ada = family_a["fid"], family_a["client"]
+    _join_as_member(family_a, users["b"], client)
+    res = ada.patch(f"/families/{fid}/members/{users['b'].id}", json=body)
+    assert res.status_code == 422, res.text
+    assert families_db.get_member_role(mdb, fid, users["b"].id) == "member"
+
+
+def test_role_route_in_openapi(app, family_a):
+    tc = TestClient(app)
+    op = tc.get("/openapi.json").json()["paths"]["/families/{fid}/members/{user_id}"]["patch"]
+    body_schema = op["requestBody"]["content"]["application/json"]["schema"]
+    assert body_schema == {"$ref": "#/components/schemas/MemberRolePatch"}
+    assert op["responses"]["200"]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/Family"}
+    for code in ("403", "404", "409"):
+        assert op["responses"][code]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ErrorResponse"
+        }, code
+    tc.close()
+
 
 
 def test_removing_a_member_unclaims_their_person(family_a, users, client, mdb):
@@ -687,6 +903,7 @@ def test_signed_out_requests_are_401(family_a, client):
         ("POST", f"/families/{fid}/people", {"name": "X"}),
         ("PATCH", f"/families/{fid}/people/{rosa}", {"name": "X"}),
         ("DELETE", f"/families/{fid}/members/x", None),
+        ("PATCH", f"/families/{fid}/members/x", {"role": "admin"}),
         ("POST", "/invites/x/join", {"person": {"name": "X"}}),
     ):
         assert guest.request(method, url, json=body).status_code == 401, (method, url)
@@ -706,10 +923,12 @@ def test_another_familys_ids_are_404_on_every_family_route(family_a, family_b, u
         ("POST", f"/families/{fid_b}/people", {"name": "Intruder"}),
         ("PATCH", f"/families/{fid_b}/people/{wen}", {"name": "Intruder"}),
         ("DELETE", f"/families/{fid_b}/members/{zoe_user}", None),
+        ("PATCH", f"/families/{fid_b}/members/{zoe_user}", {"role": "member"}),
         ("PATCH", f"/families/{family_a['fid']}/people/{wen}", {"name": "Intruder"}),
         # Admin-only routes on A with B's ids:
         ("DELETE", f"/families/{family_a['fid']}/invites/{family_b['code']}", None),
         ("DELETE", f"/families/{family_a['fid']}/members/{zoe_user}", None),
+        ("PATCH", f"/families/{family_a['fid']}/members/{zoe_user}", {"role": "member"}),
     ]
     missing = [
         ("GET", "/families/does-not-exist", None),

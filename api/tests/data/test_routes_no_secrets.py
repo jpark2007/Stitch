@@ -338,7 +338,13 @@ def test_every_route_on_its_happy_path_leaks_no_secret(env):
     )
     assert len(env.fake.answers) == 1
 
-    # Admin housekeeping, then sign out.
+    # Admin housekeeping, then sign out. The role route returns the whole family, with
+    # every member and the invites, so it is checked on both a promotion and a demotion.
+    bob_member = {**p, "user_id": bob_user["id"]}
+    promoted = d.call(alice, "PATCH", "/families/{fid}/members/{user_id}", 200, params=bob_member, json={"role": "admin"})
+    assert {m["userId"]: m["role"] for m in promoted.json()["members"]}[bob_user["id"]] == "admin"
+    demoted = d.call(alice, "PATCH", "/families/{fid}/members/{user_id}", 200, params=bob_member, json={"role": "member"})
+    assert {m["userId"]: m["role"] for m in demoted.json()["members"]}[bob_user["id"]] == "member"
     d.call(alice, "DELETE", "/families/{fid}/invites/{code}", 204, params={**p, "code": code})
     d.call(alice, "DELETE", "/families/{fid}/members/{user_id}", 204, params={**p, "user_id": bob_user["id"]})
     d.call(alice, "POST", "/auth/logout", 204)
