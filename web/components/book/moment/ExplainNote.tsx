@@ -1192,9 +1192,14 @@ class ExplainStage {
     return {
       mats,
       was: mats.map((m) => m.emissive.clone()),
-      // Plain paper brightens in its own colour; printed art (its colour is
-      // the map's) by a little warm light, so it does not wash out.
-      add: mats.map((m) => (m.map ? WARM.clone().multiplyScalar(0.1) : m.color.clone().multiplyScalar(LIFT_GLOW).add(WARM.clone().multiplyScalar(0.05)))),
+      // Coloured paper (its map only grain) brightens in its own colour, its
+      // hue kept: any white in it greys a dark paper. Printed art (a white
+      // base, the colour all the map's) takes a little warm light instead,
+      // so it does not wash out.
+      add: mats.map((m) => {
+        const c = m.color;
+        return Math.min(c.r, c.g, c.b) > 0.8 ? WARM.clone().multiplyScalar(0.06) : c.clone().multiplyScalar(LIFT_GLOW);
+      }),
     };
   }
 

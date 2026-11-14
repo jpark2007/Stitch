@@ -639,7 +639,7 @@ export const LIFT_RISE = 0.014;
 /** A hovered cutout lifts this fraction of the way. */
 export const HOVER_LIFT = 0.65;
 /** How much a fully lifted cutout brightens, as if it rose into the lamp (a fraction of its own colour). */
-export const LIFT_GLOW = 0.22;
+export const LIFT_GLOW = 0.3;
 
 const clamp01 = (t: number) => (t < 0 ? 0 : t > 1 ? 1 : t);
 export const smooth = (t: number) => {
