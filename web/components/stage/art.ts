@@ -27,7 +27,6 @@ export const PALETTE = {
   trunk: "#7c5b40",
   bush: "#5f7a55",
   bushLight: "#728c64",
-  bloom: "#f4ead6",
   bloomWarm: "#d98d6b",
   cardBack: "#e9dfcb",
   bandWarm: "#ecd6b8",
@@ -211,34 +210,6 @@ export const trees: CutoutSpec = {
   },
 };
 
-export const bush: CutoutSpec = {
-  key: "demo:bush",
-  aspect: 5.4,
-  base: PALETTE.bush,
-  seed: 41,
-  resolution: 768,
-  paint(k: PaintKit) {
-    const w = k.aspect;
-    const r = k.rand;
-    const body = new Path2D();
-    body.rect(0.06, -0.05, w - 0.12, 0.45);
-    const tops: [number, number, number][] = [];
-    for (let x = 0.36; x < w - 0.34; x += 0.3 + r() * 0.16) tops.push([x, 0.42 + r() * 0.16, 0.17 + r() * 0.1]);
-    for (const [x, y, rad] of tops) circle(x, y, rad, body);
-    k.shape(body, PALETTE.bush);
-    const light = new Path2D();
-    for (const [x, y, rad] of tops) if (r() > 0.45) circle(x - rad * 0.2, y + rad * 0.15, rad * 0.55, light);
-    k.layer(light, PALETTE.bushLight, 0.5);
-    for (let i = 0; i < 9; i++) {
-      const [x, y, rad] = tops[Math.floor(r() * tops.length)];
-      const fx = x + (r() - 0.5) * rad;
-      const fy = y + (r() - 0.6) * rad;
-      k.layer(circle(fx, fy, 0.028 + r() * 0.012), r() > 0.35 ? PALETTE.bloom : PALETTE.bloomWarm, 0.5);
-    }
-  },
-};
-
-
 /** A cottage with a chimney (the demo's smoke comes out of it). */
 export const COTTAGE_ASPECT = 0.86;
 /** Top of the chimney in piece units: across from the centre, up from the fold. */
@@ -296,8 +267,10 @@ function flowerBush(key: string, seed: number, aspect: number, petal: string): C
       body.bezierCurveTo(0.1, 0.45, w - 0.1, 0.45, w - 0.1, 0.25);
       body.lineTo(w - 0.1, -0.05);
       body.closePath();
-      for (const [x, y, rad] of lumps) circle(x, y, rad, body);
       k.shape(body, PALETTE.bush);
+      // Lumps filled one by one: in one path their winding would cancel the
+      // body's where they overlap and punch holes.
+      for (const [x, y, rad] of lumps) k.shape(circle(x, y, rad), PALETTE.bush);
       // Light catches the top-left of each lump.
       for (const [x, y, rad] of lumps) k.layer(circle(x - rad * 0.22, y + rad * 0.2, rad * 0.62), PALETTE.bushLight, 0.45);
       for (let i = 0; i < Math.round(w * 4.5); i++) {
