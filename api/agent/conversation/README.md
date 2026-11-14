@@ -14,6 +14,10 @@ implements the existing `start_run`, `stream_run`, and `answer_run` public API;
 production defaults to `agent.runs`. The service fixes family/person/principal
 from the verified, opted-in active contact. The principal is the linked user ID
 or `contact:<contactId>`. It rechecks mapping and consent for every action.
+For iMessage the frozen context also binds the observed handle, channel, direct
+space ID/kind, verifiedAt and optInAt. Every `_state` check, including the inherited
+callback before each model/subagent invocation, compares that complete proof.
+Fresh consent in the same space does not revive an older in-flight invocation.
 
 - `get_open_questions()` returns only this person's open question IDs/text.
 - `select_question(question_id)` accepts only one of those questions. Its target

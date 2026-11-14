@@ -294,6 +294,13 @@ including STT and model use. Same-handle messages in groups or different spaces,
 and legacy contacts without direct proof, may receive transport receipts but are
 blocked before their content is processed or replies sent. Terminal demo behavior
 is unchanged. Consent and proof are rechecked before every outbound action.
+The observed iMessage proof is immutable for each service/worker invocation:
+`{handle,channel,spaceId,spaceKind,verifiedAt,optInAt}`. Server-created text/photo/voice
+receipts and destination snapshots now store it as `contactProof` (timestamps are
+BSON datetimes). Missing or mismatching legacy proofs fail closed; terminal records
+are unchanged. The same frozen proof is checked before every model callback,
+including nested calls, and around transcription. STOP followed by fresh consent
+in the same DM cannot revive an older invocation, receipt or pending destination.
 
 Prompts prefer this person's current public `get_open_questions()` results, keeping
 the selected question's second-telling target bound server-side after delivery ACK.
@@ -311,6 +318,8 @@ are reserved→sending→sent→answered; `sentAt` is recorded only after sender
 The outbox uses a deterministic notification-derived message ID. A lost ACK or
 database failure blocks further work without a blind resend. A known-unsent prompt
 is cancelled if quiet hours, settings or incoming work changes before sending;
+current cadence is recomputed at both pre-send gates using the latest preferences
+and prompt/inbound/opt-in anchors, even after notification reservation.
 cancellation never delays a user's ordinary reply. A story reply marks the chain
 answered only after its words are durably saved. HELP/CALL/YEAR are not story answers.
 

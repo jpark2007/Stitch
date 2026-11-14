@@ -29,6 +29,7 @@ class ContactContext:
     contact_id: str
     person_id: str
     principal: str
+    proof: tuple = ()
 
 
 class ConversationService:
@@ -42,7 +43,8 @@ class ConversationService:
     def for_contact(cls, db, family_id: str, contact_id: str, *, runs=None):
         contact = conversations.active_contact(db, family_id, contact_id)
         context = ContactContext(family_id, contact_id, contact["personId"],
-                                 contact.get("userId") or f"contact:{contact_id}")
+                                 contact.get("userId") or f"contact:{contact_id}",
+                                 tuple((conversations.contact_proof(contact) or {}).items()))
         return cls(db, context, runs=runs)
 
     @property
@@ -57,6 +59,15 @@ class ConversationService:
         if (contact["personId"] != c.person_id
                 or (contact.get("userId") or f"contact:{c.contact_id}") != c.principal):
             raise PermissionError("Contact identity changed")
+        if c.proof or contact.get("channel") == "imessage":
+            expected = dict(c.proof)
+            if (not expected or conversations.contact_proof(contact) != expected
+                    or expected.get("spaceKind") != "direct"
+                    or not isinstance(expected.get("spaceId"), str) or not expected["spaceId"].strip()
+                    or not isinstance(expected.get("handle"), str) or not expected["handle"].strip()
+                    or not isinstance(expected.get("verifiedAt"), datetime)
+                    or not isinstance(expected.get("optInAt"), datetime)):
+                raise PermissionError("Verified contact proof changed or is unavailable")
         return conversations.load_conversation(self.db, c.family_id, c.contact_id, c.person_id, c.principal)
 
     def _update(self, row: dict, fields: dict, *, status: str | None = None) -> dict:

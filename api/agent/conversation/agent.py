@@ -55,6 +55,9 @@ class _Budget(BaseCallbackHandler):
         self.service._state()
         c = self.service.context
         conversations.take_conversation_model_call(self.service.db, c.family_id, c.contact_id, self.limit)
+        # The budget write can overlap a consent update. Recheck the frozen proof
+        # after that reservation, immediately before entering the model provider.
+        self.service._state()
 
 
 class ConversationAgent:
