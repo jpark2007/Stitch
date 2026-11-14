@@ -320,27 +320,35 @@ def test_revoke_invite(family_a, users, client):
     assert ada.delete(f"/families/{fid}/invites/unknown-code").status_code == 404
 
     preview = client(None).get(f"/invites/{code}")
-    assert preview.status_code == 404
-    assert preview.json() == {"detail": "Invite not found or expired"}
+    assert preview.status_code == 410
+    assert preview.json() == {"detail": "This invite was revoked"}
     join = client(users["b"]).post(f"/invites/{code}/join", json={"personId": family_a["rosa"]["id"]})
-    assert join.status_code == 404
+    assert join.status_code == 410
+    assert join.json() == {"detail": families_routes.INVITE_REVOKED}
 
 
-def test_expired_invite_is_404_on_preview_and_join(family_a, users, client, mdb):
+def test_expired_invite_is_410_on_preview_and_join(family_a, users, client, mdb):
     fid = family_a["fid"]
-    old = datetime.now(UTC) - timedelta(days=15)
+    old = datetime.now(UTC) - timedelta(days=families_db.INVITE_DAYS + 1)
     expired = families_db.create_invite(mdb, fid, users["a"].id, now=old)
     assert expired is not None
-    assert client(None).get(f"/invites/{expired.code}").status_code == 404
+    preview = client(None).get(f"/invites/{expired.code}")
+    assert preview.status_code == 410
+    assert preview.json() == {"detail": "This invite has expired"}
     res = client(users["b"]).post(f"/invites/{expired.code}/join", json={"person": {"name": "Ben"}})
-    assert res.status_code == 404
+    assert res.status_code == 410
+    assert res.json() == {"detail": families_routes.INVITE_EXPIRED}
     assert families_db.get_member_role(mdb, fid, users["b"].id) is None
     assert people_db.get_person_for_user(mdb, fid, users["b"].id) is None
 
 
 def test_unknown_invite_is_404(users, client):
-    assert client(None).get("/invites/nope").status_code == 404
-    assert client(users["b"]).post("/invites/nope/join", json={"person": {"name": "Ben"}}).status_code == 404
+    res = client(None).get("/invites/nope")
+    assert res.status_code == 404
+    assert res.json() == {"detail": "Invite not found"}
+    res = client(users["b"]).post("/invites/nope/join", json={"person": {"name": "Ben"}})
+    assert res.status_code == 404
+    assert res.json() == {"detail": families_routes.INVITE_NOT_FOUND}
 
 
 def test_admin_sees_revoked_invites_too(family_a):

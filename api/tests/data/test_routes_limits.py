@@ -641,10 +641,12 @@ def test_revoked_invite_code_is_never_reusable(world):
     old = _invite(world.ada, world.fid)
     assert world.ada.delete(f"/families/{world.fid}/invites/{old}").status_code == 204
     ben = world.client(world.users["ben"])
-    assert ben.get(f"/invites/{old}").status_code == 404
-    assert ben.post(f"/invites/{old}/join", json={"personId": world.rosa.id}).status_code == 404
-    assert world.ada.post(f"/invites/{old}/join", json={"personId": world.ada_p.id}).status_code == 404
+    gone = {"detail": families_routes.INVITE_REVOKED}
+    res = ben.get(f"/invites/{old}")
+    assert (res.status_code, res.json()) == (410, gone)
+    assert ben.post(f"/invites/{old}/join", json={"personId": world.rosa.id}).status_code == 410
+    assert world.ada.post(f"/invites/{old}/join", json={"personId": world.ada_p.id}).status_code == 410
     new = _invite(world.ada, world.fid)
     assert new != old
     assert ben.post(f"/invites/{new}/join", json={"personId": world.rosa.id}).status_code == 200
-    assert ben.post(f"/invites/{old}/join", json={"personId": world.rosa.id}).status_code == 404
+    assert ben.post(f"/invites/{old}/join", json={"personId": world.rosa.id}).status_code == 410
