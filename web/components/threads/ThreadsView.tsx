@@ -83,6 +83,18 @@ interface Engine {
   drawMs: number;
 }
 
+/**
+ * The paper colour at screen height y: the page is lit from the top and
+ * darkens towards the bottom (globals.css), so a title halo in plain
+ * --paper would show as a pale patch low on the screen. Measured from
+ * screenshots; good to a few levels either way.
+ */
+function paperAt(y: number): string {
+  const k = Math.min(1, Math.max(0, y / 620));
+  const c = (a: number, b: number) => Math.round(a + (b - a) * k);
+  return `rgb(${c(244, 227)},${c(237, 216)},${c(224, 201)})`;
+}
+
 /** 0 below `a`, 1 above `b`, smooth in between. */
 function ramp(a: number, b: number, x: number): number {
   const u = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -422,6 +434,11 @@ export default function ThreadsView(props: ThreadsViewProps) {
           if (t.dataset.at !== key) {
             t.dataset.at = key;
             t.style.transform = `translate(${pl.dx.toFixed(1)}px, ${pl.dy.toFixed(1)}px)`;
+          }
+          const band = String(Math.round((h.y + pl.dy) / 12));
+          if (t.dataset.band !== band) {
+            t.dataset.band = band;
+            t.style.setProperty("--halo", paperAt((h.y + pl.dy + TITLE_FONT_PX * 0.6)));
           }
           const o = (alpha.get(i) ?? 1).toFixed(2);
           if (t.style.opacity !== o) t.style.opacity = o;

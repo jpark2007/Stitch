@@ -56,7 +56,8 @@
 
 /*
  * A solid paper halo under the letters (the same text, stroked wide in the
- * paper colour) hides any thread passing behind a title. It is a separate
+ * paper colour at that height, set as --halo) hides any thread passing
+ * behind a title. It is a separate
  * layer rather than paint-order on the title itself, so it can never be
  * drawn over the letters.
  */
@@ -65,10 +66,9 @@
   position: absolute;
   inset: 0;
   z-index: -1;
-  color: var(--paper);
-  -webkit-text-stroke: 6px var(--paper);
-  stroke-linejoin: round;
-  text-shadow: 0 0 6px var(--paper);
+  color: var(--halo, var(--paper));
+  -webkit-text-stroke: 6px var(--halo, var(--paper));
+  text-shadow: 0 0 6px var(--halo, var(--paper));
 }
 
 .threads-zoom {
