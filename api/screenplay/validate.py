@@ -9,7 +9,8 @@ that is state.py). Every problem is reported, in a fixed order, as an exact Comp
 1. screenplay level: cast, props, names used as both, duplicate tellers, tellings for
    unknown shots, explanations, interactions;
 2. then each shot in order: duplicate id, set, marks, start, propStart, camera cues, actions
-   (in list order), narration (the default telling, then each other telling).
+   (in list order), narration (the default telling's line checks, then each other telling,
+   then the default telling's overlap, checked once per shot).
 
 Message grammar (shared with the compiler's other steps)::
 
@@ -619,6 +620,12 @@ class _Validator:
     # ---------------------------------------------------------------- narration
 
     def narration(self, shot: Shot) -> None:
+        """Every telling of one shot, timed statically (action start 0, which only shifts times).
+
+        Each other teller is built on its own call with ``check_default=False`` so its own
+        problems are reported in ``narrations`` order; the default telling's overlap is then
+        checked once per shot (``other={}``), after the tellers, as narration.py documents.
+        """
         default = self.default_author
         retimed: list[float] | None = None
         if self.lines(shot, default, shot.narration):
@@ -632,9 +639,16 @@ class _Validator:
                 continue  # a duplicate teller is reported once at screenplay level
             if self.lines(shot, author, lines) and retimed is not None:
                 try:
-                    narration.build_shot_narration(shot, 0.0, retimed, {author: lines}, default or "")
+                    narration.build_shot_narration(
+                        shot, 0.0, retimed, {author: lines}, default or "", check_default=False
+                    )
                 except NarrationError as e:
                     self.errors.append(_from_narration(e))
+        if shot.narration and retimed is not None:
+            try:
+                narration.build_shot_narration(shot, 0.0, retimed, {}, default or "", check_default=True)
+            except NarrationError as e:
+                self.errors.append(_from_narration(e))
 
     def lines(self, shot: Shot, author: str | None, lines: list[NarrationLine]) -> bool:
         """Per-line checks for one telling of one shot. True if every line passed."""
