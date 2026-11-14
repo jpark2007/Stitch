@@ -24,7 +24,9 @@ function readFocus(v: string | undefined): -1 | 0 | 1 {
 
 /**
  * Reads ?state=closed|open, ?spread=<n>, ?turn=<0..1> (freeze mid-turn) and
- * ?focus=left|right (close-up on one page) for deterministic views.
+ * ?focus=left|right (close-up on one page) for deterministic views, and the
+ * test switches ?still=1 (no parallax, peels or hints) and ?debug=1
+ * (`window.__book` is the controller).
  */
 function readInitial(q: Search) {
   const state = one(q.state);
@@ -56,7 +58,15 @@ export function MemoryBook({ params, searchParams }: { params: Promise<{ id: str
     );
   }
 
-  return <Book3D spreads={demoSpreads} cover={demoCover} initial={readInitial(q)} />;
+  return (
+    <Book3D
+      spreads={demoSpreads}
+      cover={demoCover}
+      initial={readInitial(q)}
+      still={one(q.still) === "1"}
+      debug={one(q.debug) === "1"}
+    />
+  );
 }
 
 export function BookLoading() {

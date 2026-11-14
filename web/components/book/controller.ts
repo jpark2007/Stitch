@@ -35,6 +35,11 @@ export const COVER_PIVOT_Y = COVER_T + (BLOCK_T + 2 * LEAF_REST_GAP) / 2;
 const TURN_DUR = 1.15;
 const FAST_TURN_DUR = 0.78;
 const OPEN_DUR = 1.6;
+/** Reduced motion: quicker, plainer turns and opening; no parallax. */
+const CALM = 0.5;
+/** Pointer parallax at the frame's edge (radians). */
+const PARALLAX_YAW = 2.2 * (Math.PI / 180);
+const PARALLAX_PITCH = 1.3 * (Math.PI / 180);
 const DEG = Math.PI / 180;
 
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
@@ -137,6 +142,13 @@ export class BookController {
   private single: number;
   private phone = false;
   private tap: Tap | null = null;
+  private calm = false;
+  private parallaxOn = false;
+  /** Corner peels under the hovering pointer (off for still screenshots). */
+  private peels = true;
+  /** Pointer parallax: goal and eased, -1..1 across the canvas. */
+  private parGoal = { x: 0, y: 0 };
+  private par = { x: 0, y: 0 };
   private tmpAngles: Float32Array;
   private tmpV = new Vector3();
   private camera: PerspectiveCamera | null = null;
@@ -198,7 +210,8 @@ export class BookController {
     coverOpen();
     // The title leaf follows the cover over, a beat behind.
     const leaf = this.rt.leaves[0];
-    Object.assign(leaf, { mode: "auto", dir: 1, from: 0, to: 1, t0: now() + 0.32, dur: 1.35, curl: 0.3, corner: 0.2, stiff: 1 });
+    const k = this.calm ? CALM : 1;
+    Object.assign(leaf, { mode: "auto", dir: 1, from: 0, to: 1, t0: now() + 0.32 * k, dur: 1.35 * k, curl: 0.3, corner: 0.2, stiff: 1 });
     this.pos = 1;
     this.invalidate();
   }
@@ -223,6 +236,30 @@ export class BookController {
     const diff = target - pending;
     for (let i = 0; i < Math.abs(diff); i++) this.queue.push(diff > 0 ? 1 : -1);
     this.invalidate();
+  }
+
+  /** prefers-reduced-motion: shorter turns and opening, no parallax. */
+  setCalm(calm: boolean) {
+    this.calm = calm;
+    this.invalidate();
+  }
+
+  /** Let the camera drift a touch with the pointer (fine pointers only). */
+  setParallax(on: boolean) {
+    this.parallaxOn = on;
+    this.invalidate();
+  }
+
+  setPeels(on: boolean) {
+    this.peels = on;
+    if (!on) this.clearHover();
+  }
+
+  /** Pointer position over the canvas, -1..1 on each axis (y down). */
+  pointer(x: number, y: number) {
+    this.parGoal.x = x;
+    this.parGoal.y = y;
+    if (this.parallaxOn && !this.calm) this.invalidate();
   }
 
   /** Look closely at one page (-1 left, 1 right), or at the whole spread (0). */
@@ -258,7 +295,9 @@ export class BookController {
     const k = dir > 0 ? this.pos : this.pos - 1;
     const leaf = this.rt.leaves[k];
     if (this.hoverLeaf === k) this.hoverLeaf = -1;
-    Object.assign(leaf, { mode: "auto", dir, from: leaf.p, to: dir > 0 ? 1 : 0, t0: now(), dur, curl: 0.42, corner: 0.55, stiff: 1 });
+    // Calm turns flip more plainly: less curl, less corner lift.
+    const curl = this.calm ? 0.25 : 0.42;
+    Object.assign(leaf, { mode: "auto", dir, from: leaf.p, to: dir > 0 ? 1 : 0, t0: now(), dur, curl, corner: this.calm ? 0.3 : 0.55, stiff: 1 });
     this.pos += dir;
     this.afterTurn(dir);
     pageTurn(dur, dir);
@@ -301,7 +340,7 @@ export class BookController {
     if (this.drag) return "grabbing";
     if (this.frozen || this.open < 1) return "";
     const z = this.zone(pt);
-    if (z && !this.busy()) this.setHover(z.leaf, z.dir, z.corner);
+    if (z && this.peels && !this.busy()) this.setHover(z.leaf, z.dir, z.corner);
     else this.clearHover();
     if (z) return "grab";
     if (this.phone) return "";
@@ -465,7 +504,7 @@ export class BookController {
 
     // Cover.
     if (this.opening) {
-      const k = clamp01((t - this.openT0) / OPEN_DUR);
+      const k = clamp01((t - this.openT0) / (OPEN_DUR * (this.calm ? CALM : 1)));
       this.open = easeInOut(k);
       if (k >= 1) {
         this.opening = false;
@@ -485,7 +524,7 @@ export class BookController {
       const progress = inFlight.length ? Math.min(...inFlight.map((l) => (t - l.t0) / l.dur)) : 1;
       if (progress > 0.32) {
         const dir = this.queue.shift()!;
-        const dur = this.queue.length > 0 || inFlight.length > 0 ? FAST_TURN_DUR : TURN_DUR;
+        const dur = (this.queue.length > 0 || inFlight.length > 0 ? FAST_TURN_DUR : TURN_DUR) * (this.calm ? CALM : 1);
         this.clearHover();
         // A turn past either end is simply dropped; the rest of the queue stays.
         this.startTurn(dir, dur);
@@ -609,10 +648,20 @@ export class BookController {
       this.focusE = this.focusGoal;
       this.single = singleGoal;
     }
-    const key = `${o.toFixed(4)}|${aspect.toFixed(3)}|${this.lift.toFixed(4)}|${this.focusE.toFixed(4)}|${this.single.toFixed(4)}`;
+    // Parallax holds still while a page is held, so the drag maps cleanly.
+    if (!this.drag?.active) {
+      const on = this.parallaxOn && !this.calm && !this.frozen;
+      const gx = on ? this.parGoal.x : 0;
+      const gy = on ? this.parGoal.y : 0;
+      const pe = dt === 0 ? 1 : 1 - Math.exp(-dt * 3);
+      this.par.x += (gx - this.par.x) * pe;
+      this.par.y += (gy - this.par.y) * pe;
+      if (Math.abs(gx - this.par.x) > 2e-3 || Math.abs(gy - this.par.y) > 2e-3) moving = true;
+    }
+    const key = `${o.toFixed(4)}|${aspect.toFixed(3)}|${this.lift.toFixed(4)}|${this.focusE.toFixed(4)}|${this.single.toFixed(4)}|${this.par.x.toFixed(3)}|${this.par.y.toFixed(3)}`;
     if (key !== this.camKey) {
       this.camKey = key;
-      const pose = { open: o, lift: this.lift, focus: this.focusE, single: this.single };
+      const pose = { open: o, lift: this.lift, focus: this.focusE, single: this.single, px: this.par.x, py: this.par.y };
       frameCamera(pose, aspect, ctx.camera.fov, this.camPos, this.camTarget);
       ctx.camera.position.copy(this.camPos);
       ctx.camera.lookAt(this.camTarget);
@@ -673,6 +722,9 @@ export interface CameraPose {
   focus: number;
   /** 0..1: framing one page rather than the spread (eased). */
   single: number;
+  /** Pointer parallax, -1..1 (optional). */
+  px?: number;
+  py?: number;
 }
 
 /** Camera: a 3/4 view of the closed book, a reading view when open. */
@@ -699,8 +751,9 @@ export function frameCamera(pose: CameraPose, aspect: number, fov: number, pos: 
   // A standing leaf (about a page tall over the spine): back off and look up a little.
   const l = lift * open;
   const d = lerp(dC, dO, open) * (1 + 0.2 * l);
-  const e = lerp(eC, eO, open);
-  const az = lerp(portrait ? -10 : -16, 0, open) * DEG;
+  // The camera drifts a little toward the pointer, as a head would.
+  const e = lerp(eC, eO, open) + (pose.py ?? 0) * PARALLAX_PITCH;
+  const az = lerp(portrait ? -10 : -16, 0, open) * DEG + (pose.px ?? 0) * PARALLAX_YAW;
   // Aim a touch nearer the reader than the spine, so the dots have room below.
   const focusX = pose.focus * (BOARD_W / 2) * one * open;
   target.set(focusX, lerp(0.1, 0.03, open) + 0.26 * l, lerp(0.04, portrait ? 0 : 0.07, open) - 0.1 * l);

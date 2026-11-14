@@ -17,7 +17,16 @@
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { motion } from "framer-motion";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+  type WheelEvent as ReactWheelEvent,
+} from "react";
 import {
   BoxGeometry,
   BufferAttribute,
@@ -68,6 +77,10 @@ export interface Book3DProps {
   initial?: BookInitial;
   /** The pop-up stage for a spread, mounted in the right page's slot. */
   renderStage?: (args: StageSlotArgs) => ReactNode;
+  /** Screenshots and tests: no parallax, no hover peels, no hints. */
+  still?: boolean;
+  /** Tests: expose the raw controller as `window.__book`. */
+  debug?: boolean;
 }
 
 export interface BookControls {
@@ -94,7 +107,7 @@ function resolveStart(initial: BookInitial | undefined, n: number): BookStart {
 /* Shell: loading, overlay UI                                                */
 /* ------------------------------------------------------------------------ */
 
-export function Book3D({ spreads, cover, initial, renderStage }: Book3DProps) {
+export function Book3D({ spreads, cover, initial, renderStage, still = false, debug = false }: Book3DProps) {
   // The starting view is read once; later prop changes do not reset the book.
   const [start] = useState(() => resolveStart(initial, spreads.length));
   const [art, setArt] = useState<BookArt | null>(null);
@@ -133,6 +146,23 @@ export function Book3D({ spreads, cover, initial, renderStage }: Book3DProps) {
     };
   }, []);
 
+  // Wheel or trackpad: one step per gesture (the lock lifts once the stream,
+  // inertia included, pauses).
+  const wheel = useRef({ acc: 0, locked: false, timer: 0 });
+  const onWheel = (e: ReactWheelEvent) => {
+    const w = wheel.current;
+    window.clearTimeout(w.timer);
+    w.timer = window.setTimeout(() => {
+      w.locked = false;
+      w.acc = 0;
+    }, 220);
+    if (w.locked) return;
+    w.acc += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (Math.abs(w.acc) < 50) return;
+    controls.current?.step(w.acc > 0 ? 1 : -1);
+    w.locked = true;
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLElement && e.target.closest("input, textarea, select")) return;
@@ -150,7 +180,11 @@ export function Book3D({ spreads, cover, initial, renderStage }: Book3DProps) {
   }, []);
 
   return (
-    <div className="relative h-[100dvh] w-full touch-none overflow-hidden select-none" style={{ background: TABLE_BG }}>
+    <div
+      className="relative h-[100dvh] w-full touch-none overflow-hidden select-none"
+      style={{ background: TABLE_BG }}
+      onWheel={onWheel}
+    >
       {art ? (
         <motion.div
           className="absolute inset-0"
@@ -173,6 +207,8 @@ export function Book3D({ spreads, cover, initial, renderStage }: Book3DProps) {
               onControls={onControls}
               onView={setView}
               renderStage={renderStage}
+              still={still}
+              debug={debug}
             />
           </Canvas>
         </motion.div>
@@ -294,6 +330,8 @@ interface SceneProps {
   onControls: (api: BookControls | null) => void;
   onView: (v: BookView) => void;
   renderStage?: (args: StageSlotArgs) => ReactNode;
+  still: boolean;
+  debug: boolean;
 }
 
 function BookScene(props: SceneProps) {
@@ -420,7 +458,7 @@ function useBookGeometry() {
   return geo;
 }
 
-function BookModel({ art, spreads, start, onControls, onView, renderStage }: SceneProps) {
+function BookModel({ art, spreads, start, onControls, onView, renderStage, still, debug }: SceneProps) {
   const camera = useThree((s) => s.camera) as PerspectiveCamera;
   const gl = useThree((s) => s.gl);
   const invalidate = useThree((s) => s.invalidate);
@@ -455,7 +493,8 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage }: Sce
     };
     onControls(api);
     // Test hook for the self-testing loop (FPS probe, scripted turns).
-    const w = window as Window & { __stitchBook?: unknown };
+    const w = window as Window & { __stitchBook?: unknown; __book?: BookController };
+    if (debug) w.__book = ctl;
     w.__stitchBook = {
       ...api,
       frames: () => ctl.rt.frames,
@@ -466,8 +505,34 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage }: Sce
     return () => {
       onControls(null);
       delete w.__stitchBook;
+      delete w.__book;
     };
-  }, [ctl, camera, gl, onControls, invalidate]);
+  }, [ctl, camera, gl, onControls, invalidate, debug]);
+
+  // Reduced motion and pointer parallax follow the reader's settings live.
+  useEffect(() => {
+    const calm = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const fine = window.matchMedia("(hover: hover) and (pointer: fine)");
+    const sync = () => {
+      ctl.setCalm(calm.matches);
+      ctl.setParallax(fine.matches && !still);
+    };
+    ctl.setPeels(!still);
+    sync();
+    calm.addEventListener("change", sync);
+    fine.addEventListener("change", sync);
+    const move = (e: PointerEvent) => {
+      if (e.pointerType !== "mouse") return;
+      const r = gl.domElement.getBoundingClientRect();
+      ctl.pointer(((e.clientX - r.left) / r.width) * 2 - 1, ((e.clientY - r.top) / r.height) * 2 - 1);
+    };
+    window.addEventListener("pointermove", move);
+    return () => {
+      calm.removeEventListener("change", sync);
+      fine.removeEventListener("change", sync);
+      window.removeEventListener("pointermove", move);
+    };
+  }, [ctl, gl, still]);
 
   const book = useRef<Group>(null);
   const coverPivot = useRef<Group>(null);
