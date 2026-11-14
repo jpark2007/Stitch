@@ -286,6 +286,120 @@ def test_patch_cycle_rejected(mdb):
     assert joe.parent_ids == ["joes_dad"]
 
 
+# ---------------------------------------------------- spouse lineage (ancestor/descendant)
+
+
+def test_ancestor_ids_is_pure_and_walks_up():
+    docs = [
+        {"_id": "gp", "parentIds": []},
+        {"_id": "gm", "parentIds": []},
+        {"_id": "dad", "parentIds": ["gp", "gm"]},
+        {"_id": "mom", "parentIds": []},
+        {"_id": "kid", "parentIds": ["dad", "mom"]},
+        {"_id": "orphan", "parentIds": ["ghost"]},
+    ]
+    assert P._ancestor_ids(docs, "kid") == {"dad", "mom", "gp", "gm"}
+    assert P._ancestor_ids(docs, "dad") == {"gp", "gm"}
+    assert P._ancestor_ids(docs, "gp") == set()
+    assert P._ancestor_ids(docs, "orphan") == {"ghost"}
+    assert P._ancestor_ids(docs, "nobody") == set()
+    # A parent cycle in bad data terminates and never lists the person themselves.
+    cyclic = [{"_id": "a", "parentIds": ["b"]}, {"_id": "b", "parentIds": ["a"]}]
+    assert P._ancestor_ids(cyclic, "a") == {"b"}
+
+
+def test_child_as_spouse_rejected_and_nothing_written(mdb):
+    add(mdb, "Dad", pid="dad")
+    add(mdb, "Mom", spouses=["dad"], pid="mom")
+    add(mdb, "Sam", parents=["dad", "mom"], pid="sam")
+    with pytest.raises(P.InvalidRelation, match="ancestor or descendant"):
+        P.update_person(mdb, FAM, "dad", schemas.PersonPatch(spouse_ids=["mom", "sam"]))
+    assert P.get_person(mdb, FAM, "sam").spouse_ids == []
+    assert P.get_person(mdb, FAM, "dad").spouse_ids == ["mom"]
+    assert P.get_person(mdb, FAM, "mom").spouse_ids == ["dad"]
+    # Sam's parents can still be patched (the old bug made this a 400 afterwards).
+    sam = P.update_person(mdb, FAM, "sam", schemas.PersonPatch(parent_ids=["dad", "mom"]))
+    assert sam.parent_ids == ["dad", "mom"]
+    # And from the child's side: Sam cannot marry a parent either.
+    with pytest.raises(P.InvalidRelation):
+        P.update_person(mdb, FAM, "sam", schemas.PersonPatch(spouse_ids=["mom"]))
+    assert P.get_person(mdb, FAM, "mom").spouse_ids == ["dad"]
+
+
+def test_grandchild_and_grandparent_as_spouse_rejected_on_patch(mdb):
+    build_family(mdb)
+    before = {p.id: p for p in P.list_people(mdb, FAM)}
+    with pytest.raises(P.InvalidRelation, match="ancestor or descendant"):
+        P.update_person(mdb, FAM, "grandpa", schemas.PersonPatch(spouse_ids=["grandma", "kid"]))
+    with pytest.raises(P.InvalidRelation, match="ancestor or descendant"):
+        P.update_person(mdb, FAM, "kid", schemas.PersonPatch(spouse_ids=["grandma"]))
+    with pytest.raises(P.InvalidRelation, match="ancestor or descendant"):
+        P.update_person(mdb, FAM, "cousin", schemas.PersonPatch(spouse_ids=["grandpa"]))
+    assert {p.id: p for p in P.list_people(mdb, FAM)} == before
+
+
+def test_spouse_check_uses_parents_from_same_patch(mdb):
+    add(mdb, "Old", pid="old")
+    add(mdb, "Mid", parents=["old"], pid="mid")
+    add(mdb, "Young", pid="young")
+    # Becoming Mid's child in the same patch makes Old a grandparent.
+    with pytest.raises(P.InvalidRelation, match="ancestor or descendant"):
+        P.update_person(
+            mdb, FAM, "young", schemas.PersonPatch(parent_ids=["mid"], spouse_ids=["old"])
+        )
+    assert P.get_person(mdb, FAM, "young").parent_ids == []
+    assert P.get_person(mdb, FAM, "old").spouse_ids == []
+    # Dropping a parent in the same patch frees the old line.
+    add(mdb, "Other", pid="other")
+    P.update_person(mdb, FAM, "young", schemas.PersonPatch(parent_ids=["mid"]))
+    young = P.update_person(
+        mdb, FAM, "young", schemas.PersonPatch(parent_ids=["other"], spouse_ids=["old"])
+    )
+    assert young.parent_ids == ["other"] and young.spouse_ids == ["old"]
+    assert P.get_person(mdb, FAM, "old").spouse_ids == ["young"]
+
+
+def test_grandparent_as_spouse_rejected_on_create(mdb):
+    build_family(mdb)
+    count = mdb.people.count_documents({})
+    with pytest.raises(P.InvalidRelation, match="ancestor or descendant"):
+        add(mdb, "New kid", parents=["dad"], spouses=["grandpa"])
+    with pytest.raises(P.InvalidRelation):  # a direct parent is still rejected too
+        add(mdb, "New kid", parents=["dad"], spouses=["dad"])
+    assert mdb.people.count_documents({}) == count
+    assert P.get_person(mdb, FAM, "grandpa").spouse_ids == ["grandma"]
+    # An in-law who is not an ancestor is fine.
+    ok = add(mdb, "New kid", parents=["dad"], spouses=["joe"])
+    assert ok.spouse_ids == ["joe"]
+    assert ok.id in P.get_person(mdb, FAM, "joe").spouse_ids
+
+
+def test_unrelated_spouse_links_and_unlinks_symmetrically(mdb):
+    build_family(mdb)
+    add(mdb, "Partner", 1991, pid="partner")
+    kid = P.update_person(mdb, FAM, "kid", schemas.PersonPatch(spouse_ids=["partner"]))
+    assert kid.spouse_ids == ["partner"]
+    assert P.get_person(mdb, FAM, "partner").spouse_ids == ["kid"]
+    # A cousin is not an ancestor or descendant, so the lineage check allows it.
+    kid = P.update_person(mdb, FAM, "kid", schemas.PersonPatch(spouse_ids=["partner", "cousin"]))
+    assert P.get_person(mdb, FAM, "cousin").spouse_ids == ["kid"]
+    kid = P.update_person(mdb, FAM, "kid", schemas.PersonPatch(spouse_ids=[]))
+    assert kid.spouse_ids == []
+    assert P.get_person(mdb, FAM, "partner").spouse_ids == []
+    assert P.get_person(mdb, FAM, "cousin").spouse_ids == []
+
+
+def test_other_family_spouse_still_rejected_with_lineage_check(mdb):
+    build_family(mdb)
+    add(mdb, "B", pid="b_person", family=OTHER)
+    with pytest.raises(P.InvalidRelation, match="unknown person"):
+        P.update_person(mdb, FAM, "kid", schemas.PersonPatch(spouse_ids=["b_person"]))
+    with pytest.raises(P.InvalidRelation, match="unknown person"):
+        add(mdb, "New", parents=["dad"], spouses=["b_person"])
+    assert P.get_person(mdb, OTHER, "b_person").spouse_ids == []
+    assert P.get_person(mdb, FAM, "kid").spouse_ids == []
+
+
 def test_partial_patch_leaves_other_fields(mdb):
     build_family(mdb)
     before = P.get_person(mdb, FAM, "dad")
