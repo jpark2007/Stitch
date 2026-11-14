@@ -12,11 +12,16 @@ Environment:
 - STITCH_FAKE_DB=1: use an in-memory mongomock database seeded with the demo family
   (see seed/README.md). Read when the app starts.
 - STITCH_AGENT=off|fake|real: who runs "add a memory" (POST /families/{fid}/memories and
-  its stream and answer routes). Read when the app starts.
-  - off: nothing is configured and agent/ is never imported; the run routes answer 503.
+  its stream and answer routes). Read when the app starts; the resolved mode is kept on
+  `app.state.agent_mode` (see routes.memories.AGENT_OFF_STATE).
+  - off: no agent at all, even with ANTHROPIC_API_KEY set. agent/ is never imported or
+    built, and the run routes answer 503.
   - fake: scripted runs from seed/fake_runs.py (no model calls, no keys, no network).
-  - real: `agent.runs.configure_from_env(db)` builds the model studio. If it is missing
-    or fails, startup logs a warning and falls back to scripted runs.
+  - real: `agent.runs.get_manager()`, which builds `agent.production.production_manager()`
+    from ANTHROPIC_API_KEY (required), MONGODB_URI, IMAGE_API_KEY, ELEVENLABS_API_KEY and
+    STITCH_WEB_URL. A manager configured before startup is kept instead. If the build
+    fails (no key, for example), startup logs a warning with the reason and falls back to
+    scripted runs.
   Unset, empty or unknown (unknown logs a warning): fake when STITCH_FAKE_DB is on or
   ANTHROPIC_API_KEY is unset or blank, otherwise real.
 - STITCH_FAKE_RUN_STEP: seconds between the steps of a scripted run (float >= 0, default 0.6).
@@ -27,7 +32,8 @@ does not send its password back in the response.
 
 This module never imports `agent/` at import time. Memory submission reaches the agent
 lazily inside routes/memories.py, and startup imports agent.runs only when STITCH_AGENT is
-fake or real, so read routes and STITCH_AGENT=off work without it.
+fake or real, so read routes and STITCH_AGENT=off work without it. Under off the run
+routes refuse before they reach that import.
 """
 
 from __future__ import annotations
@@ -179,36 +185,35 @@ def _install_agent_fake() -> bool:
     return True
 
 
-def _has_manager(runs: Any) -> bool:
-    try:
-        runs.get_manager()
-    except Exception:  # noqa: BLE001 - not configured, or no get_manager at all
-        return False
-    return True
+def _configured_manager(runs: Any) -> Any:
+    """The run manager already installed in agent.runs, or None.
+
+    This reads agent.runs' private `_manager` slot on purpose: `get_manager()` would start
+    a lazy production build when nothing is configured, and this check must not.
+    """
+    return getattr(runs, "_manager", None)
 
 
 def _configure_real_agent() -> bool:
-    """The model studio via agent.runs.configure_from_env(db), else scripted runs.
+    """The model studio via agent.runs.get_manager(), else scripted runs. Runs in the threadpool.
 
-    True when a manager was installed (real or scripted).
+    True when this process installed a manager (real or scripted), so shutdown stops it.
+    A manager configured before startup is kept and left to whoever configured it.
     """
     fallback = "falling back to scripted runs (no model calls)"
     try:
         runs = importlib.import_module("agent.runs")
     except Exception as exc:  # noqa: BLE001 - any import failure means no real runs
-        log.warning("STITCH_AGENT=real: agent.runs cannot be imported (%r); %s", exc, fallback)
+        log.warning("STITCH_AGENT=real: agent.runs cannot be imported (%s); %s", exc, fallback)
         return _install_agent_fake()
-    configure_from_env = getattr(runs, "configure_from_env", None)
-    if not callable(configure_from_env):
-        log.warning("STITCH_AGENT=real: agent.runs has no configure_from_env() yet; %s", fallback)
-        return _install_agent_fake()
+    if _configured_manager(runs) is not None:
+        log.info("STITCH_AGENT=real: keeping the agent run manager configured before startup")
+        return False
     try:
-        configure_from_env(client.get_db())
-    except Exception as exc:  # noqa: BLE001 - a bad key or adapter must not stop the API
-        log.warning("STITCH_AGENT=real: agent.runs.configure_from_env() failed (%r); %s", exc, fallback)
-        return _install_agent_fake()
-    if not _has_manager(runs):
-        log.warning("STITCH_AGENT=real: configure_from_env() did not configure a run manager; %s", fallback)
+        # Builds agent.production.production_manager() once and configures it.
+        runs.get_manager()
+    except Exception as exc:  # noqa: BLE001 - a missing key or a bad adapter must not stop the API
+        log.warning("STITCH_AGENT=real: the model studio could not be built (%s); %s", exc, fallback)
         return _install_agent_fake()
     log.info("STITCH_AGENT=real: agent runs use the model studio")
     return True
@@ -217,8 +222,8 @@ def _configure_real_agent() -> bool:
 def _shutdown_agent() -> None:
     """Stop the run manager this process configured and clear it. Never raises, never imports."""
     runs = sys.modules.get("agent.runs")
-    if runs is None:
-        return
+    if runs is None or _configured_manager(runs) is None:
+        return  # nothing to stop; get_manager() here would build a fresh studio just to stop it
     try:
         runs.get_manager().shutdown()
     except Exception as exc:  # noqa: BLE001 - shutdown must finish
@@ -232,7 +237,7 @@ def _shutdown_agent() -> None:
 async def _start_agent(mode: str) -> bool:
     """Configure agent runs for `mode`. True when a manager was installed. Never raises."""
     if mode == "off":
-        log.info("STITCH_AGENT=off: agent runs are off; adding a memory answers 503")
+        log.info("STITCH_AGENT=off: no agent runs (agent/ is not loaded); adding a memory answers 503")
         return False
     step = _install_agent_fake if mode == "fake" else _configure_real_agent
     try:
@@ -243,14 +248,17 @@ async def _start_agent(mode: str) -> bool:
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     installed_fake = False
     if fake_db_enabled():
         await run_in_threadpool(_install_fake_db)
         installed_fake = True
     else:
         await run_in_threadpool(_ensure_indexes)
-    configured_agent = await _start_agent(agent_mode())
+    mode = agent_mode()
+    # The run routes refuse with 503 when this is "off" (routes.memories._agent_off).
+    setattr(application.state, routes.memories.AGENT_OFF_STATE, mode)
+    configured_agent = await _start_agent(mode)
     try:
         yield
     finally:

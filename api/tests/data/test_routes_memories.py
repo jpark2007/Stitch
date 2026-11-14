@@ -816,6 +816,96 @@ def test_responses_never_contain_password_hash(env):
     assert all("passwordHash" not in b and "password_hash" not in b for b in bodies)
 
 
+# ------------------------------------------------------------------------------ STITCH_AGENT=off
+
+
+class _Tripwire(types.ModuleType):
+    """agent.runs stand-in that records every attribute the route looks up (none exist)."""
+
+    def __init__(self) -> None:
+        super().__init__("agent.runs")
+        self.looked_up: list[str] = []
+
+    def __getattr__(self, name: str):
+        self.looked_up.append(name)
+        raise AttributeError(name)
+
+
+@pytest.fixture
+def off(env, monkeypatch) -> _Tripwire:
+    """The bare app started as if with STITCH_AGENT=off, and agent.runs replaced by a tripwire."""
+    tripwire = _Tripwire()
+    monkeypatch.setitem(sys.modules, "agent.runs", tripwire)
+    env.app.state.agent_mode = "off"
+    return tripwire
+
+
+def _off_requests(tc: TestClient, fid: str) -> list[httpx.Response]:
+    return [
+        _submit(tc, fid, files=[("photos", ("a.png", PNG_1, "image/png"))]),
+        tc.get(f"/families/{fid}/runs/run-1/stream"),
+        tc.post(f"/families/{fid}/runs/run-1/answer", json=ANSWER),
+    ]
+
+
+def test_agent_off_constant():
+    assert memories_routes.AGENT_OFF_STATE == "agent_mode"
+
+
+def test_agent_off_every_run_route_is_503_without_touching_the_agent(env, off):
+    submit, stream, answer = _off_requests(env.a, env.fam_a.id)
+    assert submit.status_code == 503
+    assert submit.json() == {"detail": "Could not start the studio"}
+    assert stream.status_code == 503
+    assert stream.json() == {"detail": "The studio is unavailable"}
+    assert answer.status_code == 503
+    assert answer.json() == {"detail": "The studio is unavailable"}
+    assert off.looked_up == [], "agent.runs must not be imported under off"
+    assert _all_media(env.db) == [], "no photo is stored under off"
+
+
+def test_agent_off_does_not_call_a_working_seam(env):
+    """Even when agent.runs would work (a key is set, say), off never reaches it."""
+    env.app.state.agent_mode = "off"
+    env.fake.items = _plan_question_done()
+    responses = _off_requests(env.a, env.fam_a.id)
+    assert [r.status_code for r in responses] == [503, 503, 503]
+    assert env.fake.calls == 0
+    assert _all_media(env.db) == []
+
+
+def test_agent_off_membership_still_comes_first(env, off):
+    """A non-member gets 404 and a signed-out caller 401, not 503."""
+    assert [r.status_code for r in _off_requests(env.a, env.fam_b.id)] == [404, 404, 404]
+    assert [r.status_code for r in _off_requests(env.b, env.fam_a.id)] == [404, 404, 404]
+    assert [r.status_code for r in _off_requests(TestClient(env.app), env.fam_a.id)] == [401, 401, 401]
+    assert off.looked_up == []
+    assert _all_media(env.db) == []
+
+
+def test_agent_off_ignores_bad_fields_and_member_without_person(env, off):
+    """The gate runs before field checks: nothing about the submit is looked at."""
+    assert _submit(env.a, env.fam_a.id, {"text": "   ", "year": "1962"}).status_code == 503
+    assert _submit(env.c, env.fam_a.id).status_code == 503  # carol has no person yet
+    assert off.looked_up == []
+
+
+@pytest.mark.parametrize("mode", [None, "fake", "real", ""])
+def test_agent_mode_other_than_off_behaves_as_before(env, mode):
+    if mode is not None:
+        env.app.state.agent_mode = mode
+    env.fake.items = _plan_question_done()
+    submit = _submit(env.a, env.fam_a.id, files=[("photos", ("a.png", PNG_1, "image/png"))])
+    assert submit.status_code == 202, submit.text
+    assert submit.json()["runId"] == "run-1"
+    assert len(_all_media(env.db)) == 1
+    stream = env.a.get(f"/families/{env.fam_a.id}/runs/run-1/stream")
+    assert stream.status_code == 200
+    assert [name for name, _ in _parse_sse(stream.text)] == ["plan", "question", "done"]
+    assert env.a.post(f"/families/{env.fam_a.id}/runs/run-1/answer", json=ANSWER).status_code == 204
+    assert len(env.fake.started) == len(env.fake.streamed) == len(env.fake.answered) == 1
+
+
 # ------------------------------------------------------------------------------ import isolation
 
 

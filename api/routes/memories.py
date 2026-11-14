@@ -32,6 +32,13 @@ that importing this module, and serving read routes, never imports the agent pac
   `NotRunOwner(PermissionError)` 403, `RunNotWaiting(RuntimeError)` 409 NOT_WAITING, a
   ValueError (the answer does not fit the pending question) 409, and anything else,
   including the not-configured RuntimeError, 503 STUDIO_UNAVAILABLE.
+
+STITCH_AGENT=off: main.py stores the resolved agent mode on `app.state.agent_mode`
+(AGENT_OFF_STATE). When it is "off", submit answers 503 START_FAILED and stream and
+answer 503 STUDIO_UNAVAILABLE, after the membership check (so 401 and 404 come first)
+and before `agent.runs` is imported or any photo is stored, so a key in the environment
+can never start a lazy studio build. Without that attribute (a bare router, as in the
+route tests) the routes behave as described above.
 """
 
 from __future__ import annotations
@@ -45,7 +52,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import anyio
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
@@ -87,6 +94,15 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
     "Connection": "keep-alive",
 }
+
+
+AGENT_OFF_STATE = "agent_mode"
+"""The `app.state` attribute main.py sets to the resolved STITCH_AGENT mode ("off", "fake" or "real")."""
+
+
+def _agent_off(request: Request) -> bool:
+    """True when the app was started with STITCH_AGENT=off. False when the attribute is absent."""
+    return getattr(request.app.state, AGENT_OFF_STATE, None) == "off"
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -154,6 +170,7 @@ def _photo_uploads(parts: list[UploadFile | str]) -> list[UploadFile]:
     },
 )
 async def submit_memory(
+    request: Request,
     text: Annotated[str, Form()],
     year: Annotated[int, Form()],
     question: Annotated[str | None, Form()] = None,
@@ -165,6 +182,8 @@ async def submit_memory(
     db: Database = Depends(get_db),
 ) -> schemas.SubmitMemoryResponse:
     """Submit a telling (question, answer, year, photos). The author is the caller's person."""
+    if _agent_off(request):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=START_FAILED)
     fid = access.family_id
 
     # 1. Fields.
@@ -407,8 +426,14 @@ def _event_stream(agen: Any, first: Any = _END, pending: asyncio.Future | None =
         503: {"model": schemas.ErrorResponse},
     },
 )
-async def stream_run_events(run_id: str, access: FamilyAccess = Depends(family_member)) -> StreamingResponse:
+async def stream_run_events(
+    request: Request,
+    run_id: str,
+    access: FamilyAccess = Depends(family_member),
+) -> StreamingResponse:
     """Server-sent events for one run: `event: <name>` and `data: <camelCase JSON>`."""
+    if _agent_off(request):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=STUDIO_UNAVAILABLE)
     try:
         from agent.runs import stream_run
     except ImportError:
@@ -479,11 +504,14 @@ def _check_answer(body: schemas.AnswerRequest) -> None:
     },
 )
 async def answer_run_route(
+    request: Request,
     run_id: str,
     body: schemas.AnswerRequest,
     access: FamilyAccess = Depends(family_member),
 ) -> Response:
     """Answer a follow-up, confirm or edit the props, or approve a merge. Resumes the run."""
+    if _agent_off(request):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=STUDIO_UNAVAILABLE)
     _check_answer(body)
     try:
         from agent.runs import answer_run

@@ -312,6 +312,7 @@ def test_startup_survives_any_index_error(mdb, monkeypatch):
 
 _NO_AGENT_SCRIPT = textwrap.dedent(
     """
+    import os
     import sys
 
     from fastapi.testclient import TestClient
@@ -340,6 +341,23 @@ _NO_AGENT_SCRIPT = textwrap.dedent(
         photo = ok(c.get(f"/families/{FID}/media/{photo_ids[0]}"))
         assert photo.headers["content-type"].startswith("image/"), photo.headers
 
+        # STITCH_AGENT=off, even with ANTHROPIC_API_KEY set: the run routes refuse without
+        # importing the agent, and no photo is stored.
+        assert os.environ["ANTHROPIC_API_KEY"], "the parent sets a key"
+        assert c.app.state.agent_mode == "off"
+        png = b"\\x89PNG\\r\\n\\x1a\\n" + b"\\x00" * 32
+        submit = c.post(
+            f"/families/{FID}/memories",
+            data={"text": "We sang on the church steps.", "year": "1998"},
+            files=[("photos", ("steps.png", png, "image/png"))],
+        )
+        assert submit.status_code == 503, (submit.status_code, submit.text)
+        assert submit.json() == {"detail": "Could not start the studio"}
+        stream = c.get(f"/families/{FID}/runs/some-run/stream")
+        assert stream.status_code == 503, (stream.status_code, stream.text)
+        answer = c.post(f"/families/{FID}/runs/some-run/answer", json={"kind": "answer", "text": "hi"})
+        assert answer.status_code == 503, (answer.status_code, answer.text)
+
     leaked = sorted(k for k in sys.modules if k == "agent" or k.startswith("agent."))
     if leaked:
         print("agent modules imported:", leaked)
@@ -350,8 +368,14 @@ _NO_AGENT_SCRIPT = textwrap.dedent(
 
 
 def test_app_and_read_routes_never_import_agent():
+    """(f) Read routes, and the run routes under STITCH_AGENT=off with a key set, never import agent/."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("STITCH_")}
-    env.update({"STITCH_FAKE_DB": "1", "STITCH_AGENT": "off", "JWT_SECRET": os.environ["JWT_SECRET"]})
+    env.update({
+        "STITCH_FAKE_DB": "1",
+        "STITCH_AGENT": "off",
+        "ANTHROPIC_API_KEY": "sk-ant-test-not-a-key",
+        "JWT_SECRET": os.environ["JWT_SECRET"],
+    })
     proc = subprocess.run(
         [sys.executable, "-c", _NO_AGENT_SCRIPT],
         cwd=API_DIR,
@@ -524,8 +548,8 @@ def test_fake_db_default_agent_runs_the_scripted_add_a_memory_flow(monkeypatch, 
             assert found[0]["timeline"] is not None
             assert "Lily held the umbrella." in json.dumps(found[0]["tellings"])
 
-    with pytest.raises(RuntimeError):
-        agent.runs.get_manager()
+    # Cleared on shutdown. (Not get_manager(): with the key set it would build a studio.)
+    assert agent.runs._manager is None
     assert client._db_override is None
 
     lines = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
@@ -601,42 +625,12 @@ def test_agent_off_does_not_clear_a_manager_it_did_not_install(mdb, monkeypatch)
     assert agent.runs.get_manager() is sentinel
 
 
-def test_real_mode_without_configure_from_env_falls_back_to_scripted_runs(monkeypatch, caplog):
-    import agent.runs
-
-    monkeypatch.setenv("STITCH_FAKE_DB", "1")
-    monkeypatch.setenv("STITCH_FAKE_RUN_STEP", "0")
-    monkeypatch.setenv("STITCH_AGENT", "real")
-    monkeypatch.delattr(agent.runs, "configure_from_env", raising=False)
-    caplog.set_level(logging.INFO)
-    with TestClient(main.create_app()) as c:
-        assert type(agent.runs.get_manager()).__name__ == "ScriptedRunManager"
-        _login(c, SAM_EMAIL)
-        assert _submit(c).status_code == 202
-    with pytest.raises(RuntimeError):
-        agent.runs.get_manager()
-    warnings = _warnings(caplog)
-    assert any("configure_from_env" in w and "scripted" in w for w in warnings), warnings
+MODEL_STUDIO_LINE = "STITCH_AGENT=real: agent runs use the model studio"
 
 
-def test_real_mode_configure_from_env_that_raises_never_stops_startup(monkeypatch, caplog):
-    import agent.runs
+class _StubManager:
+    """Stands in for agent.production.production_manager()'s RunManager."""
 
-    def broken(_db):
-        raise RuntimeError("ANTHROPIC_API_KEY is not valid")
-
-    monkeypatch.setenv("STITCH_FAKE_DB", "1")
-    monkeypatch.setenv("STITCH_AGENT", "real")
-    monkeypatch.setattr(agent.runs, "configure_from_env", broken, raising=False)
-    caplog.set_level(logging.WARNING)
-    with TestClient(main.create_app()) as c:
-        assert c.get("/health").status_code == 200
-        assert type(agent.runs.get_manager()).__name__ == "ScriptedRunManager"
-    warnings = _warnings(caplog)
-    assert any("configure_from_env" in w and "not valid" in w for w in warnings), warnings
-
-
-class _FakeManager:
     def __init__(self) -> None:
         self.shutdowns = 0
 
@@ -644,58 +638,214 @@ class _FakeManager:
         self.shutdowns += 1
 
 
-def test_real_mode_calls_configure_from_env_once_with_the_installed_db(mdb, monkeypatch, caplog):
+def _patch_production(monkeypatch, result) -> list[dict]:
+    """Replace agent.production.production_manager; returns the list of calls (their kwargs).
+
+    `result` is returned, or raised when it is an exception.
+    """
+    import agent.production
+
+    calls: list[dict] = []
+
+    def production_manager(**kwargs):
+        calls.append(kwargs)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(agent.production, "production_manager", production_manager)
+    return calls
+
+
+def _infos(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+
+
+def test_real_mode_installs_the_production_manager_and_stops_it(mdb, monkeypatch, caplog):
+    """(a) No manager configured: startup builds agent.production.production_manager() via get_manager()."""
     import agent.runs
 
-    manager = _FakeManager()
-    calls = []
-
-    def configure_from_env(db):
-        calls.append(db)
-        agent.runs.configure(manager)
-
+    stub = _StubManager()
+    calls = _patch_production(monkeypatch, stub)
     client.set_db(mdb)
     monkeypatch.setenv("STITCH_AGENT", "real")
-    monkeypatch.setattr(agent.runs, "configure_from_env", configure_from_env, raising=False)
+    caplog.set_level(logging.INFO)
+    app = main.create_app()
+    with TestClient(app) as c:
+        assert c.get("/health").status_code == 200
+        assert agent.runs._manager is stub
+        assert agent.runs.get_manager() is stub
+        assert app.state.agent_mode == "real"
+    assert calls == [{}], "built exactly once"
+    assert stub.shutdowns == 1
+    assert agent.runs._manager is None, "shutdown clears the manager it installed"
+    assert MODEL_STUDIO_LINE in _infos(caplog)
+    assert not any("STITCH_AGENT" in w for w in _warnings(caplog)), "no fallback when the studio is built"
+
+
+def test_real_mode_default_with_a_key_builds_the_production_manager(mdb, monkeypatch, caplog):
+    import agent.runs
+
+    stub = _StubManager()
+    calls = _patch_production(monkeypatch, stub)
+    client.set_db(mdb)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    caplog.set_level(logging.INFO)
+    with TestClient(main.create_app()):
+        assert agent.runs.get_manager() is stub
+    assert calls == [{}]
+    assert stub.shutdowns == 1
+    assert MODEL_STUDIO_LINE in _infos(caplog)
+
+
+def test_real_mode_build_failure_falls_back_to_scripted_runs(monkeypatch, caplog):
+    """(b) production_manager raises: a warning with the reason, then scripted runs that work."""
+    import agent.runs
+
+    calls = _patch_production(monkeypatch, RuntimeError("no key"))
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_FAKE_RUN_STEP", "0")
+    monkeypatch.setenv("STITCH_AGENT", "real")
+    caplog.set_level(logging.INFO)
+    app = main.create_app()
+    with TestClient(app) as c:
+        assert c.get("/health").status_code == 200
+        assert type(agent.runs.get_manager()).__name__ == "ScriptedRunManager"
+        assert app.state.agent_mode == "real", "the resolved mode, not the fallback"
+        _login(c, SAM_EMAIL)
+        assert _submit(c).status_code == 202
+    assert calls == [{}]
+    assert agent.runs._manager is None
+    warnings = [w for w in _warnings(caplog) if w.startswith("STITCH_AGENT=real")]
+    assert len(warnings) == 1, _warnings(caplog)
+    assert "no key" in warnings[0] and "falling back to scripted runs" in warnings[0]
+    assert MODEL_STUDIO_LINE not in _infos(caplog)
+    assert any(line.startswith("STITCH_AGENT=fake: scripted agent runs") for line in _infos(caplog))
+
+
+def test_real_mode_without_a_key_falls_back_with_the_reason(monkeypatch, caplog):
+    """The real production build (unpatched) refuses without ANTHROPIC_API_KEY; the warning says so."""
+    import agent.runs
+
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_AGENT", "real")
+    caplog.set_level(logging.WARNING)
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+        assert type(agent.runs.get_manager()).__name__ == "ScriptedRunManager"
+    warnings = [w for w in _warnings(caplog) if w.startswith("STITCH_AGENT=real")]
+    assert len(warnings) == 1, _warnings(caplog)
+    assert "ANTHROPIC_API_KEY is not set" in warnings[0] and "falling back to scripted runs" in warnings[0]
+
+
+def test_real_mode_keeps_a_manager_configured_before_startup(mdb, monkeypatch, caplog):
+    """(c) An already configured manager is kept, production_manager is never called, and it is not stopped."""
+    import agent.runs
+
+    calls = _patch_production(monkeypatch, AssertionError("production_manager must not be called"))
+    kept = _StubManager()
+    agent.runs.configure(kept)
+    client.set_db(mdb)
+    monkeypatch.setenv("STITCH_AGENT", "real")
     caplog.set_level(logging.INFO)
     with TestClient(main.create_app()) as c:
         assert c.get("/health").status_code == 200
-        assert agent.runs.get_manager() is manager
-    assert calls == [mdb]
-    assert manager.shutdowns == 1
-    with pytest.raises(RuntimeError):
-        agent.runs.get_manager()
-    assert any(r.getMessage().startswith("STITCH_AGENT=real") for r in caplog.records)
-    assert not any("STITCH_AGENT" in w for w in _warnings(caplog)), "no fallback when the studio is configured"
+        assert agent.runs.get_manager() is kept
+    assert calls == []
+    assert kept.shutdowns == 0, "whoever configured it owns it"
+    assert agent.runs._manager is kept
+    assert any("keeping the agent run manager" in line for line in _infos(caplog))
+    assert not any("STITCH_AGENT" in w for w in _warnings(caplog))
 
 
-def test_real_mode_default_with_a_key_calls_configure_from_env(mdb, monkeypatch):
-    import agent.runs
-
-    calls = []
-
-    def configure_from_env(db):
-        calls.append(db)
-        agent.runs.configure(_FakeManager())
-
-    client.set_db(mdb)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
-    monkeypatch.setattr(agent.runs, "configure_from_env", configure_from_env, raising=False)
-    with TestClient(main.create_app()):
-        pass
-    assert calls == [mdb]
-
-
-def test_real_mode_configure_from_env_that_configures_nothing_falls_back(mdb, monkeypatch, caplog):
-    import agent.runs
-
-    client.set_db(mdb)
+def test_real_mode_import_failure_falls_back(monkeypatch, caplog):
+    monkeypatch.setitem(sys.modules, "agent.runs", None)  # importing it raises ImportError
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
     monkeypatch.setenv("STITCH_AGENT", "real")
-    monkeypatch.setattr(agent.runs, "configure_from_env", lambda db: None, raising=False)
     caplog.set_level(logging.WARNING)
-    with TestClient(main.create_app()):
-        assert type(agent.runs.get_manager()).__name__ == "ScriptedRunManager"
-    assert any("did not configure" in w for w in _warnings(caplog))
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+    warnings = _warnings(caplog)
+    assert any("cannot be imported" in w and "falling back to scripted runs" in w for w in warnings), warnings
+
+
+def test_real_mode_unpatched_build_with_a_dummy_key_installs_the_run_manager(monkeypatch, caplog):
+    """(d) The real agent.production build, with a dummy key and no other service env, makes no network call."""
+    import socket
+
+    import agent.runs
+
+    def no_network(*args, **kwargs):
+        raise AssertionError(f"network access during the studio build: {args!r}")
+
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    monkeypatch.setattr(socket, "create_connection", no_network)
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_AGENT", "real")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-a-key")
+    for name in ("IMAGE_API_KEY", "ELEVENLABS_API_KEY", "MONGODB_URI", "STITCH_WEB_URL",
+                 "STITCH_MODEL", "STITCH_SUBAGENT_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    caplog.set_level(logging.INFO)
+    with TestClient(main.create_app()) as c:
+        assert c.get("/health").status_code == 200
+        manager = agent.runs.get_manager()
+        assert type(manager) is agent.runs.RunManager, type(manager)
+    assert agent.runs._manager is None, "shutdown stops and clears the studio it built"
+    assert MODEL_STUDIO_LINE in _infos(caplog)
+    assert any("model studio" in line for line in _infos(caplog))
+    assert not any(w.startswith("STITCH_AGENT") for w in _warnings(caplog)), _warnings(caplog)
+
+
+def test_agent_off_with_a_key_is_truly_off(monkeypatch, caplog):
+    """(e) STITCH_AGENT=off beats ANTHROPIC_API_KEY: every run route is 503 and nothing is built."""
+    import agent.runs
+
+    calls = _patch_production(monkeypatch, _StubManager())
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_AGENT", "off")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-a-key")
+    caplog.set_level(logging.INFO)
+    app = main.create_app()
+    with TestClient(app) as c:
+        assert app.state.agent_mode == "off"
+        _login(c, SAM_EMAIL)
+        res = _submit(c)
+        assert res.status_code == 503
+        assert res.json() == {"detail": "Could not start the studio"}
+        stream = c.get(f"/families/{DEMO_FAMILY_ID}/runs/some-run/stream")
+        assert stream.status_code == 503
+        assert stream.json() == {"detail": "The studio is unavailable"}
+        answer = c.post(
+            f"/families/{DEMO_FAMILY_ID}/runs/some-run/answer", json={"kind": "answer", "text": "hello"}
+        )
+        assert answer.status_code == 503
+        assert answer.json() == {"detail": "The studio is unavailable"}
+        # Membership still comes first.
+        assert _submit_to(c, "someone_else").status_code == 404
+        assert c.get("/families/someone_else/runs/some-run/stream").status_code == 404
+    assert calls == [], "off never builds the studio"
+    assert agent.runs._manager is None
+    assert any(line.startswith("STITCH_AGENT=off") for line in _infos(caplog))
+
+
+def _submit_to(c: TestClient, fid: str):
+    return c.post(
+        f"/families/{fid}/memories",
+        data={"text": "x", "year": "1998"},
+        files=[("photos", ("steps.png", PNG, "image/png"))],
+    )
+
+
+@pytest.mark.parametrize("mode", ["off", "fake", "real"])
+def test_lifespan_records_the_resolved_agent_mode(mdb, monkeypatch, mode):
+    _patch_production(monkeypatch, _StubManager())
+    client.set_db(mdb)
+    monkeypatch.setenv("STITCH_AGENT", mode)
+    app = main.create_app()
+    assert not hasattr(app.state, "agent_mode"), "only set when the app starts"
+    with TestClient(app):
+        assert app.state.agent_mode == mode
 
 
 def test_agent_shutdown_errors_never_escape(mdb, monkeypatch, caplog):
@@ -705,16 +855,13 @@ def test_agent_shutdown_errors_never_escape(mdb, monkeypatch, caplog):
         def shutdown(self) -> None:
             raise RuntimeError("worker stuck")
 
+    _patch_production(monkeypatch, Stubborn())
     client.set_db(mdb)
     monkeypatch.setenv("STITCH_AGENT", "real")
-    monkeypatch.setattr(
-        agent.runs, "configure_from_env", lambda db: agent.runs.configure(Stubborn()), raising=False
-    )
     caplog.set_level(logging.WARNING)
     with TestClient(main.create_app()) as c:
         assert c.get("/health").status_code == 200
-    with pytest.raises(RuntimeError):
-        agent.runs.get_manager()
+    assert agent.runs._manager is None
     assert any("worker stuck" in w for w in _warnings(caplog))
 
 

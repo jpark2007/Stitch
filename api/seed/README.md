@@ -199,31 +199,81 @@ soon as it is answered.
 
 | Value | What runs |
 |---|---|
-| `off` | Nothing. `agent/` is never imported; adding a memory answers `503 {"detail":"Could not start the studio"}`. Everything else works. |
+| `off` | No agent at all, even when `ANTHROPIC_API_KEY` is set. `agent/` is never imported and no studio is built. Submitting a memory answers `503 {"detail":"Could not start the studio"}`; the `stream` and `answer` routes answer `503 {"detail":"The studio is unavailable"}` (after the usual 401/404 checks). Everything else works. |
 | `fake` | Scripted runs from `seed/fake_runs.py` (see [above](#add-a-memory-without-keys)): no keys, no network. Works on the in-memory database and on a real MongoDB. |
-| `real` | The model studio, built by `agent.runs.configure_from_env(db)`. |
+| `real` | The model studio: startup calls `agent.runs.get_manager()`, which builds `agent.production.production_manager()` from the environment (below) and installs it. |
 
 Unset or empty (or unknown, which also logs a warning), the default is `fake` when
 `STITCH_FAKE_DB` is on or `ANTHROPIC_API_KEY` is unset or blank, and `real` otherwise. So
 `STITCH_FAKE_DB=1` always gets scripted runs unless `STITCH_AGENT=real` says otherwise, and
-a `.env` with an Anthropic key on a real MongoDB gets the model studio.
+a `.env` with an Anthropic key on a real MongoDB gets the model studio. The mode the app
+resolved is kept on `app.state.agent_mode`.
 
 `STITCH_FAKE_RUN_STEP` is the pause between the steps of a scripted run, in seconds (a
 number >= 0, default `0.6`; anything else logs a warning and uses `0.6`).
 
-Real mode needs `configure_from_env` in `agent/runs.py`, which the agent stream provides.
-Until it exists, or if it fails (a bad key, a missing adapter) or configures nothing,
-startup logs a warning naming the reason and falls back to scripted runs, so the demo still
-works:
+### What the real studio reads
+
+`agent/production.py` picks each service from the environment when the studio is built:
+
+| Variable | Used for | When unset |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | The studio model and Claude vision (photo descriptions, frame checks). Required. | The build fails and startup falls back to scripted runs (below). |
+| `STITCH_MODEL`, `STITCH_SUBAGENT_MODEL` | Model ids for the studio and its sub-agents. | The default Claude model; sub-agents use the studio's model. |
+| `MONGODB_URI` | Run checkpoints and the agent's `/memories/` notes, on MongoDB (built with a 5 s server-selection timeout: the one network call the build makes). | In memory, so paused runs are lost on restart. Also in memory whenever `STITCH_FAKE_DB` is on. |
+| `IMAGE_API_KEY` | Generated prop and set art. | Placeholder art (no image, the prop's color). |
+| `ELEVENLABS_API_KEY` | Narration voices. | Silent placeholder audio with real timings. |
+| `STITCH_WEB_URL` | Frame checks screenshot the web app's `/render/[memoryId]` page with Playwright. | A Pillow diagram renderer. |
+
+The family data itself always goes through the API's own database, including the
+`STITCH_FAKE_DB` in-memory one. Building the studio makes no call to the model, image,
+speech or vision services; their clients connect on first use.
+
+If `agent.runs` already has a run manager when the app starts (a test or a script
+configured one), real mode keeps it, does not build another, and leaves it to its owner on
+shutdown.
+
+### Startup log lines
+
+Each mode logs one line (two for a fallback) after the `STITCH_FAKE_DB` line:
 
 ```text
-WARNING:  STITCH_AGENT=real: agent.runs has no configure_from_env() yet; falling back to scripted runs (no model calls)
+# STITCH_AGENT=off
+INFO:     STITCH_AGENT=off: no agent runs (agent/ is not loaded); adding a memory answers 503
+
+# STITCH_AGENT=fake
 INFO:     STITCH_AGENT=fake: scripted agent runs, no model calls (step 0.6s)
+
+# STITCH_AGENT=real, studio built
+INFO:     STITCH_AGENT=real: agent runs use the model studio
+
+# STITCH_AGENT=real, build failed (here: no ANTHROPIC_API_KEY); the reason is in the warning
+WARNING:  STITCH_AGENT=real: the model studio could not be built (agent runs are not configured: ANTHROPIC_API_KEY is not set; the studio needs a Claude model to run (set it in the API's environment and retry)); falling back to scripted runs (no model calls)
+INFO:     STITCH_AGENT=fake: scripted agent runs, no model calls (step 0.6s)
+
+# STITCH_AGENT=real with a manager configured before startup
+INFO:     STITCH_AGENT=real: keeping the agent run manager configured before startup
+```
+
+In real mode the build may also print its own warnings without a level prefix, such as
+`agent persistence is in memory (STITCH_FAKE_DB is set): paused runs and /memories/ notes
+are lost on restart`. Its `studio services: model=real ... renderer=diagram` summary is
+logged at INFO by the `agent.production` logger, which uvicorn's default logging does not
+show.
+
+To try each one locally without MongoDB:
+
+```sh
+cd api
+STITCH_FAKE_DB=1 STITCH_AGENT=real ANTHROPIC_API_KEY= uv run uvicorn main:app --port 8000   # fallback warning
+STITCH_FAKE_DB=1 STITCH_AGENT=off uv run uvicorn main:app --port 8000                       # submit answers 503
 ```
 
 No agent step can stop the API from starting: if even the scripted runs cannot be
 installed, startup logs a warning and the run routes answer 503. On shutdown the API stops
 the run manager it installed (runs in flight end with an error event) and clears it.
+
+Smoke-test a running API end to end: `uv run python -m seed.smoke --base-url http://localhost:8000` (see seed/smoke.py).
 
 ## Run the API on a real MongoDB
 
@@ -240,7 +290,11 @@ On startup the API creates its indexes, then tries the Atlas Vector Search index
 can stop it from starting: if MongoDB is unreachable or is not Atlas, it logs a warning and
 serves anyway (`/health` still answers), and data routes fail until the database is back.
 
-With `ANTHROPIC_API_KEY` in that `.env`, adding a memory uses the model studio
-(`STITCH_AGENT` defaults to `real`, with the fallback described in
-[Agent runs](#agent-runs-stitch_agent)); without it, or with `STITCH_AGENT=fake`, runs are
-scripted on the real database too.
+With `ANTHROPIC_API_KEY` in that `.env`, adding a memory uses the model studio:
+`STITCH_AGENT` defaults to `real`, and startup builds the studio through
+`agent.runs.get_manager()` (see [What the real studio reads](#what-the-real-studio-reads)).
+With `MONGODB_URI` set and `STITCH_FAKE_DB` off, its run checkpoints and notes also live in
+MongoDB (the API still keeps run ids in the process, so a restart ends the runs in flight).
+If the build fails, startup logs the reason and falls back to scripted runs.
+Without the key, or with `STITCH_AGENT=fake`, runs are scripted on the real database too;
+with `STITCH_AGENT=off`, adding a memory answers 503 even when the key is set.
