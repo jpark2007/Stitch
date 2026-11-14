@@ -2,8 +2,10 @@
 
 `review_scene(screenplay)` checks the storybook extras the compiler does not require.
 DESIGN.md asks the agent for more than a playable scene: storybook pageText on every shot,
-one click-to-explain text per cast member and prop, pull tabs that drive real prop parts or
-states, and narration whose words are traceable to a telling.
+one click-to-explain text per cast member and prop, at least one pull tab per memory (the
+directing skill's rule; a screenplay with no interactions, or only sliders, gets exactly one
+warning, naming the props that can move or change when their rigs are known), interactions
+that drive real prop parts or states, and narration whose words are traceable to a telling.
 
 `review_cue_drift(screenplay)` warns when a default-telling cue moves its action more than
 CUE_DRIFT_SECONDS from where it was written in a shot with camera cues after t=0: the compiler
@@ -187,16 +189,35 @@ def _review_interactions(screenplay: Screenplay, props: Mapping[str, schemas.Pro
     for it in interactions:
         out += _review_interaction(it, screenplay, shot_ids, props)
 
-    if props is not None and not interactions:
-        movable = [
-            pid for pid in dict.fromkeys(screenplay.props) if pid in props and (props[pid].parts or props[pid].states)
-        ]
-        if movable:
-            out.append(
-                f"interactions: none, but {_names(movable)} can move or change; "
-                "add a pull_tab that drives one of them (prop_part or prop_state)"
-            )
+    out += _review_pull_tab(screenplay, interactions, props)
     return out
+
+
+def _review_pull_tab(
+    screenplay: Screenplay,
+    interactions: list[Interaction],
+    props: Mapping[str, schemas.Prop] | None,
+) -> list[str]:
+    """Every memory has at least one pull_tab (the directing skill): one warning when none is
+    there, naming the props that can move or change when the rigs are known."""
+    if any(it.kind == "pull_tab" for it in interactions):
+        return []
+    have = "none" if not interactions else "only sliders"
+    movable = [
+        pid
+        for pid in dict.fromkeys(screenplay.props)
+        if props is not None and pid in props and (props[pid].parts or props[pid].states)
+    ]
+    if movable:
+        return [
+            f"interactions: {have}, but {_names(movable)} can move or change; "
+            "add a pull_tab that drives one of them (prop_part or prop_state)"
+        ]
+    problem = "no pull_tab" if not interactions else "only sliders, no pull_tab"
+    return [
+        f"interactions: {problem}; add one on the main beat of the shot list (the drop, the hand-off, "
+        "the arrival) that scrubs over that beat (drives type scrub) or moves a prop (prop_part / prop_state)"
+    ]
 
 
 # ------------------------------------------------------------------------ narration
@@ -271,7 +292,8 @@ def review_scene(screenplay: Screenplay, *, props: Mapping[str, schemas.Prop] | 
     """Warnings about missing storybook extras, one line each: '<where>: <problem>; <fix>'.
 
     `props` (prop id -> saved Prop) enables the checks that need the rig: interaction states
-    and parts must exist on the prop, and a prop with parts or states asks for a pull tab.
+    and parts must exist on the prop. A screenplay with no pull_tab gets one warning either
+    way; with the rigs, it names the props with parts or states the tab could drive.
     """
     return (
         _review_page_text(screenplay)
