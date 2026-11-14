@@ -387,6 +387,16 @@ def _populate(db, family_id: str, user_id: str) -> None:
                                                 "contentType": "image/png"}})
     db[media_db.CHUNKS].insert_many([{"files_id": file_id, "n": 0, "data": b"abc"},
                                      {"files_id": file_id, "n": 1, "data": b"def"}])
+    # Stitch Channels rows (db/contacts.py, db/conversations.py, db/question_bank.py shapes).
+    contact_id = f"contact_{family_id}"
+    db.contacts.insert_one({"_id": contact_id, "familyId": family_id, "personId": me.id, "channel": "terminal",
+                            "handle": f"handle_{family_id}", "status": "active"})
+    db.channelMessages.insert_one({"_id": f"msg_{family_id}", "familyId": family_id, "contactId": contact_id,
+                                   "kind": "inbound", "status": "received"})
+    db.conversations.insert_one({"_id": f"conv_{family_id}", "familyId": family_id, "contactId": contact_id,
+                                 "status": "draft"})
+    db.notifications.insert_one({"_id": f"note_{family_id}", "familyId": family_id, "contactId": contact_id,
+                                 "questionKey": "q1", "active": True})
 
 
 def _family_refs(db, family_id: str) -> list[str]:

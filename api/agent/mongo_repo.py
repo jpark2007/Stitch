@@ -47,8 +47,10 @@ def _same_scene_part(a: Any, b: Any) -> bool:
 
 
 def _telling_key(telling: Telling) -> tuple[Any, ...]:
-    """What makes two tellings the same, ignoring created_at (the db stamps it)."""
-    return (telling.author_id, telling.question, telling.text, tuple(telling.photo_ids))
+    """What makes two tellings the same, ignoring created_at (the db stamps it). The recording
+    and channel count, so the same words retold as a voice note still replace the old telling."""
+    return (telling.author_id, telling.question, telling.text, tuple(telling.photo_ids),
+            telling.audio_id, telling.channel)
 
 
 class MongoRepo:
