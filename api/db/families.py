@@ -6,9 +6,9 @@ Stored shape of a `families` document:
      "members": [{"userId": "...", "role": "admin", "joinedAt": datetime}],
      "invites": [{"code": "k3J9...", "createdBy": "...", "expiresAt": datetime, "revoked": False}]}
 
-Every function except `find_active_invite` is keyed by family id, so an id from another
-family simply does not match and returns None/False. Invite previews happen before
-membership, which is why `find_active_invite` is keyed by the code alone.
+Every function except `find_invite` and `find_active_invite` is keyed by family id, so an
+id from another family simply does not match and returns None/False. Invite previews
+happen before membership, which is why those two are keyed by the code alone.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from bson import ObjectId
 from pymongo.database import Database
@@ -30,6 +30,10 @@ _ROLES = ("admin", "member")
 _CODE_ATTEMPTS = 8
 _CAS_ATTEMPTS = 8
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+# Why an invite code that exists can or cannot be used. "revoked" wins over "expired" when
+# both apply: the admin's explicit action is the more useful explanation.
+InviteState = Literal["active", "expired", "revoked"]
 
 
 class LastAdmin(Exception):
@@ -81,8 +85,17 @@ def _family(doc: dict[str, Any]) -> schemas.Family:
     )
 
 
+def _invite_state(invite: dict[str, Any], now: datetime) -> InviteState:
+    """The stored invite's state at `now`. Expired means expiresAt <= now."""
+    if invite.get("revoked", False):
+        return "revoked"
+    if _aware(invite["expiresAt"]) <= now:
+        return "expired"
+    return "active"
+
+
 def _is_active(invite: dict[str, Any], now: datetime) -> bool:
-    return not invite.get("revoked", False) and _aware(invite["expiresAt"]) > now
+    return _invite_state(invite, now) == "active"
 
 
 def _other_admin(user_id: str) -> dict[str, Any]:
@@ -335,12 +348,14 @@ def list_invites(
     ]
 
 
-def find_active_invite(
+def find_invite(
     db: Database, code: str, *, now: datetime | None = None
-) -> tuple[schemas.Family, schemas.Invite] | None:
-    """Look up an invite by code alone (previews happen before membership).
+) -> tuple[schemas.Family, schemas.Invite, InviteState] | None:
+    """Look up an invite by code alone, whatever its state (previews happen before membership).
 
-    None if the code is unknown, revoked, or expired (expiresAt <= now).
+    None if the code is not a non-empty string or is unknown. Otherwise the family, the
+    invite and its state at `now`: "revoked" if an admin revoked it (even when it has also
+    expired), else "expired" if expiresAt <= now, else "active".
     """
     if not isinstance(code, str) or not code:
         return None
@@ -348,6 +363,19 @@ def find_active_invite(
     if not doc:
         return None
     invite = next((i for i in doc.get("invites", []) if i["code"] == code), None)
-    if invite is None or not _is_active(invite, _now(now)):
+    if invite is None:
         return None
-    return _family(doc), _invite(invite)
+    return _family(doc), _invite(invite), _invite_state(invite, _now(now))
+
+
+def find_active_invite(
+    db: Database, code: str, *, now: datetime | None = None
+) -> tuple[schemas.Family, schemas.Invite] | None:
+    """Look up a usable invite by code alone (previews happen before membership).
+
+    None if the code is unknown, revoked, or expired (expiresAt <= now).
+    """
+    found = find_invite(db, code, now=now)
+    if found is None or found[2] != "active":
+        return None
+    return found[0], found[1]

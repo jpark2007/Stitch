@@ -288,6 +288,86 @@ def test_find_active_invite_unknown(mdb):
     assert fam.find_active_invite(mdb, "", now=T0) is None
 
 
+def test_find_invite_states(mdb):
+    fid = _family_with(mdb)
+    inv = fam.create_invite(mdb, fid, "u_admin", now=T0)
+    expires = T0 + timedelta(days=fam.INVITE_DAYS)
+
+    found = fam.find_invite(mdb, inv.code, now=expires - timedelta(seconds=1))
+    assert found is not None
+    family, invite, state = found
+    assert (family.id, family.name, invite, state) == (fid, "The Maos", inv, "active")
+    # The exact boundary is expired, the same rule as find_active_invite (expiresAt <= now).
+    assert fam.find_invite(mdb, inv.code, now=expires)[2] == "expired"
+    assert fam.find_active_invite(mdb, inv.code, now=expires) is None
+    assert fam.find_invite(mdb, inv.code, now=expires + timedelta(days=1))[2] == "expired"
+
+    assert fam.revoke_invite(mdb, fid, inv.code)
+    revoked = fam.find_invite(mdb, inv.code, now=T0)
+    assert revoked[2] == "revoked" and revoked[1].revoked is True
+    # Revoked and expired: the admin's revocation is the answer.
+    assert fam.find_invite(mdb, inv.code, now=expires + timedelta(days=1))[2] == "revoked"
+
+
+def test_find_invite_unknown_or_bad_code_is_none(mdb):
+    fid = _family_with(mdb)
+    fam.create_invite(mdb, fid, "u_admin", now=T0)
+    for code in ("unknown", "", None, 123, ["x"]):
+        assert fam.find_invite(mdb, code, now=T0) is None  # type: ignore[arg-type]
+        assert fam.find_active_invite(mdb, code, now=T0) is None  # type: ignore[arg-type]
+
+
+def test_find_invite_picks_the_right_invite_of_a_family(mdb):
+    fid = _family_with(mdb)
+    old = fam.create_invite(mdb, fid, "u_admin", now=T0)
+    fresh = fam.create_invite(mdb, fid, "u_admin", now=T0 + timedelta(days=10))
+    gone = fam.create_invite(mdb, fid, "u_admin", now=T0 + timedelta(days=10))
+    fam.revoke_invite(mdb, fid, gone.code)
+    now = T0 + timedelta(days=15)
+    assert {c: fam.find_invite(mdb, c, now=now)[2] for c in (old.code, fresh.code, gone.code)} == {
+        old.code: "expired",
+        fresh.code: "active",
+        gone.code: "revoked",
+    }
+    family, invite = fam.find_active_invite(mdb, fresh.code, now=now)
+    assert family.id == fid and invite == fresh
+
+
+def test_find_invite_without_a_revoked_field_is_active(mdb):
+    """A hand-written or older invite document with no `revoked` key is not revoked."""
+    fid = _family_with(mdb)
+    mdb.families.update_one(
+        {"_id": fid},
+        {"$push": {"invites": {"code": "legacy-code-0123", "createdBy": "u_admin", "expiresAt": T0 + timedelta(days=1)}}},
+    )
+    assert fam.find_invite(mdb, "legacy-code-0123", now=T0)[2] == "active"
+    assert fam.find_invite(mdb, "legacy-code-0123", now=T0 + timedelta(days=1))[2] == "expired"
+
+
+def test_find_invite_naive_expires_at_and_naive_now():
+    db = mongomock.MongoClient()["stitch_naive"]  # not tz_aware: returns naive datetimes
+    fam.create_family(db, name="N", creator_user_id="u1", family_id="fam_n", now=T0)
+    inv = fam.create_invite(db, "fam_n", "u1", now=T0)
+    stored = db.families.find_one({"_id": "fam_n"})["invites"][0]["expiresAt"]
+    assert stored.tzinfo is None  # the naive read is real here
+    expires = T0 + timedelta(days=fam.INVITE_DAYS)
+    assert fam.find_invite(db, inv.code, now=expires - timedelta(seconds=1))[2] == "active"
+    assert fam.find_invite(db, inv.code, now=expires)[2] == "expired"
+    assert fam.find_invite(db, inv.code, now=expires.replace(tzinfo=None))[2] == "expired"  # naive now
+    _, invite, _ = fam.find_invite(db, inv.code, now=T0)
+    assert invite.expires_at.tzinfo is not None
+    fam.revoke_invite(db, "fam_n", inv.code)
+    assert fam.find_invite(db, inv.code, now=expires)[2] == "revoked"
+
+
+def test_find_invite_default_now_is_the_real_clock(mdb):
+    fid = _family_with(mdb)
+    fresh = fam.create_invite(mdb, fid, "u_admin")
+    stale = fam.create_invite(mdb, fid, "u_admin", now=datetime.now(UTC) - timedelta(days=fam.INVITE_DAYS + 1))
+    assert fam.find_invite(mdb, fresh.code)[2] == "active"
+    assert fam.find_invite(mdb, stale.code)[2] == "expired"
+
+
 def test_list_invites(mdb):
     fid = _family_with(mdb)
     fresh = fam.create_invite(mdb, fid, "u_admin", now=T0 + timedelta(days=10))
@@ -336,6 +416,18 @@ def test_naive_datetimes_are_treated_as_utc():
 
 
 # ---------------------------------------------------------------------------- real Mongo
+
+def test_real_db_find_invite_states(real_db):
+    """Skips without MONGODB_URI_TEST: the three states and the boundary on a real server."""
+    f = fam.create_family(real_db, name="Real", creator_user_id="u_admin", now=T0)
+    inv = fam.create_invite(real_db, f.id, "u_admin", now=T0)
+    expires = T0 + timedelta(days=fam.INVITE_DAYS)
+    assert fam.find_invite(real_db, inv.code, now=expires - timedelta(seconds=1))[2] == "active"
+    assert fam.find_invite(real_db, inv.code, now=expires)[2] == "expired"
+    assert fam.revoke_invite(real_db, f.id, inv.code)
+    assert fam.find_invite(real_db, inv.code, now=expires)[2] == "revoked"
+    assert fam.find_invite(real_db, "no-such-code", now=T0) is None
+
 
 def test_real_db_invite_flow(real_db):
     f = fam.create_family(real_db, name="Real", creator_user_id="u_admin", now=T0)
