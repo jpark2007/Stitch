@@ -117,12 +117,28 @@ def test_disabled_even_when_mounted(stack, monkeypatch, flag):
     assert db.channelMessages.count_documents({}) == 0
 
 
-@pytest.mark.parametrize("secret", ["", "short"])
-def test_missing_or_short_secret_fails_closed(stack, monkeypatch, secret):
+@pytest.mark.parametrize("secret", [
+    "", "short", "x" * 31, "é" * 15 + "x", " " * 32, "\t" * 40,
+    "\n" * 40, "\u2003" * 32, " " + SECRET, SECRET + " ",
+    "\t" + SECRET, SECRET + "\n", SECRET + "\r\n", "\u00a0" + SECRET,
+    "\ufeff" + SECRET, SECRET + "\ufeff", "\u0085" + SECRET, SECRET + "\u001c",
+])
+def test_invalid_configured_secret_fails_closed_before_storage(stack, monkeypatch, secret):
     client, db = stack
     monkeypatch.setenv("CHANNELS_SHARED_SECRET", secret)
-    assert send(client).status_code == 503
+    monkeypatch.setattr(db_client, "get_db", lambda: pytest.fail("invalid config reached storage"))
+    response = send(client, secret=secret)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Channels is not configured"}
     assert db.channelMessages.count_documents({}) == 0
+
+
+@pytest.mark.parametrize("secret", ["x" * 32, "é" * 16, "x" * 16 + " " + "y" * 16])
+def test_valid_configured_secret_uses_exact_utf8_bytes(stack, monkeypatch, secret):
+    client, db = stack
+    monkeypatch.setenv("CHANNELS_SHARED_SECRET", secret)
+    assert send(client, secret=secret).status_code == 202
+    assert db.channelMessages.count_documents({"kind": "inbound"}) == 1
 
 
 @pytest.mark.parametrize("offset", [-301, 301])
