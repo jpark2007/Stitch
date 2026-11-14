@@ -203,14 +203,20 @@ function smoother(x: number): number {
   return u * u * u * (u * (u * 6 - 15) + 10);
 }
 
-/** Where a thread rests between knots a and b, and how long each swing takes. */
+/**
+ * Between knots a and b a thread either goes home to its lane (when there
+ * is room for both swings) or runs straight from one to the other. `w`
+ * blends the two smoothly, so nothing pops while zooming.
+ */
 function between(a: Anchor, b: Anchor, lane: number, sh: Shape) {
   const D = b.t - a.t;
   const L1 = swing(a.y - lane, sh);
   const L2 = swing(b.y - lane, sh);
   const f = Math.min(1, D / (L1 + L2));
-  const mid = (a.y + b.y) / 2;
-  return { D, rest: mid + (lane - mid) * f * f, l1: L1 * f, l2: L2 * f };
+  const w = smoother((f - 0.55) / 0.45);
+  const home = Math.abs(lane - a.y) + Math.abs(b.y - lane);
+  const direct = Math.abs(b.y - a.y);
+  return { D, w, l1: L1 * f, l2: L2 * f, travel: direct + (home - direct) * w };
 }
 
 export interface StrandSample {
@@ -253,8 +259,7 @@ export function strandAt(st: Strand, t: number, sh: Shape): StrandSample {
   let travel = preRise;
   let i = 0;
   while (i < n - 1 && A[i + 1].t <= t) {
-    const seg = between(A[i], A[i + 1], lane, sh);
-    travel += Math.abs(seg.rest - A[i].y) + Math.abs(A[i + 1].y - seg.rest);
+    travel += between(A[i], A[i + 1], lane, sh).travel;
     i++;
   }
   if (i === n - 1) {
@@ -268,20 +273,29 @@ export function strandAt(st: Strand, t: number, sh: Shape): StrandSample {
   }
   const a = A[i];
   const b = A[i + 1];
-  const { D, rest, l1, l2 } = between(a, b, lane, sh);
+  const { D, w, l1, l2 } = between(a, b, lane, sh);
   const u = t - a.t;
+  // Straight from a to b.
+  const kd = smoother(u / D);
+  const yDirect = a.y + (b.y - a.y) * kd;
+  const tDirect = Math.abs(b.y - a.y) * kd;
+  // Home to the lane and out again.
+  let yHome: number;
+  let tHome: number;
   if (u < l1) {
     const k = smoother(u / l1);
-    sample.y = a.y + (rest - a.y) * k;
-    sample.travel = travel + Math.abs(rest - a.y) * k;
+    yHome = a.y + (lane - a.y) * k;
+    tHome = Math.abs(lane - a.y) * k;
   } else if (u > D - l2) {
     const k = smoother((u - (D - l2)) / l2);
-    sample.y = rest + (b.y - rest) * k;
-    sample.travel = travel + Math.abs(rest - a.y) + Math.abs(b.y - rest) * k;
+    yHome = lane + (b.y - lane) * k;
+    tHome = Math.abs(lane - a.y) + Math.abs(b.y - lane) * k;
   } else {
-    sample.y = rest;
-    sample.travel = travel + Math.abs(rest - a.y);
+    yHome = lane;
+    tHome = Math.abs(lane - a.y);
   }
+  sample.y = yDirect + (yHome - yDirect) * w;
+  sample.travel = travel + tDirect + (tHome - tDirect) * w;
   return sample;
 }
 
