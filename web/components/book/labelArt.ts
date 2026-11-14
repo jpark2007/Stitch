@@ -449,12 +449,12 @@ function splitInTwo(text: string): string[] {
 
 /**
  * The lever's top face, the whole strip (`w` × `h` px, the grip end at the
- * right; `shown` px of it at the right stick out of the slit at rest): cream
- * card stitched round its edge in thread, folded back on itself at the grip
- * (the fold shows as a crease and the card's red back), with two chevrons
- * pointing the way it pulls.
+ * right, `fold` px of it folded back; the strip is `cardPx` page px wide):
+ * cream card stitched along its edges in thread, folded back on itself at
+ * the grip (the fold shows as a crease and the card's red back), with two
+ * chevrons pointing the way it pulls.
  */
-export function drawLeverFace(w: number, h: number, shown: number, fold: number, seed: number, cardPx: number): HTMLCanvasElement {
+export function drawLeverFace(w: number, h: number, fold: number, seed: number, cardPx: number): HTMLCanvasElement {
   const { c, ctx } = canvas(w, h);
   const r = rng(seed);
   // Canvas px per page px, so thread and grain print at the page's own scale.
@@ -484,9 +484,10 @@ export function drawLeverFace(w: number, h: number, shown: number, fold: number,
   ctx.fillRect(fx + 2.5 * u, 0, 1.2 * u, h);
 
   // Running stitch round the card, in the book's red thread: along both
-  // long edges from inside the slit to the crease.
+  // long edges, all the way from the end inside the slit to the crease, so
+  // a full pull shows stitching all along.
   const inset = Math.round(h * 0.17);
-  const x0 = w - shown - 40 * u;
+  const x0 = 10 * u;
   const thread = "rgba(185,87,61,0.9)";
   drawStitchLine(ctx, x0, inset, fx - 9 * u, inset, thread, 2.4 * u, 9 * u, 6 * u);
   drawStitchLine(ctx, x0, h - inset, fx - 9 * u, h - inset, thread, 2.4 * u, 9 * u, 6 * u);

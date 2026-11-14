@@ -135,7 +135,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     // The face covers the whole strip, so a pulled card shows card, not a smear.
     const pxPerUnit = 1024 / total;
     const face = new CanvasTexture(
-      drawLeverFace(1024, Math.round(geo.width * pxPerUnit), geo.length * pxPerUnit, FOLD * pxPerUnit, 7, geo.width / PX),
+      drawLeverFace(1024, Math.round(geo.width * pxPerUnit), FOLD * pxPerUnit, 7, geo.width / PX),
     );
     face.colorSpace = SRGBColorSpace;
     face.anisotropy = 8;
@@ -190,6 +190,8 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     nudgeT0: -1,
     nudgedEarly: false,
     nudgedEnd: false,
+    /** The value a hold from elsewhere (the keyboard) has it at, or null; kept from the player's status. */
+    external: null as number | null,
     lastY: Number.NaN,
     /** Lets the book have the pointer back (set while held). */
     release: () => {},
@@ -197,18 +199,25 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
 
   const inShot = () => !shot || controller.frame.shot?.id == null || controller.frame.shot.id === shot;
 
-  // The scene ending invites a pull, if it has not been pulled yet.
+  // Every hold emits a status, so the player's status says when the
+  // keyboard holds the tab (read here, not every frame). And the scene
+  // ending invites a pull, if it has not been pulled yet.
   useEffect(
     () =>
       controller.subscribe(() => {
         const s = st.current;
+        const external = controller.heldValue(tab.id);
+        if (external !== s.external) {
+          s.external = external;
+          invalidate();
+        }
         if (controller.getStatus().ended && !s.nudgedEnd && !s.pulled && !s.held) {
           s.nudgedEnd = true;
           s.nudgeT0 = performance.now();
           invalidate();
         }
       }),
-    [controller, invalidate],
+    [controller, invalidate, tab.id],
   );
 
   const tmp = useMemo(
@@ -237,7 +246,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     let moving = false;
 
     // A hold from elsewhere (the keyboard's slider): follow it.
-    const external = s.held ? null : controller.heldValue(tab.id);
+    const external = s.held ? null : s.external;
     if (external !== null) {
       if (external !== s.value) moving = true;
       s.value = external;
