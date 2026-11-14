@@ -590,7 +590,10 @@ def _standing_surface_y(world: World, who: str) -> float:
 
 def apply_drop(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Let go: the prop falls to the dropper's standing surface (under the seat when seated),
-    DROP_OFFSET in front of the feet."""
+    DROP_OFFSET in front of the feet, but never past the stage edge: the landing x is clamped
+    to [-STAGE_EDGE, STAGE_EDGE] (B.drop_keys' ``edge``), so a puppet at the edge facing out
+    drops the prop on stage and can pick it up again. The final position key and the world's
+    landing are the same clamped point; the fall still starts at the hand."""
     who = _who(world, action)
     what = _what(world, action)
     arm = arm_of_hand(world.hold(who, what))  # validation: who must hold it in a hand
@@ -598,8 +601,9 @@ def apply_drop(world: World, tracks: TrackSet, action: Action, t: float, action_
     keys, landing = B.drop_keys(
         body_at(world, tracks, who, t), t, arm_at(tracks, who, arm, t),
         B.PropGeom.from_prop(world.catalog[what]), surface_y=_standing_surface_y(world, who), z=z, arm=arm,
+        edge=STAGE_EDGE,
     )
-    world.drop(who, what, landing)
+    world.drop(who, what, landing)  # the same clamped landing as the final position key
     tracks.extend(keys)
     return t + B.FALL_SECONDS
 

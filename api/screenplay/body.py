@@ -382,16 +382,33 @@ def pick_up_keys(
 
 
 def drop_keys(
-    body: Body, t: float, current_arm: Vec2, prop: PropGeom, surface_y: float, z: float, arm: str = "arm_r"
+    body: Body,
+    t: float,
+    current_arm: Vec2,
+    prop: PropGeom,
+    surface_y: float,
+    z: float,
+    arm: str = "arm_r",
+    edge: float | None = None,
 ) -> tuple[list[Key], Vec3]:
     """Let go: the prop falls from the hand to the ground beside the feet; the arm drops to rest.
 
-    Returns the keys and the landing anchor position (ground.x + 0.08 * facing, surface_y, z).
+    Returns the keys and the landing anchor position (ground.x + DROP_OFFSET * facing,
+    surface_y, z). With ``edge`` (the stage edge, verbs_core.STAGE_EDGE, which the verbs pass;
+    body.py cannot import it from screenplay.effects without an import cycle through
+    state -> character -> body), the landing x is clamped to [-edge, edge], so a puppet standing
+    at the edge and facing out drops the prop on stage, where a later pick_up finds it. The fall
+    starts at the hand either way; only the landing (the final position key at
+    t + FALL_SECONDS, and the returned landing) moves. A landing already within the edge is
+    unchanged.
     """
     upper, lower = arm_bones(arm)
     hand = body_socket(body, arm_socket(arm), {upper: current_arm[0], lower: current_arm[1]})
     start = anchor_from_grip(prop, hand)
-    landing: Vec3 = (body.ground[0] + DROP_OFFSET * body.facing, float(surface_y), float(z))
+    x = body.ground[0] + DROP_OFFSET * body.facing
+    if edge is not None:
+        x = min(max(x, -edge), edge)
+    landing: Vec3 = (x, float(surface_y), float(z))
     keys = _arm_keys(body.id, arm, t, current_arm) + _arm_keys(body.id, arm, t + FALL_SECONDS, REST_ARM)
     keys += _attach_keys(prop.id, t, "ground", (start[0], start[1], z))
     keys.append((_prop(prop.id), "position", t + FALL_SECONDS, list(landing)))
