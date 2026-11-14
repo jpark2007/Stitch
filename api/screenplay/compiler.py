@@ -24,6 +24,16 @@ prop reads it as of its own time. A shot's end covers every effect: an effect co
 at ``t + dur`` (rain with no ``dur`` at its start, and it then lasts until the shot's end, its
 outgoing fold included). ``Timeline.effects`` is ordered by (t, shot, action index).
 
+Foot planting (shared/CONTRACTS.md Clarifications 1): after the last shot, and before the
+tracks are written, ``planting.plant_feet`` lowers ``root.position.y`` at every walk and run cycle
+key (the PLANT_CHANNEL markers motion.locomotion_keys leaves: walk_to, run_to, enter, exit, follow
+and every walk inside another verb) so the lowest foot is on the standing surface, and the
+Timeline gets ``feetPlanted = true``. That flag goes on every compiled timeline, walks or not: it
+tells the stage not to plant. Every handler reads the unplanted root (planting is a post-pass),
+so planting changes only root y at marker times. ``compile(..., plant_feet=False)`` skips it and
+gives exactly the unplanted timeline, ``feetPlanted`` absent (the hymn_books golden test compares
+that way, since the reference sample is not planted).
+
 It never raises for a bad screenplay, and the same input gives byte-identical JSON.
 
 Schedule order within a shot (``_schedule``): the earliest runnable action, by (retimed t, list
@@ -80,7 +90,7 @@ from itertools import pairwise
 
 import schemas
 import screenplay as _pkg
-from screenplay import body, character, effects, ik, layout, motion, verbs_core
+from screenplay import body, character, effects, ik, layout, motion, planting, verbs_core
 from screenplay import camera as camera_mod
 from screenplay import errors as E
 from screenplay import narration as N
@@ -769,8 +779,15 @@ def compile(
     sets: Mapping[str, schemas.SetDef],
     props: Mapping[str, schemas.Prop],
     people: Mapping[str, schemas.Person],
+    plant_feet: bool = True,
 ) -> CompileResult:
-    """Compile a screenplay into a timeline. Never raises for a bad screenplay."""
+    """Compile a screenplay into a timeline. Never raises for a bad screenplay.
+
+    ``plant_feet`` (default True): lower root.position.y at every walk / run cycle key so the
+    lowest foot stays on the standing surface (planting.plant_feet), and set the Timeline's
+    ``feet_planted`` to True, on every timeline, so the stage does not plant again. False leaves
+    the root unplanted and ``feet_planted`` None: the output is then byte-identical to the
+    compiler before planting existed (the hymn_books reference sample is unplanted)."""
     sp = screenplay
     static = validate(sp, sets, props, people)
     if static:  # fix these first: simulating an invalid screenplay only adds knock-on errors
@@ -911,6 +928,8 @@ def compile(
 
     if errors:
         return CompileResult(ok=False, errors=errors.sorted())
+    if plant_feet:
+        planting.plant_feet(tracks, {who: p.build for who, p in world.people.items()})
     timeline = Timeline(
         duration=timeline_shots[-1].end,
         audio=None,
@@ -922,6 +941,9 @@ def compile(
         default_narrator=default,
         interactions=interactions,
         explanations=explanations,
+        # Only passed when planting, so an unplanted timeline is exactly as before (not even
+        # marked as set, for model_dump(exclude_unset=True)).
+        **({"feet_planted": True} if plant_feet else {}),
     )
     return CompileResult(ok=True, timeline=timeline)
 

@@ -10,6 +10,12 @@ Rounding and de-duplication match api/tests/gen_hymn_books_sample.py: every floa
 inside lists) is rounded to 3 dp, ints are not touched by rounding (the Track model itself stores
 numbers as floats, so facing 1 / -1 comes out as 1.0 / -1.0, equal in value), keys are stable-sorted by t and a key is
 dropped only when it equals the previous key exactly.
+
+Foot-planting markers: a key on the pseudo-channel PLANT_CHANNEL ("_plant") is not a track.
+motion.locomotion_keys emits one, valued "walk" or "run", at every walk or run cycle key time, and
+TrackSet.add files it apart from the real keys: it never shows in tracks(), has_track(),
+value_at() or last_key_time(). planting.plant_feet reads the times back with plant_times() and
+lowers root.position there (shared/CONTRACTS.md Clarifications 1).
 """
 
 from __future__ import annotations
@@ -25,6 +31,8 @@ Key = tuple[str, str, float, Any]
 """(target, channel, t, value) as accepted by TrackSet.extend."""
 
 STEP_CHANNELS = frozenset({"root.facing", "parent", "state"})
+PLANT_CHANNEL = "_plant"
+"""Pseudo-channel of the foot-planting markers (module docstring). Never written to a Timeline."""
 DECIMALS = 3
 
 
@@ -89,16 +97,48 @@ class TrackSet:
 
     def __init__(self) -> None:
         self._raw: dict[tuple[str, str], list[tuple[float, Any]]] = {}
+        self._plant: dict[str, list[float]] = {}  # target -> PLANT_CHANNEL marker times
 
     def add(self, target: str, channel: str, t: float, value: Any) -> None:
         if isinstance(t, bool) or not isinstance(t, (int, float)):
             raise TypeError(f"key time must be a number: {t!r}")
         round_value(value)  # type check early, so the bad key is reported where it was added
+        if channel == PLANT_CHANNEL:
+            self._plant.setdefault(target, []).append(t)
+            return
         self._raw.setdefault((target, channel), []).append((t, value))
 
     def extend(self, keys: Iterable[Key]) -> None:
         for target, channel, t, value in keys:
             self.add(target, channel, t, value)
+
+    def plant_times(self, target: str) -> list[float]:
+        """The PLANT_CHANNEL marker times of ``target``, rounded like key times (3 dp), sorted
+        and unique. Empty when it never walked or ran."""
+        return sorted({round_value(float(t)) for t in self._plant.get(target, ())})
+
+    def plant_targets(self) -> list[str]:
+        """Every target with at least one PLANT_CHANNEL marker, sorted."""
+        return sorted(t for t, times in self._plant.items() if times)
+
+    def raw_keys(self, target: str, channel: str) -> list[tuple[float, Any]]:
+        """A copy of one track's keys as added (unrounded, insertion order); empty if none."""
+        return list(self._raw.get((target, channel), ()))
+
+    def replace_keys(self, target: str, channel: str, keys: Iterable[tuple[float, Any]]) -> None:
+        """Replace one track's keys with ``keys`` (insertion order kept; tracks() sorts them by
+        time, stably). An empty list removes the track. Not for PLANT_CHANNEL."""
+        if channel == PLANT_CHANNEL:
+            raise ValueError(f"{PLANT_CHANNEL} holds markers, not keys")
+        new = list(keys)
+        for t, value in new:
+            if isinstance(t, bool) or not isinstance(t, (int, float)):
+                raise TypeError(f"key time must be a number: {t!r}")
+            round_value(value)
+        if new:
+            self._raw[(target, channel)] = new
+        else:
+            self._raw.pop((target, channel), None)
 
     def has_track(self, target: str, channel: str) -> bool:
         return bool(self._raw.get((target, channel)))

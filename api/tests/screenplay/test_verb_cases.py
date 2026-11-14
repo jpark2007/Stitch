@@ -246,3 +246,20 @@ def test_the_source_comment_check_catches_a_missing_comment():
         "]\n"
     )
     assert _dynamic_calls_without_source_comment(src) == [6]
+
+
+# ------------------------------------------------------------------- foot planting
+
+@pytest.mark.parametrize("case", OK, ids=ids(OK))
+def test_every_ok_case_compiles_planted_with_its_feet_on_the_surface(case):
+    """compile() plants by default (feetPlanted true); against plant_feet=False only puppet root
+    y changes, and only so the lowest foot is on the surface at walk / run cycle keys."""
+    from screenplay.compiler import compile as compile_screenplay
+    from test_foot_planting import planting_problems
+
+    sc = case.scene
+    planted = compile_screenplay(case.screenplay, sets=sc.sets, props=sc.props, people=sc.people)
+    unplanted = compile_screenplay(case.screenplay, sets=sc.sets, props=sc.props, people=sc.people, plant_feet=False)
+    assert planted.ok and unplanted.ok, [e.message for e in planted.errors + unplanted.errors]
+    builds = {pid: p.character.build for pid, p in sc.people.items()}
+    assert planting_problems(planted.timeline, unplanted.timeline, builds) == []

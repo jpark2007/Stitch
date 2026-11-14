@@ -47,8 +47,8 @@ STOVE, TABLE = [-0.5, 0.0, 0.5], [0.2, 0.0, 0.5]
 OFFSTAGE_LEFT = [-1.3, 0.0, 0.5]
 
 
-def run(data: dict) -> CompileResult:
-    return compile_screenplay(Screenplay.model_validate(data), sets=SETS, props=PROPS, people=PEOPLE)
+def run(data: dict, **kw) -> CompileResult:
+    return compile_screenplay(Screenplay.model_validate(data), sets=SETS, props=PROPS, people=PEOPLE, **kw)
 
 
 def screenplay(*shots: dict, **extra) -> dict:
@@ -83,7 +83,7 @@ def test_two_shots_on_the_same_set_carry_held_props_and_positions():
          "actions": [{"t": 0, "who": "ann", "do": "walk_to", "to": "mid"}]},
         {"id": "s2", "set": "porch",
          "actions": [{"t": 0.5, "who": "ann", "do": "walk_to", "to": "door"}]},
-    ))
+    ), plant_feet=False)  # exact root keys: foot planting adds keys at cycle times (test_foot_planting.py)
     assert res.ok, messages(res)
     s1, s2 = res.timeline.shots
     # no fold between same-set shots, and no second rise: each layer only rises once

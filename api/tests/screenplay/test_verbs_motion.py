@@ -414,8 +414,11 @@ IN_SEDAN = {"in": "sedan.driver"}
 
 
 def compile_case(sp):
+    """Compiled unplanted: these tests check the follower's path is at standing-surface height
+    (y 0 on the street), and foot planting lowers the root below it at walk cycle keys
+    (test_foot_planting.py checks the feet stay on that surface)."""
     scene = base_scene()
-    res = compile_screenplay(sp, sets=scene.sets, props=scene.props, people=scene.people)
+    res = compile_screenplay(sp, sets=scene.sets, props=scene.props, people=scene.people, plant_feet=False)
     assert res.ok, [e.message for e in res.errors]
     return res.timeline
 

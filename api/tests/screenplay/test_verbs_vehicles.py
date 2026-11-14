@@ -16,7 +16,7 @@ from screenplay.compiler import compile as compile_screenplay
 from screenplay.ik import RIG, scale
 from screenplay.schema import Action, Shot
 from screenplay.state import StateError, World
-from screenplay.tracks import TrackSet
+from screenplay.tracks import PLANT_CHANNEL, TrackSet
 from screenplay.verbs_vehicles import HANDLERS, WHEEL_RADIUS_FRACTION
 from verb_cases import SEDAN_CURB, _a, _at, _one, base_scene
 
@@ -58,7 +58,8 @@ ACTIVITY = {"get_in": "getting in", "get_out": "getting out", "drive_to": "drivi
 
 
 class RecordingTracks(TrackSet):
-    """A TrackSet that also keeps every raw (unrounded) key, for exact checks."""
+    """A TrackSet that also keeps every raw (unrounded) key, for exact checks. Foot-planting
+    markers (PLANT_CHANNEL) are not keys, so they are not recorded; plant_times has them."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -66,7 +67,8 @@ class RecordingTracks(TrackSet):
 
     def add(self, target, channel, t, value):  # noqa: ANN001
         super().add(target, channel, t, value)
-        self.raw.append((target, channel, t, value))
+        if channel != PLANT_CHANNEL:
+            self.raw.append((target, channel, t, value))
 
 
 def make_world(start: dict | None = None, prop_start: dict | None = None,
@@ -760,7 +762,9 @@ def test_get_in_compiled_after_a_kneel_stands_first():
     sc = base_scene()
     sp = _one(_a(0, "kneel", who="dad"), _a(1, "get_in", who="dad", what="sedan"),
               start={"dad": _at("door")}, prop_start=SEDAN_CURB)
-    res = compile_screenplay(sp, sets=sc.sets, props=sc.props, people=sc.people)
+    # unplanted: no root key under the ground once up (planting lowers the walk to the door's
+    # cycle keys; test_foot_planting.py checks those feet are on the ground)
+    res = compile_screenplay(sp, sets=sc.sets, props=sc.props, people=sc.people, plant_feet=False)
     assert res.ok, res.errors
     tl = res.timeline
     t_up = tl.shots[0].action_start + 1.0 + POSE_SECONDS
@@ -823,6 +827,10 @@ def test_standing_empty_handed_get_in_and_get_out_keys_are_unchanged():
     world = make_world()
     run(world, tracks, 0.0, do="get_in", who="kid", what="car", socket="passenger")  # walks to the door
     assert _digest(tracks.raw) == (125, "8c9962b5e34611b79bc20e44f14135becbe03d963ceed983f531eb4c2bc9c442")
+    # the walk to the door marks its cycle keys for foot planting
+    leg_times = {round(t, 3) for tg, ch, t, _ in tracks.raw if (tg, ch) == ("puppet:kid", "leg_l.upper.rot")}
+    marks = tracks.plant_times("puppet:kid")
+    assert marks and set(marks) < leg_times
 
     tracks = RecordingTracks()
     world = make_world()

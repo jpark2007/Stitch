@@ -573,7 +573,9 @@ def _compiled_dad_root_keys(*actions: dict) -> list:
     scene = base_scene()
     sp = _one(_a(0, "kneel", who="mom"), _a(2, "hug", who="dad", target="mom"), *actions,
               start={"dad": _at("door"), "mom": _at("curb")})
-    result = compile(sp, sets=scene.sets, props=scene.props, people=scene.people)
+    # unplanted: the walk-up's surface height is the point here (planting lowers the root at
+    # walk cycle keys; test_foot_planting.py checks the hug walk-up's feet stay on the ground)
+    result = compile(sp, sets=scene.sets, props=scene.props, people=scene.people, plant_feet=False)
     assert result.ok, result.errors
     assert result.timeline is not None
     tracks = {(tr.target, tr.channel): [list(k) for k in tr.keys] for tr in result.timeline.tracks}

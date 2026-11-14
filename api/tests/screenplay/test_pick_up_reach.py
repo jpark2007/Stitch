@@ -26,7 +26,7 @@ BUILDS = list(VOCABULARY["builds"])  # small, short, average, tall
 CAST_BUILDS = {"dad": "tall", "mom": "average", "kid": "small"}
 
 
-def compile_one(actions, start, prop_start=None, marks=None, build=None):
+def compile_one(actions, start, prop_start=None, marks=None, build=None, plant_feet=True):
     """One shot on the yard. ``build`` re-casts dad in that build."""
     sp = Screenplay.model_validate({
         "memoryId": "m", "cast": ["dad", "mom", "kid"], "props": ["hymn_books", "cap", "chair", "table"],
@@ -37,7 +37,7 @@ def compile_one(actions, start, prop_start=None, marks=None, build=None):
     if build is not None:
         dad = sc.people["dad"]
         sc.people["dad"] = dad.model_copy(update={"character": dad.character.model_copy(update={"build": build})})
-    return compile_screenplay(sp, sets=sc.sets, props=sc.props, people=sc.people)
+    return compile_screenplay(sp, sets=sc.sets, props=sc.props, people=sc.people, plant_feet=plant_feet)
 
 
 def track(res, target, channel):
@@ -249,8 +249,9 @@ MAIN_SNAPSHOT = {
 @pytest.mark.parametrize("who", ["dad", "mom", "kid"])
 def test_the_walk_up_from_the_curb_with_free_hands_is_unchanged(who):
     """It compiled before the fix: the same keys, the same duration (MAIN_SNAPSHOT is those
-    tracks as origin/main 7baa415 compiled them)."""
-    res = compile_one([{"t": 1, "who": who, "do": "pick_up", "what": "cap"}], {who: {"at": "curb"}})
+    tracks as origin/main 7baa415 compiled them, before foot planting: compiled unplanted)."""
+    res = compile_one([{"t": 1, "who": who, "do": "pick_up", "what": "cap"}], {who: {"at": "curb"}},
+                      plant_feet=False)
     assert res.ok, errors(res)
     expected = MAIN_SNAPSHOT[who]
     assert res.timeline.duration == expected["duration"]
@@ -266,7 +267,9 @@ def test_the_walk_up_from_the_curb_stops_short_of_the_grip_by_the_plain_rule(who
     """The same pin, by hand: the plain walk-up stops AUTO_WALK_REACH (0.6) of the arm's reach
     short of the grip, measured from the root, and the arm reaches from there."""
     build = CAST_BUILDS[who]
-    res = compile_one([{"t": 1, "who": who, "do": "pick_up", "what": "cap"}], {who: {"at": "curb"}})
+    # unplanted, so pos[2] is the arrival key (planting adds keys at the walk's cycle keys)
+    res = compile_one([{"t": 1, "who": who, "do": "pick_up", "what": "cap"}], {who: {"at": "curb"}},
+                      plant_feet=False)
     stop = round(cap_grip()[0] + 0.6 * ik.arm_reach(build), 3)
     pos = track(res, f"puppet:{who}", "root.position")
     assert pos[2][1] == [stop, 0.0, 0.5]

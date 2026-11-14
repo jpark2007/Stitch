@@ -35,6 +35,9 @@ Invariants, for every generated screenplay:
    starts with "shot " or "screenplay"; error.shot is set whenever the message starts "shot ".
 4. compiling the same input again (a fresh copy of the screenplay and scene) gives
    byte-identical model_dump_json, and compile() does not mutate its input.
+5. ok: foot planting (test_foot_planting.planting_problems): the timeline has feetPlanted, and
+   against the same screenplay compiled with plant_feet=False (also ok) only puppet root y
+   differs, and at every walk / run cycle key the lowest foot is on that unplanted surface.
 
 Known failures (crashes or broken invariants whose cause is in api/screenplay or api/seed code
 owned by other tasks) get a minimal hand-written reproduction marked xfail(strict=True) below,
@@ -63,6 +66,7 @@ from screenplay.compiler import compile as compile_screenplay
 from screenplay.schema import VOCABULARY, CompileResult, Screenplay, Timeline
 from seed import demo
 from seed.fake_runs import SAMPLE_OTHER, SAMPLE_TELLER, strip_person, strip_prop
+from test_foot_planting import planting_problems
 from verb_cases import CASES, CAST, PROPS, STREET_MARKS, YARD_MARKS, Scene, base_scene
 
 # ----------------------------------------------------------------------- corpus size
@@ -423,6 +427,19 @@ def _compile(sp: Screenplay, scene: Scene) -> CompileResult:
     return compile_screenplay(sp, sets=scene.sets, props=scene.props, people=scene.people)
 
 
+def _planting_problems(sample: Sample, result: CompileResult) -> list[str]:
+    """Invariant 5, for an ok result."""
+    if result.timeline is None:
+        return []
+    scene = base_scene()
+    unplanted = compile_screenplay(Screenplay.model_validate(copy.deepcopy(sample.raw)), sets=scene.sets,
+                                   props=scene.props, people=scene.people, plant_feet=False)
+    if not unplanted.ok or unplanted.timeline is None:
+        return [f"plant_feet=False failed where the planted compile did not: {[e.message for e in unplanted.errors]}"]
+    builds = {pid: p.character.build for pid, p in scene.people.items()}
+    return [f"planting: {m}" for m in planting_problems(result.timeline, unplanted.timeline, builds)]
+
+
 def _non_finite(value: Any, path: str = "") -> list[str]:
     """Paths of every NaN or inf float inside a model_dump (python mode)."""
     if isinstance(value, float):
@@ -493,6 +510,7 @@ def check(sample: Sample) -> tuple[CompileResult, list[str]]:
             problems += timeline_problems(result.timeline)
         if result.errors:
             problems.append(f"ok with errors: {[e.message for e in result.errors]}")
+        problems += _planting_problems(sample, result)
     else:
         problems += error_problems(result)
     if sp.model_dump_json() != before:
