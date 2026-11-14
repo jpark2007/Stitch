@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+import re
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from pymongo import ASCENDING, MongoClient
 from pymongo.collection import Collection
@@ -263,19 +265,82 @@ def _ensure_collection(db: Database, name: str) -> None:
         pass  # created concurrently
 
 
-def ensure_search_indexes(db: Database) -> list[str]:
-    """Best-effort creation of the Atlas Vector Search indexes. Returns the names created.
+SearchIndexAction = Literal["created", "existed", "updated", "wrong_type", "not_created"]
+SearchIndexState = Literal["ready", "pending", "missing", "stale", "wrong_type", "unsupported"]
+
+
+@dataclass(frozen=True)
+class SearchIndexOutcome:
+    """What ensure_search_indexes_report did to one vector index, and why.
+
+    action: 'created' (requested now), 'existed' (already there with a covering definition),
+    'updated' (it was there with a stale definition; an update was requested), 'wrong_type'
+    (a same-named search index of another type is in the way; left alone) or 'not_created'
+    (the server refused or cannot do search indexes). `detail` is the server's own message,
+    with any MongoDB URI and its credentials removed (empty when there is nothing to add).
+    """
+
+    collection: str
+    name: str
+    action: SearchIndexAction
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class SearchIndexStatus:
+    """One vector index as the server reports it now (search_index_status).
+
+    state: 'ready' (Atlas says READY, or the index is queryable), 'pending' (PENDING,
+    BUILDING, or listed as DOES_NOT_EXIST while it is being created), 'missing' (not listed,
+    or being deleted), 'stale' (its definition does not cover what the app needs, or Atlas
+    says STALE), 'wrong_type' (a search index of another type has the name) or
+    'unsupported' (the server cannot list search indexes, or Atlas says FAILED).
+    """
+
+    collection: str
+    name: str
+    state: SearchIndexState
+    detail: str = ""
+
+
+_URI_RE = re.compile(r"mongodb(?:\+srv)?://[^\s'\"<>]+", re.IGNORECASE)
+
+
+def _clean_error(exc: BaseException) -> str:
+    """An exception as text for a report: any MongoDB URI is cut down to its hosts, and the
+    credentials of MONGODB_URI never appear. Callers that print it scrub it again."""
+    text = " ".join(f"{type(exc).__name__}: {exc}".split())
+
+    def hosts_only(match: re.Match[str]) -> str:
+        scheme, _, rest = match.group(0).partition("://")
+        hosts = re.split(r"[/?#]", rest.rpartition("@")[2], maxsplit=1)[0]
+        return f"{scheme}://" + ("<credentials redacted>@" if "@" in rest else "") + hosts
+
+    text = _URI_RE.sub(hosts_only, text)
+    uri = os.environ.get("MONGODB_URI") or ""
+    userinfo = uri.partition("://")[2].rpartition("@")[0]
+    for secret in sorted({userinfo, *userinfo.split(":", 1)}, key=len, reverse=True):
+        if len(secret) >= 4:
+            text = re.sub(re.escape(secret), "[redacted]", text, flags=re.IGNORECASE)
+    return text[:500]
+
+
+def ensure_search_indexes_report(db: Database) -> list[SearchIndexOutcome]:
+    """Best-effort creation of the Atlas Vector Search indexes: one outcome per index, in
+    VECTOR_INDEXES order. Never raises.
 
     An index that already exists under the right name but with a stale definition (made by
     hand in the Atlas UI without the familyId filter field, or for another EMBEDDING_DIM)
-    is updated in place and logged, not returned: without the filter field every family
-    scoped $vectorSearch would fail and silently fall back to keywords. A same-named index
-    of another type (a plain Atlas Search index) cannot be converted; that is logged.
+    is updated in place and logged: without the filter field every family scoped
+    $vectorSearch would fail and silently fall back to keywords. A same-named index of
+    another type (a plain Atlas Search index) cannot be converted; that is logged.
 
     Plain MongoDB and mongomock do not support search indexes; that is logged, not raised,
-    and the db layer falls back to keyword search.
+    the outcome is 'not_created' with the server's reason, and the db layer falls back to
+    keyword search. So is an Atlas refusal, such as the M0 and Flex tiers' limit of three
+    search indexes per cluster (this app needs exactly three).
     """
-    created: list[str] = []
+    outcomes: list[SearchIndexOutcome] = []
     wanted = _vector_definition()
     for collection, name in VECTOR_INDEXES.items():
         try:
@@ -286,7 +351,7 @@ def ensure_search_indexes(db: Database) -> list[str]:
                 db[collection].create_search_index(
                     SearchIndexModel(definition=wanted, name=name, type="vectorSearch")
                 )
-                created.append(name)
+                outcomes.append(SearchIndexOutcome(collection, name, "created"))
                 continue
             kind = current.get("type")
             if kind not in (None, "vectorSearch"):
@@ -295,6 +360,10 @@ def ensure_search_indexes(db: Database) -> list[str]:
                     "can be recreated. Vector search falls back to keywords until then.",
                     collection, name, kind,
                 )
+                outcomes.append(SearchIndexOutcome(
+                    collection, name, "wrong_type",
+                    f"a search index of type {kind!r} has this name; drop it in Atlas so it can be recreated",
+                ))
                 continue
             definition = current.get("latestDefinition") or current.get("definition")
             if not vector_definition_covers(definition, wanted):
@@ -303,11 +372,77 @@ def ensure_search_indexes(db: Database) -> list[str]:
                     "Vector search index %s.%s had a stale definition %r; updated to %r",
                     collection, name, definition, wanted,
                 )
+                outcomes.append(SearchIndexOutcome(
+                    collection, name, "updated", "the definition was stale; an update was requested",
+                ))
+                continue
+            outcomes.append(SearchIndexOutcome(collection, name, "existed"))
         except (OperationFailure, NotImplementedError, AttributeError, TypeError) as exc:
             log.warning("Vector search index %s.%s not created: %s", collection, name, exc)
+            outcomes.append(SearchIndexOutcome(collection, name, "not_created", _clean_error(exc)))
         except Exception as exc:  # noqa: BLE001 - startup must never fail on a best-effort index
             log.warning("Vector search index %s.%s not created (unexpected): %r", collection, name, exc)
-    return created
+            outcomes.append(SearchIndexOutcome(collection, name, "not_created", _clean_error(exc)))
+    return outcomes
+
+
+def ensure_search_indexes(db: Database) -> list[str]:
+    """Best-effort creation of the Atlas Vector Search indexes. Returns the names created.
+
+    A thin wrapper over ensure_search_indexes_report, which also says why an index was not
+    created. Never raises.
+    """
+    return [o.name for o in ensure_search_indexes_report(db) if o.action == "created"]
+
+
+# Atlas `status` values (listSearchIndexes) -> state. READY, or `queryable` true, is ready.
+_ATLAS_PENDING = frozenset({"PENDING", "BUILDING", "DOES_NOT_EXIST"})
+
+
+def _index_state(collection: str, name: str, listed: dict[str, Any] | None) -> SearchIndexStatus:
+    if listed is None:
+        return SearchIndexStatus(collection, name, "missing", "not listed by the server")
+    kind = listed.get("type")
+    if kind not in (None, "vectorSearch"):
+        return SearchIndexStatus(collection, name, "wrong_type", f"a search index of type {kind!r} has this name")
+    status = str(listed.get("status") or "").upper()
+    definition = listed.get("latestDefinition") or listed.get("definition")
+    if not vector_definition_covers(definition, _vector_definition()):
+        return SearchIndexStatus(
+            collection, name, "stale",
+            f"its definition does not cover the app's (numDimensions {VECTOR_DIM}, "
+            f"{VECTOR_SIMILARITY}, filter on {', '.join(VECTOR_FILTER_PATHS)}); status {status or 'unknown'}",
+        )
+    if status == "FAILED":
+        reason = listed.get("message") or listed.get("statusDetail") or "no reason given"
+        return SearchIndexStatus(collection, name, "unsupported", f"Atlas says FAILED: {reason}")
+    if status == "DELETING":
+        return SearchIndexStatus(collection, name, "missing", "Atlas is deleting it")
+    if status == "STALE":
+        return SearchIndexStatus(collection, name, "stale", "Atlas says STALE: queryable, but not syncing new data")
+    if status == "READY" or listed.get("queryable") is True:
+        return SearchIndexStatus(collection, name, "ready", f"status {status or 'unknown'}, queryable")
+    if status in _ATLAS_PENDING or not status:
+        return SearchIndexStatus(collection, name, "pending", f"status {status or 'unknown'}, not queryable yet")
+    return SearchIndexStatus(collection, name, "pending", f"status {status}, not queryable yet")
+
+
+def search_index_status(db: Database) -> dict[str, SearchIndexStatus]:
+    """The state of every vector index, keyed by its VECTOR_INDEXES name. Never raises.
+
+    A server that cannot list search indexes (mongomock, plain MongoDB, an Atlas tier
+    without search) gives 'unsupported' with the reason; nothing is created or changed.
+    """
+    statuses: dict[str, SearchIndexStatus] = {}
+    for collection, name in VECTOR_INDEXES.items():
+        try:
+            listed = {ix.get("name"): ix for ix in db[collection].list_search_indexes()}
+            statuses[name] = _index_state(collection, name, listed.get(name))
+        except Exception as exc:  # noqa: BLE001 - OperationFailure, NotImplementedError, AttributeError, TypeError...
+            statuses[name] = SearchIndexStatus(
+                collection, name, "unsupported", f"cannot list search indexes here ({_clean_error(exc)})"
+            )
+    return statuses
 
 
 def ping(db: Database) -> bool:

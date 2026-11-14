@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import pytest
 
@@ -648,6 +649,119 @@ def test_cli_seeds_and_prints_accounts(restore_db, capsys):
     assert "users_email_unique" in db.users.index_information()
     assert demo.main([]) == 0 and "already present" in capsys.readouterr().out
     assert demo.main(["--reset"]) == 0 and "seeded" in capsys.readouterr().out
+
+
+# ------------------------------------------------- the CLI on a real database (seams)
+
+CLI_USER = "presenter"
+CLI_PASSWORD = "pa:ss@w0rd%21"
+CLI_URI = (f"mongodb+srv://{CLI_USER}:{quote_plus(CLI_PASSWORD)}@cluster0.example.mongodb.net/"
+           "?appName=StitchCluster0Presenter")
+CLI_FORBIDDEN = (CLI_USER, CLI_PASSWORD, quote_plus(CLI_PASSWORD), "StitchCluster0Presenter", CLI_URI)
+REDACTED_TARGET = "mongodb+srv://<credentials redacted>@cluster0.example.mongodb.net"
+
+
+def assert_no_cli_secrets(*texts: str) -> None:
+    for text in texts:
+        for secret in CLI_FORBIDDEN:
+            assert secret.lower() not in text.lower(), (secret, text)
+
+
+@pytest.fixture
+def cli_env(monkeypatch, restore_db):
+    db_client.set_db(None)  # the CLI connects itself only when no database is installed
+    monkeypatch.setenv("MONGODB_URI", CLI_URI)
+    monkeypatch.setenv("MONGODB_DB", "stitch_cli_real")
+    return monkeypatch
+
+
+def test_cli_connects_from_the_environment_and_prints_only_the_redacted_target(cli_env, capsys):
+    import mongomock
+
+    mongo = mongomock.MongoClient(tz_aware=True)
+    calls: list[dict] = []
+
+    def connect(uri, db_name, *, timeout_ms, appname):
+        calls.append({"uri": uri, "db": db_name, "timeout_ms": timeout_ms, "appname": appname})
+        return mongo, mongo[db_name]
+
+    assert demo.main([], connect=connect) == demo.EXIT_OK
+    out = capsys.readouterr()
+    assert calls == [{"uri": CLI_URI, "db": "stitch_cli_real", "timeout_ms": 5000, "appname": "stitch-seed"}]
+    assert f"Seeding {REDACTED_TARGET}, database 'stitch_cli_real'" in out.out
+    assert "Vector search indexes: not supported on this server" in out.out
+    assert "seeded in database 'stitch_cli_real'" in out.out
+    assert out.err == ""
+    assert_no_cli_secrets(out.out, out.err)
+    db = mongo["stitch_cli_real"]
+    assert "users_email_unique" in db.users.index_information()
+    assert families_db.get_family(db, DEMO_FAMILY_ID) is not None
+
+    # Re-runnable: a second run writes nothing, --reset rebuilds, both from the same command.
+    before = counts(db)
+    assert demo.main([], connect=connect) == demo.EXIT_OK
+    assert "already present" in capsys.readouterr().out and counts(db) == before
+    assert demo.main(["--reset"], connect=connect) == demo.EXIT_OK
+    assert "seeded" in capsys.readouterr().out and counts(db) == before
+
+
+def test_cli_says_it_will_seed_localhost_before_connecting(cli_env, capsys):
+    import mongomock
+
+    cli_env.delenv("MONGODB_URI")
+    mongo = mongomock.MongoClient(tz_aware=True)
+    printed_before_connect: list[str] = []
+
+    def connect(uri, db_name, *, timeout_ms, appname):
+        printed_before_connect.append(capsys.readouterr().out)
+        assert uri == "mongodb://localhost:27017"
+        return mongo, mongo[db_name]
+
+    assert demo.main([], connect=connect) == demo.EXIT_OK
+    assert "MONGODB_URI is not set" in printed_before_connect[0]
+    assert "mongodb://localhost:27017" in printed_before_connect[0]
+
+
+def test_cli_unreachable_is_one_scrubbed_sentence(cli_env, capsys):
+    from pymongo.errors import ServerSelectionTimeoutError
+
+    def unreachable(uri, db_name, *, timeout_ms, appname):
+        raise ServerSelectionTimeoutError(f"{uri}: timed out")
+
+    assert demo.main([], connect=unreachable) == demo.EXIT_NO_DATABASE
+    out = capsys.readouterr()
+    assert "IP access list" in out.err and "MONGODB_URI" in out.err and "STITCH_FAKE_DB=1" in out.err
+    assert "Traceback" not in out.err and out.err.count("\n") == 1
+    assert REDACTED_TARGET in out.out
+    assert_no_cli_secrets(out.out, out.err)
+
+
+def test_cli_scrubs_a_mongodb_error_raised_while_seeding(cli_env, capsys, monkeypatch):
+    import mongomock
+    from pymongo.errors import OperationFailure
+
+    mongo = mongomock.MongoClient(tz_aware=True)
+
+    def refuse(_db):
+        raise OperationFailure(f"not authorized on stitch_cli_real to execute command via {CLI_URI}", code=13)
+
+    monkeypatch.setattr(db_client, "ensure_indexes", refuse)
+    code = demo.main([], connect=lambda uri, db_name, **_kw: (mongo, mongo[db_name]))
+    assert code == demo.EXIT_NO_DATABASE
+    out = capsys.readouterr()
+    assert "refused the operation (code 13)" in out.err and "stitch_cli_real" in out.err
+    assert_no_cli_secrets(out.out, out.err)
+
+
+def test_cli_reports_created_vector_indexes_in_one_line():
+    from db.client import SearchIndexOutcome
+
+    created = [SearchIndexOutcome("memories", n, "created") for n in db_client.VECTOR_INDEXES.values()]
+    line = demo._vector_index_line(created)
+    assert line.startswith("Vector search indexes: created memories_vector, props_vector, sets_vector")
+    mixed = [SearchIndexOutcome("memories", "memories_vector", "existed"),
+             SearchIndexOutcome("props", "props_vector", "not_created", "limit reached")]
+    assert "already present memories_vector; not created props_vector" in demo._vector_index_line(mixed)
 
 
 # --------------------------------------------------------------------------- real MongoDB

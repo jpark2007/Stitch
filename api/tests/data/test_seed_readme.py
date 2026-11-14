@@ -149,6 +149,50 @@ def test_every_seed_module_the_readme_runs_is_importable(readme: str) -> None:
     assert unresolved == []
 
 
+def preflight_exit_codes() -> dict[str, int]:
+    from seed import preflight
+
+    return {name: value for name, value in vars(preflight).items() if name.startswith("EXIT_") and isinstance(value, int)}
+
+
+def test_the_preflight_is_documented(readme: str) -> None:
+    from db import client
+    from seed import preflight
+
+    section = readme.split("## Preflight a real MongoDB", 1)[1].split("\n## ", 1)[0]
+    assert "uv run python -m seed.preflight" in section
+    for flag in ("--json", "--timeout-ms", "--wait", "--skip-checkpointer"):
+        assert flag in section, flag
+    rows = ["connect", "server", "indexes", "round trip", "tree", "search", "checkpointer", "cleanup",
+            *(f"vector index {n}" for n in client.VECTOR_INDEXES.values())]
+    for row in rows:
+        assert row in section, row
+    for line in ("PREFLIGHT PASS", "PREFLIGHT PASS with N warnings", "PREFLIGHT FAIL"):
+        assert line in section
+    codes = preflight_exit_codes()
+    assert codes == {"EXIT_OK": 0, "EXIT_FAILED": 1, "EXIT_NO_DATABASE": 3}
+    for name, value in codes.items():
+        row = next(line for line in section.splitlines() if f"`seed.preflight.{name}`" in line)
+        assert row.startswith(f"| {value} |"), row
+    assert preflight.UNSET_MESSAGE in section
+    flat = " ".join(section.split())
+    assert "IP access list" in flat and "at most 3 search indexes" in flat
+    assert "[../db/REAL_MONGODB.md](../db/REAL_MONGODB.md)" in readme
+
+
+def test_the_real_database_seed_is_one_command(readme: str) -> None:
+    section = readme.split("## Seed a real MongoDB", 1)[1].split("\n## ", 1)[0]
+    assert "uv run python -m seed.demo  " in section and "--reset" in section
+    assert "<credentials redacted>" in section
+    # The CLI reads .env itself: no command in the seed or run sections needs --env-file.
+    run = readme.split("## Run the API on a real MongoDB", 1)[1].split("\n## ", 1)[0]
+    for text in (section, run):
+        commands = [line for line in text.splitlines() if line.startswith("uv run")]
+        assert commands and not any("--env-file" in c for c in commands), commands
+    not_verified = readme.split("## What is not verified", 1)[1]
+    assert "preflight" in not_verified and "mongomock" in not_verified
+
+
 def test_the_checks_fail_when_the_readme_drops_something(scenes: dict[str, demo.DemoScene]) -> None:
     """Each checker reports a removed id, set, prop, email, effect or exit code (guards against a
     vacuous pass)."""
