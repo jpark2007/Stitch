@@ -278,11 +278,20 @@ _FSTRING_CODES = {"already_{state}": {"already_open", "already_closed"}}
 
 def compiler_codes() -> set[str]:
     """Every error code api/screenplay can emit: the code argument of StateError, NarrationError,
-    CompileError, errors.error and validate's add(site, code, reason), and every `code = "..."`
-    the compiler passes on (follow_cycle, follow_order)."""
+    CompileError, errors.error and validate's add(site, code, reason), any `code="..."` keyword
+    or default (verb_helpers.require_person), and every `code = "..."` the compiler passes on
+    (follow_cycle, follow_order)."""
     codes: set[str] = set()
     for path in sorted((API / "screenplay").glob("*.py")):
         for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                a = node.args
+                pairs = [*zip(a.args[len(a.args) - len(a.defaults):], a.defaults), *zip(a.kwonlyargs, a.kw_defaults)]
+                codes |= {d.value for arg, d in pairs if arg.arg == "code" and isinstance(d, ast.Constant)
+                          and isinstance(d.value, str)}
+            if isinstance(node, ast.Call):
+                codes |= {k.value.value for k in node.keywords if k.arg == "code"
+                          and isinstance(k.value, ast.Constant) and isinstance(k.value.value, str)}
             if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "code" for t in node.targets):
                 if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                     codes.add(node.value.value)
@@ -764,6 +773,15 @@ def test_open_does_not_reach_a_carried_prop_on_the_floor_or_a_table(where):
         data = sp([{"t": 0, "who": "mom", "do": "open", "what": "suitcase"}], start={"mom": {"at": "g", "facing": "right"}},
                   props=props, marks=_at(du), propStart=prop_start)
         assert [e.code for e in compile_data(data).errors] == ["out_of_reach"], (where, du)
+
+
+def test_effects_need_their_at_on_stage_as_the_skill_says():
+    waiting = sp([{"t": 0, "do": "confetti", "at": "dad"}], start={"mom": {"at": "b"}, "dad": {"at": "offstage_right"}})
+    assert [e.code for e in compile_data(waiting).errors] == ["offstage"]
+    unplaced = sp([{"t": 0, "do": "steam", "at": "cake"}], props=["cake"])
+    assert [e.code for e in compile_data(unplaced).errors] == ["not_on_stage"]
+    text = " ".join(section(body("directing"), "## Action vocabulary").split())
+    assert "is `offstage`" in text and "is `not_on_stage`" in text
 
 
 def test_follow_dur_frees_the_leader_as_the_skill_says():

@@ -78,8 +78,9 @@ NarrationLine { t, text, source, cue?, cueWord? }      never write `words`; TTS 
   Example: `offstage_left` (x = −1.3) to u = 0.2 (x = −0.6) walking: 0.7 / 0.35 = 2.0 s.
 - **Movement notes change walking and running speed** (from `get_person`): a cane, walker,
   limp or shuffle walks at × 0.6 (0.7 / (0.35 × 0.6) = 3.33 s for the example above); slowly,
-  slow, frail, elderly, stiff or carefully at × 0.75; quickly, brisk, hurries, spry or energetic
-  at × 1.25. Respect them: someone with a cane never `run_to`s.
+  slow, frail, elderly, stiff or carefully at × 0.75; quickly, fast, brisk, hurries, spry or
+  energetic at × 1.25 (any form of the word counts: slower, limped, faster; a slow word wins over
+  a fast one). Respect them: someone with a cane never `run_to`s.
 - **One action at a time per person.** An action may start only when the same person's
   previous one has ended; otherwise the compiler reports `busy`
   (`shot s1, t=4: dad cannot pick_up "hymn_books"; dad is still walking until t=5.31`).
@@ -136,7 +137,9 @@ or prop (effects); `value` time of day; `dur` seconds.
 
 **Effects** (actions with no `who`): `confetti`, `steam`, `rain`, `smoke`, `time_of_day`.
 Every verb in the table compiles, effects included. An effect occupies nobody, so it may run
-while its `at` person is busy; a prop named in `at` must be on stage then (`not_on_stage`).
+while its `at` person is busy, but whoever or whatever `at` names must be on stage then (a
+person waiting offstage, or the offstage marks, is `offstage`; a prop not on stage is
+`not_on_stage`).
 With no `dur`, `confetti` lasts 2 s, `steam` and `smoke` 3 s and `time_of_day` 1 s; `rain`
 lasts until the shot ends, so give it a `dur` if it should stop sooner. Use an effect for a
 real moment the tellings name (confetti at a wedding, steam off a pot, rain on a car trip).
@@ -399,7 +402,7 @@ it helps, the names you may use instead.
 | `busy` | Move `t` to the "until" time the message names, or later |
 | `not_holding`, `already_held`, `hands_full`, `head_full`, `double_hold`, `prop_conflict` | Add the `pick_up` (or `drop`), or fix `start.holding` and `propStart` |
 | `out_of_reach` | Put the marks closer (see "Reach"). For `open`/`close` of a held prop, `place_on` it at hand height first and open it there |
-| `offstage` | Add an `enter` first |
+| `offstage` | Add an `enter` first; for an effect, aim it at a mark on stage |
 | `already_on_stage` | Use `walk_to` instead of `enter` |
 | `not_on_stage` | Place the prop with `propStart` in this shot (or have someone carry it in) |
 | `held`, `occupied` | Someone holds the prop, or sits on it: `drop` or `place_on` it, or `stand_up` first |

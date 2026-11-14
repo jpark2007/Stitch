@@ -89,7 +89,7 @@ from screenplay.schema import (
 )
 from screenplay.state import HANDS, HEAD, SEATED_POSES, StateError, World, fmt_t, parse_parent
 from screenplay.validate import validate
-from screenplay.verbs_core import _crouch_solution
+from screenplay.verb_helpers import crouch_solution
 
 if TYPE_CHECKING:
     from agent.tools.compile import SceneInputs
@@ -776,7 +776,7 @@ class _ShotSim:
             ik.solve_body_arm(me, arm, grip)
             end = t + 2 * B.REACH_SECONDS
         else:  # too low for a standing arm: bends (kneeling if needed) down to it, as the real place_on
-            _crouch_solution(me, arm, grip, can_kneel=not (p.seat is not None or p.pose in SEATED_POSES))
+            crouch_solution(me, arm, grip, can_kneel=not (p.seat is not None or p.pose in SEATED_POSES))
             end = t + 2 * B.POSE_SECONDS + B.REACH_SECONDS
         w.place_on(who, what, parent, pos)
         return end
