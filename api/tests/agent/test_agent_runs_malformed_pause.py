@@ -24,6 +24,7 @@ import schemas
 from agent import runs, studio
 from agent.fake_llm import tool_call, tool_calls, tool_messages
 from agent.run_info import RunInfo
+from agent.tools.ask import merge_people
 from test_agent_runs import (  # pytest puts tests/agent on sys.path (no __init__.py)
     FAMILY,
     INTERVIEWER,
@@ -154,6 +155,34 @@ def test_a_prop_chip_with_a_bad_size_goes_back_to_the_model(harnesses: list[Harn
     assert "validation error" not in text.lower()
     assert "errors.pydantic.dev" not in text and "Traceback" not in text
     assert "kept 1 props" in approved.text
+
+
+# ------------------------------------------------------------------ merge_people
+
+
+def test_a_merge_with_a_blank_candidate_goes_back_to_the_model(harnesses: list[Harness]) -> None:
+    merge = {"name": "Uncle Joe", "person_id": "dad", "question": "Is Uncle Joe the Joseph in your tree?"}
+    studio_script = stage_and_save(
+        tool_call("merge_people", {**merge, "candidate_name": "  "}),
+        tool_call("merge_people", {**merge, "candidate_name": "Joseph"}),
+    )
+    h = Harness(make_responder(studio_script), extra_tools=[merge_people])
+    harnesses.append(h)
+    run_id = h.start()
+
+    assert h.wait(run_id) == "waiting"
+    events = h.manager.events(FAMILY, run_id)
+    assert events == [("merge", schemas.MergeEvent(text=merge["question"], person_id="dad", candidate_name="Joseph"))]
+    assert h.manager.status(FAMILY, run_id) == "waiting"
+
+    h.manager.answer_run(FAMILY, run_id, USER, schemas.AnswerRequest(kind="merge", approve=True))
+    assert h.wait(run_id) == "done"
+    assert h.names(run_id) == ["merge", "scene_ready", "done"]
+
+    rejected, approved = studio_tool_messages(h, "merge_people")
+    assert NOT_SHOWN in rejected.text and "candidate_name" in rejected.text
+    assert "call the tool again" in rejected.text and len(rejected.text) < 300
+    assert approved.text.startswith("approved:")
 
 
 # ------------------------------------------------------------------ the cap
