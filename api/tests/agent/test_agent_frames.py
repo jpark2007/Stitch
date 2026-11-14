@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import io
 import json
 import os
@@ -38,7 +39,9 @@ from agent.tools.frames import (
     FakeFrameCritic,
     FakeFrameRenderer,
     FrameRenderError,
+    READY_EXPR,
     PlaywrightFrameRenderer,
+    _frames_json,
     _load_frames,
     frame_prompt,
     make_frame_tools,
@@ -607,7 +610,7 @@ def test_inspect_frames_after_a_recompile_sees_only_the_new_draft():
     msg, state, events = call(graph, thread, 3, "render_frames", {"times": [3]}, files=files)
     (new,) = frames_file(state)
     assert new["mediaId"] != old["mediaId"]
-    assert new == {"t": 3.0, "mediaId": new["mediaId"], "timeline": digest(TIMELINE_TEXT)}
+    assert new == {"t": 3.0, "mediaId": new["mediaId"], "timeline": digest(TIMELINE_TEXT), "diagram": True}
     assert json.loads(msg.content) == [new]
     assert [s["mediaId"] for s in events[0]["data"]["frames"]] == [new["mediaId"]]
 
@@ -759,6 +762,161 @@ def test_a_renderer_without_a_critic_note_attribute_gets_frame_prompt():
     assert prompt.startswith(FRAME_PROMPT)
 
 
+# ------------------------------------------- inspect_frames: the note recorded per frame
+
+
+class _StagePage:
+    """A fake render page. `mode_for(url)` decides what the page at a URL does:
+
+    "contract" draws the injected scene and sets __STITCH_READY__; "legacy" only marks
+    data-stage-ready (web/app/render on main today); "down" refuses the connection.
+    """
+
+    def __init__(self, mode_for) -> None:
+        self.mode_for = mode_for
+        self.mode = "down"
+
+    def add_init_script(self, script: str) -> None:
+        assert script.startswith("window.__STITCH_RENDER__ = ")
+
+    def goto(self, url: str, timeout: int) -> None:
+        self.mode = self.mode_for(url)
+        if self.mode == "down":
+            raise ConnectionError("net::ERR_CONNECTION_REFUSED")
+
+    def wait_for_function(self, expression: str, timeout: int) -> bool:
+        if expression == READY_EXPR or self.mode == "contract":
+            return True
+        raise TimeoutError(f"Timeout {timeout}ms exceeded")
+
+    def screenshot(self, type: str, full_page: bool) -> bytes:  # noqa: A002 - Playwright's name
+        img = Image.new("RGB", (64, 36), (200, 180, 150))
+        img.paste((40, 90, 160), (10, 10, 30, 30))
+        out = io.BytesIO()
+        img.save(out, format="PNG")
+        return out.getvalue()
+
+
+def _stage(mode_for):
+    import contextlib
+
+    @contextlib.contextmanager
+    def factory(viewport):
+        yield _StagePage(mode_for)
+
+    return factory
+
+
+def _build_for(run: RunInfo, renderer, vision, repo):
+    tools = make_frame_tools(repo, run, renderer, vision, make_scene_for(repo))
+    builder = StateGraph(FilesystemState)
+    builder.add_node("tools", ToolNode(tools))
+    builder.add_edge(START, "tools")
+    builder.add_edge("tools", END)
+    return builder.compile(checkpointer=InMemorySaver())
+
+
+def test_fallback_frames_are_marked_diagram_and_the_critic_gets_the_legend():
+    critic = FakeFrameCritic()
+    renderer = PlaywrightFrameRenderer("http://web:3000", page_factory=_stage(lambda url: "legacy"))
+    graph, _, _ = build(renderer=renderer, vision=critic)
+    _, state, _ = call(graph, "fb", 1, "render_frames", {"times": [3.2, 7.5]}, files=sample_files())
+    assert [f.get("diagram") for f in frames_file(state)] == [True, True]
+    call(graph, "fb", 2, "inspect_frames", {})
+    ((_, prompt),) = critic.calls
+    assert prompt.startswith(DIAGRAM_CRITIC_NOTE.strip())
+    assert "cut-paper pop-up storybook" not in prompt
+
+
+def test_contract_page_frames_carry_no_note_and_the_critic_gets_frame_prompt():
+    critic = FakeFrameCritic()
+    renderer = PlaywrightFrameRenderer("http://web:3000", page_factory=_stage(lambda url: "contract"))
+    graph, _, _ = build(renderer=renderer, vision=critic)
+    _, state, _ = call(graph, "ok", 1, "render_frames", {"times": [3.2]}, files=sample_files())
+    (entry,) = frames_file(state)
+    assert "diagram" not in entry and "note" not in entry
+    call(graph, "ok", 2, "inspect_frames", {})
+    ((_, prompt),) = critic.calls
+    assert prompt.startswith(FRAME_PROMPT)
+
+
+def test_the_note_comes_from_frames_json_not_from_the_renderers_current_state():
+    """Run A renders screenshots; then run B's render sends the shared renderer into its
+    fallback cool-down; A's inspect still says screenshots, B's says diagrams."""
+    repo = make_repo()
+    pages = {"draft-run_a": "contract", "draft-run_b": "legacy"}
+    renderer = PlaywrightFrameRenderer(
+        "http://web:3000", page_factory=_stage(lambda url: next(m for k, m in pages.items() if k in url))
+    )
+    critic_a, critic_b = FakeFrameCritic(), FakeFrameCritic()
+    graph_a = _build_for(dataclasses.replace(RUN, run_id="run_a"), renderer, critic_a, repo)
+    graph_b = _build_for(dataclasses.replace(RUN, run_id="run_b"), renderer, critic_b, repo)
+
+    call(graph_a, "a", 1, "render_frames", {"times": [3.2]}, files=sample_files())
+    call(graph_b, "b", 1, "render_frames", {"times": [3.2]}, files=sample_files())
+    assert renderer.cooling_down  # the renderer now answers "diagram" to everyone
+    call(graph_a, "a", 2, "inspect_frames", {})
+    call(graph_b, "b", 2, "inspect_frames", {})
+    assert critic_a.calls[0][1].startswith(FRAME_PROMPT)
+    assert critic_b.calls[0][1].startswith(DIAGRAM_CRITIC_NOTE.strip())
+
+
+def test_two_concurrent_runs_one_falling_back_each_get_the_right_note():
+    import concurrent.futures
+    import threading
+
+    repo = make_repo()
+    barrier = threading.Barrier(2, timeout=10)
+
+    def mode_for(url: str) -> str:
+        barrier.wait()  # both renders are inside the browser at the same time
+        return "contract" if "draft-run_a" in url else "down"
+
+    renderer = PlaywrightFrameRenderer("http://web:3000", page_factory=_stage(mode_for))
+    critics = {"run_a": FakeFrameCritic(), "run_b": FakeFrameCritic()}
+    graphs = {
+        rid: _build_for(dataclasses.replace(RUN, run_id=rid), renderer, critics[rid], repo)
+        for rid in critics
+    }
+
+    def run(rid: str) -> list[dict]:
+        _, state, _ = call(graphs[rid], rid, 1, "render_frames", {"times": [3.2]}, files=sample_files())
+        call(graphs[rid], rid, 2, "inspect_frames", {})
+        return frames_file(state)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        a, b = pool.map(run, ["run_a", "run_b"])
+    assert "diagram" not in a[0] and b[0]["diagram"] is True
+    assert critics["run_a"].calls[0][1].startswith(FRAME_PROMPT)
+    assert critics["run_b"].calls[0][1].startswith(DIAGRAM_CRITIC_NOTE.strip())
+
+
+def test_mixed_frames_in_one_inspect_use_the_diagram_note():
+    critic = FakeFrameCritic()
+    graph, repo, _ = build(vision=critic)
+    _, state, _ = call(graph, "mix", 1, "render_frames", {"times": [3.2, 7.5]}, files=sample_files())
+    entries = frames_file(state)
+    del entries[0]["diagram"]  # as if the first frame were a real screenshot
+    files = {FRAMES_PATH: create_file_data(json.dumps(entries))}
+    call(graph, "mix", 2, "inspect_frames", {}, files=files)
+    call(graph, "mix", 3, "inspect_frames", {"media_ids": [entries[0]["mediaId"]]})
+    (_, mixed), (_, plain) = critic.calls
+    assert mixed.startswith(DIAGRAM_CRITIC_NOTE.strip())
+    assert plain.startswith(FRAME_PROMPT)
+
+
+def test_frames_json_round_trips_the_note():
+    entries = [
+        {"t": 1, "mediaId": "media/1", "timeline": "abc", "diagram": True},
+        {"t": 2, "mediaId": "media/2", "timeline": "abc"},
+        {"t": 3, "mediaId": "media/3", "timeline": "abc", "note": "Sketches, not art."},
+        {"t": 4, "mediaId": "media/4", "timeline": "abc", "diagram": "yes", "note": 7},
+    ]
+    frames = _load_frames({FRAMES_PATH: create_file_data(json.dumps(entries))})
+    assert [f.note for f in frames] == [DIAGRAM_CRITIC_NOTE, None, "Sketches, not art.", None]
+    assert json.loads(_frames_json(frames)) == entries[:3] + [{"t": 4, "mediaId": "media/4", "timeline": "abc"}]
+
+
 class _FakeAnthropicMessages:
     """Stands in for `anthropic.Anthropic().messages`: records calls, never touches the network."""
 
@@ -846,6 +1004,7 @@ class _FakePage:
         self.log.append(("wait", expression, timeout))
         if self.fail_on == "wait":
             raise TimeoutError("Timeout 15000ms exceeded")
+        # A contract page: __STITCH_READY__ is set, so both readiness waits pass.
 
     def screenshot(self, type: str, full_page: bool) -> bytes:  # noqa: A002 - Playwright's name
         self.log.append(("shot", type, full_page))
@@ -890,7 +1049,7 @@ def test_playwright_renderer_follows_the_render_page_contract(monkeypatch):
     pngs = renderer.render(SAMPLE, [0, 3.2])
     assert len(pngs) == 2 and all(p.startswith(b"\x89PNG") for p in pngs)
     kinds = [entry[0] for entry in log]
-    assert kinds == ["launch", "page", "init", "goto", "wait", "shot", "goto", "wait", "shot", "close"]
+    assert kinds == ["launch", "page", "init", "goto", "wait", "wait", "shot", "goto", "wait", "wait", "shot", "close"]
     assert log[0] == ("launch", True)
     assert log[1] == ("page", {"width": 800, "height": 450})
     script = log[2][1]
@@ -900,16 +1059,29 @@ def test_playwright_renderer_follows_the_render_page_contract(monkeypatch):
     assert "participantIds" in script  # camelCase
     memory_id = SAMPLE.memory.id
     assert log[3] == ("goto", f"http://web:3000/render/{memory_id}?t=0.000", 5000)
-    assert log[4] == ("wait", "window.__STITCH_READY__ === true", 5000)
-    assert log[5] == ("shot", "png", False)
-    assert log[6][1] == f"http://web:3000/render/{memory_id}?t=3.200"
+    # Ready by the contract or the legacy way, then (at once on a contract page) the contract.
+    assert log[4] == ("wait", READY_EXPR, 5000)
+    assert "window.__STITCH_READY__ === true" in READY_EXPR and "stageReady === '1'" in READY_EXPR
+    assert log[5] == ("wait", "window.__STITCH_READY__ === true", 1500)
+    assert log[6] == ("shot", "png", False)
+    assert log[7][1] == f"http://web:3000/render/{memory_id}?t=3.200"
+    assert renderer.render_with_note(SAMPLE, [1.0])[1] is None  # real screenshots: no note
 
 
 @pytest.mark.parametrize("fail_on", ["goto", "wait"])
 def test_playwright_renderer_wraps_failures(monkeypatch, fail_on):
     log = _install_fake_playwright(monkeypatch, fail_on)
     with pytest.raises(FrameRenderError):
-        PlaywrightFrameRenderer("http://web:3000").render(SAMPLE, [1.0])
+        PlaywrightFrameRenderer("http://web:3000", fallback=None).render(SAMPLE, [1.0])
+    assert log[-1] == ("close",)
+
+
+@pytest.mark.parametrize("fail_on", ["goto", "wait"])
+def test_playwright_renderer_falls_back_to_diagrams_on_failure(monkeypatch, fail_on):
+    log = _install_fake_playwright(monkeypatch, fail_on)
+    pngs, note = PlaywrightFrameRenderer("http://web:3000").render_with_note(SAMPLE, [3.2])
+    assert pngs == FakeFrameRenderer().render(SAMPLE, [3.2])
+    assert note == DIAGRAM_CRITIC_NOTE
     assert log[-1] == ("close",)
 
 
@@ -926,7 +1098,10 @@ def test_playwright_renderer_without_playwright_raises_frame_render_error(monkey
     monkeypatch.setitem(sys.modules, "playwright", None)
     monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
     with pytest.raises(FrameRenderError, match="playwright is not installed"):
-        PlaywrightFrameRenderer().render(SAMPLE, [1.0])
+        PlaywrightFrameRenderer(fallback=None).render(SAMPLE, [1.0])
+    # With the default fallback, a machine without Playwright still gets diagrams.
+    pngs, note = PlaywrightFrameRenderer().render_with_note(SAMPLE, [1.0])
+    assert len(pngs) == 1 and note == DIAGRAM_CRITIC_NOTE
 
 
 def _chromium_installed() -> bool:
