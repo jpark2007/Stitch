@@ -3,16 +3,17 @@
  * no idea of mute or gestures: engine.ts drives it live, offline.ts drives it
  * through OfflineAudioContext.suspend() for the verification renders.
  *
- *   voices --dry--> bus --> warmth --> duck --> level --> trim --> ceiling --> out
+ *   voices --dry--> bus --> warmth --> level --> trim --> ceiling --> duck --> out
  *          --wet--> room (convolver) --^
  *
  *   warmth   a gentle high shelf so nothing is bright
- *   duck     narration ducking (-10 dB)
  *   level    the transport: mute, the book open or closed
  *   trim     the music's loudness: each era's `level` evens them out at
- *            about -26 dBFS RMS, so a voice sits well on top
+ *            -26 dBFS RMS, so a voice sits well on top
  *   ceiling  a soft clipper that can never exceed -12 dBFS (transparent
  *            where the music lives; it only rounds the odd pluck's peak)
+ *   duck     narration ducking, last so it is an exact -10 dB: before the
+ *            ceiling, the clipper would give back part of the drop on peaks
  *
  * No compressor: one would undo the duck and pump with the eras' beats.
  */
@@ -23,7 +24,7 @@ import { CEILING, CROSSFADE, DUCK_DB, DUCK_DOWN, DUCK_UP, dbToGain, softClipCurv
 import { GainLine } from "./line";
 import { PALETTES } from "./palettes";
 import { createKit, type Kit } from "./patches";
-import { EraVoice } from "./voice";
+import { EraVoice, prepareEra, warmEra, type EraPrep } from "./voice";
 
 /** Scheduling horizon: notes are created this far ahead of the clock. */
 export const LOOKAHEAD = 0.4;
@@ -51,6 +52,8 @@ export class MusicCore {
   private readonly trim: GainNode;
   private readonly out: AudioNode;
   private voices: EraVoice[] = [];
+  private readonly preps = new Map<EraId, EraPrep>();
+  private warming: EraId[] = [];
   private era: EraId | null = null;
   private analyser: AnalyserNode | null = null;
   private scratch: Float32Array<ArrayBuffer> | null = null;
@@ -73,8 +76,8 @@ export class MusicCore {
     const ceiling = ctx.createWaveShaper();
     ceiling.curve = softClipCurve(2049, CEILING) as Float32Array<ArrayBuffer>;
     ceiling.oversample = "2x";
-    this.bus.connect(warmth).connect(duck).connect(level).connect(this.trim).connect(ceiling).connect(destination);
-    this.out = ceiling;
+    this.bus.connect(warmth).connect(level).connect(this.trim).connect(ceiling).connect(duck).connect(destination);
+    this.out = duck;
 
     this.room = ctx.createConvolver();
     this.room.normalize = false;
@@ -125,9 +128,42 @@ export class MusicCore {
           .slice(0, excess)
           .forEach((v) => v.end(now, Math.min(CUT, fade)));
       }
-      const v = new EraVoice(this.kit, PALETTES[id], { dry: this.bus, wet: this.room }, now + 0.02);
-      v.fade(1, fade, now, "in");
+      const v = new EraVoice(this.kit, PALETTES[id], this.prep(id), { dry: this.bus, wet: this.room }, now + 0.02);
+      v.start(now, fade);
       this.voices.push(v);
+    }
+  }
+
+  /** The era's score and string list, made once per core. */
+  private prep(id: EraId): EraPrep {
+    let p = this.preps.get(id);
+    if (!p) {
+      p = prepareEra(PALETTES[id]);
+      this.preps.set(id, p);
+    }
+    return p;
+  }
+
+  /**
+   * Make an era ready before it is asked for (the next spread's): its score
+   * now, its strings a slice at a time on the following passes (warm()).
+   */
+  prefetch(id: EraId) {
+    if (this.disposed || this.warming.includes(id)) return;
+    const p = this.prep(id);
+    if (p.built < p.strings.length) this.warming.push(id);
+  }
+
+  /** True while a prefetched era still has strings to build. */
+  get warmingUp() {
+    return this.warming.length > 0;
+  }
+
+  /** Build prefetched strings for up to `budgetMs`. */
+  warm(budgetMs: number) {
+    while (this.warming.length) {
+      if (!warmEra(this.kit, this.prep(this.warming[0]), budgetMs)) return;
+      this.warming.shift();
     }
   }
 
