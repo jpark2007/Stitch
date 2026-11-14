@@ -14,20 +14,32 @@ Script for a new memory (`fields.memory_id is None`), one step every `step_secon
 3. question "Who else was there that day?", then the run waits for AnswerRequest(kind="answer").
    The reply is kept: it is appended to the telling text as a new paragraph.
    (Skipped when `ask_followup=False`.)
-4. plan, subagent_start prop_master, props_found with the hymn-book prop (reused=True), then
-   the run waits for AnswerRequest(kind="props"). Edits for the chip's id are honored:
-   `rename` renames the saved prop, `replace_photo` puts a photo of this family on it,
-   `remove` leaves the prop out of the memory and strips it from the scene (the saved prop
-   itself is never deleted, and is not created for this run if it did not exist yet).
-   subagent_end prop_master.
+4. plan, subagent_start prop_master, props_found with the hymn-book prop, then the run waits
+   for AnswerRequest(kind="props"). The chip's `reused` is True only when the family already
+   had its own saved copy before the run (a fresh family gets a new copy: reused=False).
+   Edits for the chip's id are honored: `rename` renames the saved prop, `replace_photo`
+   puts a photo of this family on it (`photo_id` as "media/<id>" or a bare "<id>"; the art
+   becomes {"body": "media/<id>"}, and an unknown id is ignored), `remove` leaves the prop
+   out of the memory and strips it from the scene (the saved prop itself is never deleted,
+   and is not created for this run if it did not exist yet). subagent_end prop_master says
+   "Reused the X.", "Saved the X." or "Left out the X.".
 5. plan, subagent_start director, subagent_end director, plan
 6. the memory is saved: create_memory with the telling, then save_scene with the sample's
    screenplay and timeline. Person ids are recast: the sample's `mom` becomes the teller,
    and `dad` the first participant who is not the teller, else the teller's spouse, else
-   another person of the family, else the teller. The sample's prop and set are created in
-   the run's family when missing (keeping the sample ids when free, otherwise
-   `<sampleId>_<familyId>`), and the scene points at the family's copies.
-7. plan (all completed), scene_ready, done(memoryId)
+   another person of the family. When the family has nobody else, `dad` is stripped from
+   the scene (`strip_person`): one puppet, the teller's narration, and the books left where
+   they fell. The sample's prop and set are created in the run's family when missing
+   (keeping the sample ids when free, otherwise `<sampleId>_<familyId>`), and the scene
+   points at the family's copies. The memory's participants are the teller, the recast
+   `dad` (if any) and the named participants.
+7. the linker (only when someone besides the teller was named in `participant_ids`): plan
+   with "Ask the others for their version" in progress, then one open question per named
+   participant, linked to the new memory ("<teller> told the story of "<title>". What do
+   you remember?"). A person who already has an open question for the memory is skipped,
+   and a failure to create one is logged, never failing the run. The auto-recast `dad` is
+   not asked unless named.
+8. plan (all completed), scene_ready, done(memoryId)
 
 A second telling (`fields.memory_id` set) adds the telling to that memory, links the teller
 and participants to it, and sends plan, subagent_start, subagent_end, plan and done: no
@@ -70,6 +82,7 @@ Event = tuple[str, schemas.Model]
 SAMPLE_TELLER = "mom"
 SAMPLE_OTHER = "dad"
 FOLLOWUP_QUESTION = "Who else was there that day?"
+ASK_OTHERS = "Ask the others for their version"
 ERROR_MESSAGE = "Something went wrong while making this memory. Please try again."
 STOPPED_MESSAGE = "The studio stopped before this memory was finished."
 TITLE_WORDS = 6
@@ -157,17 +170,18 @@ def _dedupe(ids: list[str]) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
-def _strip_interactions(items: list[dict] | None, target: str, prop_id: str) -> list[dict] | None:
+def _strip_interactions(items: list[dict] | None, target: str, prop_id: str | None) -> list[dict] | None:
+    """Drop `target` from interaction drives (and interactions driving `prop_id`, when given)."""
     if items is None:
         return None
     kept = []
     for item in items:
         drives = dict(item.get("drives") or {})
-        if drives.get("prop") == prop_id:
+        if prop_id is not None and drives.get("prop") == prop_id:
             continue
         targets = drives.get("targets")
         if targets is not None:
-            targets = [t for t in targets if t != target]
+            targets = [t for t in targets if not _names(t, target)]
             if not targets:
                 continue
             drives["targets"] = targets
@@ -181,8 +195,9 @@ def _strip_explanations(items: list[dict] | None, target: str) -> list[dict] | N
     return [e for e in items if e.get("target") != target]
 
 
-def _mentions_prop(value: Any, prop_id: str) -> bool:
-    return isinstance(value, str) and (value == prop_id or value.startswith(prop_id + "."))
+def _names(value: Any, ref: str) -> bool:
+    """True when `value` is `ref` itself or a part of it: "hymn_books.top", "puppet:dad.hand_r"."""
+    return isinstance(value, str) and (value == ref or value.startswith(ref + "."))
 
 
 def strip_prop(screenplay: dict, timeline: dict, prop_id: str) -> tuple[dict, dict]:
@@ -195,11 +210,11 @@ def strip_prop(screenplay: dict, timeline: dict, prop_id: str) -> tuple[dict, di
         shot = dict(shot)
         start = {}
         for who, state in (shot.get("start") or {}).items():
-            state = {k: v for k, v in state.items() if not (k in ("holding", "in") and _mentions_prop(v, prop_id))}
+            state = {k: v for k, v in state.items() if not (k in ("holding", "in") and _names(v, prop_id))}
             start[who] = state
         shot["start"] = start
         shot["propStart"] = {
-            pid: {k: v for k, v in ps.items() if not (k == "on" and _mentions_prop(v, prop_id))}
+            pid: {k: v for k, v in ps.items() if not (k == "on" and _names(v, prop_id))}
             for pid, ps in (shot.get("propStart") or {}).items()
             if pid != prop_id
         }
@@ -208,7 +223,7 @@ def strip_prop(screenplay: dict, timeline: dict, prop_id: str) -> tuple[dict, di
         ]
         actions = [
             a for a in shot.get("actions", [])
-            if not any(_mentions_prop(a.get(k), prop_id) for k in ("what", "on", "target", "at"))
+            if not any(_names(a.get(k), prop_id) for k in ("what", "on", "target", "at"))
         ]
         shot["actions"] = actions
         cues = {a["id"] for a in actions if a.get("id")} | {a["do"] for a in actions}
@@ -239,6 +254,130 @@ def strip_prop(screenplay: dict, timeline: dict, prop_id: str) -> tuple[dict, di
     return sp, tl
 
 
+def _from_telling(line: dict, person_id: str) -> bool:
+    source = line.get("source")
+    return isinstance(source, str) and source.startswith(f"telling:{person_id}:")
+
+
+def _drop_cues(lines: list[dict], gone: set[str]) -> list[dict]:
+    """Drop cue/cueWord from lines whose cue names an action that no longer exists."""
+    return [
+        {k: v for k, v in line.items() if k not in ("cue", "cueWord")} if line.get("cue") in gone else line
+        for line in lines
+    ]
+
+
+def strip_person(screenplay: dict, timeline: dict, person_id: str, *, keep_narrator: str) -> tuple[dict, dict]:
+    """Remove one person from a screenplay and timeline (camelCase JSON dicts). Pure.
+
+    Their cast entry, start states, actions (by them, or naming them in to/target/at/on/what),
+    camera targets, narrations, interactions and explanations go. Shot narration from their
+    telling is replaced with `keep_narrator`'s lines for that shot (which then leave
+    `screenplay.narrations`, since they are now the default telling). In the timeline, their
+    tracks go; any other target whose keys name them (a prop parented to their hand) is cut,
+    with all its channels, from the first such key, so it stays where it last was. When they
+    were the default narrator, `keep_narrator` takes over `defaultNarrator`, `captions` and
+    `audio`.
+    """
+    puppet = f"puppet:{person_id}"
+    sp = dict(screenplay)
+    sp["cast"] = [c for c in sp.get("cast", []) if c != person_id]
+
+    other_narrations: dict[str, dict[str, list[dict]]] = {
+        author: dict(by_shot)
+        for author, by_shot in (sp.get("narrations") or {}).items()
+        if author != person_id
+    }
+    keep_lines = other_narrations.get(keep_narrator, {})
+
+    shots = []
+    removed_cues: set[str] = set()
+    kept_cues: set[str] = set()
+    for shot in sp.get("shots", []):
+        shot = dict(shot)
+        shot["start"] = {who: state for who, state in (shot.get("start") or {}).items() if who != person_id}
+        shot["camera"] = [
+            {k: v for k, v in cue.items() if not (k == "target" and _names(v, person_id))}
+            for cue in shot.get("camera", [])
+        ]
+        actions, dropped = [], []
+        for action in shot.get("actions", []):
+            gone = action.get("who") == person_id or any(
+                _names(action.get(k), person_id) for k in ("to", "target", "at", "on", "what")
+            )
+            (dropped if gone else actions).append(action)
+        shot["actions"] = actions
+        cues = {a["id"] for a in actions if a.get("id")} | {a["do"] for a in actions}
+        gone_cues = ({a["id"] for a in dropped if a.get("id")} | {a["do"] for a in dropped}) - cues
+        removed_cues |= gone_cues
+        kept_cues |= cues
+
+        narration = shot.get("narration", [])
+        if any(_from_telling(line, person_id) for line in narration):
+            narration = list(keep_lines.get(shot["id"], []))
+            if shot["id"] in keep_lines:  # now the default telling, no longer an "other" one
+                keep_lines = {sid: lines for sid, lines in keep_lines.items() if sid != shot["id"]}
+        shot["narration"] = _drop_cues(narration, gone_cues)
+        other_narrations = {
+            author: {
+                sid: (_drop_cues(lines, gone_cues) if sid == shot["id"] else lines) for sid, lines in by_shot.items()
+            }
+            for author, by_shot in other_narrations.items()
+        }
+        shots.append(shot)
+    sp["shots"] = shots
+
+    if keep_narrator in other_narrations:
+        other_narrations[keep_narrator] = {
+            sid: lines for sid, lines in other_narrations[keep_narrator].items() if sid in keep_lines
+        }
+    other_narrations = {author: by_shot for author, by_shot in other_narrations.items() if by_shot}
+    if sp.get("narrations") is not None:
+        sp["narrations"] = other_narrations or None
+    sp["interactions"] = _strip_interactions(sp.get("interactions"), puppet, None)
+    sp["explanations"] = _strip_person_explanations(sp.get("explanations"), puppet)
+
+    tl = dict(timeline)
+    tracks = [t for t in tl.get("tracks", []) if t.get("target") != puppet]
+    cut: dict[str, float] = {}
+    for track in tracks:
+        for t, value in track.get("keys", []):
+            if _names(value, puppet):
+                target = track["target"]
+                cut[target] = min(t, cut.get(target, t))
+    trimmed = []
+    for track in tracks:
+        if track["target"] in cut:
+            keys = [k for k in track.get("keys", []) if k[0] < cut[track["target"]]]
+            if not keys:
+                continue
+            track = {**track, "keys": keys}
+        trimmed.append(track)
+    tl["tracks"] = trimmed
+
+    gone_cues = removed_cues - kept_cues
+    if tl.get("narrations") is not None:
+        tl["narrations"] = {
+            author: {**track, "lines": _drop_cues(track.get("lines", []), gone_cues)}
+            for author, track in tl["narrations"].items()
+            if author != person_id
+        }
+    if tl.get("defaultNarrator") == person_id:
+        tl["defaultNarrator"] = keep_narrator
+        keep_track = (tl.get("narrations") or {}).get(keep_narrator) or {}
+        tl["captions"] = list(keep_track.get("captions", []))
+        tl["audio"] = keep_track.get("audio")
+    tl["interactions"] = _strip_interactions(tl.get("interactions"), puppet, None)
+    tl["explanations"] = _strip_person_explanations(tl.get("explanations"), puppet)
+    return sp, tl
+
+
+def _strip_person_explanations(items: list[dict] | None, puppet: str) -> list[dict] | None:
+    if items is None:
+        return None
+    return [e for e in items if not _names(e.get("target"), puppet)]
+
+
 def short_title(text: str, words: int = TITLE_WORDS) -> str:
     """A short title from the first sentence of the telling."""
     first = re.split(r"(?<=[.!?])\s+", text.strip(), maxsplit=1)[0]
@@ -247,6 +386,40 @@ def short_title(text: str, words: int = TITLE_WORDS) -> str:
     if len(tokens) > words:
         title += "…"
     return title or "A memory"
+
+
+# ----------------------------------------------------------------------------- linker
+
+
+def _askees(teller_id: str, participant_ids: list[str]) -> list[str]:
+    """Named participants other than the teller, in order, once each."""
+    return [pid for pid in _dedupe(participant_ids) if pid != teller_id]
+
+
+def ask_participants(
+    db: Database, family_id: str, memory: schemas.Memory, teller_id: str, participant_ids: list[str]
+) -> list[schemas.Question]:
+    """The linker: one open question per named participant (never the teller) for `memory`.
+
+    A person who already has an open question for this memory is skipped, so running it
+    again creates nothing new. A failure for one person is logged and skipped. Returns the
+    questions created.
+    """
+    askees = _askees(teller_id, participant_ids)
+    if not askees:
+        return []
+    teller = people_db.get_person(db, family_id, teller_id)
+    teller_name = teller.name if teller is not None else "Someone"
+    text = f'{teller_name} told the story of "{memory.title}". What do you remember?'
+    created = []
+    for pid in askees:
+        try:
+            if any(q.memory_id == memory.id for q in memories_db.open_questions(db, family_id, pid)):
+                continue
+            created.append(memories_db.create_question(db, family_id, person_id=pid, text=text, memory_id=memory.id))
+        except Exception:  # noqa: BLE001 - a missing question never fails the run
+            logger.exception("memory %s: could not ask %s for their version", memory.id, pid)
+    return created
 
 
 # --------------------------------------------------------------------------- manager
@@ -477,10 +650,13 @@ class ScriptedRunManager:
 
     def _new_memory(self, run: _Run, db: Database) -> None:
         fields = run.fields
+        askees = _askees(run.person_id, fields.participant_ids)
         todos = ["Read the telling"]
         if self._ask_followup:
             todos.append("Ask one follow-up")
         todos += ["Find the props", "Stage the scene", "Narrate"]
+        if askees:  # a new memory has no questions yet, so every named participant gets one
+            todos.append(ASK_OTHERS)
         at = {name: i for i, name in enumerate(todos)}
 
         self._emit(run, "plan", self._plan(todos, 0))
@@ -506,7 +682,8 @@ class ScriptedRunManager:
         sample_prop = sample.props[0]
         prop_id = self._planned_id(props_db.get_prop, db, run.family_id, sample_prop.id)
         current = props_db.get_prop(db, run.family_id, prop_id)
-        shown = current if current is not None and current.family_id == run.family_id else sample_prop
+        reused = current is not None and current.family_id == run.family_id
+        shown = current if reused else sample_prop
         self._emit(run, "plan", self._plan(todos, at["Find the props"]))
         self._step()
         self._emit(run, "subagent_start", schemas.SubagentStartEvent(
@@ -518,15 +695,18 @@ class ScriptedRunManager:
             description=shown.description,
             size=shown.size,
             art=shown.art.get("body"),
-            reused=True,
+            reused=reused,
         )
         review = self._ask(run, "props_found", schemas.PropsFoundEvent(props=[chip]))
         edits = [e for e in (review.props or []) if e.id == prop_id]
         removed = any(e.action == "remove" for e in edits)
-        self._emit(run, "subagent_end", schemas.SubagentEndEvent(
-            name="prop_master",
-            summary=f"Left out the {chip.name}." if removed else f"Reused the {chip.name}.",
-        ))
+        if removed:
+            summary = f"Left out the {chip.name}."
+        elif reused:
+            summary = f"Reused the {chip.name}."
+        else:
+            summary = f"Saved the {chip.name}."
+        self._emit(run, "subagent_end", schemas.SubagentEndEvent(name="prop_master", summary=summary))
         self._step()
 
         self._emit(run, "plan", self._plan(todos, at["Stage the scene"]))
@@ -541,6 +721,14 @@ class ScriptedRunManager:
         self._step()
 
         memory = self._save(run, db, sample, text, edits, removed)
+
+        if askees:
+            self._emit(run, "plan", self._plan(todos, at[ASK_OTHERS]))
+            self._step()
+            try:
+                ask_participants(db, run.family_id, memory, run.person_id, askees)
+            except Exception:  # noqa: BLE001 - the linker never fails the run
+                logger.exception("run %s: the linker failed; no questions were asked", run.run_id)
 
         self._emit(run, "plan", self._plan(todos, len(todos)))
         self._step()
@@ -607,16 +795,20 @@ class ScriptedRunManager:
         except ValueError:  # the id belongs to another family
             return insert(None).id
 
-    def _people_map(self, run: _Run, db: Database) -> dict[str, str]:
-        """Sample person id -> this family's person id."""
+    def _people_map(self, run: _Run, db: Database) -> dict[str, str | None]:
+        """Sample person id -> this family's person id.
+
+        SAMPLE_OTHER maps to None when the family has nobody but the teller: the two
+        sample puppets are never merged into one person.
+        """
         teller = run.person_id
         other = next((p for p in run.fields.participant_ids if p != teller), None)
         if other is None:
             people = people_db.list_people(db, run.family_id)
             me = next((p for p in people if p.id == teller), None)
-            spouses = [s for s in (me.spouse_ids if me else []) if any(p.id == s for p in people)]
+            spouses = [s for s in (me.spouse_ids if me else []) if s != teller and any(p.id == s for p in people)]
             others = [p.id for p in people if p.id != teller]
-            other = next(iter(spouses + others), teller)
+            other = next(iter(spouses + others), None)
         return {SAMPLE_TELLER: teller, SAMPLE_OTHER: other}
 
     def _save(
@@ -634,10 +826,11 @@ class ScriptedRunManager:
         assert sample_memory.screenplay is not None and sample_memory.timeline is not None
 
         people = self._people_map(run, db)
-        participants = _dedupe([run.person_id, people[SAMPLE_OTHER], *fields.participant_ids])
+        other = people[SAMPLE_OTHER]
+        participants = _dedupe([run.person_id, *([other] if other else []), *fields.participant_ids])
 
         # The family's set (and prop, unless the family left it out).
-        ids: dict[str, str] = dict(people)
+        ids: dict[str, str] = {sample_id: pid for sample_id, pid in people.items() if pid is not None}
         set_ids: list[str] = []
         for set_def in sample.sets:
             planned = self._planned_id(props_db.get_set, db, fid, set_def.id)
@@ -669,6 +862,8 @@ class ScriptedRunManager:
         timeline = sample_memory.timeline.model_dump(mode="json", by_alias=True, exclude_none=True)
         for pid in removed_ids:
             screenplay, timeline = strip_prop(screenplay, timeline, pid)
+        if other is None:  # a family of one: the teller plays alone
+            screenplay, timeline = strip_person(screenplay, timeline, SAMPLE_OTHER, keep_narrator=SAMPLE_TELLER)
 
         memory = memories_db.create_memory(
             db,
@@ -710,10 +905,12 @@ class ScriptedRunManager:
             if edit.action == "rename" and edit.name and edit.name.strip():
                 props_db.update_prop(db, family_id, prop_id, schemas.PropPatch(name=edit.name.strip()))
             elif edit.action == "replace_photo" and edit.photo_id:
-                if media_db.media_exists(db, family_id, edit.photo_id):
-                    props_db.update_prop(db, family_id, prop_id, schemas.PropPatch(photo_id=edit.photo_id))
+                media_id = media_db.parse_media_ref(edit.photo_id)
+                if media_id is not None and media_db.media_exists(db, family_id, media_id):
+                    patch = schemas.PropPatch(photo_id=media_db.media_ref(media_id))
+                    props_db.update_prop(db, family_id, prop_id, patch)
                 else:
-                    logger.warning("prop %s: ignored replace_photo with unknown photo %s", prop_id, edit.photo_id)
+                    logger.warning("prop %s: ignored replace_photo with unknown photo %r", prop_id, edit.photo_id)
 
 
 # --------------------------------------------------------------------------- install
@@ -739,4 +936,12 @@ def install_fake_runs(*, step_seconds: float = 0.6) -> bool:
     return True
 
 
-__all__ = ["ScriptedRunManager", "install_fake_runs", "remap_ids", "short_title", "strip_prop"]
+__all__ = [
+    "ScriptedRunManager",
+    "ask_participants",
+    "install_fake_runs",
+    "remap_ids",
+    "short_title",
+    "strip_person",
+    "strip_prop",
+]
