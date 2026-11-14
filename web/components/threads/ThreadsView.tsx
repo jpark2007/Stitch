@@ -18,7 +18,7 @@ import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } fro
 import { parseZoom } from "./camera";
 import { ThreadsEngine } from "./engine";
 import { buildModel, type ThreadMoment, type ThreadPerson } from "./model";
-import { paperAt, TITLE_FONT_PX } from "./titles";
+import { paperAt, TITLE_FONT_PX, TITLE_FONT_PX_COMPACT } from "./titles";
 
 export interface ThreadsViewProps {
   familyName: string;
@@ -103,7 +103,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
         const band = String(Math.round((h.y + pl.dy) / 12));
         if (t.dataset.band !== band) {
           t.dataset.band = band;
-          t.style.setProperty("--halo", paperAt(h.y + pl.dy + TITLE_FONT_PX * 0.6));
+          t.style.setProperty("--halo", paperAt(h.y + pl.dy + 11));
         }
         const o = pl.alpha.toFixed(2);
         if (t.style.opacity !== o) t.style.opacity = o;
@@ -163,6 +163,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
       e.kick();
     };
     document.fonts?.load(`500 ${TITLE_FONT_PX}px ${hand}`).then(remeasure);
+    document.fonts?.load(`500 ${TITLE_FONT_PX_COMPACT}px ${hand}`).then(remeasure);
     document.fonts?.ready.then(remeasure);
 
     const unbind = e.bindInput({
@@ -252,7 +253,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
                 }}
                 className="threads-title absolute left-0 top-0 whitespace-nowrap"
                 data-title={k.moment.title}
-                style={{ opacity: 0, fontSize: TITLE_FONT_PX }}
+                style={{ opacity: 0 }}
                 aria-hidden
               >
                 {k.moment.title}

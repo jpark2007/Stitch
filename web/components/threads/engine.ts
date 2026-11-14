@@ -22,7 +22,7 @@ import {
 } from "./camera";
 import type { ThreadsModel } from "./model";
 import { drawFrame, makeLayout, type FrameGeometry, type Layout } from "./renderer";
-import { placeTitles, TITLE_FONT_PX, type TitleBox, type TitlePlacement } from "./titles";
+import { placeTitles, titleFontPx, type TitleBox, type TitlePlacement } from "./titles";
 
 const INTRO_MS = 1900;
 const KNOT_POP_MS = 460;
@@ -145,6 +145,7 @@ export class ThreadsEngine {
     this.canvas.style.height = `${H}px`;
     this.layout = makeLayout(W, H, this.model.strands.length);
     const prevW = this.bounds.width;
+    if (titleFontPx(W) !== titleFontPx(prevW)) this.measureTitles();
     this.bounds = { tMin: this.model.tMin, tMax: this.model.tMax, width: W };
     if (!this.ready) {
       // Open on the followed person's life, or on the whole family's.
@@ -163,7 +164,7 @@ export class ThreadsEngine {
   measureTitles() {
     const ctx = this.ctx;
     if (!ctx) return;
-    ctx.font = `500 ${TITLE_FONT_PX}px ${this.fonts.hand}`;
+    ctx.font = `500 ${titleFontPx(this.layout.width)}px ${this.fonts.hand}`;
     this.titleW = this.model.knots.map((k) => ctx.measureText(k.moment.title).width + 6);
   }
 

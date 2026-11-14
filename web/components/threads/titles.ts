@@ -12,6 +12,13 @@ import type { ThreadsModel } from "./model";
 import type { FrameGeometry } from "./renderer";
 
 export const TITLE_FONT_PX = 20;
+/** Phones set titles a size smaller, so more of them find room. */
+export const TITLE_FONT_PX_COMPACT = 17;
+
+/** Title size (px) for a view this wide; matches the CSS breakpoint in threads.css. */
+export function titleFontPx(width: number): number {
+  return width < 640 ? TITLE_FONT_PX_COMPACT : TITLE_FONT_PX;
+}
 
 export interface TitleBox {
   x0: number;
@@ -118,7 +125,7 @@ export function placeTitles(model: ThreadsModel, inp: TitleInput): TitleLayout {
   const boxes: TitleBox[] = [];
   const shown = new Map<number, TitlePlacement>();
   const knotBoxes = g.knots.filter((k) => k && k.visible);
-  const hTxt = TITLE_FONT_PX * 1.15;
+  const hTxt = titleFontPx(W) * 1.15;
   for (const i of candidates) {
     const h = g.knots[i];
     const w = widths[i];

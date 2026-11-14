@@ -45,6 +45,7 @@
 }
 
 .threads-title {
+  font-size: 20px; /* TITLE_FONT_PX in titles.ts */
   font-family: var(--font-caveat), "Bradley Hand", cursive;
   font-weight: 500;
   line-height: 1.15;
@@ -156,6 +157,10 @@
 
 /* Phones: beside the zoom buttons, which sit bottom right. */
 @media (max-width: 639px) {
+  .threads-title {
+    font-size: 17px; /* TITLE_FONT_PX_COMPACT */
+  }
+
   .threads-hint {
     left: var(--gutter);
     bottom: 2.05rem;
