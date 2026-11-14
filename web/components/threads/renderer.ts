@@ -182,6 +182,10 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
     };
     let p0 = phase[0] / period;
     let inGap = p0 - Math.floor(p0) > 1 - gapOf(Math.floor(p0)) && !nearAny(knotT, t0, knotClear);
+    // Just past the last gap edge handled. It carries over between samples:
+    // an edge that falls exactly on a sample is handled by the next one,
+    // rather than skipped (which would drop a whole stitch).
+    let pa = p0;
     if (!inGap) run.push(buf[0], buf[1]);
     for (let k = 1; k < nSamples; k++) {
       const p1 = phase[k] / period;
@@ -189,7 +193,6 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
       const ya = buf[k * 2 - 1];
       const xb = buf[k * 2];
       const yb = buf[k * 2 + 1];
-      let pa = p0;
       // Walk every gap edge between the two samples.
       for (let guard = 0; guard < 64; guard++) {
         const cell = Math.floor(pa);
