@@ -1015,39 +1015,23 @@ class ExplainStage {
     const root = this.runtime.root;
     if (!root) return;
     const s = this.s;
+    const pl = this.pl;
     const cam = st.camera;
     const W = st.size.width;
     const H = st.size.height;
     root.updateWorldMatrix(true, false);
     cam.updateMatrixWorld();
-    const camStage = root.worldToLocal(s.cam.setFromMatrixPosition(cam.matrixWorld));
-    const yawAt = (x: number, z: number) => Math.max(-MAX_YAW, Math.min(MAX_YAW, Math.atan2(camStage.x - x, camStage.z - z) * 0.55));
-    const leanAt = (x: number, h: number, z: number) => {
-      const el = Math.atan2(camStage.y - h * 0.5, Math.hypot(camStage.x - x, camStage.z - z));
-      return Math.max(0, Math.min(MAX_LEAN, el * 0.5));
-    };
-    const rectAt: PlaceInput["rectAt"] = (x, h, d, out) => {
-      const z = NOTE_Z[d] ?? NOTE_Z[0];
-      const yaw = yawAt(x, z);
-      const lean = leanAt(x, h, z);
-      const cy = Math.cos(yaw);
-      const sy = Math.sin(yaw);
-      out.x0 = out.y0 = Infinity;
-      out.x1 = out.y1 = -Infinity;
-      for (let i = 0; i < 4; i++) {
-        // Card-local (u across, v up) -> leaned back -> turned -> stood at (x, BASE_Y, z).
-        const u = (i & 1 ? 0.5 : -0.5) * h * rig.aspect;
-        const vUp = i & 2 ? h : 0;
-        const ly = vUp * Math.cos(lean);
-        const lz = -vUp * Math.sin(lean);
-        s.v.set(x + u * cy + lz * sy, BASE_Y + ly, z - u * sy + lz * cy).applyMatrix4(root.matrixWorld);
-        addPoint(s.v, cam, W, H, out);
-      }
-      return out;
-    };
+    root.worldToLocal(s.cam.setFromMatrixPosition(cam.matrixWorld));
+    pl.rig = rig;
+    pl.root = root;
+    pl.camera = cam;
+    pl.w = W;
+    pl.h = H;
     projectBox(rig.box, cam, W, H, s.v, s.target);
     for (let i = 0; i < rig.others.length; i++) projectBox(rig.others[i], cam, W, H, s.v, rig.otherRects[i]);
-    const avoid: Rect[] = [];
+    const input = pl.input;
+    const avoid = input.avoid as Rect[];
+    avoid.length = 0;
     const caption = this.inputs?.caption;
     const at = caption?.at.current;
     if (caption && at) {
@@ -1067,27 +1051,84 @@ class ExplainStage {
     view.y0 = VIEW_PAD.top;
     view.y1 = H - VIEW_PAD.bottom;
     const per = rig.layout.height / rig.layout.font;
-    const p = placeNote(
-      {
-        target: s.target,
-        view,
-        avoid,
-        others: rig.otherRects,
-        rectAt,
-        depths: NOTE_Z.length,
-        targetX: rig.anchor.x,
-        xMin: -1.0,
-        xMax: 1.0,
-        wantPx: per * (W < 560 ? READ_PX_PHONE : READ_PX),
-        minPx: per * MIN_PX,
-        maxH: MAX_H,
-        prevX: rig.isPlaced ? rig.x : null,
-      },
-      s.place,
-    );
+    input.others = rig.otherRects;
+    input.targetX = rig.anchor.x;
+    input.wantPx = per * (W < 560 ? READ_PX_PHONE : READ_PX);
+    input.minPx = per * MIN_PX;
+    input.prevX = rig.isPlaced ? rig.x : null;
+    const p = placeNote(input, s.place);
     const z = NOTE_Z[p.depth] ?? NOTE_Z[0];
-    rig.setGoal(p.x, p.h, z, yawAt(p.x, z), leanAt(p.x, p.h, z), p.side > 0 ? -1 : 1);
+    rig.setGoal(p.x, p.h, z, this.yawAt(p.x, z), this.leanAt(p.x, p.h, z), p.side > 0 ? -1 : 1);
+    pl.rig = null;
   }
+
+  /** How far a note at stage (x, z) turns toward the camera (s.cam, stage space). */
+  private yawAt(x: number, z: number): number {
+    const c = this.s.cam;
+    return Math.max(-MAX_YAW, Math.min(MAX_YAW, Math.atan2(c.x - x, c.z - z) * 0.55));
+  }
+
+  /** How far a note `h` tall at (x, z) leans back to face the camera. */
+  private leanAt(x: number, h: number, z: number): number {
+    const c = this.s.cam;
+    const el = Math.atan2(c.y - h * 0.5, Math.hypot(c.x - x, c.z - z));
+    return Math.max(0, Math.min(MAX_LEAN, el * 0.5));
+  }
+
+  /** placeNote's camera: the screen rect of the note being placed, standing at x, h tall, in depth slot d. */
+  private readonly rectAt: PlaceInput["rectAt"] = (x, h, d, out) => {
+    const { rig, root, camera, w, h: H } = this.pl;
+    out.x0 = out.y0 = Infinity;
+    out.x1 = out.y1 = -Infinity;
+    if (!rig || !root || !camera) return out;
+    const z = NOTE_Z[d] ?? NOTE_Z[0];
+    const yaw = this.yawAt(x, z);
+    const lean = this.leanAt(x, h, z);
+    const cy = Math.cos(yaw);
+    const sy = Math.sin(yaw);
+    const v = this.s.v;
+    for (let i = 0; i < 4; i++) {
+      // Card-local (u across, v up) -> leaned back -> turned -> stood at (x, BASE_Y, z).
+      const u = (i & 1 ? 0.5 : -0.5) * h * rig.aspect;
+      const up = i & 2 ? h : 0;
+      const ly = up * Math.cos(lean);
+      const lz = -up * Math.sin(lean);
+      v.set(x + u * cy + lz * sy, BASE_Y + ly, z - u * sy + lz * cy).applyMatrix4(root.matrixWorld);
+      addPoint(v, camera, w, H, out);
+    }
+    return out;
+  };
+
+  /** One placement's inputs, reused (placement runs on every frame the camera moves). */
+  private readonly pl: {
+    rig: NoteRig | null;
+    root: Object3D | null;
+    camera: Camera | null;
+    w: number;
+    h: number;
+    input: PlaceInput;
+  } = {
+    rig: null,
+    root: null,
+    camera: null,
+    w: 1,
+    h: 1,
+    input: {
+      target: this.s.target,
+      view: this.s.view,
+      avoid: [],
+      others: [],
+      rectAt: (x, h, d, out) => this.rectAt(x, h, d, out),
+      depths: NOTE_Z.length,
+      targetX: 0,
+      xMin: -1,
+      xMax: 1,
+      wantPx: 100,
+      minPx: 60,
+      maxH: MAX_H,
+      prevX: null,
+    },
+  };
 
   /** A point on a clickable cutout's paper (client CSS px), or null when it cannot be clicked now. */
   private where(target: string): ExplainPoint | null {
