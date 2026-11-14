@@ -19,7 +19,9 @@ checks the form kit: every input has a label, a failed submit moves focus to the
 problem, invalid fields carry aria-invalid and aria-describedby pointing at their
 message, Enter submits, the "(optional)" mark reads with a space, and tab order follows
 the visual order. It also types into the server-rendered form before React hydrates it
-(the text must survive).
+(the text must survive), holding the app's scripts meanwhile so the typing comes first
+however busy the machine, and checks a stale signed-in hint: the form stays in front of
+someone already typing while /me is asked, and an untouched one waits behind the blank sheet.
 
 Every check is a seam in seams.json with a screenshot under shots/. Exit code 1 when a
 'pages' or 'api' seam failed, else 0. Without Playwright's Chromium it prints the SKIP
