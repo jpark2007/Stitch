@@ -6,7 +6,7 @@
     {
       "id": "s1",
       "set": "church_steps_1988",
-      "marks": {"steps_near": [0.54, 0.0], "upper_step": [0.62, 0.16]},
+      "marks": {"steps_near": [0.44, 0.0], "upper_step": [0.55, 0.15]},
       "start": {
         "grandpa_joseph": {"at": "offstage_left", "holding": "black_umbrella", "facing": "right"},
         "grandma_rosa": {"at": "steps_top", "facing": "left"}
@@ -58,7 +58,7 @@
       "marks": {},
       "start": {
         "grandma_rosa": {"at": "church_door", "holding": "black_umbrella", "facing": "right"},
-        "grandpa_joseph": {"at": "path", "facing": "right"}
+        "grandpa_joseph": {"at": "lilac", "facing": "left"}
       },
       "propStart": {},
       "camera": [

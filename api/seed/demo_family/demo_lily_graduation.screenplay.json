@@ -30,7 +30,7 @@
         {"t": 0.3, "who": "grandma_rosa", "do": "put_on", "what": "rosa_hat", "id": "hats"},
         {"t": 0.3, "who": "grandma_carmen", "do": "put_on", "what": "carmen_hat"},
         {"t": 2.4, "who": "grandma_carmen", "do": "turn_to", "target": "grandma_rosa"},
-        {"t": 0.5, "who": "lily", "do": "walk_to", "to": "stage_steps"},
+        {"t": 3.9, "who": "lily", "do": "walk_to", "to": "stage_steps", "id": "called_up"},
         {"t": 6.9, "who": "lily", "do": "pose", "pose": "bow_head", "dur": 1.2, "id": "bow"},
         {"t": 7.6, "who": "grandma_rosa", "do": "stand_up", "id": "cheer"},
         {"t": 8.1, "who": "grandma_rosa", "do": "pose", "pose": "arms_raised", "dur": 1.6, "id": "clap"},

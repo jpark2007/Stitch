@@ -19,9 +19,10 @@
       "actions": [
         {"t": 0.5, "who": "sam", "do": "get_in", "what": "red_bike", "socket": "driver", "id": "on_bike"},
         {"t": 3.8, "who": "dad", "do": "walk_to", "to": "behind_bike", "id": "round_back"},
+        {"t": 5.4, "who": "dad", "do": "turn_to", "target": "sam"},
         {"t": 6.4, "who": "dad", "do": "pose", "pose": "reach", "dur": 0.8, "id": "steady"},
         {"t": 7.8, "who": "sam", "do": "drive_to", "what": "red_bike", "to": "street_end", "id": "ride"},
-        {"t": 7.8, "who": "dad", "do": "run_to", "to": "sidewalk", "id": "run_behind"}
+        {"t": 7.8, "who": "dad", "do": "run_to", "to": "street_end", "id": "run_behind"}
       ],
       "narration": [
         {
@@ -45,7 +46,7 @@
     {
       "id": "s2",
       "set": "maple_corner_1997",
-      "marks": {"chase_in": [0.0, 0.0]},
+      "marks": {"chase_in": [0.05, 0.0]},
       "start": {
         "sam": {"at": "street_in", "in": "red_bike.driver", "facing": "right"},
         "dad": {"at": "chase_in", "facing": "right"}

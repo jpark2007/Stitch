@@ -65,8 +65,9 @@
       "actions": [
         {"t": 0, "do": "time_of_day", "value": "dusk", "dur": 1.5},
         {"t": 1.5, "who": "mom", "do": "hug", "target": "sam", "dur": 2.0, "id": "hug"},
+        {"t": 2.2, "do": "confetti", "at": "sam", "dur": 3.0},
+        {"t": 3.9, "who": "sam", "do": "turn_to", "target": "dad"},
         {"t": 4.0, "who": "sam", "do": "drop", "what": "boutonniere", "id": "fell_off"},
-        {"t": 4.0, "do": "confetti", "at": "sam", "dur": 3.0},
         {"t": 4.5, "who": "dad", "do": "wave", "target": "sam", "dur": 1.6, "id": "wave_all"},
         {"t": 5.0, "who": "lily", "do": "pick_up", "what": "boutonniere", "id": "rescue"},
         {"t": 7.0, "who": "lily", "do": "hand_to", "what": "boutonniere", "to": "sam", "id": "pin_back"}
