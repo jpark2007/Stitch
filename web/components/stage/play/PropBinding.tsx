@@ -13,6 +13,7 @@
 
 import { useFrame } from "@react-three/fiber";
 import { useMemo, useRef } from "react";
+import { Matrix4, Vector3, type Group } from "three";
 import type { Prop } from "@/lib/types";
 import {
   PropActor,
@@ -24,17 +25,22 @@ import {
   setState,
   type PropActorHandle,
 } from "../PropActor";
-import { PRIORITY, useScene, useWingClip } from "./SceneProvider";
+import { PRIORITY, standStill, standUp, tiltAbout, useScene, useWingClip } from "./SceneProvider";
+import type { Mount } from "./standing";
 
 export interface PropBindingProps {
   prop: Prop;
 }
 
 export function PropBinding({ prop }: PropBindingProps) {
-  const { frame, runtime, resolveMedia } = useScene();
+  const { frame, runtime, standing, resolveMedia } = useScene();
   const pf = useMemo(() => frame.propsById.get(prop.id) ?? null, [frame, prop.id]);
   const pose = useMemo(() => createPropPose({ parent: "ground", position: [0, 0, 0] }), []);
   const actor = useRef<PropActorHandle>(null);
+  const outer = useRef<Group>(null);
+  const inner = useRef<Group>(null);
+  const mount = useMemo<Mount>(() => ({ angle: 0, dy: 0, dz: 0 }), []);
+  const scratch = useMemo(() => ({ m: new Matrix4(), v: new Vector3() }), []);
 
   // A missing image resolves to an empty string: the actor draws its
   // placeholder card in prop.color instead.
@@ -49,19 +55,42 @@ export function PropBinding({ prop }: PropBindingProps) {
     if (pose.state !== pf.state) setState(pose, pf.state);
     const parts = pf.parts;
     for (let i = 0; i < parts.length; i++) setPartRotation(pose, parts[i], pf.partRotations[i]);
+    // On the page it stands up with the set. On a puppet it already follows
+    // the socket's position; while the holder lies folded it also tilts flat
+    // with them (a held prop otherwise keeps its own upright orientation).
+    const parent = pf.parent;
+    if (parent.kind === "ground") {
+      standUp(standing, outer.current, inner.current, p[0], p[1], p[2], mount);
+      return;
+    }
+    const holder = parent.kind === "puppet" && parent.id ? frame.puppetsById.get(parent.id) : undefined;
+    if (holder && parent.target && parent.socket) {
+      const h = holder.position;
+      standing.mount(h[0], h[1], h[2], mount);
+      if (mount.angle !== 0 && runtime.resolvePuppetSocket(parent.target, parent.socket, scratch.m)) {
+        scratch.v.setFromMatrixPosition(scratch.m);
+        tiltAbout(outer.current, inner.current, scratch.v.x, scratch.v.y, scratch.v.z, mount.angle);
+        return;
+      }
+    }
+    standStill(outer.current, inner.current);
   }, PRIORITY.pose);
 
   useWingClip(() => actor.current?.object);
 
   if (!pf) return null;
   return (
-    <PropActor
-      ref={actor}
-      prop={prop}
-      pose={pose}
-      resolveSocket={runtime.resolvePuppetSocket}
-      registry={runtime.registry}
-      resolveArt={resolveArt}
-    />
+    <group ref={outer}>
+      <group ref={inner}>
+        <PropActor
+          ref={actor}
+          prop={prop}
+          pose={pose}
+          resolveSocket={runtime.resolvePuppetSocket}
+          registry={runtime.registry}
+          resolveArt={resolveArt}
+        />
+      </group>
+    </group>
   );
 }

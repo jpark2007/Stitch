@@ -59,13 +59,24 @@ export interface TimelineSceneProps {
   camera?: boolean;
   /** With `camera`: allow the small drag-orbit that eases back. Default true. */
   orbit?: boolean;
+  /** With `camera`: lens-shift the picture up by this share of the screen (room for captions). Default 0. */
+  lift?: number;
   /** Tick the controller from the render loop. Default true (see SceneProvider). */
   tick?: boolean;
   /** Extra things in stage space (debug markers, probes). */
   children?: ReactNode;
 }
 
-export function TimelineScene({ controller, scene, size, camera = false, orbit = true, tick = true, children }: TimelineSceneProps) {
+export function TimelineScene({
+  controller,
+  scene,
+  size,
+  camera = false,
+  orbit = true,
+  lift = 0,
+  tick = true,
+  children,
+}: TimelineSceneProps) {
   const { scale, origin } = useMemo(() => stageLayout(size), [size]);
   const frame = controller.frame;
   const props = useMemo(() => {
@@ -75,14 +86,14 @@ export function TimelineScene({ controller, scene, size, camera = false, orbit =
   return (
     <SceneProvider controller={controller} scene={scene} scale={scale} origin={origin} tick={tick}>
       <SetLayers />
-      {frame.puppets.map((p) => (
-        <PuppetActor key={p.id} id={p.id} />
+      {frame.puppets.map((p, i) => (
+        <PuppetActor key={p.id} id={p.id} index={i} />
       ))}
       {props.map((p) => (
         <PropBinding key={p.id} prop={p} />
       ))}
       <EffectBindings />
-      {camera && <CameraBinding orbit={orbit} />}
+      {camera && <CameraBinding orbit={orbit} lift={lift} />}
       {children}
     </SceneProvider>
   );

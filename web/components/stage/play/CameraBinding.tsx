@@ -15,8 +15,9 @@
  * back").
  */
 
-import { useMemo } from "react";
-import { Vector3 } from "three";
+import { useFrame, useThree } from "@react-three/fiber";
+import { useEffect, useMemo, useRef } from "react";
+import { Vector3, type PerspectiveCamera } from "three";
 import { CameraRig, type CameraPath } from "../CameraRig";
 import type { PlaybackFrame } from "../playback";
 import { useScene, type StageRuntime } from "./SceneProvider";
@@ -49,10 +50,38 @@ export function timelineCameraPath(frame: PlaybackFrame, runtime: StageRuntime):
 export interface CameraBindingProps {
   /** Drag to orbit a little, easing back on release. Default true. */
   orbit?: boolean;
+  /**
+   * Shift the picture up by this share of the screen height (a lens shift,
+   * not a tilt: perspective is unchanged), leaving the bottom of the frame
+   * for captions laid over it. Default 0.
+   */
+  lift?: number;
 }
 
-export function CameraBinding({ orbit = true }: CameraBindingProps) {
+export function CameraBinding({ orbit = true, lift = 0 }: CameraBindingProps) {
   const { frame, runtime } = useScene();
   const path = useMemo(() => timelineCameraPath(frame, runtime), [frame, runtime]);
+  const camera = useThree((s) => s.camera);
+  const last = useRef({ w: 0, h: 0, lift: Number.NaN });
+
+  useFrame((state) => {
+    const cam = state.camera as PerspectiveCamera;
+    if (!cam.isPerspectiveCamera) return;
+    const { width: w, height: h } = state.size;
+    const l = last.current;
+    if (l.w === w && l.h === h && l.lift === lift) return;
+    l.w = w;
+    l.h = h;
+    l.lift = lift;
+    if (lift) cam.setViewOffset(w, h, 0, Math.round(lift * h), w, h);
+    else cam.clearViewOffset();
+  });
+  useEffect(
+    () => () => {
+      if ((camera as PerspectiveCamera).isPerspectiveCamera) (camera as PerspectiveCamera).clearViewOffset();
+    },
+    [camera],
+  );
+
   return <CameraRig pose={path} orbit={orbit} />;
 }

@@ -86,19 +86,29 @@ function paintBack(k: PaintKit, color: string) {
   panel.quadraticCurveTo(w - m - inset, 0.985 - inset, w - m - inset, 0.985 - inset - pr);
   panel.lineTo(w - m - inset, 0.16);
   panel.closePath();
-  k.layer(panel, tone(color, 0.12), 0.45);
+  k.layer(panel, tone(color, 0.1), 0.45);
+  // A few torn scraps of paler and deeper card glued over the panel: the
+  // collage a painted backdrop starts as. Kept low and soft, so it reads as
+  // texture behind the cast, never as a picture of something.
+  const scraps: [number, number, number, number, number][] = [
+    [0.22, 0.72, 0.2, 0.11, 0.12],
+    [0.7, 0.58, 0.26, 0.13, -0.04],
+    [0.42, 0.34, 0.18, 0.09, 0.09],
+    [0.86, 0.3, 0.14, 0.1, -0.05],
+  ];
+  for (const [u, v, rx, ry, t] of scraps) k.layer(tornBlob(k, u * w, v, rx * w * 0.5, ry, 18), tone(color, t), 0.22);
   k.layer(closed([[m, -0.05], [m, 0.12], [w - m, 0.12], [w - m, -0.05]]), tone(color, -0.1), 0.5);
-  // Pencil courses across the panel, drawn by hand (never quite straight).
-  const rows = 7;
-  for (let i = 1; i < rows; i++) {
-    const y = 0.16 + ((0.985 - inset - 0.16) * i) / rows;
-    const line = new Path2D();
-    const wob = () => (k.rand() - 0.5) * 0.006;
-    line.moveTo(m + inset + 0.03, y + wob());
-    line.lineTo(w / 2, y + wob());
-    line.lineTo(w - m - inset - 0.03, y + wob());
-    k.line(line, tone(color, -0.18), 0.0028);
+}
+
+/** A torn scrap: an ellipse with a ragged rim. */
+function tornBlob(k: PaintKit, cx: number, cy: number, rx: number, ry: number, n: number): Path2D {
+  const pts: Pt[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const j = 0.82 + k.rand() * 0.3;
+    pts.push([cx + Math.cos(a) * rx * j, cy + Math.sin(a) * ry * j]);
   }
+  return closed(pts);
 }
 
 /** Middle: a band with a gently terraced top. */

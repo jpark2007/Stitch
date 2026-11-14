@@ -21,10 +21,20 @@
 
 export { TimelineScene, stageLayout, type TimelineSceneProps } from "./TimelineScene";
 export { TimelineStage, type TimelineStageProps } from "./TimelineStage";
-export { SceneProvider, useScene, PRIORITY, WING_X, type SceneContextValue, type SceneProviderProps } from "./SceneProvider";
+export {
+  SceneProvider,
+  StageRuntime,
+  useScene,
+  standUp,
+  PRIORITY,
+  WING_X,
+  type SceneContextValue,
+  type SceneProviderProps,
+} from "./SceneProvider";
 export { PuppetActor, type PuppetActorProps } from "./PuppetActor";
 export { PropBinding, type PropBindingProps } from "./PropBinding";
-export { LayerBinding, SetLayers, foldToRise, layerZ, sceneCutoutSpecs, type LayerBindingProps } from "./LayerBinding";
+export { LayerBinding, SetLayers, sceneCutoutSpecs, type LayerBindingProps } from "./LayerBinding";
+export { Standing, foldToRise, layerZ, risersFor, type Mount, type Riser } from "./standing";
 export { CameraBinding, type CameraBindingProps } from "./CameraBinding";
 export { EffectBindings } from "./EffectBindings";
 export { CaptionStrip, type CaptionStripProps, type Teller } from "./CaptionStrip";

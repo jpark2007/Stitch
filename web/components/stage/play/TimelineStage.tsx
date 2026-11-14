@@ -23,16 +23,26 @@ export interface TimelineStageProps {
   className?: string;
   /** Allow the small drag-orbit. Default true. */
   orbit?: boolean;
+  /** Lens-shift the picture up by this share of the screen, leaving room for captions. Default 0. */
+  lift?: number;
   /** Soft depth of field focused on the camera target. Default false. */
   dof?: boolean;
   /** Extra things in the Canvas outside the stage (frame probes). */
   overlay?: ReactNode;
 }
 
-export const TimelineStage = memo(function TimelineStage({ controller, scene, className, orbit = true, dof = false, overlay }: TimelineStageProps) {
+export const TimelineStage = memo(function TimelineStage({
+  controller,
+  scene,
+  className,
+  orbit = true,
+  lift = 0,
+  dof = false,
+  overlay,
+}: TimelineStageProps) {
   return (
     <Stage className={className} camera={null} dof={dof} overlay={overlay}>
-      <TimelineScene controller={controller} scene={scene} camera orbit={orbit} />
+      <TimelineScene controller={controller} scene={scene} camera orbit={orbit} lift={lift} />
     </Stage>
   );
 });

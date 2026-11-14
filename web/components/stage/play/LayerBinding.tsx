@@ -7,17 +7,18 @@
  * pieces below it through a RiseProvider, so the existing <SetPiece> (and
  * <FloatingLayer>) hinge it every frame: 0 flat on the page, 1 risen. The
  * linear fold is eased into a hinge angle with a small pop past upright near
- * the top, so cards spring up like paper rather than swing like doors, and
- * any fold value is still exactly one pose (scrubbing and ?t are exact).
+ * the top (foldToRise), so cards spring up like paper rather than swing like
+ * doors, and any fold value is still exactly one pose (scrubbing and ?t are
+ * exact).
  *
  * Placement (CONTRACTS.md "Stage space"): every layer spans the full stage
  * width (2 units), centred, standing at z = depth × 0.35, `height` tall.
  * Layers rise back first (the compiler's stagger), and fold flat in that
  * order on top of each other.
  *
- * <MarkRisers> stands a paper platform under every mark with a standing
- * surface above the page (h > 0), hinged on the layer behind it, so a puppet
- * on `steps_top` stands on steps instead of air.
+ * Risers: a paper platform under every mark with a standing surface above
+ * the page (h > 0), hinged with the layer behind it, so a puppet on
+ * `steps_top` stands on steps instead of air (./standing).
  */
 
 import { useFrame } from "@react-three/fiber";
@@ -30,26 +31,14 @@ import { FloatingLayer, RiseProvider, SetPiece, type PopUpValue } from "../SetPi
 import type { SetLayerFrame } from "../playback";
 import { imageLayerSpec, loadImage, placeholderLayerSpec, riserArt, tone } from "./layerArt";
 import { useScene } from "./SceneProvider";
-
-/** Stage z of a layer depth (0 back, 1 middle, 2 front). */
-export const layerZ = (depth: number) => depth * 0.35;
-
-/**
- * Fold (0..1, linear in time) to hinge rise: eased, with a soft ~2% pop past
- * upright near the top that settles exactly at 1.
- */
-export function foldToRise(fold: number): number {
-  const f = fold <= 0 ? 0 : fold >= 1 ? 1 : fold;
-  const s = f * f * (3 - 2 * f);
-  return s + 1.5 * s * s * (1 - s);
-}
+import { RISER_DEPTH, RISER_THICK, foldToRise, layerZ, type Riser } from "./standing";
 
 /** A RiseProvider value that plays one layer frame's fold. */
 function useFoldRise(lf: SetLayerFrame | null): PopUpValue {
   return useMemo<PopUpValue>(() => ({ rise: () => (lf ? foldToRise(lf.fold) : 1) }), [lf]);
 }
 
-/** Shows its children while the layer stands, or while its set is the current shot's. */
+/** Shows its children while a layer stands, or while its set is the current shot's. */
 function SetVisibility({ setId, folds, children }: { setId: string; folds: readonly SetLayerFrame[]; children: ReactNode }) {
   const { frame } = useScene();
   const group = useRef<Group>(null);
@@ -118,64 +107,12 @@ export function LayerBinding({ set, index, order, count }: LayerBindingProps) {
   );
 }
 
-/** Marks above the page: where something stands on a raised surface. */
-interface Riser {
-  key: string;
-  x: number;
-  z: number;
-  h: number;
-  halfWidth: number;
-  /** Layer whose fold the riser follows (the one standing behind it). */
-  layer: number;
-  color: string;
-}
-
-const RISER_DEPTH = 0.24;
-const THICK = 0.007;
-
-function risersFor(set: SetDef): Riser[] {
-  const marks = Object.entries(set.marks ?? {}).map(([name, m]) => ({
-    name,
-    x: 2 * (m[0] ?? 0.5) - 1,
-    h: m[1] ?? 0,
-    z: m[2] ?? 0.5,
-  }));
-  const out: Riser[] = [];
-  for (const m of marks) {
-    if (!(m.h > 0.02)) continue;
-    // Keep clear of nearby marks on lower ground (someone stands there).
-    let room = 0.16;
-    for (const o of marks) if (o !== m && o.h < m.h - 0.02) room = Math.min(room, Math.abs(o.x - m.x) - 0.07);
-    // The layer behind the mark, else the back one.
-    let layer = 0;
-    let best = -Infinity;
-    set.layers.forEach((l, i) => {
-      const z = layerZ(l.depth);
-      if (z <= m.z && z > best) {
-        best = z;
-        layer = i;
-      }
-    });
-    const behind = set.layers[layer];
-    out.push({
-      key: m.name,
-      x: m.x,
-      z: m.z,
-      h: m.h,
-      halfWidth: Math.max(0.08, room),
-      layer,
-      color: behind?.color ?? PALETTE.stone,
-    });
-  }
-  return out;
-}
-
 function RiserBinding({ set, riser, order, count }: { set: SetDef; riser: Riser; order: number; count: number }) {
   const { frame } = useScene();
   const lf = useMemo(() => frame.layersByTarget.get(`set:${set.id}.layer${riser.layer}`) ?? null, [frame, set.id, riser.layer]);
   const rise = useFoldRise(lf);
   const width = riser.halfWidth * 2;
-  const color = tone(riser.color, 0.04);
+  const color = tone(riser.color ?? PALETTE.stone, 0.04);
   const front = useMemo(() => getCutout(riserArt(`${set.id}:${riser.key}`, width / riser.h, color)), [set.id, riser.key, width, riser.h, color]);
   return (
     <RiseProvider value={rise}>
@@ -183,13 +120,13 @@ function RiserBinding({ set, riser, order, count }: { set: SetDef; riser: Riser;
         x={riser.x}
         z={riser.z - RISER_DEPTH / 2}
         width={width}
-        height={Math.max(0.01, riser.h - THICK)}
+        height={Math.max(0.01, riser.h - RISER_THICK)}
         depth={RISER_DEPTH}
         order={order}
         count={count}
         front={front}
         color={color}
-        thickness={THICK}
+        thickness={RISER_THICK}
       />
     </RiseProvider>
   );
@@ -197,16 +134,16 @@ function RiserBinding({ set, riser, order, count }: { set: SetDef; riser: Riser;
 
 /** Every layer (and riser) of every set the timeline folds. */
 export function SetLayers() {
-  const { frame, scene } = useScene();
+  const { frame, scene, standing } = useScene();
   const sets = useMemo(() => {
     const byId = new Map(scene.sets.map((s) => [s.id, s]));
-    const out: { set: SetDef; layers: number[]; folds: SetLayerFrame[]; risers: Riser[] }[] = [];
+    const out: { set: SetDef; layers: number[]; folds: SetLayerFrame[] }[] = [];
     for (const lf of frame.layers) {
       const set = byId.get(lf.setId);
       if (!set || !set.layers[lf.layer]) continue;
       let entry = out.find((e) => e.set.id === set.id);
       if (!entry) {
-        entry = { set, layers: [], folds: [], risers: risersFor(set) };
+        entry = { set, layers: [], folds: [] };
         out.push(entry);
       }
       entry.layers.push(lf.layer);
@@ -219,7 +156,8 @@ export function SetLayers() {
 
   return (
     <>
-      {sets.map(({ set, layers, folds, risers }) => {
+      {sets.map(({ set, layers, folds }) => {
+        const risers = standing.risers(set.id);
         const count = layers.length + risers.length;
         return (
           <SetVisibility key={set.id} setId={set.id} folds={folds}>

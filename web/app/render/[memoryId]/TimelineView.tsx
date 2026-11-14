@@ -176,7 +176,8 @@ function Player({ scene, time, narrator, autoplay, ui }: Omit<TimelineViewProps,
       animate={{ opacity: 1 }}
       transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
     >
-      <TimelineStage className="absolute inset-0" controller={controller} scene={scene} overlay={overlay} />
+      {/* Lifted so the caption strip sits under the action, not over it. */}
+      <TimelineStage className="absolute inset-0" controller={controller} scene={scene} overlay={overlay} lift={0.065} />
       {/* Soft lens vignette: the lamp's pool, falling off into the room. */}
       <div
         aria-hidden

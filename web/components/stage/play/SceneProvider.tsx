@@ -53,6 +53,7 @@ import type { PuppetHandle, SocketName } from "../Puppet";
 import { PropRegistry, type SocketResolver } from "../props/sockets";
 import { RIG } from "../puppet/rig";
 import type { SceneData } from "./scene";
+import { Standing, type Mount } from "./standing";
 
 /** useFrame priorities of the timeline stage (all <= 0: r3f keeps rendering). */
 export const PRIORITY = { tick: -4, drive: -3, pose: -2 } as const;
@@ -128,6 +129,8 @@ export interface SceneContextValue {
   /** The timeline already plants feet (Timeline.feetPlanted). */
   feetPlanted: boolean;
   runtime: StageRuntime;
+  /** How puppets and grounded props stand up with the page (./standing). */
+  standing: Standing;
   /** `media/<id>` -> URL (null when it cannot be resolved, e.g. a local sample). */
   resolveMedia(mediaId: string): string | null;
   /** A person by id (with a fallback sheet for cast missing from the data). */
@@ -209,6 +212,7 @@ export function SceneProvider({ controller, scene, scale = 1, origin = ORIGIN, t
       scene,
       feetPlanted: scene.timeline.feetPlanted === true,
       runtime,
+      standing: new Standing(scene.sets, controller.frame),
       resolveMedia: (mediaId) => (familyId ? api.mediaUrl(familyId, bareMediaId(mediaId)) : null),
       person: personLookup(scene),
     };
@@ -260,6 +264,43 @@ function clipMaterial(m: Material | undefined, planes: readonly Plane[]) {
   m.clippingPlanes = planes as Plane[];
   m.clipShadows = true;
   m.needsUpdate = true;
+}
+
+/**
+ * Stand something at stage (x, y, z) up with the page: `outer` and `inner`
+ * are two nested groups around it (outer > inner > thing). With the set
+ * risen they are the identity; while it folds they hinge the thing about
+ * (x, y, z) and carry it with the riser it stands on. `m` is scratch.
+ */
+export function standUp(standing: Standing, outer: Group | null, inner: Group | null, x: number, y: number, z: number, m: Mount): void {
+  if (!outer || !inner) return;
+  standing.mount(x, y, z, m);
+  if (m.angle === 0 && m.dy === 0 && m.dz === 0) {
+    outer.position.set(0, 0, 0);
+    outer.rotation.x = 0;
+    inner.position.set(0, 0, 0);
+    return;
+  }
+  outer.position.set(x, y + m.dy, z + m.dz);
+  outer.rotation.x = m.angle;
+  inner.position.set(-x, -y, -z);
+}
+
+/** Turns the two stand-up groups into a tilt of `angle` (about x) around stage point (x, y, z). */
+export function tiltAbout(outer: Group | null, inner: Group | null, x: number, y: number, z: number, angle: number): void {
+  if (!outer || !inner) return;
+  outer.position.set(x, y, z);
+  outer.rotation.x = angle;
+  inner.position.set(-x, -y, -z);
+}
+
+/** Puts the two stand-up groups back to the identity (for something held in a hand). */
+export function standStill(outer: Group | null, inner: Group | null): void {
+  if (outer) {
+    outer.position.set(0, 0, 0);
+    outer.rotation.x = 0;
+  }
+  if (inner) inner.position.set(0, 0, 0);
 }
 
 /** Re-applies clipToWings to `target()` every `every` frames (and on the first few). */
