@@ -20,7 +20,7 @@ One JSON object matching the screenplay contract, camelCase, no fields the contr
 - **What the compiler checks** (details and durations in the directing skill):
   - One action at a time per person: the next action by the same person starts only after the last one ends (a walk takes distance / 0.35 s; `hand_to` and `hug` keep the other person busy too). Otherwise the error code is busy.
   - Offstage people (at `offstage_left`/`offstage_right`, or left out of `start` on a new set) can only `enter`; `enter` only works from offstage.
-  - `hand_to` does not walk: giver and receiver stand on the same surface, at most 0.15 apart in u. `open`, `close` and `place_on` do not bend: the prop is held or at hand height. `pick_up`, `hug` and `sit_on` walk up by themselves. Too far is out_of_reach.
+  - `hand_to` does not walk: giver and receiver stand on the same surface, at most 0.15 apart in u. `open`, `close` and `place_on` neither bend nor walk: the handle or spot must be at hand height, within arm's reach (on a step or a table, not the floor). Never `open` or `close` a prop someone is holding (the free hand cannot reach across to it): `place_on` it at hand height first. `pick_up`, `hug` and `sit_on` walk up by themselves. Too far is out_of_reach.
   - Mark names are plain snake_case and never a cast member's or prop's id.
   - A cued action moves onto its cue word (0.25 s per word), and the actions after it move with it: write `t` so the word already falls on the action. Lines of one telling never overlap.
 - **`pageText` for every shot**: one or two short sentences printed on the page, in storybook voice, fun for kids and adults, at most 30 words. Only facts from the tellings.

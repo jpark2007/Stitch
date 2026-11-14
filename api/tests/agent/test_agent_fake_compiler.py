@@ -526,3 +526,73 @@ def test_effects_occupy_nobody(scene):
     ])
     assert res.ok, [e.message for e in res.errors]
     assert [fx.kind for fx in res.timeline.effects] == ["rain", "time_of_day"]
+
+
+@pytest.mark.parametrize("who, verb, reason", [
+    ("mom", "open", "mom's arm_l cannot reach: target is 0.22 from the shoulder, reach is 0.17"),
+    ("mom", "close", "mom's arm_l cannot reach: target is 0.22 from the shoulder, reach is 0.17"),
+])
+def test_open_or_close_of_a_held_prop_is_out_of_reach(scene, who, verb, reason):
+    """As in the real compiler (verbs_objects._open_close): the free arm reaches for the hand that
+    holds the prop, in the hold pose, and comes up short. The directing skill says never to."""
+    err = _only_error(_compile(scene, [{"t": 0.5, "who": who, "do": verb, "what": "hymn_books"}]))
+    assert err.code == "out_of_reach"
+    assert err.message == f'shot s1, t=0.5: {who} cannot {verb} "hymn_books"; {reason}'
+    # raised into the hold pose first: the same
+    err = _only_error(_compile(scene, [{"t": 0.5, "who": who, "do": "hold", "what": "hymn_books"},
+                                       {"t": 2, "who": who, "do": verb, "what": "hymn_books"}]))
+    assert err.code == "out_of_reach" and err.t == 2
+
+
+def test_open_a_held_prop_after_setting_it_down_at_hand_height(scene):
+    """The skill's fix for the above: place_on it at hand height (a mark one step up, from the
+    foot of the steps), then open it there."""
+    res = _compile(scene, [{"t": 0.5, "who": "mom", "do": "place_on", "what": "hymn_books", "on": "steps_top"},
+                           {"t": 1.5, "who": "mom", "do": "open", "what": "hymn_books"}],
+                   marks={"by_steps": [0.53, 0.0]},
+                   start={"dad": {"at": "steps_foot", "facing": "right"},
+                          "mom": {"at": "by_steps", "holding": "hymn_books", "facing": "right"}})
+    assert res.ok, [e.message for e in res.errors]
+
+
+def test_kneeling_lowers_the_shoulders(scene):
+    """A kneeling puppet's root (and so its shoulders) is lowered by the kneel rootOffset, as in
+    the real tracks: a handle at standing hand height can go out of reach."""
+    start = {"dad": {"at": "steps_foot", "facing": "right"},
+             "mom": {"at": "steps_top", "holding": "hymn_books", "facing": "left"}}
+    standing = _compile(scene, [{"t": 0.5, "who": "dad", "do": "close", "what": "hymn_books"}], start=start)
+    assert standing.ok, [e.message for e in standing.errors]
+    err = _only_error(_compile(scene, [{"t": 0, "who": "dad", "do": "kneel"},
+                                       {"t": 2, "who": "dad", "do": "close", "what": "hymn_books"}], start=start))
+    assert err.code == "out_of_reach" and err.t == 2
+
+
+def test_hug_threshold_uses_rounded_positions(scene):
+    """steps_foot and steps_top are 0.2 apart in x, exactly HUG_GAP + HUG_SLACK. The real
+    compiler reads roots back rounded to 3 dp, so the hugger walks over first (and a kneeling
+    hugger cannot): the fake decides the same way."""
+    err = _only_error(_compile(scene, [{"t": 0, "who": "mom", "do": "kneel"},
+                                       {"t": 3, "who": "mom", "do": "hug", "target": "dad"}]))
+    assert (err.code, err.message) == ("not_standing", "shot s1, t=3: mom cannot hug; mom is kneeling; stand_up first")
+
+
+def test_follow_counts_kneeling_as_the_leader_moving(scene):
+    """The real follow reads the leader's root.position track, where kneeling lowers the root."""
+    res = _compile(scene, [{"t": 4, "who": "mom", "do": "kneel"},
+                           {"t": 4, "who": "dad", "do": "follow", "target": "mom"}])
+    assert res.ok, [e.message for e in res.errors]
+    err = _only_error(_compile(scene, [{"t": 4, "who": "dad", "do": "follow", "target": "mom"}]))
+    assert err.code == "nothing_to_follow"
+
+
+def test_pick_up_above_the_shoulder_still_needs_reach(scene):
+    """A grip level with or above the shoulder is a standing reach (no crouch helps): out of reach
+    when the arm cannot get there, as in the real pick_up_keys."""
+    start = {"dad": {"at": "steps_foot", "facing": "right"}, "mom": {"at": "curb", "facing": "left"}}
+    for height, ok in ((0.5, True), (0.9, False)):
+        res = _compile(scene, [{"t": 0.5, "who": "dad", "do": "pick_up", "what": "hymn_books"}], start=start,
+                       marks={"shelf": [0.0, height]}, propStart={"hymn_books": {"at": "shelf"}})
+        assert res.ok == ok, [e.message for e in res.errors]
+    assert (res.errors[0].code, res.errors[0].message) == (
+        "out_of_reach", 'shot s1, t=0.5: dad cannot pick_up "hymn_books"; dad\'s arm_r cannot reach: '
+                        "target is 0.57 from the shoulder, reach is 0.19")

@@ -316,6 +316,13 @@ def _suitcase(actions: list[dict], start: dict | None = None, **extra: object) -
     return data
 
 
+def _carried_suitcase(actions: list[dict]) -> dict:
+    """Mom at the foot of the steps carrying the suitcase (no propStart)."""
+    data = _suitcase(actions, start={"mom": {"at": "by_steps", "holding": "suitcase", "facing": "right"}})
+    del data["shots"][0]["propStart"]
+    return data
+
+
 def _with_confetti(data: dict) -> None:
     _actions(data).append({"t": 8.5, "do": "confetti", "at": "steps_top", "dur": 2})
 
@@ -357,6 +364,16 @@ def _corpus() -> dict[str, Case]:
         "suitcase_opens": Case(_suitcase(
             [{"t": 0.5, "who": "mom", "do": "open", "what": "suitcase", "id": "open_case"}],
             narration=[]), True),
+        # the directing skill's fix for opening something carried: set it down at hand height first
+        "place_on_then_open": Case(_carried_suitcase(
+            [{"t": 0.5, "who": "mom", "do": "place_on", "what": "suitcase", "on": "steps_top"},
+             {"t": 1.3, "who": "mom", "do": "open", "what": "suitcase"},
+             {"t": 3, "who": "mom", "do": "close", "what": "suitcase"},
+             {"t": 4, "who": "mom", "do": "pick_up", "what": "suitcase"}]), True),
+        # the real follow reads the leader's root track, where kneeling lowers the root
+        "follow_a_kneeling_leader": Case(_base(
+            [{"t": 4, "who": "mom", "do": "kneel"},
+             {"t": 4, "who": "dad", "do": "follow", "target": "mom"}]), True),
         "sedan_drives_off": Case(_sedan(
             [{"t": 0, "who": "dad", "do": "get_in", "what": "green_sedan_1985"},
              {"t": 3, "who": "dad", "do": "drive_to", "what": "green_sedan_1985", "to": "curb"}]), True),
@@ -410,6 +427,30 @@ def _corpus() -> dict[str, Case]:
         "drive_without_driver": Case(_sedan(
             [{"t": 0, "who": "dad", "do": "drive_to", "what": "green_sedan_1985", "to": "curb"}]),
             False, ("not_driver",)),
+        # open/close never reach a held prop: the free arm comes up short of the holding hand
+        "open_held_prop": Case(_base([{"t": 0.5, "who": "mom", "do": "open", "what": "hymn_books"}]),
+                               False, ("out_of_reach",)),
+        "close_held_prop_tall": Case(_base(
+            [{"t": 0.5, "who": "dad", "do": "close", "what": "hymn_books"}],
+            start={"dad": {"at": "steps_foot", "holding": "hymn_books", "facing": "right"},
+                   "mom": {"at": "steps_top", "facing": "left"}}), False, ("out_of_reach",)),
+        "open_carried_suitcase": Case(_carried_suitcase([{"t": 0.5, "who": "mom", "do": "open", "what": "suitcase"}]),
+                                      False, ("out_of_reach",)),
+        "hold_then_open": Case(_base(
+            [{"t": 0.5, "who": "mom", "do": "hold", "what": "hymn_books"},
+             {"t": 2, "who": "mom", "do": "open", "what": "hymn_books"}]), False, ("out_of_reach",)),
+        # kneeling lowers the shoulders: the suitcase handle up on the step is out of reach
+        "kneel_then_open": Case(_suitcase(
+            [{"t": 0, "who": "mom", "do": "kneel"},
+             {"t": 2, "who": "mom", "do": "open", "what": "suitcase"}]), False, ("out_of_reach",)),
+        # steps_foot to steps_top is exactly HUG_GAP + HUG_SLACK in x; rounded roots make it a walk
+        "kneeling_hug_needs_a_walk": Case(_base(
+            [{"t": 0, "who": "mom", "do": "kneel"},
+             {"t": 3, "who": "mom", "do": "hug", "target": "dad"}]), False, ("not_standing",)),
+        "pick_up_above_the_shoulder": Case(_base(
+            [{"t": 0.5, "who": "dad", "do": "pick_up", "what": "hymn_books"}],
+            start={"dad": {"at": "steps_foot", "facing": "right"}, "mom": {"at": "curb", "facing": "left"}},
+            marks={"shelf": [0.0, 0.9]}, propStart={"hymn_books": {"at": "shelf"}}), False, ("out_of_reach",)),
         "open_out_of_reach": Case(_suitcase(
             [{"t": 0, "who": "mom", "do": "open", "what": "suitcase"}],
             start={"mom": {"at": "steps_left", "facing": "right"}}), False, ("out_of_reach",)),
@@ -559,6 +600,8 @@ def test_fake_and_real_agree_on_ok_versus_not_ok(real, lookup, name):
     assert got_real.ok == case.ok, (name, real_msgs)
     assert got_fake.ok == got_real.ok, (name, {"real": real_msgs, "fake": fake_msgs})
     if not got_real.ok:
+        # Asserted for this stored corpus only: on an arbitrary screenplay that both reject, the
+        # fake can report an extra code (see "Positions are logical" in the FakeCompiler docstring).
         # the fake's codes are ones the real compiler reported here ...
         assert {e.code for e in got_fake.errors} <= {e.code for e in got_real.errors}, (name, real_msgs, fake_msgs)
         # ... at the same places, in the same path style ("screenplay", "shot s1", "shot s1, t=5",

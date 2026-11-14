@@ -144,6 +144,18 @@ def test_director_prompt_states_the_compiler_rules():
     assert '"prop": "<' not in text and '"part": "<' not in text  # drives examples are concrete
 
 
+def test_open_and_close_are_never_taught_on_a_held_prop():
+    """The real compiler rejects open/close of a held prop (out_of_reach: the free arm cannot reach
+    the holding hand), so both docs say so and give the place_on fix, and neither recommends it."""
+    prompt = (REPO / "api" / "agent" / "prompts" / "director.md").read_text()
+    skill = body("directing")
+    for text in (prompt, skill):
+        flat = " ".join(text.split())
+        assert re.search(r"never `open` or `close` a prop someone is holding", flat, re.IGNORECASE)
+        assert "`place_on` it at hand height" in flat
+        assert not re.search(r"the prop is held or|open a prop the person holds|have the person hold the prop", flat)
+
+
 # ------------------------------------------------------------- directing: worked example
 
 def test_worked_example_is_a_byte_identical_copy_of_the_sample():

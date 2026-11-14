@@ -213,9 +213,12 @@ The person (and, where noted, the other person) is busy from `t` until `t` + thi
   them onto the same surface first (the worked example's tall Dad only just reaches Mom on the
   step from 0.2 away; two average puppets need to be within 0.15). `open`, `close` and
   `place_on` do not bend or walk either: the handle (or the spot) must be within the arm's
-  0.17, so open a prop the person holds or one standing at hand height (on a step or a table),
-  and set things on a surface, not the floor. Too far is `out_of_reach`
-  (`dad's arm_r cannot reach: target is 0.61 from the shoulder, reach is 0.19`).
+  0.17, so open a prop standing at hand height (on a step or a table, placed there by
+  `propStart` or `place_on`), and set things on a surface, not the floor. **Never `open` or
+  `close` a prop someone is holding**, not even the holder: the free hand reaches for the
+  holding hand and comes up short (0.22 against 0.17). To open something a person carries,
+  `place_on` it at hand height first (a mark on a step), then `open` it. Too far is
+  `out_of_reach` (`dad's arm_r cannot reach: target is 0.61 from the shoulder, reach is 0.19`).
 - **Seats**: a seated person must `stand_up` (or `get_out` of a vehicle) before walking; a
   person kneeling or sitting on the floor stands up by themselves before walking (0.4 s), but
   must `stand_up` before `kneel` or `sit_on`. `drive_to` needs the person in the `driver`
@@ -323,8 +326,8 @@ story, from the tellings and person records only. No invented ages, names or fac
    - `missing_param`, `unexpected_param`: give the verb exactly its row's parameters.
    - `busy`: move `t` to the "until" time the message names, or later.
    - `not_holding`, `already_held`, `hands_full`: add the `pick_up` or fix `start.holding`.
-   - `out_of_reach`: put the two marks closer (same surface, at most 0.15 apart in u), or have
-     the person hold the prop.
+   - `out_of_reach`: put the two marks closer (same surface, at most 0.15 apart in u). For
+     `open`/`close` of a held prop, `place_on` it at hand height first and open it there.
    - `offstage`: add an `enter` first; `already_on_stage`: use `walk_to` instead of `enter`.
    - `lines_overlap`, `cue_before_start`, `cue_conflict`: move the line's `t`, not the action.
    - `unsupported_verb`: the compiler cannot do that verb yet. Delete an effect; replace `exit`

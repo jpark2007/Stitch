@@ -19,6 +19,12 @@ exist. It has two halves:
      the real verb handlers have no auto-walk: ``hand_to``, ``place_on``, ``open``/``close``
      and ``put_on``. ``pick_up``, ``hug`` and ``sit_on`` walk up first, as the real ones do.
      Durations come from the same constants (`screenplay.body`, `motion.locomotion_keys`).
+     Geometry follows the real tracks where it decides ok versus not-ok: roots are read back
+     rounded to 3 dp, kneeling or sitting on the floor lowers the root (and the shoulders) by
+     the pose's rootOffset, and a held prop is where its holder's hand is in the hold pose. So
+     ``open``/``close`` of a held prop is ``out_of_reach`` here exactly when it is there (always
+     for the holder with one hand full: the free arm reaches across to the holding hand), and a
+     ``follow`` whose leader only kneels or stands up still has a leader that "moves".
 
 2. **Output** (`_Run`): for a screenplay that passes, a simple Timeline that validates against
    `screenplay.schema.Timeline` and follows the channel grammar in shared/CONTRACTS.md
@@ -33,9 +39,14 @@ explicitly):
   compiler (#60 + #66 + #70) has `screenplay/effects.py` but no ``HANDLERS`` for it, so it
   rejects every effect with ``unsupported_verb``. That is a compiler-side gap.
 - **Positions are logical, not keyframed**: reach is measured from where a puppet's last move
-  ended and a held prop is located at its holder's root, so an action that only works or fails
-  because of where a limb is mid-gesture can differ. ``pick_up`` of a prop far below the
-  shoulder always succeeds here (the real compiler may still find no crouch that reaches).
+  ended, so an action that only works or fails because of where a puppet is mid-walk (opening a
+  prop someone carries while they are still walking, at the walk's own start time) or where a
+  limb is mid-gesture can differ. ``pick_up`` of a prop far below the shoulder always succeeds
+  here (the real compiler may still find no crouch that reaches). Seated in a seat socket, the
+  root stays where the puppet stood. In fuzzing against the merged real compiler this showed
+  only in screenplays both compilers already rejected, as one extra ``out_of_reach``: on a
+  not-ok screenplay the fake's codes are usually, not always, a subset of the real ones, which
+  is why the parity test asserts the subset only for its stored corpus.
 - **follow** uses `motion.follow_keys` over the leader's logical path (shot start plus each
   move), not its full keyframed track, so its end time can differ slightly.
 - **Camera** targets are checked against the world at the end of the shot (``bad_camera`` for a
@@ -321,7 +332,7 @@ class _ShotSim:
         self.marks = {k: (float(v[0]), float(v[1]), float(v[2])) for k, v in marks.items()}
         self.shot = shot
         # Logical root paths (t, position) per puppet, for follow; vehicle motion windows.
-        self.paths: dict[str, list[tuple[float, Vec3]]] = {who: [(0.0, p.pos)] for who, p in world.people.items()}
+        self.paths: dict[str, list[tuple[float, Vec3]]] = {who: [(0.0, self.root_now(who))] for who in world.people}
         self.moving_until: dict[str, float] = {}
 
     # ------------------------------------------------------------------ driver
@@ -392,8 +403,41 @@ class _ShotSim:
 
     def body(self, who: str, facing: int | None = None, at: Vec3 | None = None) -> ik.Body:
         p = self.world.people[who]
-        pos = at if at is not None else p.pos
-        return ik.Body(who, (pos[0], pos[1]), p.facing if facing is None else facing, p.build)
+        face = p.facing if facing is None else facing
+        if at is not None:
+            return ik.Body(who, (at[0], at[1]), face, p.build)
+        return ik.Body(who, self.ground(who), face, p.build)
+
+    def root(self, who: str) -> Vec3:
+        """The puppet's world position as the real compiler reads it back from its tracks:
+        rounded to 3 dp (screenplay.tracks.round_value), which decides threshold cases such as a
+        hug from exactly HUG_GAP + HUG_SLACK away."""
+        x, y, z = self.world.people[who].pos
+        return (round(x, 3), round(y, 3), round(z, 3))
+
+    def root_now(self, who: str) -> Vec3:
+        """`ground` with the depth: the root as the real tracks have it right now."""
+        x, y = self.ground(who)
+        return (x, y, self.root(who)[2])
+
+    def posture(self, who: str, t0: float, t1: float, before: Vec3) -> None:
+        """Record a root change from kneeling, sitting or standing up (before -> now, over
+        t0..t1) on the puppet's path: the real follow counts it as the leader moving."""
+        after = self.root_now(who)
+        if max(abs(a - b) for a, b in zip(before, after)) > 1e-9:
+            self.paths.setdefault(who, []).extend([(t0, before), (t1, after)])
+
+    def ground(self, who: str) -> tuple[float, float]:
+        """The puppet's root where the real compiler's tracks have it: kneeling or sitting on the
+        floor lowers it by the pose's rootOffset (body.kneel_keys / sit_keys), so the shoulders
+        come down with it."""
+        p = self.world.people[who]
+        x, y, _ = self.root(who)
+        if p.seat is None and p.pose in SEATED_POSES:
+            off = POSES[p.pose].get("rootOffset", [0.0, 0.0])
+            s = ik.scale(p.build)
+            x, y = x + p.facing * off[0] * s, y + off[1] * s
+        return (x, y)
 
     def geom(self, what: str) -> B.PropGeom:
         return B.PropGeom.from_prop(self.world.catalog[what])
@@ -440,6 +484,18 @@ class _ShotSim:
     def free_arm(self, who: str) -> str:
         holding = self.world.people[who].holding
         return "arm_l" if "hand_r" in holding and "hand_l" not in holding else "arm_r"
+
+    def socket_at_rest(self, who: str, socket: str) -> tuple[float, float]:
+        """Where a puppet's socket is between actions: its current pose's bones, with every arm
+        that holds a prop in the hold pose (the real compiler keeps a holding arm there through
+        poses, walks and gestures). This is where the real `open`/`close` reaches for a held prop."""
+        p = self.world.people[who]
+        rots = {b: float(v) for b, v in POSES.get(p.pose, {}).items() if b != "rootOffset"}
+        for hand in p.holding:
+            if hand in HANDS:
+                upper, lower = ik.arm_bones(_arm_of_hand(hand))
+                rots[upper], rots[lower] = B.hold_pose(_arm_of_hand(hand))
+        return ik.socket_world(socket, rots, self.ground(who), p.facing, p.build)
 
     # ---------------------------------------------------------------- movement
 
@@ -576,8 +632,10 @@ class _ShotSim:
             seat, anchor = w.socket_world(*p.seat), w.props[p.seat[0]].world_pos
             if seat is not None and anchor is not None:
                 stand_at = (seat[0], anchor[1], seat[2])
+        before = self.root_now(who)
         w.stand_up(who)
         w.move(who, stand_at)
+        self.posture(who, t, t + B.POSE_SECONDS, before)
         return t + B.POSE_SECONDS
 
     def do_kneel(self, a: Action, t: float) -> float:
@@ -588,10 +646,15 @@ class _ShotSim:
         if w.people[who].pose == "kneel":
             raise StateError("already_kneeling", f"{who} is already kneeling")
         self.not_standing(who)
+        standing = self.root_now(who)
         w.kneel(who)
+        blend = B.POSE_SECONDS if dur is None else min(B.POSE_SECONDS, dur)
+        self.posture(who, t, t + blend, standing)
         if dur is None:
             return t + B.POSE_SECONDS
+        low = self.root_now(who)
         w.stand_up(who)
+        self.posture(who, t + dur, t + dur + B.POSE_SECONDS, low)
         return t + dur + B.POSE_SECONDS
 
     def do_hug(self, a: Action, t: float) -> float:
@@ -600,13 +663,14 @@ class _ShotSim:
         w.hug_check(who, other)
         w.check_free(other)
         me, them = w.people[who], w.people[other]
-        dx = them.pos[0] - me.pos[0]
+        them_at = self.root(other)
+        dx = them_at[0] - self.root(who)[0]
         t_hug = t
         if abs(dx) > HUG_GAP + HUG_SLACK:
             self.not_standing(who)
             side = 1 if dx > 0 else -1
-            goal = (them.pos[0] - side * HUG_GAP, them.pos[1], them.pos[2])
-            t_hug, facing = self.travel(who, t, me.pos, goal)
+            goal = (them_at[0] - side * HUG_GAP, them.pos[1], them.pos[2])
+            t_hug, facing = self.travel(who, t, self.root(who), goal)
             w.move(who, goal, facing=facing)
         self.face_toward(who, them.pos[0])
         self.face_toward(other, w.people[who].pos[0])
@@ -626,11 +690,11 @@ class _ShotSim:
         p = w.people[who]
         arm = _arm_of_hand(hand)
         grip = B.grip_from_anchor(self.geom(what), anchor)
-        here = p.pos
+        here = self.root(who)
         d = _sign(grip[0] - here[0])
         facing = d or p.facing
         t_reach, walk_to = t, None
-        ground = (here[0], here[1])
+        ground = self.ground(who)
         if not ik.can_reach(arm, grip, ground, facing, p.build):
             reach = ik.arm_reach(p.build, arm)
             if d != 0 and abs(grip[0] - here[0]) > AUTO_WALK_REACH * reach:
@@ -639,6 +703,9 @@ class _ShotSim:
                 t_reach, facing = self.travel(who, self.stand_first(who, t), here, walk_to)
                 ground = (walk_to[0], walk_to[1])
         if ik.can_reach(arm, grip, ground, facing, p.build) or grip[1] >= ik.shoulder_world(arm, ground, facing, p.build)[1]:
+            # a standing reach, as the real pick_up_keys: out_of_reach when the grip is level with
+            # or above the shoulder and still too far (no crouch helps there)
+            ik.solve_body_arm(ik.Body(who, ground, facing, p.build), arm, grip)
             end = t_reach + 2 * B.REACH_SECONDS
         else:  # bends (kneeling if needed) down to a low grip and comes back up
             end = t_reach + 2 * B.POSE_SECONDS + B.REACH_SECONDS
@@ -742,14 +809,17 @@ class _ShotSim:
         w, who, what = self.world, a.who, a.what
         scratch = w.copy()
         (scratch.open if opening else scratch.close)(who, what)
-        if w.holder(what) is None:
+        held = w.holder(what)
+        if held is None:
             anchor = self.prop_pos(what)
             geom = self.geom(what)
             if w.catalog[what].grip is not None:
                 handle = B.grip_from_anchor(geom, anchor)
             else:
                 handle = (anchor[0], anchor[1] + geom.height / 2)
-            ik.solve_body_arm(self.body(who), self.free_arm(who), handle)
+        else:
+            handle = self.socket_at_rest(*held)
+        ik.solve_body_arm(self.body(who), self.free_arm(who), handle)
         (w.open if opening else w.close)(who, what)
         return t + 2 * B.REACH_SECONDS
 
