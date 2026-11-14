@@ -8,6 +8,8 @@
  *   ?demo=states   a suitcase with two states (?state=closed|open to hold one)
  *   ?demo=held     a prop held by its grip on a draggable hand; Drop / Pick up
  *                  (?mode=dropped, ?facing=left)
+ *   ?demo=worn     put_on: a hand carries a cap up by its grip; worn, its
+ *                  anchor rests on the head socket (?t= to hold a moment)
  *   ?demo=closeup  a close look at placeholder cards
  *   ?t=<seconds>   freeze time, for stills
  *   ?chrome=0      hide the labels and controls
@@ -30,6 +32,7 @@ import {
   HeldDemo,
   HeldHand,
   StatesDemo,
+  WornDemo,
   type DemoName,
   type ReadyList,
 } from "./demos";
@@ -59,6 +62,12 @@ const DEMOS: { id: DemoName; label: string; note: string; shot: Shot }[] = [
     label: "Held",
     note: "Drag the hand. The suitcase hangs from its grip and never mirrors when the hand turns; drop it and it lands on its anchor.",
     shot: { position: [0, 0.48, 2.3], lookAt: [0, 0.26, 0.5], fov: 30 },
+  },
+  {
+    id: "worn",
+    label: "Worn",
+    note: "Put on: the hand carries the cap by its grip; on the head it rests by its anchor, the way the compiler places it, so it never jumps.",
+    shot: { position: [0.06, 0.36, 1.8], lookAt: [0.06, 0.28, 0.5], fov: 30 },
   },
   {
     id: "closeup",
@@ -196,6 +205,7 @@ function Demo({
       {demo === "drive" && <DriveDemo ready={ready} fixedT={fixedT} />}
       {demo === "states" && <StatesDemo ready={ready} fixedState={fixedState} onState={onState} />}
       {demo === "held" && <HeldDemo ready={ready} control={control} fixedT={fixedT} />}
+      {demo === "worn" && <WornDemo ready={ready} fixedT={fixedT} />}
       {demo === "closeup" && <CloseupDemo ready={ready} />}
     </>
   );

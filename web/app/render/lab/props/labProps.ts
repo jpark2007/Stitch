@@ -6,7 +6,7 @@
 
 import memory from "@/public/samples/hymn_books.memory.json";
 import type { Prop } from "@/lib/types";
-import { CAR_H, CAR_W, CAR_WHEELS } from "./labArt";
+import { CAP_H, CAP_W, CAR_H, CAR_W, CAR_WHEELS } from "./labArt";
 
 export const hymnBooks = (memory.props as Prop[]).find((p) => p.id === "hymn_books")!;
 
@@ -94,4 +94,19 @@ export const suitcase: Prop = {
   anchor: [0.5, 0.98],
   grip: [0.5, 0.3],
   states: { closed: {}, open: { body: "lab/case_open" } },
+};
+
+/** Dad's flat cap, the signature item put_on puts on a head. The anchor is
+ *  inside the crown, above the band (it rests on the head socket when worn,
+ *  so the band comes down over the head); the grip is off-centre, pinching
+ *  the crown, so a wrong pivot would show sideways too. */
+export const flatCap: Prop = {
+  id: "flat_cap",
+  name: "dad's flat cap",
+  source: "generated",
+  size: "hand",
+  art: { body: "lab/flat_cap" },
+  aspect: CAP_W / CAP_H,
+  anchor: [0.36, 0.62],
+  grip: [0.55, 0.3],
 };

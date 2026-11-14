@@ -6,9 +6,9 @@
  * `time` (seconds) is frozen when the URL gives ?t=, for stills.
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
-import { Matrix4, Plane, Vector3, type Group } from "three";
+import { Matrix4, Plane, Shape, ShapeGeometry, Vector3, type Group } from "three";
 import {
   createPropPose,
   PropActor,
@@ -22,12 +22,13 @@ import {
   type SocketResolver,
 } from "@/components/stage/PropActor";
 import { usePaperMaterial } from "@/components/paper/usePaper";
-import { rollAngle } from "@/components/stage/props/rig";
+import vocabulary from "@shared/vocabulary.json";
+import { propDims, rollAngle } from "@/components/stage/props/rig";
 import type { Prop } from "@/lib/types";
 import { resolveLabArt, WHEEL_PX, CAR_H } from "./labArt";
-import { greenSedan, hymnBooks, placeholders, suitcase } from "./labProps";
+import { flatCap, greenSedan, hymnBooks, placeholders, suitcase } from "./labProps";
 
-export type DemoName = "ground" | "drive" | "states" | "held" | "closeup";
+export type DemoName = "ground" | "drive" | "states" | "held" | "worn" | "closeup";
 
 /** Every PropActor handle in a demo, so the page can tell when art is in. */
 export type ReadyList = React.RefObject<(PropActorHandle | null)[]>;
@@ -273,10 +274,28 @@ export function HeldDemo({ ready, control, fixedT }: { ready: ReadyList; control
   );
 }
 
-/** The draggable hand: a small paper disc on the acting plane. */
-function HandMarker({ control }: { control: HeldHand }) {
+/** A stand-in hand: a small paper disc, a dot where the socket is, and a
+ *  thumb on the side it faces. */
+function HandDisc() {
   const paper = usePaperMaterial({ color: "#b9573d", grain: 0.5 });
   const dot = usePaperMaterial({ color: "#f4ecdb", grain: 0.3 });
+  return (
+    <>
+      <mesh material={paper} castShadow>
+        <circleGeometry args={[0.022, 40]} />
+      </mesh>
+      <mesh position={[0, 0, 0.001]} material={dot}>
+        <circleGeometry args={[0.007, 24]} />
+      </mesh>
+      <mesh position={[0.021, 0.01, -0.0005]} material={paper} castShadow>
+        <circleGeometry args={[0.008, 24]} />
+      </mesh>
+    </>
+  );
+}
+
+/** The draggable hand. */
+function HandMarker({ control }: { control: HeldHand }) {
   const [hover, setHover] = useState(false);
   const dragging = useRef(false);
   const plane = useMemo(() => new Plane(new Vector3(0, 0, 1), -0.5), []);
@@ -289,16 +308,7 @@ function HandMarker({ control }: { control: HeldHand }) {
 
   return (
     <group scale={hover ? 1.15 : 1}>
-      <mesh material={paper} castShadow>
-        <circleGeometry args={[0.022, 40]} />
-      </mesh>
-      <mesh position={[0, 0, 0.001]} material={dot}>
-        <circleGeometry args={[0.007, 24]} />
-      </mesh>
-      {/* A thumb on the side the hand faces, so turning it shows. */}
-      <mesh position={[0.021, 0.01, -0.0005]} material={paper} castShadow>
-        <circleGeometry args={[0.008, 24]} />
-      </mesh>
+      <HandDisc />
       {/* A generous invisible hit area so the hand is easy to grab. */}
       <mesh
         visible={false}
@@ -322,6 +332,110 @@ function HandMarker({ control }: { control: HeldHand }) {
         onPointerMove={move}
       >
         <circleGeometry args={[0.06, 16]} />
+      </mesh>
+    </group>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Worn: a hand puts a cap on a head, as the compiler's put_on_keys does     */
+/* ------------------------------------------------------------------------ */
+
+const BUST_TARGET = "puppet:lab_bust";
+const BUST_HAND = `${BUST_TARGET}.hand_r`;
+const BUST_HEAD = `${BUST_TARGET}.head`;
+const HEAD_R = 0.05;
+/** The bust's head socket: the top of its head (CONTRACTS.md, "head"). */
+const HEAD = new Vector3(0, 0.43 + HEAD_R, 0.5);
+/** Where the hand rests, holding the cap low beside the bust. */
+const HAND_REST = new Vector3(0.2, 0.2, 0.53);
+/** Where the hand reaches: body.py grip_from_anchor(cap, head), so that at
+ *  the parent key the cap is exactly where the hand held it. */
+const HAND_REACH = (() => {
+  const { width, height } = propDims(flatCap, vocabulary.sizes);
+  const [au, av] = flatCap.anchor!;
+  const [gu, gv] = flatCap.grip!;
+  return new Vector3(HEAD.x - (au - gu) * width, HEAD.y - (gv - av) * height, HEAD.z);
+})();
+/** The loop: reach up, let go (worn), lower the hand, wait, reach, take it
+ *  back, lower it, wait. Seconds. */
+const WEAR = { reach: 1.1, lower: 0.8, wait: 1.4, period: 2 * (1.1 + 0.8 + 1.4) };
+
+const ease = (k: number) => k * k * (3 - 2 * k);
+
+export function WornDemo({ ready, fixedT }: { ready: ReadyList; fixedT: number | null }) {
+  const pose = useMemo(() => createPropPose({ parent: BUST_HAND, position: [0, 0, 0] }), []);
+  const hand = useMemo(() => HAND_REST.clone(), []);
+  const marker = useRef<Group>(null);
+  const slot = useHandleSlot(ready, 0);
+
+  const resolve: SocketResolver = useMemo(
+    () => (target, socket, out) => {
+      if (target !== BUST_TARGET) return false;
+      if (socket === "head") out.makeTranslation(HEAD.x, HEAD.y, HEAD.z);
+      else if (socket === "hand_r") out.makeTranslation(hand.x, hand.y, hand.z);
+      else return false;
+      return true;
+    },
+    [hand],
+  );
+
+  useFrame((s) => {
+    const t = clockOf(fixedT, s.clock.elapsedTime);
+    const half = WEAR.period / 2;
+    const k = ((t % WEAR.period) + WEAR.period) % WEAR.period;
+    const putting = k < half; // first half: put it on; second: take it off
+    const r = putting ? k : k - half;
+    // Hand height along the loop: 0 at rest, 1 at the head.
+    const up =
+      r < WEAR.reach ? ease(r / WEAR.reach) : r < WEAR.reach + WEAR.lower ? 1 - ease((r - WEAR.reach) / WEAR.lower) : 0;
+    hand.lerpVectors(HAND_REST, HAND_REACH, up);
+    // Putting on: in the hand until it reaches the head, then worn.
+    // Taking off: worn until the hand reaches it, then back in the hand.
+    const worn = putting ? r >= WEAR.reach : r < WEAR.reach;
+    const parent = worn ? BUST_HEAD : BUST_HAND;
+    if (pose.parent !== parent) setParent(pose, parent);
+    if (marker.current) marker.current.position.copy(hand);
+  }, -1);
+
+  return (
+    <>
+      <Bust />
+      <PropActor ref={slot} prop={flatCap} pose={pose} resolveSocket={resolve} resolveArt={resolveLabArt} />
+      <group ref={marker}>
+        <HandDisc />
+      </group>
+    </>
+  );
+}
+
+/** A faceless stand-in puppet from the shoulders up: shoulders, neck, head. */
+function Bust() {
+  const coat = usePaperMaterial({ color: "#6f7f8c", grain: 0.5 });
+  const skin = usePaperMaterial({ color: "#d9bc9c", grain: 0.4 });
+  const shoulders = useMemo(() => {
+    const w = 0.21;
+    const h = 0.36;
+    const r = 0.08;
+    const shape = new Shape();
+    shape.moveTo(-w / 2, 0);
+    shape.lineTo(w / 2, 0);
+    shape.lineTo(w / 2, h - r);
+    shape.quadraticCurveTo(w / 2, h, w / 2 - r, h);
+    shape.lineTo(-w / 2 + r, h);
+    shape.quadraticCurveTo(-w / 2, h, -w / 2, h - r);
+    shape.closePath();
+    return new ShapeGeometry(shape, 12);
+  }, []);
+  useEffect(() => () => shoulders.dispose(), [shoulders]);
+  return (
+    <group position={[0, 0, HEAD.z - 0.006]}>
+      <mesh geometry={shoulders} material={coat} castShadow receiveShadow />
+      <mesh position={[0, 0.375, -0.001]} material={skin} castShadow>
+        <planeGeometry args={[0.04, 0.07]} />
+      </mesh>
+      <mesh position={[0, HEAD.y - HEAD_R, 0]} material={skin} castShadow receiveShadow>
+        <circleGeometry args={[HEAD_R, 48]} />
       </mesh>
     </group>
   );

@@ -244,6 +244,55 @@ function caseOpen(): string {
   });
 }
 
+/* Dad's flat cap ---------------------------------------------------------- */
+
+export const CAP_W = 600;
+export const CAP_H = 400;
+const TWEED = "#7d6a55";
+const TWEED_DARK = "#5f4f3f";
+const TWEED_LIGHT = "#97836b";
+
+/** Side view, brim to the right: a soft crown snapped down onto a short brim. */
+function flatCap(): string {
+  return sheet(CAP_W, CAP_H, (ctx) => {
+    const W = CAP_W;
+    const H = CAP_H;
+    // The brim, under the crown's front.
+    ctx.beginPath();
+    ctx.moveTo(W * 0.5, H * 0.72);
+    ctx.bezierCurveTo(W * 0.72, H * 0.66, W * 0.92, H * 0.7, W * 0.97, H * 0.8);
+    ctx.bezierCurveTo(W * 0.98, H * 0.88, W * 0.86, H * 0.93, W * 0.62, H * 0.93);
+    ctx.lineTo(W * 0.5, H * 0.93);
+    ctx.closePath();
+    ctx.fillStyle = TWEED_DARK;
+    ctx.fill();
+    // The crown.
+    ctx.beginPath();
+    ctx.moveTo(W * 0.05, H * 0.93);
+    ctx.bezierCurveTo(W * 0.02, H * 0.55, W * 0.22, H * 0.16, W * 0.5, H * 0.14);
+    ctx.bezierCurveTo(W * 0.72, H * 0.13, W * 0.86, H * 0.32, W * 0.86, H * 0.6);
+    ctx.bezierCurveTo(W * 0.8, H * 0.74, W * 0.7, H * 0.8, W * 0.62, H * 0.82);
+    ctx.lineTo(W * 0.62, H * 0.93);
+    ctx.closePath();
+    glue(ctx, TWEED, 0.8);
+    // The top panel, a lighter layer glued on.
+    ctx.beginPath();
+    ctx.moveTo(W * 0.12, H * 0.58);
+    ctx.bezierCurveTo(W * 0.18, H * 0.3, W * 0.34, H * 0.2, W * 0.52, H * 0.2);
+    ctx.bezierCurveTo(W * 0.7, H * 0.2, W * 0.8, H * 0.34, W * 0.81, H * 0.52);
+    ctx.bezierCurveTo(W * 0.6, H * 0.44, W * 0.34, H * 0.46, W * 0.12, H * 0.58);
+    ctx.closePath();
+    glue(ctx, TWEED_LIGHT, 0.4);
+    // The band.
+    rr(ctx, W * 0.05, H * 0.84, W * 0.58, H * 0.09, H * 0.02);
+    glue(ctx, TWEED_DARK, 0.4);
+    // The snap button on top.
+    ctx.beginPath();
+    ctx.arc(W * 0.5, H * 0.17, H * 0.035, 0, Math.PI * 2);
+    glue(ctx, TWEED_DARK, 0.3);
+  });
+}
+
 /* ----------------------------------------------------------------------- */
 
 let cached: Record<string, string> | null = null;
@@ -256,6 +305,7 @@ export function labArt(): Record<string, string> {
       "lab/car_wheel": carWheel(),
       "lab/case_closed": caseClosed(),
       "lab/case_open": caseOpen(),
+      "lab/flat_cap": flatCap(),
     };
   }
   return cached;
