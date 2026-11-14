@@ -241,8 +241,8 @@ def test_put_on_errors():
     w = make_world({"dad": {"at": "home"}, "mom": {"at": "beside", "holding": "hat"}, "kid": {"at": "far"}},
                    {"cap": {"at": "ledge"}})
     rejects("not_holding", "mom is holding it", apply_put_on, w, tracks, do="put_on", who="dad", what="hat")
-    rejects("not_on_stage", "box is not on stage", apply_put_on, w, tracks, do="put_on", who="dad", what="box")
-    rejects("offstage", "dad is offstage", apply_put_on,
+    rejects("not_on_stage", "box is not on stage; place it with propStart", apply_put_on, w, tracks, do="put_on", who="dad", what="box")
+    rejects("offstage", "dad is offstage; use enter first", apply_put_on,
             make_world({"dad": {"at": "offstage_left"}}, {"cap": {"at": "ledge"}}), tracks,
             do="put_on", who="dad", what="cap")
     w.occupy("mom", 9.0, "waving")
@@ -371,7 +371,7 @@ def test_place_on_errors():
     w = make_world({"dad": {"at": "home", "holding": "hat"}, "mom": {"at": "beside", "holding": "cap"}},
                    {"table": {"at": "near"}, "stool": {"at": "near"}, "jar": {"on": "table.top"}})
     kw = {"do": "place_on", "who": "dad", "what": "hat"}
-    rejects("unknown_socket", "table has no socket shelf", apply_place_on, w, tracks, on="table", socket="shelf", **kw)
+    rejects("unknown_socket", "table has no socket shelf; its sockets are top", apply_place_on, w, tracks, on="table", socket="shelf", **kw)
     rejects("socket_taken", "table.top is taken by jar", apply_place_on, w, tracks, on="table", socket="top", **kw)
     rejects("socket_taken", "table has no free socket", apply_place_on, w, tracks, on="table", **kw)
     rejects("no_socket", "stool has no sockets to place on", apply_place_on, w, tracks, on="stool", **kw)
@@ -395,7 +395,7 @@ def test_place_on_a_carried_surface_or_itself():
     rejects("held", "bowl is on tray, which mom is holding", apply_place_on, w1, tracks,
             do="place_on", who="dad", what="hat", on="bowl")
     w2 = make_world({"dad": {"at": "home", "holding": "shelf"}})
-    rejects("cycle", "shelf cannot rest on shelf", apply_place_on, w2, tracks,
+    rejects("cycle", "shelf cannot rest on itself", apply_place_on, w2, tracks,
             do="place_on", who="dad", what="shelf", on="shelf", socket="high")
 
 
@@ -698,8 +698,8 @@ def test_open_a_prop_on_a_tray_someone_holds(dad_facing, mom_at, mom_facing):
 def test_open_errors():
     w, tracks = jar_on_table(state="open")
     rejects("already_open", "it is already open", apply_open, w, tracks, do="open", who="dad", what="jar")
-    rejects("unknown_state", "lamp has no state open", apply_open, w, tracks, do="open", who="dad", what="lamp")
-    rejects("not_on_stage", "stool is not on stage", apply_open, w, tracks, do="open", who="dad", what="stool")
+    rejects("unknown_state", "lamp has no state open; its states are lit, out", apply_open, w, tracks, do="open", who="dad", what="lamp")
+    rejects("not_on_stage", "stool is not on stage; place it with propStart", apply_open, w, tracks, do="open", who="dad", what="stool")
 
 
 def test_open_out_of_reach():
@@ -713,9 +713,9 @@ def test_open_out_of_reach():
 def test_close_errors():
     w, tracks = jar_on_table(state="closed")
     rejects("already_closed", "it is already closed", apply_close, w, tracks, do="close", who="dad", what="jar")
-    rejects("unknown_state", "lamp has no state closed", apply_close, w, tracks, do="close", who="dad", what="lamp")
+    rejects("unknown_state", "lamp has no state closed; its states are lit, out", apply_close, w, tracks, do="close", who="dad", what="lamp")
     w2 = make_world({"dad": {"at": "offstage_right"}}, {"table": {"at": "near"}, "jar": {"on": "table.top"}})
-    rejects("offstage", "dad is offstage", apply_close, w2, tracks, do="close", who="dad", what="jar")
+    rejects("offstage", "dad is offstage; use enter first", apply_close, w2, tracks, do="close", who="dad", what="jar")
 
 
 # -------------------------------------------------------------------- set_state
@@ -732,7 +732,7 @@ def test_set_state_with_and_without_who():
 
 def test_set_state_errors():
     w, tracks = jar_on_table()
-    rejects("unknown_state", "lamp has no state broken", apply_set_state, w, tracks,
+    rejects("unknown_state", "lamp has no state broken; its states are lit, out", apply_set_state, w, tracks,
             do="set_state", what="lamp", state="broken")
     rejects("unknown_id", "anvil is not a known prop", apply_set_state, w, tracks,
             do="set_state", what="anvil", state="lit")

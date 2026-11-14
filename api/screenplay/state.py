@@ -201,6 +201,9 @@ class World:
 
     def _prop(self, what: str | None) -> PropState:
         if what is None or what not in self.props:
+            # The one-grammar wording would be "<what> is not in the screenplay's props" (#171
+            # item 13, verbs_core's and validate's words), but test_verbs_body.py
+            # test_sit_on_errors pins this text through World.sit_on.
             raise StateError("unknown_id", f"{what} is not a known prop")
         return self.props[what]
 
@@ -356,20 +359,22 @@ class World:
         fix = "use get_out first" if self.is_vehicle(prop) else "use stand_up first"
         return f"{who} is seated in {prop}.{sock}; {fix}"
 
-    def _require_on_stage(self, *who: str, fix: bool = True) -> None:
-        """``offstage``: ``dad is offstage; use enter first``. ``fix=False`` leaves the fix off,
-        for put_on, place_on, open and close, whose bare reason test_verbs_objects.py pins
-        until verbs_objects moves to this wording too."""
+    def _require_on_stage(self, *who: str) -> None:
+        """``offstage``: ``dad is offstage; use enter first``."""
         for w in who:
             if not self.on_stage(w):
-                raise StateError("offstage", f"{w} is offstage; {ENTER_FIRST}" if fix else f"{w} is offstage")
+                raise StateError("offstage", f"{w} is offstage; {ENTER_FIRST}")
 
-    def _require_placed(self, what: str, fix: bool = True) -> None:
-        """``not_on_stage``: ``cup is not on stage; place it with propStart``. ``fix=False``
-        as in ``_require_on_stage`` (put_on, open and close)."""
+    def _require_placed(self, what: str) -> None:
+        """``not_on_stage``: ``cup is not on stage; place it with propStart``."""
         if self.is_unplaced(what):
-            reason = f"{what} is not on stage"
-            raise StateError("not_on_stage", f"{reason}; {PLACE_WITH_PROPSTART}" if fix else reason)
+            raise StateError("not_on_stage", f"{what} is not on stage; {PLACE_WITH_PROPSTART}")
+
+    def _require_state(self, what: str, state: str) -> None:
+        """``unknown_state``: ``lamp has no state broken; its states are lit, out``. A prop with
+        no declared states takes any state."""
+        if self.catalog[what].states and state not in self.catalog[what].states:
+            raise StateError("unknown_state", f"{what} has no state {state}; {self._states_list(what)}")
 
     # ----------------------------------------------------- low-level mutations
 
@@ -517,9 +522,8 @@ class World:
                 seats[(prop, sock)] = who
         for what, ps in shot.prop_start.items():
             self._prop(what)
-            states = self.catalog[what].states
-            if ps.state is not None and states and ps.state not in states:
-                raise StateError("unknown_state", f"{what} has no state {ps.state}; {self._states_list(what)}")
+            if ps.state is not None:
+                self._require_state(what, ps.state)
 
         self.now = 0.0
         for p in self.people.values():
@@ -606,40 +610,80 @@ class World:
                 self._detach(what)
 
     def _apply_prop_start(self, shot: Shot, mark) -> None:
+        """Place every prop_start prop. The order of the entries does not matter.
+
+        Every prop that moves (``at`` or ``on``) is first taken off wherever it was, so a socket
+        it leaves is free for another entry, whichever comes first in the shot. Then ``at``
+        entries go to the ground, ``on`` entries naming a socket take it, and bare ``on`` entries
+        take their base's first socket still free. Two entries that really claim one socket fail
+        with ``socket_taken`` on the later one; a prop resting on itself, directly or through
+        other props, fails with ``cycle`` before any socket is checked (on the later entry of
+        the loop, as a socket conflict does).
+        """
+        ons: list[tuple[str, str, str]] = []  # (prop, base, socket or "")
         for what, ps in shot.prop_start.items():
             if ps.on is not None:
                 base, _, sock = ps.on.partition(".")
                 self._prop(base)
-                self._check_no_cycle(what, base)
-                if not sock:
-                    free = [k for k in self.catalog[base].sockets
-                            if self.props[base].occupants.get(k) in (None, f"prop:{what}")]
-                    if not free:
-                        raise StateError("socket_taken", f"every socket on {base} is taken")
-                    sock = free[0]
-                self._check_socket_for_prop(base, sock, what)
-                self._attach_prop(what, base, sock)
-            elif ps.at is not None:
+                if base == what:
+                    raise StateError("cycle", f"{what} cannot rest on itself")
+                ons.append((what, base, sock))
+        moved = [what for what, ps in shot.prop_start.items() if ps.on is not None or ps.at is not None]
+        self._check_no_prop_start_cycle(ons, moved)
+        for what in moved:
+            self._detach(what)
+        for what, ps in shot.prop_start.items():
+            if ps.on is None and ps.at is not None:
                 self._to_ground(what, mark(ps.at))
+        for what, base, sock in [o for o in ons if o[2]] + [o for o in ons if not o[2]]:
+            if not sock:
+                free = [k for k in self.catalog[base].sockets if k not in self.props[base].occupants]
+                if not free:
+                    raise StateError("socket_taken", f"every socket on {base} is taken")
+                sock = free[0]
+            self._check_socket_for_prop(base, sock, what)
+            self._attach_prop(what, base, sock)
+        for what, ps in shot.prop_start.items():
             if ps.state is not None:
                 self.props[what].state = ps.state
         # Checked after every prop_start is applied, so their order in the shot does not matter.
-        for what, ps in shot.prop_start.items():
-            if ps.on is not None:
-                base = ps.on.partition(".")[0]
-                if not self._placed(base):
-                    raise StateError("not_on_stage", f"{base} is not on stage in this shot; {PLACE_WITH_PROPSTART}")
+        for what, base, _ in ons:
+            if not self._placed(base):
+                raise StateError("not_on_stage", f"{base} is not on stage in this shot; {PLACE_WITH_PROPSTART}")
+
+    def _check_no_prop_start_cycle(self, ons: list[tuple[str, str, str]], moved: list[str]) -> None:
+        """``cycle`` when the props would rest on each other once every prop_start entry is
+        applied: each ``on`` entry's prop rests on its base, a moved ``at`` entry on the ground,
+        and every other prop where it is now. The last entry in the loop is named, so for
+        ``{table: on crate.top, crate: on table.top}`` it is ``crate cannot rest on table, which
+        rests on crate``, whatever else the shot gets wrong."""
+        final: dict[str, str | None] = {}
+        for what, st in self.props.items():
+            parsed = parse_parent(st.parent)
+            final[what] = parsed[1] if parsed is not None and parsed[0] == "prop" else None
+        for what in moved:
+            final[what] = None
+        for what, base, _ in ons:
+            final[what] = base
+        for what, base, _ in reversed(ons):
+            seen: set[str] = set()
+            cur: str | None = base
+            while cur is not None and cur not in seen:
+                if cur == what:
+                    raise StateError("cycle", f"{what} cannot rest on {base}, which rests on {what}")
+                seen.add(cur)
+                cur = final.get(cur)
 
     def _check_no_cycle(self, what: str, base: str) -> None:
         """``cycle`` when ``what`` would rest on itself or on a prop that rests on it."""
         if base == what:
-            raise StateError("cycle", f"{what} cannot rest on {base}")
+            raise StateError("cycle", f"{what} cannot rest on itself")
         if base in set(self._descendants(what)):
             raise StateError("cycle", f"{what} cannot rest on {base}, which rests on {what}")
 
     def _check_socket_for_prop(self, base: str, socket: str, what: str) -> None:
         if socket not in self.catalog[base].sockets:
-            raise StateError("unknown_socket", f"{base} has no socket {socket}")
+            raise StateError("unknown_socket", f"{base} has no socket {socket}; {self._sockets_list(base)}")
         occ = self.props[base].occupants.get(socket)
         if occ is not None and occ != f"prop:{what}":
             raise StateError("socket_taken", f"{base}.{socket} is taken by {occ.partition(':')[2]}")
@@ -790,16 +834,16 @@ class World:
             raise StateError("not_holding", self._where(what, who))
         if h is None and st.parent != GROUND:
             raise StateError("not_holding", self._where(what, who))
-        self._require_on_stage(who, fix=False)
+        self._require_on_stage(who)
         if h is None:
-            self._require_placed(what, fix=False)
+            self._require_placed(what)
             self._check_takeable(who, what)
             if self.free_hand(who) is None:
                 raise StateError("hands_full", self._hands_full_reason(who))
         if HEAD in t.holding:
             raise StateError("head_full", f"{target} is already wearing {t.holding[HEAD]}")
         if target != who:
-            self._require_on_stage(target, fix=False)
+            self._require_on_stage(target)
         self._attach_puppet(what, target, HEAD)
 
     def place_on(self, who: str, what: str, parent: str, pos: Vec3) -> None:
@@ -807,7 +851,7 @@ class World:
         self._person(who)
         self._prop(what)
         self._require_in_hand(who, what)
-        self._require_on_stage(who, fix=False)
+        self._require_on_stage(who)
         parsed = parse_parent(parent)
         if parsed is None:
             self._to_ground(what, pos)
@@ -822,9 +866,7 @@ class World:
 
     def set_prop_state(self, what: str, state: str) -> None:
         self._prop(what)
-        states = self.catalog[what].states
-        if states and state not in states:
-            raise StateError("unknown_state", f"{what} has no state {state}")
+        self._require_state(what, state)
         self.props[what].state = state
 
     def open(self, who: str, what: str) -> None:
@@ -838,11 +880,9 @@ class World:
     def _open_close(self, who: str, what: str, state: str) -> None:
         self._person(who)
         st = self._prop(what)
-        self._require_on_stage(who, fix=False)
-        self._require_placed(what, fix=False)
-        states = self.catalog[what].states
-        if states and state not in states:
-            raise StateError("unknown_state", f"{what} has no state {state}")
+        self._require_on_stage(who)
+        self._require_placed(what)
+        self._require_state(what, state)
         if st.state == state:
             raise StateError(f"already_{state}", f"it is already {state}")
         st.state = state
