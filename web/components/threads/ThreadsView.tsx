@@ -69,6 +69,8 @@ interface Engine {
   reveal: number;
   geom: FrameGeometry | null;
   titles: TitleBox[];
+  /** Which placement each shown title used last frame. */
+  titleSpot: Map<number, number>;
   titleW: number[];
   fonts: { hand: string; sans: string };
   raf: number;
@@ -77,6 +79,29 @@ interface Engine {
   pointers: Map<number, { x: number; y: number }>;
   drag: { x: number; moved: boolean; lastX: number; lastT: number; pinch: number; startCx: number } | null;
   drawMs: number;
+}
+
+/**
+ * How much thread runs through a title box: samples inside it, faded
+ * threads counting for less. Samples are evenly spaced in x, so only the
+ * slice under the box is checked.
+ */
+function threadsThrough(g: FrameGeometry, dim: number[], box: { x0: number; y0: number; x1: number; y1: number }): number {
+  let score = 0;
+  for (let i = 0; i < g.strands.length; i++) {
+    const pts = g.strands[i];
+    const n = g.strandLens[i];
+    if (!pts || n < 2) continue;
+    const step = pts[2] - pts[0] || 1;
+    const k0 = Math.max(0, Math.floor((box.x0 - pts[0]) / step));
+    const k1 = Math.min(n - 1, Math.ceil((box.x1 - pts[0]) / step));
+    const weight = 1 - dim[i] * 0.9;
+    for (let k = k0; k <= k1; k += 2) {
+      const y = pts[k * 2 + 1];
+      if (y > box.y0 - 3 && y < box.y1 + 3) score += weight;
+    }
+  }
+  return score;
 }
 
 export default function ThreadsView(props: ThreadsViewProps) {
@@ -124,6 +149,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
       reveal: reduced ? model.tNow : model.tMin,
       geom: null,
       titles: [],
+      titleSpot: new Map(),
       titleW: model.knots.map((k) => k.moment.title.length * 8.5),
       fonts: { hand, sans },
       raf: 0,
@@ -303,7 +329,19 @@ export default function ThreadsView(props: ThreadsViewProps) {
           { dy: up - hTxt * 0.9, dx: -w / 2 },
           { dy: down + hTxt * 0.9, dx: -w / 2 },
         ];
-        for (const tr of tries) {
+        // Of the spots that collide with nothing, take the one the fewest
+        // (lit) threads run through, preferring earlier spots on a tie.
+        // The spot used last frame wins unless another is clearly better, so
+        // titles do not hop while panning.
+        let bestBox: TitleBox | null = null;
+        let bestTry = tries[0];
+        let bestScore = Infinity;
+        let bestIdx = -1;
+        let prevBox: TitleBox | null = null;
+        let prevScore = Infinity;
+        const prevIdx = e.titleSpot.get(i) ?? -1;
+        for (let ti = 0; ti < tries.length; ti++) {
+          const tr = tries[ti];
           const box: TitleBox = { x0: h.x + tr.dx, y0: h.y + tr.dy, x1: h.x + tr.dx + w, y1: h.y + tr.dy + hTxt, knot: i };
           if (box.x0 < 8 || box.x1 > W - 8) continue;
           const hitsTitle = placed.some((b) => b.x0 < box.x1 + 10 && box.x0 < b.x1 + 10 && b.y0 < box.y1 + 2 && box.y0 < b.y1 + 2);
@@ -313,10 +351,29 @@ export default function ThreadsView(props: ThreadsViewProps) {
           const hitsName = g.names.some((b) => b.x0 < box.x1 + 6 && box.x0 < b.x1 + 6 && b.y0 < box.y1 && box.y0 < b.y1);
           const hitsHeader = box.y0 < (W < 640 ? 150 : 136) && box.x0 < 520;
           if (hitsTitle || hitsKnot || hitsName || hitsHeader) continue;
-          placed.push(box);
-          shown.set(i, tr);
-          break;
+          // Centred spots first: each step down the list must earn its place.
+          const score = threadsThrough(g, e.dim, box) + ti * 2;
+          if (ti === prevIdx) {
+            prevBox = box;
+            prevScore = score;
+          }
+          if (score < bestScore - 0.5) {
+            bestScore = score;
+            bestBox = box;
+            bestTry = tr;
+            bestIdx = ti;
+          }
         }
+        if (prevBox && prevScore <= bestScore + 4) {
+          bestBox = prevBox;
+          bestTry = tries[prevIdx];
+          bestIdx = prevIdx;
+        }
+        if (bestBox) {
+          placed.push(bestBox);
+          shown.set(i, bestTry);
+          e.titleSpot.set(i, bestIdx);
+        } else e.titleSpot.delete(i);
       }
       e.titles = placed;
 
