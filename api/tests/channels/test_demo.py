@@ -126,11 +126,12 @@ def test_cli_binds_only_loopback_and_never_logs_secret(isolated, monkeypatch, ca
 
 
 @pytest.mark.parametrize("web", [False, True])
-def test_scripted_worker_uses_real_offline_studio_to_save_book(isolated, web):
+def test_scripted_worker_uses_real_offline_studio_to_save_book(isolated, web, monkeypatch):
     from tests.channels.test_inbox import sign
     from tests.channels.test_worker import Sender
     sender = Sender()
-    app = channels_demo.create_app(worker=True, sender=sender, web=web)
+    monkeypatch.setenv("STITCH_WEB_URL", "https://unrelated-preview.invalid")
+    app = channels_demo.create_app(worker=True, sender=sender, web=web, preview_port=3402)
     def tick(client):
         path = "/internal/channels/tick"
         response = client.post(path, content=b"{}", headers=sign(b"{}", path, secret=SECRET))
@@ -177,6 +178,9 @@ def test_scripted_worker_uses_real_offline_studio_to_save_book(isolated, web):
         assert all(m["provider"] == "terminal" and m["spaceId"] == "terminal" for m in sender.messages)
         if web:
             mid = memory["_id"]
+            completed = [m["text"] for m in sender.messages if "/memories/" in m["text"]]
+            assert any(f"http://127.0.0.1:3402/memories/{mid}?family=demo_family" in text for text in completed)
+            assert all("unrelated-preview" not in text and "localhost:3000" not in text for text in completed)
             memory_path = f"/families/{family_id}/memories/{mid}"
             book_path = f"/families/{family_id}/people/dad/book"
             media_id = memory["tellings"][0]["photoIds"][0]
@@ -256,3 +260,47 @@ def test_book_contact_fixture_refuses_unseeded_or_wrong_identity(isolated):
         db.people.update_one({"_id": "dad"}, {"$set": {"userId": "other"}})
         with pytest.raises(ValueError, match="matching"):
             seed_book_demo_contact(db)
+
+
+def test_web_demo_mounts_settings_on_same_db_without_allowing_cloud_activation(isolated):
+    from tests.channels.test_inbox import sign
+    app = channels_demo.create_app(web=True)
+    base = "/families/demo_family/channels"
+    with TestClient(app) as client:
+        assert client.get(base + "/contacts").status_code == 401
+        assert client.post("/auth/login", json={"email": "david@demo.stitch", "password": "stitch-demo"}).status_code == 200
+        contact = client.get(base + "/people/dad/contact").json()["contact"]
+        assert contact["provider"] == "terminal" and contact["handle"] == "terminal-user"
+        assert client.get("/families/unknown/channels/contacts").status_code == 404
+        preflight = client.options(base + "/people/dad/contact", headers={
+            "Origin": "http://127.0.0.1:3002", "Access-Control-Request-Method": "PATCH",
+            "Access-Control-Request-Headers": "content-type"})
+        assert preflight.status_code == 200
+        assert preflight.headers["access-control-allow-origin"] == "http://127.0.0.1:3002"
+        updated = client.patch(base + "/people/dad/contact", json={"timezone": "America/New_York", "cadenceDays": 7,
+            "quietHours": {"start": "21:00", "end": "08:00"}})
+        assert updated.status_code == 200
+        assert app.state.demo_db.contacts.find_one({"_id": "terminal-contact"})["cadenceDays"] == 7
+        pending = client.post(base + "/people/mom/enrollment", json={"provider": "imessage", "handle": "+15555550123",
+            "timezone": "America/New_York", "cadenceDays": 7, "quietHours": {"start": "21:00", "end": "08:00"}})
+        assert pending.status_code == 201 and pending.json()["contact"]["status"] == "pending"
+        path = "/internal/channels/enroll"
+        raw = json.dumps({"messageId": "synthetic-proof", "provider": "imessage", "senderId": "+15555550123",
+            "spaceId": "synthetic-direct", "spaceKind": "direct", "code": pending.json()["code"]}).encode()
+        assert client.post(path, content=raw, headers={"content-type": "application/json"}).status_code == 401
+        assert client.post(path, content=raw, headers=sign(raw, path, secret=SECRET)).status_code == 403
+        assert client.get(base + "/people/mom/contact").json()["contact"]["status"] == "pending"
+        assert os.environ["STITCH_CHANNELS_TRANSCRIPTION"] == "0"
+        for path in ("/internal/channels/inbound-voice", "/internal/channels/authorize"):
+            body = json.dumps({"provider": "imessage", "senderId": "+15555550123"}).encode()
+            assert client.post(path, content=body, headers=sign(body, path, secret=SECRET)).status_code == 403
+        assert client.post(base + "/people/mom/contact/stop", json={}).json()["contact"]["status"] == "stopped"
+
+
+def test_default_worker_preview_url_is_isolated_from_inherited_url(isolated, monkeypatch):
+    from tests.channels.test_worker import Sender
+    monkeypatch.setenv("STITCH_WEB_URL", "https://unrelated-preview.invalid")
+    app = channels_demo.create_app(worker=True, web=True, sender=Sender())
+    with TestClient(app):
+        assert app.state.channels_worker.web_url == "http://127.0.0.1:3002"
+    assert os.environ["STITCH_WEB_URL"] == "https://unrelated-preview.invalid"
