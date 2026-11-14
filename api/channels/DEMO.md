@@ -85,19 +85,37 @@ Use these inputs in order, ticking after each:
 4. When asked who was there: `I was alone.`
 5. When asked to approve the studio proposal: `KEEP`
 
-Tick again as needed until the terminal returns a `/memories/<id>?family=demo_family`
-link. Open that relative path on `http://127.0.0.1:3002`; David's book now includes
+Tick again as needed until the terminal returns a full
+`http://127.0.0.1:3002/memories/<id>?family=demo_family` link. Open that link directly;
+`--preview-port` controls its port even when an unrelated `STITCH_WEB_URL` is
+inherited. David's book now includes
 the newly saved memory. Optional photos sent before the text remain attached to
 the telling. The scripted studio compiles a real playable payload, but the scene
 is a fixed offline rehearsal, not an AI interpretation of the text. Receipt 202
 alone is never proof of a saved story. Voice transcription is deliberately disabled.
+
+## Settings preview
+
+While signed in, open `http://127.0.0.1:3002/settings/notifications` and choose the
+demo family. `--web` mounts the reviewed cookie-authenticated settings routes on
+the same disposable database; no separate API harness is required. David's
+terminal contact can have preferences edited or be stopped. An admin can create
+a pending iMessage request for another seeded relative and inspect or stop it.
+
+Pending really means pending. This terminal-only demo rejects iMessage inbound,
+authorization and enrollment requests even with a valid HMAC. The mounted
+enrollment route still authenticates requests, but its demo boundary refuses
+cloud proof; it never pretends that a real phone has opted in. There is no demo
+activation bypass. Creating a request sends nothing. Live phone enrollment and
+voice transcription require the separately configured production integration.
 
 ## Isolation and verification
 
 The API reuses existing auth/family/tree/book/memory/media read routes and account
 login/logout/signup routes. Normal session and family checks apply: anonymous
 book/media requests return 401; a different family's user gets 404. Studio REST
-writes, enrollment and external services are not mounted. CORS permits only
+writes and external services are not mounted. Settings and enrollment routers
+are mounted with the terminal-only boundary described above. CORS permits only
 `localhost` and `127.0.0.1` on `--preview-port`. A fresh process-only JWT secret
 replaces inherited JWT configuration during the demo; it is never printed.
 

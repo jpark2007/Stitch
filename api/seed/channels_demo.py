@@ -102,7 +102,8 @@ def create_app(*, worker: bool = False, sender=None, web: bool = False, preview_
                 manager = ScriptedRunManager(db_getter=lambda: db, step_seconds=0)
                 port = bridge_port if bridge_port is not None else (3012 if web else 3011)
                 app.state.channels_worker = ChannelWorker(db, sender=sender or BridgeSender(base_url=f"http://127.0.0.1:{port}"),
-                    agent_factory=ScriptedConversation, runs=manager)
+                    agent_factory=ScriptedConversation, runs=manager,
+                    **({"web_url": f"http://{HOST}:{preview_port}"} if web else {}))
             app.state.demo_db = db
             yield
         finally:
@@ -123,7 +124,7 @@ def create_app(*, worker: bool = False, sender=None, web: bool = False, preview_
 
     async def terminal_body(request: Request) -> bytes:
         body = await authenticated_body(request)
-        if request.url.path.rsplit("/", 1)[-1] in {"inbound", "inbound-photo", "inbound-voice", "authorize"}:
+        if request.url.path.rsplit("/", 1)[-1] in {"inbound", "inbound-photo", "inbound-voice", "authorize", "enroll"}:
             try:
                 value = json.loads(body)
             except (ValueError, UnicodeDecodeError):
@@ -140,11 +141,15 @@ def create_app(*, worker: bool = False, sender=None, web: bool = False, preview_
         from fastapi.exceptions import RequestValidationError
         from fastapi.responses import JSONResponse
         from routes import auth, families, tree
+        from channels.settings import router as settings_router
+        from channels.enrollment import router as enrollment_router
 
         app.add_middleware(CORSMiddleware,
             allow_origins=[f"http://127.0.0.1:{preview_port}", f"http://localhost:{preview_port}"],
-            allow_credentials=True, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+            allow_credentials=True, allow_methods=["GET", "POST", "PATCH"], allow_headers=["Content-Type"])
         app.include_router(auth.router)
+        app.include_router(settings_router)
+        app.include_router(enrollment_router)
         # Existing protected read routes, including book/memory/media bundles.
         # Studio REST writes are deliberately absent; only the explicit worker runs.
         for existing in (families.router, tree.router):
