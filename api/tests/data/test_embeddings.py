@@ -214,8 +214,9 @@ def _set(name="church steps", description="stone steps outside St. Mary's") -> s
                           layers=[schemas.SetLayer(art=None, depth=0, height=2.0)])
 
 
-def _raw(mdb, coll, doc_id):
-    return mdb[coll].find_one({"_id": doc_id})
+def _raw(mdb, coll, doc_id, family_id=FAM_A):
+    """The stored document for a family's prop or set (storage key "<familyId>:<id>")."""
+    return mdb[coll].find_one({"_id": f"{family_id}:{doc_id}"})
 
 
 def test_insert_prop_and_set_store_a_vector_from_name_and_description(mdb, fake_embedder):

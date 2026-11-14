@@ -3,9 +3,17 @@
 ARCHITECTURE.md section 5 (`props`, `sets`, the vector index on descriptions) and the
 PATCH /families/{fid}/props/{id} semantics in section 6.
 
-Storage: one document per prop or set, `_id` = API `id` (a str), camelCase fields,
-`familyId` on every document, and an optional storage-only `embedding` used by the
-Atlas Vector Search indexes `props_vector` and `sets_vector` (created by db/client.py).
+Storage: one document per prop or set, camelCase fields. The API `id` (a bare slug
+such as 'hymn_books', or a generated ObjectId string) is stored as the plain field `id`,
+next to `familyId`, and the storage key is the compound `_id` = "<familyId>:<id>" (see
+_key). Ids are therefore unique per family, not globally: two families can each own a
+'hymn_books', and neither can reach or block the other's. Every query also filters on
+`familyId` as a second line of defence. Documents written before this layout (`_id` =
+the bare id, no `id` field) still list with their bare id, but lookups by id only find
+them once migrate_legacy_ids has rewritten them; db/client.ensure_indexes runs it on
+startup. Each document may also carry an optional
+storage-only `embedding` used by the Atlas Vector Search indexes `props_vector` and
+`sets_vector` (created by db/client.py).
 When no embedding is passed in, saving computes one from "<name>. <description>" with
 db.search.embed (the embedder main.py installs from VOYAGE_API_KEY). With no embedder,
 or when it fails, nothing is stored and matching uses keywords; saving never fails on it.
@@ -22,6 +30,7 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 import re
 import unicodedata
 from pathlib import Path
@@ -33,7 +42,9 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
 import schemas
-from db import search
+from db import media, search
+
+log = logging.getLogger(__name__)
 
 LIBRARY_DIR = Path(__file__).resolve().parents[2] / "shared" / "props"
 
@@ -86,11 +97,28 @@ library_props.cache_clear = _load_library.cache_clear  # type: ignore[attr-defin
 # ------------------------------------------------------------------ doc <-> model
 
 
-def _to_doc(model: schemas.Prop | schemas.SetDef, family_id: str, doc_id: str,
+def _key(family_id: str, api_id: str) -> str:
+    """The storage `_id` of a family's prop or set: "<familyId>:<api id>"."""
+    return f"{family_id}:{api_id}"
+
+
+def _api_id(doc: dict) -> str:
+    """The API id of a stored document: its `id` field, or for a legacy document (no `id`,
+    `_id` = the bare id) its `_id`, with any leading "<familyId>:" removed."""
+    if doc.get("id") is not None:
+        return str(doc["id"])
+    raw = str(doc["_id"])
+    family_id = doc.get("familyId")
+    if family_id is not None:
+        raw = raw.removeprefix(f"{family_id}:")
+    return raw
+
+
+def _to_doc(model: schemas.Prop | schemas.SetDef, family_id: str, api_id: str,
             embedding: list[float] | None) -> dict:
     doc = model.model_dump(by_alias=True, mode="json")
-    doc.pop("id", None)
-    doc["_id"] = doc_id
+    doc["_id"] = _key(family_id, api_id)
+    doc["id"] = api_id
     doc["familyId"] = family_id
     if embedding is not None:
         doc["embedding"] = [float(x) for x in embedding]
@@ -98,11 +126,17 @@ def _to_doc(model: schemas.Prop | schemas.SetDef, family_id: str, doc_id: str,
 
 
 def _from_doc(cls: type[M], doc: dict) -> M:
-    """Map `_id` to `id` and keep only the model's fields (drops `embedding`)."""
+    """The model for a stored document: `id` is the API id (never the compound `_id`), and
+    only the model's fields are kept (drops `embedding`)."""
     allowed = {f.alias or name for name, f in cls.model_fields.items()}
     data = {k: v for k, v in doc.items() if k in allowed}
-    data["id"] = str(doc["_id"])
+    data["id"] = _api_id(doc)
     return cls.model_validate(data)
+
+
+def _query(family_id: str, api_id: str) -> dict:
+    """Filter for one family's document: the compound key, and familyId as defence."""
+    return {"_id": _key(family_id, api_id), "familyId": family_id}
 
 
 _NO_EMBEDDING = {"embedding": 0}
@@ -123,22 +157,23 @@ def _compute_embedding(model: schemas.Prop | schemas.SetDef) -> list[float] | No
         return None
 
 
-def _insert(db: Database, coll: str, family_id: str, model: M, doc_id: str | None,
+def _insert(db: Database, coll: str, family_id: str, model: M, api_id: str | None,
             embedding: list[float] | None) -> M:
-    doc_id = doc_id or str(bson.ObjectId())
+    api_id = api_id or str(bson.ObjectId())
     if embedding is None:
         embedding = _compute_embedding(model)
-    doc = _to_doc(model, family_id, doc_id, embedding)
+    doc = _to_doc(model, family_id, api_id, embedding)
     try:
         db[coll].insert_one(doc)
     except DuplicateKeyError as exc:
-        raise ValueError(f"{coll[:-1]} id {doc_id!r} already exists") from exc
+        # The key is per family, so this is a duplicate within family_id only.
+        raise ValueError(f"{coll[:-1]} id {api_id!r} already exists") from exc
     return _from_doc(type(model), doc)
 
 
 def _replace(db: Database, coll: str, family_id: str, model: M,
              embedding: list[float] | None) -> M | None:
-    current = db[coll].find_one({"_id": model.id, "familyId": family_id})
+    current = db[coll].find_one(_query(family_id, model.id))
     if current is None:
         return None
     if embedding is None:
@@ -151,14 +186,14 @@ def _replace(db: Database, coll: str, family_id: str, model: M,
         else:
             embedding = _compute_embedding(model)
     doc = _to_doc(model, family_id, model.id, embedding)
-    result = db[coll].replace_one({"_id": model.id, "familyId": family_id}, doc)
+    result = db[coll].replace_one(_query(family_id, model.id), doc)
     if result.matched_count == 0:
         return None
     return _from_doc(type(model), doc)
 
 
-def _get(db: Database, coll: str, cls: type[M], family_id: str, doc_id: str) -> M | None:
-    doc = db[coll].find_one({"_id": doc_id, "familyId": family_id}, _NO_EMBEDDING)
+def _get(db: Database, coll: str, cls: type[M], family_id: str, api_id: str) -> M | None:
+    doc = db[coll].find_one(_query(family_id, api_id), _NO_EMBEDDING)
     return _from_doc(cls, doc) if doc else None
 
 
@@ -166,9 +201,10 @@ def _get_many(db: Database, coll: str, cls: type[M], family_id: str,
               ids: list[str]) -> dict[str, M]:
     if not ids:
         return {}
-    cursor = db[coll].find({"_id": {"$in": list(dict.fromkeys(ids))}, "familyId": family_id},
-                           _NO_EMBEDDING)
-    return {str(doc["_id"]): _from_doc(cls, doc) for doc in cursor}
+    keys = [_key(family_id, i) for i in dict.fromkeys(ids)]
+    cursor = db[coll].find({"_id": {"$in": keys}, "familyId": family_id}, _NO_EMBEDDING)
+    found = (_from_doc(cls, doc) for doc in cursor)
+    return {item.id: item for item in found}
 
 
 def _list(db: Database, coll: str, cls: type[M], family_id: str) -> list[M]:
@@ -382,17 +418,24 @@ def update_prop(db: Database, family_id: str, prop_id: str,
     description, which a rename does not change).
 
     photo_id sets art={'body': photo_id}, source='photo' and states={}, keeping size,
-    anchor, grip, sockets, aspect and color. It also sets parts={}: beyond the letter of
-    the spec, but every part points at an art key ('bellows', 'door') that the new art no
-    longer has, so keeping them would leave parts with no image. Library props and other
-    families' props return None. Checking that the media id exists is the route's job.
+    anchor, grip, sockets and color; aspect is set from the photo's pixel size when it can
+    be read (media.image_aspect: this family's media, EXIF orientation applied), and kept
+    otherwise. It also sets parts={}: beyond the letter of the spec, but every part points
+    at an art key ('bellows', 'door') that the new art no longer has, so keeping them
+    would leave parts with no image. Library props and other families' props return None.
+    Checking that the media id exists is the route's job.
     """
     update: dict = {}
     if patch.name is not None:
         update["name"] = patch.name
     if patch.photo_id is not None:
         update.update({"art": {"body": patch.photo_id}, "source": "photo", "states": {}, "parts": {}})
-    query = {"_id": prop_id, "familyId": family_id}
+    query = _query(family_id, prop_id)
+    if patch.photo_id is not None:
+        bare = media.parse_media_ref(patch.photo_id)
+        aspect = media.image_aspect(db, family_id, bare) if bare is not None else None
+        if aspect is not None:
+            update["aspect"] = aspect
     if not update:
         return _get(db, PROPS, schemas.Prop, family_id, prop_id)
     doc = db[PROPS].find_one_and_update(query, {"$set": update}, projection=_NO_EMBEDDING,
@@ -452,3 +495,41 @@ def find_sets(db: Database, family_id: str, text: str, *, vector: list[float] | 
               limit: int = 5) -> list[schemas.SetDef]:
     """As find_props, over the family's sets (there is no set library)."""
     return _find(db, SETS, SETS_VECTOR_INDEX, schemas.SetDef, family_id, text, vector, limit, {})
+
+
+# ----------------------------------------------------------------------- migration
+
+
+def migrate_legacy_ids(db: Database) -> int:
+    """Rewrite props and sets stored in the old layout (`_id` = the bare API id, no `id`
+    field) to the compound key. Returns how many documents were migrated.
+
+    Each legacy document is copied with `_id` = _key(familyId, old _id) and `id` = the
+    old _id, every other field (embedding included) kept, and the old document is
+    deleted. When the new key already exists the copy is skipped but the old document is
+    still deleted. Documents with no familyId cannot be keyed and are left alone. Safe to
+    run on every startup: a second run finds nothing to do, and an empty database is fine.
+    """
+    migrated = 0
+    for coll in (PROPS, SETS):
+        for doc in list(db[coll].find({"id": {"$exists": False}})):
+            family_id = doc.get("familyId")
+            if not isinstance(family_id, str) or not family_id:
+                log.warning("%s document %r has no familyId; not migrated", coll, doc.get("_id"))
+                continue
+            old_id = doc["_id"]
+            api_id = _api_id(doc)
+            new_key = _key(family_id, api_id)
+            if old_id == new_key:  # already keyed, only the id field is missing
+                db[coll].update_one({"_id": old_id}, {"$set": {"id": api_id}})
+                migrated += 1
+                continue
+            new_doc = {**doc, "_id": new_key, "id": api_id}
+            if db[coll].find_one({"_id": new_key}, {"_id": 1}) is None:
+                try:
+                    db[coll].insert_one(new_doc)
+                except DuplicateKeyError:
+                    pass  # written concurrently: the new layout already holds it
+            db[coll].delete_one({"_id": old_id})
+            migrated += 1
+    return migrated
