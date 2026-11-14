@@ -21,6 +21,7 @@ from screenplay.narration import (
     line_words,
     narrate_shot,
     retime_actions,
+    retime_point,
     shot_tellings,
     tokenize,
 )
@@ -484,6 +485,153 @@ def test_convert_interactions_unknown_shot():
     assert (e.code, e.shot, e.line_index) == ("interaction_unknown_shot", "s9", 0)
 
 
+# ---------------------------------------------------------------------- retime_point
+
+ORIG = [1.0, 2.0, 4.0]
+NEW = [1.5, 3.0, 4.25]
+
+
+def test_retime_point_before_the_first_action_is_unchanged():
+    assert retime_point(0.4, ORIG, NEW) == 0.4
+    assert retime_point(-2.0, ORIG, NEW) == -2.0
+
+
+def test_retime_point_exactly_on_an_action_lands_on_its_new_time():
+    assert [retime_point(t, ORIG, NEW) for t in ORIG] == NEW
+
+
+def test_retime_point_between_actions_follows_the_latest_earlier_action():
+    assert retime_point(1.25, ORIG, NEW) == 1.75  # after action 0 (+0.5)
+    assert retime_point(3.9, ORIG, NEW) == 4.9  # after action 1 (+1.0), not pulled back by action 2
+    assert retime_point(6.0, ORIG, NEW) == 6.25  # after the last action (+0.25)
+
+
+def test_retime_point_does_not_depend_on_action_order():
+    assert retime_point(3.0, [4.0, 1.0, 2.0], [4.25, 1.5, 3.0]) == 4.0  # follows the action written at 2.0
+
+
+def test_retime_point_ties_follow_the_last_action_at_that_time():
+    original = [1.0, 1.0, 3.0]
+    retimed = [1.25, 1.0, 3.0]  # retime_actions: the cued action moves, its same-time sibling does not
+    assert retime_point(1.0, original, retimed) == 1.0
+    assert retime_point(1.5, original, retimed) == 1.5
+    assert retime_point(1.5, original, [1.0, 2.0, 3.0]) == 2.5
+
+
+def test_retime_point_with_no_actions_is_unchanged():
+    assert retime_point(2.5, [], []) == 2.5
+    assert retime_point(2.5, (), ()) == 2.5
+
+
+def test_retime_point_rounds_float_noise():
+    assert retime_point(4.45, [3.25], [4.0]) == 5.2
+
+
+def test_retime_point_needs_one_retimed_t_per_action():
+    with pytest.raises(ValueError):
+        retime_point(1.0, [1.0, 2.0], [1.0])
+
+
+# ------------------------------------------------------- interactions after retiming
+
+def _scrub(id_: str, t_from: float | None, t_to: float | None, shot: str | None = None) -> Interaction:
+    drives: dict = {"type": "scrub"}
+    if t_from is not None:
+        drives["from"] = t_from
+    if t_to is not None:
+        drives["to"] = t_to
+    return Interaction.model_validate(
+        {"id": id_, "kind": "pull_tab", "label": "Pull", "shot": shot, "at": [0.5, 0.5], "drives": drives}
+    )
+
+
+@pytest.mark.parametrize("dt", [-0.5, 0.6, 1.0])
+def test_scrub_follows_a_drop_cued_later(sp, dt):
+    shot = _with_drop_line_at(sp, 2.5 + dt)
+    original = [a.t for a in shot.actions]
+    retimed = retime_actions(shot, ACTION_START)
+    assert retimed[1] == pytest.approx(3.25 + dt)
+    out = convert_interactions(
+        sp.interactions, {"s1": ACTION_START}, "s1", retimed_by_shot={"s1": (original, retimed)}
+    )
+    # Written as shot 3.25..3.55 around the drop at 3.25: both ends move by the drop's delta.
+    assert out[0].drives.from_ == pytest.approx(ACTION_START + 3.25 + dt)
+    assert out[0].drives.to == pytest.approx(ACTION_START + 3.55 + dt)
+    assert out[0].drives.to - out[0].drives.from_ == pytest.approx(0.3)
+    assert sp.interactions[0].drives.from_ == 3.25  # input untouched
+    # Without the retiming the tab would scrub the old window, off the drop.
+    old = convert_interactions(sp.interactions, {"s1": ACTION_START}, "s1")
+    assert old[0].drives.from_ == 4.45
+
+
+def test_scrub_output_without_retimed_by_shot_is_unchanged(sp, tl):
+    scrubs = [*sp.interactions, _scrub("b", 1.0, 2.0, shot="s2"), _scrub("c", None, 2.0), _scrub("d", 0.5, None)]
+    starts = {"s1": ACTION_START, "s2": 12.0}
+    plain = convert_interactions(scrubs, starts, "s1")
+    assert [i.model_dump_json() for i in plain] == [
+        i.model_dump_json() for i in convert_interactions(scrubs, starts, "s1", retimed_by_shot=None)
+    ]
+    assert [dump(i) for i in plain[:1]] == [dump(i) for i in tl.interactions]
+    assert [(i.drives.from_, i.drives.to) for i in plain] == [(4.45, 4.75), (13.0, 14.0), (None, 3.2), (1.7, None)]
+    # Identity retiming, or retiming for another shot only, changes nothing either.
+    shot = sp.shots[0]
+    same = [a.t for a in shot.actions]
+    for timing in ({"s1": (same, same)}, {"s2": ([0.0], [5.0])}):
+        got = convert_interactions(scrubs[:1], starts, "s1", retimed_by_shot=timing)
+        assert [i.model_dump_json() for i in got] == [i.model_dump_json() for i in plain[:1]]
+
+
+def test_scrub_retiming_maps_each_present_end_and_only_its_own_shot():
+    timing = {"s2": ([1.0, 2.0], [1.5, 3.0])}
+    out = convert_interactions(
+        [_scrub("a", 1.0, 2.0), _scrub("b", 1.2, 2.5, shot="s2"), _scrub("c", None, 2.5, shot="s2"),
+         _scrub("d", 0.5, None, shot="s2")],
+        {"s1": 1.0, "s2": 10.0},
+        "s1",
+        retimed_by_shot=timing,
+    )
+    assert [(i.drives.from_, i.drives.to) for i in out] == [(2.0, 3.0), (11.7, 13.5), (None, 13.5), (10.5, None)]
+
+
+def _crossed_cues_shot() -> Shot:
+    # b is cued first on "now" (shot 2.0, where it was written); a is then cued on "later"
+    # (shot 3.0). b is already pinned, so a now lands after b.
+    return Shot(
+        id="s1",
+        set="x",
+        actions=[Action(t=1.0, do="drop", who="a", what="p"), Action(t=2.0, do="pose", who="b", pose="x", id="b")],
+        narration=[line(2.0, "now", cue="b"), line(3.0, "later", cue="drop")],
+    )
+
+
+def test_scrub_range_turned_around_by_cues_is_an_error():
+    shot = _crossed_cues_shot()
+    original = [a.t for a in shot.actions]
+    retimed = retime_actions(shot, 0.0)
+    assert retimed == [3.0, 2.0]
+    ok = _scrub("fine", 0.5, 1.5)  # before a, then after a: 0.5 .. 3.5
+    bad = _scrub("pull", 1.5, 2.5)  # after a (-> 3.5) to after b (-> 2.5)
+    e = _err(
+        convert_interactions, [ok, bad], {"s1": 1.2}, "s1", retimed_by_shot={"s1": (original, retimed)}
+    )
+    assert (e.code, e.shot, e.line_index, e.author) == ("interaction_bad_range", "s1", 1, None)
+    assert e.reason == (
+        'interaction "pull" would scrub from shot t=3.50 back to t=2.50 once its actions move onto '
+        "their cue words; widen the range or cue the actions in order"
+    )
+    assert str(e) == f"shot s1, narration line 1: {e.reason}"
+    # Without the retiming the same range converts as written.
+    out = convert_interactions([ok, bad], {"s1": 1.2}, "s1")
+    assert (out[1].drives.from_, out[1].drives.to) == (2.7, 3.7)
+
+
+def test_scrub_range_collapsing_to_a_point_is_allowed():
+    out = convert_interactions(
+        [_scrub("a", 1.5, 2.5)], {"s1": 0.0}, "s1", retimed_by_shot={"s1": ([1.0, 2.0], [2.0, 2.0])}
+    )
+    assert (out[0].drives.from_, out[0].drives.to) == (2.5, 2.5)
+
+
 # ------------------------------------------------------------- shot_tellings / narrate_shot
 
 def test_cue_word_missing_exact_message(sp):
@@ -510,6 +658,17 @@ def test_shot_tellings(sp):
     }
     assert list(shot_tellings(Screenplay.model_validate(data), "s1")) == ["gran", "mom"]
     assert shot_tellings(sp.model_copy(update={"narrations": None}), "s1") == {}
+
+
+def test_shot_tellings_skips_authors_with_an_empty_list_for_the_shot(sp):
+    data = sp.model_dump(by_alias=True)
+    data["narrations"] = {"kid": {"s1": [], "s2": [{"t": 0, "text": "Later"}]}, "mom": data["narrations"]["mom"]}
+    sp2 = Screenplay.model_validate(data)
+    assert list(shot_tellings(sp2, "s1")) == ["mom"]
+    assert list(shot_tellings(sp2, "s2")) == ["kid"]
+    # So narrate_shot builds no empty telling for the kid in s1.
+    _, built = narrate_shot(sp2, sp2.shots[0], ACTION_START, default_author(sp2))
+    assert list(built) == ["dad", "mom"]
 
 
 def test_narrate_shot_reproduces_sample(sp, tl):

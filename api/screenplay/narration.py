@@ -30,11 +30,17 @@ Speaking rules checked here (each a ``NarrationError``):
 - within one telling of a shot, a line must not start before the previous line's last word
   has been said, ``WORD_SECONDS`` after its time (``lines_overlap``). ``build_shot_narration``
   checks each other telling right after shifting it, then the default telling once.
+
+Scrub interactions (``convert_interactions``) are written in shot time against the actions as
+written. When the compiler passes each shot's original and retimed action times, a scrub's
+``from``/``to`` follow those actions onto their cue words (``retime_point``); a range that
+would run backwards afterwards is ``interaction_bad_range``.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 
 from screenplay.layout import RISE
 from screenplay.schema import (
@@ -484,16 +490,45 @@ def assemble(
 
 # ---------------------------------------------------------------------- interactions
 
+def retime_point(t: float, original: Sequence[float], retimed: Sequence[float]) -> float:
+    """Where shot time ``t`` lands once the shot's actions have been retimed.
+
+    ``original[i]`` / ``retimed[i]`` are action i's shot-time ``t`` before and after
+    ``retime_actions``. ``t`` follows the action i with the largest ``original[i] <= t`` (ties:
+    the largest i) and keeps its offset from it: ``retimed[i] + (t - original[i])``. Before the
+    first action, or with no actions, ``t`` is returned unchanged. Raises ``ValueError`` when
+    the two sequences differ in length.
+    """
+    if len(original) != len(retimed):
+        raise ValueError(f"retime_point needs one retimed t per action: {len(original)} != {len(retimed)}")
+    best: int | None = None
+    for i, t0 in enumerate(original):
+        if t0 <= t and (best is None or t0 >= original[best]):
+            best = i
+    if best is None:
+        return t
+    return _r(retimed[best] + (t - original[best]))
+
+
 def convert_interactions(
     interactions: list[Interaction],
     action_start_by_shot: dict[str, float],
     first_shot: str,
+    *,
+    retimed_by_shot: Mapping[str, tuple[Sequence[float], Sequence[float]]] | None = None,
 ) -> list[Interaction]:
     """Screenplay interactions -> timeline interactions.
 
     A ``scrub`` drive's ``from``/``to`` move from shot time to timeline time using the
     shot's ``action_start`` (``shot`` None means the first shot). Every other field is
     copied unchanged.
+
+    ``retimed_by_shot`` maps a shot id to ``(original, retimed)``: its actions' shot-time
+    ``t`` before and after ``retime_actions``. When the scrub's shot has an entry, ``from`` and
+    ``to`` first follow the actions onto their cue words (``retime_point``), so the tab still
+    scrubs the actions it was written for. If that turns the range around (``to`` before
+    ``from``), ``interaction_bad_range`` is raised. Without ``retimed_by_shot`` (or with no
+    entry for the shot) the shot times are used as written.
     """
     out: list[Interaction] = []
     for i, it in enumerate(interactions):
@@ -509,11 +544,27 @@ def convert_interactions(
                 line_index=i,
             )
         base = action_start_by_shot[shot_id]
+        t_from, t_to = it.drives.from_, it.drives.to
+        timing = retimed_by_shot.get(shot_id) if retimed_by_shot is not None else None
+        if timing is not None:
+            original, retimed = timing
+            if t_from is not None:
+                t_from = retime_point(t_from, original, retimed)
+            if t_to is not None:
+                t_to = retime_point(t_to, original, retimed)
+            if t_from is not None and t_to is not None and t_to < t_from:
+                raise NarrationError(
+                    "interaction_bad_range",
+                    f'interaction "{it.id}" would scrub from shot t={_f2(t_from)} back to t={_f2(t_to)} '
+                    f"once its actions move onto their cue words; widen the range or cue the actions in order",
+                    shot=shot_id,
+                    line_index=i,
+                )
         update: dict[str, float | None] = {}
-        if it.drives.from_ is not None:
-            update["from_"] = _r(base + it.drives.from_)
-        if it.drives.to is not None:
-            update["to"] = _r(base + it.drives.to)
+        if t_from is not None:
+            update["from_"] = _r(base + t_from)
+        if t_to is not None:
+            update["to"] = _r(base + t_to)
         drives = it.drives.model_copy(deep=True, update=update)
         out.append(it.model_copy(deep=True, update={"drives": drives}))
     return out
