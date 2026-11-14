@@ -40,6 +40,7 @@ export interface ThreadsViewProps {
 
 const NOW = new Date().getFullYear();
 const TITLE_FONT_PX = 20;
+const KNOT_POP_MS = 460;
 
 interface TitleBox {
   x0: number;
@@ -67,6 +68,9 @@ interface Engine {
   highlight: number;
   revealStart: number;
   reveal: number;
+  /** Per knot: when the intro needle reached it (ms), and its pop 0..1. */
+  popAt: number[];
+  pop: number[];
   geom: FrameGeometry | null;
   titles: TitleBox[];
   /** Which placement each shown title used last frame. */
@@ -170,6 +174,8 @@ export default function ThreadsView(props: ThreadsViewProps) {
       highlight: initialHighlight,
       revealStart: performance.now(),
       reveal: reduced ? model.tNow : model.tMin,
+      popAt: model.knots.map(() => (reduced ? -1e9 : NaN)),
+      pop: model.knots.map(() => (reduced ? 1 : 0)),
       geom: null,
       titles: [],
       titleSpot: new Map(),
@@ -281,6 +287,16 @@ export default function ThreadsView(props: ThreadsViewProps) {
       const eased = p < 1 ? 1 - Math.pow(1 - p, 2.2) : 1;
       e.reveal = model.tMin + (model.tNow + 2 - model.tMin) * eased;
       if (p < 1) moving = true;
+      // Each knot springs in as the needle reaches it.
+      for (let i = 0; i < e.pop.length; i++) {
+        if (e.pop[i] >= 1) continue;
+        if (Number.isNaN(e.popAt[i])) {
+          if (e.reveal < model.knots[i].t) continue;
+          e.popAt[i] = now;
+        }
+        e.pop[i] = Math.min(1, (now - e.popAt[i]) / KNOT_POP_MS);
+        moving = true;
+      }
 
       const ctx = e.ctx;
       if (ctx) {
@@ -294,6 +310,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
           hoverKnot: e.hoverKnot,
           swell: e.swell,
           reveal: e.reveal,
+          pop: e.pop,
           fonts: e.fonts,
         });
         e.drawMs = performance.now() - t0;

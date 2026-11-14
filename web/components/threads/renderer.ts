@@ -48,6 +48,8 @@ export interface FrameState {
   swell: number[];
   /** Intro: threads are sewn up to this year. */
   reveal: number;
+  /** Per knot 0..1: how far it has popped in since the needle reached it. */
+  pop: number[];
   fonts: { hand: string; sans: string; serif: string };
 }
 
@@ -252,7 +254,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
     const x = X(k.t);
     const y = laneY(k.y);
     const r0 = knotRadius(s, k.people.length);
-    const appear = Math.min(1, Math.max(0, (st.reveal - k.t) * 1.4));
+    const appear = st.pop[ki] ?? 1;
     const pop = appear < 1 ? easeBack(appear) : 1;
     let lifted = 0;
     for (const p of k.people) lifted = Math.max(lifted, st.lift[model.strands.findIndex((q) => q.person.id === p.id)] ?? 0);
