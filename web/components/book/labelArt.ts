@@ -371,8 +371,13 @@ const PAGE_H_PX = 1300;
 
 /** The lever's size, page px: big enough to read and grab on a laptop, the grip a thumb wide. */
 const LEVER = { length: 150, width: 76, travel: 96 } as const;
-/** Kept this far inside the page's edges (the deckled edge is ~24 px). */
-const LEVER_MARGIN = { side: 40, head: 150, foot: 130 } as const;
+/** From the lever's lower edge to its label's first baseline, page px. */
+const PULL_LABEL_GAP = 46;
+/**
+ * Kept this far inside the page's edges (the deckled edge is ~24 px); the
+ * foot leaves room for the label under the lever, clear of the page number.
+ */
+const LEVER_MARGIN = { side: 40, head: 150, foot: 210 } as const;
 
 export function pullTabGeometry(tab: BookPullTab): PullTabGeometry {
   const { length, width, travel } = LEVER;
@@ -403,26 +408,28 @@ export function drawPullTabPrint(ctx: Ctx, tab: BookPullTab, fonts: PageFonts, s
   ctx.stroke();
   ctx.restore();
 
-  // The label, pencilled above, ending over the tab; a little curved pencil
-  // arrow from it down to where the lever pulls.
+  // The label, pencilled under the tab (clear of the caption printed above
+  // it), ending under the grip; a little curved pencil arrow from it up to
+  // where the lever pulls.
   ctx.save();
   ctx.fillStyle = "rgba(78,72,68,0.82)";
   ctx.font = `500 35px ${fonts.hand}`;
   ctx.textAlign = "right";
   ctx.textBaseline = "alphabetic";
-  const endX = g.slitX + g.length + 8;
+  const endX = g.slitX + g.length + 4;
   const words = tab.label.trim();
   const lines = ctx.measureText(words).width > 360 ? splitInTwo(words) : [words];
   const lineH = 35;
-  const baseY = g.y - g.width / 2 - 36 - (lines.length - 1) * lineH;
+  const baseY = g.y + g.width / 2 + PULL_LABEL_GAP;
   ctx.translate(endX, baseY);
-  ctx.rotate(-0.025);
+  ctx.rotate(0.02);
   lines.forEach((l, i) => ctx.fillText(l, 0, i * lineH));
   ctx.restore();
-  const from: [number, number] = [endX + 12, g.y - g.width / 2 - 52];
-  const to: [number, number] = [endX + 30, g.y - g.width / 2 - 10];
-  pencilCurve(ctx, from, [endX + 34, from[1] + 4], to, seed, 0.62);
-  pencilHead(ctx, to, Math.atan2(to[1] - (from[1] + 4), to[0] - (endX + 34)) + 0.3, 11, seed + 1, 0.62);
+  const from: [number, number] = [endX + 10, baseY - 8];
+  const ctrl: [number, number] = [endX + 38, baseY - 6];
+  const to: [number, number] = [endX + 30, g.y + g.width / 2 + 10];
+  pencilCurve(ctx, from, ctrl, to, seed, 0.62);
+  pencilHead(ctx, to, Math.atan2(to[1] - ctrl[1], to[0] - ctrl[0]), 11, seed + 1, 0.62);
 }
 
 function splitInTwo(text: string): string[] {

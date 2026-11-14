@@ -63,7 +63,7 @@ const FOLD = 0.03;
 /** How far down the card the cut page's lip shades it, world units. */
 const LIP = 0.016;
 /** The grab area reaches this far past the card on every side, world units. */
-const HIT_PAD = 0.018;
+const HIT_PAD = 0.026;
 /** A drag across the tab (down or up the page) pulls this much as one along it. */
 const ACROSS = 0.7;
 /** Scene time (s) at which the tab nudges once, while the scene plays. */

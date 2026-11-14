@@ -362,6 +362,10 @@ function PullSlider({ controller, tab }: { controller: PlaybackController; tab: 
           controller.holdInteraction(tab.id, v / 100);
         }}
         onBlur={release}
+        onKeyDown={(e) => {
+          // Escape lets go, as a hand does.
+          if (e.key === "Escape") release();
+        }}
         className="accent-[#b9573d]"
       />
     </label>
