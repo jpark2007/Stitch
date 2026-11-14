@@ -142,7 +142,7 @@ export function PhotoUpload(props: {
         <span
           id={countId}
           aria-live="polite"
-          className="shrink-0 text-xs text-ink-faint tabular-nums"
+          className="shrink-0 text-xs text-ink-soft tabular-nums"
         >
           {files.length} of {MAX_PHOTOS}
           <span className="sr-only"> photos added</span>
@@ -199,7 +199,7 @@ export function PhotoUpload(props: {
             </>
           )}
         </span>
-        <span aria-hidden="true" className="text-xs text-ink-faint">
+        <span aria-hidden="true" className="text-xs text-ink-soft">
           Up to {MAX_PHOTOS}, 10 MB each
         </span>
       </label>
@@ -298,10 +298,10 @@ function Thumb({
           className="flex aspect-square w-full flex-col items-center justify-center gap-0.5 bg-paper-deep text-center"
         >
           <span className="font-display text-sm tracking-wide text-ink-soft">{photoKind(file)}</span>
-          <span className="text-[10px] leading-tight text-ink-faint">no preview</span>
+          <span className="text-[10px] leading-tight text-ink-soft">no preview</span>
         </span>
       ) : null}
-      <figcaption className="mt-1 truncate text-center text-[11px] leading-tight text-ink-faint">
+      <figcaption className="mt-1 truncate text-center text-[11px] leading-tight text-ink-soft">
         {file.name}
       </figcaption>
       <button
