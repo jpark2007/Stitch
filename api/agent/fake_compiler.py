@@ -34,11 +34,10 @@ exist. It has two halves:
 Known gaps (the parity corpus in tests/agent/test_agent_real_compiler.py checks the fake
 against the real compiler and names the one it skips):
 
-- **Effects** (``confetti``, ``steam``, ``rain``, ``smoke``, ``time_of_day``): the fake
-  accepts them and emits `Timeline.effects`, as shared/CONTRACTS.md specifies. The real compiler
-  on main has `screenplay/effects.py` (``effect_for``), but ``compile()`` still emits
-  ``effects=[]`` and has no handler for an effect verb, so it rejects every effect with
-  ``unsupported_verb``. That is a compiler-side gap; the parity case skips only while it lasts.
+- **Effects** (``confetti``, ``steam``, ``rain``, ``smoke``, ``time_of_day``): both compilers
+  accept them and emit `Timeline.effects`. The fake checks an effect's ``at`` only statically
+  (validate.py), not that a prop named there is on stage when the effect starts, and its
+  default durations are the real ones only roughly (a rain with no ``dur`` lasts 0 s here).
 - **Positions are logical, not keyframed**: reach is measured from where a puppet's last move
   ended, so an action that only works or fails because of where a puppet is mid-walk (opening a
   prop someone carries while they are still walking, at the walk's own start time) or where a
@@ -54,8 +53,8 @@ against the real compiler and names the one it skips):
   prop that is not on stage), not at the cue's own time.
 - Gesture facings (``wave``/``point_at``/``lean_toward`` turning toward a target) are
   approximated by the target's x.
-- **Speed from notes** (`character.speed_scale`) is not applied: the real verb handlers do not
-  apply it yet either.
+- **Speed from notes** (`character.speed_scale`) is applied to walks, runs, enters, exits and
+  walk-ups, as the real handlers apply it, but not to ``follow``.
 - **Wording**: messages are the real ones (same codes, same ``shot s1, t=5: ...`` heads and
   the same reasons, which come from `screenplay.state.World` and `screenplay.validate`).
 """
@@ -90,6 +89,7 @@ from screenplay.schema import (
 )
 from screenplay.state import HANDS, HEAD, SEATED_POSES, StateError, World, fmt_t, parse_parent
 from screenplay.validate import validate
+from screenplay.verbs_core import _crouch_solution
 
 if TYPE_CHECKING:
     from agent.tools.compile import SceneInputs
@@ -428,7 +428,9 @@ class _ShotSim:
 
     def travel(self, who: str, t: float, start: Vec3, dest: Vec3, gait: str = "walk") -> tuple[float, int]:
         p = self.world.people[who]
-        _, arrival, facing = motion.locomotion_keys(who, p.build, t, start, dest, p.facing, gait)  # type: ignore[arg-type]
+        _, arrival, facing = motion.locomotion_keys(
+            who, p.build, t, start, dest, p.facing, gait, speed_scale=p.speed_scale,  # type: ignore[arg-type]
+        )
         if arrival > t:
             self.paths.setdefault(who, []).extend([(t, start), (arrival, dest)])
         return arrival, facing
@@ -765,9 +767,19 @@ class _ShotSim:
             parent = "ground"
             w.copy().place_on(who, what, parent, dest)
             pos = dest
-        ik.solve_body_arm(self.body(who), _arm_of_hand(hand), B.grip_from_anchor(self.geom(what), dest))
+        arm = _arm_of_hand(hand)
+        me = self.body(who)
+        grip = B.grip_from_anchor(self.geom(what), dest)
+        p = w.people[who]
+        if ik.can_reach(arm, grip, me.ground, me.facing, me.build) or grip[1] >= ik.shoulder_world(
+                arm, me.ground, me.facing, me.build)[1]:
+            ik.solve_body_arm(me, arm, grip)
+            end = t + 2 * B.REACH_SECONDS
+        else:  # too low for a standing arm: bends (kneeling if needed) down to it, as the real place_on
+            _crouch_solution(me, arm, grip, can_kneel=not (p.seat is not None or p.pose in SEATED_POSES))
+            end = t + 2 * B.POSE_SECONDS + B.REACH_SECONDS
         w.place_on(who, what, parent, pos)
-        return t + 2 * B.REACH_SECONDS
+        return end
 
     def _open_close(self, a: Action, t: float, opening: bool) -> float:
         w, who, what = self.world, a.who, a.what
@@ -853,7 +865,9 @@ class _ShotSim:
         return arrival, end
 
     def _riders(self, what: str) -> list[str]:
-        return [o.partition(":")[2] for o in self.world.props[what].occupants.values() if o.startswith("puppet:")]
+        """Everyone the vehicle carries: in its own seats, or on a prop resting on it (a chair on
+        a pickup's bed), as the real ride_to keeps busy."""
+        return [who for _, _, who in self.world.riders(what)]
 
     def do_drive_to(self, a: Action, t: float) -> float:
         w = self.world

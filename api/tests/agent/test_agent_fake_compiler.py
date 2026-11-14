@@ -597,3 +597,54 @@ def test_pick_up_above_the_shoulder_still_needs_reach(scene):
     assert (res.errors[0].code, res.errors[0].message) == (
         "out_of_reach", 'shot s1, t=0.5: dad cannot pick_up "hymn_books"; dad\'s arm_r cannot reach: '
                         "target is 0.57 from the shoulder, reach is 0.19")
+
+
+# ------------------------------------------- what the directing skill teaches, as the real compiler
+
+
+def _both(scene, data: dict) -> tuple[CompileResult, CompileResult]:
+    """(fake, real) on one screenplay, so each fake behaviour below is pinned to the real one."""
+    from screenplay.compiler import compile as real_compile
+
+    sp = Screenplay.model_validate(data)
+    return FakeCompiler()(sp, scene), real_compile(sp, sets=scene.sets, props=scene.props, people=scene.people)
+
+
+def _base(actions, **shot) -> dict:
+    data = copy.deepcopy(BASE)
+    data["shots"][0]["actions"] = actions
+    data["shots"][0].update(shot)
+    return data
+
+
+def test_place_on_bends_down_to_the_floor_as_the_real_compiler(scene):
+    """place_on reaches a low spot (#141): it bends down to a mark on the floor close by, taking
+    POSE + REACH + POSE (1.2 s) instead of 2 x REACH; one too far is still out_of_reach."""
+    start = {"dad": {"at": "steps_foot", "holding": "hymn_books", "facing": "right"},
+             "mom": {"at": "curb", "facing": "left"}}
+    for du, ok in ((0.1, True), (0.4, False)):
+        data = _base([{"t": 0, "who": "dad", "do": "place_on", "what": "hymn_books", "on": "spot"},
+                      {"t": 1.25, "who": "dad", "do": "wave"}],
+                     start=start, marks={"spot": [0.5 + du, 0.0]})
+        fake, real = _both(scene, data)
+        assert fake.ok == real.ok == ok, ([e.message for e in fake.errors], [e.message for e in real.errors])
+    data["shots"][0]["marks"] = {"spot": [0.6, 0.0]}
+    data["shots"][0]["actions"][1]["t"] = 1.1  # still bending back up
+    fake, real = _both(scene, data)
+    assert [e.code for e in fake.errors] == [e.code for e in real.errors] == ["busy"]
+
+
+def test_movement_notes_slow_the_walk_as_the_real_compiler(scene):
+    """character.speed_scale: "walks slowly with a cane" is x 0.6 in both compilers."""
+    people = dict(scene.people)
+    mom = people["mom"]
+    people["mom"] = mom.model_copy(update={"character": mom.character.model_copy(update={"notes": "walks with a cane"})})
+    slow = SceneInputs(sets=scene.sets, props=scene.props, people=people)
+    start = {"dad": {"at": "steps_left", "facing": "right"}, "mom": {"at": "curb", "facing": "left"}}
+    walk = 0.8 / (0.35 * 0.6)  # curb (x 0.8) to steps_foot (x 0.0)
+    for t, ok in ((walk + 0.05, True), (walk - 0.05, False)):
+        data = _base([{"t": 0, "who": "mom", "do": "walk_to", "to": "steps_foot"},
+                      {"t": round(t, 3), "who": "mom", "do": "wave"}], start=start)
+        data["props"] = []
+        fake, real = _both(slow, data)
+        assert fake.ok == real.ok == ok, ([e.message for e in fake.errors], [e.message for e in real.errors])
