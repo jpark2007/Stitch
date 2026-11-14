@@ -41,6 +41,17 @@ export interface AnswerRequest {
   approve?: boolean | null;
 }
 
+/** The single memory an ask points at: the one to open. */
+export interface AskBest {
+  memoryId: string;
+  title?: string | null;
+  year?: number | null;
+  /** A person whose book holds it: the teller of the quoted telling, else the first participant */
+  personId?: string | null;
+  /** True only when this memory clearly leads the other candidates */
+  confident: boolean;
+}
+
 export interface AskQuote {
   memoryId: string;
   authorId: string;
@@ -56,6 +67,10 @@ export interface AskRequest {
 export interface AskResponse {
   answer: string;
   quotes: AskQuote[];
+  /** The single memory to open; null when nothing fits */
+  best?: AskBest | null;
+  /** How it was answered */
+  mode?: "search" | "model" | null;
 }
 
 export interface BookResponse {

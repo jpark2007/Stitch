@@ -7,6 +7,7 @@
 // ./index.ts.
 import type {
   AnswerRequest,
+  AskBest,
   AskQuote,
   AskResponse,
   BookResponse,
@@ -2936,13 +2937,22 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     scored.sort((a, b) => b.score - a.score || (a.quote.year ?? 0) - (b.quote.year ?? 0));
     const quotes = scored.slice(0, 3).map((x) => x.quote);
     if (!quotes.length) {
-      return { answer: "Nobody in the family has told that story yet.", quotes: [] };
+      return { answer: "Nobody in the family has told that story yet.", quotes: [], best: null, mode: "search" };
     }
     const top = quotes[0];
     const name = findPerson(s, fid, top.authorId)?.name ?? "Someone";
     const others = quotes.length - 1;
     const more = others ? `, and ${others} other ${others === 1 ? "telling mentions" : "tellings mention"} it too` : "";
-    return { answer: `${name} remembers it in "${top.title}" (${top.year})${more}.`, quotes };
+    // As api/db/search.py: confident when the top memory clearly leads the runner-up.
+    const runnerUp = scored.find((x) => x.quote.memoryId !== top.memoryId);
+    const best: AskBest = {
+      memoryId: top.memoryId,
+      title: top.title ?? null,
+      year: top.year ?? null,
+      personId: top.authorId,
+      confident: !runnerUp || scored[0].score >= runnerUp.score * 1.5,
+    };
+    return { answer: `${name} remembers it in "${top.title}" (${top.year})${more}.`, quotes, best, mode: "search" };
   }
 
   // ----- fetch

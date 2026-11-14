@@ -379,9 +379,24 @@ class AskQuote(Model):
     year: int | None = None
 
 
+class AskBest(Model):
+    """The single memory an ask points at: the one to open."""
+
+    memory_id: str
+    title: str | None = None
+    year: int | None = None
+    person_id: str | None = Field(
+        default=None,
+        description="A person whose book holds it: the teller of the quoted telling, else the first participant",
+    )
+    confident: bool = Field(description="True only when this memory clearly leads the other candidates")
+
+
 class AskResponse(Model):
     answer: str
     quotes: list[AskQuote]
+    best: AskBest | None = Field(default=None, description="The single memory to open; null when nothing fits")
+    mode: Literal["search", "model"] | None = Field(default=None, description="How it was answered")
 
 
 class MediaUploadResponse(Model):

@@ -1407,8 +1407,13 @@ test("questions and ask", async () => {
   assert.ok(asked.body.quotes.every((q) => q.memoryId === "sample_hymn_books"));
   assert.equal(typeof asked.body.answer, "string");
   assert.match(asked.body.answer, /\.$/);
+  assert.equal(asked.body.best.memoryId, "sample_hymn_books", "best is the top hit");
+  assert.equal(asked.body.best.personId, asked.body.quotes[0].authorId);
+  assert.equal(typeof asked.body.best.confident, "boolean");
+  assert.equal(asked.body.mode, "search");
   const none = await call(b, "POST", "/families/sample_family/ask", { query: "spaceship" });
   assert.deepEqual(none.body.quotes, []);
+  assert.equal(none.body.best, null);
   assert.equal((await call(b, "POST", "/families/sample_family/ask", { query: "" })).status, 422);
 });
 
