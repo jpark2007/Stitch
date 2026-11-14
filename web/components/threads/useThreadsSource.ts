@@ -89,6 +89,9 @@ export function useThreadsSource(opts: { family?: string; demo?: boolean }) {
     const mine = ++ticket.current;
     const settle = (s: ThreadsSource) => {
       if (mine !== ticket.current) return;
+      // A background refresh that fails (offline for a moment, a server
+      // hiccup) keeps the family on screen; only signing out replaces it.
+      if (quiet && (s.kind === "error" || s.kind === "demo")) return;
       // A refresh that changed nothing keeps the same objects, so the
       // threads are not sewn in again.
       const was = current.current;
