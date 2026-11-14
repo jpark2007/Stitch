@@ -8,14 +8,17 @@
 // session cookie is httpOnly, so the page asks /me on arrival, but only when
 // this browser holds the signed-in hint (session.ts): a signed-out visit makes
 // no requests until the form is sent. While that check runs the page shows the
-// same blank sheet as the fallback, so the form never flashes on the way out.
+// same blank sheet as the fallback, so the form never flashes on the way out,
+// unless the person is already in the form: next dev renders it on the server,
+// and someone typing as React takes over keeps it in front of them (keys typed
+// into a hidden form go nowhere, and the field would lose focus).
 //
 // If sign up succeeds but the me() after it fails, the account exists, so the
 // person is sent to log in rather than shown an error (a second Create account
 // would only get a 409). The log in page then shows a calm notice with their
 // email filled in, handed over through sessionStorage (see authPages.ts).
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useLayoutEffect, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 import { isApiError } from "@/lib/api";
 
@@ -57,6 +60,8 @@ export function AuthScreen(props: { kind: AuthKind }) {
   const [handoff, setHandoff] = useState<string | null>(null);
   // True while asking /me whether this visitor is already signed in.
   const [checking, setChecking] = useState(false);
+  // Around the form, to tell whether the person is already in it.
+  const formBox = useRef<HTMLDivElement>(null);
 
   // Already signed in? Send them on. Before paint, so a signed-in visitor sees
   // the blank sheet rather than the form. Runs again each time a hidden page
@@ -64,9 +69,15 @@ export function AuthScreen(props: { kind: AuthKind }) {
   useLayoutEffect(() => {
     if (!recallSignedIn()) return;
     let live = true;
-    // Holding the form back while the server is asked, once per arrival.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setChecking(true);
+    // Holding the form back while the server is asked, once per arrival, unless
+    // the person is already in it (see the top of this file); the check still
+    // runs and still sends a signed-in person on. A hidden page shown again
+    // holds no focus, so a returning visitor always gets the blank sheet.
+    // `:focus-within` too: in a busy Chromium the field being typed into can
+    // still match it while document.activeElement briefly reads <body>.
+    const box = formBox.current;
+    const inForm = box !== null && (box.contains(document.activeElement) || box.matches(":focus-within"));
+    if (!inForm) setChecking(true);
     // A slow server never keeps the form away for long.
     const giveUp = window.setTimeout(() => {
       if (live) setChecking(false);
@@ -144,7 +155,7 @@ export function AuthScreen(props: { kind: AuthKind }) {
   return (
     <FlowPage title={AUTH_TITLES[kind]} lede={authLede(kind, next)}>
       {checking ? <BlankSheet kind={kind} /> : null}
-      <div hidden={checking}>
+      <div ref={formBox} hidden={checking}>
         {kind === "login" ? (
           <>
             {handoff ? <ReadyNotice /> : null}

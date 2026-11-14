@@ -3,7 +3,12 @@
 From api/ (it uses the API's uv environment, which has Playwright):
 
     cd api && uv run python ../web/components/flow/e2e/sweep_accounts.py \
-        [--mode mock|real|both] [--headed] [--out DIR] [--api-port N] [--web-port N]
+        [--mode mock|real|both] [--headed] [--out DIR] [--api-port N] [--web-port N] \
+        [--cpu-throttle RATE]
+
+--cpu-throttle RATE slows every page's CPU RATE times (Chromium's
+Emulation.setCPUThrottlingRate), the way a busy machine does during a full run_all:
+use it to shake out hydration races (4 is a good start).
 
 For each mode (mock: the in-browser mock backend; real: the offline API, seed.serve) and
 each viewport (harness.VIEWPORTS), it walks every state of the three pages: the empty
@@ -14,7 +19,9 @@ checks the form kit: every input has a label, a failed submit moves focus to the
 problem, invalid fields carry aria-invalid and aria-describedby pointing at their
 message, Enter submits, the "(optional)" mark reads with a space, and tab order follows
 the visual order. It also types into the server-rendered form before React hydrates it
-(the text must survive).
+(the text must survive), holding the app's scripts meanwhile so the typing comes first
+however busy the machine, and checks a stale signed-in hint: the form stays in front of
+someone already typing while /me is asked, and an untouched one waits behind the blank sheet.
 
 Every check is a seam in seams.json with a screenshot under shots/. Exit code 1 when a
 'pages' or 'api' seam failed, else 0. Without Playwright's Chromium it prints the SKIP
@@ -29,6 +36,7 @@ import sys
 
 sys.dont_write_bytecode = True  # keep __pycache__ out of web/
 
+import argparse  # noqa: E402
 import re  # noqa: E402
 import traceback  # noqa: E402
 import uuid  # noqa: E402
@@ -88,6 +96,18 @@ ETHAN_PATHS = re.compile(r"^/(people|memories|threads|render)(/|$)|^/$")
 
 SENTINEL_STATUS = 418
 SENTINEL_DETAIL = "sweep sentinel: a second request was sent"
+
+HINT_SCRIPT = "try { localStorage.setItem('stitch.signedIn', '1'); } catch {}"
+"""The signed-in hint a sign-out can leave behind (session.ts): /login and /signup ask /me."""
+
+ME_DELAY_MS = 4_000
+"""Mock mode cannot hold the in-browser /me, so the signed-in check is slowed this much instead."""
+
+NO_PASSWORD_LEFT_JS = "() => [...document.querySelectorAll('input[type=password]')].every(el => !el.value)"
+"""True when no password field in the document, shown or hidden, holds any text."""
+
+BLANK_SHEET = "[role=status][aria-busy=true]"
+"""The blank sheet the account pages show while they ask /me (AuthScreen's BlankSheet)."""
 
 # ----------------------------------------------------------------------------- source facts
 
@@ -248,7 +268,14 @@ MOCK_FAMILIES_NAMED_JS ="""async name => {
 class Person:
     """One browser context at one window size, with its page, problem watch and request log."""
 
-    def __init__(self, browser: Any, label: str, viewport: tuple[int, int], init_script: str | None = None) -> None:
+    def __init__(
+        self,
+        browser: Any,
+        label: str,
+        viewport: tuple[int, int],
+        init_script: str | None = None,
+        cpu_throttle: float = 1.0,
+    ) -> None:
         width, height = viewport
         self.label = label
         self.ctx = browser.new_context(viewport={"width": width, "height": height})
@@ -256,6 +283,9 @@ class Person:
         if init_script:
             self.ctx.add_init_script(init_script)
         self.page = self.ctx.new_page()
+        if cpu_throttle > 1:
+            cdp = self.ctx.new_cdp_session(self.page)
+            cdp.send("Emulation.setCPUThrottlingRate", {"rate": cpu_throttle})
         self.watch = PageWatch()
         self.watch.attach(self.page, label)
         self.requests: list[tuple[str, str]] = []
@@ -281,6 +311,7 @@ class AccountSweep:
         browser: Any,
         seams: SeamLog,
         view: str,
+        cpu_throttle: float = 1.0,
     ) -> None:
         from playwright.sync_api import expect
 
@@ -291,6 +322,7 @@ class AccountSweep:
         self.mock = stack.mock
         self.mode = "mock" if stack.mock else "real"
         self.view = view
+        self.cpu_throttle = cpu_throttle
         self.viewport = VIEWPORTS[view]
         self.tag = f"{self.mode}/{view}"
         self.web = stack.web_url
@@ -306,7 +338,7 @@ class AccountSweep:
     # ------------------------------------------------------------------ runner
 
     def person(self, label: str, init_script: str | None = None) -> Person:
-        p = Person(self.browser, f"{self.tag} {label}", self.viewport, init_script)
+        p = Person(self.browser, f"{self.tag} {label}", self.viewport, init_script, self.cpu_throttle)
         self.people.append(p)
         return p
 
@@ -492,6 +524,84 @@ class AccountSweep:
 
         who.page.route(url, handler)
         return lambda: who.page.unroute(url, handler)
+
+    def hold_scripts(self, who: Person) -> Callable[[], None]:
+        """Hold the app's scripts on this page until the returned release is called.
+
+        React cannot hydrate until then, so whatever the check types meanwhile is typed
+        before hydration on a fast machine and a slow one alike. Typing "the moment the
+        document arrives" is a race with hydration instead: under load Playwright's fill()
+        can pass its visibility check just before React commits, and then type into a
+        form the commit has just changed. Returns the release; calling it twice is fine.
+        """
+        pattern = f"{self.web}/_next/**"
+        held: list[Any] = []
+        released = [False]
+
+        def handler(route: Any) -> None:
+            if not released[0] and route.request.resource_type == "script":
+                held.append(route)
+            else:
+                route.fallback()
+
+        who.page.route(pattern, handler)
+
+        def release() -> None:
+            if released[0]:
+                return
+            released[0] = True
+            for route in held:
+                route.fallback()
+            who.page.unroute(pattern, handler)
+
+        return release
+
+    def hold_me(self, who: Person) -> Callable[[], None]:
+        """Keep this page's signed-in check (GET /me) unanswered until the returned release.
+
+        Real mode holds the requests at the network. The mock backend lives in the page, so
+        mock mode arms a ME_DELAY_MS delay before the page loads and the release does
+        nothing: checks that need /me still pending must make their point within that time.
+        """
+        if self.mock:
+            who.page.add_init_script(
+                mock_faults_script([{"method": "GET", "path": "/me", "delayMs": ME_DELAY_MS, "times": 2}])
+            )
+            return lambda: None
+        api_me = f"{self.api}/me"
+        held: list[Any] = []
+        released = [False]
+
+        def is_me(url: str) -> bool:
+            return url.split("?")[0] == api_me
+
+        def handler(route: Any) -> None:
+            if not released[0] and route.request.method == "GET":
+                held.append(route)
+            else:
+                route.fallback()
+
+        who.page.route(is_me, handler)
+
+        def release() -> None:
+            if released[0]:
+                return
+            released[0] = True
+            for route in held:
+                route.fallback()
+            who.page.unroute(is_me, handler)
+
+        return release
+
+    def type_before_hydration(self, who: Person, path: str, fields: list[tuple[str, str]]) -> None:
+        """Open `path` with the app's scripts held, fill `fields` (label, value), then let React in."""
+        release = self.hold_scripts(who)
+        try:
+            self.goto(who, path, wait="commit")
+            for label, value in fields:
+                lab(who.page, label).fill(value)
+        finally:
+            release()
 
     def arm_mock(self, who: Person, faults: list[dict[str, Any]]) -> None:
         """Arm mock faults on this page: inject into a live backend, else arm it before it starts."""
@@ -713,15 +823,13 @@ class AccountSweep:
         self.check("login: pending state, a double click sends one request", pend, pending)
 
     def login_success_checks(self) -> None:
-        # Typed before hydration: next dev renders the form on the server; fill it the
-        # moment the document arrives, before React has taken it over.
+        # Typed before hydration: next dev renders the form on the server; fill it while
+        # the app's scripts are held, so React takes it over only afterwards.
         who = self.person("login-early")
         page = who.page
 
         def early() -> str:
-            self.goto(who, "/login", wait="commit")
-            lab(page, "Email").fill(self.seed_email)
-            lab(page, "Password").fill(self.seed_password)
+            self.type_before_hydration(who, "/login", [("Email", self.seed_email), ("Password", self.seed_password)])
             self.expect(self.submit_button(page, "Log in")).to_be_enabled()  # hydrated
             page.wait_for_load_state("load")
             page.wait_for_timeout(500)  # any re-render after hydration has happened by now
@@ -734,31 +842,64 @@ class AccountSweep:
         def home() -> str:
             self.submit_button(page, "Log in").click()
             self.expect(page).to_have_url(f"{self.web}/")
-            return f"{self.seed_email} -> {self.path_of(page)}"
+            # cacheComponents keeps the /login left behind mounted but hidden, DOM and all:
+            # once it has re-rendered, no password field anywhere in the document has text.
+            page.wait_for_function(NO_PASSWORD_LEFT_JS, timeout=EXPECT_MS)
+            kept = page.evaluate("() => document.querySelectorAll('input[type=password]').length")
+            where = f"the hidden /login's password field is empty ({kept} in the DOM)" if kept else "no /login kept"
+            return f"{self.seed_email} -> {self.path_of(page)}; {where}"
 
-        self.check("login: a seeded user goes home", who, home)
+        self.check("login: a seeded user goes home; the hidden /login keeps no password", who, home)
 
         # The same after a sign-out that left the signed-in hint behind (the join page's
-        # "Not you? Sign out" does): the form hides while /me is asked, then comes back.
-        hinted = self.person(
-            "login-hint", init_script="try { localStorage.setItem('stitch.signedIn', '1'); } catch {}"
-        )
+        # "Not you? Sign out" does), so the page asks /me as React takes over. Someone
+        # already typing keeps the form: it must not vanish under them while /me is asked
+        # (keys typed into a hidden form go nowhere), and nothing they typed is lost.
+        hinted = self.person("login-hint", init_script=HINT_SCRIPT)
 
         def early_with_hint() -> str:
             p = hinted.page
-            self.goto(hinted, "/login", wait="commit")
-            lab(p, "Email").fill(self.seed_email)
-            lab(p, "Password").fill(self.seed_password)
-            self.expect(self.submit_button(p, "Log in")).to_be_enabled()
+            release_me = self.hold_me(hinted)
+            try:
+                self.type_before_hydration(
+                    hinted, "/login", [("Email", self.seed_email), ("Password", self.seed_password)]
+                )
+                self.expect(self.submit_button(p, "Log in")).to_be_enabled()  # hydrated; /me unanswered
+                self.expect(p.locator(BLANK_SHEET)).to_have_count(0)
+                self.expect(lab(p, "Password")).to_be_focused()
+                self.expect(lab(p, "Password")).to_have_value(self.seed_password)
+            finally:
+                release_me()
             p.wait_for_load_state("load")
-            p.wait_for_timeout(1_000)  # the /me check answers 401 and the form comes back
+            p.wait_for_timeout(1_000)  # the /me check answers 401
             self.expect(lab(p, "Email")).to_have_value(self.seed_email)
             self.expect(lab(p, "Password")).to_have_value(self.seed_password)
             self.submit_button(p, "Log in").click()
             self.expect(p).to_have_url(f"{self.web}/")
-            return "typed values survive the signed-in check; logged in and home"
+            return "the form stayed in place while /me was asked; typed values kept; logged in and home"
 
         self.check("login: input typed before hydration survives a stale signed-in hint", hinted, early_with_hint)
+
+        # Nobody in the form: the page shows the blank sheet while /me is asked (a signed-in
+        # visitor is sent on without the form ever flashing), then the empty form.
+        untouched = self.person("login-hint-untouched", init_script=HINT_SCRIPT)
+
+        def hint_untouched() -> str:
+            p = untouched.page
+            release_me = self.hold_me(untouched)
+            try:
+                self.goto(untouched, "/login", wait="commit")
+                self.expect(p.locator(BLANK_SHEET)).to_be_visible()
+                self.expect(p.get_by_label("Password", exact=True)).to_be_hidden()
+            finally:
+                release_me()
+            self.expect(p.locator(BLANK_SHEET)).to_have_count(0, timeout=ME_DELAY_MS + EXPECT_MS)
+            self.expect(lab(p, "Email")).to_have_value("")
+            self.expect(lab(p, "Password")).to_have_value("")
+            self.expect(self.submit_button(p, "Log in")).to_be_enabled()
+            return "blank sheet while /me was asked, then the empty form"
+
+        self.check("login: a stale signed-in hint shows the blank sheet, then the form", untouched, hint_untouched)
 
         # Enter pressed the moment the document arrives: before hydration that would be
         # the browser's own GET submit, with the password in the URL, unless Log in is
@@ -767,10 +908,14 @@ class AccountSweep:
 
         def eager_enter() -> str:
             p = eager.page
-            self.goto(eager, "/login", wait="commit")
-            lab(p, "Email").fill(self.seed_email)
-            lab(p, "Password").fill(WRONG_PASSWORD)
-            lab(p, "Password").press("Enter")
+            release = self.hold_scripts(eager)
+            try:
+                self.goto(eager, "/login", wait="commit")
+                lab(p, "Email").fill(self.seed_email)
+                lab(p, "Password").fill(WRONG_PASSWORD)
+                lab(p, "Password").press("Enter")
+            finally:
+                release()
             p.wait_for_load_state("load")
             self.expect(self.submit_button(p, "Log in")).to_be_enabled()
             p.wait_for_timeout(500)
@@ -1049,10 +1194,9 @@ class AccountSweep:
         def early_signup() -> str:
             p = early.page
             mail = self.new_email("early")
-            self.goto(early, "/signup", wait="commit")
-            lab(p, "Your name").fill("Early Typist")
-            lab(p, "Email").fill(mail)
-            lab(p, "Password").fill(PASSWORD)
+            self.type_before_hydration(
+                early, "/signup", [("Your name", "Early Typist"), ("Email", mail), ("Password", PASSWORD)]
+            )
             self.expect(self.submit_button(p, "Create account")).to_be_enabled()
             p.wait_for_load_state("load")
             p.wait_for_timeout(500)
@@ -1146,14 +1290,28 @@ def summarize(seams: SeamLog, out: Path) -> int:
     return code
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """The shared sweep CLI (harness.sweep_args) plus this sweep's --cpu-throttle RATE."""
+    extra = argparse.ArgumentParser(add_help=False)
+    extra.add_argument("--cpu-throttle", type=float, default=1.0)
+    known, rest = extra.parse_known_args(sys.argv[1:] if argv is None else argv)
+    if known.cpu_throttle < 1:
+        raise SystemExit(f"--cpu-throttle is a slowdown factor >= 1, not {known.cpu_throttle}")
+    args = sweep_args(DESCRIPTION + " --cpu-throttle RATE slows each page's CPU RATE times.", rest)
+    args.cpu_throttle = known.cpu_throttle
+    return args
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = sweep_args(DESCRIPTION, argv)
+    args = parse_args(argv)
     require_chromium()
     from playwright.sync_api import expect, sync_playwright
 
     expect.set_options(timeout=EXPECT_MS)
     out = sweep_out_dir(args.out, prefix="stitch-sweep-accounts-")
     print(f"out dir: {out}", flush=True)
+    if args.cpu_throttle > 1:
+        print(f"CPU throttled {args.cpu_throttle:g}x on every page", flush=True)
     seams = SeamLog()
     for mock in sweep_modes(args.mode):
         mode = "mock" if mock else "real"
@@ -1175,7 +1333,7 @@ def main(argv: list[str] | None = None) -> int:
                         if mock:
                             probe_mock_faults(stack, browser, seams)
                         for view in VIEWPORTS:
-                            AccountSweep(stack, browser, seams, view).run()
+                            AccountSweep(stack, browser, seams, view, args.cpu_throttle).run()
                     finally:
                         browser.close()
         except StackError as exc:

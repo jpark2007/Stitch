@@ -126,6 +126,38 @@ export function signupDraftAfterSuccess(): SignupDraft {
   return { name: "", email: "", password: "" };
 }
 
+// ---------------------------------------------------------------------------
+// When the form is hidden
+//
+// The log in and sign up forms run these from a layout effect cleanup, which
+// React calls when Activity hides the page, on unmount, and (next dev only) in
+// strict mode's simulated unmount right after the first mount. That last one
+// must not lose a password typed before hydration: React re-runs the forms'
+// layout effects straight after, in the same commit, and useTypedBeforeHydration
+// takes the typed values back from the DOM, which nothing has re-rendered yet.
+// A form hidden for real re-renders empty while hidden, so when it is shown
+// again the DOM has no password left to adopt.
+
+/**
+ * The log in draft as its form is hidden: once sent, loginDraftAfterSuccess;
+ * otherwise everything but the password. Returns `d` itself when there is no
+ * password to clear, so hiding an untouched form re-renders nothing.
+ */
+export function loginDraftOnHide(d: LoginDraft, sent: boolean): LoginDraft {
+  if (sent) return loginDraftAfterSuccess(d);
+  return d.password === "" ? d : { ...d, password: "" };
+}
+
+/**
+ * The sign up draft as its form is hidden: once sent, signupDraftAfterSuccess;
+ * otherwise the name and email stay (a detour to /login and back keeps them)
+ * and the password goes. `d` itself when there is no password to clear.
+ */
+export function signupDraftOnHide(d: SignupDraft, sent: boolean): SignupDraft {
+  if (sent) return signupDraftAfterSuccess();
+  return d.password === "" ? d : { ...d, password: "" };
+}
+
 /** The family and its first person: you. A blank year is sent as null. */
 export function toCreateFamilyRequest(d: FamilyDraft): CreateFamilyRequest {
   const born = d.born.trim();
