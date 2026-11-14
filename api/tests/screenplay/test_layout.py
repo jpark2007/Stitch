@@ -170,3 +170,73 @@ def test_hymn_books_camera_and_fold_tracks_within_tolerance():
         for (gt, gv), (wt, wv) in zip(gkeys, wkeys):
             assert gt == pytest.approx(wt, abs=1e-3), k
             assert gv == pytest.approx(wv, abs=1e-3), (k, gt)
+
+
+# ------------------------------------------------------------ bug hunt: shot ends, zero layers
+
+@pytest.mark.parametrize(("t", "shot_end"), [(4.6955, 5.365), (1.0005, 3.0), (2.2225, 9.9)])
+def test_rain_without_dur_never_outlasts_the_shot(t, shot_end):
+    """Bug: rain with no dur rounded t and dur separately, so t + dur could pass the shot's end
+    (and the timeline's duration, for the last shot) by a millisecond: 4.696 + 0.67 > 5.365."""
+    rain = effect_entry("rain", t, None, None, None, shot_end)
+    assert rain.t + rain.dur <= shot_end + 1e-9
+    assert rain.t + rain.dur == pytest.approx(shot_end, abs=1e-9)
+
+
+def test_rain_rounding_holds_for_any_start():
+    import random
+
+    rng = random.Random(7)
+    for _ in range(5000):
+        t = round(rng.uniform(0, 30), 6)
+        end = round(t + rng.uniform(0.5, 10), 3)
+        rain = effect_entry("rain", t, None, None, None, end)
+        assert rain.t + rain.dur <= end + 1e-9, (t, end, rain)
+
+
+@pytest.mark.parametrize("t", [7.0, 7.0006, 7.0004, 1.2345675])
+def test_rain_starting_at_the_shot_end_lasts_nothing(t):
+    """The compiler first builds a rain with shot_end = t (a placeholder): rounding t up must
+    not make that a negative duration."""
+    assert effect_entry("rain", t, None, None, None, t).dur == 0.0
+
+
+def test_rain_ending_before_it_starts_is_still_an_error():
+    with pytest.raises(ValueError, match="negative duration"):
+        effect_entry("rain", 7.0, None, None, None, 6.0)
+
+
+def test_a_set_with_no_layers_takes_no_time_to_fold():
+    """Bug: fold_out_seconds(0) said 0.4 s while fold_keys of a zero-layer set takes 0 s."""
+    keys, used = fold_keys("void", 0, 3.0, "fold")
+    assert (keys, used) == ([], 0.0)
+    assert fold_out_seconds(0) == used
+    assert rise_keys("void", 0, 0.0, "fold") == [] == rise_keys("void", 0, 0.0, "none")
+    prev_end, start, action, keys = next_shot_timing(5.0, "void", 0, "church", "fold")
+    assert (prev_end, start, keys) == (5.0, 5.0, [])
+    assert action == pytest.approx(5.0 + RISE)
+
+
+def test_content_end_with_no_keys_and_no_words():
+    assert content_end(0.0, None) == 0.5
+    assert content_end(0.0, 0.0) == 0.6
+
+
+@pytest.mark.parametrize("t", [3.2405, 3.2775, 3.6475])
+def test_compiled_rain_ends_within_the_timeline(t):
+    """End to end: the shot's end comes from a camera move, so the rain's t + dur (rounded
+    apart) was 7.701 on a 7.7 s timeline."""
+    from verb_cases import base_scene
+
+    from screenplay.compiler import compile as compile_screenplay
+    from screenplay.schema import Screenplay
+
+    scene = base_scene()
+    sp = Screenplay.model_validate({"memoryId": "m", "cast": ["dad"], "props": [], "shots": [{
+        "id": "s1", "set": "yard", "start": {"dad": {"at": "door"}},
+        "camera": [{"t": 5, "move": "pull_back", "dur": 1}], "actions": [{"t": t, "do": "rain"}],
+    }]})
+    res = compile_screenplay(sp, sets=scene.sets, props=scene.props, people=scene.people)
+    assert res.ok, res.errors
+    (rain,) = res.timeline.effects
+    assert rain.t + rain.dur <= res.timeline.duration + 1e-9
