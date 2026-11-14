@@ -11,8 +11,9 @@ A run is bounded in four ways, each read from the environment by ``RunLimits.fro
                                 ``studio.make_model`` (ChatAnthropic ``timeout``).
     STITCH_MODEL_MAX_RETRIES    retries of a failed Claude request (default 2). Used by
                                 ``studio.make_model`` (ChatAnthropic ``max_retries``).
-    STITCH_RUN_TIMEOUT_S        seconds one run may take in all (default 1200). Parsed here;
-                                enforced by the run manager (agent/runs.py).
+    STITCH_RUN_TIMEOUT_S        seconds of running time one run may take in all (default 1200);
+                                time spent waiting on the teller's answer does not count.
+                                Parsed here; enforced by the run manager (agent/runs.py).
 
 A blank, unparsable or out-of-range value never stops the API: it logs one warning naming the
 variable and the default is used. The warning is logged once per (variable, value) in a
@@ -114,10 +115,14 @@ class RunLimits:
         )
 
     def label(self) -> str:
-        """A short summary for the production services line, e.g. 'images=24 steps=1000 model_timeout=120s'."""
+        """A short summary for the production services line.
+
+        The defaults read 'images=24 steps=1000 model_timeout=120s model_retries=2 run_timeout=1200s'.
+        """
         return (
             f"images={self.max_images_per_run} steps={self.max_graph_steps} "
-            f"model_timeout={self.model_timeout_s:g}s model_retries={self.model_max_retries}"
+            f"model_timeout={self.model_timeout_s:g}s model_retries={self.model_max_retries} "
+            f"run_timeout={self.run_timeout_s:g}s"
         )
 
 

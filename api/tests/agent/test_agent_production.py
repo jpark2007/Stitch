@@ -332,7 +332,7 @@ def test_describe_is_one_line_in_a_stable_order(monkeypatch: pytest.MonkeyPatch)
     assert line.startswith("studio services: model=real subagent_model=studio repo=mongo persistence=memory ")
     assert "art=placeholder tts=real" in line
     assert "sk-ant" not in line and "dummy" not in line
-    assert line.endswith(" limits=images=24 steps=1000 model_timeout=120s model_retries=2")
+    assert line.endswith(" limits=images=24 steps=1000 model_timeout=120s model_retries=2 run_timeout=1200s")
     assert production.LABEL_ORDER[-2:] == ("compiler", "limits")
 
 
@@ -340,16 +340,17 @@ def test_the_image_cap_and_the_limits_label(monkeypatch: pytest.MonkeyPatch, no_
     dummy_keys(monkeypatch)
     svc = production.production_services()
     assert svc.art.max_images_per_run == 24
-    assert svc.labels["limits"] == "images=24 steps=1000 model_timeout=120s model_retries=2"
+    assert svc.labels["limits"] == "images=24 steps=1000 model_timeout=120s model_retries=2 run_timeout=1200s"
 
     monkeypatch.setenv("STITCH_MAX_IMAGES_PER_RUN", "3")
     monkeypatch.setenv("STITCH_MAX_GRAPH_STEPS", "400")
     monkeypatch.setenv("STITCH_MODEL_TIMEOUT_S", "60")
     monkeypatch.setenv("STITCH_MODEL_MAX_RETRIES", "1")
+    monkeypatch.setenv("STITCH_RUN_TIMEOUT_S", "600")
     svc = production.production_services()
     assert isinstance(svc.art.image_model, OpenAIImageModel)
     assert svc.art.max_images_per_run == 3 and svc.art.images_left("any_run") == 3
-    assert svc.labels["limits"] == "images=3 steps=400 model_timeout=60s model_retries=1"
+    assert svc.labels["limits"] == "images=3 steps=400 model_timeout=60s model_retries=1 run_timeout=600s"
     assert svc.model.default_request_timeout == 60.0 and svc.model.max_retries == 1
     assert no_network == []
 

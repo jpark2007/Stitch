@@ -44,10 +44,11 @@ Time and cost limits (agent.guards.RunLimits; a bad value warns and keeps the de
     STITCH_MAX_GRAPH_STEPS     graph steps per run (1000, at least 50; studio.thread_config)
     STITCH_MODEL_TIMEOUT_S     seconds per Claude request (120; studio.make_model)
     STITCH_MODEL_MAX_RETRIES   retries of a failed Claude request (2; studio.make_model)
-    STITCH_RUN_TIMEOUT_S       seconds per run (1200; enforced by the run manager)
+    STITCH_RUN_TIMEOUT_S       seconds of running time per run (1200; enforced by the run
+                               manager, agent/runs.py; waiting on the teller does not count)
 
 The "limits" label shows the limits in force, e.g. "images=24 steps=1000 model_timeout=120s
-model_retries=2".
+model_retries=2 run_timeout=1200s".
 
 The family data goes through `MongoRepo(db.client.get_db())`, so it follows whatever
 database the API uses, including the STITCH_FAKE_DB mongomock override.
