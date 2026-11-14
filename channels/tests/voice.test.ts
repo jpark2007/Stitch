@@ -12,6 +12,21 @@ const payload = { ...identity, attachmentId: "voice-id", mimeType: "audio/mp4", 
 const source = (bytes = Uint8Array.of(1, 2, 3)) => ({ id: "voice-id", mimeType: "audio/mp4", stream: async () => new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }) });
 const accepted: Receipt = { status: 202, body: { accepted: true, duplicate: false } };
 
+test("native iMessage CAF remains CAF in the signed envelope for backend conversion", async () => {
+  const bytes = Buffer.from([0x63, 0x61, 0x66, 0x66, 0, 1, 0, 0]);
+  const requests: { path: string; value: unknown }[] = [];
+  const client = { post: async (path: Parameters<ApiClient["post"]>[0], value: Parameters<ApiClient["post"]>[1]) => {
+    requests.push({ path, value });
+    return path.endsWith("authorize") ? { status: 200, body: { allowed: true } } : accepted;
+  } };
+  await forwardVoice(client, identity, { ...source(bytes), mimeType: "audio/x-caf" });
+  assert.equal(requests[0].path, "/internal/channels/authorize");
+  assert.deepEqual(requests[1], { path: "/internal/channels/inbound-voice", value: {
+    ...identity, attachmentId: "voice-id", mimeType: "audio/x-caf", dataBase64: bytes.toString("base64"),
+  } });
+  assert.equal(parseVoice(requests[1].value).mimeType, "audio/x-caf");
+});
+
 test("strict voice schema allows only supported audio with bounded IDs and canonical base64", () => {
   for (const mimeType of VOICE_TYPES) assert.equal(parseVoice({ ...payload, mimeType }).mimeType, mimeType);
   for (const change of [{ caption: "not permitted" }, { url: "https://evil.invalid" }, { familyId: "spoof" }, { mimeType: "audio/caf" }, { mimeType: "image/png" }, { attachmentId: " " }, { attachmentId: "é".repeat(129) }, { messageId: "\ud800" }, { dataBase64: "AB==" }, { dataBase64: "" }, { dataBase64: "AQID\n" }, { dataBase64: "AQI" }]) assert.throws(() => parseVoice({ ...payload, ...change }), /Invalid/);

@@ -10,6 +10,7 @@ import wave
 from db import contacts, conversations, media
 from .models import InboundVoice, WHITESPACE
 from .transcription import MIME_FILENAMES, MAX_TRANSCRIPT_BYTES
+from .audio import CAF_MIME, AudioConversionError, convert_caf, validate_caf
 
 
 def _wav(data):
@@ -103,7 +104,7 @@ def _flac(data):
 
 
 def decode_voice(message: InboundVoice) -> bytes:
-    if message.mimeType not in MIME_FILENAMES:
+    if message.mimeType not in MIME_FILENAMES and message.mimeType != CAF_MIME:
         raise ValueError("Unsupported audio MIME")
     try:
         data = base64.b64decode(message.dataBase64, validate=True)
@@ -112,7 +113,12 @@ def decode_voice(message: InboundVoice) -> bytes:
     if not data or len(data) > media.MAX_BYTES or base64.b64encode(data).decode("ascii") != message.dataBase64:
         raise ValueError("Invalid audio encoding or size")
     mime = message.mimeType
-    if mime in {"audio/wav", "audio/x-wav"}:
+    if mime == CAF_MIME:
+        try:
+            validate_caf(data)
+        except AudioConversionError:
+            raise ValueError("Invalid CAF audio") from None
+    elif mime in {"audio/wav", "audio/x-wav"}:
         _wav(data)
     elif mime in {"audio/mp4", "audio/m4a", "audio/x-m4a"}:
         _mp4(data)
@@ -150,7 +156,12 @@ def transcribe_receipt(db, family_id: str, contact_id: str, receipt: dict, *, tr
         check()
         async def call():
             async with asyncio.timeout(60):
-                return await transcriber.transcribe(audio.data, content_type=audio.content_type)
+                data, content_type = audio.data, audio.content_type
+                if content_type == CAF_MIME:
+                    data = await convert_caf(data)
+                    content_type = "audio/wav"
+                    check()  # Recheck consent after local decoding, before any provider upload.
+                return await transcriber.transcribe(data, content_type=content_type)
         transcript = asyncio.run(call())
         check()
         if (not isinstance(transcript, str) or not transcript.strip(WHITESPACE)
@@ -159,6 +170,9 @@ def transcribe_receipt(db, family_id: str, contact_id: str, receipt: dict, *, tr
         conversations.complete_transcription(db, family_id, contact_id, receipt["_id"], transcript)
         check()
         return transcript
+    except AudioConversionError:
+        conversations.uncertain_transcription(db, family_id, contact_id, receipt["_id"])
+        raise  # Explicit conversion-only failure; no provider request was made.
     except (Exception, asyncio.CancelledError):
         conversations.uncertain_transcription(db, family_id, contact_id, receipt["_id"])
         raise RuntimeError("Transcription outcome requires reconciliation") from None
