@@ -15,6 +15,15 @@ MAX_FAMILY_NAME_CHARS, a person's name MAX_PERSON_NAME_CHARS, and a character sh
 free text (signature item, notes) MAX_PERSON_TEXT_CHARS. Over a limit is a 422 whose
 detail names the limit. A blank name stays the 400 it always was. A character color must
 be a hex code (#rgb or #rrggbb), since the stage paints the puppet with it.
+
+A character sheet's `itemPropId` (the signature item worn in the head socket) must name a
+prop of this family or a built-in library prop, looked up with db.props.get_prop after
+strip(); anything else is a 422 ITEM_PROP_UNKNOWN, whether the id is missing or belongs to
+another family (the same sentence for both, so nothing leaks). null, absent, blank or
+whitespace-only means "no item prop" and is stored as null. Every route that writes a
+sheet checks it: creating a family (library props only, since the family has none yet),
+adding a person, patching one, and joining by adding yourself, always before anything is
+written.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ import schemas
 from auth import FamilyAccess, current_user, family_admin, family_member
 from db import families as families_db
 from db import people as people_db
+from db import props as props_db
 from db.client import get_db
 from db.families import LastAdmin
 from db.people import AlreadyClaimed, InvalidRelation
@@ -39,6 +49,7 @@ LAST_ADMIN = "A family needs at least one admin"
 PERSON_TAKEN = "Someone has already claimed this person"
 ALREADY_HAVE_PERSON = "You already have a person in this family"
 BAD_COLOR = "Color must be a hex code like #3f6fb5"
+ITEM_PROP_UNKNOWN = "That item is not one of this family's props"
 
 MAX_FAMILY_NAME_CHARS = 100
 MAX_PERSON_NAME_CHARS = 100
@@ -83,11 +94,16 @@ def _clean_person_name(raw: str) -> str:
 
 
 def _clean_character(character: schemas.CharacterSheet) -> schemas.CharacterSheet:
-    """The sheet with a trimmed hex color and trimmed free text (blank text becomes None).
+    """The sheet with a trimmed hex color, trimmed free text (blank text becomes None) and a
+    trimmed itemPropId (blank becomes None). Whether that prop exists is _check_item_prop's job.
 
     422 for a color that is not a hex code, or free text over MAX_PERSON_TEXT_CHARS.
     """
     updates: dict[str, str | None] = {}
+    if character.item_prop_id is not None:
+        item_prop_id = character.item_prop_id.strip() or None
+        if item_prop_id != character.item_prop_id:
+            updates["item_prop_id"] = item_prop_id
     color = character.color.strip()
     if not _HEX_COLOR.fullmatch(color):
         raise _unprocessable(BAD_COLOR)
@@ -102,6 +118,28 @@ def _clean_character(character: schemas.CharacterSheet) -> schemas.CharacterShee
         if trimmed != value:
             updates[field] = trimmed or None
     return character.model_copy(update=updates) if updates else character
+
+
+def item_prop_ok(db: Database, family_id: str | None, prop_id: str) -> bool:
+    """True if prop_id names a prop of this family or a built-in library prop.
+
+    `family_id` None (a family that does not exist yet) accepts library props only.
+    """
+    prop_id = prop_id.strip()
+    if not prop_id:
+        return False
+    if family_id is None:
+        return prop_id in props_db.library_props()
+    prop = props_db.get_prop(db, family_id, prop_id)
+    return prop is not None and prop.family_id in (None, family_id)
+
+
+def _check_item_prop(db: Database, family_id: str | None, character: schemas.CharacterSheet | None) -> None:
+    """422 ITEM_PROP_UNKNOWN when a (cleaned) sheet names an item prop that is not this family's."""
+    if character is None or character.item_prop_id is None:
+        return
+    if not item_prop_ok(db, family_id, character.item_prop_id):
+        raise _unprocessable(ITEM_PROP_UNKNOWN)
 
 
 def _clean_new_person(new: schemas.NewPerson) -> schemas.NewPerson:
@@ -181,6 +219,7 @@ def create_family(
         people_db.check_lifespan(new.born, new.died)
     except InvalidRelation as exc:
         raise _bad_request(str(exc)) from exc
+    _check_item_prop(db, None, new.character)  # the family has no props of its own yet
 
     family = families_db.create_family(db, name=name, creator_user_id=user.id)
     try:
@@ -269,7 +308,9 @@ def join_family(
     family, _ = found
 
     if new is not None:
-        return _join_by_adding(db, family, user, _clean_new_person(new))
+        new = _clean_new_person(new)
+        _check_item_prop(db, family.id, new.character)  # before the membership is added
+        return _join_by_adding(db, family, user, new)
     return _join_by_claim(db, family, user, str(person_id))
 
 
@@ -325,6 +366,7 @@ def add_person(
 ) -> schemas.Person:
     """Add a relative, who may never have an account. Anyone can claim them later."""
     new = _clean_new_person(body)
+    _check_item_prop(db, access.family_id, new.character)
     try:
         return people_db.create_person(db, access.family_id, new, added_by=access.user.id, user_id=None)
     except InvalidRelation as exc:
@@ -340,6 +382,7 @@ def patch_person(
 ) -> schemas.Person:
     """Edit a person, their relationships, or their character sheet."""
     patch = _clean_patch(body)
+    _check_item_prop(db, access.family_id, patch.character)
     try:
         person = people_db.update_person(db, access.family_id, person_id, patch)
     except InvalidRelation as exc:
