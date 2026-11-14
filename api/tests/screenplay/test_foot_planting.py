@@ -16,9 +16,13 @@ import json
 import math
 from pathlib import Path
 
+import copy
+
 import pytest
+from story_scenes import STORIES, story_scene
 from verb_cases import Scene, _a, _at, _one, base_scene
 
+import schemas
 from screenplay import ik, planting
 from screenplay.compiler import compile as compile_screenplay
 from screenplay.schema import VOCABULARY, Screenplay, Timeline
@@ -371,3 +375,152 @@ def test_plant_feet_leaves_straight_legs_and_other_puppets_alone():
     before = ts.tracks()
     planting.plant_feet(ts, {"dad": "average", "mom": "average"})
     assert ts.tracks() == before
+
+
+# ------------------------------------------------------------------ every story, planted
+
+STORY_TOL = 1e-3
+SAMPLES = SHARED.parent / "web" / "public" / "samples"
+
+
+def _story_compile(name: str, **kw) -> Timeline:
+    sets, props, people = story_scene()
+    res = compile_screenplay(Screenplay.model_validate(copy.deepcopy(STORIES[name])), sets=sets, props=props,
+                             people=people, **kw)
+    assert res.ok, [f"{e.code}: {e.message}" for e in res.errors]
+    assert res.timeline is not None
+    return res.timeline
+
+
+def _hymn_compile(**kw) -> Timeline:
+    memory = json.loads((SAMPLES / "hymn_books.memory.json").read_text())
+    res = compile_screenplay(
+        Screenplay.model_validate(json.loads((SAMPLES / "hymn_books.screenplay.json").read_text())),
+        sets={s["id"]: schemas.SetDef.model_validate(s) for s in memory["sets"]},
+        props={p["id"]: schemas.Prop.model_validate(p) for p in memory["props"]},
+        people={p["id"]: schemas.Person.model_validate(p) for p in memory["people"]}, **kw)
+    assert res.ok, [f"{e.code}: {e.message}" for e in res.errors]
+    assert res.timeline is not None
+    return res.timeline
+
+
+def _story_builds() -> dict[str, str]:
+    return {pid: p.character.build for pid, p in story_scene()[2].items()}
+
+
+def _hymn_builds() -> dict[str, str]:
+    memory = json.loads((SAMPLES / "hymn_books.memory.json").read_text())
+    return {p["id"]: p["character"]["build"] for p in memory["people"]}
+
+
+_PLANTING: dict[str, tuple[Timeline, Timeline, dict[str, str]]] = {}
+
+
+def planted_pair(name: str) -> tuple[Timeline, Timeline, dict[str, str]]:
+    """(planted, unplanted, builds) for a story name or ``"hymn_books"``, compiled once."""
+    if name not in _PLANTING:
+        if name == "hymn_books":
+            _PLANTING[name] = (_hymn_compile(), _hymn_compile(plant_feet=False), _hymn_builds())
+        else:
+            _PLANTING[name] = (_story_compile(name), _story_compile(name, plant_feet=False), _story_builds())
+    return _PLANTING[name]
+
+
+STORY_NAMES = sorted(STORIES)
+
+
+@pytest.mark.parametrize("name", STORY_NAMES)
+def test_every_story_plants_the_lowest_foot_at_every_cycle_key(name):
+    """Every story compiles planted and unplanted; planting changes nothing but root y at cycle
+    keys; and at every walk / run cycle key of every puppet the lowest foot, by forward
+    kinematics, is on the standing surface (the unplanted root's y) within 1e-3."""
+    planted, unplanted, builds = planted_pair(name)
+    assert planting_problems(planted, unplanted, builds) == []
+    assert planted.feet_planted is True
+    assert unplanted.feet_planted is None
+    errs = foot_errors(planted, unplanted, builds)
+    walkers = {target for target, _, _ in errs}
+    assert walkers, f"{name} has no walk or run cycle to check"
+    for target in walkers:
+        assert len([e for e in errs if e[0] == target]) == len(cycle_key_times(planted, target))
+    off = [(target, t, round(e, 5)) for target, t, e in errs if abs(e) > STORY_TOL]
+    assert off == []
+
+
+def test_the_stories_plant_runs_and_walks_for_every_build():
+    """The story catalogue exercises planting widely: several puppets of different builds walk."""
+    builds = _story_builds()
+    walked = {target.removeprefix("puppet:") for name in STORY_NAMES
+              for target, _, _ in foot_errors(*planted_pair(name))}
+    assert len(walked) >= 4
+    assert len({builds[w] for w in walked}) >= 3
+
+
+# ------------------------------------------------------- between keys: the foot, measured
+#
+# The stage interpolates root.position and the leg rotations linearly between keys, so the
+# lowest foot is exactly on the surface only at the planted cycle keys. Between two keys of a
+# cycle the foot can lift or sink. Measured over every story and the hymn sample, 8 samples per
+# key interval (each interval of the puppet's root / leg key times with a cycle key at either
+# end), on the code this test was written for:
+#
+#   worst lift (foot above the surface): +0.00047 (graduation, teen at a cycle key: 3 dp
+#                                        rounding of the keys, not interpolation)
+#   worst sink (foot below the surface): -0.01008 (moving_house and wedding, kid, small build,
+#                                        between a run's rest key and its first cycle key)
+#
+# The lift is far below the 0.01 the task set for adding interior root keys, so planting.py
+# adds none. The bounds below pin the measurement with a little headroom.
+
+BETWEEN_SAMPLES = 8
+MAX_LIFT = 1e-3   # measured +0.00047; the task's threshold for adding interior keys is 0.01
+MAX_SINK = 0.0125  # measured -0.01008
+ROOT_CHANNEL = "root.position"
+
+
+def between_key_foot_offsets(planted: Timeline, unplanted: Timeline, builds: dict[str, str],
+                             samples: int = BETWEEN_SAMPLES) -> list[tuple[float, str, float]]:
+    """(foot height above the surface, target, t) at ``samples`` evenly spaced points (both ends
+    included) of every key interval of a puppet's root / leg keys that has a cycle key at either
+    end. The surface is the unplanted root's y at t."""
+    chans = {ROOT_CHANNEL} | {f"{b}.rot" for b in LEGS}
+    out: list[tuple[float, str, float]] = []
+    for who, build in sorted(builds.items()):
+        target = f"puppet:{who}"
+        cycle = set(cycle_key_times(planted, target))
+        if not cycle:
+            continue
+        times = sorted({k[0] for tr in planted.tracks if tr.target == target and tr.channel in chans
+                        for k in tr.keys})
+        for a, b in zip(times, times[1:]):
+            if a not in cycle and b not in cycle:
+                continue
+            for i in range(samples + 1):
+                t = a + (b - a) * i / samples
+                root = evaluate(planted.tracks, target, ROOT_CHANNEL, t)
+                ground = evaluate(unplanted.tracks, target, ROOT_CHANNEL, t)
+                foot = root[1] + (RIG["hipHeight"] - lowest_foot(_legs_at(planted, target, t))) * puppet_scale(build)
+                out.append((foot - ground[1], target, t))
+    return out
+
+
+@pytest.mark.parametrize("name", ["hymn_books", *STORY_NAMES])
+def test_between_cycle_keys_the_foot_stays_near_the_surface(name):
+    planted, unplanted, builds = planted_pair(name)
+    offsets = between_key_foot_offsets(planted, unplanted, builds)
+    assert offsets, f"{name} has no cycle to measure"
+    lift = max(offsets)
+    sink = min(offsets)
+    assert lift[0] <= MAX_LIFT, lift
+    assert sink[0] >= -MAX_SINK, sink
+
+
+def test_the_between_key_measurement_sees_the_dip_and_the_unplanted_lift():
+    """The measurement is not vacuous: over all of them the foot does dip between keys, and on
+    the unplanted compile it lifts well off the surface mid-stride."""
+    names = ["hymn_books", *STORY_NAMES]
+    planted = [o for n in names for o in between_key_foot_offsets(*planted_pair(n))]
+    assert min(planted)[0] < -0.005
+    unplanted = [o for n in names
+                 for o in between_key_foot_offsets(planted_pair(n)[1], planted_pair(n)[1], planted_pair(n)[2])]
+    assert max(unplanted)[0] > 0.01

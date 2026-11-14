@@ -699,3 +699,154 @@ def test_follow_speed_scale_is_keyword_only():
 
     param = inspect.signature(follow_keys).parameters["speed_scale"]
     assert param.kind is inspect.Parameter.KEYWORD_ONLY and param.default == 1.0
+
+
+# ------------------------------------------------- a walk that climbs: max(ground, |dy|)
+#
+# A walk or run is timed by max(ground distance, |dy|) / (gait speed * speed_scale): a climb
+# takes at least as long as the same climb straight up, and a walk whose ground distance
+# dominates keeps exactly the time and keys hypot(dx, dz) gave it.
+
+GROUND = (0.0, 0.0, 0.5)
+
+
+def _root_keys(keys):
+    return [(k[2], k[3]) for k in keys if k[1] == "root.position"]
+
+
+def test_travel_distance_is_the_larger_of_ground_and_climb():
+    assert motion.travel_distance((0, 0, 0.5), (0.6, 0, 0.5)) == 0.6
+    assert motion.travel_distance((0, 0, 0.5), (0, 0.3, 0.5)) == 0.3
+    assert motion.travel_distance((0, 0.3, 0.5), (0.02, 0, 0.5)) == 0.3  # down counts too
+    assert motion.travel_distance((0, 0, 0.2), (0.3, 0.1, 0.6)) == math.hypot(0.3, 0.6 - 0.2)
+    assert motion.travel_distance((0.1, 0.2, 0.5), (0.1, 0.2, 0.5)) == 0.0
+
+
+@pytest.mark.parametrize("gait", ["walk", "run"])
+def test_a_straight_up_climb_takes_the_climb_at_gait_speed(gait):
+    keys, t1, facing = locomotion_keys("dad", "average", 2.0, GROUND, (0.0, 0.3, 0.5), 1, gait)
+    assert t1 == pytest.approx(2.0 + 0.3 / motion.SPEEDS[gait])
+    assert facing == 1
+    assert keys == [("puppet:dad", "root.position", 2.0, [0.0, 0.0, 0.5]),
+                    ("puppet:dad", "root.position", t1, [0.0, 0.3, 0.5])]
+
+
+@pytest.mark.parametrize("gait", ["walk", "run"])
+@pytest.mark.parametrize("dy", [0.3, -0.3])
+def test_an_almost_straight_up_climb_takes_the_climb_not_the_step(gait, dy):
+    start = (0.0, 0.0 if dy > 0 else 0.3, 0.5)
+    end = (0.02, start[1] + dy, 0.5)
+    keys, t1, _ = locomotion_keys("dad", "average", 2.0, start, end, 1, gait)
+    _, straight, _ = locomotion_keys("dad", "average", 2.0, start, (0.0, end[1], 0.5), 1, gait)
+    assert t1 == pytest.approx(2.0 + 0.3 / motion.SPEEDS[gait])  # was 2.0 + 0.02 / speed
+    assert t1 >= straight - 1e-12
+    assert _root_keys(keys) == [(2.0, list(start)), (t1, list(end))]
+    # the legs still swing over the whole (longer) walk: rest at both ends
+    for b in LIMBS:
+        times = [k[2] for k in keys if k[1] == f"{b}.rot"]
+        assert times[0] == 2.0 and times[-1] == t1
+
+
+@pytest.mark.parametrize("gait", ["walk", "run"])
+def test_a_steep_climb_with_strides_spreads_its_cycle_keys_over_the_climb(gait):
+    """0.3 across and 0.5 up: the strides are counted from the ground distance (as before) and
+    spread evenly over the climb's time, with a plant marker at each interior cycle key."""
+    keys, t1, _ = locomotion_keys("dad", "average", 0.0, GROUND, (0.3, 0.5, 0.5), 1, gait)
+    flat, t_flat, _ = locomotion_keys("dad", "average", 0.0, GROUND, (0.3, 0.0, 0.5), 1, gait)
+    assert t1 == pytest.approx(0.5 / motion.SPEEDS[gait])
+    assert t_flat == pytest.approx(0.3 / motion.SPEEDS[gait])
+    leg = [k for k in keys if k[1] == "leg_l.upper.rot"]
+    flat_leg = [k for k in flat if k[1] == "leg_l.upper.rot"]
+    assert [k[3] for k in leg] == [k[3] for k in flat_leg]  # same strides
+    assert [k[2] for k in leg] == pytest.approx([k[2] * t1 / t_flat for k in flat_leg])  # stretched
+    markers = [k[2] for k in keys if k[1] == PLANT_CHANNEL]
+    assert markers == [k[2] for k in leg[1:-1]]
+
+
+@pytest.mark.parametrize("gait", ["walk", "run"])
+@pytest.mark.parametrize("end", [(0.6, 0.0, 0.5), (0.6, 0.3, 0.5), (-0.4, 0.1, 0.8), (0.3, -0.29, 0.5)])
+def test_a_walk_whose_ground_distance_dominates_is_unchanged(gait, end):
+    """The flat (and gently climbing) walks keep exactly the duration hypot(dx, dz) gives."""
+    ground = math.hypot(end[0], end[2] - 0.5)
+    start = (0.0, 0.0 if end[1] >= 0 else 0.3, 0.5)
+    end = (end[0], start[1] + end[1], end[2])
+    keys, t1, _ = locomotion_keys("dad", "average", 1.0, start, end, 1, gait, speed_scale=0.75)
+    assert t1 == 1.0 + ground / (motion.SPEEDS[gait] * 0.75)  # exactly, not approximately
+    assert _root_keys(keys) == [(1.0, list(start)), (t1, list(end))]
+
+
+def test_a_slow_walker_climbs_slower_too():
+    _, t1, _ = locomotion_keys("gran", "short", 0.0, GROUND, (0.02, 0.3, 0.5), 1, speed_scale=0.6)
+    assert t1 == pytest.approx(0.3 / (motion.SPEEDS["walk"] * 0.6))
+
+
+def test_hug_up_the_church_steps_example():
+    """The reported case: 0.02 across and 0.3 up took 0.057 s; now it takes 0.857 s."""
+    _, t1, _ = locomotion_keys("dad", "average", 0.0, GROUND, (0.02, 0.3, 0.5), 1)
+    assert round(t1, 3) == 0.857
+
+
+# ---------------------------------------------------------------- follow: climbs
+
+def test_follow_a_stationary_leader_up_a_step_straight_up():
+    """The follower's spot (spacing behind the leader, on the step) is straight above it."""
+    keys, t_end, _ = follow_keys("kid", "small", 1.0, GROUND, 1, [(0.0, (0.2, 0.3, 0.5))], None)
+    assert _root_keys(keys) == [(1.0, [0.0, 0.0, 0.5]), (pytest.approx(t_end), [0.0, 0.3, 0.5])]
+    assert t_end == pytest.approx(1.0 + 0.3 / 0.35)
+
+
+def test_follow_a_stationary_leader_with_dur_clips_a_straight_up_climb():
+    """Bug: the dur clip measured the ground distance only, so a climb with none was never
+    clipped and ran past t0 + dur."""
+    keys, t_end, _ = follow_keys("kid", "small", 1.0, GROUND, 1, [(0.0, (0.2, 0.3, 0.5))], 0.5)
+    assert t_end == pytest.approx(1.5)
+    assert max(k[2] for k in keys) == pytest.approx(1.5)
+    assert _root_keys(keys)[-1][1] == pytest.approx([0.0, 0.5 * 0.35, 0.5])
+
+
+def test_follow_a_stationary_leader_with_dur_clips_an_almost_straight_up_climb():
+    keys, t_end, _ = follow_keys("kid", "small", 1.0, GROUND, 1, [(0.0, (0.22, 0.3, 0.5))], 0.5)
+    assert t_end == pytest.approx(1.5)  # unclipped it would arrive at 1.857, past the dur
+    end = _root_keys(keys)[-1][1]
+    assert end == pytest.approx([0.02 * 0.175 / 0.3, 0.175, 0.5])
+
+
+def test_follow_a_stationary_leader_flat_is_unchanged():
+    keys, t_end, _ = follow_keys("dad", "tall", 1.0, (-1.0, 0, 0.5), 1, [(0.0, (0.3, 0, 0.5))], None)
+    assert t_end == 1.0 + 1.1 / 0.35
+    keys, t_end, _ = follow_keys("dad", "tall", 1.0, (-1.0, 0, 0.5), 1, [(0.0, (0.3, 0, 0.5))], 2.0)
+    assert t_end == pytest.approx(3.0)
+    assert _root_keys(keys)[-1][1][0] == pytest.approx(-1.0 + 2.0 * 0.35)
+
+
+def test_follow_a_leader_who_climbs_straight_up_climbs_too():
+    """Bug: a leader move with no ground distance (up a riser) was skipped, so the follower
+    stayed on the ground below. It now climbs after the lag, slowed to arrive at arrival + lag."""
+    leader = [(0.0, (0.2, 0.0, 0.5)), (1.0, (0.2, 0.0, 0.5)), (2.0, (0.2, 0.3, 0.5))]
+    keys, t_end, facing = follow_keys("kid", "small", 0.0, GROUND, 1, leader, None)
+    assert _root_keys(keys) == [(1.5, [0.0, 0.0, 0.5]), (pytest.approx(2.5), [0.0, 0.3, 0.5])]
+    assert t_end == pytest.approx(2.5) and facing == 1
+
+
+def test_follow_a_leader_who_hops_almost_straight_up_takes_the_climb_time():
+    """The leader hops 0.02 across and 0.3 up in 0.01 s: the follower is not held back, so it
+    takes its own natural time, the climb's 0.3 / 0.35 (was the step's 0.02 / 0.35)."""
+    leader = [(0.0, (0.2, 0.0, 0.5)), (1.0, (0.2, 0.0, 0.5)), (1.01, (0.22, 0.3, 0.5))]
+    keys, t_end, _ = follow_keys("kid", "small", 0.0, GROUND, 1, leader, None)
+    straight = [(0.0, (0.2, 0.0, 0.5)), (1.0, (0.2, 0.0, 0.5)), (1.01, (0.2, 0.3, 0.5))]
+    _, t_straight, _ = follow_keys("kid", "small", 0.0, GROUND, 1, straight, None)
+    assert t_end == pytest.approx(1.5 + 0.3 / 0.35)
+    assert t_end >= t_straight - 1e-12
+    assert _root_keys(keys)[-1][1] == pytest.approx([0.02, 0.3, 0.5])
+
+
+def test_follow_a_running_leader_up_a_step_uses_run_speed():
+    leader = [(0.0, (0.2, 0.0, 0.5)), (1.0, (0.2, 0.0, 0.5)), (1.01, (0.22, 0.3, 0.5))]
+    _, t_end, _ = follow_keys("kid", "small", 0.0, GROUND, 1, leader, None, gait="run")
+    assert t_end == pytest.approx(1.5 + 0.3 / 0.8)
+
+
+def test_follow_a_flat_hopping_leader_is_unchanged():
+    leader = [(0.0, (0.2, 0.0, 0.5)), (1.0, (0.2, 0.0, 0.5)), (1.01, (0.6, 0.0, 0.5))]
+    _, t_end, _ = follow_keys("kid", "small", 0.0, GROUND, 1, leader, None)
+    assert t_end == pytest.approx(1.5 + 0.4 / 0.35, abs=1e-12)
