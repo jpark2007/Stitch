@@ -607,11 +607,6 @@ def test_a_stored_scene_still_compiles_after_its_props_are_renamed_or_replaced(s
     assert _timeline_json(result.timeline) == _timeline_json(memory.timeline)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Reported, not fixed here: update_prop(photo_id=...) empties `parts` (locked in by "
-    "tests/data/test_props_db.py and test_routes_props.py, outside this task), so a stored "
-    "scene with a pull tab on that prop's part no longer recompiles, e.g. when a second "
-    "telling is added after swapping the green sedan for a photo."))
 def test_a_scene_with_a_pull_tab_on_a_part_still_compiles_after_a_photo_swap(seeded):
     db = seeded
     photo = media_db.put_media(db, DEMO_FAMILY_ID, demo._placeholder_png("car", "#fff", "#ccc", "#5e8c4a"),

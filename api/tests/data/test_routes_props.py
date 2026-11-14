@@ -169,11 +169,42 @@ def test_replace_with_uploaded_photo(env, as_ref):
     body = resp.json()
     assert body["art"] == {"body": f"media/{media_id}"}
     assert body["source"] == "photo"
-    assert body["states"] == {} and body["parts"] == {}
+    assert body["states"] == {} and body["parts"] == {}  # hymn_books has no parts or states
     assert body["name"] == "hymn books"
     assert body["grip"] == [0.5, 0.0]  # the rig is kept
     stored = props_db.get_prop(env["db"], FAM_A, "hymn_books")
     assert stored.art == {"body": f"media/{media_id}"} and stored.source == "photo"
+
+
+def test_photo_keeps_parts_part_art_and_state_names(env):
+    """A pull tab on a wheel or a set_state in a saved scene must still find its target."""
+    tc, db = env["tc"], env["db"]
+    bike = schemas.Prop(
+        id="red_bike", name="red bike", size="furniture", color="#c0392b",
+        art={"body": "media/old_body", "wheel": "media/old_wheel", "ringing": "media/old_ring"},
+        parts={"wheel_front": schemas.PropPart(art="wheel", at=[0.8, 0.8], spin=True),
+               "wheel_back": schemas.PropPart(art="wheel", at=[0.2, 0.8], spin=True),
+               "bell": schemas.PropPart(art="bell", at=[0.7, 0.2])},
+        states={"quiet": {}, "ringing": {"body": "media/old_ring"},
+                "spinning": {"body": "media/b2", "wheel": "media/blur"}},
+        sockets={"seat": [0.45, 0.35]}, grip=[0.75, 0.25],
+    )
+    props_db.insert_prop(db, FAM_A, bike, prop_id="red_bike")
+    media_id = _upload(tc, FAM_A).json()["id"]
+    resp = tc.patch(f"/families/{FAM_A}/props/red_bike", json={"photoId": media_id})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["art"] == {"body": f"media/{media_id}", "wheel": "media/old_wheel", "bell": None}
+    assert body["parts"] == {
+        "wheel_front": {"art": "wheel", "at": [0.8, 0.8], "spin": True},
+        "wheel_back": {"art": "wheel", "at": [0.2, 0.8], "spin": True},
+        "bell": {"art": "bell", "at": [0.7, 0.2], "spin": False},
+    }
+    assert body["states"] == {"quiet": {}, "ringing": {}, "spinning": {"wheel": "media/blur"}}
+    assert body["source"] == "photo"
+    assert (body["sockets"], body["grip"], body["color"], body["size"]) == (
+        {"seat": [0.45, 0.35]}, [0.75, 0.25], "#c0392b", "furniture")
+    assert props_db.get_prop(db, FAM_A, "red_bike") == schemas.Prop.model_validate(body)
 
 
 def test_rename_and_photo_together(env):

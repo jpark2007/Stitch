@@ -418,6 +418,38 @@ def list_props(db: Database, family_id: str) -> list[schemas.Prop]:
     return _list(db, PROPS, schemas.Prop, family_id)
 
 
+BODY = "body"
+
+
+def photo_rig(prop: schemas.Prop, photo_ref: str) -> dict:
+    """The stored fields (camelCase) that replace `prop`'s art with the photo `photo_ref`,
+    keeping its rig so every scene already saved with it still compiles and draws.
+
+    - art: {'body': photo_ref}, plus each kept part's art entry copied from the old art
+      ({part.art: old art[part.art]}); a missing old entry is stored as None, the
+      placeholder card. A part drawn with the 'body' key itself keeps the photo.
+    - parts: unchanged. A pull tab that drives a part (a wheel, a lid) still has it.
+    - states: every state name kept. Each override map drops 'body' (the photo is the body
+      now) and keeps only keys that are part art keys in the new art map, so a state that
+      only overrode the body becomes {}: 'no visual change'.
+    - source: 'photo'.
+
+    Pure: reads only its arguments. Size, anchor, grip, sockets, color, aspect, name and
+    description are not in the result, so the update leaves them as they are.
+    """
+    art: dict[str, str | None] = {BODY: photo_ref}
+    for part in prop.parts.values():  # in part order; two wheels share one 'wheel' entry
+        if part.art not in art:
+            art[part.art] = prop.art.get(part.art)
+    part_keys = set(art) - {BODY}
+    states = {
+        name: {key: value for key, value in override.items() if key in part_keys}
+        for name, override in prop.states.items()
+    }
+    parts = {name: part.model_dump(by_alias=True, mode="json") for name, part in prop.parts.items()}
+    return {"art": art, "parts": parts, "states": states, "source": "photo"}
+
+
 def update_prop(db: Database, family_id: str, prop_id: str,
                 patch: schemas.PropPatch) -> schemas.Prop | None:
     """PATCH /families/{fid}/props/{id}: rename, and/or replace the art with a photo.
@@ -425,21 +457,30 @@ def update_prop(db: Database, family_id: str, prop_id: str,
     name sets the name and keeps the stored embedding (it is computed from the
     description, which a rename does not change).
 
-    photo_id sets art={'body': photo_id}, source='photo' and states={}, keeping size,
-    anchor, grip, sockets and color; aspect is set from the photo's pixel size when it can
-    be read (media.image_aspect: this family's media, EXIF orientation applied), and kept
-    otherwise. It also sets parts={}: beyond the letter of the spec, but every part points
-    at an art key ('bellows', 'door') that the new art no longer has, so keeping them
-    would leave parts with no image. Library props and other families' props return None.
-    Checking that the media id exists is the route's job.
+    photo_id replaces the art with the photo and keeps the rig (see photo_rig), so every
+    memory already saved with this prop still recompiles: a pull tab on a part (a wheel, a
+    lid) and a set_state or prop_state tab keep working, and a second telling after the
+    swap compiles. art becomes {'body': photo} plus each part's old art entry (None when it
+    had none), parts are unchanged, every state name is kept with its 'body' override
+    dropped and only part art keys left (a body-only state becomes {}), and source becomes
+    'photo'. aspect is set from the photo's pixel size when it can be read
+    (media.image_aspect: this family's media, EXIF orientation applied), and kept
+    otherwise. size, anchor, grip, sockets, color, name (unless also patched) and
+    description are kept.
+
+    The current document is read once and the new fields are written with one
+    find_one_and_update on the same family and id. Library props and other families'
+    props return None. Checking that the media id exists is the route's job.
     """
+    query = _query(family_id, prop_id)
     update: dict = {}
     if patch.name is not None:
         update["name"] = patch.name
     if patch.photo_id is not None:
-        update.update({"art": {"body": patch.photo_id}, "source": "photo", "states": {}, "parts": {}})
-    query = _query(family_id, prop_id)
-    if patch.photo_id is not None:
+        current = _get(db, PROPS, schemas.Prop, family_id, prop_id)
+        if current is None:
+            return None
+        update.update(photo_rig(current, patch.photo_id))
         bare = media.parse_media_ref(patch.photo_id)
         aspect = media.image_aspect(db, family_id, bare) if bare is not None else None
         if aspect is not None:
