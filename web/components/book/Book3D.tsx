@@ -313,8 +313,8 @@ function BookScene(props: SceneProps) {
         decay={2}
         distance={0}
         shadow-mapSize={[2048, 2048]}
-        shadow-bias={-0.00025}
-        shadow-normalBias={0.012}
+        shadow-bias={-0.0012}
+        shadow-normalBias={0.02}
         shadow-radius={5}
         shadow-camera-near={1.5}
         shadow-camera-far={9}
@@ -422,7 +422,8 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage }: Sce
   const [ctl] = useState(() => new BookController(spreads.length, start, invalidate, onView, setStageSpread));
 
   const leafTextures = useMemo<LeafTextures[]>(() => {
-    const grain = getPaperTextures("paper", [2.2, 2.8]);
+    // Fine tiling: at coarser scales the grain's soft fields read as smudges.
+    const grain = getPaperTextures("paper", [4.5, 5.85]);
     const mask = getDeckledMask(LEAF_MASK);
     return textures.leaves.map((l) => ({
       front: l.front,
