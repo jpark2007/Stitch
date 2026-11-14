@@ -656,7 +656,7 @@ def _props() -> list[VerbCase]:
                  _one(_a(1, "close", who="dad", what="suitcase"), start={"dad": _at("by_table")}),
                  "not_on_stage",
                  # state.py World._require_placed (via World._open_close)
-                 'shot s1, t=1: dad cannot close "suitcase"; suitcase is not on stage'),
+                 'shot s1, t=1: dad cannot close "suitcase"; suitcase is not on stage; place it with propStart'),
 
         # ---------------------------------------------------------------- set_state
         _ok("set_state", "ok", _one(_a(1, "set_state", what="lamp", state="lit"),

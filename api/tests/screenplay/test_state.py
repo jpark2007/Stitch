@@ -1,12 +1,16 @@
 """World state simulation: holders, sockets, seats, prop states, positions, preconditions."""
 
 import json
+import random
 from pathlib import Path
 
 import pytest
+from verb_cases import TABLE, _a, _at, _one, _shot, _sp, base_scene
 
 import schemas
-from screenplay.schema import Screenplay, Shot
+from screenplay import errors as E
+from screenplay.compiler import compile as compile_screenplay
+from screenplay.schema import Action, Screenplay, Shot
 from screenplay.state import (
     OFFSTAGE_LEFT,
     OFFSTAGE_RIGHT,
@@ -16,6 +20,7 @@ from screenplay.state import (
     World,
     fmt_t,
     missing_param_reason,
+    parse_parent,
     self_target_reason,
     unknown_mark_reason,
 )
@@ -501,7 +506,7 @@ def test_put_on(world: World):
     assert world.holder("scarf") == ("mom", "head")
     assert world.people["dad"].holding == {"head": "hat"}
     raises("not_holding", "mom is holding it", world.put_on, "dad", "hymn_books")
-    raises("offstage", "kid is offstage", world.put_on, "dad", "cup", "kid")
+    raises("offstage", "kid is offstage; use enter first", world.put_on, "dad", "cup", "kid")
 
 
 def test_put_on_from_a_surface_is_rejected(world: World):
@@ -523,7 +528,7 @@ def test_place_on_socket_and_ground(world: World):
     assert world.props["hymn_books"].world_pos == pytest.approx((0.8, 0.4, 0.5))
     assert world.people["mom"].holding == {}
     raises("socket_taken", "table.top is taken by hymn_books", world.place_on, "dad", "cup", "prop:table.top", (0, 0, 0))
-    raises("unknown_socket", "table has no socket shelf", world.place_on, "dad", "cup", "prop:table.shelf", (0, 0, 0))
+    raises("unknown_socket", "table has no socket shelf; its sockets are top", world.place_on, "dad", "cup", "prop:table.shelf", (0, 0, 0))
     raises("not_holding", "it is on table.top", world.place_on, "mom", "hymn_books", "ground", (0, 0, 0.5))
     raises("bad_parent", "puppet:mom.hand_r is not the ground or a prop socket", world.place_on, "dad", "cup", "puppet:mom.hand_r", (0, 0, 0))
     world.place_on("dad", "cup", "ground", (-0.45, 0.0, 0.5))
@@ -539,13 +544,13 @@ def test_place_on_rejects_cycles(world: World):
     # the cup rides on the crate while it is carried
     assert world.props["cup"].parent == "prop:crate.top"
     assert world.props["cup"].world_pos is None
-    raises("cycle", "crate cannot rest on crate", world.place_on, "dad", "crate", "prop:crate.top", (0, 0, 0))
+    raises("cycle", "crate cannot rest on itself", world.place_on, "dad", "crate", "prop:crate.top", (0, 0, 0))
 
 
 def test_prop_state(world: World):
     world.set_prop_state("lamp", "lit")
     assert world.props["lamp"].state == "lit"
-    raises("unknown_state", "lamp has no state broken", world.set_prop_state, "lamp", "broken")
+    raises("unknown_state", "lamp has no state broken; its states are lit, out", world.set_prop_state, "lamp", "broken")
     world.set_prop_state("cup", "full")  # a prop with no declared states accepts any (validate.py checks)
     assert world.props["cup"].state == "full"
 
@@ -753,10 +758,10 @@ def test_open_and_close():
 
 def test_open_close_errors():
     w = door_world()
-    raises("unknown_state", "lamp has no state open", w.open, "mom", "lamp")
-    raises("unknown_state", "lamp has no state closed", w.close, "mom", "lamp")
-    raises("offstage", "dad is offstage", w.open, "dad", "door")
-    raises("not_on_stage", "crate is not on stage", w.open, "mom", "crate")
+    raises("unknown_state", "lamp has no state open; its states are lit, out", w.open, "mom", "lamp")
+    raises("unknown_state", "lamp has no state closed; its states are lit, out", w.close, "mom", "lamp")
+    raises("offstage", "dad is offstage; use enter first", w.open, "dad", "door")
+    raises("not_on_stage", "crate is not on stage; place it with propStart", w.open, "mom", "crate")
     raises("unknown_id", "ghost is not in the cast", w.open, "ghost", "door")
     raises("unknown_id", "anvil is not a known prop", w.close, "mom", "anvil")
     w.pick_up("mom", "cup")
@@ -902,7 +907,7 @@ def test_start_holding_a_prop_someone_sits_on(world: World):
 def test_pick_up_and_put_on_an_unplaced_prop(world: World):
     world.begin_shot(shot(start={"dad": {"at": "home"}}), MARKS, same_set_as_previous=False)
     raises("not_on_stage", "cup is not on stage; place it with propStart", world.pick_up, "dad", "cup")
-    raises("not_on_stage", "hat is not on stage", world.put_on, "dad", "hat")
+    raises("not_on_stage", "hat is not on stage; place it with propStart", world.put_on, "dad", "hat")
     raises("not_holding", "it is not on stage", world.hand_to, "dad", "cup", "mom")
     raises("not_holding", "it is not on stage", world.drop, "dad", "cup", (0, 0, 0.5))
 
@@ -910,12 +915,12 @@ def test_pick_up_and_put_on_an_unplaced_prop(world: World):
 def test_offstage_puppets_cannot_handle_props(world: World):
     opening(world)
     raises("offstage", "dad is offstage; use enter first", world.pick_up, "dad", "cup")
-    raises("offstage", "dad is offstage", world.put_on, "dad", "hat")
+    raises("offstage", "dad is offstage; use enter first", world.put_on, "dad", "hat")
     world.exit("mom")
     raises("offstage", "mom is offstage; use enter first", world.hold, "mom", "hymn_books")
     raises("offstage", "mom is offstage; use enter first", world.drop, "mom", "hymn_books", (0, 0, 0.5))
-    raises("offstage", "mom is offstage", world.put_on, "mom", "hymn_books")
-    raises("offstage", "mom is offstage", world.place_on, "mom", "hymn_books", "ground", (0, 0, 0.5))
+    raises("offstage", "mom is offstage; use enter first", world.put_on, "mom", "hymn_books")
+    raises("offstage", "mom is offstage; use enter first", world.place_on, "mom", "hymn_books", "ground", (0, 0, 0.5))
 
 
 def test_put_on_from_the_ground_needs_a_free_hand(world: World):
@@ -1332,3 +1337,494 @@ def test_check_rider_accepts_a_puppet_on_a_prop_stacked_on_the_vehicle(world: Wo
     raises("not_in_vehicle", "kid is not in wagon; use get_in first", world.check_rider, "kid", "wagon")
     world.get_out("mom", "sedan")
     raises("no_driver", "nobody is in sedan.driver; someone must get_in it with socket driver first", world.check_rider, "kid", "sedan")
+
+
+# ------------------------------------------- propStart sockets are order-free (bug B7)
+
+def _compile(sp: Screenplay):
+    scene = base_scene()
+    return compile_screenplay(sp, sets=scene.sets, props=scene.props, people=scene.people)
+
+
+def _ordered(entries: dict, reverse: bool) -> dict:
+    items = list(entries.items())
+    return dict(reversed(items) if reverse else items)
+
+
+@pytest.mark.parametrize("books_first", [True, False], ids=["books_first", "cap_first"])
+def test_prop_start_can_swap_what_sits_on_a_socket_in_any_order(books_first: bool):
+    """B7 (test_compile_fuzz.py's repro): the cap leaves table.top and the books take it, in one
+    propStart. The socket was checked while the entries were applied in order, so the books
+    found the cap still there when they came first."""
+    w = World(PEOPLE, PROPS)
+    w.begin_shot(shot(start={"dad": {"at": "home"}}, propStart={"table": {"at": "curb"}, "cup": {"on": "table.top"}}),
+                 MARKS, same_set_as_previous=False)
+    swap = {"hymn_books": {"on": "table.top"}, "cup": {"at": "home"}}
+    w.begin_shot(shot(id="s2", start={"dad": {"at": "home"}}, propStart=_ordered(swap, not books_first)),
+                 MARKS, same_set_as_previous=True)
+    assert w.props["table"].occupants == {"top": "prop:hymn_books"}
+    assert w.props["hymn_books"].parent == "prop:table.top"
+    assert w.props["hymn_books"].world_pos == w.socket_world("table", "top")
+    assert w.props["cup"].parent == "ground" and w.props["cup"].world_pos == MARKS["home"]
+
+    # The same through compile(), as the fuzz repro wrote it.
+    first = _shot(_a(1, "wave", who="dad"), start={"dad": _at("door")}, prop_start={**TABLE, "cap": {"on": "table.top"}})
+    s2 = {"hymn_books": {"on": "table.top"}, "cap": {"at": "curb"}}
+    second = _shot(_a(1, "wave", who="dad"), id="s2", start={"dad": _at("door")},
+                   prop_start=_ordered(s2, not books_first))
+    result = _compile(_sp(first, second))
+    assert result.ok, [(e.code, e.message) for e in result.errors]
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["in_order", "reversed"])
+def test_prop_start_swaps_two_props_between_two_sockets(reverse: bool):
+    w = World(PEOPLE, PROPS)
+    w.begin_shot(shot(start={}, propStart={"bench": {"at": "home"}, "cup": {"on": "bench.left_seat"},
+                                           "hat": {"on": "bench.right_seat"}}), MARKS, same_set_as_previous=False)
+    swap = {"cup": {"on": "bench.right_seat"}, "hat": {"on": "bench.left_seat"}}
+    w.begin_shot(shot(id="s2", start={}, propStart=_ordered(swap, reverse)), MARKS, same_set_as_previous=True)
+    assert w.props["bench"].occupants == {"right_seat": "prop:cup", "left_seat": "prop:hat"}
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["bare_first", "named_first"])
+def test_a_bare_on_takes_a_socket_no_named_on_claims(reverse: bool):
+    """A bare ``on: bench`` takes the first socket still free after the named claims, so it never
+    steals the socket a later entry names."""
+    w = World(PEOPLE, PROPS)
+    entries = {"cup": {"on": "bench"}, "hat": {"on": "bench.back"}}
+    w.begin_shot(shot(start={}, propStart={"bench": {"at": "home"}, **_ordered(entries, reverse)}),
+                 MARKS, same_set_as_previous=False)
+    assert w.props["bench"].occupants == {"back": "prop:hat", "left_seat": "prop:cup"}
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["cup_first", "lamp_first"])
+def test_two_props_really_claiming_one_socket_give_socket_taken_in_either_order(reverse: bool):
+    w = opening(World(PEOPLE, PROPS))
+    claims = _ordered({"cup": {"on": "table.top"}, "lamp": {"on": "table.top"}}, reverse)
+    first = next(iter(claims))
+    raises("socket_taken", f"table.top is taken by {first}", w.begin_shot,
+           shot(id="s2", propStart={"table": {"at": "curb"}, **claims}), MARKS, True)
+    # through compile(), the same message on the shot
+    result = _compile(_one(_a(1, "wave", who="dad"), start={"dad": _at("door")},
+                           prop_start={**TABLE, **_ordered({"lamp": {"on": "table.top"}, "cap": {"on": "table.top"}},
+                                                           reverse)}))
+    taker = "cap" if reverse else "lamp"
+    assert [(e.code, e.message) for e in result.errors] == [("socket_taken", f"shot s1: table.top is taken by {taker}")]
+    # a prop that stays on the socket still holds it against a newcomer
+    w.begin_shot(shot(id="s2", propStart={"table": {"at": "curb"}, "cup": {"on": "table.top"}}), MARKS, True)
+    raises("socket_taken", "table.top is taken by cup", w.begin_shot,
+           shot(id="s3", propStart={"lamp": {"on": "table.top"}}), MARKS, True)
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["table_first", "crate_first"])
+def test_prop_start_cycles_are_still_cycle(reverse: bool):
+    w = opening(World(PEOPLE, PROPS))
+    pair = _ordered({"table": {"on": "crate.top"}, "crate": {"on": "table.top"}}, reverse)
+    later, earlier = list(pair)[1], list(pair)[0]
+    raises("cycle", f"{later} cannot rest on {earlier}, which rests on {later}", w.begin_shot,
+           shot(id="s2", propStart=pair), MARKS, True)
+    raises("cycle", "crate cannot rest on itself", w.begin_shot,
+           shot(id="s2", propStart={"crate": {"on": "crate.top"}}), MARKS, True)
+    # a prop that already rests on the one being moved closes a cycle too
+    w.begin_shot(shot(id="s2", propStart={"crate": {"at": "curb"}, "table": {"on": "crate.top"}}), MARKS, True)
+    raises("cycle", "crate cannot rest on table, which rests on crate", w.begin_shot,
+           shot(id="s3", propStart={"crate": {"on": "table.top"}}), MARKS, True)
+
+
+# ------------------------------- object-path messages in the one grammar (with hints)
+
+def _hint(e: StateError, shot_id: str | None, action: Action | None) -> str | None:
+    return E.hint_for(E.from_state_error(e, shot_id, action))
+
+
+def _act(**kw) -> Action:
+    return Action.model_validate({"t": 1, **kw})
+
+
+# (screenplay, code, exact message, errors.hint_for) for every changed message that compile()
+# can reach. unknown_state and unknown_socket from these paths are caught statically by
+# validate.py (invalid_value) first; they are pinned below on World with the same hint check.
+COMPILED_MESSAGES = [
+    pytest.param(_one(_a(1, "put_on", who="dad", what="cap"), start={"dad": _at("offstage_left", holding="cap")}),
+                 "offstage", 'shot s1, t=1: dad cannot put_on "cap"; dad is offstage; use enter first',
+                 "add an enter for dad before this put_on", id="put_on-offstage"),
+    pytest.param(_one(_a(1, "put_on", who="dad", what="cap", target="kid"),
+                      start={"dad": _at("door", holding="cap"), "kid": _at("offstage_left")}),
+                 "offstage", 'shot s1, t=1: dad cannot put_on "cap"; kid is offstage; use enter first',
+                 "add an enter for kid before this put_on", id="put_on-target-offstage"),
+    pytest.param(_one(_a(1, "put_on", who="dad", what="cap"), start={"dad": _at("door")}),
+                 "not_on_stage", 'shot s1, t=1: dad cannot put_on "cap"; cap is not on stage; place it with propStart',
+                 "place cap with propStart in shot s1, or have someone carry it in", id="put_on-not_on_stage"),
+    pytest.param(_one(_a(1, "place_on", who="dad", what="hymn_books", on="table"),
+                      start={"dad": _at("offstage_left", holding="hymn_books")}, prop_start=TABLE),
+                 "offstage", 'shot s1, t=1: dad cannot place_on "hymn_books"; dad is offstage; use enter first',
+                 "add an enter for dad before this place_on", id="place_on-offstage"),
+    pytest.param(_one(_a(1, "open", who="dad", what="suitcase"), start={"dad": _at("offstage_left")},
+                      prop_start={"suitcase": {"on": "table.top", "state": "closed"}, **TABLE}),
+                 "offstage", 'shot s1, t=1: dad cannot open "suitcase"; dad is offstage; use enter first',
+                 "add an enter for dad before this open", id="open-offstage"),
+    pytest.param(_one(_a(1, "open", who="dad", what="suitcase"), start={"dad": _at("by_table")}),
+                 "not_on_stage",
+                 'shot s1, t=1: dad cannot open "suitcase"; suitcase is not on stage; place it with propStart',
+                 "place suitcase with propStart in shot s1, or have someone carry it in", id="open-not_on_stage"),
+    pytest.param(_one(_a(1, "close", who="dad", what="suitcase"), start={"dad": _at("by_table")}),
+                 "not_on_stage",
+                 'shot s1, t=1: dad cannot close "suitcase"; suitcase is not on stage; place it with propStart',
+                 "place suitcase with propStart in shot s1, or have someone carry it in", id="close-not_on_stage"),
+    pytest.param(_one(_a(1, "wave", who="dad"), start={"dad": _at("door")}, prop_start={"table": {"on": "table.top"}}),
+                 "cycle", "shot s1: table cannot rest on itself", "place it on a different prop", id="propStart-cycle"),
+]
+
+
+@pytest.mark.parametrize("sp,code,message,hint", COMPILED_MESSAGES)
+def test_object_messages_through_compile(sp: Screenplay, code: str, message: str, hint: str):
+    result = _compile(sp)
+    assert [(e.code, e.message) for e in result.errors] == [(code, message)]
+    assert E.hint_for(result.errors[0]) == hint
+
+
+def _objects_world() -> World:
+    w = door_world()
+    w.begin_shot(shot(id="s2", start={"mom": {"at": "home"}, "dad": {"at": "home", "holding": "cup"}},
+                      propStart={"table": {"at": "curb"}}), MARKS, same_set_as_previous=True)
+    return w
+
+
+def test_unknown_state_names_the_states_with_its_hint():
+    w = _objects_world()
+    for fn, args, do in ((w.set_prop_state, ("lamp", "broken"), "set_state"),
+                         (w.open, ("mom", "lamp"), "open"), (w.close, ("mom", "lamp"), "close")):
+        state = args[-1] if do == "set_state" else {"open": "open", "close": "closed"}[do]
+        err = raises("unknown_state", f"lamp has no state {state}; its states are lit, out", fn, *args)
+        action = _act(do=do, what="lamp", state=state) if do == "set_state" else _act(do=do, who="mom", what="lamp")
+        assert E.from_state_error(err, "s2", action).message.endswith(f"lamp has no state {state}; its states are lit, out")
+        assert _hint(err, "s2", action) == "use a state the message lists"
+
+
+def test_unknown_socket_from_a_prop_names_the_sockets_with_its_hint():
+    w = _objects_world()
+    err = raises("unknown_socket", "table has no socket shelf; its sockets are top", w.place_on,
+                 "dad", "cup", "prop:table.shelf", (0, 0, 0))
+    assert _hint(err, "s2", _act(do="place_on", who="dad", what="cup", on="table", socket="shelf")) == (
+        "use a socket the message lists")
+    err = raises("unknown_socket", "hat has no socket top; it has no sockets", w.place_on,
+                 "dad", "cup", "prop:hat.top", (0, 0, 0))
+    # errors.py has no HINT_VARIANTS entry for "it has no sockets" yet, so the registry hint
+    # shows; the proposed variant (not added: errors.py is not this task's file) is
+    # (re.compile(r"; it has no sockets$"), "use a prop that has sockets").
+    assert _hint(err, "s2", _act(do="place_on", who="dad", what="cup", on="hat", socket="top")) == (
+        "use a socket the message lists")
+
+
+def test_cycle_on_itself_with_its_hint():
+    # validate.py rejects place_on onto the prop itself (self_target) before the world sees it;
+    # a world placing a held crate on its own top gives cycle.
+    w = World(PEOPLE, PROPS)
+    w.begin_shot(shot(start={"dad": {"at": "home", "holding": "crate"}}), MARKS, same_set_as_previous=False)
+    err = raises("cycle", "crate cannot rest on itself", w.place_on, "dad", "crate", "prop:crate.top", (0, 0, 0))
+    assert _hint(err, "s1", _act(do="place_on", who="dad", what="crate", on="crate")) == "place it on a different prop"
+
+
+@pytest.mark.parametrize("fn_name,args,reason,hint", [
+    ("put_on", ("dad", "hat"), "dad is offstage; use enter first", "add an enter for dad before this put_on"),
+    ("place_on", ("mom", "hymn_books", "ground", (0, 0, 0.5)), "mom is offstage; use enter first",
+     "add an enter for mom before this place_on"),
+    ("open", ("dad", "door"), "dad is offstage; use enter first", "add an enter for dad before this open"),
+    ("close", ("dad", "door"), "dad is offstage; use enter first", "add an enter for dad before this close"),
+])
+def test_offstage_object_reasons_carry_the_enter_fix(fn_name: str, args: tuple, reason: str, hint: str):
+    w = door_world()
+    w.props["door"].state = "open" if fn_name == "close" else "closed"
+    w.begin_shot(shot(id="s2", start={"dad": {"at": "offstage_left"}, "mom": {"at": "offstage_right",
+                                                                            "holding": "hymn_books"}}),
+                 MARKS, same_set_as_previous=True)
+    err = raises("offstage", reason, getattr(w, fn_name), *args)
+    assert _hint(err, "s2", _act(do=fn_name, who=args[0], what=args[1])) == hint
+
+
+def test_not_on_stage_object_reasons_carry_the_propstart_fix():
+    w = door_world()
+    for fn, args, do in ((w.put_on, ("mom", "crate"), "put_on"), (w.open, ("mom", "crate"), "open"),
+                         (w.close, ("mom", "crate"), "close")):
+        err = raises("not_on_stage", "crate is not on stage; place it with propStart", fn, *args)
+        assert _hint(err, "s1", _act(do=do, who="mom", what="crate")) == (
+            "place crate with propStart in shot s1, or have someone carry it in")
+
+
+# --------------------------------------------- begin_shot transitions (property-style)
+
+GEN_PEOPLE = ("dad", "mom", "kid")
+GEN_HAND_PROPS = ("hymn_books", "hat", "scarf", "cup", "lamp")
+GEN_BASES = ("table", "crate", "bench", "chair", "sedan", "wagon")
+GEN_SEATS = ("chair.seat", "bench.left_seat", "bench.right_seat", "sedan.driver", "sedan.passenger", "wagon.seat")
+GEN_SURFACES = ("table.top", "crate.top", "bench.back", "wagon.bed", "sedan.back_seat")
+GEN_MARKS = ("steps_left", "steps_foot", "steps_top", "curb", "home")
+GEN_POSES = (None, None, "kneel", "wave", "sit")
+
+
+def _random_shot(rng: random.Random, i: int, set_id: str, bare: bool = True) -> Shot:
+    """A plausible shot: mostly sound (seats and surfaces on furniture the shot places), with
+    a small share of mistakes (an unplaced base, a doubled claim, a stack that loops)."""
+    prop_start: dict = {}
+    bases = rng.sample(GEN_BASES, rng.randint(1, 4))
+    for base in bases:
+        others = [s for s in GEN_SURFACES if s.partition(".")[0] in bases and s.partition(".")[0] != base]
+        if others and rng.random() < 0.2:
+            prop_start[base] = {"on": rng.choice(others)}
+        else:
+            prop_start[base] = {"at": rng.choice(GEN_MARKS)}
+
+    def usable(sockets: tuple[str, ...]) -> list[str]:
+        ok = [s for s in sockets if s.partition(".")[0] in bases]
+        return ok if ok and rng.random() < 0.9 else list(sockets)
+
+    start: dict = {}
+    for who in GEN_PEOPLE:
+        if rng.random() < 0.7:
+            s: dict = {"at": rng.choice(GEN_MARKS)}
+            if rng.random() < 0.3:
+                s["holding"] = rng.choice(GEN_HAND_PROPS)
+            if rng.random() < 0.3:
+                s["in"] = rng.choice(usable(GEN_SEATS))
+            pose = rng.choice(GEN_POSES)
+            if pose:
+                s["pose"] = pose
+            start[who] = s
+    held = {s.get("holding") for s in start.values()}
+    for what in rng.sample(GEN_HAND_PROPS, rng.randint(0, 4)):
+        if what in held and rng.random() < 0.9:
+            continue
+        r = rng.random()
+        if r < 0.4:
+            prop_start[what] = {"at": rng.choice(GEN_MARKS)}
+        elif r < 0.85:
+            surface = rng.choice(usable(GEN_SURFACES))
+            prop_start[what] = {"on": surface.partition(".")[0] if bare and rng.random() < 0.2 else surface}
+        else:
+            prop_start[what] = {"state": "lit" if what == "lamp" else "worn"}
+    order = list(prop_start.items())
+    rng.shuffle(order)
+    return shot(id=f"s{i}", set=set_id, start=start, propStart=dict(order))
+
+
+def _check_world(w: World) -> None:
+    """Every link in the world points both ways, and no prop rests on itself."""
+    for what, st in w.props.items():
+        parsed = parse_parent(st.parent)
+        if parsed is None:
+            continue
+        kind, pid, sock = parsed
+        if kind == "puppet":
+            assert w.people[pid].holding.get(sock) == what, (what, st.parent)
+            assert st.world_pos is None, what
+        else:
+            assert w.props[pid].occupants.get(sock) == f"prop:{what}", (what, st.parent)
+        seen, cur = {what}, st.parent
+        while (p := parse_parent(cur)) is not None and p[0] == "prop":
+            assert p[1] not in seen, f"cycle through {what}"
+            seen.add(p[1])
+            cur = w.props[p[1]].parent
+    for who, p in w.people.items():
+        for sock, what in p.holding.items():
+            assert w.props[what].parent == f"puppet:{who}.{sock}", (who, sock, what)
+        if p.seat is not None:
+            assert w.props[p.seat[0]].occupants.get(p.seat[1]) == f"puppet:{who}", (who, p.seat)
+    for what, st in w.props.items():
+        for sock, occ in st.occupants.items():
+            kind, _, oid = occ.partition(":")
+            if kind == "puppet":
+                assert w.people[oid].seat == (what, sock), (what, sock, oid)
+            else:
+                assert w.props[oid].parent == f"prop:{what}.{sock}", (what, sock, oid)
+
+
+def _check_shot(before: World, w: World, sh: Shot, same_set: bool) -> None:
+    for who, p in w.people.items():
+        if who in sh.start:
+            s = sh.start[who]
+            assert p.pos == MARKS.get(s.at, p.pos), who
+            want = s.pose or ("sit" if s.in_ is not None else "stand")
+            assert p.pose == want, (who, p.pose, want)
+            assert (p.seat is not None) == (s.in_ is not None), who
+            if s.holding is not None:
+                assert w.holder(s.holding) is not None and w.holder(s.holding)[0] == who
+        elif same_set:
+            old = before.people[who]
+            assert (p.pos, p.pose, p.seat) == (old.pos, old.pose, old.seat), who
+        else:
+            assert p.pos == OFFSTAGE_LEFT and p.pose == "stand" and p.seat is None, who
+            assert set(p.holding) <= {"head"}, who
+        assert p.busy_until == 0.0 and p.activity is None
+    if not same_set:
+        # Nothing the shot does not bring stays on the new set (at the old set's coordinates).
+        brought = {what for what, ps in sh.prop_start.items() if ps.at is not None or ps.on is not None}
+        brought |= {s.holding for s in sh.start.values() if s.holding is not None}
+        for who in sh.start:
+            for what in before.people[who].holding.values():
+                brought.add(what)
+                brought.update(before._descendants(what))
+        for what, st in w.props.items():
+            if st.world_pos is not None:
+                assert what in brought or any(sup in brought for sup in w.supports(what)), what
+
+
+def _random_story(seed: int, bare: bool = True):
+    rng = random.Random(seed)
+    w = World(PEOPLE, PROPS)
+    prev_set = None
+    for i in range(1, 6):
+        set_id = rng.choice(("church", "church", "kitchen"))
+        sh = _random_shot(rng, i, set_id, bare)
+        same = set_id == prev_set
+        yield w, sh, same
+        prev_set = set_id
+
+
+@pytest.mark.parametrize("seed", range(150))
+def test_begin_shot_transitions_keep_the_world_consistent(seed: int):
+    applied = 0
+    for w, sh, same in _random_story(seed):
+        before = w.copy()
+        try:
+            w.begin_shot(sh, MARKS, same_set_as_previous=same)
+        except StateError:
+            assert w == before, "begin_shot is all-or-nothing"
+            continue
+        applied += 1
+        _check_world(w)
+        _check_shot(before, w, sh, same)
+        # copy independence: a shot applied to a copy leaves the original alone
+        c = w.copy()
+        snap = w.snapshot()
+        try:
+            c.begin_shot(shot(id="probe", set="elsewhere", start={}), MARKS, same_set_as_previous=False)
+        except StateError:
+            pass
+        assert w.snapshot() == snap
+
+
+@pytest.mark.parametrize("seed", range(150))
+def test_begin_shot_does_not_depend_on_the_prop_start_order(seed: int):
+    """With named sockets only (a bare ``on`` takes the first free socket in order), applying a
+    shot's propStart reversed gives the same world, or an error with the same code."""
+    for w, sh, same in _random_story(seed, bare=False):
+        flipped = shot(id=sh.id, set=sh.set, start={k: v.model_dump(by_alias=True, exclude_none=True)
+                                                    for k, v in sh.start.items()},
+                       propStart=_ordered({k: v.model_dump(exclude_none=True) for k, v in sh.prop_start.items()},
+                                          True))
+        a, b = w.copy(), w.copy()
+        ea = eb = None
+        try:
+            a.begin_shot(sh, MARKS, same_set_as_previous=same)
+        except StateError as e:
+            ea = e.code
+        try:
+            b.begin_shot(flipped, MARKS, same_set_as_previous=same)
+        except StateError as e:
+            eb = e.code
+        assert ea == eb, (sh.prop_start, ea, eb)
+        if ea is None:
+            assert a == b
+            w.begin_shot(sh, MARKS, same_set_as_previous=same)
+
+
+def test_seat_release_across_shots():
+    w = World(PEOPLE, PROPS)
+    w.begin_shot(shot(start={"mom": {"at": "home", "in": "chair.seat"}, "dad": {"at": "curb", "in": "sedan.driver"}},
+                      propStart={"chair": {"at": "home"}, "sedan": {"at": "curb"}}), MARKS, same_set_as_previous=False)
+    # same set, mom listed standing: her seat is free for kid; dad unlisted stays at the wheel
+    w.begin_shot(shot(id="s2", start={"mom": {"at": "home"}, "kid": {"at": "home", "in": "chair.seat"}}),
+                 MARKS, same_set_as_previous=True)
+    assert w.people["mom"].seat is None and w.props["chair"].occupants == {"seat": "puppet:kid"}
+    assert w.people["dad"].seat == ("sedan", "driver")
+    # new set: everyone unlisted is unseated, and the sedan is gone with the old set
+    w.begin_shot(shot(id="s3", set="kitchen", start={"mom": {"at": "steps_left"}}), MARKS, same_set_as_previous=False)
+    assert all(p.seat is None for p in w.people.values())
+    assert w.props["sedan"].occupants == {} and w.props["chair"].occupants == {}
+    # and dad can take any seat again
+    w.begin_shot(shot(id="s4", start={"dad": {"at": "curb", "in": "sedan.passenger"}},
+                      propStart={"sedan": {"at": "curb"}}), MARKS, same_set_as_previous=False)
+    assert w.props["sedan"].occupants == {"passenger": "puppet:dad"}
+
+
+def test_kneel_and_pose_across_shots():
+    w = World(PEOPLE, PROPS)
+    w.begin_shot(shot(start={"mom": {"at": "home", "pose": "kneel"}, "dad": {"at": "curb", "pose": "wave"}}),
+                 MARKS, same_set_as_previous=False)
+    w.begin_shot(shot(id="s2", start={"dad": {"at": "curb"}}), MARKS, same_set_as_previous=True)
+    assert w.people["mom"].pose == "kneel"  # unlisted on the same set: as she was
+    assert w.people["dad"].pose == "stand"  # listed with no pose: standing again
+    w.begin_shot(shot(id="s3", set="kitchen", start={"dad": {"at": "curb"}}), MARKS, same_set_as_previous=False)
+    assert w.people["mom"].pose == "stand" and w.people["mom"].pos == OFFSTAGE_LEFT  # waits offstage, standing
+    w.begin_shot(shot(id="s4", set="kitchen", start={"mom": {"at": "home", "pose": "kneel"}}),
+                 MARKS, same_set_as_previous=True)
+    assert w.people["mom"].pose == "kneel"
+    w.move("mom", MARKS["curb"])  # walking ends a kneel
+    assert w.people["mom"].pose == "stand"
+
+
+def test_holders_across_a_set_change():
+    w = World(PEOPLE, PROPS)
+    w.begin_shot(shot(start={"dad": {"at": "home", "holding": "crate"}, "mom": {"at": "home", "holding": "lamp"}},
+                      propStart={"cup": {"on": "crate.top"}}), MARKS, same_set_as_previous=False)
+    w.begin_shot(shot(id="s2", set="kitchen", start={"dad": {"at": "curb"}}), MARKS, same_set_as_previous=False)
+    # dad carries the crate (and the cup on it) in; mom waits offstage and her lamp stays behind
+    assert w.holder("crate") == ("dad", "hand_r") and w.props["cup"].parent == "prop:crate.top"
+    assert w.people["mom"].holding == {} and w.is_unplaced("lamp")
+    # a later shot on the kitchen set that lists mom gives her nothing back
+    w.begin_shot(shot(id="s3", set="kitchen", start={"mom": {"at": "home"}}), MARKS, same_set_as_previous=True)
+    assert w.people["mom"].holding == {}
+
+
+def test_props_on_a_prop_that_leaves_with_its_set():
+    w = World(PEOPLE, PROPS)
+    w.begin_shot(shot(start={"kid": {"at": "home", "in": "bench.left_seat"}},
+                      propStart={"table": {"at": "curb"}, "crate": {"on": "table.top"}, "cup": {"on": "crate.top"},
+                                 "bench": {"at": "home"}, "hat": {"on": "bench.back"}}),
+                 MARKS, same_set_as_previous=False)
+    w.begin_shot(shot(id="s2", set="kitchen", start={"kid": {"at": "steps_left"}},
+                      propStart={"cup": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    for what in ("table", "crate", "bench", "hat"):
+        assert w.is_unplaced(what) and w.props[what].occupants == {}, what
+    assert w.props["cup"].parent == "ground" and w.props["cup"].world_pos == MARKS["home"]
+    assert w.people["kid"].seat is None
+    _check_world(w)
+
+
+def test_a_state_only_prop_start_does_not_keep_a_prop_on_a_new_set():
+    """Bug: a propStart entry with only a state kept the prop on a set change, so a lamp left
+    at the yard's curb stood at the same coordinates on the street, and a cup in the hand of
+    someone waiting offstage stayed in that hand."""
+    w = World(PEOPLE, PROPS)
+    w.begin_shot(shot(start={"mom": {"at": "home", "holding": "cup"}}, propStart={"lamp": {"at": "curb"}}),
+                 MARKS, same_set_as_previous=False)
+    w.begin_shot(shot(id="s2", set="kitchen", start={"dad": {"at": "home"}},
+                      propStart={"lamp": {"state": "lit"}, "cup": {"state": "full"}}), MARKS, same_set_as_previous=False)
+    assert w.is_unplaced("lamp") and w.props["lamp"].state == "lit"
+    assert w.is_unplaced("cup") and w.people["mom"].holding == {} and w.props["cup"].state == "full"
+    raises("not_on_stage", "lamp is not on stage; place it with propStart", w.pick_up, "dad", "lamp")
+    # on the same set a state-only entry leaves the prop where it is
+    w.begin_shot(shot(id="s3", set="kitchen", start={"dad": {"at": "home"}}, propStart={"lamp": {"at": "curb"}}),
+                 MARKS, same_set_as_previous=True)
+    w.begin_shot(shot(id="s4", set="kitchen", start={}, propStart={"lamp": {"state": "out"}}), MARKS, True)
+    assert w.props["lamp"].world_pos == MARKS["curb"] and w.props["lamp"].state == "out"
+    # through compile(): the street shot cannot pick up the lamp left in the yard
+    s1 = _shot(_a(1, "wave", who="dad"), start={"dad": _at("door")}, prop_start={"lamp": {"at": "curb"}})
+    s2 = _shot(_a(1, "pick_up", who="dad", what="lamp"), id="s2", set="street", start={"dad": _at("corner")},
+               prop_start={"lamp": {"state": "lit"}})
+    result = _compile(_sp(s1, s2))
+    assert [(e.code, e.message) for e in result.errors] == [
+        ("not_on_stage", 'shot s2, t=1: dad cannot pick_up "lamp"; lamp is not on stage; place it with propStart')]
+
+
+def test_world_copy_is_independent_across_shots():
+    w = opening(World(PEOPLE, PROPS))
+    c = w.copy()
+    c.begin_shot(shot(id="s2", set="kitchen", start={"dad": {"at": "curb", "in": "chair.seat"}},
+                      propStart={"chair": {"at": "curb"}, "table": {"at": "home"}, "cup": {"on": "table.top"}}),
+                 MARKS, same_set_as_previous=False)
+    c.busy_time_offset = 2.0
+    assert w.holder("hymn_books") == ("mom", "hand_r") and w.people["dad"].seat is None
+    assert w.props["chair"].occupants == {} and w.props["table"].occupants == {}
+    assert w.props["cup"].world_pos == MARKS["home"] and w.busy_time_offset == 0.0
+    assert w.copy() == w and w.copy() != c
