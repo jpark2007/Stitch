@@ -1,28 +1,35 @@
 import Link from "next/link";
 import type { CSSProperties } from "react";
 import { DEFAULT_LAYOUT, layoutFamily, type TreeLayout } from "./layout";
-import type { CharacterSheet, Person } from "@/lib/types";
 import { Puppet, PuppetDefs } from "./Puppet";
 import { hashSeed, wobblyCubic, wobblyLine, type Pt } from "./sketch";
+import type { TreePerson } from "./treeData";
 import "./tree.css";
+
+export type { TreePerson } from "./treeData";
 
 /**
  * The home-screen family tree: grandparents on top, children below, couples
  * holding a thread between them, and a stitched thread from each couple down
  * to each of their children. Layout is automatic from the links.
  *
- * Server component, no client JS: hover and the draw-in are CSS only.
+ * Server-safe, no client JS of its own: hover and the draw-in are CSS only.
  */
-
-/** The bits of a contract `Person` the tree reads, so API people plug straight in. */
-export type TreePerson = Pick<Person, "id" | "name" | "parentIds" | "spouseIds"> & {
-  character: Pick<CharacterSheet, "color" | "item" | "build">;
-};
 
 export interface FamilyTreeProps {
   people: readonly TreePerson[];
   /** Cap the tree's height (any CSS length); it then narrows to keep its shape. */
   maxHeight?: string;
+  /**
+   * The smallest scale, in px per layout unit. A tree too wide to fit at
+   * this scale scrolls sideways inside its frame instead of shrinking until
+   * names are unreadable.
+   */
+  minScale?: number;
+  /** Where a person's node links to (their book). */
+  hrefFor?: (personId: string) => string;
+  /** A paper placeholder of the tree while the real one loads: no names, no links. */
+  ghost?: boolean;
   className?: string;
 }
 
@@ -37,6 +44,20 @@ const HAND_Y = (81 / 130) * FIG_H;
 const HEAD_TOP = (9 / 130) * FIG_H;
 
 const STITCH = "6 4.6";
+const GHOST_COLOR = "#d6c6a8";
+
+/**
+ * How big a name is set: short names in the full hand size, longer ones a
+ * little smaller, and long ones smaller again over up to two lines.
+ */
+export function nameSize(name: string): "m" | "l" | "xl" {
+  const n = [...name].length;
+  if (n <= 9) return "m";
+  return n <= 12 ? "l" : "xl";
+}
+
+/** Extra drop below a name that may wrap to a second line. */
+const NAME_EXTRA = { m: 0, l: 0, xl: 22 } as const;
 
 interface Thread {
   key: string;
@@ -47,10 +68,11 @@ interface Thread {
   ids: string[];
 }
 
-function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>) {
+function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>, ghost: boolean) {
   const threads: Thread[] = [];
   const knots: { key: string; at: Pt; delay: number; ids: string[] }[] = [];
-  const colorOf = (id: string) => people.get(id)?.character.color ?? "#8f8173";
+  const colorOf = (id: string) => (ghost ? GHOST_COLOR : (people.get(id)?.character.color ?? "#8f8173"));
+  const nameExtra = (id: string) => (ghost ? 0 : NAME_EXTRA[nameSize(people.get(id)?.name ?? "")]);
 
   const coupleKnot = new Map<string, Pt>();
   for (const c of layout.couples) {
@@ -64,14 +86,14 @@ function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>) {
     const delay = 0.35 + a.gen * 0.45;
     // Each partner holds their own colour; the two meet in a knot.
     threads.push({
-      key: `couple-${c.a}`,
+      key: `couple-${c.a}-${c.b}-a`,
       d: wobblyCubic(left, [left[0] + 12, y + sag], [mid[0] - 12, mid[1]], mid, { seed: hashSeed(c.a), amplitude: 0.8 }),
       color: colorOf(c.a),
       delay,
       ids: [c.a, c.b],
     });
     threads.push({
-      key: `couple-${c.b}`,
+      key: `couple-${c.a}-${c.b}-b`,
       d: wobblyCubic(right, [right[0] - 12, y + sag], [mid[0] + 12, mid[1]], mid, { seed: hashSeed(c.b), amplitude: 0.8 }),
       color: colorOf(c.b),
       delay,
@@ -83,12 +105,13 @@ function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>) {
 
   for (const fam of layout.families) {
     const parents = fam.parentIds.map((id) => layout.byId.get(id)!);
-    const start: Pt =
-      coupleKnot.get([...fam.parentIds].sort().join("+")) ??
-      [fam.anchorX, Math.max(...parents.map((p) => p.y)) + NODE_H - 4];
+    const lowest = Math.max(...parents.map((p) => p.y));
+    const knot = coupleKnot.get([...fam.parentIds].sort().join("+"));
+    // A lone parent's thread starts under their name (which may run to two lines).
+    const start: Pt = knot ?? [fam.anchorX, lowest + NODE_H - 4 + Math.max(...fam.parentIds.map(nameExtra))];
     // A short shared trunk drops between the parents' names, then each
     // child's strand branches off toward them.
-    const branchY = Math.max(...parents.map((p) => p.y)) + NODE_H + 2;
+    const branchY = Math.max(lowest + NODE_H + 2, start[1] + 8);
     const n = fam.childIds.length;
     fam.childIds.forEach((childId, i) => {
       const child = layout.byId.get(childId)!;
@@ -117,112 +140,137 @@ function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>) {
   return { threads, knots };
 }
 
+/** Ids safe to drop into a CSS attribute selector and an SVG url(#...). */
+const SAFE_ID = /^[\w-]+$/;
+
 /**
  * Hovering a person fades every thread that isn't theirs, so their partner,
  * parents and children stand out. CSS only: one :has() rule per person.
  */
 function highlightRules(ids: string[]): string {
-  const safe = ids.filter((id) => /^[\w-]+$/.test(id));
+  const safe = ids.filter((id) => SAFE_ID.test(id));
   const rules = safe.map(
     (id) => `.ft-tree:has(.ft-node[data-id="${id}"]:hover) .ft-thread:not([data-ids~="${id}"]){opacity:.18}`,
   );
   return `@media (hover:hover){${rules.join("")}}`;
 }
 
-export function FamilyTree({ people, maxHeight, className }: FamilyTreeProps) {
+const defaultHref = (id: string) => `/people/${encodeURIComponent(id)}`;
+
+export function FamilyTree({ people, maxHeight, minScale, hrefFor = defaultHref, ghost = false, className }: FamilyTreeProps) {
   const layout = layoutFamily(people, DEFAULT_LAYOUT);
+  if (!layout.people.length) return null;
   const W = layout.width;
   const H = layout.height + NODE_H - DEFAULT_LAYOUT.margin;
   const byId = new Map(people.map((p) => [p.id, p]));
-  const { threads, knots } = buildThreads(layout, byId);
+  const { threads, knots } = buildThreads(layout, byId, ghost);
+  // Mask ids must be unique on the page and valid inside url(#...).
+  const maskId = (key: string, i: number) => `tree-draw-${i}-${SAFE_ID.test(key) ? key : hashSeed(key)}`;
 
   const frameStyle = {
     "--u": `calc(100cqw / ${W.toFixed(3)})`,
     ...(maxHeight ? { maxWidth: `calc(${maxHeight} * ${(W / H).toFixed(4)})` } : {}),
+    ...(minScale ? { minWidth: `${(W * minScale).toFixed(1)}px` } : {}),
   } as CSSProperties;
 
   return (
-    <div className={`ft-frame ${className ?? ""}`} style={frameStyle}>
-      <PuppetDefs />
-      <style>{highlightRules(layout.people.map((p) => p.id))}</style>
-      <div className="ft-tree" style={{ aspectRatio: `${W.toFixed(2)} / ${H.toFixed(2)}` }}>
-        <svg className="ft-lines" viewBox={`0 0 ${W.toFixed(2)} ${H.toFixed(2)}`} aria-hidden>
-          <defs>
-            {threads.map((t) => (
-              <mask key={t.key} id={`tree-draw-${t.key}`} maskUnits="userSpaceOnUse" x="0" y="0" width={W} height={H}>
-                <path
-                  d={t.d}
-                  pathLength={1}
-                  fill="none"
-                  stroke="#fff"
-                  strokeWidth="10"
-                  strokeLinecap="round"
-                  className="ft-draw"
-                  style={{ animationDelay: `${t.delay}s` }}
-                />
-              </mask>
+    <div className={`ft-scroll ${ghost ? "ft-ghost" : ""} ${className ?? ""}`}>
+      <div className="ft-frame" style={frameStyle}>
+        <PuppetDefs />
+        {!ghost && <style>{highlightRules(layout.people.map((p) => p.id))}</style>}
+        <div className="ft-tree" style={{ aspectRatio: `${W.toFixed(2)} / ${H.toFixed(2)}` }}>
+          <svg className="ft-lines" viewBox={`0 0 ${W.toFixed(2)} ${H.toFixed(2)}`} aria-hidden>
+            <defs>
+              {threads.map((t, i) => (
+                <mask key={t.key} id={maskId(t.key, i)} maskUnits="userSpaceOnUse" x="0" y="0" width={W} height={H}>
+                  <path
+                    d={t.d}
+                    pathLength={1}
+                    fill="none"
+                    stroke="#fff"
+                    strokeWidth="10"
+                    strokeLinecap="round"
+                    className="ft-draw"
+                    style={{ animationDelay: `${t.delay}s` }}
+                  />
+                </mask>
+              ))}
+            </defs>
+            {threads.map((t, i) => (
+              <g
+                key={t.key}
+                className="ft-thread"
+                data-ids={t.ids.join(" ")}
+                mask={`url(#${maskId(t.key, i)})`}
+                fill="none"
+                strokeLinecap="round"
+              >
+                {/* faint pencil guide, so the stitches read as one line */}
+                <path d={t.d} stroke="#5c4e43" strokeOpacity="0.16" strokeWidth="1" />
+                {/* stitch shadow, then the thread itself */}
+                <path d={t.d} stroke="#4a2f1d" strokeOpacity="0.22" strokeWidth="2.2" strokeDasharray={STITCH} transform="translate(0.5 0.9)" />
+                <path d={t.d} stroke={t.color} strokeWidth="2.2" strokeDasharray={STITCH} />
+              </g>
             ))}
-          </defs>
-          {threads.map((t) => (
-            <g
-              key={t.key}
-              className="ft-thread"
-              data-ids={t.ids.join(" ")}
-              mask={`url(#tree-draw-${t.key})`}
-              fill="none"
-              strokeLinecap="round"
-            >
-              {/* faint pencil guide, so the stitches read as one line */}
-              <path d={t.d} stroke="#5c4e43" strokeOpacity="0.16" strokeWidth="1" />
-              {/* stitch shadow, then the thread itself */}
-              <path d={t.d} stroke="#4a2f1d" strokeOpacity="0.22" strokeWidth="2.2" strokeDasharray={STITCH} transform="translate(0.5 0.9)" />
-              <path d={t.d} stroke={t.color} strokeWidth="2.2" strokeDasharray={STITCH} />
-            </g>
-          ))}
-          {knots.map((k) => (
-            <circle
-              key={k.key}
-              cx={k.at[0]}
-              cy={k.at[1]}
-              r="2.4"
-              fill="#5c4e43"
-              fillOpacity="0.55"
-              className="ft-knot ft-thread"
-              data-ids={k.ids.join(" ")}
-              style={{ animationDelay: `${k.delay}s` }}
-            />
-          ))}
-        </svg>
+            {knots.map((k) => (
+              <circle
+                key={k.key}
+                cx={k.at[0]}
+                cy={k.at[1]}
+                r="2.4"
+                fill="#5c4e43"
+                fillOpacity="0.55"
+                className="ft-knot ft-thread"
+                data-ids={k.ids.join(" ")}
+                style={{ animationDelay: `${k.delay}s` }}
+              />
+            ))}
+          </svg>
 
-        {layout.people.map((p, i) => {
-          const person = byId.get(p.id)!;
-          return (
-            <Link
-              key={p.id}
-              href={`/people/${p.id}`}
-              className="ft-node"
-              data-id={p.id}
-              style={{
-                left: `${((p.x / W) * 100).toFixed(3)}%`,
-                top: `${((p.y / H) * 100).toFixed(3)}%`,
-                animationDelay: `${(p.gen * 0.45 + i * 0.04).toFixed(2)}s`,
-              }}
-              aria-label={`${person.name}: open their book`}
-            >
+          {layout.people.map((p, i) => {
+            const person = byId.get(p.id)!;
+            const style = {
+              left: `${((p.x / W) * 100).toFixed(3)}%`,
+              top: `${((p.y / H) * 100).toFixed(3)}%`,
+              animationDelay: `${(p.gen * 0.45 + i * 0.04).toFixed(2)}s`,
+            };
+            const figure = (
               <span className="ft-figure">
                 <span className="ft-ground" aria-hidden />
                 <Puppet
                   id={p.id}
-                  color={person.character.color}
-                  item={person.character.item ?? undefined}
-                  build={person.character.build}
+                  color={ghost ? GHOST_COLOR : person.character.color}
+                  item={ghost ? undefined : (person.character.item ?? undefined)}
+                  build={person.character.build ?? undefined}
                   className="ft-puppet"
                 />
               </span>
-              <span className="ft-name">{person.name}</span>
-            </Link>
-          );
-        })}
+            );
+            if (ghost) {
+              return (
+                <span key={p.id} className="ft-node" style={style} aria-hidden>
+                  {figure}
+                  <span className="ft-name-ghost" />
+                </span>
+              );
+            }
+            return (
+              <Link
+                key={p.id}
+                href={hrefFor(p.id)}
+                className="ft-node"
+                data-id={p.id}
+                style={style}
+                aria-label={`${person.name}: open their book`}
+              >
+                {figure}
+                <span className="ft-name" data-size={nameSize(person.name)}>
+                  {person.name}
+                </span>
+              </Link>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
