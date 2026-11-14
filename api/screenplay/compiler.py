@@ -1163,7 +1163,8 @@ def _camera(
     """The shot's camera keys (added to ``tracks``) and the pose it ends on.
 
     validate.py has checked the cues statically; what is left is a target that cannot be
-    placed when the move happens (a prop that is not on stage)."""
+    placed when the move lands (a prop that is not on stage), and one that is offstage for the
+    whole move (``_offstage_target``)."""
     errs: list[CompileError] = []
     for cue in shot.camera:
         if cue.move in camera_mod.TARGET_MOVES:
@@ -1171,10 +1172,13 @@ def _camera(
             if cue.target is None:
                 reason = "it needs a target"
             else:
+                t0, t1 = camera_mod.cue_span(cue, action_start)
                 try:
-                    locate(cue.target, action_start + cue.t + (cue.dur or 0.0))
+                    locate(cue.target, t1)
                 except StateError as e:
                     reason = e.reason
+                else:
+                    reason = _offstage_target(locate, cue.target, t0, t1, cue.t + (t1 - t0))
             if reason is not None:
                 errs.append(CompileError(
                     code="bad_camera",
@@ -1191,3 +1195,26 @@ def _camera(
     tracks.extend(keys)
     return errs, pose
 
+
+def _offstage_target(locate: Locate, target: str, t0: float, t1: float, shown_end: float) -> str | None:
+    """Why a camera move from timeline time ``t0`` to ``t1`` cannot aim at ``target``, or None.
+
+    A mark is fixed: one beyond the stage edge (the builtin offstage_left / offstage_right) is
+    refused. A person or prop is refused only when it is beyond the edge (``|x| > STAGE_EDGE``)
+    both when the move starts and when it lands; one that enters or leaves during the move is
+    framed at the edge on its side (camera.py). ``shown_end`` is the landing time as written in
+    the screenplay, for the message. A target that cannot be placed at ``t0`` (a prop placed
+    during the move) counts as offstage then."""
+    x1 = locate(target, t1)[0]
+    side = effects.offstage_side(x1)
+    if side is None:
+        return None
+    if effects.is_mark(locate, target):
+        return f"{target} is a mark offstage {side}; aim the camera at a mark on stage"
+    try:
+        x0: float | None = locate(target, t0)[0]
+    except StateError:
+        x0 = None
+    if x0 is not None and effects.offstage_side(x0) is None:
+        return None
+    return f"{target} is offstage {side} at t={fmt_t(shown_end)}; aim the camera at someone on stage"

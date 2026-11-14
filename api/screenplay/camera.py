@@ -4,7 +4,10 @@ The camera is three tracks on target "camera": 'position' [x, y, z], 'lookAt' [x
 'fov' (degrees). Named moves are resolved here so the stage only interpolates. Arithmetic
 matches api/tests/gen_hymn_books_sample.py: the first shot flies in from FLY_IN while the set
 rises, shot t=0 lands on WIDE unless a t=0 cue says otherwise, and every later cue holds the
-current pose at its start time and reaches the resolved pose after `dur` seconds.
+current pose at its start time and reaches the resolved pose after `dur` seconds (``cue_span``).
+
+A target beyond the stage edge is framed at CAMERA_X_LIMIT on its side. Aiming at a target that
+is offstage for the whole move is refused before this runs (compiler._camera: ``bad_camera``).
 """
 
 from __future__ import annotations
@@ -65,6 +68,16 @@ def resolve_move(move: str, current: CameraPose, target: Vec3 | None) -> CameraP
     if move == "pan_to":
         return _pose((tx, cp[1], cp[2]), (tx, cl[1], cl[2]), current.fov)
     raise ValueError(f"unknown camera move {move!r}")
+
+
+def cue_span(cue: CameraCue, action_start: float) -> tuple[float, float]:
+    """Timeline times a cue's move starts and lands, as ``shot_camera_keys`` plays it: a t=0
+    cue lands on ``action_start`` (its ``dur`` is not used), a later one starts at
+    ``action_start + t`` and lands ``dur`` (default DEFAULT_MOVE_SECONDS) later."""
+    t0 = action_start + cue.t
+    if cue.t == 0:
+        return t0, t0
+    return t0, t0 + (DEFAULT_MOVE_SECONDS if cue.dur is None else cue.dur)
 
 
 def _lerp3(a: Vec3, b: Vec3, f: float) -> Vec3:
