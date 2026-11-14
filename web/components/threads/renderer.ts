@@ -505,6 +505,18 @@ export function nameFontPx(layout: Layout): number {
   return layout.gap > 0 ? Math.round(Math.max(NAME_MIN_PX, Math.min(full, layout.gap * 0.6))) : full;
 }
 
+/**
+ * Lanes closer than this (px) leave no room for a name above its thread
+ * without crossing the thread above, so names are written on the thread
+ * itself instead, the yarn parted under the letters.
+ */
+export const INLINE_NAMES_GAP = 26;
+
+/** True when this layout writes names on their threads rather than above them. */
+export function namesInline(layout: Layout): boolean {
+  return layout.gap > 0 && layout.gap < INLINE_NAMES_GAP;
+}
+
 /** Spots offered per thread walking forward from its start: the first, then staggered further along. */
 const FORWARD_SPOTS = 3;
 
@@ -516,7 +528,8 @@ const FORWARD_SPOTS = 3;
  * Here each thread is offered a few clean spots (over a level stretch of
  * its own thread, clear of knots and other threads); names.ts picks one per
  * thread so no two names touch and all stay inside the gutter, dropping the
- * least important when a crowded family has no room for everyone.
+ * least important when a crowded family has no room for everyone. In tight
+ * lanes (namesInline) the name is written on its thread instead of above.
  */
 function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: FrameState, geom: FrameGeometry, w0: number) {
   const { layout } = st;
@@ -524,6 +537,10 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
   ctx.textAlign = "left";
   const size = nameFontPx(layout);
   ctx.font = `600 ${size}px ${st.fonts.hand}`;
+  const inline = namesInline(layout);
+  // Baseline below the thread's y: above it, or on it with the x-height centred.
+  const drop = inline ? Math.round(size * 0.28) : -(w0 + 8);
+  const level = inline ? 2.5 : 6;
   const margin = NAME_GUTTER;
   const right = layout.width - margin;
   const requests: NameRequest[] = [];
@@ -545,7 +562,7 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
       if (x < margin || x + w > right || x + w > endX) return false;
       if (Math.abs(pts[k * 2 + 1] - lanePx) > 2) return false;
       for (let j = k; j < n && pts[j * 2] < x + w; j += 4) {
-        if (Math.abs(pts[j * 2 + 1] - lanePx) > 6) return false;
+        if (Math.abs(pts[j * 2 + 1] - lanePx) > level) return false;
       }
       if (
         geom.knots.some(
@@ -554,14 +571,15 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
       )
         return false;
       // Nor where another thread runs through the name.
-      const yb = lanePx - w0 - 8;
+      const yb = lanePx + drop;
       return !crossedBy(geom, i, x - 2, x + w + 2, yb - size, yb + 3);
     };
     const spots: NameSpot[] = [];
-    const baseline = (k: number) => pts[k * 2 + 1] - w0 - 8;
+    const baseline = (k: number) => pts[k * 2 + 1] + drop;
     // Walking forward from the start: the first clean spot, then a couple
     // more a name's width further on, for when a neighbour has the first.
-    const lead = startX >= margin ? 6 : 0;
+    // Clear of the knot the thread starts with (more when the yarn is parted under the name).
+    const lead = startX >= margin ? (inline ? 14 : 6) : 0;
     let from = -Infinity;
     for (let k = 0; k < n && spots.length < FORWARD_SPOTS; k++) {
       const px = Math.max(margin, pts[k * 2] + lead);
@@ -613,8 +631,14 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
     const riding = (geom.strands[i]?.[0] ?? 0) < margin;
     geom.names.push(p);
     ctx.globalAlpha = riding ? 0.85 : 1;
+    const paper = paperAt(p.y - size * 0.35);
+    if (inline) {
+      // Part the yarn under the name, as if it were written in a gap of the stitching.
+      ctx.fillStyle = paper;
+      ctx.fillRect(p.x0 - 5, p.y - drop - 4.5, p.x1 - p.x0 + 10, 9);
+    }
     // A paper halo, so a forced name (or a thread passing close) stays legible.
-    ctx.strokeStyle = paperAt(p.y - size * 0.35);
+    ctx.strokeStyle = paper;
     ctx.strokeText(labels[i], p.x, p.y);
     ctx.fillStyle = yarnInk(model.strands[i].person.color, st.dim[i]).label;
     ctx.fillText(labels[i], p.x, p.y);

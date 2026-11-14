@@ -36,7 +36,7 @@ const rendererPath = "./renderer.ts";
 const modelPath = "./model.ts";
 const cameraPath = "./camera.ts";
 const { NAME_GUTTER, NAME_MIN_PX, insideGutter, nameBox, placeNames }: typeof import("./names") = await import(namesPath);
-const { drawFrame, makeLayout, nameFontPx }: typeof import("./renderer") = await import(rendererPath);
+const { drawFrame, makeLayout, nameFontPx, namesInline }: typeof import("./renderer") = await import(rendererPath);
 const { buildModel }: typeof import("./model") = await import(modelPath);
 const { initialCamera }: typeof import("./camera") = await import(cameraPath);
 type ThreadPerson = import("./model").ThreadPerson;
@@ -306,6 +306,38 @@ for (const n of [9, 18, 24, 30]) {
       }
     });
   }
+}
+
+test("tight lanes write names on their threads; roomy ones above", () => {
+  assert.equal(namesInline(makeLayout(390, 844, 9)), false);
+  assert.equal(namesInline(makeLayout(390, 844, 18)), false);
+  assert.equal(namesInline(makeLayout(390, 844, 24)), true);
+  assert.equal(namesInline(makeLayout(390, 844, 30)), true);
+  assert.equal(namesInline(makeLayout(1440, 900, 24)), false);
+  assert.equal(namesInline(makeLayout(1440, 900, 30)), true);
+});
+
+for (const [n, W, H] of [
+  [24, 390, 844],
+  [30, 390, 844],
+  [30, 1440, 900],
+] as const) {
+  test(`${n} people at ${W}px: crowding still names most threads`, () => {
+    const { people, moments } = family(n);
+    const model = buildModel(people, moments, NOW);
+    for (const [label, cam] of views(model, W)) {
+      const { geom } = frame(model, W, H, cam);
+      let onScreen = 0;
+      for (let i = 0; i < geom.strands.length; i++) {
+        const pts = geom.strands[i];
+        const len = geom.strandLens[i];
+        let vis = 0;
+        for (let k = 0; k < len; k++) if (pts[k * 2] >= NAME_GUTTER && pts[k * 2] <= W - NAME_GUTTER) vis++;
+        if (vis * 2.5 > 120) onScreen++; // more than a name's width of thread in view
+      }
+      assert.ok(geom.names.length >= onScreen * 0.5, `${label}: ${geom.names.length} names for ${onScreen} threads in view`);
+    }
+  });
 }
 
 test("9 people on a laptop, zoomed out: everyone's name is written", () => {
