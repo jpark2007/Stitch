@@ -77,7 +77,9 @@ export function DepthOfField({ aperture = 0.0018, maxblur = 0.006 }: DepthOfFiel
   const fx = useMemo(() => buildComposer(gl, scene, camera, aperture, maxblur), [gl, scene, camera, aperture, maxblur]);
   useEffect(() => () => fx.composer.dispose(), [fx]);
   useEffect(() => {
-    fx.composer.setPixelRatio(dpr);
+    // The blur hides the last bit of resolution: cap the composer's pixel
+    // ratio so the extra passes stay cheap on retina screens.
+    fx.composer.setPixelRatio(Math.min(dpr, 1.25));
     fx.composer.setSize(size.width, size.height);
   }, [fx, size.width, size.height, dpr]);
 
