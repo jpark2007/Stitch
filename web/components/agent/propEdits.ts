@@ -111,3 +111,21 @@ export function toPropEdits(chips: PropChip[], d: Record<string, PropDecision>):
     }
   });
 }
+
+/** Shown when a replacement photo did not upload and nothing more specific applies. */
+export const GENERIC_UPLOAD_ERROR = "That photo didn’t upload. Try again, or pick another one.";
+
+/**
+ * The line under a photo that did not upload. The server's own words are
+ * shown only for the 4xx answers that say what to change (too large, wrong
+ * type, and the like: the API client's fixed sentences). Anything else (no
+ * connection, a 5xx whose wording can carry internals) gets the calm generic
+ * line.
+ */
+export function uploadErrorMessage(error: unknown): string {
+  const status =
+    typeof error === "object" && error !== null ? (error as { status?: unknown }).status : undefined;
+  if (typeof status !== "number" || status === 0 || status >= 500) return GENERIC_UPLOAD_ERROR;
+  const message = error instanceof Error ? error.message.trim() : "";
+  return message || GENERIC_UPLOAD_ERROR;
+}

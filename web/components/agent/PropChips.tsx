@@ -12,6 +12,7 @@ import {
   REUSED_PROP_LABEL,
   propSizeLabel,
   toPropEdits,
+  uploadErrorMessage,
   validatePropDecisions,
   type PropDecision,
 } from "./propEdits";
@@ -28,7 +29,6 @@ type PhotoDraft = {
 const SWATCHES = ["bg-card", "bg-kraft/40", "bg-sage/30", "bg-accent/20", "bg-mustard/30", "bg-sky/25"];
 
 const GENERIC_SUBMIT_ERROR = "We couldn't send your changes. Check your connection and try again.";
-const GENERIC_UPLOAD_ERROR = "That photo didn't upload. Try again, or pick another one.";
 
 const FOCUS_RING = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
 
@@ -126,6 +126,9 @@ export default function PropChips(props: {
 
   async function handleFile(chip: PropChip, e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
+    // Clear the control, so picking the same file again (after a failed
+    // upload, say) is a change the browser reports instead of a no-op.
+    e.target.value = "";
     if (!file || !onUploadPhoto) return;
     const seq = (uploadSeq.current[chip.id] ?? 0) + 1;
     uploadSeq.current[chip.id] = seq;
@@ -153,7 +156,7 @@ export default function PropChips(props: {
       setPhotos((prev) => ({ ...prev, [chip.id]: { ...prev[chip.id], photoId } }));
     } catch (err) {
       if (uploadSeq.current[chip.id] !== seq) return;
-      setUploadErrors((prev) => ({ ...prev, [chip.id]: errorMessage(err, GENERIC_UPLOAD_ERROR) }));
+      setUploadErrors((prev) => ({ ...prev, [chip.id]: uploadErrorMessage(err) }));
     } finally {
       if (uploadSeq.current[chip.id] === seq) {
         setUploading((prev) => ({ ...prev, [chip.id]: false }));
