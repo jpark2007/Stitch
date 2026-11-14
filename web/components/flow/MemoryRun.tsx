@@ -46,7 +46,7 @@ function prefersReducedMotion(): boolean {
 export function MemoryRun(props: {
   source: RunSource | null;
   options?: UseAgentRunOptions;
-  telling: MemoryRunTelling;
+  telling?: MemoryRunTelling | null;
   mediaUrl: (mediaId: string) => string;
   sceneHref?: (memoryId: string) => string;
   onUploadPhoto?: (file: File) => Promise<string>;
@@ -115,7 +115,7 @@ export function MemoryRun(props: {
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-6">
-      <TellingNote {...telling} />
+      {telling ? <TellingNote {...telling} /> : null}
 
       {/* The feed is a full sheet in this column, the same width as the note
           above it. `*:` lifts the cap on whatever element AgentFeed renders at
