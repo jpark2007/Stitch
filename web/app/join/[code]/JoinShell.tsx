@@ -3,16 +3,17 @@
 // placeholder as its Suspense fallback.
 import type { ReactNode } from "react";
 
+import { FlowFrame } from "@/components/flow/FlowPage";
 import { PaperCard } from "@/components/flow/PaperCard";
 
-/** One centred column, the same gutters as the other flow pages. */
+/**
+ * The shared flow frame (the "Stitch" mark top left, linking home, and one
+ * centred column), so the invite looks like every other flow page. The join
+ * views draw their own centred headings, so this is the frame without
+ * FlowPage's title block.
+ */
 export function JoinShell(props: { children: ReactNode; width?: "narrow" | "wide" }) {
-  const width = props.width === "wide" ? "max-w-[36rem]" : "max-w-[30rem]";
-  return (
-    <main className="w-full min-w-0 overflow-x-clip px-4 pt-10 pb-20 font-sans text-ink sm:px-6 sm:pt-16">
-      <div className={`mx-auto w-full min-w-0 ${width}`}>{props.children}</div>
-    </main>
-  );
+  return <FlowFrame width={props.width ?? "narrow"}>{props.children}</FlowFrame>;
 }
 
 /** A loose thread and a line of text while the invitation is fetched. */

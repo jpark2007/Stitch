@@ -14,7 +14,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } fr
 import { isApiError } from "@/lib/api";
 import type { JoinRequest, PersonSummary } from "@/lib/types";
 import { Button } from "./Button";
-import { TextField } from "./Field";
+import { OptionalMark, TextField } from "./Field";
 import { FormError, focusFirstError } from "./FormError";
 import {
   JOIN_FIELDS,
@@ -42,10 +42,6 @@ function RequiredMark() {
       *
     </span>
   );
-}
-
-function OptionalMark() {
-  return <span className="ml-1.5 font-normal text-ink-soft">(optional)</span>;
 }
 
 export function JoinForm(props: {
