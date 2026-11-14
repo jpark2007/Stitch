@@ -21,6 +21,7 @@ class EnrollmentProof(StrictModel):
     provider: Literal["imessage"]
     senderId: str
     spaceId: str
+    spaceKind: Literal["direct"]
     code: str
 
     @field_validator("messageId", "spaceId")
@@ -45,7 +46,7 @@ async def enroll(raw: bytes = Depends(authenticated_body), db=Depends(get_db)):
     except ValidationError:
         raise HTTPException(400, "Enrollment proof unavailable") from None
     accepted = await run_in_threadpool(contacts.redeem_enrollment, db, proof.provider,
-                                       proof.senderId, proof.code, proof.spaceId)
+                                       proof.senderId, proof.code, proof.spaceId, space_kind=proof.spaceKind)
     if not accepted:
         raise HTTPException(400, "Enrollment proof unavailable")
     return {"status": "active"}
