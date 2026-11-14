@@ -340,6 +340,10 @@ CASES: dict[tuple[str, str], Builder] = {
         "json": {"name": "Renamed by an outsider"},
     },
     ("DELETE", "/families/{fid}/members/{user_id}"): lambda f, w: {"url": f"/families/{f}/members/{w.member.id}"},
+    ("PATCH", "/families/{fid}/members/{user_id}"): lambda f, w: {
+        "url": f"/families/{f}/members/{w.member.id}",
+        "json": {"role": "admin"},
+    },
     ("GET", "/families/{fid}/tree"): lambda f, w: {"url": f"/families/{f}/tree"},
     ("GET", "/families/{fid}/threads"): lambda f, w: {"url": f"/families/{f}/threads"},
     ("GET", "/families/{fid}/people/{person_id}/book"): lambda f, w: {"url": f"/families/{f}/people/{w.elder.id}/book"},
@@ -553,6 +557,13 @@ SECOND_ID_CASES: list[SecondId] = [
         "/families/{fid}/members/{user_id}",
         lambda f, o: f"/families/{f.fid}/members/{o.member.id}",
         ok=204,
+    ),
+    SecondId(
+        "member role",
+        "PATCH",
+        "/families/{fid}/members/{user_id}",
+        lambda f, o: f"/families/{f.fid}/members/{o.member.id}",
+        lambda: {"json": {"role": "admin"}},
     ),
     SecondId(
         "run stream",

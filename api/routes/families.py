@@ -1,4 +1,4 @@
-"""Family routes: create a family, invite links, join, claim a person in the tree.
+"""Family routes: create a family, invite links, join, claim a person, member roles.
 
 ARCHITECTURE.md section 4 (start a family, invite, join and claim, people without
 accounts, roles) and the section 6 "Accounts and families" rows other than auth.
@@ -263,6 +263,40 @@ def patch_person(
 
 
 # ------------------------------------------------------------------------------ members
+
+
+@router.patch(
+    "/families/{fid}/members/{user_id}",
+    response_model=schemas.Family,
+    responses={
+        403: {"model": schemas.ErrorResponse, "description": "The caller is not an admin of this family"},
+        404: {"model": schemas.ErrorResponse, "description": "Unknown family, or the user is not a member of it"},
+        409: {"model": schemas.ErrorResponse, "description": "Demoting the family's last admin"},
+    },
+)
+def set_member_role(
+    user_id: str,
+    body: schemas.MemberRolePatch,
+    access: FamilyAccess = Depends(family_admin),
+    db: Database = Depends(get_db),
+) -> schemas.Family:
+    """Admin: make a member an admin or a member. Returns the family, as GET does.
+
+    Setting the role a member already has is a no-op. An admin may demote themselves
+    while another admin remains; the response is then the member's view (no invites).
+    """
+    try:
+        changed = families_db.set_member_role(db, access.family_id, user_id, body.role)
+    except LastAdmin as exc:
+        raise _conflict(LAST_ADMIN) from exc
+    if not changed:
+        raise _not_found("Member not found")
+    family = families_db.get_family(db, access.family_id)
+    if family is None:
+        raise _not_found()
+    if families_db.get_member_role(db, access.family_id, access.user.id) != "admin":
+        family = family.model_copy(update={"invites": []})
+    return family
 
 
 @router.delete("/families/{fid}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
