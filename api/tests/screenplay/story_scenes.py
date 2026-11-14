@@ -693,6 +693,117 @@ CHRISTMAS = _sp(
     ),
 )
 
+# Props across sets: what is left on one set stays there. The compiler keys a prop left on the
+# ground offstage at the cut to another set, and a set that comes back shows only what its own
+# propStart places again (timeline_sanity.check_props_on_set checks both).
+MOVING_DAY = _sp(
+    "the_last_boxes_2003", ["dad", "mom"], ["box_a", "box_b", "box_c", "armchair"],
+    _shot(
+        "old_living_room", "living_room",
+        start={"dad": _at("rug", facing="right"), "mom": _at("tree", facing="left")},
+        # Two boxes and the armchair stay behind in the old house.
+        prop_start={"box_a": {"at": "rug", "state": "closed"}, "box_b": {"at": "hall"},
+                    "armchair": {"at": "armchair_spot"}},
+        actions=[
+            _a(0.5, "pick_up", who="dad", what="box_a", id="lift"),
+            _a(3, "walk_to", who="dad", to="front_door", id="carry"),
+            _a(3.5, "wave", who="mom", target="dad", dur=2),
+            _a(7, "exit", who="dad", to="offstage_left"),
+        ],
+        camera=[_cam(0, "wide"), _cam(3, "pan_to", target="front_door", dur=3)],
+        narration=[
+            _line(0, "Dad took the first box out himself.", cue="lift", word="took"),
+            _line(3, "Mom stayed behind with the rest of it.", cue="carry", word="stayed"),
+        ],
+    ),
+    _shot(
+        "new_porch", "new_house_porch",
+        start={"dad": _at("walkway", holding="box_a", facing="right"), "mom": _at("offstage_left", facing="right")},
+        prop_start={"box_c": {"at": "porch_spot"}},
+        actions=[
+            _a(0, "walk_to", who="dad", to="beside_pile"),
+            _a(2.5, "place_on", who="dad", what="box_a", on="box_c", socket="top", id="stack"),
+            _a(3, "enter", who="mom", frm="offstage_left", to="driveway", id="arrive"),
+            _a(7, "hug", who="mom", target="dad", dur=2, id="hug"),
+        ],
+        camera=[_cam(0, "wide"), _cam(7, "close_up", target="mom", dur=2)],
+        narration=[
+            _line(0.5, "On Birch Lane he stacked it on the only other box there.", cue="stack", word="stacked"),
+            _line(6.5, "Then Mom pulled in and hugged him on the porch.", cue="hug", word="hugged"),
+        ],
+    ),
+    _shot(
+        "one_last_look", "living_room",
+        start={"mom": _at("front_door", facing="right")},
+        # Back in the old house: only the armchair is placed again; the boxes left here are gone.
+        prop_start={"armchair": {"at": "armchair_spot"}},
+        actions=[
+            _a(0, "walk_to", who="mom", to="rug", id="back_in"),
+            _a(3.5, "sit_on", who="mom", what="armchair", socket="seat", id="sit"),
+        ],
+        camera=[_cam(0, "wide"), _cam(3.5, "dolly_to", target="mom", dur=2)],
+        narration=[
+            _line(0, "She went back in for one last look.", cue="back_in", word="went"),
+            _line(3.5, "And sat in the old chair one more time.", cue="sit", word="sat"),
+        ],
+    ),
+)
+
+RAINY_SUNDAY = _sp(
+    "rainy_sunday_1961", ["grandpa", "grandma"], ["umbrella", "hymn_books", "box_c", "pew"],
+    _shot(
+        "the_porch", "new_house_porch",
+        start={"grandpa": _at("porch_spot", holding="hymn_books", facing="left"),
+               "grandma": _at("porch_door", holding="umbrella", facing="left")},
+        # A box waits on the porch; it stays at the house.
+        prop_start={"box_c": {"at": "porch_swing"}},
+        actions=[
+            _a(0, "rain", id="rain"),
+            _a(1, "hold", who="grandma", what="umbrella", id="umbrella"),
+            _a(2, "walk_to", who="grandpa", to="walkway", id="go"),
+            _a(2.5, "walk_to", who="grandma", to="beside_pile"),
+            _a(7.5, "exit", who="grandpa", to="offstage_left"),
+            _a(8, "exit", who="grandma", to="offstage_left"),
+        ],
+        camera=[_cam(0, "wide"), _cam(2, "pan_to", target="walkway", dur=3)],
+        narration=[
+            _line(0, "It rained every Sunday that spring.", cue="rain", word="rained"),
+            _line(2, "We walked to church anyway, under Grandma's umbrella.", cue="go", word="walked"),
+        ],
+    ),
+    _shot(
+        "the_steps", "church_steps",
+        start={"grandpa": _at("sidewalk", holding="hymn_books", facing="right"),
+               "grandma": _at("steps_left", holding="umbrella", facing="right")},
+        actions=[
+            _a(0, "rain"),
+            _a(0.5, "walk_to", who="grandpa", to="steps_top", id="climb"),
+            # The umbrella is left on the steps when they go in.
+            _a(3, "drop", who="grandma", what="umbrella", id="leave_it"),
+            _a(5, "walk_to", who="grandma", to="steps_mid"),
+        ],
+        camera=[_cam(0, "wide"), _cam(3, "dolly_to", target="grandpa", dur=2)],
+        narration=[
+            _line(0.5, "He took the steps two at a time.", cue="climb", word="took"),
+            _line(3, "She left the umbrella dripping at the bottom.", cue="leave_it", word="left"),
+        ],
+    ),
+    _shot(
+        "the_pew_inside", "chapel",
+        start={"grandpa": _at("aisle_back", holding="hymn_books", facing="right"),
+               "grandma": _at("back_door", facing="right")},
+        prop_start={"pew": {"at": "pew_spot"}},
+        actions=[
+            _a(0.5, "sit_on", who="grandpa", what="pew", socket="seat_wall", id="sit"),
+            _a(1, "walk_to", who="grandma", to="aisle_mid", id="dry"),
+        ],
+        camera=[_cam(0, "wide"), _cam(1, "close_up", target="grandpa", dur=2)],
+        narration=[
+            _line(0.5, "Inside it was warm and dry.", cue="sit", word="warm"),
+        ],
+    ),
+)
+
 # A second telling of the wedding: the multi-teller path through cued narration.
 WEDDING["narrations"] = {
     "mom": {
@@ -716,4 +827,6 @@ STORIES: dict[str, dict[str, Any]] = {
     "moving_house": MOVING_HOUSE,
     "rainy_walk": RAINY_WALK,
     "christmas": CHRISTMAS,
+    "moving_day": MOVING_DAY,
+    "rainy_sunday": RAINY_SUNDAY,
 }
