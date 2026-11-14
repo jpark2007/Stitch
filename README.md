@@ -96,7 +96,50 @@ npm run dev
 
 Keep this list current as features land: how to open it and everything that can be clicked, dragged or pulled.
 
-- Nothing is interactive yet. The app is a scaffold.
+**Start the offline demo.** No MongoDB, Docker or API keys needed. Data resets on every restart.
+
+```bash
+cd api && uv run python -m seed.serve   # API on http://localhost:8000, seeded with the Mao family
+cd web && npm run dev                   # second terminal
+```
+
+Open **http://localhost:3000**, not `127.0.0.1:3000`, because the session cookie won't cross between them. Sign in with `david@demo.stitch`, `ana@demo.stitch` or `sam@demo.stitch`, all with the password `stitch-demo`. Add `?demo=1` to `/`, `/people/<id>` or `/threads` to see a second, local demo family without signing in.
+
+**Family tree (`/`).** Click any paper figure to open their book. The links along the top go to Threads, Ask the family, Traditions and Add a memory.
+
+**A person's book (`/people/<id>`, for example `/people/dad`).**
+- Click the closed book to open it.
+- Turn a page by clicking the right or left page, or by dragging a page corner across.
+- **Contents** (a card beside the closed book, a tab at the top right once it's open) and the year dots along the bottom jump to any spread.
+- The round button at the top right mutes and unmutes the sound.
+- `?memory=<memory id>` opens the book at that memory's spread, for example `/people/dad?memory=sample_hymn_books`.
+- `/memories/<memory id>` opens one moment by itself as a book.
+
+**A moment playing in the book.** As a spread opens, the set rises off the page and the camera moves in.
+- **Who's telling?** Click a teller's tag ("Hear Ana's version") and the same scene replays with that person's narration.
+- **Pull tabs.** Drag the paper tab under the scene ("Pull to drop the books") to move that part of the scene. Let go and the scene goes back to where it was.
+- **Click to explain.** Click a puppet or a prop and a note rises beside it saying why it matters to the story. Click anywhere else or press Escape to close it.
+
+**Threads (`/threads`).** One thread per person along a timeline.
+- Scroll or use the − and + buttons to zoom between decades and single years. Drag to move through time.
+- Click a thread to highlight that person; their name then links to their book. `?highlight=<person id>` opens with one highlighted, for example `/threads?highlight=sam`.
+- Click a knot or its title to open that moment.
+
+**Traditions (`/traditions`).** The family's Book of Traditions, a pop-up book that opens and turns like a person's book. **Add a tradition** is at the top.
+
+**Ask the family (`/ask`).** Type a question or pick a suggestion. The answer opens on the page it comes from, and the closest other pages are listed below it. `?q=` makes a question shareable, for example `/ask?q=how did mom and dad meet`.
+
+**Add a memory (`/add`).** Pick a question or tell any story, then add a year, photos and who was there. **Save this memory** and watch the studio's plan tick through as it turns the memory into a scene. If it asks a follow-up question ("Who else was there that day?"), answer it and the run carries on. In the offline demo the run is scripted.
+
+**Films (`/films`).** The family's photo films. **Make a film** starts a new one.
+
+**The stage and labs** (developer pages, no sign-in needed):
+- `/render/hymn_books`: the sample memory playing on its own stage, with teller tabs and play controls.
+- `/render/lab/book`: the sample in the book's stage slot.
+- `/render/lab/playback`: the timeline player drawn flat, with tellings, speed and loop.
+- `/render/lab/puppet`: one paper puppet with buttons for each pose, walk and run.
+- `/render/lab/props`: props on the ground, driving, opening, held and worn.
+- `/render/lab/music`: the era music, one palette per decade.
 
 ## Scope for the weekend
 
