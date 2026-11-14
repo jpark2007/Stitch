@@ -19,9 +19,9 @@
 import { PerformanceMonitor } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { CanvasTexture, Object3D, PlaneGeometry, SRGBColorSpace } from "three";
+import { CanvasTexture, Float32BufferAttribute, Object3D, PlaneGeometry, SRGBColorSpace } from "three";
 import { useCardBoxMaterials, usePaperMaterial, useWoodMaterial } from "@/components/paper/usePaper";
-import { createCardEdgeMaterial } from "@/components/paper/materials";
+import { createCardEdgeMaterial, createPaperMaterial } from "@/components/paper/materials";
 import { StageClock, StaticShadows } from "./clock";
 import { CameraRig, DEFAULT_STAGE_SIZE, stagePoses, type CameraPath, type CameraPose, type StageSize } from "./CameraRig";
 import { DepthOfField } from "./DepthOfField";
@@ -95,26 +95,45 @@ export function PageSurface({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize })
   );
 }
 
-/** Width of the gutter dip at the spine, and how deep the pages sink there. */
-const GUTTER = 0.16;
-const DIP = 0.026;
+/** Width of the gutter valley at the spine, and how deep the pages sink there. */
+const GUTTER = 0.36;
+const DIP = 0.05;
+
+/** How far into the gutter valley stage x is: 0 on the open page, 1 at the spine. */
+function gutterK(x: number, w: number) {
+  return Math.max(0, 1 - (x + w / 2) / GUTTER);
+}
+
+/** Height of the stage page's surface at stage x (it sinks towards the spine). */
+export function pageHeightAt(x: number, size: StageSize = DEFAULT_STAGE_SIZE) {
+  const k = gutterK(x, size[0]);
+  return -DIP * k * k * (3 - 2 * k);
+}
 
 /**
- * A page that dips gently into the gutter at its spine edge. `spine` is -1
- * when the spine is on the left (a right-hand page), 1 on the right.
+ * A page that curves down into the gutter at its spine edge and darkens there
+ * (vertex colours), so the open spread reads as a bound book, not a board.
+ * `spine` is -1 when the spine is on the left (a right-hand page), 1 on the
+ * right.
  */
 function usePageGeometry(size: StageSize, spine: -1 | 1) {
   const geo = useMemo(() => {
     const [w, d] = size;
-    const g = new PlaneGeometry(w, d, 48, 2);
+    const g = new PlaneGeometry(w, d, 64, 2);
     g.rotateX(-Math.PI / 2);
     const pos = g.getAttribute("position");
+    const colors = new Float32Array(pos.count * 3);
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
-      const fromSpine = spine < 0 ? x + w / 2 : w / 2 - x;
-      const k = Math.max(0, 1 - fromSpine / GUTTER);
+      const k = gutterK(spine < 0 ? x : -x, w);
       pos.setY(i, -DIP * k * k * (3 - 2 * k));
+      // Shade the valley: deepest at the spine, a soft falloff onto the page.
+      const shade = 1 - 0.3 * Math.pow(k, 2.2);
+      colors[i * 3] = shade;
+      colors[i * 3 + 1] = shade * 0.985;
+      colors[i * 3 + 2] = shade * 0.96;
     }
+    g.setAttribute("color", new Float32BufferAttribute(colors, 3));
     pos.needsUpdate = true;
     g.computeVertexNormals();
     return g;
@@ -130,7 +149,12 @@ export function OpenBook({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize }) {
   const block = 0.07;
   const rightGeo = usePageGeometry(size, -1);
   const leftGeo = usePageGeometry(size, 1);
-  const page = usePaperMaterial({ color: STAGE_COLORS.page, repeat: [w * 1.2, d * 1.2] });
+  const page = useMemo(() => {
+    const m = createPaperMaterial({ color: STAGE_COLORS.page, repeat: [w * 1.2, d * 1.2] });
+    m.vertexColors = true;
+    return m;
+  }, [w, d]);
+  useEffect(() => () => page.dispose(), [page]);
   const cover = useCardBoxMaterials({ color: STAGE_COLORS.cover, repeat: [2, 1.4], edgeColor: "#4f281c" });
   const edge = useMemo(() => createCardEdgeMaterial({ color: STAGE_COLORS.pageEdge, darken: 0.04 }), []);
   useEffect(() => () => edge.dispose(), [edge]);
