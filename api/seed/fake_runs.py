@@ -837,7 +837,8 @@ def merge_candidate(
     Rosa", with Rosa in the tree) is that person, with nothing to ask.
     """
     firsts = {_first_name(p.name).casefold() for p in people}
-    others = [p for p in people if p.id != teller_id and p.id not in set(named)]
+    skip = {teller_id, *named}
+    others = [p for p in people if p.id not in skip]
     for match in _KIN_NAME.finditer(text):
         said_name = match.group(2)
         key = said_name.casefold()
