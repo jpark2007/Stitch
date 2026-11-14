@@ -23,7 +23,8 @@ import { toCreateTraditionRequest, type TraditionDraft } from "@/components/flow
 import { isApiError } from "@/lib/api";
 
 const TITLE = "Add a tradition";
-const LEDE = "The things your family does again and again. Write one down so it carries on.";
+// No lede, as on /add: the form's placeholders carry the invitation. Only
+// someone in two or more families gets a line (which family, and a switch).
 const LOAD_ERROR = "We couldn't open the page for adding a tradition. Check your connection and try again.";
 
 type PickablePerson = { id: string; name: string; born?: number | null; color?: string | null };
@@ -41,7 +42,7 @@ function currentPath(): string {
 /** The page shell with a quiet loading sheet, so nothing jumps when the form arrives. */
 export function NewTraditionLoading(props: { familyId: string | null }) {
   return (
-    <FlowPage title={TITLE} lede={LEDE} back={backTo(props.familyId)} width="wide">
+    <FlowPage title={TITLE} back={backTo(props.familyId)} width="wide">
       <LoadingSheet label="Opening your family’s pages…" />
     </FlowPage>
   );
@@ -150,7 +151,7 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
     );
   }
 
-  const lede = <FamilyLede choice={choice} />;
+  const lede = choice.show ? <FamilyLede choice={choice} /> : undefined;
   const back = backTo(fid);
 
   if (status.kind === "loading") {
@@ -195,13 +196,13 @@ function joiner(i: number, n: number): string {
 }
 
 /**
- * The lede, with one quiet line above it for someone in two or more families:
- * which family the tradition goes into, and a link to each other family's
- * form (the same line /add shows).
+ * One quiet line for someone in two or more families: which family the
+ * tradition goes into, and a link to each other family's form (the same line
+ * /add shows).
  */
 function FamilyLede(props: { choice: FamilyChoice }) {
   const { current, others, show } = props.choice;
-  if (!show || !current) return <p className="text-pretty">{LEDE}</p>;
+  if (!show || !current) return null;
   return (
     <>
       <div className="flex min-w-0 flex-col gap-y-1 text-[0.9375rem] leading-snug text-ink-soft sm:flex-row sm:flex-wrap sm:items-baseline sm:gap-x-2">
@@ -227,7 +228,6 @@ function FamilyLede(props: { choice: FamilyChoice }) {
           </>
         ) : null}
       </div>
-      <p className="mt-3 text-pretty">{LEDE}</p>
     </>
   );
 }

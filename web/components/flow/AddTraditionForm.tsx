@@ -1,9 +1,10 @@
 "use client";
 
-// The "Add a tradition" form: its name, what kind of tradition it is, how
-// often it happens (with an optional "when, in your words" and, for a yearly
-// or seasonal one, the month), the story of it, who takes part, photos and the
-// year it started. Built from the same kit as the add-a-memory form.
+// The "Add a tradition" form, laid out like the add-a-memory form: its name as
+// a quiet prominent line, the story of it as a large borderless writing area,
+// then compact detail rows: what kind of tradition it is, how often it happens
+// (with an optional "when, in your words" and, for a yearly or seasonal one,
+// the month), who takes part, photos and the year it started.
 // Presentational: the page owns the API calls and passes them in as onSubmit
 // (the checked draft and the photo files); a rejected ApiError comes back here
 // as field errors (photos too big or the wrong type land on the photos field)
@@ -12,9 +13,17 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { isApiError } from "@/lib/api";
 import { Button, FOCUS_RING_WITHIN } from "./Button";
-import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS, OptionalMark, SelectField, TextAreaField, TextField } from "./Field";
+import {
+  FIELD_ERROR_CLASS,
+  FIELD_ROW_CLASS,
+  FIELD_ROW_LABEL_CLASS,
+  Field,
+  SelectField,
+  TextAreaField,
+  TextField,
+  fieldControlClass,
+} from "./Field";
 import { FormError, focusFirstError } from "./FormError";
-import { PaperCard } from "./PaperCard";
 import { PersonPicker } from "./PersonPicker";
 import { PhotoUpload } from "./PhotoUpload";
 import {
@@ -39,14 +48,17 @@ const GENERIC_ERROR = "That didn't save. Everything you wrote is still here: try
 const PHOTOS_TOO_BIG = "Those photos are too big to send. Try fewer or smaller ones.";
 const PHOTOS_WRONG_TYPE = "One of those photos isn't a kind we can use. Try a JPEG, PNG, WebP, HEIC or GIF.";
 
-/** A visible asterisk; the control's `required` tells assistive tech. */
-function RequiredMark() {
-  return (
-    <span aria-hidden="true" className="ml-1 font-normal text-ink-faint">
-      *
-    </span>
-  );
-}
+/** The invitation in the empty name line; short enough to fit a phone. */
+const TITLE_PLACEHOLDER = "What do you call it?";
+/** The invitation in the empty story: it is also the page's only instruction. */
+const STORY_PLACEHOLDER =
+  "Tell how it goes: who started it, what everyone brings, the one thing nobody may skip…";
+
+// The add-a-memory page's writing look. `!`: these beat the kit control's own
+// sans text style whatever the CSS order. The name is a quiet, prominent serif
+// line; the story a large, comfortable serif area under it.
+const TITLE_CLASS = "font-serif! text-[1.375rem]! leading-snug! font-semibold sm:text-[1.5rem]!";
+const STORY_CLASS = "font-serif! text-[1.1875rem]! leading-[1.65]! sm:text-[1.3125rem]! pb-3!";
 
 export function AddTraditionForm(props: {
   people: Array<{ id: string; name: string; born?: number | null; color?: string | null }>;
@@ -145,186 +157,196 @@ export function AddTraditionForm(props: {
   }
 
   return (
-    <PaperCard
-      as="form"
+    <form
       ref={formRef}
       noValidate
       onSubmit={handleSubmit}
       aria-busy={pending || undefined}
-      className="space-y-8"
+      className="min-w-0"
     >
-      {/* mx-0, not m-0: the sheet's space-y-8 gives the fieldset its bottom margin. */}
-      <fieldset disabled={locked} className="mx-0 min-w-0 space-y-8 border-0 p-0">
-        <div>
-          <p className="mb-5 text-sm text-ink-soft">
-            <span aria-hidden="true">* </span>
-            Needed: its name, what kind it is and how often it happens.
-          </p>
-          <TextField
-            label={
-              <>
-                What do you call it?
-                <RequiredMark />
-              </>
-            }
-            hint="The name the family would know it by."
-            placeholder="Tamales on Christmas Eve"
-            required
-            name="title"
-            autoComplete="off"
-            value={draft.title}
-            onChange={(e) => update("title", e.target.value)}
-            error={errors.title}
+      <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
+        {/* The name, then the story: one quiet prominent line and a large,
+            borderless writing area, as on the add-a-memory page. Their labels
+            are for assistive tech; nothing is starred: what is missing is
+            said beside the field when someone saves without it. */}
+        <Field label="What do you call it?" labelHidden required error={errors.title}>
+          {(c) => (
+            <input
+              {...c}
+              type="text"
+              name="title"
+              autoComplete="off"
+              placeholder={TITLE_PLACEHOLDER}
+              value={draft.title}
+              onChange={(e) => update("title", e.target.value)}
+              disabled={locked}
+              className={fieldControlClass(c["aria-invalid"] === true, TITLE_CLASS)}
+            />
+          )}
+        </Field>
+
+        <div className="mt-6">
+          <TextAreaField
+            label="The story of it"
+            optionalLabel
+            labelHidden
+            placeholder={STORY_PLACEHOLDER}
+            name="description"
+            rows={5}
+            value={draft.description}
+            onChange={(e) => update("description", e.target.value)}
+            error={errors.description}
             disabled={locked}
+            className={STORY_CLASS}
           />
         </div>
 
-        <ChoiceChips
-          legend={
-            <>
-              What kind of tradition is it?
-              <RequiredMark />
-            </>
-          }
-          name="category"
-          options={CATEGORY_OPTIONS}
-          value={draft.category}
-          onChange={(v) => update("category", v)}
-          error={errors.category}
-          disabled={locked}
-        />
-
-        <div className="space-y-6">
-          <ChoiceChips
-            legend={
-              <>
-                How often does it happen?
-                <RequiredMark />
-              </>
-            }
-            name="kind"
-            options={WHEN_OPTIONS}
-            value={draft.kind}
-            onChange={(v) => {
-              setDraft((d) => ({ ...d, kind: v }));
-              clearError("kind", "month");
-            }}
-            error={errors.kind}
-            disabled={locked}
-          />
-          <div className="grid gap-6 sm:grid-cols-[minmax(0,1fr)_minmax(0,13rem)]">
-            <TextField
-              label="When, in your words"
-              optionalLabel
-              hint={`Like “Christmas Eve” or “every Sunday”.`}
-              placeholder={labelPlaceholder(draft.kind)}
-              name="label"
-              autoComplete="off"
-              value={draft.label}
-              onChange={(e) => update("label", e.target.value)}
-              error={errors.label}
+        {/* The details, quiet and compact under the story: one row each, the
+            labels in a narrow column so the answers line up. */}
+        <div className="mt-10 space-y-5 sm:space-y-3">
+          <DetailRow label="What kind of tradition is it?">
+            <ChoiceChips
+              legend="What kind of tradition is it?"
+              name="category"
+              options={CATEGORY_OPTIONS}
+              value={draft.category}
+              onChange={(v) => update("category", v)}
+              error={errors.category}
               disabled={locked}
             />
-            {showMonth ? (
-              <SelectField
-                label="Which month"
+          </DetailRow>
+
+          <DetailRow label="How often does it happen?">
+            <ChoiceChips
+              legend="How often does it happen?"
+              name="kind"
+              options={WHEN_OPTIONS}
+              value={draft.kind}
+              onChange={(v) => {
+                setDraft((d) => ({ ...d, kind: v }));
+                clearError("kind", "month");
+              }}
+              error={errors.kind}
+              disabled={locked}
+            />
+            <div className="mt-4 grid gap-5 sm:grid-cols-[minmax(0,1fr)_minmax(0,11rem)] sm:gap-6">
+              <TextField
+                label="When, in your words"
                 optionalLabel
-                hint="If it falls in one."
-                name="month"
-                value={draft.month}
-                onChange={(e) => update("month", e.target.value)}
-                error={errors.month}
+                placeholder={labelPlaceholder(draft.kind)}
+                name="label"
+                autoComplete="off"
+                value={draft.label}
+                onChange={(e) => update("label", e.target.value)}
+                error={errors.label}
                 disabled={locked}
-              >
-                <option value="">No month</option>
-                {MONTH_NAMES.map((m, i) => (
-                  <option key={m} value={String(i + 1)}>
-                    {m}
-                  </option>
-                ))}
-              </SelectField>
-            ) : null}
-          </div>
+              />
+              {showMonth ? (
+                <SelectField
+                  label="Which month"
+                  optionalLabel
+                  name="month"
+                  value={draft.month}
+                  onChange={(e) => update("month", e.target.value)}
+                  error={errors.month}
+                  disabled={locked}
+                >
+                  <option value="">No month</option>
+                  {MONTH_NAMES.map((m, i) => (
+                    <option key={m} value={String(i + 1)}>
+                      {m}
+                    </option>
+                  ))}
+                </SelectField>
+              ) : null}
+            </div>
+          </DetailRow>
+
+          <PersonPicker
+            layout="row"
+            legend={
+              <>
+                Who takes part?
+                <span className="sr-only"> (optional)</span>
+              </>
+            }
+            people={people}
+            value={draft.participantIds}
+            onChange={(ids) => update("participantIds", ids)}
+            error={errors.participantIds}
+            disabled={locked}
+          />
+
+          <PhotoUpload
+            layout="row"
+            label={
+              <>
+                Photos
+                <span className="sr-only"> (optional)</span>
+              </>
+            }
+            max={PHOTOS_MAX}
+            holder="tradition"
+            files={photos}
+            onChange={(files) => {
+              setPhotos(files);
+              clearError("photos");
+            }}
+            error={errors.photos}
+            disabled={locked}
+            attempt={attempt}
+          />
+
+          <YearInput
+            layout="row"
+            label={
+              <>
+                The year it started
+                <span className="sr-only"> (optional)</span>
+              </>
+            }
+            name="startedYear"
+            // No max: reading the clock while rendering breaks prerendering.
+            // validateYear checks "not in the future" on submit.
+            min={START_YEAR_MIN}
+            value={draft.startedYear}
+            onChange={(v) => update("startedYear", v)}
+            error={errors.startedYear}
+          />
         </div>
-
-        <TextAreaField
-          label="The story of it"
-          optionalLabel
-          hint="How it goes, who started it, what nobody may skip."
-          name="description"
-          rows={6}
-          value={draft.description}
-          onChange={(e) => update("description", e.target.value)}
-          error={errors.description}
-          disabled={locked}
-        />
-
-        <PersonPicker
-          legend={
-            <>
-              Who takes part?
-              <OptionalMark />
-            </>
-          }
-          hint="Everyone who keeps it going."
-          people={people}
-          value={draft.participantIds}
-          onChange={(ids) => update("participantIds", ids)}
-          error={errors.participantIds}
-          disabled={locked}
-        />
-
-        <PhotoUpload
-          label={
-            <>
-              Photos
-              <OptionalMark />
-            </>
-          }
-          hint="Snapshots from any year it happened."
-          max={PHOTOS_MAX}
-          holder="tradition"
-          files={photos}
-          onChange={(files) => {
-            setPhotos(files);
-            clearError("photos");
-          }}
-          error={errors.photos}
-          disabled={locked}
-          attempt={attempt}
-        />
-
-        <YearInput
-          label={
-            <>
-              The year it started
-              <OptionalMark />
-            </>
-          }
-          hint="A good guess is fine."
-          name="startedYear"
-          // No max: reading the clock while rendering breaks prerendering.
-          // validateYear checks "not in the future" on submit.
-          min={START_YEAR_MIN}
-          value={draft.startedYear}
-          onChange={(v) => update("startedYear", v)}
-          error={errors.startedYear}
-        />
       </fieldset>
 
-      <div className="space-y-4 border-t border-dashed border-rule pt-6">
+      <div className="mt-12 space-y-4">
         <FormError message={formError} />
         <Button type="submit" busy={pending} busyLabel="Saving…" disabled={disabled} className="w-full sm:w-auto">
           {submitLabel}
         </Button>
       </div>
-    </PaperCard>
+    </form>
   );
 }
 
 /**
- * One choice from a short list, as a row of paper chips: a fieldset of real
- * (visually hidden) radio buttons, so arrow keys move between them. Drawn
+ * A details row whose control is a group (or more than one control): the
+ * label drawn in the kit's left column, hidden from assistive tech because
+ * each group names itself with its own legend (a rendered <legend> cannot sit
+ * in a grid cell). The same shape as PersonPicker's row layout.
+ */
+function DetailRow(props: { label: ReactNode; children: ReactNode }) {
+  return (
+    <div className={FIELD_ROW_CLASS}>
+      <span aria-hidden="true" className={FIELD_ROW_LABEL_CLASS}>
+        {props.label}
+      </span>
+      <div className="mt-2 min-w-0 sm:mt-0">{props.children}</div>
+    </div>
+  );
+}
+
+/**
+ * One choice from a short list, as a row of chips: a fieldset of real
+ * (visually hidden) radio buttons, so arrow keys move between them. Its
+ * legend is for assistive tech (DetailRow draws the visible label). Drawn
  * like PersonPicker's chips, with the same stitched tick for the picked one.
  */
 function ChoiceChips<T extends string>(props: {
@@ -333,30 +355,22 @@ function ChoiceChips<T extends string>(props: {
   options: ReadonlyArray<{ value: T; label: string }>;
   value: T | null;
   onChange(value: T): void;
-  hint?: ReactNode;
   error?: string | null;
   disabled?: boolean;
 }) {
-  const { legend, name, options, value, onChange, hint, error, disabled } = props;
+  const { legend, name, options, value, onChange, error, disabled } = props;
   const uid = useId();
-  const hintId = `${uid}-hint`;
   const errorId = `${uid}-error`;
-  const describedBy = [error ? errorId : null, hint ? hintId : null].filter(Boolean).join(" ");
 
   return (
     <fieldset
       disabled={disabled}
-      aria-describedby={describedBy || undefined}
+      aria-describedby={error ? errorId : undefined}
       aria-required="true"
       className="min-w-0"
     >
-      <legend className={`p-0 ${FIELD_LABEL_CLASS}`}>{legend}</legend>
-      {hint ? (
-        <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
-          {hint}
-        </p>
-      ) : null}
-      <ul className="mt-2 flex list-none flex-wrap gap-2 p-0">
+      <legend className="sr-only">{legend}</legend>
+      <ul className="flex list-none flex-wrap gap-2 p-0">
         {options.map((o, i) => {
           const checked = value === o.value;
           const inputId = `${uid}-${o.value}`;
@@ -368,11 +382,12 @@ function ChoiceChips<T extends string>(props: {
                   "relative inline-flex min-h-11 select-none items-center gap-2 rounded-full border px-3.5 text-sm transition-colors duration-150 ease-paper motion-reduce:transition-none",
                   FOCUS_RING_WITHIN,
                   "has-[:disabled]:cursor-not-allowed",
+                  // Flat, as PersonPicker's: picked is a filled chip with a tick, not picked a hairline.
                   checked
-                    ? "border-ink-soft bg-paper-deep text-ink shadow-inset"
+                    ? "border-ink-soft/40 bg-paper-deep text-ink"
                     : error
-                      ? "border-[#9c3b2a]/60 bg-paper-light text-ink-soft hover:border-accent"
-                      : "border-rule bg-paper-light text-ink-soft shadow-[0_1px_1px_rgb(74_47_29/0.08)] hover:border-accent",
+                      ? "border-[#9c3b2a]/60 bg-transparent text-ink-soft hover:text-ink"
+                      : "border-rule bg-transparent text-ink-soft hover:border-ink-faint hover:text-ink",
                   disabled ? "opacity-60" : "cursor-pointer",
                 ].join(" ")}
               >
