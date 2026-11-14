@@ -58,21 +58,25 @@ export function TellerTabs({ controller, tellers, className = "", onChange }: Te
               onChange?.(t.id);
             }}
             className={[
-              "group relative rounded-t-[10px] px-4 font-sans text-[13px] font-semibold tracking-wide transition-all duration-300 [transition-timing-function:var(--ease-paper)]",
+              "group relative rounded-t-[10px] px-3.5 font-serif text-[0.9rem] leading-none italic sm:px-4 sm:text-[0.95rem]",
+              "transition-all duration-300 [transition-timing-function:var(--ease-paper)]",
               "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f3d488]",
               active
-                ? "bg-[#f7f0e1] pb-2.5 pt-2.5 text-ink shadow-[0_-2px_10px_rgba(20,10,4,0.35)]"
-                : "bg-[#d9c6a4]/80 pb-1.5 pt-1.5 text-ink-soft hover:bg-[#e6d6b8] hover:pb-2",
+                ? "bg-[#f7f0e1] pb-3 pt-2.5 text-ink shadow-[0_-2px_10px_rgba(20,10,4,0.35)]"
+                : "bg-[#d9c6a4]/80 pb-2 pt-2 text-ink-soft hover:bg-[#e6d6b8] hover:pb-2.5",
             ].join(" ")}
             style={{ rotate: `${(i % 2 ? 1 : -1) * (active ? 0.4 : 1.1)}deg` }}
           >
-            <span className="mr-2 inline-block h-2 w-2 translate-y-[-1px] rounded-full align-middle" style={{ background: t.color }} />
-            {active ? `${t.name}'s version` : `Hear ${t.name}'s version`}
-            {/* The tab's stitched hem */}
+            {/* DESIGN.md's wording, the same on every tab; the thread says which is playing. */}
+            Hear <span className="not-italic">{t.name}</span>&rsquo;s version
+            {/* The teller's thread, stitched along the tab's hem. */}
             <span
               aria-hidden
-              className="absolute inset-x-2 bottom-1 border-b border-dashed opacity-40"
-              style={{ borderColor: active ? "#8f8173" : "#5c4e43" }}
+              className="absolute inset-x-3 bottom-1 h-[2px] rounded-full transition-opacity duration-300"
+              style={{
+                background: `repeating-linear-gradient(90deg, ${t.color} 0 6px, transparent 6px 10px)`,
+                opacity: active ? 0.95 : 0.4,
+              }}
             />
           </button>
         );
@@ -173,6 +177,7 @@ export function PlayerControls({ controller, className = "", muted = false, onMu
   useEffect(() => {
     const total = fmt(duration);
     let lastText = "";
+    let lastAria = "";
     const draw = () => {
       const k = duration > 0 ? Math.min(1, Math.max(0, controller.time / duration)) : 0;
       if (fill.current) fill.current.style.transform = `scaleX(${k})`;
@@ -182,7 +187,11 @@ export function PlayerControls({ controller, className = "", muted = false, onMu
         clock.current.textContent = text;
         lastText = text;
       }
-      if (track.current) track.current.setAttribute("aria-valuenow", controller.time.toFixed(1));
+      if (track.current && text !== lastAria) {
+        track.current.setAttribute("aria-valuenow", controller.time.toFixed(1));
+        track.current.setAttribute("aria-valuetext", fmt(controller.time));
+        lastAria = text;
+      }
     };
     draw();
     return controller.onFrame(draw);
@@ -224,7 +233,9 @@ export function PlayerControls({ controller, className = "", muted = false, onMu
         aria-label="Scene time"
         aria-valuemin={0}
         aria-valuemax={Number(duration.toFixed(1))}
-        aria-valuenow={0}
+        // Current at every render; between renders the frame listener above keeps it.
+        aria-valuenow={Number(controller.time.toFixed(1))}
+        aria-valuetext={fmt(controller.time)}
         className="relative h-8 w-[min(42vw,420px)] cursor-pointer touch-none select-none"
         onPointerDown={(e) => {
           if (e.button !== 0) return;
