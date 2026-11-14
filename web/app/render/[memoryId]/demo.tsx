@@ -48,7 +48,7 @@ export const demoCamera: CameraPath = cameraPath([
 ]);
 
 const EFFECTS: Record<EffectKind, Omit<PaperEffectProps, "kind">> = {
-  confetti: { origin: [0.25, 0.4, 0.05], spread: [0.75, 0.42], start: 4.6 },
+  confetti: { origin: [0.25, 0.4, -0.05], spread: [0.55, 0.38], count: 80, start: 4.6 },
   steam: { origin: [-0.08, 0.04, 0.32], start: 0 },
   rain: { origin: [0, 0, -0.1], start: 0 },
   smoke: { origin: [0.62, 0.46, -0.62], start: 0 },
