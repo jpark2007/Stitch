@@ -66,6 +66,10 @@ INDEXES: dict[str, list[tuple[str, list[tuple[str, int]], dict[str, Any]]]] = {
     "sets": [
         ("sets_familyId_name", [("familyId", ASCENDING), ("name", ASCENDING)], {}),
     ],
+    "revoked_sessions": [
+        # TTL: a revoked session id is dropped once its token would have expired anyway.
+        ("revoked_sessions_expiresAt_ttl", [("expiresAt", ASCENDING)], {"expireAfterSeconds": 0}),
+    ],
 }
 
 _client: MongoClient | None = None
@@ -103,7 +107,13 @@ def _same_spec(existing: dict[str, Any], keys: list[tuple[str, int]], options: d
         [(k, int(v)) for k, v in existing.get("key", [])] == [(k, int(v)) for k, v in keys]
         and bool(existing.get("unique")) == bool(options.get("unique"))
         and existing.get("partialFilterExpression") == options.get("partialFilterExpression")
+        and _ttl(existing.get("expireAfterSeconds")) == _ttl(options.get("expireAfterSeconds"))
     )
+
+
+def _ttl(value: Any) -> int | None:
+    """expireAfterSeconds as an int (servers may report it as a float), or None."""
+    return None if value is None else int(value)
 
 
 def ensure_indexes(db: Database) -> None:
