@@ -57,7 +57,11 @@ def create_user(
     user_id: str | None = None,
     now: datetime | None = None,
 ) -> schemas.User:
-    """Store a new user. Raises EmailTaken if the email is already registered."""
+    """Store a new user. Raises EmailTaken if the email is already registered.
+
+    ValueError when an explicit `user_id` already belongs to an account with another
+    email (the id clashed, not the email, so EmailTaken would be the wrong answer).
+    """
     email = normalize_email(email)
     name = name.strip() if isinstance(name, str) else ""
     if not name:
@@ -76,7 +80,12 @@ def create_user(
     try:
         db[COLLECTION].insert_one(doc)
     except DuplicateKeyError as exc:
-        # Lost a race with another signup for the same email (or a reused user_id).
+        # Lost a race with another signup for the same email, or the explicit user_id is
+        # in use. Never read exc.details (mongomock leaves it None); look at the data.
+        if user_id and db[COLLECTION].count_documents(
+            {"_id": user_id, "email": {"$ne": email}}, limit=1
+        ):
+            raise ValueError(f"user id already exists: {user_id}") from exc
         raise EmailTaken(email) from exc
     return _to_user(doc)
 
