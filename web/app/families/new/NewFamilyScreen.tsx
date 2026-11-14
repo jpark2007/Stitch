@@ -66,7 +66,7 @@ function NewFamily(props: { session: SessionValue }) {
   return (
     <FlowPage
       title="Start your family"
-      lede="You’ll be its admin, so you can invite everyone else next."
+      lede="You’ll be the first person in its tree and its admin. Next, you can invite everyone else."
       back={back}
     >
       <CreateFamilyForm key={formKey} defaultYourName={me.user.name} onSubmit={create} />

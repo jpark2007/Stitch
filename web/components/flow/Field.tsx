@@ -29,6 +29,20 @@ export const FIELD_LABEL_CLASS = "block text-[0.9375rem] leading-snug font-semib
 /** The quiet "(optional)" after a label. */
 export const FIELD_OPTIONAL_CLASS = "ml-1.5 font-normal text-ink-soft";
 
+/**
+ * The quiet "(optional)" after a label, led by a real space so the label's
+ * accessible name reads "Title (optional)" rather than "Title(optional)"
+ * (a margin alone does not separate words for screen readers).
+ */
+export function OptionalMark() {
+  return (
+    <>
+      {" "}
+      <span className="font-normal text-ink-soft">(optional)</span>
+    </>
+  );
+}
+
 /** A hint under a label. Add mt-0.5. */
 export const FIELD_HINT_CLASS = "text-sm leading-snug text-ink-soft";
 
@@ -76,7 +90,9 @@ export function Field(
 
   const control: ControlProps = { id };
   // The error first, so it is what a screen reader reads right after the label.
-  const describedBy = joinIds(hasError && errorId, hasHint && hintId);
+  // A hint that says exactly what the error says is not read a second time.
+  const hintRepeatsError = hasError && typeof hint === "string" && hint.trim() === error.trim();
+  const describedBy = joinIds(hasError && errorId, hasHint && !hintRepeatsError && hintId);
   if (describedBy) control["aria-describedby"] = describedBy;
   if (hasError) control["aria-invalid"] = true;
   if (required) control.required = true;
@@ -85,7 +101,7 @@ export function Field(
     <div className="min-w-0">
       <label htmlFor={id} className={FIELD_LABEL_CLASS}>
         {label}
-        {optionalLabel ? <span className={FIELD_OPTIONAL_CLASS}>(optional)</span> : null}
+        {optionalLabel ? <OptionalMark /> : null}
       </label>
       {hasHint ? (
         <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
