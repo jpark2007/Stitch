@@ -330,3 +330,109 @@ def test_missing_key_exit_imports_no_network_clients() -> None:
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "2 []"
     assert "ANTHROPIC_API_KEY is not set" in done.stderr
+
+
+# --------------------------------------------------------------------------- the weekend demo path
+
+
+@pytest.fixture
+def captured_setup(monkeypatch: pytest.MonkeyPatch) -> list[demo._Setup]:
+    """Every setup main builds in fake mode, so a test can read the repo the run wrote to."""
+    made: list[demo._Setup] = []
+    build = demo._fake_setup
+
+    def capture(args, out):  # noqa: ANN001, ANN202
+        setup = build(args, out)
+        made.append(setup)
+        return setup
+
+    monkeypatch.setattr(demo, "_fake_setup", capture)
+    return made
+
+
+def test_main_fake_weekend_path_is_in_both_books_with_a_valid_timeline(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], captured_setup: list[demo._Setup]
+) -> None:
+    """README 'Scope for the weekend': mom tells with a photo, the scene is in mom's and dad's
+    books, dad adds his telling, and the saved timeline validates and recompiles on the real compiler."""
+    from screenplay import compiler
+
+    out_path = tmp_path / "memory.json"
+    assert demo.main(["--fake", "--auto", "--weekend", "--out", str(out_path)]) == 0
+    (setup,) = captured_setup
+    family = setup.family_id
+    printed = capsys.readouterr().out
+
+    response = schemas.MemoryResponse.model_validate_json(out_path.read_text())
+    memory = response.memory
+    assert memory.family_id == family == demo.FAKE_FAMILY_ID
+    # One telling with a photo, then a second telling of the same memory.
+    assert [t.author_id for t in memory.tellings] == ["mom", "dad"]
+    assert memory.tellings[0].text == demo.DEFAULT_STORY and memory.tellings[1].text == demo.DEFAULT_THEN_STORY
+    (photo,) = memory.tellings[0].photo_ids
+    assert setup.repo.get_media(family, photo) is not None
+    assert memory.version == 2
+    assert [m.id for m in setup.repo.find_memories(family, limit=1000) if m.id == memory.id] == [memory.id]
+
+    # In both people's books.
+    for person in ("mom", "dad"):
+        assert memory.id in [m.id for m in setup.repo.find_memories(family, person_id=person, limit=1000)], person
+    assert demo.books_with(setup.repo, family, memory.id) == {"mom": True, "dad": True}
+    assert printed.count(f"book: mom has {memory.id}") == 2 and printed.count(f"book: dad has {memory.id}") == 2
+
+    # The saved timeline validates against the contract, with both voices over one scene.
+    assert memory.screenplay is not None and memory.timeline is not None
+    timeline = schemas.Timeline.model_validate(memory.timeline.model_dump(mode="json", by_alias=True))
+    assert timeline.duration > 0 and timeline.shots and timeline.tracks
+    assert all(shot.page_text and shot.page_text.strip() for shot in timeline.shots)
+    assert set(timeline.narrations or {}) == {"mom", "dad"} and timeline.default_narrator == "mom"
+    assert timeline.explanations and timeline.interactions
+
+    # The run used the real compiler, and the saved screenplay compiles on it again.
+    assert "compiler=screenplay.compiler" in printed
+    result = compiler.compile(
+        memory.screenplay,
+        sets={s.id: s for s in response.sets},
+        props={p.id: p for p in response.props},
+        people={p.id: p for p in response.people},
+    )
+    assert result.ok and not result.errors, result.errors
+    assert result.timeline is not None and [s.id for s in result.timeline.shots] == [s.id for s in timeline.shots]
+
+    assert "photo: generated sample photo" in printed
+    assert f"second telling: dad tells their version of memory {memory.id}" in printed
+    assert printed.count(f"done: memory {memory.id}") == 2
+    assert f"timeline: valid, {len(timeline.shots)} shot(s)" in printed and "narrations: dad, mom" in printed
+
+
+def test_main_then_needs_another_person_in_the_family(capsys: pytest.CaptureFixture[str]) -> None:
+    assert demo.main(["--fake", "--auto", "--then", "mom"]) == 2
+    assert "is the first teller" in capsys.readouterr().err
+    assert demo.main(["--fake", "--auto", "--then", "nobody"]) == 2
+    assert "'nobody' is not a person" in capsys.readouterr().err
+
+
+def test_main_fails_when_the_memory_is_missing_from_a_book(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(demo, "books_with", lambda _repo, _family, _memory: {"mom": True, "dad": False})
+    assert demo.main(["--fake", "--auto"]) == 1
+    captured = capsys.readouterr()
+    assert "book: dad is MISSING" in captured.out and "book: mom has" in captured.out
+    assert "missing from someone's book" in captured.err
+
+
+def test_main_fails_when_the_saved_timeline_does_not_validate(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(demo, "describe_timeline", lambda _memory: schemas.Timeline.model_validate({}))
+    assert demo.main(["--fake", "--auto"]) == 1
+    assert "the saved timeline does not validate" in capsys.readouterr().err
+
+
+def test_sample_photo_is_a_png() -> None:
+    from PIL import Image
+
+    data = demo.sample_photo_png()
+    with Image.open(io.BytesIO(data)) as image:
+        assert image.format == "PNG" and image.size == (160, 120)
