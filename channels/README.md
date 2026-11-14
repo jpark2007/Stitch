@@ -5,8 +5,10 @@ provider is the credential-free terminal. It forwards text, photo attachments an
 to the Channels inbox and reports HTTP receipts. A receipt is **not** a generated
 story or proof that the conversation worker completed. Cloud iMessage mode is
 explicitly enabled as described below. Calls and transcription models are not part
-of this bridge. Voice transport requires a separate backend route that is not yet
-available in this slice; it does not make voice transcription ready end to end.
+of this bridge. The integrated API modules implement signed voice intake,
+consent-checked transcription and worker draft integration. Production API hooks
+and live phone/transcription qualification remain pending; module availability
+does not establish end-to-end live readiness.
 This remains a local rehearsal tool, not a production service.
 
 ## Run locally
@@ -22,10 +24,14 @@ npm test
 
 Set `CHANNELS_SHARED_SECRET` to the same randomly generated value (at least
 32 UTF-8 bytes) in both local processes. Keep it out of source control and logs.
-This bridge does not load `.env` files automatically. Start the backend with the
-Channels router and a verified/opted-in terminal contact first, following
-`api/channels/README.md` on the inbox branch. Main does not yet mount that router;
-Jonah owns the gated integration. Then run:
+This bridge does not load `.env` files automatically. Start the disposable backend
+from `api/` with `uv run python -m seed.channels_demo --worker --port 8011`, using
+the same exported secret. It provisions a trusted terminal contact and an offline
+scripted studio. Set `CHANNELS_API_URL=http://127.0.0.1:8011` in the bridge terminal.
+For the shared-database browser preview, follow [the demo guide](../api/channels/DEMO.md).
+Main does not yet mount the Channels routers; Jonah owns the gated production
+integration described in [the API checklist](../api/channels/README.md#integration-hooks-api-owner).
+Then run:
 
 ```sh
 # In this same terminal, with CHANNELS_SHARED_SECRET exported:
@@ -67,14 +73,16 @@ exception of 27,978,412 bytes for exactly `/internal/channels/inbound-photo` whe
 existing JSON limit. All other API request limits must remain unchanged. The
 bridge does not edit API mounting, shared contracts, or the studio save path.
 
-Voice notes additionally require `/internal/channels/inbound-voice` and its exact
-27,978,412-byte middleware allowance. This bridge does not install either backend
-hook. Until those exist, voice delivery fails explicitly. Backend ingestion must
-validate audio bytes, check current consent, and reserve durable processing before
-any transcription call; retries must not duplicate transcription or stories.
+Voice intake is implemented at `/internal/channels/inbound-voice` in
+`api/channels/routes.py`, with validation/storage in `api/channels/voice.py` and
+consent-checked processing in `api/channels/worker.py`. Jonah's production mount
+and exact 27,978,412-byte middleware allowance are still required. This bridge
+does not install those hooks. Intake validates audio, checks consent and reserves
+durable processing before the worker invokes transcription; uncertain operations
+are held for reconciliation instead of blindly retried.
 No OpenAI credential belongs in the bridge. The server-side transcription adapter
-and its explicit opt-in are documented separately in `api/channels/TRANSCRIPTION.md`
-on the transcription branch.
+and its explicit opt-in are documented in [TRANSCRIPTION.md](../api/channels/TRANSCRIPTION.md).
+The terminal demo disables transcription; it is not a live voice rehearsal.
 
 Photo authorization happens before download and is checked again by the
 backend before storage. Unknown, ambiguous, or nonconsenting contacts do not
@@ -159,10 +167,13 @@ U+3000, U+FEFF. Strings are not normalized or trimmed in transit.
   attachmentId, mimeType, dataBase64}`. No caption or URL field is accepted.
   Strict base64 decodes to at most 20,971,520 bytes and raw JSON is at most
   27,978,412 bytes. Same raw-body HMAC and stable retry identity as photos.
-  Backend route/processing integration remains pending; a transport receipt alone
-  never confirms a transcript or saved story.
+  The API modules implement storage and worker processing; production mounting
+  remains pending. A receipt alone never confirms a transcript or saved story.
 - `/internal/channels/tick`: `{}`, sent every 60 seconds without overlapping
-  requests. This slice's backend reports readiness, not scheduled prompts.
+  requests. The API returns an inactive result unless `STITCH_CHANNELS_WORKER=1`.
+  Enabled ticks process receipts and replies; production additionally requires
+  `CHANNELS_CONVERSATION_MODE=real`. Proactive prompts separately require
+  `STITCH_CHANNELS_SCHEDULER=1`; see [worker and scheduler details](../api/channels/README.md).
 - Bridge `/send`: `{messageId, provider, spaceId, text}`. Only the explicitly
   configured provider and a space observed from this process's inbound stream
   can receive a reply. Spaces and delivery IDs are scoped by provider.
