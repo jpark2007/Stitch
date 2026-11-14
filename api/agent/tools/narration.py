@@ -28,7 +28,11 @@ is the compiler's job, so when the tool has a compiler the voice pass:
 
 A second telling plays over the memory's saved action, not over the draft compile: each
 line keeps its offset from its own shot's `actionStart` in the recompiled draft and is laid
-over the saved timeline's shots, so a longer telling never moves a later shot. A second
+over the saved timeline's shots, so a longer telling never moves a later shot. When the
+default narrator retells, the draft recompile moves the action to the NEW cue words while the
+saved action stays put, so each cued line is laid instead so its spoken cue word lands on the
+saved action (`saved_action_starts`, rebuilt from the saved default telling's track), and the
+uncued lines after it in the shot move with it. A second
 teller's lines come only from `narrations[<authorId>]`, except when the memory's default
 narrator retells it: the compiler refuses `narrations[author]` for the default teller
 (`duplicate_telling`), so their retold lines are each shot's own `narration`.
@@ -58,7 +62,7 @@ import math
 import re
 import struct
 import wave
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Annotated, Any, Callable, Protocol
 
 from deepagents.backends.utils import create_file_data, file_data_to_string, update_file_data
@@ -248,13 +252,29 @@ def _check_shots(timeline: Timeline, lines_by_shot: dict[str, list[NarrationLine
         raise ValueError(f"narration lines for unknown shot(s): {', '.join(unknown)}; timeline has {shot_ids}")
 
 
+def _estimated_words(text: str, duration: float) -> list[WordTiming]:
+    """Word starts for a clip that came back without them: FakeTTS's timing rule, scaled to
+    the clip's real duration (when it has one), so the words fit the audio."""
+    estimate = FakeTTS(tone=False).synthesize(text)
+    scale = duration / estimate.duration if duration > 0 and estimate.duration > 0 else 1.0
+    return [WordTiming(t=_r(w.t * scale), word=w.word) for w in estimate.words]
+
+
 def _synthesize(lines_by_shot: dict[str, list[NarrationLine]], tts: TTS, voice: str | None) -> list[_Voiced]:
-    """A clip for every non-blank line, in shot-key order then line order."""
+    """A clip for every non-blank line, in shot-key order then line order.
+
+    A clip with no word timings for a line that has words (a provider whose alignment came
+    back empty) gets estimated ones (`_estimated_words`): without them a cued line has no cue
+    word, the recompile fails and the track's lines carry no words for the stage."""
     out: list[_Voiced] = []
     for shot_id, lines in lines_by_shot.items():
         for index, line in enumerate(lines):
             if line.text.strip():
-                out.append(_Voiced(shot_id, index, line, tts.synthesize(line.text, voice=voice)))
+                speech = tts.synthesize(line.text, voice=voice)
+                if not speech.words and _split_words(line.text):
+                    log.warning("synthesize_narration: a clip came back without word timings; estimating them")
+                    speech = replace(speech, words=_estimated_words(line.text, speech.duration))
+                out.append(_Voiced(shot_id, index, line, speech))
     return out
 
 
@@ -544,6 +564,89 @@ class _RecompileFailed(Exception):
     pass
 
 
+def _shot_of_line(timeline: Timeline, t: float) -> str | None:
+    """The shot whose window holds timeline time `t` (the last shot that started by then)."""
+    holder = None
+    for shot in timeline.shots:
+        if shot.start <= t + 1e-6:
+            holder = shot.id
+    return holder
+
+
+def saved_action_starts(screenplay: Screenplay, base: Timeline) -> dict[str, list[float]]:
+    """Shot id -> the timeline start of each of the shot's actions in the saved scene `base`.
+
+    The saved action was placed by the cue words of `base`'s default telling, whose lines (in
+    timeline time, with their cues and words) are its `defaultNarrator`'s track. Each shot's
+    lines are turned back into screenplay lines (t from the shot's actionStart, words from the
+    line's start) and retimed exactly as the compiler did (`retime_actions`). A shot whose
+    lines cannot be retimed, or a base with no default telling, is left out.
+    """
+    narrator = base.default_narrator
+    track = (base.narrations or {}).get(narrator) if narrator else None
+    if track is None:
+        return {}
+    by_shot: dict[str, list[NarrationLine]] = {}
+    for line in track.lines:
+        shot_id = _shot_of_line(base, line.t)
+        if shot_id is not None:
+            by_shot.setdefault(shot_id, []).append(line)
+    action_start = {s.id: s.action_start for s in base.shots}
+    out: dict[str, list[float]] = {}
+    for shot in screenplay.shots:
+        if shot.id not in action_start:
+            continue
+        start = action_start[shot.id]
+        old = [
+            line.model_copy(update={
+                "t": _r(line.t - start),
+                "words": [WordTiming(t=_r(w.t - line.t), word=w.word) for w in line.words]
+                if line.words is not None else None,
+            })
+            for line in by_shot.get(shot.id, [])
+        ]
+        try:
+            retimed = screenplay_narration.retime_actions(
+                shot.model_copy(update={"narration": old}), 0.0, author=narrator
+            )
+        except screenplay_narration.NarrationError:
+            continue
+        out[shot.id] = [_r(start + t) for t in retimed]
+    return out
+
+
+def _anchored(
+    screenplay: Screenplay,
+    voiced: list[_Voiced],
+    saved: dict[str, list[float]],
+    desired: Callable[[_Voiced], float],
+) -> dict[tuple[str, int], float]:
+    """(shot id, line index) -> start on the saved scene so each cued line's spoken cue word
+    lands on the saved action it cues; the uncued lines after it in the shot move with it.
+
+    Used when the default narrator retells a memory: the draft recompile moved the action to
+    the new cue words, but the saved action never moves. Lines in a shot `saved` does not
+    cover, and lines before the shot's first cued line, keep `desired`.
+    """
+    shots = {shot.id: shot for shot in screenplay.shots}
+    out: dict[tuple[str, int], float] = {}
+    shift: dict[str, float] = {}
+    for v in sorted(voiced, key=lambda v: v.index):
+        at = desired(v)
+        times = saved.get(v.shot_id)
+        shot = shots.get(v.shot_id)
+        if times is not None and shot is not None and v.line.cue is not None:
+            try:
+                idx = screenplay_narration.cue_action_index(shot, v.line.cue)
+                word = screenplay_narration.cue_word_time(v.line, list(v.speech.words))
+            except screenplay_narration.NarrationError:
+                word = None
+            if word is not None and idx < len(times):
+                shift[v.shot_id] = times[idx] - word - at
+        out[(v.shot_id, v.index)] = _r(at + shift.get(v.shot_id, 0.0))
+    return out
+
+
 def _recompile(
     screenplay: Screenplay,
     compiler: Compiler,
@@ -564,7 +667,17 @@ def _read_json(files: dict[str, Any], path: str) -> tuple[Any, str | None]:
     if file_data is None:
         return None, f"Error: {path} not found. Write it before calling synthesize_narration."
     try:
-        return json.loads(file_data_to_string(file_data)), None
+        text = file_data_to_string(file_data)
+    except (TypeError, ValueError) as e:
+        return None, f"Error: {path} is not valid JSON: {e}"
+    if path == TIMELINE_PATH and not text.strip():
+        # compile_screenplay blanks the timeline when a draft stops compiling.
+        return None, (
+            f"Error: {TIMELINE_PATH} is empty: the last compile_screenplay failed, so there is no timeline to "
+            f"voice. Fix {SCREENPLAY_PATH} and compile it before calling synthesize_narration."
+        )
+    try:
+        return json.loads(text), None
     except (TypeError, ValueError) as e:
         return None, f"Error: {path} is not valid JSON: {e}"
 
@@ -723,8 +836,16 @@ def make_narration_tool(
 
         target = base if base is not None else layout_on
         target_start = {s.id: s.action_start for s in target.shots}
+
+        wanted = {(v.shot_id, v.index): target_start[v.shot_id] + offset(v) for v in voiced}
+        if base is not None and compiled is not None and from_default:
+            # The default narrator's retelling: the draft moved the action to the new cue words,
+            # the saved scene did not. Lay each cued line so its word lands on the saved action.
+            drafted = wanted
+            wanted = _anchored(screenplay, voiced, saved_action_starts(screenplay, base),
+                               lambda v: drafted[(v.shot_id, v.index)])
         try:
-            placed, audio_end = _lay_out(target, voiced, lambda v: target_start[v.shot_id] + offset(v))
+            placed, audio_end = _lay_out(target, voiced, lambda v: wanted[(v.shot_id, v.index)])
             audio_id = put_media(_mix(placed), "audio/wav") if placed else None
         except Exception as e:  # noqa: BLE001 - the mix and the media store are outside the agent's control
             log.warning("synthesize_narration: could not mix or store the audio for %s", author_id, exc_info=True)

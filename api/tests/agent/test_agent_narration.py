@@ -965,3 +965,97 @@ def test_a_failing_media_store_is_an_error_string_not_an_exception(screenplay, c
     assert text.startswith("Error: could not voice the narration (ConnectionError); try synthesize_narration again")
     assert "unreachable" not in text  # the store's message stays in the server log
     assert state["files"] == files  # neither draft was rewritten
+
+
+# --------------------------------------------------------------------------- voice-pass bug hunt
+
+
+def test_a_blanked_timeline_says_the_last_compile_failed(screenplay):
+    """compile_screenplay blanks /timeline.json when a draft stops compiling. The voice pass
+    says so plainly instead of calling an empty file invalid JSON (which reads as "write the
+    timeline yourself")."""
+    files = _files(load("hymn_books.screenplay.json"), None)
+    files["/timeline.json"] = create_file_data("")
+    for second in (False, True):
+        tts = FakeTTS()
+        tool = make_narration_tool(tts, MediaStore().put, author_id="dad", voice=None, second_telling=second,
+                                   base_timeline=lambda: None)
+        state = _call(tool, files)
+        text = _tool_text(state)
+        assert text == (
+            "Error: /timeline.json is empty: the last compile_screenplay failed, so there is no timeline to "
+            "voice. Fix /screenplay.json and compile it before calling synthesize_narration."
+        ), text
+        assert tts.calls == [] and state["files"] == files
+
+
+# Dad's retelling: his cue words fall elsewhere than in his first telling (FakeTTS timings), so
+# the draft recompile moves the drop and the hand-back; the saved scene does not move them.
+RETOLD_SHORT = [
+    {"t": 0, "text": "There she was.", "source": "telling:dad:s1"},
+    {"t": 2.75, "text": "Then she dropped the lot of them.", "source": "telling:dad:s2", "cue": "drop",
+     "cueWord": "dropped"},
+    {"t": 6.35, "text": "I handed them back.", "source": "telling:dad:s3", "cue": "hand_back", "cueWord": "handed"},
+    {"t": 8.0, "text": "She never looked up.", "source": "telling:dad:s4"},
+]
+
+
+def test_a_retelling_lands_its_cue_words_on_the_saved_action(screenplay, compiler, lookup):
+    """The default narrator retells over the saved action: the draft recompile moves the action
+    to his NEW cue words, but the saved action does not move, so each cued line is laid so its
+    cue word lands on the saved action (not where the draft put it)."""
+    first_files = _draft_files(screenplay, _compiled(screenplay, compiler, lookup))
+    dad = make_narration_tool(FakeTTS(), MediaStore().put, author_id="dad", voice=None, second_telling=False,
+                              compiler=compiler, scene_for=lookup)
+    saved = _timeline_in(_run_tool(dad, first_files))
+    # His first telling put the drop on "dropped" and the hand-back on "handed".
+    drop, hand_back = _word_time(saved.narrations["dad"], "dropped"), _word_time(saved.narrations["dad"], "handed")
+    assert _ground_time(saved) == pytest.approx(drop, abs=0.01)
+
+    data = screenplay.model_dump(mode="json", by_alias=True)
+    data["shots"][0]["narration"] = RETOLD_SHORT
+    retold = Screenplay.model_validate(data)
+    tool = make_narration_tool(FakeTTS(), MediaStore().put, author_id="dad", voice=None, second_telling=True,
+                               compiler=compiler, scene_for=lookup, base_timeline=lambda: saved)
+    state = _run_tool(tool, _draft_files(retold, _compiled(retold, compiler, lookup)))
+    text = _tool_text(state)
+    assert text.startswith("Narrated") and "warning" not in text, text
+    voiced = _timeline_in(state)
+    assert voiced.tracks == saved.tracks
+    track = voiced.narrations["dad"]
+    assert [line.text for line in track.lines] == [line["text"] for line in RETOLD_SHORT]
+    # The uncued line after the hand-back keeps its distance from it.
+    draft = _compiled(_screenplay_in(state), compiler, lookup).narrations["dad"].lines
+    assert track.lines[3].t - track.lines[2].t == pytest.approx(draft[3].t - draft[2].t, abs=0.01)
+    assert _word_time(track, "dropped") == pytest.approx(drop, abs=0.01)
+    assert _word_time(track, "handed") == pytest.approx(hand_back, abs=0.01)
+    for earlier, later in zip(track.lines, track.lines[1:]):
+        assert later.t >= earlier.words[-1].t + 0.3 - 1e-6  # no line starts before the last one is said
+
+
+class NoTimingsTTS:
+    """A TTS whose alignment came back empty: real audio, no word timings."""
+
+    def __init__(self) -> None:
+        self.inner = FakeTTS()
+
+    def synthesize(self, text: str, *, voice: str | None = None) -> Speech:
+        speech = self.inner.synthesize(text, voice=voice)
+        return Speech(audio=speech.audio, sample_rate=speech.sample_rate, duration=speech.duration, words=[])
+
+
+def test_a_clip_without_word_timings_gets_estimated_words(screenplay, compiler, lookup):
+    """A provider that returns audio but no alignment: the line still gets words (spread over
+    its clip), so its cue word exists, the recompile succeeds and the drop lands on "dropped"."""
+    timeline = _compiled(screenplay, compiler, lookup)
+    tool = make_narration_tool(NoTimingsTTS(), MediaStore().put, author_id="dad", voice=None, second_telling=False,
+                               compiler=compiler, scene_for=lookup)
+    state = _run_tool(tool, _draft_files(screenplay, timeline))
+    text = _tool_text(state)
+    assert text.startswith("Narrated") and "warning" not in text and "Recompiled" in text, text
+    voiced = _timeline_in(state)
+    track = voiced.narrations["dad"]
+    for line in track.lines:
+        assert [w.word for w in line.words] == [w.word for w in FakeTTS().synthesize(line.text).words]
+        assert line.words[0].t == pytest.approx(line.t, abs=1e-6)
+    assert _ground_time(voiced) == pytest.approx(_word_time(track, "dropped"), abs=0.01)
