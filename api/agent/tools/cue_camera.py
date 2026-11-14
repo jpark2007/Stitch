@@ -20,6 +20,14 @@ timings then maps from the written times again and never shifts a cue twice.
 A narration problem (`NarrationError`) leaves the screenplay as it is: the compiler reports
 it as a compile error itself.
 
+Only the agent's compiler adapter applies the carry. A saved agent Memory's timeline is
+therefore reproduced by `agent.tools.compile.load_compiler()(memory.screenplay, scene)`, NOT by
+calling `screenplay.compiler.compile(memory.screenplay, ...)` directly: that gives the camera
+keys at the written cue times wherever a cue word moved an action. The direct callers on main
+today (seed/demo.py, seed/fake_runs.py, tests/data/test_seed_scenes.py) compile their own seed
+screenplays, never an agent-made memory, so they are consistent; any new code that recompiles
+an agent memory must go through `load_compiler()` or call `carry_camera_cues` first.
+
 If `screenplay/compiler.py` ever retimes camera cues itself, delete this carry (the guard test
 in tests/agent/test_agent_cue_camera.py fails to say so).
 """

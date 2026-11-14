@@ -320,10 +320,20 @@ def _lay_out(
     start (then line order). Each line starts at max(desired start, end of the previous
     line's clip + LINE_GAP).
     """
+    placements = _placements(timeline, voiced, desired)
+    placed = [(start, v.line, v.speech) for start, v in placements]
+    audio_end = _r(placements[-1][0] + placements[-1][1].speech.duration) if placements else 0.0
+    return placed, audio_end
+
+
+def _placements(
+    timeline: Timeline, voiced: list[_Voiced], desired: Callable[[_Voiced], float]
+) -> list[tuple[float, _Voiced]]:
+    """`_lay_out`'s walk: (start, voiced line) in the order the lines are laid."""
     by_shot: dict[str, list[_Voiced]] = {}
     for v in voiced:
         by_shot.setdefault(v.shot_id, []).append(v)
-    placed: list[tuple[float, NarrationLine, Speech]] = []
+    out: list[tuple[float, _Voiced]] = []
     prev_end: float | None = None
     for shot in timeline.shots:
         items = sorted(by_shot.get(shot.id, []), key=lambda v: (desired(v), v.index))
@@ -332,10 +342,9 @@ def _lay_out(
             if prev_end is not None:
                 start = max(start, prev_end + LINE_GAP)
             start = _r(start)
-            placed.append((start, v.line, v.speech))
+            out.append((start, v))
             prev_end = start + v.speech.duration
-    audio_end = _r(prev_end) if prev_end is not None else 0.0
-    return placed, audio_end
+    return out
 
 
 def _track_lines(
@@ -615,35 +624,144 @@ def saved_action_starts(screenplay: Screenplay, base: Timeline) -> dict[str, lis
     return out
 
 
+CUE_SLACK = 0.05
+"""Seconds a retold cue word may land after its saved action before the voice pass warns."""
+
+
 def _anchored(
     screenplay: Screenplay,
     voiced: list[_Voiced],
     saved: dict[str, list[float]],
     desired: Callable[[_Voiced], float],
-) -> dict[tuple[str, int], float]:
+    action_start: dict[str, float],
+) -> tuple[dict[tuple[str, int], float], list[str]]:
     """(shot id, line index) -> start on the saved scene so each cued line's spoken cue word
     lands on the saved action it cues; the uncued lines after it in the shot move with it.
+    Also the warnings for cue words that cannot land.
 
     Used when the default narrator retells a memory: the draft recompile moved the action to
     the new cue words, but the saved action never moves. Lines in a shot `saved` does not
     cover, and lines before the shot's first cued line, keep `desired`.
+
+    The telling keeps its written order: within a shot no line starts before the shot's
+    `action_start` or before the line ahead of it has been said (its clip's end + LINE_GAP).
+    A cued line whose words before the cue word take longer to say than that leaves room for
+    starts as early as it may, and its cue word lands late: one `warning:` line says by how
+    much and what to change.
     """
     shots = {shot.id: shot for shot in screenplay.shots}
-    out: dict[tuple[str, int], float] = {}
-    shift: dict[str, float] = {}
+    by_shot: dict[str, list[_Voiced]] = {}
     for v in sorted(voiced, key=lambda v: v.index):
-        at = desired(v)
-        times = saved.get(v.shot_id)
-        shot = shots.get(v.shot_id)
-        if times is not None and shot is not None and v.line.cue is not None:
-            try:
-                idx = screenplay_narration.cue_action_index(shot, v.line.cue)
-                word = screenplay_narration.cue_word_time(v.line, list(v.speech.words))
-            except screenplay_narration.NarrationError:
-                word = None
-            if word is not None and idx < len(times):
-                shift[v.shot_id] = times[idx] - word - at
-        out[(v.shot_id, v.index)] = _r(at + shift.get(v.shot_id, 0.0))
+        by_shot.setdefault(v.shot_id, []).append(v)
+    out: dict[tuple[str, int], float] = {}
+    warnings: list[str] = []
+    for shot_id, items in by_shot.items():
+        times = saved.get(shot_id)
+        shot = shots.get(shot_id)
+        shift = 0.0
+        prev_end: float | None = None
+        for v in items:
+            at = desired(v)
+            aim: float | None = None  # where the cue word must be said: the saved action
+            word = 0.0
+            if times is not None and shot is not None and v.line.cue is not None:
+                try:
+                    idx = screenplay_narration.cue_action_index(shot, v.line.cue)
+                    word = screenplay_narration.cue_word_time(v.line, list(v.speech.words))
+                except screenplay_narration.NarrationError:
+                    idx = len(times)
+                if idx < len(times):
+                    aim = times[idx]
+                    shift = aim - word - at
+            start = at + shift
+            shot_floor = action_start.get(shot_id, start)
+            after_prev = prev_end + LINE_GAP if prev_end is not None else shot_floor
+            if start < max(shot_floor, after_prev):
+                start = max(shot_floor, after_prev)
+                shift = start - at  # the uncued lines after it keep their distance from it
+            start = _r(start)
+            if aim is not None and start + word - aim > CUE_SLACK:
+                late = _r(start + word - aim)
+                said = v.line.cue_word or (v.speech.words[-1].word if v.speech.words else "")
+                why = (
+                    "the line before it is still being said then. Shorten that line, or the words before the "
+                    "cue word in this one"
+                    if after_prev > shot_floor
+                    else "the words before it take longer to say than the time from the shot's start to that "
+                    "action. Shorten them, or move the cue word nearer the start of the line"
+                )
+                warnings.append(
+                    f'warning: shot {shot_id}, narration line {v.index}: the cue word "{said}" lands '
+                    f"{round(late, 1):g}s after the saved action it cues ({v.line.cue}): {why}."
+                )
+            out[(v.shot_id, v.index)] = start
+            prev_end = start + v.speech.duration
+    return out, warnings
+
+
+SETTLE_ROUNDS = 3
+"""Recompiles the first telling may spend moving lines that laying the track pushed later."""
+
+
+def _settle(
+    draft: Screenplay,
+    compiled: Timeline,
+    starts: dict[tuple[str, int], float],
+    voiced: list[_Voiced],
+    author_id: str,
+    compiler: Compiler,
+    scene_for: Callable[[Screenplay], SceneInputs],
+) -> tuple[Screenplay, Timeline, dict[tuple[str, int], float], list[str]]:
+    """The default telling's draft, recompiled until the track lays every line where the
+    compiler put it.
+
+    Laying the track pushes a line later when the clip before it is still playing; a padded
+    clip at the end of a shot can run past the next shot's first line. The compiler placed
+    the action on the unpushed line's cue word, so the cue word would miss its action (and a
+    later retelling, which rebuilds the saved action from this track, would land off it too).
+    So each pushed line, and every line after it in its shot, moves later by the push in the
+    screenplay, and the screenplay is recompiled. After SETTLE_ROUNDS a remaining push is a
+    `warning:` line.
+    """
+    for _ in range(SETTLE_ROUNDS):
+        pushes = _pushes(compiled, voiced, starts)
+        if not pushes:
+            return draft, compiled, starts, []
+        draft = _pushed(draft, pushes)
+        compiled = _recompile(draft, compiler, scene_for)
+        starts = compiled_starts(draft, compiled, author_id, from_default=True)
+    pushes = _pushes(compiled, voiced, starts)
+    warnings = [
+        f"warning: shot {shot_id}, narration line {index} is said {round(push, 1):g}s after the action "
+        f"was timed to it (the clip before it is still playing), so its cue word may miss its action. "
+        f"Start that line later in {SCREENPLAY_PATH}."
+        for (shot_id, index), push in pushes.items()
+    ]
+    return draft, compiled, starts, warnings
+
+
+def _pushes(
+    timeline: Timeline, voiced: list[_Voiced], starts: dict[tuple[str, int], float]
+) -> dict[tuple[str, int], float]:
+    """(shot id, line index) -> seconds laying the track pushes the line past `starts`."""
+    out: dict[tuple[str, int], float] = {}
+    for start, v in _placements(timeline, voiced, lambda v: starts[(v.shot_id, v.index)]):
+        push = start - starts[(v.shot_id, v.index)]
+        if push > 0.01:
+            out[(v.shot_id, v.index)] = push
+    return out
+
+
+def _pushed(draft: Screenplay, pushes: dict[tuple[str, int], float]) -> Screenplay:
+    """A copy of the draft with each pushed default-telling line, and every later line in its
+    shot, moved later by the push (a later line's own push replaces it when larger)."""
+    out = draft.model_copy(deep=True)
+    for shot in out.shots:
+        moved = 0.0
+        for index, line in enumerate(shot.narration):
+            moved = max(moved, pushes.get((shot.id, index), 0.0))
+            if moved:
+                shot.narration[index] = line.model_copy(update={"t": _r(line.t + moved)})
     return out
 
 
@@ -813,6 +931,11 @@ def make_narration_tool(
                 draft = voiced_screenplay(screenplay, author_id, voiced, from_default=from_default)
                 compiled = _recompile(draft, compiler, scene_for)
                 starts = compiled_starts(draft, compiled, author_id, from_default=from_default)
+                if base is None and from_default:
+                    draft, compiled, starts, settle_warnings = _settle(
+                        draft, compiled, starts, voiced, author_id, compiler, scene_for
+                    )
+                    warnings.extend(settle_warnings)
             except Exception as e:  # noqa: BLE001 - a failed recompile only costs cue precision
                 log.warning("synthesize_narration: recompile with word timings failed", exc_info=True)
                 draft, compiled, starts = None, None, {}
@@ -842,8 +965,9 @@ def make_narration_tool(
             # The default narrator's retelling: the draft moved the action to the new cue words,
             # the saved scene did not. Lay each cued line so its word lands on the saved action.
             drafted = wanted
-            wanted = _anchored(screenplay, voiced, saved_action_starts(screenplay, base),
-                               lambda v: drafted[(v.shot_id, v.index)])
+            wanted, missed = _anchored(screenplay, voiced, saved_action_starts(screenplay, base),
+                                       lambda v: drafted[(v.shot_id, v.index)], target_start)
+            warnings.extend(missed)
         try:
             placed, audio_end = _lay_out(target, voiced, lambda v: wanted[(v.shot_id, v.index)])
             audio_id = put_media(_mix(placed), "audio/wav") if placed else None

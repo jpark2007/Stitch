@@ -27,6 +27,7 @@ from agent.tools.narration import (
     build_narration_track,
     lines_for_author,
     make_narration_tool,
+    saved_action_starts,
     voice_for,
 )
 from schemas import CharacterSheet, Person, SubmitMemoryFields
@@ -748,7 +749,8 @@ def test_a_second_telling_plays_over_the_saved_action(screenplay, family_repo, c
 
 
 DAD_RETOLD = [
-    {"t": 0, "text": "There she was, at the very top of the church steps.", "source": "telling:dad:s1"},
+    # Short enough that "dropped" can still land on the saved drop after it.
+    {"t": 0, "text": "There she was, at the top of the steps.", "source": "telling:dad:s1"},
     {"t": 3.0, "text": "Then she dropped the lot of them.", "source": "telling:dad:s2", "cue": "drop",
      "cueWord": "dropped"},
     {"t": 7.0, "text": "I handed them back, one at a time.", "source": "telling:dad:s3", "cue": "hand_back",
@@ -1059,3 +1061,133 @@ def test_a_clip_without_word_timings_gets_estimated_words(screenplay, compiler, 
         assert [w.word for w in line.words] == [w.word for w in FakeTTS().synthesize(line.text).words]
         assert line.words[0].t == pytest.approx(line.t, abs=1e-6)
     assert _ground_time(voiced) == pytest.approx(_word_time(track, "dropped"), abs=0.01)
+
+
+def _saved_first_telling(screenplay, compiler, lookup, tts=None) -> Timeline:
+    """Dad's first telling of hymn_books, compiled and voiced: the saved scene."""
+    files = _draft_files(screenplay, _compiled(screenplay, compiler, lookup))
+    dad = make_narration_tool(tts or FakeTTS(), MediaStore().put, author_id="dad", voice=None, second_telling=False,
+                              compiler=compiler, scene_for=lookup)
+    state = _run_tool(dad, files)
+    assert _tool_text(state).startswith("Narrated"), _tool_text(state)
+    return _timeline_in(state)
+
+
+def _retell(screenplay, compiler, lookup, saved: Timeline, lines: list[dict], tts=None) -> dict:
+    data = screenplay.model_dump(mode="json", by_alias=True)
+    data["shots"][0]["narration"] = lines
+    retold = Screenplay.model_validate(data)
+    tool = make_narration_tool(tts or FakeTTS(), MediaStore().put, author_id="dad", voice=None, second_telling=True,
+                               compiler=compiler, scene_for=lookup, base_timeline=lambda: saved)
+    return _run_tool(tool, _draft_files(retold, _compiled(retold, compiler, lookup)))
+
+
+LATE_CUE = "On that cold bright Sunday morning at the very top of the old church steps that morning she just dropped the lot."
+RETOLD_LATE_CUE = [
+    {"t": 0, "text": "There she was.", "source": "telling:dad:s1"},
+    {"t": 1.5, "text": LATE_CUE, "source": "telling:dad:s2", "cue": "drop", "cueWord": "dropped"},
+    {"t": 10.5, "text": "I handed them back.", "source": "telling:dad:s3", "cue": "hand_back", "cueWord": "handed"},
+]
+
+
+@pytest.mark.parametrize("lead_in", [True, False], ids=["after-an-uncued-line", "first-line"])
+def test_a_retold_cue_word_that_cannot_reach_the_saved_action_keeps_the_order_and_warns(
+    lead_in, screenplay, compiler, lookup
+):
+    """Review finding: the cue word of a long retold line sits so late that landing it on the
+    saved drop would start the line before the shot (or before the line written ahead of it).
+    The telling keeps its order, never starts before the shot's actionStart, and the tool says
+    the cue word misses the saved action and how to fix it."""
+    saved = _saved_first_telling(screenplay, compiler, lookup)
+    drop = _ground_time(saved)
+    lines = RETOLD_LATE_CUE if lead_in else RETOLD_LATE_CUE[1:]
+    state = _retell(screenplay, compiler, lookup, saved, lines)
+    text = _tool_text(state)
+    assert text.startswith("Narrated"), text
+    track = _timeline_in(state).narrations["dad"]
+    assert [line.text for line in track.lines] == [line["text"] for line in lines]  # spoken in the written order
+    action_start = saved.shots[0].action_start
+    if not lead_in:
+        assert track.lines[0].t == pytest.approx(action_start)  # as early as the shot allows
+    assert min(line.t for line in track.lines) >= action_start - 1e-6
+    for earlier, later in zip(track.lines, track.lines[1:]):
+        end = earlier.t + FakeTTS().synthesize(earlier.text).duration
+        assert later.t >= end + LINE_GAP - 1e-6
+    # The cue word lands as early as it can, after the saved drop; the tool says so, and why.
+    late = _word_time(track, "dropped") - drop
+    assert late > 0.5
+    cued = 1 if lead_in else 0
+    why = (
+        "the line before it is still being said then. Shorten that line, or the words before the cue word in this one"
+        if lead_in
+        else "the words before it take longer to say than the time from the shot's start to that action. "
+        "Shorten them, or move the cue word nearer the start of the line"
+    )
+    assert (
+        f'\nwarning: shot s1, narration line {cued}: the cue word "dropped" lands {round(late, 1):g}s after the saved '
+        f"action it cues (drop): {why}."
+    ) in text, text
+    saved_handed = _word_time(saved.narrations["dad"], "handed")
+    if lead_in:
+        # The long line still being said pushes the hand-back late too, and that is said as well.
+        assert _word_time(track, "handed") > saved_handed + 0.5
+        assert '\nwarning: shot s1, narration line 2: the cue word "handed" lands' in text, text
+    else:
+        # There is room for the hand-back: it lands on its saved time, with no warning of its own.
+        assert _word_time(track, "handed") == pytest.approx(saved_handed, abs=0.01)
+        assert text.count("\nwarning: ") == 1, text
+
+
+class TailTTS:
+    """FakeTTS with `tail` seconds of silence after each clip's last word (a provider that pads
+    its clips): the last line of a shot can run on past the next shot's first line."""
+
+    def __init__(self, tail: float = 2.5) -> None:
+        self.inner = FakeTTS()
+        self.tail = tail
+
+    def synthesize(self, text: str, *, voice: str | None = None) -> Speech:
+        speech = self.inner.synthesize(text, voice=voice)
+        with wave.open(io.BytesIO(speech.audio)) as w:
+            frames = w.readframes(w.getnframes())
+        frames += bytes(2 * round(self.tail * speech.sample_rate))
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(speech.sample_rate)
+            w.writeframes(frames)
+        return Speech(audio=buf.getvalue(), sample_rate=speech.sample_rate, duration=len(frames) // 2 / speech.sample_rate,
+                      words=speech.words)
+
+
+def _ground_times(timeline: Timeline, prop: str = "hymn_books") -> list[float]:
+    (parent,) = [t for t in timeline.tracks if t.target == f"prop:{prop}" and t.channel == "parent"]
+    return [t for t, value in parent.keys if value == "ground"]
+
+
+def test_a_clip_that_runs_into_the_next_shot_still_lands_its_cue_words(screenplay, compiler, lookup):
+    """Review finding: a padded clip at the end of s1 runs past s2's first line, so laying the
+    track pushes s2's lines later than the compiler put them. The voice pass moves those lines
+    in the screenplay and recompiles, so every cue word in the saved track sits on its action,
+    and `saved_action_starts` (what a retelling lands on) reads the real action times."""
+    two = _two_shot(screenplay)
+    tool = make_narration_tool(TailTTS(), MediaStore().put, author_id="dad", voice=None, second_telling=False,
+                               compiler=compiler, scene_for=lookup)
+    state = _run_tool(tool, _draft_files(two, _compiled(two, compiler, lookup)))
+    text = _tool_text(state)
+    assert text.startswith("Narrated") and "warning" not in text, text
+    voiced = _timeline_in(state)
+    track = voiced.narrations["dad"]
+    dropped = [w.t for line in track.lines for w in line.words if w.word == "dropped"]
+    assert len(dropped) == 2
+    assert _ground_times(voiced) == pytest.approx(dropped, abs=0.01)
+    # The screenplay written back reproduces the action, and every line sits in its own shot.
+    written = _screenplay_in(state)
+    assert _compiled(written, compiler, lookup).tracks == voiced.tracks
+    s2 = voiced.shots[1]
+    assert [line.t >= s2.start for line in track.lines] == [False] * 3 + [True] * 3
+    starts = saved_action_starts(written, voiced)
+    drop = written.shots[0].actions[1]
+    assert drop.id == "drop"
+    assert [starts["s1"][1], starts["s2"][1]] == pytest.approx(dropped, abs=0.01)
