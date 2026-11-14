@@ -15,6 +15,9 @@ from screenplay.state import (
     StateError,
     World,
     fmt_t,
+    missing_param_reason,
+    self_target_reason,
+    unknown_mark_reason,
 )
 
 SAMPLES = Path(__file__).resolve().parents[3] / "web" / "public" / "samples"
@@ -124,6 +127,25 @@ def test_fmt_t():
     assert fmt_t(5.0) == "5"
     assert fmt_t(0.5) == "0.5"
     assert fmt_t(3.256) == "3.26"
+    assert fmt_t(2.50) == "2.5"  # narration's overlap and scrub times too, not "2.50"
+
+
+def test_fmt_t_has_no_negative_zero_or_exponent():
+    # `:g` gave "-0" for a tiny negative and six significant digits for a large time
+    assert fmt_t(-0.001) == "0"
+    assert fmt_t(-0.0) == "0"
+    assert fmt_t(-0.5) == "-0.5"
+    assert fmt_t(123456.5) == "123456.5"
+    assert fmt_t(1234567.25) == "1234567.25"
+    assert fmt_t(100) == "100"
+
+
+def test_reason_builders_share_validates_wording():
+    assert missing_param_reason("turn_to", "target") == 'turn_to requires who, target; "target" is missing'
+    assert missing_param_reason("time_of_day", "value") == 'time_of_day requires value; "value" is missing'
+    assert missing_param_reason("no_such_verb", "x") == 'no_such_verb requires x; "x" is missing'
+    assert self_target_reason("target", "dad") == '"target" is dad themselves'
+    assert unknown_mark_reason("porch", ["door", "curb"]) == "porch is not a mark in this shot; the marks are door, curb"
 
 
 # ------------------------------------------------------------ the sample scene
@@ -210,14 +232,14 @@ def test_not_holding_reasons(world: World):
 def test_hand_to_other_errors(world: World):
     opening(world)
     raises("self_hand_to", '"to" is mom themselves', world.hand_to, "mom", "hymn_books", "mom")
-    raises("offstage", "dad is offstage", world.hand_to, "mom", "hymn_books", "dad")
+    raises("offstage", "dad is offstage; use enter first", world.hand_to, "mom", "hymn_books", "dad")
     world.move("dad", MARKS["steps_foot"])
     world.pick_up("dad", "cup")
     world.pick_up("dad", "lamp")
     raises("hands_full", "dad's hands are full (hand_r: cup, hand_l: lamp)",
            world.hand_to, "mom", "hymn_books", "dad")
     world.move("mom", OFFSTAGE_RIGHT)
-    raises("offstage", "mom is offstage", world.hand_to, "mom", "hymn_books", "dad")
+    raises("offstage", "mom is offstage; use enter first", world.hand_to, "mom", "hymn_books", "dad")
 
 
 def test_hand_to_uses_the_takers_free_hand(world: World):
@@ -330,7 +352,7 @@ def test_get_in_takes_driver_then_next_free(world: World):
     assert world.props["sedan"].occupants == {"driver": "puppet:mom", "passenger": "puppet:dad", "back_seat": "puppet:kid"}
     world.get_out("kid", "sedan")
     assert world.get_in("kid", "sedan") == "back_seat"
-    raises("already_seated", "mom is seated in sedan.driver", world.get_in, "mom", "sedan")
+    raises("already_seated", "mom is seated in sedan.driver; use get_out first", world.get_in, "mom", "sedan")
 
 
 def test_get_in_errors(world: World):
@@ -338,13 +360,13 @@ def test_get_in_errors(world: World):
     world.get_in("dad", "sedan", "passenger")
     assert world.get_in("mom", "sedan") == "driver"
     raises("socket_taken", "sedan.passenger is taken by dad", world.get_in, "kid", "sedan", "passenger")
-    raises("unknown_socket", "sedan has no socket roof", world.get_in, "kid", "sedan", "roof")
+    raises("unknown_socket", "sedan has no socket roof; its sockets are driver, passenger, back_seat", world.get_in, "kid", "sedan", "roof")
     world.get_in("kid", "sedan")
     world.get_out("kid", "sedan")
     world.get_in("kid", "sedan", "back_seat")
     world.get_out("kid", "sedan")
     world.sit_on("kid", "chair")
-    raises("already_seated", "kid is seated in chair.seat", world.get_in, "kid", "sedan")
+    raises("already_seated", "kid is seated in chair.seat; use stand_up first", world.get_in, "kid", "sedan")
     world.stand_up("kid")
     w2 = World(PEOPLE + [person("aunt")], PROPS)
     parked(w2)
@@ -363,24 +385,24 @@ def test_get_in_without_driver_socket_uses_dict_order(world: World):
 def test_ride_and_drive_checks(world: World):
     parked(world)
     world.get_in("dad", "sedan", "passenger")
-    raises("no_driver", "nobody is driving sedan", world.check_rider, "dad", "sedan")
-    raises("not_in_vehicle", "kid is not in sedan", world.check_rider, "kid", "sedan")
-    raises("not_driver", "dad is in sedan.passenger, not the driver's seat", world.check_driver, "dad", "sedan")
-    raises("not_driver", "kid is not in the driver's seat of sedan", world.check_driver, "kid", "sedan")
+    raises("no_driver", "nobody is in sedan.driver; someone must get_in it with socket driver first", world.check_rider, "dad", "sedan")
+    raises("not_in_vehicle", "kid is not in sedan; use get_in first", world.check_rider, "kid", "sedan")
+    raises("not_driver", "dad is in sedan.passenger, not sedan.driver", world.check_driver, "dad", "sedan")
+    raises("not_driver", "kid is not in sedan.driver; use get_in with socket driver first", world.check_driver, "kid", "sedan")
     world.get_in("mom", "sedan")
     world.check_driver("mom", "sedan")
     world.check_rider("dad", "sedan")
-    raises("not_in_vehicle", "kid is not in sedan", world.get_out, "kid", "sedan")
+    raises("not_in_vehicle", "kid is not in sedan; use get_in first", world.get_out, "kid", "sedan")
 
 
 def test_seated_cannot_move_and_vehicle_carries_occupants(world: World):
     parked(world)
     world.get_in("mom", "sedan")
     world.get_in("dad", "sedan")
-    raises("seated", "mom is seated in sedan.driver", world.move, "mom", MARKS["curb"])
-    raises("seated", "dad is seated in sedan.passenger", world.exit, "dad")
-    raises("seated_vehicle", "dad is seated in sedan; use get_out first", world.pick_up, "dad", "cup")
-    raises("seated_vehicle", "mom is in sedan; use get_out", world.stand_up, "mom")
+    raises("seated", "mom is seated in sedan.driver; use get_out first", world.move, "mom", MARKS["curb"])
+    raises("seated", "dad is seated in sedan.passenger; use get_out first", world.exit, "dad")
+    raises("seated_vehicle", "dad is seated in sedan.passenger; use get_out first", world.pick_up, "dad", "cup")
+    raises("seated_vehicle", "mom is seated in sedan.driver; use get_out first", world.stand_up, "mom")
     world.put_on("kid", "hat")  # sanity: others unaffected
     world.move_vehicle("sedan", (-0.2, 0.0, 0.5))
     assert world.props["sedan"].pos == (-0.2, 0.0, 0.5)
@@ -427,9 +449,9 @@ def test_sit_on_errors(world: World):
     parked(world)
     world.sit_on("dad", "chair")
     raises("socket_taken", "chair.seat is taken by dad", world.sit_on, "mom", "chair")
-    raises("no_seat", "cup has nowhere to sit", world.sit_on, "mom", "cup")
-    raises("unknown_socket", "bench has no socket arm", world.sit_on, "mom", "bench", "arm")
-    raises("already_seated", "dad is seated in chair.seat", world.sit_on, "dad", "bench")
+    raises("no_seat", "cup has no sockets to sit on", world.sit_on, "mom", "cup")
+    raises("unknown_socket", "bench has no socket arm; its sockets are back, left_seat, right_seat", world.sit_on, "mom", "bench", "arm")
+    raises("already_seated", "dad is seated in chair.seat; use stand_up first", world.sit_on, "dad", "bench")
     world.sit_on("mom", "bench", "back")
     world.sit_on("kid", "bench")
     w2 = World(PEOPLE + [person("aunt")], PROPS)
@@ -443,8 +465,8 @@ def test_stand_up_and_kneel(world: World):
     parked(world)
     raises("not_sitting", "dad is not sitting or kneeling", world.stand_up, "dad")
     world.sit_on("dad", "chair")
-    raises("seated", "dad is seated in chair.seat", world.kneel, "dad")
-    raises("seated", "dad is seated in chair.seat", world.move, "dad", MARKS["curb"])
+    raises("seated", "dad is seated in chair.seat; use stand_up first", world.kneel, "dad")
+    raises("seated", "dad is seated in chair.seat; use stand_up first", world.move, "dad", MARKS["curb"])
     world.stand_up("dad")
     assert world.people["dad"].pose == "stand" and world.people["dad"].seat is None
     assert world.props["chair"].occupants == {}
@@ -532,14 +554,14 @@ def test_prop_state(world: World):
 
 def test_hug_check(world: World):
     opening(world)
-    raises("hug_self", "mom cannot hug themselves", world.hug_check, "mom", "mom")
-    raises("offstage", "dad is offstage", world.hug_check, "mom", "dad")
+    raises("hug_self", '"target" is mom themselves', world.hug_check, "mom", "mom")
+    raises("offstage", "dad is offstage; use enter first", world.hug_check, "mom", "dad")
     world.move("dad", MARKS["steps_foot"])
     world.hug_check("dad", "mom")
     world.begin_shot(shot(id="s2", start={"dad": {"at": "home"}, "mom": {"at": "home"}}),
                      MARKS, same_set_as_previous=True)
     world.sit_on("mom", "chair")
-    raises("seated", "mom is seated in chair.seat", world.hug_check, "dad", "mom")
+    raises("seated", "mom is seated in chair.seat; use stand_up first", world.hug_check, "dad", "mom")
 
 
 def test_move_exit_and_facing(world: World):
@@ -632,7 +654,7 @@ def test_begin_shot_errors_leave_world_unchanged(world: World):
            shot(id="s2", start={"dad": {"at": "home", "holding": "hymn_books"},
                                 "mom": {"at": "curb", "holding": "hymn_books"}}),
            MARKS, False)
-    raises("unknown_mark", "nowhere is not a mark in shot s2", world.begin_shot,
+    raises("unknown_mark", "nowhere is not a mark in this shot; the marks are offstage_left, offstage_right, steps_left, steps_foot, steps_top, curb, home", world.begin_shot,
            shot(id="s2", start={"dad": {"at": "nowhere"}}), MARKS, False)
     raises("prop_conflict",
            "dad starts holding hymn_books, and propStart also places it; "
@@ -753,7 +775,7 @@ def test_new_set_clears_props_left_behind(world: World):
     assert books.parent == "ground" and books.world_pos is None and world.is_unplaced("hymn_books")
     for what in LOOSE:
         assert world.is_unplaced(what), what
-    raises("not_on_stage", "hymn_books is not on stage", world.pick_up, "mom", "hymn_books")
+    raises("not_on_stage", "hymn_books is not on stage; place it with propStart", world.pick_up, "mom", "hymn_books")
     raises("not_holding", "it is not on stage", world.hold, "mom", "hymn_books")
 
 
@@ -838,13 +860,13 @@ def test_hand_to_a_prop_mom_holds_exact_reason(world: World):
 
 def test_start_seat_must_be_on_stage(world: World):
     opening(world)
-    raises("not_on_stage", "chair is not on stage in shot s2; place it with propStart", world.begin_shot,
+    raises("not_on_stage", "chair is not on stage in this shot; place it with propStart", world.begin_shot,
            shot(id="s2", start={"mom": {"at": "home", "in": "chair.seat"}}), MARKS, True)
-    raises("not_on_stage", "sedan is not on stage in shot s2; place it with propStart", world.begin_shot,
+    raises("not_on_stage", "sedan is not on stage in this shot; place it with propStart", world.begin_shot,
            shot(id="s2", start={"mom": {"at": "home", "in": "sedan.driver"}}), MARKS, False)
     # a seat on a carried prop is not on stage either
     world.move("dad", MARKS["home"])
-    raises("not_on_stage", "chair is not on stage in shot s2; place it with propStart", world.begin_shot,
+    raises("not_on_stage", "chair is not on stage in this shot; place it with propStart", world.begin_shot,
            shot(id="s2", start={"dad": {"at": "home", "holding": "chair"}, "mom": {"at": "home", "in": "chair.seat"}}),
            MARKS, True)
     # prop_start is applied before seats, so placing it in the same shot works
@@ -855,7 +877,7 @@ def test_start_seat_must_be_on_stage(world: World):
 
 def test_prop_start_on_a_prop_that_is_not_on_stage(world: World):
     opening(world)
-    raises("not_on_stage", "table is not on stage in shot s2; place it with propStart", world.begin_shot,
+    raises("not_on_stage", "table is not on stage in this shot; place it with propStart", world.begin_shot,
            shot(id="s2", propStart={"cup": {"on": "table.top"}}), MARKS, True)
     # order inside prop_start does not matter
     world.begin_shot(shot(id="s2", propStart={"cup": {"on": "table.top"}, "table": {"at": "curb"}}), MARKS, True)
@@ -879,7 +901,7 @@ def test_start_holding_a_prop_someone_sits_on(world: World):
 
 def test_pick_up_and_put_on_an_unplaced_prop(world: World):
     world.begin_shot(shot(start={"dad": {"at": "home"}}), MARKS, same_set_as_previous=False)
-    raises("not_on_stage", "cup is not on stage", world.pick_up, "dad", "cup")
+    raises("not_on_stage", "cup is not on stage; place it with propStart", world.pick_up, "dad", "cup")
     raises("not_on_stage", "hat is not on stage", world.put_on, "dad", "hat")
     raises("not_holding", "it is not on stage", world.hand_to, "dad", "cup", "mom")
     raises("not_holding", "it is not on stage", world.drop, "dad", "cup", (0, 0, 0.5))
@@ -887,11 +909,11 @@ def test_pick_up_and_put_on_an_unplaced_prop(world: World):
 
 def test_offstage_puppets_cannot_handle_props(world: World):
     opening(world)
-    raises("offstage", "dad is offstage", world.pick_up, "dad", "cup")
+    raises("offstage", "dad is offstage; use enter first", world.pick_up, "dad", "cup")
     raises("offstage", "dad is offstage", world.put_on, "dad", "hat")
     world.exit("mom")
-    raises("offstage", "mom is offstage", world.hold, "mom", "hymn_books")
-    raises("offstage", "mom is offstage", world.drop, "mom", "hymn_books", (0, 0, 0.5))
+    raises("offstage", "mom is offstage; use enter first", world.hold, "mom", "hymn_books")
+    raises("offstage", "mom is offstage; use enter first", world.drop, "mom", "hymn_books", (0, 0, 0.5))
     raises("offstage", "mom is offstage", world.put_on, "mom", "hymn_books")
     raises("offstage", "mom is offstage", world.place_on, "mom", "hymn_books", "ground", (0, 0, 0.5))
 
@@ -926,13 +948,13 @@ def test_move_vehicle_carries_puppets_seated_on_stacked_props(world: World):
 
 
 def test_move_vehicle_that_is_not_on_stage(world: World):
-    raises("not_on_stage", "sedan is not on stage", world.move_vehicle, "sedan", (0, 0, 0.5))
+    raises("not_on_stage", "sedan is not on stage; place it with propStart", world.move_vehicle, "sedan", (0, 0, 0.5))
 
 
 def test_exit_while_seated_or_kneeling(world: World):
     parked(world)
     world.sit_on("dad", "chair")
-    raises("seated", "dad is seated in chair.seat", world.exit, "dad")
+    raises("seated", "dad is seated in chair.seat; use stand_up first", world.exit, "dad")
     world.kneel("mom")
     world.exit("mom")
     assert world.people["mom"].pose == "stand" and not world.on_stage("mom")
@@ -952,8 +974,8 @@ def test_put_on_a_prop_someone_sits_on(world: World):
 def test_put_on_from_the_ground_while_seated_in_a_vehicle(world: World):
     parked(world)
     world.get_in("dad", "sedan")
-    raises("seated_vehicle", "dad is seated in sedan; use get_out first", world.put_on, "dad", "hat")
-    raises("seated_vehicle", "dad is seated in sedan; use get_out first", world.pick_up, "dad", "hat")
+    raises("seated_vehicle", "dad is seated in sedan.driver; use get_out first", world.put_on, "dad", "hat")
+    raises("seated_vehicle", "dad is seated in sedan.driver; use get_out first", world.pick_up, "dad", "hat")
 
 
 def test_cannot_take_a_prop_someone_sits_on_through_a_stacked_prop(world: World):
@@ -1306,7 +1328,7 @@ def test_check_rider_accepts_a_puppet_on_a_prop_stacked_on_the_vehicle(world: Wo
     )
     world.check_rider("kid", "sedan")  # on the chair, on the crate, on the sedan
     world.check_rider("mom", "sedan")
-    raises("not_in_vehicle", "dad is not in sedan", world.check_rider, "dad", "sedan")
-    raises("not_in_vehicle", "kid is not in wagon", world.check_rider, "kid", "wagon")
+    raises("not_in_vehicle", "dad is not in sedan; use get_in first", world.check_rider, "dad", "sedan")
+    raises("not_in_vehicle", "kid is not in wagon; use get_in first", world.check_rider, "kid", "wagon")
     world.get_out("mom", "sedan")
-    raises("no_driver", "nobody is driving sedan", world.check_rider, "kid", "sedan")
+    raises("no_driver", "nobody is in sedan.driver; someone must get_in it with socket driver first", world.check_rider, "kid", "sedan")

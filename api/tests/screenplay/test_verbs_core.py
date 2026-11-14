@@ -126,7 +126,7 @@ def test_enter_errors():
     e = fails(world, tracks, "already_on_stage", who="mom", do="enter", to="curb")
     assert e.reason == "mom is already on stage; use walk_to"
     e = fails(world, tracks, "unknown_mark", who="dad", do="enter", to="porch")
-    assert e.reason == "porch is not a mark in shot s1"
+    assert e.reason == "porch is not a mark in this shot; the marks are offstage_left, offstage_right, steps_left, steps_foot, steps_top, curb, far, high"
     fails(world, tracks, "unknown_person", who="gran", do="enter", to="curb")
 
 
@@ -166,9 +166,9 @@ def test_walk_to_errors():
     world, tracks = scene({"dad": {"at": "steps_left"}, "mom": {"at": "steps_foot", "in": "chair.seat"}},
                           {"chair": {"at": "steps_foot"}})
     e = fails(world, tracks, "unknown_mark", who="dad", do="walk_to", to="nowhere")
-    assert e.reason == "nowhere is not a mark in shot s1"
+    assert e.reason == "nowhere is not a mark in this shot; the marks are offstage_left, offstage_right, steps_left, steps_foot, steps_top, curb, far, high"
     e = fails(world, tracks, "seated", who="mom", do="walk_to", to="curb")
-    assert e.reason == "mom is seated in chair.seat"
+    assert e.reason == "mom is seated in chair.seat; use stand_up first"
     fails(world, tracks, "missing_param", who="dad", do="walk_to")
 
 
@@ -519,7 +519,7 @@ def test_pick_up_that_fails_at_the_spot_leaves_the_world_untouched(monkeypatch):
     low_cup(world, -0.98)
     monkeypatch.setattr(verbs_core, "STAGE_EDGE", 5.0)
     e = fails(world, tracks, "offstage", who="dad", do="pick_up", what="cup")
-    assert str(e) == "dad is offstage"
+    assert str(e) == "dad is offstage; use enter first"
 
 
 @pytest.mark.parametrize("x,facing", [(-1.0, "right"), (1.0, "left")])
@@ -576,7 +576,7 @@ def test_pick_up_errors():
     e = fails(world, tracks, "already_held", who="dad", do="pick_up", what="books")
     assert e.reason == "mom is holding it"
     e = fails(world, tracks, "not_on_stage", who="dad", do="pick_up", what="cup")
-    assert e.reason == "cup is not on stage"
+    assert e.reason == "cup is not on stage; place it with propStart"
     world._to_ground("cup", (0.0, 1.5, 0.5))  # straight above dad's head, far out of reach
     e = fails(world, tracks, "out_of_reach", who="dad", do="pick_up", what="cup")
     assert e.who == "dad"
@@ -589,7 +589,7 @@ def test_pick_up_offstage_and_hands_full():
     world, tracks = scene({"dad": {"at": "offstage_left"}, "mom": {"at": "steps_top", "holding": "books"}})
     world._to_ground("cup", (0.0, 0.0, 0.5))
     e = fails(world, tracks, "offstage", who="dad", do="pick_up", what="cup")
-    assert e.reason == "dad is offstage"
+    assert e.reason == "dad is offstage; use enter first"
     world._attach_puppet("hat", "mom", "hand_l")
     e = fails(world, tracks, "hands_full", who="mom", do="pick_up", what="cup")
     assert e.reason == "mom's hands are full (hand_r: books, hand_l: hat)"

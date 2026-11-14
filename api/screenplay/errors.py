@@ -3,8 +3,12 @@
 The director agent reads these messages and fixes its draft, so the wording is stable:
 
     shot s1, t=5: dad cannot hand_to "hymn_books"; mom is holding it
-    shot s1: steps_top is not a mark in shot s1
-    screenplay: church_steps is not a known set
+    shot s1: steps_top is not a mark in this shot; the marks are offstage_left, offstage_right, curb
+    screenplay: set "church_steps" is not a known set; known sets: church_steps_1988
+
+One grammar: ``<head>: <who> cannot <do> "<what>"; <subject> <fact>; <fix>``. Lists read
+``the <things> are a, b`` (or ``its sockets are a, b``), times go through ``state.fmt_t``
+(``t=2.5``), and an action aimed at its own actor says ``"<field>" is <who> themselves``.
 
 For an action error, ``CompileError.t`` is the action's ``t`` as written in the screenplay (not
 the cue-retimed time), and ``who`` / ``do`` are filled in.
@@ -282,6 +286,9 @@ HINT_VARIANTS: dict[str, tuple[tuple[re.Pattern[str], str | None], ...]] = {
         (re.compile(r"^\S+ is wearing it$"), None),
         (re.compile(r"^it is not on stage$"), "place {what} with propStart in shot {shot}, then have {who} pick_up {what}"),
     ),
+    # state.World.seat_reason ends with the fix: get_out in a vehicle, stand_up anywhere else
+    "seated": ((re.compile(r"; use get_out first$"), "add a get_out for {subject} before this {do}"),),
+    "already_seated": ((re.compile(r"; use get_out first$"), "add a get_out for {subject} first"),),
     "prop_conflict": (
         (
             re.compile(r"^(?P<holder>\S+) starts holding (?P<what>\S+),"),

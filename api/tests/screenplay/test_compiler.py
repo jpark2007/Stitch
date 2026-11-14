@@ -201,7 +201,7 @@ def test_starting_in_a_seat_that_is_not_on_stage():
     data["shots"][0]["start"]["kid"] = {"at": "curb", "in": "chair.seat"}
     res = run(data)
     assert [(e.code, e.message, e.shot) for e in res.errors] == [
-        ("not_on_stage", "shot s1: chair is not on stage in shot s1; place it with propStart", "s1"),
+        ("not_on_stage", "shot s1: chair is not on stage in this shot; place it with propStart", "s1"),
     ]
 
 
@@ -212,7 +212,7 @@ def test_camera_target_that_is_not_on_stage():
     res = run(data)
     (err,) = res.errors
     assert err.code == "bad_camera"
-    assert err.message == 'shot s1, t=5.5: cannot dolly_to "chair"; chair is not on stage'
+    assert err.message == 'shot s1, t=5.5: cannot dolly_to "chair"; chair is not on stage; place it with propStart'
     assert (err.shot, err.t, err.who, err.do) == ("s1", 5.5, None, "dolly_to")
 
 
@@ -242,8 +242,8 @@ def test_a_line_inside_the_rise_window_may_start_but_must_not_overlap():
     assert [e.code for e in res.errors] == ["lines_overlap"]
     assert res.errors[0].shot == "s1"
     assert res.errors[0].message == (
-        "shot s1, mom's narration line 1: line 1 starts at shot t=-0.50, before line 0 has been said "
-        "(its last word ends at shot t=2.00); start line 1 later or shorten line 0"
+        "shot s1, mom's narration line 1: line 1 starts at shot t=-0.5, before line 0 has been said "
+        "(its last word ends at shot t=2); start line 1 later or shorten line 0"
     )
 
 
@@ -638,10 +638,10 @@ def test_a_scrub_turned_around_by_the_cues_is_a_narration_error():
     assert not res.ok
     bad = [e for e in res.errors if e.code == "interaction_bad_range"]
     assert len(bad) == 1 and bad[0].shot == "s1"
-    # narration.py builds the head ("shot s1, narration line 0: ..."); the reason is the point here
+    # narration.py builds the head ("shot s1, interaction 0: ..."); the reason is the point here
     assert bad[0].message.startswith("shot s1, ")
     assert bad[0].message.endswith(
-        'interaction "drop_books" would scrub from shot t=3.25 back to t=2.50 '
+        'interaction "drop_books" would scrub from shot t=3.25 back to t=2.5 '
         "once its actions move onto their cue words; widen the range or cue the actions in order"
     )
 

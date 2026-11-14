@@ -209,7 +209,7 @@ def test_exit_while_kneeling_stands_up_first(world, tracks):
 
 def test_exit_while_seated_is_refused(world, tracks):
     world.sit_on("mom", "chair")
-    expect_error("seated", "mom is seated in chair.seat", apply_exit, world, tracks, 2.0, do="exit", who="mom")
+    expect_error("seated", "mom is seated in chair.seat; use stand_up first", apply_exit, world, tracks, 2.0, do="exit", who="mom")
 
 
 def test_exit_when_already_offstage(world, tracks):
@@ -264,8 +264,14 @@ def test_turn_to_unknown_target(world, tracks):
 
 
 def test_turn_to_self(world, tracks):
-    expect_error("self_target", "dad cannot turn to face themselves",
+    expect_error("self_target", '"target" is dad themselves',
                  apply_turn_to, world, tracks, 2.0, do="turn_to", who="dad", target="dad")
+
+
+def test_turn_to_without_a_target(world, tracks):
+    # validate's missing_param wording
+    expect_error("missing_param", 'turn_to requires who, target; "target" is missing',
+                 apply_turn_to, world, tracks, 2.0, do="turn_to", who="dad")
 
 
 # -------------------------------------------------------------------- follow
@@ -317,8 +323,13 @@ def test_follow_leader_who_moved_only_before_t(world, tracks):
 
 
 def test_follow_self(world, tracks):
-    expect_error("self_target", "kid cannot follow themselves",
+    expect_error("self_target", '"target" is kid themselves',
                  apply_follow, world, tracks, 2.0, do="follow", who="kid", target="kid")
+
+
+def test_follow_without_a_target(world, tracks):
+    expect_error("missing_param", 'follow requires who, target; "target" is missing',
+                 apply_follow, world, tracks, 2.0, do="follow", who="kid")
 
 
 def test_follow_needs_a_person(world, tracks):
@@ -337,7 +348,7 @@ def test_follow_bad_dur(world, tracks):
 def test_follow_while_seated(world, tracks):
     lead_dad(tracks, world)
     world.sit_on("mom", "chair")
-    expect_error("seated", "mom is seated in chair.seat",
+    expect_error("seated", "mom is seated in chair.seat; use stand_up first",
                  apply_follow, world, tracks, 2.0, do="follow", who="mom", target="dad")
 
 

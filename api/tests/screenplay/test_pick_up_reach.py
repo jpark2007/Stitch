@@ -310,7 +310,7 @@ def test_a_seated_puppet_never_walks_to_the_cap():
     res = compile_one([{"t": 1, "who": "mom", "do": "pick_up", "what": "cap"}],
                       {"mom": {"at": "bench_spot", "in": "chair.seat"}}, {"chair": {"at": "bench_spot"},
                                                                          "cap": {"at": "door"}})
-    assert errors(res) == [("seated", 'shot s1, t=1: mom cannot pick_up "cap"; mom is seated in chair.seat')]
+    assert errors(res) == [("seated", 'shot s1, t=1: mom cannot pick_up "cap"; mom is seated in chair.seat; use stand_up first')]
 
 
 HIGH = {"high": [0.5, 1.0]}  # x = 0, y = 1.0: far above every standing shoulder

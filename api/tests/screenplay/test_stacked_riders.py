@@ -198,4 +198,4 @@ def test_ride_to_by_the_driver_keeps_the_stacked_rider_busy():
 def test_someone_on_a_chair_on_the_ground_cannot_ride_to():
     res = run([{"t": 1, "who": "mom", "do": "ride_to", "what": "sedan", "to": "corner"}],
               start={**SEATED, "mom": {"at": "corner"}})
-    assert errors(res) == [("not_in_vehicle", 'shot s1, t=1: mom cannot ride_to "sedan"; mom is not in sedan')]
+    assert errors(res) == [("not_in_vehicle", 'shot s1, t=1: mom cannot ride_to "sedan"; mom is not in sedan; use get_in first')]

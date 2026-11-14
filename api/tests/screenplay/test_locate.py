@@ -148,7 +148,7 @@ def test_unknown_name(scene):
     )
     with pytest.raises(StateError) as e:
         loc.mark("dad")
-    assert (e.value.code, e.value.reason) == ("unknown_mark", "dad is not a mark in shot s1")
+    assert (e.value.code, e.value.reason) == ("unknown_mark", "dad is not a mark in this shot; the marks are offstage_left, offstage_right, steps_top, steps_foot, porch")
 
 
 def test_a_prop_track_parented_to_itself_is_a_cycle(scene):
@@ -180,7 +180,7 @@ def test_unplaced_prop_is_not_on_stage(scene):
     loc = make_locate(world, tracks, MARKS, "s1")
     with pytest.raises(StateError) as e:
         loc("ghost", 0)
-    assert (e.value.code, e.value.reason) == ("not_on_stage", "ghost is not on stage")
+    assert (e.value.code, e.value.reason) == ("not_on_stage", "ghost is not on stage; place it with propStart")
 
 
 def _new_set(world, tracks):
@@ -202,7 +202,7 @@ def test_a_prop_the_previous_set_left_behind_is_not_on_stage(scene):
     for t in (5.0, 6.0, 9.0):  # its parked tracks would say offstage_left
         with pytest.raises(StateError) as e:
             loc("table", t)
-        assert (e.value.code, e.value.reason) == ("not_on_stage", "table is not on stage")
+        assert (e.value.code, e.value.reason) == ("not_on_stage", "table is not on stage; place it with propStart")
     with pytest.raises(StateError) as e:
         loc.prop("table", 6.0)
     assert e.value.code == "not_on_stage"
@@ -253,20 +253,20 @@ def test_turn_to_a_prop_the_previous_set_left_behind_is_an_exact_error():
     res = _compile_two_sets([{"t": 0, "do": "turn_to", "who": "dad", "target": "hymn_books"}])
     assert not res.ok
     assert [(e.code, e.message) for e in res.errors] == [
-        ("not_on_stage", "shot s2, t=0: dad cannot turn_to; hymn_books is not on stage"),
+        ("not_on_stage", "shot s2, t=0: dad cannot turn_to; hymn_books is not on stage; place it with propStart"),
     ]
 
 
 def test_point_at_a_prop_the_previous_set_left_behind_is_an_exact_error():
     res = _compile_two_sets([{"t": 0, "do": "point_at", "who": "dad", "target": "hymn_books"}])
-    assert [e.message for e in res.errors] == ["shot s2, t=0: dad cannot point_at; hymn_books is not on stage"]
+    assert [e.message for e in res.errors] == ["shot s2, t=0: dad cannot point_at; hymn_books is not on stage; place it with propStart"]
 
 
 def test_camera_close_up_on_a_prop_the_previous_set_left_behind_is_an_exact_error():
     res = _compile_two_sets(s2_camera=[{"t": 0, "move": "close_up", "target": "hymn_books"}])
     assert not res.ok
     assert [(e.code, e.message) for e in res.errors] == [
-        ("bad_camera", 'shot s2, t=0: cannot close_up "hymn_books"; hymn_books is not on stage'),
+        ("bad_camera", 'shot s2, t=0: cannot close_up "hymn_books"; hymn_books is not on stage; place it with propStart'),
     ]
 
 

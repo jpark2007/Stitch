@@ -91,9 +91,16 @@ def test_values_are_rounded_like_the_timeline():
     assert (got.t, got.dur) == (1.0, 1.235)
 
 
-@pytest.mark.parametrize("value", ["noon", None, "Dusk"])
+@pytest.mark.parametrize("value", ["noon", "Dusk"])
 def test_bad_time_of_day_value(value):
-    error("invalid_value", "time_of_day value must be one of dawn, day, dusk, night", act(do="time_of_day", value=value))
+    # validate's wording for the same value (validate.py, unknown time of day)
+    error("invalid_value", f'"{value}" is not a time of day; use one of dawn, day, dusk, night',
+          act(do="time_of_day", value=value))
+
+
+def test_time_of_day_without_a_value():
+    # validate's missing_param wording and code
+    error("missing_param", 'time_of_day requires value; "value" is missing', act(do="time_of_day"))
 
 
 @pytest.mark.parametrize("verb", EFFECT_VERBS)
@@ -103,7 +110,7 @@ def test_negative_dur(verb):
 
 
 def test_rain_starting_after_the_shot_ends():
-    error("bad_time", "rain starts 0.50 s after the shot ends; give it a dur", act(do="rain"), t=12.5)
+    error("bad_time", "rain starts 0.5 s after the shot ends; give it a dur", act(do="rain"), t=12.5)
 
 
 def test_unknown_place():
@@ -195,5 +202,5 @@ def test_params_the_effect_does_not_take():
 
 
 def test_not_an_effect():
-    error("not_an_effect", "wave is not an effect; effects are confetti, steam, rain, smoke, time_of_day",
+    error("not_an_effect", "wave is not an effect; the effects are confetti, steam, rain, smoke, time_of_day",
           act(do="wave", who="dad"))
