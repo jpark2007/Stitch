@@ -1,5 +1,12 @@
 """Account routes: sign up, log in, log out, current user (ARCHITECTURE.md sections 4 and 6).
 
+- POST /auth/signup, POST /auth/login, POST /auth/logout
+- GET /me: the signed-in user and their families; 401 when signed out.
+- GET /session: the same data, but always 200 with `user` null when signed out (or the
+  cookie is invalid), so a signed-out page view does not log a 401. It reads the database
+  only when the cookie is a valid token, never sets or clears a cookie, and answers 503
+  (not "signed out") when the database cannot be read. Both are `Cache-Control: no-store`.
+
 Responses are built only from schemas.User, which has no password field. The stored
 password hash is read through users_db.get_login() and never leaves login().
 
@@ -13,6 +20,7 @@ from __future__ import annotations
 import logging
 import secrets
 import threading
+from collections.abc import Callable
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from pymongo.database import Database
@@ -30,6 +38,8 @@ log = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
 
 INVALID_LOGIN = "Invalid email or password"
+SESSION_UNAVAILABLE = "Could not check your session right now"
+NO_STORE = {"Cache-Control": "no-store"}  # the answer depends on the cookie
 HTTP_422 = 422  # starlette renamed the constant; the number is the contract
 
 # Signup limits, checked after trimming (schemas.SignupRequest itself is unbounded).
@@ -167,8 +177,51 @@ def logout(
 
 @router.get("/me", response_model=schemas.MeResponse)
 def me(
+    response: Response,
     user: schemas.User = Depends(auth.current_user),
     db: Database = Depends(get_db),
 ) -> schemas.MeResponse:
     """The signed-in user and the families they belong to. 401 when signed out."""
+    response.headers.update(NO_STORE)
     return _me(db, user)
+
+
+def _db_opener(request: Request) -> Callable[[], Database]:
+    """get_db, not yet called (honouring app.dependency_overrides like Depends(get_db) does).
+
+    GET /session calls it only once the cookie decodes, so a signed-out page view never
+    touches the database and still works while MongoDB is down.
+    """
+    return request.app.dependency_overrides.get(get_db, get_db)
+
+
+@router.get("/session", response_model=schemas.SessionResponse)
+def session_probe(
+    response: Response,
+    session: str | None = Cookie(default=None, alias=auth.COOKIE_NAME),
+    open_db: Callable[[], Database] = Depends(_db_opener),
+) -> schemas.SessionResponse:
+    """Who is signed in. Always 200: user null and no families when nobody is.
+
+    Signed in, the body is exactly GET /me's. No cookie, an empty or invalid one, a revoked
+    session or a deleted user are all "signed out". The cookie is never set or cleared here:
+    clearing an invalid one could race a login in another tab and wipe its fresh cookie.
+
+    A valid token whose session or user cannot be read (PyMongoError) is a 503, not
+    "signed out", which the web app would act on by sending the user to the login page.
+    """
+    response.headers.update(NO_STORE)
+    if auth.decode_session_claims(session) is None:  # no database needed to say "signed out"
+        return schemas.SessionResponse()
+    try:
+        db = open_db()
+        user = auth.session_user_or_none(session, db)
+        if user is None:
+            return schemas.SessionResponse()
+        me = _me(db, user)
+    except PyMongoError:
+        log.exception("Could not read the session or its user")  # never logs the token
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail=SESSION_UNAVAILABLE, headers=NO_STORE
+        ) from None
+    return schemas.SessionResponse(user=me.user, families=me.families)

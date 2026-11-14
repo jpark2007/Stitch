@@ -51,13 +51,14 @@ def _assert_no_secrets(resp) -> None:
 # ---------------------------------------------------------------- router shape
 
 
-def test_router_has_exactly_the_four_routes():
+def test_router_has_exactly_the_five_routes():
     routes = {(m, r.path) for r in auth_routes.router.routes for m in r.methods}
     assert routes == {
         ("POST", "/auth/signup"),
         ("POST", "/auth/login"),
         ("POST", "/auth/logout"),
         ("GET", "/me"),
+        ("GET", "/session"),  # tests/data/test_routes_session.py
     }
 
 
