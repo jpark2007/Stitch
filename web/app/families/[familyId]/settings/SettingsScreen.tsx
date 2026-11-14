@@ -26,6 +26,8 @@ import {
   findFamily,
   inviteAskLine,
   isWelcome,
+  NO_LONGER_ADMIN,
+  resyncAfter,
   settingsLoadError,
   signedInLabel,
   type SettingsLoad,
@@ -162,41 +164,80 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
     setLoad((prev) => (prev.kind === "ready" ? { ...prev, family, now } : prev));
   }, [api, fid]);
 
+  // Set when a refused admin action turns out to mean the viewer is no longer
+  // an admin: the admin cards go, so the page says why.
+  const [lostAdmin, setLostAdmin] = useState(false);
+
+  /**
+   * After a failed change, show the family as it is now (resyncAfter says
+   * what to fetch), so no stale link, row or role stays on screen beside the
+   * message. Never rejects: the caller rethrows the original error.
+   */
+  const resync = useCallback(
+    async (err: unknown) => {
+      const what = resyncAfter(err);
+      const jobs: Promise<unknown>[] = [];
+      if (what.family) {
+        jobs.push(
+          api.getFamily(fid).then(
+            (family) => {
+              const now = new Date();
+              setLoad((prev) => (prev.kind === "ready" ? { ...prev, family, now } : prev));
+              const mine = family.members?.find((m) => m.userId === me.user.id);
+              if (mine && mine.role !== "admin") setLostAdmin(true);
+            },
+            (e: unknown) => {
+              // Gone, or no longer ours: the not-found card.
+              if (isApiError(e) && e.status === 404) setLoad({ kind: "not-found" });
+            },
+          ),
+        );
+      }
+      if (what.session) jobs.push(refresh());
+      await Promise.allSettled(jobs);
+    },
+    [api, fid, me.user.id, refresh],
+  );
+
+  /** Run a change; on failure resync, then rethrow for the card or row to word. */
+  const guarded = useCallback(
+    async <T,>(change: () => Promise<T>): Promise<T> => {
+      try {
+        return await change();
+      } catch (err) {
+        await resync(err);
+        throw err;
+      }
+    },
+    [resync],
+  );
+
   const createInvite = useCallback(async () => {
-    await api.createInvite(fid);
+    await guarded(() => api.createInvite(fid));
     await reloadFamily();
-  }, [api, fid, reloadFamily]);
+  }, [api, fid, guarded, reloadFamily]);
 
   const revokeInvite = useCallback(
     async (code: string) => {
-      await api.revokeInvite(fid, code);
+      await guarded(() => api.revokeInvite(fid, code));
       await reloadFamily();
     },
-    [api, fid, reloadFamily],
+    [api, fid, guarded, reloadFamily],
   );
 
   const removeMember = useCallback(
     async (userId: string) => {
-      await api.removeMember(fid, userId);
+      await guarded(() => api.removeMember(fid, userId));
       await reloadFamily();
     },
-    [api, fid, reloadFamily],
+    [api, fid, guarded, reloadFamily],
   );
 
   const changeRole = useCallback(
     async (userId: string, role: Member["role"]) => {
-      let family: Family;
-      try {
-        family = await api.setMemberRole(fid, userId, { role });
-      } catch (err) {
-        // The page was out of date (someone changed roles or left elsewhere):
-        // show the family as it is now, beside the row's message. A 403 means
-        // the viewer is no longer an admin, so the session needs asking too.
-        if (isApiError(err) && (err.status === 403 || err.status === 404 || err.status === 409)) {
-          await Promise.allSettled([reloadFamily(), err.status === 403 ? refresh() : undefined]);
-        }
-        throw err;
-      }
+      // On a 403, 404 or 409 the page was out of date: guarded shows the
+      // family as it is now, beside the row's message.
+      const family: Family = await guarded(() => api.setMemberRole(fid, userId, { role }));
       const now = new Date();
       setLoad((prev) => (prev.kind === "ready" ? { ...prev, family, now } : prev));
       if (userId === me.user.id && role === "member") {
@@ -207,7 +248,7 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
         await refresh().catch(() => undefined);
       }
     },
-    [api, fid, me.user.id, refresh, reloadFamily],
+    [api, fid, guarded, me.user.id, refresh],
   );
 
   if (load.kind === "not-found") return <FamilyNotFound />;
@@ -244,6 +285,11 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
     const rows = memberRows(load.family.members ?? [], load.tree.people, me.user.id, isAdmin);
     body = (
       <div ref={contentRef} tabIndex={-1} className="flex flex-col gap-8 focus:outline-none">
+        {lostAdmin && !isAdmin ? (
+          <p role="status" className="border-l-[3px] border-rule pl-4 text-[0.9375rem] leading-relaxed text-pretty text-ink-soft">
+            {NO_LONGER_ADMIN}
+          </p>
+        ) : null}
         {isAdmin ? (
           <InviteLinkCard
             invite={pickActiveInvite(load.family.invites, load.now)}

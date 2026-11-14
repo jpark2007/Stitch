@@ -99,23 +99,61 @@ export function roleChangeCopy(row: Pick<MemberRow, "name" | "personId" | "isYou
   };
 }
 
+function statusOf(err: unknown): number | undefined {
+  const status = typeof err === "object" && err !== null ? (err as { status?: unknown }).status : undefined;
+  return typeof status === "number" ? status : undefined;
+}
+
+function ownMessage(err: unknown): string {
+  if (err instanceof Error && err.message.trim()) return err.message;
+  return "Something went wrong. Please try again.";
+}
+
+/** A 403 from an admin route: the viewer was an admin when the page loaded, and isn't now. */
+export function notAdminMessage(what: string): string {
+  return `Only admins can ${what}, and you’re not an admin of this family any more.`;
+}
+
+function lastAdminMessage(row: Pick<MemberRow, "name" | "personId">): string {
+  return `${whoIn(row, "This family member")} is the only admin left, and a family always needs one. Make someone else an admin first.`;
+}
+
 /**
  * The message for a failed role change, in plain words. A 409 is the API's
- * LAST_ADMIN ("A family needs at least one admin") and a 404 a member who has
- * left; anything else keeps the error's own message.
+ * LAST_ADMIN ("A family needs at least one admin"), a 404 a member who has
+ * left, and a 403 a viewer who is no longer an admin; anything else (a 5xx,
+ * no connection) keeps the error's own message, which the API client already
+ * words for people.
  */
 export function roleChangeError(err: unknown, row: Pick<MemberRow, "name" | "personId" | "isYou">): string {
-  const status = typeof err === "object" && err !== null ? (err as { status?: unknown }).status : undefined;
+  const status = statusOf(err);
   if (status === 409) {
     return row.isYou
       ? "You’re the only admin, so you can’t step down yet. Make someone else an admin first."
-      : `${whoIn(row, "This family member")} is the only admin left, and a family always needs one. Make someone else an admin first.`;
+      : lastAdminMessage(row);
   }
   if (status === 404 && !row.isYou) {
     return `${whoIn(row, "This family member")} isn’t in the family any more.`;
   }
-  if (err instanceof Error && err.message.trim()) return err.message;
-  return "Something went wrong. Please try again.";
+  if (status === 403) return notAdminMessage("change who is an admin");
+  return ownMessage(err);
+}
+
+/**
+ * What removing a member came to. A 404 means they had already left, which
+ * is what the admin wanted: `gone` is true and `message` says so calmly. A
+ * 409 is the last admin, a 403 a viewer who is no longer an admin; anything
+ * else keeps the error's own message.
+ */
+export function removeMemberOutcome(
+  err: unknown,
+  row: Pick<MemberRow, "name" | "personId">,
+): { gone: boolean; message: string } {
+  const status = statusOf(err);
+  if (status === 404) return { gone: true, message: `${whoIn(row, "The family member")} had already left the family.` };
+  if (status === 409) return { gone: false, message: lastAdminMessage(row) };
+  if (status === 403) return { gone: false, message: notAdminMessage("remove people") };
+  return { gone: false, message: ownMessage(err) };
 }
 
 /** Shown when no person in the tree is claimed by this member's account. */

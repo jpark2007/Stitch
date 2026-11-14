@@ -8,6 +8,30 @@ import type { Invite } from "../../lib/types";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * What a failed invite action came to, in plain words. Turning off a link
+ * the server no longer has (404, "Invite not found or expired") is what the
+ * admin wanted: `done` is true and `message` says so calmly. A 403 is a
+ * viewer who is no longer an admin, a 404 on making a link a family that is
+ * gone; anything else (a 5xx, no connection) keeps the error's own message,
+ * which the API client already words for people.
+ */
+export function inviteActionOutcome(err: unknown, action: "create" | "revoke"): { done: boolean; message: string } {
+  const raw = typeof err === "object" && err !== null ? (err as { status?: unknown }).status : undefined;
+  const status = typeof raw === "number" ? raw : undefined;
+  if (status === 403) {
+    const what = action === "create" ? "make invite links" : "turn off invite links";
+    return { done: false, message: `Only admins can ${what}, and you’re not an admin of this family any more.` };
+  }
+  if (status === 404) {
+    return action === "revoke"
+      ? { done: true, message: "That link was already turned off." }
+      : { done: false, message: "We couldn’t find this family any more." };
+  }
+  const own = err instanceof Error && err.message.trim() ? err.message : "Something went wrong. Please try again.";
+  return { done: false, message: own };
+}
+
 /** The link people open to join: `${origin}/join/${code}`. */
 export function inviteUrl(origin: string, code: string): string {
   return `${origin.replace(/\/+$/, "")}/join/${encodeURIComponent(code)}`;

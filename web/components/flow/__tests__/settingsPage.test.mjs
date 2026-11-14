@@ -24,6 +24,8 @@ const {
   inviteAskLine,
   isWelcome,
   listOfNames,
+  NO_LONGER_ADMIN,
+  resyncAfter,
   settingsLoadError,
   signedInLabel,
 } = await import("../settingsPage.ts");
@@ -190,5 +192,30 @@ describe("settingsLoadError", () => {
     for (const err of [new Error("boom"), new TypeError("x is undefined"), "nope", null, undefined, { status: 404 }]) {
       assert.deepEqual(settingsLoadError(err), { kind: "error", message: SETTINGS_LOAD_FALLBACK }, String(err));
     }
+  });
+});
+
+// ---- resyncAfter ------------------------------------------------------------
+
+describe("resyncAfter", () => {
+  test("403, 404 and 409 mean the page was out of date: fetch the family", () => {
+    for (const status of [403, 404, 409]) assert.equal(resyncAfter(new ApiError(status)).family, true, String(status));
+  });
+
+  test("403 and 401 also ask for the session (the viewer's role or sign-in changed)", () => {
+    assert.deepEqual(resyncAfter(new ApiError(403, "Admins only")), { family: true, session: true });
+    assert.deepEqual(resyncAfter(new ApiError(401, "Not signed in")), { family: false, session: true });
+    assert.deepEqual(resyncAfter(new ApiError(409)), { family: true, session: false });
+  });
+
+  test("a 5xx, a 422, no connection or a non-API error changed nothing", () => {
+    for (const err of [new ApiError(500), new ApiError(503), new ApiError(422), new ApiError(0), new Error("x"), null]) {
+      assert.deepEqual(resyncAfter(err), { family: false, session: false });
+    }
+  });
+
+  test("NO_LONGER_ADMIN is one plain sentence", () => {
+    assert.match(NO_LONGER_ADMIN, /^You’re not an admin of this family any more/);
+    assert.ok(NO_LONGER_ADMIN.endsWith("."));
   });
 });

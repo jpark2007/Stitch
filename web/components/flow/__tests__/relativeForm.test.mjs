@@ -23,6 +23,7 @@ const {
   RELATIVE_YEAR_MIN,
   childCandidates,
   childPatches,
+  duplicateNameHint,
   emptyRelative,
   relativeServerError,
   toNewPerson,
@@ -340,6 +341,110 @@ describe("relativeServerError", () => {
     assert.deepEqual(relativeServerError("Something odd happened"), {
       field: null,
       message: "Something odd happened",
+    });
+  });
+});
+
+// ---- the API's year and lineage rules, checked before the round trip -------
+
+describe("validateRelative: years against the people picked (api/db/people.py)", () => {
+  test("born before a picked parent is refused on Born, naming the parent", () => {
+    const e = validateRelative(draft({ born: "1950", parentIds: ["dad"] }), PEOPLE);
+    assert.equal(e.born, "They can’t be born before their parent David (born 1962).");
+  });
+
+  test("the oldest parent who is too young is named", () => {
+    const e = validateRelative(draft({ born: "1930", parentIds: ["rosa", "joseph"] }), PEOPLE);
+    assert.equal(e.born, "They can’t be born before their parent Joseph (born 1934).");
+  });
+
+  test("born after a picked child is refused on Born, naming the child", () => {
+    const e = validateRelative(draft({ born: "1995", childIds: ["nora", "joseph"] }), PEOPLE);
+    assert.equal(e.born, "They can’t be born after their child Joseph (born 1934).");
+  });
+
+  test("same year as a parent or child passes; unknown years pass", () => {
+    assert.deepEqual(validateRelative(draft({ born: "1962", parentIds: ["dad"] }), PEOPLE), {});
+    assert.deepEqual(validateRelative(draft({ born: "1934", childIds: ["joseph"] }), PEOPLE), {});
+    assert.deepEqual(validateRelative(draft({ parentIds: ["dad"], childIds: ["nora"] }), PEOPLE), {});
+    const noYear = [...PEOPLE, { id: "x", name: "X", parentIds: [], spouseIds: [] }];
+    assert.deepEqual(validateRelative(draft({ born: "2020", childIds: ["x"] }), noYear), {});
+  });
+
+  test("a bad year keeps its own message", () => {
+    assert.equal(validateRelative(draft({ born: "abc", parentIds: ["dad"] }), PEOPLE).born, "Enter the year as a number, like 1987.");
+  });
+});
+
+describe("validateRelative: a child whose spouse would become their ancestor", () => {
+  test("the child of Rosa can't be the parent of Joseph, Rosa's husband", () => {
+    const people = PEOPLE.map((p) => (p.id === "joseph" ? { ...p, spouseIds: ["rosa"] } : p));
+    const e = validateRelative(draft({ parentIds: ["rosa"], childIds: ["joseph"] }), people);
+    assert.equal(
+      e.childIds,
+      "Joseph can’t be their child: Joseph is married to Rosa, who would then be one of Joseph’s ancestors too.",
+    );
+  });
+
+  test("a spouse further up counts too", () => {
+    // Carmen is Luis's wife; the new person is David's child, and Joseph is David's father.
+    const people = PEOPLE.map((p) => (p.id === "luis" ? { ...p, spouseIds: ["joseph"] } : p));
+    const e = validateRelative(draft({ parentIds: ["dad"], childIds: ["luis"] }), people);
+    assert.match(e.childIds, /^Luis can’t be their child: Luis is married to Joseph/);
+  });
+
+  test("an unrelated child is fine", () => {
+    assert.deepEqual(validateRelative(draft({ parentIds: ["rosa"], childIds: ["luis"] }), PEOPLE), {});
+  });
+});
+
+describe("duplicateNameHint", () => {
+  test("names the person already in the tree, with their year", () => {
+    assert.equal(
+      duplicateNameHint("  rosa ", PEOPLE),
+      "Rosa (born 1938) is already in the tree. Only add them again if this is someone else.",
+    );
+  });
+
+  test("several with the name", () => {
+    const people = [...PEOPLE, { id: "rosa2", name: "Rosa", born: 1990, parentIds: [], spouseIds: [] }];
+    assert.equal(
+      duplicateNameHint("Rosa", people),
+      "2 people called Rosa are already in the tree. Only add one more if this is someone else.",
+    );
+  });
+
+  test("inner spaces and case don't matter; no year shows just the name", () => {
+    const people = [{ id: "a", name: "Great  Grandma Ines", parentIds: [], spouseIds: [] }];
+    assert.equal(
+      duplicateNameHint("great grandma ines", people),
+      "Great  Grandma Ines is already in the tree. Only add them again if this is someone else.",
+    );
+  });
+
+  test("a new or blank name has no hint", () => {
+    assert.equal(duplicateNameHint("Maria", PEOPLE), null);
+    assert.equal(duplicateNameHint("   ", PEOPLE), null);
+    assert.equal(duplicateNameHint("Ros", PEOPLE), null);
+  });
+});
+
+describe("relativeServerError: the API's year rules", () => {
+  test("died before born goes on Died", () => {
+    assert.deepEqual(relativeServerError("a person cannot die before they were born"), {
+      field: "died",
+      message: "The year they died can’t be before the year they were born.",
+    });
+  });
+
+  test("born before a parent and after a child go on Born, keeping the names", () => {
+    assert.deepEqual(relativeServerError("a person cannot be born before their parent (David, born 1962)"), {
+      field: "born",
+      message: "They can’t be born before their parent David (born 1962).",
+    });
+    assert.deepEqual(relativeServerError("a person cannot be born after their child (Great Grandma Inés, born 1910)"), {
+      field: "born",
+      message: "They can’t be born after their child Great Grandma Inés (born 1910).",
     });
   });
 });

@@ -13,6 +13,7 @@ import { Button, FOCUS_RING } from "./Button";
 import { FormError } from "./FormError";
 import { PaperCard } from "./PaperCard";
 import {
+  removeMemberOutcome,
   roleAfter,
   roleChangeCopy,
   roleChangeError,
@@ -32,11 +33,6 @@ const ROW_ACTION =
   "font-sans text-base font-semibold leading-tight text-accent-deep underline-offset-[0.2em] select-none " +
   "not-disabled:hover:underline not-disabled:hover:decoration-1 disabled:cursor-not-allowed disabled:opacity-60 " +
   FOCUS_RING;
-
-function messageOf(err: unknown): string {
-  if (err instanceof Error && err.message.trim()) return err.message;
-  return "Something went wrong. Please try again.";
-}
 
 /** "Ana", or "this family member" when we don't know their name. */
 function whoOf(row: MemberRow): string {
@@ -72,6 +68,12 @@ export function MemberList(props: {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [announcement, setAnnouncement] = useState("");
+  // A visible line under the list for news about someone no longer in it.
+  const [notice, setNotice] = useState("");
+  // A failed change for someone whose row has since gone (they left): shown under the list.
+  const orphanErrors = Object.entries(errors)
+    .filter(([userId]) => !rows.some((r) => r.userId === userId))
+    .map(([, message]) => message);
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const removeRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -115,8 +117,15 @@ export function MemberList(props: {
 
   function openConfirm(row: MemberRow, action: Confirming["action"]) {
     if (action === "role" && !row.roleAction) return;
-    clearError(row.userId);
+    // Clear this row's message and any about people no longer listed.
+    setErrors((prev) => {
+      const keep = Object.entries(prev).filter(
+        ([userId]) => userId !== row.userId && rows.some((r) => r.userId === userId),
+      );
+      return keep.length === Object.keys(prev).length ? prev : Object.fromEntries(keep);
+    });
     setAnnouncement("");
+    setNotice("");
     setConfirming(
       action === "role" && row.roleAction
         ? { userId: row.userId, action, row, roleAction: row.roleAction, copy: roleChangeCopy(row, row.roleAction) }
@@ -142,9 +151,17 @@ export function MemberList(props: {
       setAnnouncement(`${row.personId ? row.name : "The family member"} was removed from the family.`);
       pendingFocus.current = { kind: "afterRemoval", userId: row.userId, index: Math.max(0, index) };
     } catch (err) {
-      setErrors((prev) => ({ ...prev, [row.userId]: messageOf(err) }));
+      const outcome = removeMemberOutcome(err, row);
       setConfirming(null);
-      pendingFocus.current = { kind: "remove", userId: row.userId };
+      if (outcome.gone) {
+        // Already gone (the page has fetched the family again): say so, quietly.
+        setAnnouncement(outcome.message);
+        setNotice(outcome.message);
+        pendingFocus.current = { kind: "afterRemoval", userId: row.userId, index: Math.max(0, index) };
+      } else {
+        setErrors((prev) => ({ ...prev, [row.userId]: outcome.message }));
+        pendingFocus.current = { kind: "remove", userId: row.userId };
+      }
     } finally {
       setBusyId(null);
     }
@@ -312,6 +329,17 @@ export function MemberList(props: {
           })}
         </ul>
       )}
+
+      {orphanErrors.length ? (
+        <div className="mt-4">
+          <FormError message={[...new Set(orphanErrors)].join(" ")} />
+        </div>
+      ) : null}
+      {notice ? (
+        <p className="mt-4 border-t border-dashed border-rule pt-3 text-[0.9375rem] leading-relaxed text-ink-soft">
+          {notice}
+        </p>
+      ) : null}
 
       <p role="status" aria-live="polite" className="sr-only">
         {announcement}

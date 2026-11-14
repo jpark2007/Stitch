@@ -3,10 +3,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { describeExpiry, inviteUrl, pickActiveInvite } from "../invites.ts";
+import { describeExpiry, inviteActionOutcome, inviteUrl, pickActiveInvite } from "../invites.ts";
 import {
   UNKNOWN_MEMBER_NAME,
   memberRows,
+  removeMemberOutcome,
   roleAfter,
   roleChangeCopy,
   roleChangeError,
@@ -368,7 +369,65 @@ test("roleChangeError: a 409 is the last-admin rule in plain words; others keep 
   assert.match(roleChangeError(conflict, { name: "Luis", personId: "p-luis", isYou: false }), /^Luis is the only admin/);
   const gone = Object.assign(new Error("Member not found"), { status: 404 });
   assert.equal(roleChangeError(gone, { name: "Sam", personId: "p-sam", isYou: false }), "Sam isn’t in the family any more.");
-  const other = Object.assign(new Error("Only a family admin can do that."), { status: 403 });
-  assert.equal(roleChangeError(other, { name: "Ana", personId: "p-ana", isYou: false }), "Only a family admin can do that.");
+  // The API's 403 detail is "Admins only": say why in words.
+  const denied = Object.assign(new Error("Admins only"), { status: 403 });
+  assert.equal(
+    roleChangeError(denied, { name: "Ana", personId: "p-ana", isYou: false }),
+    "Only admins can change who is an admin, and you’re not an admin of this family any more.",
+  );
+  // A 5xx or no connection keeps the client's own sentence.
+  const down = Object.assign(new Error("Something went wrong on our side. Please try again."), { status: 500 });
+  assert.equal(roleChangeError(down, { name: "Ana", personId: "p-ana", isYou: false }), down.message);
+  const offline = Object.assign(new Error("We can't reach Stitch right now."), { status: 0 });
+  assert.equal(roleChangeError(offline, { name: "Ana", personId: "p-ana", isYou: false }), offline.message);
   assert.equal(roleChangeError("boom", { name: "Ana", personId: "p-ana", isYou: false }), "Something went wrong. Please try again.");
+});
+
+test("removeMemberOutcome: a 404 means already gone; 409, 403 and the rest in plain words", () => {
+  const ana = { name: "Ana", personId: "p-ana" };
+  const nobody = { name: UNKNOWN_MEMBER_NAME, personId: null };
+  const err = (status, message) => Object.assign(new Error(message), { status });
+  assert.deepEqual(removeMemberOutcome(err(404, "Member not found"), ana), {
+    gone: true,
+    message: "Ana had already left the family.",
+  });
+  assert.equal(removeMemberOutcome(err(404, "Member not found"), nobody).message, "The family member had already left the family.");
+  assert.deepEqual(removeMemberOutcome(err(409, "A family needs at least one admin"), ana), {
+    gone: false,
+    message: "Ana is the only admin left, and a family always needs one. Make someone else an admin first.",
+  });
+  assert.equal(
+    removeMemberOutcome(err(403, "Admins only"), ana).message,
+    "Only admins can remove people, and you’re not an admin of this family any more.",
+  );
+  assert.deepEqual(removeMemberOutcome(err(500, "Something went wrong on our side. Please try again."), ana), {
+    gone: false,
+    message: "Something went wrong on our side. Please try again.",
+  });
+  assert.equal(removeMemberOutcome(undefined, ana).message, "Something went wrong. Please try again.");
+});
+
+test("inviteActionOutcome: a revoked link that is already gone is done; 403 and 404 in plain words", () => {
+  const err = (status, message) => Object.assign(new Error(message), { status });
+  assert.deepEqual(inviteActionOutcome(err(404, "Invite not found or expired"), "revoke"), {
+    done: true,
+    message: "That link was already turned off.",
+  });
+  assert.deepEqual(inviteActionOutcome(err(404, "Not found"), "create"), {
+    done: false,
+    message: "We couldn’t find this family any more.",
+  });
+  assert.equal(
+    inviteActionOutcome(err(403, "Admins only"), "create").message,
+    "Only admins can make invite links, and you’re not an admin of this family any more.",
+  );
+  assert.equal(
+    inviteActionOutcome(err(403, "Admins only"), "revoke").message,
+    "Only admins can turn off invite links, and you’re not an admin of this family any more.",
+  );
+  assert.deepEqual(inviteActionOutcome(err(0, "We can't reach Stitch right now."), "revoke"), {
+    done: false,
+    message: "We can't reach Stitch right now.",
+  });
+  assert.equal(inviteActionOutcome(null, "create").message, "Something went wrong. Please try again.");
 });
