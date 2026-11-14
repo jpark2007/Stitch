@@ -17,6 +17,7 @@ import {
   propDims,
   propSocketMatrix,
   rollAngle,
+  socketPivot,
 } from "../rig.ts";
 
 const SIZES = { tiny: 0.03, hand: 0.08, carried: 0.2, furniture: 0.4, vehicle: 0.9, building: 1.5 };
@@ -104,6 +105,57 @@ test("a held prop is not mirrored by a puppet facing left", () => {
     const turned = heldMatrix(new Matrix4(), socket, "socket", [0, 0, 0], 0, g.x, g.y);
     nearVec(landing(turned, grip[0], grip[1], d), hand);
     assert.ok(turned.determinant() > 0, `facing ${facing}, socket: drawn mirrored`);
+  }
+});
+
+test("a hand socket takes the grip; the head and prop sockets take the anchor", () => {
+  assert.equal(socketPivot(parseParent("puppet:dad.hand_r")), "grip");
+  assert.equal(socketPivot(parseParent("puppet:mom.hand_l")), "grip");
+  assert.equal(socketPivot(parseParent("puppet:dad.head")), "anchor");
+  assert.equal(socketPivot(parseParent("prop:car.roof")), "anchor");
+  assert.equal(socketPivot(parseParent("prop:hook.hang"), "grip"), "grip");
+  // The override is for prop sockets only: a puppet's sockets follow the compiler.
+  assert.equal(socketPivot(parseParent("puppet:dad.head"), "grip"), "anchor");
+  assert.equal(socketPivot(parseParent("puppet:dad.hand_r"), "anchor"), "grip");
+  assert.equal(socketPivot(parseParent("ground")), "anchor");
+});
+
+test("put on: a worn cap rests its anchor on the head, with no jump from the hand", () => {
+  // Mirrors api/tests/screenplay/test_body.py test_put_on_self: put_on_keys
+  // reaches the hand to grip_from_anchor(cap, head), then parents the cap to
+  // puppet:dad.head at [0, 0, 0]; at that key anchor_from_grip(cap, hand) is
+  // the head socket. Also an off-centre grip, which would jump sideways.
+  const head = [0.12, 0.62, 0.5];
+  const caps = [
+    { prop: { size: "hand", aspect: 1.5, anchor: [0.5, 1], grip: [0.5, 0.5] } },
+    { prop: { size: "hand", aspect: 1.5, anchor: [0.5, 1], grip: [0.15, 0.3] } },
+  ];
+  for (const { prop } of caps) {
+    const d = propDims(prop, SIZES);
+    const a = imageToLocal({ x: 0, y: 0 }, prop.anchor[0], prop.anchor[1], d.width, d.height);
+    const g = imageToLocal({ x: 0, y: 0 }, prop.grip[0], prop.grip[1], d.width, d.height);
+    // body.py grip_from_anchor: where the hand is at the parent key.
+    const hand = [
+      head[0] - (prop.anchor[0] - prop.grip[0]) * d.width,
+      head[1] - (prop.grip[1] - prop.anchor[1]) * d.height,
+      head[2],
+    ];
+    for (const facing of [1, -1]) {
+      const scale = new Vector3(0.6 * facing, 0.6, 0.6);
+      const headSocket = new Matrix4().compose(new Vector3(...head), new Quaternion(), scale);
+      const handSocket = new Matrix4().compose(new Vector3(...hand), new Quaternion(), scale);
+
+      const wornParent = parseParent("puppet:dad.head");
+      assert.equal(socketPivot(wornParent), "anchor");
+      const worn = heldMatrix(new Matrix4(), headSocket, "upright", [0, 0, 0], 0, a.x, a.y);
+      // The anchor (the cap's bottom edge) is on the head socket.
+      nearVec(landing(worn, prop.anchor[0], prop.anchor[1], d), head);
+
+      // Just before the key, in the hand by its grip: the very same placement.
+      assert.equal(socketPivot(parseParent("puppet:dad.hand_r")), "grip");
+      const held = heldMatrix(new Matrix4(), handSocket, "upright", [0, 0, 0], 0, g.x, g.y);
+      for (let i = 0; i < 16; i++) near(held.elements[i], worn.elements[i]);
+    }
   }
 });
 
