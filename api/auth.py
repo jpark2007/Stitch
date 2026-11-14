@@ -1,1 +1,187 @@
-"""Password hashing (argon2), session JWTs, and the current-user / family-member dependencies."""
+"""Password hashing (argon2), session JWTs, and the current-user / family-member dependencies.
+
+ARCHITECTURE.md section 4 (Access control):
+- `current_user` decodes the session cookie (401 if absent, invalid, or the user is gone).
+- `family_member(fid)` checks membership. A non-member gets 404, never 403, so another
+  family's ids are indistinguishable from ids that do not exist.
+- `family_admin` additionally requires the admin role (403 for a plain member, who
+  already knows the family exists).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import secrets
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+import jwt
+from argon2 import PasswordHasher
+from argon2.exceptions import Argon2Error, InvalidHashError
+from fastapi import Cookie, Depends, HTTPException, Response, status
+from pymongo.database import Database
+
+import schemas
+from db import families as families_db
+from db import users as users_db
+from db.client import get_db
+
+log = logging.getLogger(__name__)
+
+COOKIE_NAME = "stitch_session"
+SESSION_DAYS = 30
+JWT_ALGORITHM = "HS256"
+
+_hasher = PasswordHasher()  # argon2id with the library's recommended parameters
+_fallback_secret: str | None = None
+
+
+# ---------------------------------------------------------------- passwords
+
+def hash_password(pw: str) -> str:
+    """An argon2id hash of pw (`$argon2id$...`)."""
+    if not isinstance(pw, str):
+        raise ValueError("password must be a string")
+    return _hasher.hash(pw)
+
+
+def verify_password(password_hash: str, pw: str) -> bool:
+    """True only if pw matches. False on a mismatch or an invalid hash; never raises."""
+    if not isinstance(password_hash, str) or not isinstance(pw, str):
+        return False
+    try:
+        return _hasher.verify(password_hash, pw)
+    except (Argon2Error, InvalidHashError, ValueError, TypeError):
+        return False
+
+
+# ---------------------------------------------------------------- session tokens
+
+def _secret() -> str:
+    """JWT_SECRET from the environment, else one random secret for this process."""
+    configured = os.environ.get("JWT_SECRET")
+    if configured:
+        return configured
+    global _fallback_secret
+    if _fallback_secret is None:
+        _fallback_secret = secrets.token_urlsafe(32)
+        log.warning("JWT_SECRET is not set; using a random per-process secret. Sessions end on restart.")
+    return _fallback_secret
+
+
+def create_session_token(user_id: str, *, now: datetime | None = None) -> str:
+    """A signed HS256 JWT with sub (user id), iat and exp (SESSION_DAYS later)."""
+    if not isinstance(user_id, str) or not user_id:
+        raise ValueError("user_id is required")
+    issued = now or datetime.now(UTC)
+    claims = {
+        "sub": user_id,
+        "iat": int(issued.timestamp()),
+        "exp": int((issued + timedelta(days=SESSION_DAYS)).timestamp()),
+    }
+    return jwt.encode(claims, _secret(), algorithm=JWT_ALGORITHM)
+
+
+def decode_session_token(token: str) -> str | None:
+    """The user id in a valid token. None if it is expired, tampered, or malformed."""
+    if not isinstance(token, str) or not token:
+        return None
+    try:
+        claims = jwt.decode(
+            token,
+            _secret(),
+            algorithms=[JWT_ALGORITHM],
+            options={"require": ["sub", "iat", "exp"]},
+        )
+    except jwt.PyJWTError:
+        return None
+    sub = claims.get("sub")
+    return sub if isinstance(sub, str) and sub else None
+
+
+# ---------------------------------------------------------------- cookies
+
+def _cookie_secure() -> bool:
+    return os.environ.get("COOKIE_SECURE") == "1"
+
+
+def set_session_cookie(response: Response, user_id: str) -> None:
+    """Start a session: httpOnly, SameSite=Lax, whole site, SESSION_DAYS long."""
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=create_session_token(user_id),
+        max_age=SESSION_DAYS * 86400,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    """End a session (expire the cookie with the same attributes it was set with)."""
+    response.delete_cookie(
+        key=COOKIE_NAME,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+    )
+
+
+# ---------------------------------------------------------------- dependencies
+
+def _user_from_cookie(session: str | None, db: Database) -> schemas.User | None:
+    user_id = decode_session_token(session) if session else None
+    if user_id is None:
+        return None
+    return users_db.get_user(db, user_id)
+
+
+def current_user(
+    session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+    db: Database = Depends(get_db),
+) -> schemas.User:
+    """The signed-in user. 401 "Not signed in" if there is no valid session."""
+    user = _user_from_cookie(session, db)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not signed in")
+    return user
+
+
+def optional_user(
+    session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+    db: Database = Depends(get_db),
+) -> schemas.User | None:
+    """The signed-in user, or None."""
+    return _user_from_cookie(session, db)
+
+
+@dataclass(frozen=True)
+class FamilyAccess:
+    user: schemas.User
+    family_id: str
+    role: schemas.Role
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
+
+
+def family_member(
+    fid: str,
+    user: schemas.User = Depends(current_user),
+    db: Database = Depends(get_db),
+) -> FamilyAccess:
+    """The caller's access to family `fid` (path parameter). 404 if they are not a member."""
+    role = families_db.get_member_role(db, fid, user.id)
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return FamilyAccess(user=user, family_id=fid, role=role)
+
+
+def family_admin(access: FamilyAccess = Depends(family_member)) -> FamilyAccess:
+    """Like family_member, but 403 unless the caller is the family's admin."""
+    if not access.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admins only")
+    return access
