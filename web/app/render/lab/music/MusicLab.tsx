@@ -283,7 +283,7 @@ function YearSlider({ year, onYear, onStep }: { year: number | null; onYear: (y:
           aria-label="Year"
           aria-valuetext={year ? `${year}, ${era ? eraLabel(era) : ""}` : "not started"}
           onChange={(e) => onYear(Number(e.target.value))}
-          className="relative z-10 h-8 w-full cursor-pointer appearance-none rounded-full bg-transparent focus-visible:outline-offset-0 [&::-moz-range-thumb]:size-5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-paper-light [&::-moz-range-thumb]:bg-accent [&::-webkit-slider-thumb]:size-5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-paper-light [&::-webkit-slider-thumb]:bg-accent [&::-webkit-slider-thumb]:shadow-[0_1px_2px_rgb(74_47_29/0.35),0_3px_8px_-2px_rgb(74_47_29/0.4)]"
+          className={`${year ? "" : "opacity-55 "}relative z-10 h-8 w-full cursor-pointer appearance-none rounded-full bg-transparent transition-opacity duration-300 focus-visible:outline-offset-0 [&::-moz-range-thumb]:size-5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-paper-light [&::-moz-range-thumb]:bg-accent [&::-webkit-slider-thumb]:size-5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-paper-light [&::-webkit-slider-thumb]:bg-accent [&::-webkit-slider-thumb]:shadow-[0_1px_2px_rgb(74_47_29/0.35),0_3px_8px_-2px_rgb(74_47_29/0.4)]`}
         />
         {/* The track: a stitched thread, sewn solid up to the year. */}
         <span aria-hidden className="pointer-events-none absolute inset-x-0 top-[1.05rem] border-t-[1.5px] border-dashed border-ink-faint/45" />
@@ -386,8 +386,12 @@ function LevelMeter({ music }: { music: RefObject<EraMusic | null> }) {
         hold = Math.max(peakDb, FLOOR_DB, hold - 0.4);
       }
       if (bar.current) bar.current.style.transform = `scaleX(${toPct(rmsSmooth)})`;
-      if (tick.current) tick.current.style.left = `${toPct(hold) * 100}%`;
-      const label = hold <= FLOOR_DB + 0.5 ? "silent" : `${hold.toFixed(1)} dBFS peak`;
+      const silent = hold <= FLOOR_DB + 0.5;
+      if (tick.current) {
+        tick.current.style.left = `${toPct(hold) * 100}%`;
+        tick.current.style.opacity = silent ? "0" : "1";
+      }
+      const label = silent ? "silent" : `${hold.toFixed(1)} dBFS peak`;
       if (label !== shownPeak && readout.current) {
         readout.current.textContent = label;
         shownPeak = label;
@@ -426,7 +430,12 @@ function LevelMeter({ music }: { music: RefObject<EraMusic | null> }) {
       >
         <span ref={bar} className="absolute inset-y-0 left-0 w-full origin-left rounded-full bg-ink-soft/70" style={{ transform: "scaleX(0)" }} />
         <span aria-hidden className="absolute inset-y-0 border-l-[1.5px] border-dashed border-accent-deep/60" style={{ left: `${toPct(-12) * 100}%` }} />
-        <span ref={tick} aria-hidden className="absolute inset-y-0 w-[2px] -translate-x-1/2 bg-accent" style={{ left: "0%" }} />
+        <span
+          ref={tick}
+          aria-hidden
+          className="absolute inset-y-0 w-[2px] -translate-x-1/2 bg-accent transition-opacity duration-300"
+          style={{ left: "0%", opacity: 0 }}
+        />
       </div>
       <div aria-hidden className="relative h-4 text-[0.62rem] tabular-nums text-ink-faint">
         {[-48, -36, -24, -12, 0].map((db) => (
