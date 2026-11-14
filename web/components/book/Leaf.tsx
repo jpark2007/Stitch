@@ -96,16 +96,15 @@ export interface LeafTextures {
   /** Shared deckled edge, so page edges are slightly irregular. */
   alphaMap: Texture;
   normalMap: Texture;
-  roughnessMap: Texture;
 }
 
 function pageMaterial(map: Texture, t: LeafTextures) {
   const m = new MeshStandardMaterial({
     map,
     normalMap: t.normalMap,
-    normalScale: new Vector2(0.55, 0.55),
-    roughnessMap: t.roughnessMap,
-    roughness: 0.9,
+    normalScale: new Vector2(0.4, 0.4),
+    // No roughness map: its soft fields read as stains under a spotlight.
+    roughness: 0.94,
     metalness: 0,
     alphaMap: t.alphaMap,
     alphaTest: 0.5,

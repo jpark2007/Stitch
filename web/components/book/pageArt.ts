@@ -35,7 +35,7 @@ export const INK = "#2f2620";
 export const INK_SOFT = "#5c4e43";
 export const INK_FAINT = "#8f8173";
 export const ACCENT = "#b9573d";
-export const PAPER = "#f4ecdc";
+export const PAPER = "#f7f0e2";
 
 export interface PageFonts {
   display: string;
@@ -109,13 +109,13 @@ function paper(ctx: Ctx, w: number, h: number, o: PaperOptions) {
   ctx.fillRect(0, 0, w, h);
 
   // Soft mottling: the sheet is never one flat colour.
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < 9; i++) {
     const x = r() * w;
     const y = r() * h;
-    const rad = (0.15 + r() * 0.35) * Math.max(w, h);
+    const rad = (0.2 + r() * 0.35) * Math.max(w, h);
     const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
-    const light = r() > 0.5;
-    g.addColorStop(0, light ? "rgba(255,252,244,0.22)" : "rgba(196,163,122,0.07)");
+    const light = r() > 0.4;
+    g.addColorStop(0, light ? "rgba(255,252,244,0.2)" : "rgba(196,163,122,0.045)");
     g.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);

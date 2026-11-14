@@ -414,7 +414,6 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage }: Sce
       back: l.back,
       alphaMap: mask.alphaMap,
       normalMap: grain.normalMap,
-      roughnessMap: grain.roughnessMap,
     }));
   }, [textures]);
 
