@@ -28,6 +28,7 @@ import {
 } from "three";
 import { BONES, PAGE_H, PAGE_W, SEG, turnTargets, turnTwist } from "./leafShape";
 import type { BookRuntime } from "./runtime";
+import { FRONT_OFFSET_FACTOR, FRONT_OFFSET_UNITS } from "./stacking";
 
 const X_SEGS = BONES * 2;
 const Z_SEGS = 2;
@@ -140,6 +141,7 @@ export class LeafBody {
   private started = false;
   private settled = false;
   private key = "";
+  private front = false;
 
   constructor(
     private readonly index: number,
@@ -176,6 +178,16 @@ export class LeafBody {
     const { mesh, phi, vel, tw, twv, target, twTarget } = this;
     mesh.visible = leaf.visible;
     mesh.position.set(0, rt.hinge, -PAGE_H / 2);
+    // A moving sheet can lie exactly on a stack's top sheet (same hinge, same
+    // rest shape); bias its depth so it, not the stale page, is seen.
+    if (leaf.front !== this.front) {
+      this.front = leaf.front;
+      for (const m of mesh.material as MeshStandardMaterial[]) {
+        m.polygonOffset = leaf.front;
+        m.polygonOffsetFactor = leaf.front ? FRONT_OFFSET_FACTOR : 0;
+        m.polygonOffsetUnits = leaf.front ? FRONT_OFFSET_UNITS : 0;
+      }
+    }
     if (!leaf.visible && this.started) return false;
 
     turnTargets(leaf, rt.restR, rt.restL, target);

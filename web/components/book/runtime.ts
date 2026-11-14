@@ -26,6 +26,8 @@ export interface LeafState {
   corner: number;
   mode: LeafMode;
   visible: boolean;
+  /** Drawn over a sheet it coincides with (see stacking.ts). */
+  front: boolean;
   /** "auto" clock. */
   from: number;
   to: number;
@@ -60,6 +62,7 @@ export function createLeafState(p: number): LeafState {
     corner: 0.5,
     mode: "rest",
     visible: true,
+    front: false,
     from: p,
     to: p,
     t0: 0,
