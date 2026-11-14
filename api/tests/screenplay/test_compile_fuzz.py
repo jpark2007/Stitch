@@ -1,23 +1,32 @@
-"""Fuzz compile(): it never raises, its timelines are sane, its errors are well-formed, and it
-is deterministic (ARCHITECTURE.md section 3). Also compiles the scripted demo variants of the
-hymn sample (seed.fake_runs strip_prop / strip_person).
+"""Fuzz compile(): it never raises, its timelines are sane, its errors are well-formed and
+placed, foot planting changes only what it should, and it is deterministic (ARCHITECTURE.md
+section 3). Also compiles the scripted demo variants of the hymn sample (seed.fake_runs
+strip_prop / strip_person).
 
 The directing agent hands compile() arbitrary LLM-written screenplays, so this is a regression
-net over random ones. The generator is a plain ``random.Random(seed)``: no new dependency, and
-the corpus is the same on every run. It builds on verb_cases.base_scene() (the shared stage of
-the verb case catalogue) with its CAST, PROPS, YARD_MARKS and STREET_MARKS. Two kinds of
-screenplay come out of it:
+net over random ones. The generators are plain ``random.Random(seed)``: no new dependency, and
+the corpus is the same on every run. Three kinds of screenplay come out of them:
 
-- random: 1 to 3 shots (sometimes the same set twice, sometimes a set change) with random start
-  blocks and propStart, 1 to 8 actions per shot drawn from every vocabulary verb, parameters
-  mostly valid names with about 15% invalid or missing on average (each screenplay draws its
-  rate from INVALID_RATES, so a clean third reaches the world simulation), t in [0, 12],
-  optional dur, and sometimes camera cues, cued narration, a second teller, interactions and
-  explanations. Nearly all of these fail, statically or in the world simulation, which
-  exercises the error paths.
-- perturbed: one to three ok verb cases played as consecutive shots, with jittered times,
-  extra camera cues, narration and a second teller. About half compile, which exercises the
-  timeline invariants (including shot contiguity on multi-shot timelines).
+- random (on verb_cases.base_scene(), with its CAST, PROPS, YARD_MARKS and STREET_MARKS): 1 to 3
+  shots (sometimes the same set twice, sometimes a set change) with random start blocks and
+  propStart, 1 to 8 actions per shot drawn from every vocabulary verb, parameters mostly valid
+  names with about 15% invalid or missing on average (each screenplay draws its rate from
+  INVALID_RATES, so a clean third reaches the world simulation), t in [0, 12], optional dur, and
+  sometimes camera cues, cued narration, a second teller, interactions and explanations. Nearly
+  all of these fail, statically or in the world simulation, which exercises the error paths.
+- perturbed (base_scene()): one to three ok verb cases played as consecutive shots, with
+  jittered times, extra camera cues, narration and a second teller. About half compile, which
+  exercises the timeline invariants (including shot contiguity on multi-shot timelines).
+- story (story_scenes.story_scene(), read-only: eight sets, raised marks, a car, furniture with
+  seat and surface sockets, boxes gripped low): StoryGen writes a 2 to 4 shot family story that
+  is meant to compile. It models who is on stage, seated, kneeling and holding what, and where
+  each prop is, and schedules each puppet's next action after its last one ends. Shots switch
+  sets about two thirds of the time; props are carried across a set change by listed puppets,
+  dropped or set down before a fold, left behind and brought back with propStart; people exit in
+  one shot and enter in the next, sit in one and stand up in the next, ride the car across a set
+  change. Narration (sometimes cued), a second teller, camera cues and scrub tabs are added. About
+  95% compile, so every timeline invariant runs on long, many-verb, multi-set timelines.
+  test_the_story_corpus_switches_sets_carries_drops_enters_and_sits checks that mix.
 
 A few hand-written edge shapes (no shots, empty or unknown cast, NaN marks, huge t, empty
 narration text) go through the same checks.
@@ -25,33 +34,55 @@ narration text) go through the same checks.
 Each screenplay is built through ``Screenplay.model_validate`` on a dict, so the schema runs
 too; only inputs the pydantic schema itself rejects are skipped (and counted).
 
-Invariants, for every generated screenplay:
+Invariants, for every generated screenplay (``check``):
 
-1. compile(...) returns a CompileResult and never raises.
+1. compile(...) returns a CompileResult and never raises (with plant_feet=False too).
 2. ok: the timeline survives a JSON round trip through Timeline.model_validate; per track, key
    times never decrease; no NaN or inf anywhere; duration >= the last key time; shots are
-   contiguous (shot[i].end == shot[i + 1].start within 1e-6).
+   contiguous (shot[i].end == shot[i + 1].start within 1e-6); and
+   timeline_sanity.sanity_problems(timeline) == [] (no prop in two places or a socket holding
+   two, a position key at every parent key, every time within the timeline, nobody walking while
+   seated, finite values; plus whatever checks later waves append to timeline_sanity.CHECKS).
 3. not ok: there is at least one error; every code matches ^[a-z]+(_[a-z]+)*$; every message
    starts with "shot " or "screenplay"; error.shot is set whenever the message starts "shot ".
 4. compiling the same input again (a fresh copy of the screenplay and scene) gives
    byte-identical model_dump_json, and compile() does not mutate its input.
-5. ok: foot planting (test_foot_planting.planting_problems): the timeline has feetPlanted, and
-   against the same screenplay compiled with plant_feet=False (also ok) only puppet root y
-   differs, and at every walk / run cycle key the lowest foot is on that unplanted surface.
+5. planting: compile(plant_feet=False) agrees with the default compile on ok-ness and on the
+   exact errors; on ok, feetPlanted is True on the planted timeline and unset on the unplanted
+   one, and test_foot_planting.planting_problems(planted, unplanted, builds) == [] (only puppet
+   root y differs, and at every walk / run cycle key the lowest foot is on the unplanted surface).
+6. not ok (error_site_problems): every error.shot is one of the screenplay's shot ids or None;
+   an error.t comes with a shot, is finite and lies within that shot's action span (its first to
+   its last action or camera cue time as written, since errors report the written t); the
+   message head names the same shot, with ``t=`` when error.t is set.
+
+Size: DEFAULT_SIZES (random 8000, perturbed 3500, story 250) keep the file to roughly 25 to 30 s
+of CPU. ``STITCH_FUZZ_N=<total>`` runs a larger sweep split in the same proportions, and
+``STITCH_FUZZ_START=<i>`` starts every kind at index i (fresh seeds); seeds outside the default
+range are not in EXCLUDED, so a larger sweep reports every known-bug seed it hits as a failure.
 
 Known failures (crashes or broken invariants whose cause is in api/screenplay or api/seed code
-owned by other tasks) get a minimal hand-written reproduction marked xfail(strict=True) below,
-and their seeds or shapes go in EXCLUDED so the random loop passes. As written, the random loop
-found none (also over a one-off sweep of the same generator: random 0-29999 and perturbed
-0-11999, 42,000 screenplays, at the commit this file was written on); the one known failure
-is a scripted demo variant (test_strip_person_variant_for_the_teller_compiles).
+owned by other tasks) get a minimal hand-written reproduction marked xfail(strict=True) at the
+bottom, naming the module and function, and their seeds go in EXCLUDED so the random loop
+passes. One shape is tolerated instead of excluded, because the random generator writes it on
+purpose in hundreds of seeds: a non-finite error.t (TOLERATE_NON_FINITE_ERROR_T,
+test_an_error_on_a_non_finite_t_has_a_json_safe_t). The other compiler bugs at the bottom were
+found through compile errors on story screenplays that should compile (StoryGen steers around
+them so most stories still reach a timeline; see a_place_on and a_open_close). One-off sweep at
+the commit this was written on: random 0-19999, perturbed 0-9999, story 0-7999 (38,000
+screenplays): no crash and no broken invariant except the prop-before-its-first-shot bug
+(test_a_prop_first_used_in_a_later_shot_is_not_on_stage_before_it; 30 perturbed and 392 story
+seeds). The scripted demo variant test_strip_person_variant_for_the_teller_compiles is the other
+known failure.
 """
 
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import math
+import os
 import random
 import re
 import time
@@ -66,7 +97,9 @@ from screenplay.compiler import compile as compile_screenplay
 from screenplay.schema import VOCABULARY, CompileResult, Screenplay, Timeline
 from seed import demo
 from seed.fake_runs import SAMPLE_OTHER, SAMPLE_TELLER, strip_person, strip_prop
+from story_scenes import CAST as STORY_CAST, SETS as STORY_SET_DEFS, story_scene
 from test_foot_planting import planting_problems
+from timeline_sanity import sanity_problems, value_at
 from verb_cases import CASES, CAST, PROPS, STREET_MARKS, YARD_MARKS, Scene, base_scene
 
 # ----------------------------------------------------------------------- corpus size
@@ -75,12 +108,28 @@ SEED = 20261113
 """Seed of the whole corpus: random screenplay i uses random.Random(SEED * 100_003 + i), perturbed
 screenplay i random.Random(SEED * 100_003 + 50_000 + i) (see _seed)."""
 
-N_RANDOM = 8000
-"""Random screenplays. With N_PERTURBED, the whole file runs in about 8 s (measured: see the
-printed line of test_compile_never_raises_and_keeps_its_invariants with pytest -s)."""
+DEFAULT_SIZES = {"random": 8000, "perturbed": 3500, "story": 250}
+"""Screenplays of each kind in the default run (see the printed line of
+test_compile_never_raises_and_keeps_its_invariants with pytest -s for the time it takes)."""
 
-N_PERTURBED = 3500
-"""Perturbed ok verb cases."""
+
+def _sizes() -> tuple[dict[str, int], int]:
+    """The corpus size of each kind, and the first index.
+
+    ``STITCH_FUZZ_N=<total>`` runs a larger (or smaller) sweep: ``total`` screenplays split
+    across the kinds in the default proportions. ``STITCH_FUZZ_START=<i>`` starts every kind at
+    index ``i`` instead of 0, to sweep fresh seeds. For example
+    ``STITCH_FUZZ_N=20000 uv run pytest tests/screenplay/test_compile_fuzz.py -s``."""
+    total = os.environ.get("STITCH_FUZZ_N", "").strip()
+    start = int(os.environ.get("STITCH_FUZZ_START", "0") or 0)
+    if not total:
+        return dict(DEFAULT_SIZES), start
+    scale = int(total) / sum(DEFAULT_SIZES.values())
+    return {k: max(1, round(n * scale)) for k, n in DEFAULT_SIZES.items()}, start
+
+
+SIZES, OFFSET = _sizes()
+N_RANDOM, N_PERTURBED, N_STORY = SIZES["random"], SIZES["perturbed"], SIZES["story"]
 
 INVALID_RATES = [0.0, 0.15, 0.3]
 """Per random screenplay, the chance that a parameter is invalid or missing is one of these
@@ -118,8 +167,14 @@ WORDS = (
 CODE = re.compile(r"[a-z]+(_[a-z]+)*")
 
 # Seeds or shapes excluded from the random loop because of a known bug, each with an xfail
-# reproduction below: {(kind, index): "reason"}.
-EXCLUDED: dict[tuple[str, int], str] = {}
+# reproduction below: {(kind, index): "reason"}. Every excluded seed of the default corpus was
+# checked to fail only that way (every problem is the hands check, at a time before one of the
+# props involved has its first parent key).
+B1 = "compiler._start_keys: a prop first placed in a later shot is there from t=0 (test_a_prop_first_used_in_a_later_shot_is_not_on_stage_before_it)"
+EXCLUDED: dict[tuple[str, int], str] = {
+    **{("perturbed", i): B1 for i in (203, 464, 734, 874, 1192, 1371, 1496, 1590, 2182, 2565, 2891, 2927, 3035)},
+    **{("story", i): B1 for i in (0, 16, 43, 44, 78, 87, 99, 149, 159, 175, 193, 233, 241)},
+}
 
 
 # --------------------------------------------------------------------------- generator
@@ -395,21 +450,732 @@ class Gen:
 OK_CASES = [c for c in CASES if c.ok]
 
 
+# ------------------------------------------------------------ multi-shot story generator
+
+# The story scene (story_scenes.story_scene(), read-only): eight sets, raised marks (the church
+# steps, the graduation stage), moving boxes gripped halfway up (floor pick-ups need a crouch),
+# a car with two seats, furniture with seat and surface sockets.
+STORY_MARKS: dict[str, dict[str, tuple[float, float]]] = {
+    sid: {m: (round(2 * v[0] - 1, 6), float(v[1])) for m, v in s["marks"].items()} for sid, s in STORY_SET_DEFS.items()
+}
+OFF_X = {"offstage_left": -1.3, "offstage_right": 1.3}
+STORY_HAND = ["bouquet", "hymn_books", "umbrella", "diploma", "cup", "kettle", "keys", "cap", "cake", "gift",
+              "box_a", "box_b"]
+STORY_SEATS: dict[str, list[str]] = {"chair": ["seat"], "armchair": ["seat"], "pew": ["seat_aisle", "seat_wall"]}
+STORY_SURFACES: dict[str, str] = {"table": "top", "picnic_table": "top", "stove": "burner"}
+STORY_FURNITURE = list(STORY_SEATS) + list(STORY_SURFACES)
+STORY_STATES: dict[str, list[str]] = {"cake": ["unlit", "lit"], "gift": ["closed", "open"], "box_a": ["closed", "open"],
+                                      "box_b": ["closed", "open"], "car": ["parked", "driving"]}
+OPENABLE = ("gift", "box_a", "box_b")
+STORY_POSES = ["wave", "point", "arms_raised", "bow_head", "slumped", "reach", "hold", "kneel", "hug", "stand"]
+CAR_SEATS = ("driver", "passenger")
+
+# Conservative speeds for the generator's own schedule (stage units / s): the slowest walker in
+# the story cast (grandpa, "walks slowly with a cane", 0.6 x 0.35) and a slow run.
+GEN_WALK, GEN_RUN, GEN_DRIVE = 0.19, 0.42, 0.6
+
+
+@dataclass
+class _Who:
+    """The story generator's own model of one cast member (approximate: it only has to keep
+    most screenplays valid, the compiler is the judge)."""
+
+    x: float | None = None  # None: offstage
+    y: float = 0.0
+    seat: tuple[str, str] | None = None  # (prop, socket), the car's included
+    kneeling: bool = False
+    hands: list[str] | None = None
+    head: str | None = None
+    free: float = 0.0  # shot time this puppet is free again
+    exact: bool = True  # x is exactly a mark's (not wherever an auto-walk stopped)
+
+    def __post_init__(self) -> None:
+        self.hands = [] if self.hands is None else self.hands
+
+
+@dataclass
+class _Thing:
+    """Where a prop is: off (not on stage), ground (at x), on (a surface socket), held, worn."""
+
+    where: str = "off"
+    x: float | None = None
+    holder: str | None = None
+    on: str | None = None  # "<prop>.<socket>"
+    state: str | None = None
+
+
+class StoryGen:
+    """A 2 to 4 shot family story on the story scene, written to compile: it tracks who is on
+    stage, seated, kneeling and holding what, where each prop is, and schedules each puppet's
+    actions after its previous one ends (by a conservative estimate). Shots switch sets (about
+    two thirds of the time) or stay on the same set; props are carried between shots by
+    listed puppets, dropped or placed before a fold, left behind on the old set, brought back
+    with propStart; people exit in one shot and enter in the next, sit down in one and stand up
+    in the next, ride the car across a set change. Narration (sometimes cued), a second teller,
+    camera cues and scrub interactions are added too. Everything a family story would do."""
+
+    def __init__(self, seed: int) -> None:
+        self.r = random.Random(seed)
+        self.cast: list[str] = self.r.sample(STORY_CAST, self.r.randint(2, 4))
+        props = self.r.sample(STORY_HAND, self.r.randint(2, 5)) + self.r.sample(STORY_FURNITURE, self.r.randint(0, 2))
+        if self.r.random() < 0.4:
+            props.append("car")
+        self.props: list[str] = props
+        self.who = {w: _Who() for w in self.cast}
+        self.thing = {p: _Thing() for p in self.props}
+        self.marks: dict[str, tuple[float, float]] = {}
+        self.ground: list[str] = []
+        self.clock = 0.0
+        self.n = 0
+        self.frozen: set[str] = set()  # leader and follower of a follow: they act no more this shot
+
+    # ---- helpers
+
+    def chance(self, p: float) -> bool:
+        return self.r.random() < p
+
+    def pick(self, items: list[Any]) -> Any:
+        return self.r.choice(items)
+
+    def on_stage(self, w: str) -> bool:
+        return self.who[w].x is not None
+
+    def active(self, w: str) -> bool:
+        """On stage and free to take part in another action this shot."""
+        return self.who[w].x is not None and w not in self.frozen
+
+    def standing(self, w: str) -> bool:
+        p = self.who[w]
+        return self.active(w) and p.seat is None and not p.kneeling
+
+    def placed(self, what: str) -> bool:
+        return self.thing[what].where in ("ground", "on") and self.thing[what].x is not None
+
+    def x_of(self, what: str) -> float | None:
+        th = self.thing[what]
+        if th.where == "held" or th.where == "worn":
+            return self.who[th.holder].x  # type: ignore[index]
+        return th.x
+
+    def schedule(self, who: list[str], est: float) -> float:
+        """The next action's t: after the previous action started and after everyone in ``who``
+        is free; they are then busy for ``est`` seconds."""
+        t = max([self.clock] + [self.who[w].free for w in who]) + self.r.uniform(0.0, 0.6)
+        t = round(t, 2)
+        self.clock = t
+        for w in who:
+            self.who[w].free = t + est
+        return t
+
+    def walk_time(self, a: float | None, b: float | None, *, run: bool = False, dy: float = 0.0) -> float:
+        if a is None or b is None:
+            return 2.0
+        return 1.0 + (abs(a - b) + abs(dy)) / (GEN_RUN if run else GEN_WALK)
+
+    def act(self, acts: list[dict], busy: list[str], est: float, do: str, **params: Any) -> dict:
+        a: dict[str, Any] = {"t": self.schedule(busy, est), "do": do, **{k: v for k, v in params.items() if v is not None}}
+        if "frm" in a:
+            a["from"] = a.pop("frm")
+        if self.chance(0.4):
+            self.n += 1
+            a["id"] = f"{do}_{self.n}"
+        acts.append(a)
+        return a
+
+    def free_mark(self, x: float | None, *, raised: bool = False) -> str | None:
+        pool = list(self.marks) if raised else self.ground
+        choices = [m for m in pool if x is None or abs(self.marks[m][0] - x) > 0.08]
+        return self.pick(choices) if choices else None
+
+    def free_socket(self, what: str, sockets: list[str]) -> str | None:
+        taken = {p.seat[1] for p in self.who.values() if p.seat is not None and p.seat[0] == what}
+        taken |= {th.on.split(".", 1)[1] for th in self.thing.values() if th.where == "on" and th.on
+                  and th.on.split(".", 1)[0] == what}
+        free = [s for s in sockets if s not in taken]
+        return self.pick(free) if free else None
+
+    def riders(self, what: str) -> list[str]:
+        return [w for w, p in self.who.items() if p.seat is not None and p.seat[0] == what]
+
+    def put(self, what: str, where: str, *, x: float | None = None, holder: str | None = None, on: str | None = None) -> None:
+        """Move a prop in the model, along with anything resting on it."""
+        th = self.thing[what]
+        if th.where == "held" and th.holder is not None and what in self.who[th.holder].hands:  # type: ignore[operator]
+            self.who[th.holder].hands.remove(what)  # type: ignore[union-attr]
+        if th.where == "worn" and th.holder is not None and self.who[th.holder].head == what:
+            self.who[th.holder].head = None
+        th.where, th.x, th.holder, th.on = where, x, holder, on
+        if where == "held":
+            self.who[holder].hands.append(what)  # type: ignore[index, union-attr]
+        if where == "worn":
+            self.who[holder].head = what  # type: ignore[index]
+        for o in self.thing.values():
+            if o.where == "on" and o.on and o.on.split(".", 1)[0] == what:
+                o.x = th.x if where in ("ground", "on") else None
+                if where == "off":
+                    o.where, o.on = "off", None
+
+    # ---- the shot's start
+
+    def begin(self, sid: str, set_id: str, same: bool) -> dict:
+        self.marks = dict(STORY_MARKS[set_id])
+        self.ground = [m for m, (_, y) in self.marks.items() if y == 0.0]
+        self.extra: dict[str, list[float]] = {}
+        self.clock = 0.0
+        self.frozen = set()
+        for p in self.who.values():
+            p.free = 0.0
+        shot: dict[str, Any] = {"id": sid, "set": set_id}
+        start: dict[str, dict] = {}
+        prop_start: dict[str, dict] = {}
+        if not same:
+            listed = [w for w, p in self.who.items()
+                      if self.chance(0.8 if (p.hands or (p.seat and p.seat[0] == "car")) else 0.55)]
+            if not listed:
+                listed = [self.pick(self.cast)]
+            car_riders = [w for w in listed if self.who[w].seat is not None and self.who[w].seat[0] == "car"]  # type: ignore[index]
+            bring_car = bool(car_riders) and self.chance(0.6)
+            for w, p in self.who.items():
+                if w not in listed:  # waits offstage; hand-held props stay behind (and leave the stage)
+                    for what in list(p.hands):  # type: ignore[union-attr]
+                        self.put(what, "off")
+                    p.x, p.y, p.seat, p.kneeling = None, 0.0, None, False
+            keep = {what for w in listed for what in self.who[w].hands} | {p.head for p in self.who.values() if p.head}  # type: ignore[union-attr]
+            for what, th in self.thing.items():
+                if what not in keep and th.where in ("ground", "on"):
+                    self.put(what, "off")
+            for w in listed:  # listing unseats (the car riders are re-seated below)
+                self.who[w].seat, self.who[w].kneeling = None, False
+            used: set[str] = set()
+            furniture = [f for f in self.props if f in STORY_FURNITURE]
+            for f in furniture:
+                if self.chance(0.65):
+                    m = self.pick([g for g in self.ground if g not in used] or self.ground)
+                    used.add(m)
+                    prop_start[f] = {"at": m}
+                    self.put(f, "ground", x=self.marks[m][0])
+            car_mark = None
+            if "car" in self.props and (bring_car or self.chance(0.35)):
+                car_mark = self.pick(self.ground)
+                prop_start["car"] = {"at": car_mark}
+                self.put("car", "ground", x=self.marks[car_mark][0])
+                if self.chance(0.3):
+                    prop_start["car"]["state"] = self.thing["car"].state = self.pick(STORY_STATES["car"])
+            surfaces = [f for f in furniture if f in STORY_SURFACES and f in prop_start]
+            for h in self.props:
+                th = self.thing[h]
+                if h not in STORY_HAND or th.where != "off" or not self.chance(0.5):
+                    continue
+                sock = None
+                if surfaces and self.chance(0.5):
+                    base = self.pick(surfaces)
+                    sock = self.free_socket(base, [STORY_SURFACES[base]])
+                if sock is not None:
+                    prop_start[h] = {"on": f"{base}.{sock}"}
+                    self.put(h, "on", x=self.thing[base].x, on=f"{base}.{sock}")
+                else:
+                    m = self.pick(self.ground)
+                    prop_start[h] = {"at": m}
+                    self.put(h, "ground", x=self.marks[m][0])
+                if h in STORY_STATES and self.chance(0.3):
+                    prop_start[h]["state"] = th.state = self.pick(STORY_STATES[h])
+            seats_free = {f: list(STORY_SEATS[f]) for f in furniture if f in STORY_SEATS and f in prop_start}
+            car_free = list(CAR_SEATS) if car_mark else []
+            for w in listed:
+                p = self.who[w]
+                s: dict[str, Any]
+                if w in car_riders and bring_car and car_free:
+                    sock = car_free.pop(0) if self.chance(0.7) else car_free.pop()
+                    s = {"at": car_mark, "in": f"car.{sock}"}
+                    p.x, p.y, p.seat = self.marks[car_mark][0], 0.0, ("car", sock)  # type: ignore[index]
+                elif not p.hands and self.chance(0.15):
+                    side = self.pick(list(OFF_X))
+                    s = {"at": side}
+                    p.x, p.y = None, 0.0
+                else:
+                    m = self.pick(self.ground)
+                    s = {"at": m}
+                    p.x, p.y = self.marks[m]
+                    seats = [f for f, socks in seats_free.items() if socks]
+                    if seats and self.chance(0.2):
+                        f = self.pick(seats)
+                        sock = seats_free[f].pop(0)
+                        s["in"] = f"{f}.{sock}"
+                        p.seat, p.x = (f, sock), self.thing[f].x
+                if self.chance(0.4):
+                    s["facing"] = self.pick(["left", "right"])
+                loose = [h for h in self.props if h in STORY_HAND and self.thing[h].where == "off"
+                         and h not in prop_start and h not in keep]
+                if loose and len(p.hands) < 2 and self.chance(0.25):  # type: ignore[arg-type]
+                    h = self.pick(loose)
+                    s["holding"] = h
+                    keep.add(h)
+                    self.put(h, "held", holder=w)
+                start[w] = s
+        else:
+            for w, p in self.who.items():
+                if self.chance(0.25) and not (p.seat and p.seat[0] == "car"):
+                    m = self.pick(self.ground)
+                    start[w] = {"at": m}
+                    p.x, p.y = self.marks[m]
+                    p.seat, p.kneeling = None, False
+            movable = [f for f in self.props if f in STORY_FURNITURE and self.placed(f)]
+            if movable and self.chance(0.2):  # move a piece of furniture; whoever sits on it rides along
+                f = self.pick(movable)
+                m = self.pick(self.ground)
+                prop_start[f] = {"at": m}
+                self.put(f, "ground", x=self.marks[m][0])
+                for w in self.riders(f):
+                    if w not in start:
+                        self.who[w].x = self.marks[m][0]
+        shot["start"], shot["propStart"] = start, prop_start
+        return shot
+
+    # ---- actions
+
+    def options(self) -> list[tuple[float, Any]]:
+        out: list[tuple[float, Any]] = []
+        act = [w for w in self.cast if self.active(w)]
+        stand = [w for w in self.cast if self.standing(w)]
+        if any(self.who[w].x is None for w in self.cast):
+            out.append((1.5, self.a_enter))
+        if stand:
+            out += [(2.5, self.a_walk), (0.6, self.a_exit), (0.6, self.a_kneel)]
+        if act:
+            out += [(1.0, self.a_gesture), (0.6, self.a_point), (0.4, self.a_turn)]
+        if len(stand) >= 2:
+            out += [(0.5, self.a_follow), (0.6, self.a_hug)]
+        if any(self.who[w].kneeling or (self.who[w].seat and self.who[w].seat[0] != "car") for w in act):
+            out.append((2.5, self.a_stand_up))
+        if any(self.placed(h) and h in STORY_HAND for h in self.props) and any(len(self.who[w].hands) < 2 for w in stand):  # type: ignore[arg-type]
+            out.append((2.5, self.a_pick_up))
+        if any(self.who[w].hands for w in stand):
+            out += [(1.2, self.a_drop), (1.2, self.a_hand_to), (1.2, self.a_place_on), (0.4, self.a_hold)]
+        if "cap" in self.thing and self.thing["cap"].where == "held":
+            out.append((0.8, self.a_put_on))
+        if any(f in STORY_SEATS and self.placed(f) for f in self.props) and stand:
+            out.append((1.5, self.a_sit_on))
+        if stand and any(h in self.thing and self.thing[h].where == "on" for h in OPENABLE):
+            out.append((1.0, self.a_open_close))
+        if any(h in STORY_STATES for h in self.props):
+            out.append((0.4, self.a_set_state))
+        if "car" in self.thing and self.placed("car"):
+            if stand:
+                out.append((1.5, self.a_get_in))
+            if any(self.active(w) for w in self.riders("car")):
+                out += [(2.0, self.a_drive), (1.0, self.a_get_out)]
+        out.append((0.5, self.a_effect))
+        return out
+
+    def goto(self, acts: list[dict], w: str, m: str) -> None:
+        """``w`` walks to mark ``m`` (nothing when already standing exactly there)."""
+        p = self.who[w]
+        x, y = self.marks[m]
+        if p.exact and p.x is not None and abs(p.x - x) < 1e-9 and p.y == y:
+            return
+        self.act(acts, [w], self.walk_time(p.x, x, dy=y - p.y), "walk_to", who=w, to=m)
+        p.x, p.y, p.exact, p.kneeling = x, y, True, False
+
+    def approach(self, acts: list[dict], w: str, x: float, lo: float = 0.1, hi: float = 0.2) -> None:
+        """Get ``w`` standing on a ground mark ``lo`` to ``hi`` from ``x``, walking there if not
+        already. With no such mark in the set, the shot gets one (Shot.marks), on ``w``'s side."""
+        p = self.who[w]
+        if p.exact and p.x is not None and p.y == 0.0 and lo <= abs(p.x - x) <= hi:
+            return
+        near = [m for m in self.ground if lo <= abs(self.marks[m][0] - x) <= hi]
+        if not near:
+            side = 1.0 if (p.x if p.x is not None else 0.0) >= x else -1.0
+            mx = x + side * (lo + hi) / 2
+            if not -0.95 <= mx <= 0.95:
+                mx = x - side * (lo + hi) / 2
+            name = f"spot_{len(self.extra) + 1}"
+            self.extra[name] = [round((mx + 1) / 2, 4), 0.0]
+            self.marks[name] = (round(2 * self.extra[name][0] - 1, 6), 0.0)
+            self.ground.append(name)
+            near = [name]
+        self.goto(acts, w, self.pick(near))
+
+    def face(self, acts: list[dict], w: str, target: str) -> None:
+        """turn_to: place_on and open do not turn toward what they reach for."""
+        self.act(acts, [w], 1.2, "turn_to", who=w, target=target)
+
+    def a_enter(self, acts: list[dict]) -> None:
+        w = self.pick([w for w in self.cast if self.who[w].x is None])
+        m = self.pick(self.ground)
+        side = self.pick(list(OFF_X)) if self.chance(0.6) else None
+        x = self.marks[m][0]
+        est = self.walk_time(OFF_X[side or ("offstage_left" if x < 0 else "offstage_right")], x)
+        self.act(acts, [w], est, "enter", who=w, to=m, frm=side)
+        p = self.who[w]
+        p.x, p.y, p.kneeling, p.exact = x, 0.0, False, True
+
+    def a_exit(self, acts: list[dict]) -> None:
+        w = self.pick([w for w in self.cast if self.standing(w)])
+        p = self.who[w]
+        side = self.pick(list(OFF_X)) if self.chance(0.5) else None
+        est = self.walk_time(p.x, OFF_X[side or ("offstage_left" if (p.x or 0) < 0 else "offstage_right")])
+        self.act(acts, [w], est, "exit", who=w, to=side)
+        p.x, p.y = None, 0.0
+
+    def a_walk(self, acts: list[dict]) -> None:
+        w = self.pick([w for w in self.cast if self.standing(w)])
+        p = self.who[w]
+        m = self.free_mark(p.x, raised=self.chance(0.3))
+        if m is None:
+            return
+        run = self.chance(0.3)
+        x, y = self.marks[m]
+        self.act(acts, [w], self.walk_time(p.x, x, run=run, dy=y - p.y) + 0.5, "run_to" if run else "walk_to", who=w, to=m)
+        p.x, p.y, p.exact = x, y, True
+
+    def a_follow(self, acts: list[dict]) -> None:
+        leader, follower = self.r.sample([w for w in self.cast if self.standing(w)], 2)
+        lp, fp = self.who[leader], self.who[follower]
+        m = self.free_mark(lp.x)
+        if m is None:
+            return
+        x, y = self.marks[m]
+        est = self.walk_time(lp.x, x, dy=y - lp.y)
+        dur = round(self.r.uniform(1.0, est), 2) if self.chance(0.3) else None
+        a = self.act(acts, [leader, follower], est + self.walk_time(fp.x, x) + 1.5, "walk_to", who=leader, to=m)
+        f: dict[str, Any] = {"t": a["t"], "do": "follow", "who": follower, "target": leader}
+        if dur is not None:
+            f["dur"] = dur
+        acts.append(f)
+        lp.x, lp.y = x, y
+        fp.x, fp.y, fp.exact = x, y, False
+        self.frozen |= {leader, follower}  # a follow reads its leader's whole path: keep both out of the rest
+
+    def a_gesture(self, acts: list[dict]) -> None:
+        w = self.pick([w for w in self.cast if self.active(w)])
+        dur = round(self.r.uniform(0.8, 3.0), 2) if self.chance(0.6) else None
+        if self.chance(0.5) or not self.standing(w):
+            others = [o for o in self.cast if o != w and self.who[o].x is not None]
+            target = self.pick(others) if others and self.chance(0.6) else None
+            self.act(acts, [w], (dur or 2.0) + 1.5, "wave", who=w, target=target, dur=dur)
+        else:
+            pose = self.pick(STORY_POSES)
+            self.act(acts, [w], (dur or 2.0) + 1.5, "pose", who=w, pose=pose, dur=dur)
+            if pose == "kneel" and dur is None:
+                self.who[w].kneeling = True
+
+    def a_kneel(self, acts: list[dict]) -> None:
+        w = self.pick([w for w in self.cast if self.standing(w)])
+        dur = round(self.r.uniform(1.0, 3.0), 2) if self.chance(0.5) else None
+        self.act(acts, [w], (dur or 1.5) + 2.0, "kneel", who=w, dur=dur)
+        if dur is None:
+            self.who[w].kneeling = True
+
+    def a_stand_up(self, acts: list[dict]) -> None:
+        w = self.pick([w for w in self.cast if self.active(w) and (self.who[w].kneeling or (
+            self.who[w].seat and self.who[w].seat[0] != "car"))])
+        self.act(acts, [w], 2.5, "stand_up", who=w)
+        self.who[w].seat, self.who[w].kneeling = None, False
+
+    def _target(self, w: str) -> str:
+        people = [o for o in self.cast if o != w and self.who[o].x is not None]
+        things = [h for h in self.props if self.placed(h)]
+        return self.pick(people * 2 + things + list(self.marks))
+
+    def a_point(self, acts: list[dict]) -> None:
+        w = self.pick([w for w in self.cast if self.active(w)])
+        dur = round(self.r.uniform(0.8, 2.5), 2) if self.chance(0.5) else None
+        verb = self.pick(["point_at", "lean_toward"])
+        self.act(acts, [w], (dur or 2.0) + 1.5, verb, who=w, target=self._target(w), dur=dur)
+
+    def a_turn(self, acts: list[dict]) -> None:
+        w = self.pick([w for w in self.cast if self.active(w)])
+        self.act(acts, [w], 1.5, "turn_to", who=w, target=self._target(w))
+
+    def a_hug(self, acts: list[dict]) -> None:
+        w, o = self.r.sample([w for w in self.cast if self.standing(w)], 2)
+        dur = round(self.r.uniform(1.0, 3.0), 2) if self.chance(0.5) else None
+        est = self.walk_time(self.who[w].x, self.who[o].x) + (dur or 2.0) + 2.5
+        self.act(acts, [w, o], est, "hug", who=w, target=o, dur=dur)
+        self.who[w].x, self.who[w].exact = self.who[o].x, False
+
+    def a_pick_up(self, acts: list[dict]) -> None:
+        w = self.pick([w for w in self.cast if self.standing(w) and len(self.who[w].hands) < 2])  # type: ignore[arg-type]
+        h = self.pick([h for h in self.props if h in STORY_HAND and self.placed(h)])
+        est = self.walk_time(self.who[w].x, self.x_of(h)) + 6.0
+        self.act(acts, [w], est, "pick_up", who=w, what=h)
+        self.who[w].x, self.who[w].exact = self.x_of(h), False
+        self.put(h, "held", holder=w)
+
+    def _holder(self) -> tuple[str, str]:
+        w = self.pick([w for w in self.cast if self.standing(w) and self.who[w].hands])
+        return w, self.pick(self.who[w].hands)
+
+    def a_drop(self, acts: list[dict], w: str | None = None) -> None:
+        w, h = (w, self.pick(self.who[w].hands)) if w else self._holder()  # type: ignore[arg-type]
+        self.act(acts, [w], 2.0, "drop", who=w, what=h)
+        self.put(h, "ground", x=self.who[w].x)
+
+    def a_hold(self, acts: list[dict]) -> None:
+        w, h = self._holder()
+        self.act(acts, [w], 2.0, "hold", who=w, what=h)
+
+    def a_hand_to(self, acts: list[dict]) -> None:
+        """No auto-walk: the taker stands on a mark (walking there first if needed), the giver
+        on a mark next to it."""
+        w, h = self._holder()
+        takers = [o for o in self.cast if o != w and self.standing(o) and self.who[o].y == 0.0
+                  and len(self.who[o].hands) < 2]  # type: ignore[arg-type]
+        if not takers:
+            return
+        o = self.pick(takers)
+        if not self.who[o].exact:
+            self.goto(acts, o, self.pick(self.ground))
+        self.approach(acts, w, self.who[o].x)  # type: ignore[arg-type]
+        self.act(acts, [w, o], 3.5, "hand_to", who=w, what=h, to=o)
+        self.put(h, "held", holder=o)
+
+    def a_place_on(self, acts: list[dict]) -> None:
+        """No auto-walk and no turn: next to a surface (a standing reach), or next to a mark on
+        the floor (a crouch), facing it. (Not on the mark the puppet stands on: see
+        test_place_on_the_mark_you_stand_on.)"""
+        w, h = self._holder()
+        surfaces = [f for f in self.props if f in STORY_SURFACES and self.placed(f) and self.thing[f].where == "ground"]
+        if surfaces and self.chance(0.6):
+            base = self.pick(surfaces)
+            sock = self.free_socket(base, [STORY_SURFACES[base]])
+            if sock is not None:
+                self.approach(acts, w, self.thing[base].x)  # type: ignore[arg-type]
+                self.face(acts, w, base)
+                self.act(acts, [w], 3.5, "place_on", who=w, what=h, on=base, socket=sock if self.chance(0.5) else None)
+                self.put(h, "on", x=self.thing[base].x, on=f"{base}.{sock}")
+                return
+        m = self.pick(self.ground)
+        self.approach(acts, w, self.marks[m][0])
+        self.face(acts, w, m)
+        self.act(acts, [w], 4.5, "place_on", who=w, what=h, on=m)
+        self.put(h, "ground", x=self.marks[m][0])
+
+    def a_put_on(self, acts: list[dict]) -> None:
+        w = self.thing["cap"].holder
+        if w is None or not self.standing(w):
+            return
+        heads = [o for o in self.cast if self.who[o].head is None and (o == w or (self.standing(o) and self.who[o].y == 0.0))]
+        if not heads:
+            return
+        o = self.pick(heads)
+        if o != w:
+            if not self.who[o].exact:
+                self.goto(acts, o, self.pick(self.ground))
+            self.approach(acts, w, self.who[o].x)  # type: ignore[arg-type]
+        self.act(acts, [w] if o == w else [w, o], 4.0, "put_on", who=w, what="cap",
+                 target=o if o != w or self.chance(0.3) else None)
+        self.put("cap", "worn", holder=o)
+
+    def a_sit_on(self, acts: list[dict]) -> None:
+        ws = [w for w in self.cast if self.standing(w)]
+        seats = [(f, s) for f in self.props if f in STORY_SEATS and self.placed(f)
+                 for s in [self.free_socket(f, STORY_SEATS[f])] if s is not None]
+        if not ws or not seats:
+            return
+        w = self.pick(ws)
+        f, sock = self.pick(seats)
+        est = self.walk_time(self.who[w].x, self.thing[f].x) + 3.5
+        self.act(acts, [w], est, "sit_on", who=w, what=f, socket=sock if self.chance(0.5) or sock != "seat" else None)
+        self.who[w].seat, self.who[w].x, self.who[w].exact = (f, sock), self.thing[f].x, False
+
+    def a_open_close(self, acts: list[dict]) -> None:
+        """A box or gift on a surface, from right beside it, facing it. (Not one on the floor
+        or in the opener's own hand: test_story_scenarios.test_open_a_gift_on_the_floor_standing
+        and test_open_a_box_you_are_holding.)"""
+        props = [h for h in OPENABLE if h in self.thing and self.thing[h].where == "on"]
+        ws = [w for w in self.cast if self.standing(w)]
+        if not props or not ws:
+            return
+        h, w = self.pick(props), self.pick(ws)
+        th = self.thing[h]
+        base = th.on.split(".", 1)[0]  # type: ignore[union-attr]
+        self.approach(acts, w, th.x, 0.08, 0.12)  # type: ignore[arg-type]
+        self.face(acts, w, base)
+        verb = "close" if th.state == "open" else "open" if th.state == "closed" else self.pick(["open", "close"])
+        self.act(acts, [w], 3.0, verb, who=w, what=h)
+        th.state = "open" if verb == "open" else "closed"
+
+    def a_set_state(self, acts: list[dict]) -> None:
+        h = self.pick([h for h in self.props if h in STORY_STATES])
+        ws = [w for w in self.cast if self.active(w)]
+        who = self.pick(ws) if ws and self.chance(0.5) else None
+        state = self.pick(STORY_STATES[h])
+        self.act(acts, [who] if who else [], 1.5, "set_state", what=h, state=state, who=who)
+        self.thing[h].state = state
+
+    def a_get_in(self, acts: list[dict]) -> None:
+        ws = [w for w in self.cast if self.standing(w)]
+        sock = self.free_socket("car", list(CAR_SEATS))
+        if not ws or sock is None:
+            return
+        w = self.pick(ws)
+        named = sock if self.chance(0.4) else None
+        if named is None:  # the compiler's default: driver if free, else the next free seat
+            sock = "driver" if "driver" not in {self.who[r].seat[1] for r in self.riders("car")} else "passenger"  # type: ignore[index]
+        # Wait for the car to stop (a drive in progress keeps every rider busy).
+        busy = [w] + self.riders("car")
+        self.act(acts, busy, self.walk_time(self.who[w].x, self.thing["car"].x) + 3.5, "get_in", who=w, what="car",
+                 socket=named)
+        self.who[w].seat, self.who[w].x, self.who[w].kneeling, self.who[w].exact = ("car", sock), self.thing["car"].x, False, False
+
+    def a_get_out(self, acts: list[dict]) -> None:
+        w = self.pick([w for w in self.riders("car") if self.active(w)])
+        self.act(acts, [w], 3.5, "get_out", who=w, what="car")
+        self.who[w].seat = None
+
+    def a_drive(self, acts: list[dict]) -> None:
+        riders = self.riders("car")
+        driver = [w for w in riders if self.who[w].seat[1] == "driver"]  # type: ignore[index]
+        if not driver or any(w in self.frozen for w in riders):
+            return
+        m = self.free_mark(self.thing["car"].x)
+        if m is None:
+            return
+        x = self.marks[m][0]
+        est = 2.5 + abs(x - self.thing["car"].x) / GEN_DRIVE  # type: ignore[operator]
+        passengers = [w for w in riders if w not in driver]
+        if passengers and self.chance(0.4):
+            self.act(acts, riders, est, "ride_to", who=self.pick(passengers), what="car", to=m)
+        else:
+            self.act(acts, riders, est, "drive_to", who=driver[0], what="car", to=m)
+        self.put("car", "ground", x=x)
+        for w in riders:
+            self.who[w].x = x
+
+    def a_effect(self, acts: list[dict]) -> None:
+        kind = self.pick(["confetti", "steam", "smoke", "rain", "time_of_day"])
+        t = round(self.clock + self.r.uniform(0.0, 2.0), 2)
+        a: dict[str, Any] = {"t": t, "do": kind}
+        if kind == "time_of_day":
+            a["value"] = self.pick(TIMES_OF_DAY)
+        elif kind != "rain" and self.chance(0.7):
+            # Someone standing still on stage by then, a prop on the ground, or a mark.
+            people = [w for w in self.cast if self.who[w].x is not None and self.who[w].free <= t and w not in self.frozen]
+            things = [h for h in self.props if self.thing[h].where == "ground"]
+            a["at"] = self.pick(people + things + self.ground)
+        if self.chance(0.5):
+            a["dur"] = round(self.r.uniform(0.5, 3.0), 2)
+        acts.append(a)
+
+    # ---- one shot, the whole screenplay
+
+    def shot(self, i: int, n_shots: int, prev_set: str | None) -> dict:
+        if prev_set is not None and self.chance(0.35):
+            set_id = prev_set
+        else:
+            set_id = self.pick([s for s in STORY_MARKS if s != prev_set])
+        sid = f"s{i + 1}"
+        shot = self.begin(sid, set_id, set_id == prev_set)
+        acts: list[dict] = []
+        on_at_start = {w for w in self.cast if self.on_stage(w)}
+        for _ in range(self.r.randint(2, 7)):
+            weights, fns = zip(*self.options())
+            self.r.choices(fns, weights)[0](acts)
+        if i + 1 < n_shots and self.chance(0.5):  # drop something before the fold
+            holders = [w for w in self.cast if self.on_stage(w) and self.who[w].hands]
+            if holders:
+                self.a_drop(acts, self.pick(holders))
+        shot["actions"] = acts
+        if self.extra:
+            shot["marks"] = dict(self.extra)
+        steady = sorted(on_at_start & {w for w in self.cast if self.on_stage(w)}
+                        - {a.get("who") for a in acts if a["do"] in ("exit", "enter")})
+        if self.chance(0.6):
+            cues = []
+            for _ in range(self.r.randint(1, 2)):
+                move = self.pick(MOVES)
+                cue: dict[str, Any] = {"t": round(self.r.uniform(0.0, max(self.clock, 1.0)), 2), "move": move}
+                if VOCABULARY["camera"][move]["required"]:
+                    cue["target"] = self.pick(steady + self.ground) if steady else self.pick(self.ground)
+                if self.chance(0.5):
+                    cue["dur"] = round(self.r.uniform(0.5, 3.0), 2)
+                cues.append(cue)
+            shot["camera"] = sorted(cues, key=lambda c: c["t"])
+        if self.chance(0.4):
+            shot["transition"] = self.pick(TRANSITIONS)
+        if self.chance(0.4):
+            shot["pageText"] = " ".join(self.pick(WORDS) for _ in range(5)).capitalize() + "."
+        return shot
+
+    def narrate(self, shot: dict, author: str, cue_p: float) -> list[dict]:
+        """One or two short lines, spaced so they never overlap; sometimes cued to an action."""
+        out = []
+        t = round(self.r.uniform(0.0, 1.5), 2)
+        ids = {a["id"]: a["t"] for a in shot["actions"] if "id" in a}
+        for _ in range(self.r.randint(1, 2)):
+            words = [self.pick(WORDS) for _ in range(self.r.randint(3, 6))]
+            line: dict[str, Any] = {"t": t, "text": " ".join(words).capitalize() + ".",
+                                    "source": f"telling:{author}:{shot['id']}"}
+            later = [i for i, at in ids.items() if at >= t + 1.0]
+            if later and self.chance(cue_p):  # cued: the line starts about where its action does
+                cue = self.pick(later)
+                line["t"] = t = round(ids.pop(cue) - 1.0, 2)
+                line["cue"] = cue
+                if self.chance(0.5):
+                    line["cueWord"] = self.pick(words[:2])
+            out.append(line)
+            t = round(t + 6.0 + self.r.uniform(0.0, 3.0), 2)
+        return out
+
+    def screenplay(self) -> dict:
+        n = self.r.randint(2, 4)
+        shots: list[dict] = []
+        prev = None
+        for i in range(n):
+            shots.append(self.shot(i, n, prev))
+            prev = shots[-1]["set"]
+        sp: dict[str, Any] = {"memoryId": "fuzz_story", "cast": list(self.cast), "props": list(self.props), "shots": shots}
+        teller = self.pick(self.cast)
+        for shot in shots:
+            if self.chance(0.6):
+                shot["narration"] = self.narrate(shot, teller, 0.15)
+        if not any("narration" in s for s in shots):
+            teller = self.cast[0]  # who tells the default narration when no line names a teller
+        if self.chance(0.3):
+            other = self.pick([c for c in self.cast if c != teller])
+            sp["narrations"] = {other: {s["id"]: self.narrate(s, other, 0.0) for s in shots if self.chance(0.7)}}
+        if self.chance(0.15):
+            shot = self.pick(shots)
+            frm = round(self.r.uniform(0.0, 3.0), 2)
+            sp["interactions"] = [{
+                "id": "tab", "kind": self.pick(VOCABULARY["interactionKinds"]), "label": "Pull it", "shot": shot["id"],
+                "at": [0.8, 0.8], "page": "stage",
+                "drives": {"type": "scrub", "from": frm, "to": round(frm + 2.0, 2), "targets": [f"puppet:{self.pick(self.cast)}"]},
+            }]
+        return sp
+
+
 @dataclass(frozen=True)
 class Sample:
-    kind: str  # "random" | "perturbed"
+    kind: str  # "random" | "perturbed" | "story" | "edge"
     index: int
     raw: dict
     screenplay: Screenplay | None  # None: the pydantic schema rejected it
 
 
+KIND_OFFSET = {"random": 0, "perturbed": 50_000, "story": 1_000_000}
+
+
 def _seed(kind: str, i: int) -> int:
-    return SEED * 100_003 + i + (0 if kind == "random" else 50_000)
+    """Distinct per (kind, i) for random i < 50,000, perturbed i < 950,000 and any story i."""
+    return SEED * 100_003 + i + KIND_OFFSET[kind]
+
+
+def scene_for(kind: str) -> Scene:
+    """A fresh copy of the scene a kind of sample compiles against."""
+    if kind == "story":
+        sets, props, people = story_scene()
+        return Scene(sets=sets, props=props, people=people)
+    return base_scene()
 
 
 def generate(kind: str, i: int) -> Sample:
-    g = Gen(_seed(kind, i))
-    raw = g.screenplay() if kind == "random" else g.perturbed(i)
+    if kind == "story":
+        raw = StoryGen(_seed(kind, i)).screenplay()
+    else:
+        g = Gen(_seed(kind, i))
+        raw = g.screenplay() if kind == "random" else g.perturbed(i)
     try:
         sp = Screenplay.model_validate(copy.deepcopy(raw))
     except ValidationError:
@@ -418,26 +1184,73 @@ def generate(kind: str, i: int) -> Sample:
 
 
 def corpus() -> list[Sample]:
-    return [generate("random", i) for i in range(N_RANDOM)] + [generate("perturbed", i) for i in range(N_PERTURBED)]
+    return [generate(kind, i) for kind, n in SIZES.items() for i in range(OFFSET, OFFSET + n)]
 
 
 # ------------------------------------------------------------------------- invariants
 
-def _compile(sp: Screenplay, scene: Scene) -> CompileResult:
-    return compile_screenplay(sp, sets=scene.sets, props=scene.props, people=scene.people)
+def _compile(sp: Screenplay, scene: Scene, **kw: Any) -> CompileResult:
+    return compile_screenplay(sp, sets=scene.sets, props=scene.props, people=scene.people, **kw)
 
 
 def _planting_problems(sample: Sample, result: CompileResult) -> list[str]:
-    """Invariant 5, for an ok result."""
-    if result.timeline is None:
+    """Invariant 5: the planted compile (``result``) and ``plant_feet=False`` agree on ok-ness
+    and errors; on ok, planting_problems is empty and feetPlanted is True on the planted
+    timeline and unset on the unplanted one."""
+    scene = scene_for(sample.kind)
+    unplanted = _compile(Screenplay.model_validate(copy.deepcopy(sample.raw)), scene, plant_feet=False)
+    if unplanted.ok != result.ok:
+        return [(f"planting: plant_feet=False gives ok={unplanted.ok}, plant_feet=True ok={result.ok}: "
+                 f"{[e.message for e in unplanted.errors + result.errors]}")]
+    if unplanted.errors != result.errors:
+        return [(f"planting: plant_feet=False errors {[e.message for e in unplanted.errors]} differ from "
+                 f"plant_feet=True {[e.message for e in result.errors]}")]
+    if result.timeline is None or unplanted.timeline is None:
         return []
-    scene = base_scene()
-    unplanted = compile_screenplay(Screenplay.model_validate(copy.deepcopy(sample.raw)), sets=scene.sets,
-                                   props=scene.props, people=scene.people, plant_feet=False)
-    if not unplanted.ok or unplanted.timeline is None:
-        return [f"plant_feet=False failed where the planted compile did not: {[e.message for e in unplanted.errors]}"]
+    out: list[str] = []
+    if result.timeline.feet_planted is not True:
+        out.append(f"planting: feet_planted is {result.timeline.feet_planted!r} on the planted timeline")
+    if "feet_planted" in unplanted.timeline.model_fields_set or unplanted.timeline.feet_planted is not None:
+        out.append(f"planting: feet_planted is set ({unplanted.timeline.feet_planted!r}) on the unplanted timeline")
     builds = {pid: p.character.build for pid, p in scene.people.items()}
-    return [f"planting: {m}" for m in planting_problems(result.timeline, unplanted.timeline, builds)]
+    return out + [f"planting: {m}" for m in planting_problems(result.timeline, unplanted.timeline, builds)]
+
+
+# Known bug (test_an_error_on_a_non_finite_t_has_a_json_safe_t): an action or cue written with
+# t = inf / nan gets CompileError.t = inf / nan. Tolerated in the random loop, which writes such
+# times on purpose, until wave 3 fixes it; the reproduction checks it strictly.
+TOLERATE_NON_FINITE_ERROR_T = True
+
+
+def error_site_problems(sp: Screenplay, result: CompileResult, *,
+                        tolerate_non_finite_t: bool = TOLERATE_NON_FINITE_ERROR_T) -> list[str]:
+    """Invariant 6: every error's ``shot`` is one of the screenplay's shot ids or None; a ``t``
+    comes with a ``shot``, is finite and lies within that shot's action span (from its first
+    to its last action or camera cue time as written: the compiler reports the written ``t``);
+    and the message head names the same shot (``shot <id>``, ``shot <id>, t=`` with a ``t``)."""
+    spans: dict[str, list[float]] = {}
+    for shot in sp.shots:
+        spans.setdefault(shot.id, []).extend(x.t for x in [*shot.actions, *shot.camera] if math.isfinite(x.t))
+    out: list[str] = []
+    for e in result.errors:
+        if e.shot is not None and e.shot not in spans:
+            out.append(f"error.shot {e.shot!r} is not a shot id: {e.message!r}")
+            continue
+        if e.shot is not None and not (e.message.startswith(f"shot {e.shot}:") or e.message.startswith(f"shot {e.shot},")):
+            out.append(f"error.shot is {e.shot!r} but the message head names another: {e.message!r}")
+        if e.t is None:
+            continue
+        if e.shot is None:
+            out.append(f"error.t is {e.t} without a shot: {e.message!r}")
+        elif not math.isfinite(e.t):
+            if not tolerate_non_finite_t:
+                out.append(f"error.t is {e.t}: {e.message!r}")
+        elif not spans[e.shot] or not min(spans[e.shot]) - 1e-6 <= e.t <= max(spans[e.shot]) + 1e-6:
+            span = f"[{min(spans[e.shot]):g}, {max(spans[e.shot]):g}]" if spans[e.shot] else "empty"
+            out.append(f"error.t {e.t:g} is outside shot {e.shot}'s action span {span}: {e.message!r}")
+        elif not e.message.startswith(f"shot {e.shot}, t="):
+            out.append(f"error.t is {e.t:g} but the message head has no t: {e.message!r}")
+    return out
 
 
 def _non_finite(value: Any, path: str = "") -> list[str]:
@@ -492,9 +1305,9 @@ def error_problems(result: CompileResult) -> list[str]:
 
 
 def check(sample: Sample) -> tuple[CompileResult, list[str]]:
-    """Run invariants 1 to 4 on one sample. Returns the result and every problem found."""
+    """Run every invariant on one sample. Returns the (planted) result and every problem found."""
     assert sample.screenplay is not None
-    sp, scene = sample.screenplay, base_scene()
+    sp, scene = sample.screenplay, scene_for(sample.kind)
     before = sp.model_dump_json()
     try:
         result = _compile(sp, scene)
@@ -508,14 +1321,19 @@ def check(sample: Sample) -> tuple[CompileResult, list[str]]:
             problems.append("ok without a timeline")
         else:
             problems += timeline_problems(result.timeline)
+            problems += [f"sanity: {m}" for m in sanity_problems(result.timeline)]
         if result.errors:
             problems.append(f"ok with errors: {[e.message for e in result.errors]}")
-        problems += _planting_problems(sample, result)
     else:
         problems += error_problems(result)
+        problems += error_site_problems(sp, result)
     if sp.model_dump_json() != before:
         problems.append("compile mutated its screenplay")
-    again = _compile(Screenplay.model_validate(copy.deepcopy(sample.raw)), base_scene())  # invariant 4
+    try:
+        problems += _planting_problems(sample, result)
+    except Exception as e:  # invariant 1, for plant_feet=False
+        problems.append(f"compile(plant_feet=False) raised {type(e).__name__}: {e}")
+    again = _compile(Screenplay.model_validate(copy.deepcopy(sample.raw)), scene_for(sample.kind))  # invariant 4
     if again.model_dump_json() != result.model_dump_json():
         problems.append("compiling the same input twice gave different JSON")
     return result, problems
@@ -529,7 +1347,7 @@ def samples() -> list[Sample]:
 
 
 def test_the_generator_is_deterministic():
-    for kind, i in [("random", 0), ("random", 17), ("perturbed", 3)]:
+    for kind, i in [("random", 0), ("random", 17), ("perturbed", 3), ("story", 0), ("story", 11)]:
         a, b = generate(kind, i), generate(kind, i)
         assert json.dumps(a.raw, sort_keys=True) == json.dumps(b.raw, sort_keys=True)
 
@@ -547,13 +1365,53 @@ def test_the_corpus_covers_every_verb_and_camera_move(samples):
 
 def test_the_corpus_has_one_to_three_shots_set_changes_tellers_and_cues(samples):
     raws = [s.raw for s in samples if s.kind == "random"]
+    f = N_RANDOM / DEFAULT_SIZES["random"]
     assert {len(r["shots"]) for r in raws} == {1, 2, 3}
     pairs = [(a["set"], b["set"]) for r in raws for a, b in zip(r["shots"], r["shots"][1:])]
     assert any(a == b for a, b in pairs) and any(a != b for a, b in pairs)
     assert all(1 <= len(shot["actions"]) <= 8 for r in raws for shot in r["shots"])
-    assert sum("narrations" in r for r in raws) > 50
-    assert sum(any("cue" in ln for shot in r["shots"] for ln in shot.get("narration", [])) for r in raws) > 50
-    assert sum(any(shot.get("camera") for shot in r["shots"]) for r in raws) > 200
+    assert sum("narrations" in r for r in raws) > 50 * f
+    assert sum(any("cue" in ln for shot in r["shots"] for ln in shot.get("narration", [])) for r in raws) > 50 * f
+    assert sum(any(shot.get("camera") for shot in r["shots"]) for r in raws) > 200 * f
+
+
+def _story_features(raw: dict) -> set[str]:
+    """What a story screenplay does across its shots (test_the_story_corpus_...)."""
+    out: set[str] = set()
+    shots = raw["shots"]
+    for a, b in itertools.pairwise(shots):
+        out.add("set_change" if a["set"] != b["set"] else "same_set")
+        acts_a = a["actions"]
+        held_in = {s["holding"] for s in b["start"].values() if "holding" in s}
+        picked = {x["what"] for x in acts_a if x["do"] in ("pick_up", "hand_to")}
+        if a["set"] != b["set"] and any(w in b["start"] for w in {x["who"] for x in acts_a if x["do"] == "pick_up"}):
+            out.add("carry_across_sets")  # someone who picked something up is brought into the next set
+        if acts_a and acts_a[-1]["do"] in ("drop", "place_on"):
+            out.add("drop_before_fold")
+        if held_in - picked:
+            out.add("start_holding")
+        exits = {x["who"] for x in acts_a if x["do"] == "exit"}
+        if exits & {x["who"] for x in b["actions"] if x["do"] == "enter"}:
+            out.add("exit_then_enter_next_shot")
+        sat = {x["who"] for x in acts_a if x["do"] == "sit_on"}
+        if a["set"] == b["set"] and sat & {x["who"] for x in b["actions"] if x["do"] == "stand_up"}:
+            out.add("sit_then_stand_next_shot")
+        if any(st.get("in", "").startswith("car.") for st in b["start"].values()):
+            out.add("ride_across_sets")
+        if any(x["do"] in ("drive_to", "ride_to") for x in acts_a):
+            out.add("drive")
+    return out
+
+
+def test_the_story_corpus_switches_sets_carries_drops_enters_and_sits(samples):
+    stories = [s for s in samples if s.kind == "story"]
+    assert {len(s.raw["shots"]) for s in stories} == {2, 3, 4}
+    features = Counter(f for s in stories for f in _story_features(s.raw))
+    print(f"\nstory features: {dict(sorted(features.items()))}")
+    for name in ("set_change", "same_set", "carry_across_sets", "drop_before_fold", "start_holding",
+                 "exit_then_enter_next_shot", "sit_then_stand_next_shot", "ride_across_sets", "drive"):
+        assert features[name] >= max(1, N_STORY // 100), name
+    assert all(s.screenplay is not None for s in stories)  # the schema accepts every story
 
 
 def test_compile_never_raises_and_keeps_its_invariants(samples):
@@ -567,6 +1425,7 @@ def test_compile_never_raises_and_keeps_its_invariants(samples):
             continue
         if (s.kind, s.index) in EXCLUDED:
             stats["excluded"] += 1
+            stats[f"excluded_{s.kind}"] += 1
             continue
         result, problems = check(s)
         stats[f"{s.kind}_{'ok' if result.ok else 'error'}"] += 1
@@ -582,8 +1441,10 @@ def test_compile_never_raises_and_keeps_its_invariants(samples):
     # The corpus must exercise both sides, or invariants 2 and 3 are vacuous.
     assert stats["random_error"] > N_RANDOM // 2
     assert stats["random_ok"] + stats["perturbed_ok"] >= N_PERTURBED // 3
-    assert stats["ok_multishot"] >= 100  # shot contiguity is checked on real multi-shot timelines
+    assert stats["ok_multishot"] >= 100 * N_RANDOM / DEFAULT_SIZES["random"]  # shot contiguity on real multi-shot timelines
     assert stats["schema_rejected"] < (N_RANDOM + N_PERTURBED) // 10
+    # The stories are written to compile: most of them reach a timeline (and every invariant).
+    assert stats["story_ok"] >= 0.8 * (N_STORY - stats["excluded_story"])
     # Errors come from the world simulation as well as from static validation.
     assert len(codes) >= 25
 
@@ -688,3 +1549,210 @@ def test_strip_person_variant_for_the_teller_compiles():
     stripped, _ = strip_person(sp, tl, SAMPLE_TELLER, keep_narrator=SAMPLE_OTHER)
     assert stripped["cast"] == [SAMPLE_OTHER]
     assert _messages(stripped, scene) == []
+
+
+# ------------------------------------------------- bugs the fuzz found (wave 3 fixes them)
+#
+# Each is a minimal hand-written reproduction, xfail(strict=True) with the exact error or broken
+# invariant in its reason; the random seeds they break are in EXCLUDED. None of them is fixed
+# here: this file owns only tests.
+
+def _repro(*shots: dict, scene: Scene | None = None, plant_feet: bool = True) -> CompileResult:
+    scene = scene or base_scene()
+    sp = Screenplay.model_validate({"memoryId": "repro", "cast": list(CAST), "props": list(PROPS), "shots": list(shots)})
+    return _compile(sp, scene, plant_feet=plant_feet)
+
+
+def _shot(sid: str, set_id: str, start: dict, actions: list[dict], prop_start: dict | None = None,
+          marks: dict | None = None) -> dict:
+    shot = {"id": sid, "set": set_id, "start": start, "propStart": prop_start or {}, "actions": actions}
+    if marks:
+        shot["marks"] = marks
+    return shot
+
+
+def _keys(tl: Timeline, target: str, channel: str) -> list[tuple[float, Any]]:
+    return next(([(float(k[0]), k[1]) for k in tr.keys] for tr in tl.tracks
+                 if (tr.target, tr.channel) == (target, channel)), [])
+
+
+def _errors(result: CompileResult) -> list[str]:
+    return [f"{e.code}: {e.message}" for e in result.errors]
+
+
+WAVE = [{"t": 1, "do": "wave", "who": "mom"}]
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "compiler.py _start_keys (line 663; the keys at lines 713 and 734-744): a prop first placed in a later shot (a start "
+    "`holding` or a propStart) gets its first parent/position keys at that shot's start, and "
+    "CONTRACTS.md holds a track's first value before its first key, so the prop is already there "
+    "through every earlier shot: here the cap sits in mom's hand through shot s1 (prop:cap parent "
+    "[(4.5, 'puppet:mom.hand_r')]), and a cap placed at the street's corner in s2 stands at "
+    "[0.6, 0, 0.5] in the yard all through s1. Two such props on one socket or hand also break "
+    "timeline_sanity's hands check at t=0 (e.g. 'hands: t=0: socket prop:table.top holds 2 props: "
+    "cap, hymn_books'). It should be keyed off the stage (offstage_left, as a stale prop is) from "
+    "t=0 until the shot that brings it on."
+))
+def test_a_prop_first_used_in_a_later_shot_is_not_on_stage_before_it():
+    held = _repro(_shot("s1", "yard", {"mom": {"at": "door"}}, WAVE),
+                  _shot("s2", "street", {"mom": {"at": "garage", "holding": "cap"}}, WAVE))
+    placed = _repro(_shot("s1", "yard", {"mom": {"at": "door"}}, WAVE),
+                    _shot("s2", "street", {"mom": {"at": "garage"}}, WAVE, prop_start={"cap": {"at": "corner"}}))
+    assert held.ok and placed.ok, _errors(held) + _errors(placed)
+    assert held.timeline is not None and placed.timeline is not None
+    mid_s1 = held.timeline.shots[0].end / 2
+    assert not str(value_at(_keys(held.timeline, "prop:cap", "parent"), mid_s1)).startswith("puppet:mom.")
+    assert abs(value_at(_keys(placed.timeline, "prop:cap", "position"), mid_s1)[0]) > 1.0  # offstage during s1
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "verbs_objects.py apply_place_on / _crouch_place_on_keys (lines 147-203): place_on onto the mark "
+    "the puppet stands on (a prop set down at its own feet) is out of reach for every hand-size prop "
+    "and every build, though pick_up takes the same prop from the same spot: "
+    "'out_of_reach: shot s1, t=1: dad cannot place_on \"cap\"; dad\'s arm_r cannot reach: target "
+    "is 0.20 from the shoulder, reach is 0.19' (the crouch misses by about 0.01; pick_up steps back "
+    "instead, see verbs_core._reach_spot)."
+))
+def test_place_on_the_mark_you_stand_on():
+    result = _repro(_shot("s1", "yard", {"dad": {"at": "door", "holding": "cap"}},
+                          [{"t": 1, "do": "place_on", "who": "dad", "what": "cap", "on": "door"}]))
+    assert result.ok, _errors(result)
+
+
+def test_place_on_a_mark_just_in_front_compiles():
+    """Control for the two place_on reproductions: 0.12 in front, facing it."""
+    result = _repro(_shot("s1", "yard", {"dad": {"at": "door", "holding": "cap", "facing": "right"}},
+                          [{"t": 1, "do": "place_on", "who": "dad", "what": "cap", "on": "spot"}],
+                          marks={"spot": [0.16, 0.0]}))
+    assert result.ok, _errors(result)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "verbs_objects.py apply_place_on (line 147): place_on does not turn the puppet toward its "
+    "destination (pick_up and hand_to do), so a mark 0.1 behind it is out of reach: dad at by_table "
+    "facing left, placing the cap on table_spot: 'out_of_reach: shot s1, t=1: dad cannot place_on "
+    "\"cap\"; dad\'s arm_r cannot reach: target is 0.28 from the shoulder, reach is 0.19'; facing "
+    "right, the same action compiles."
+))
+def test_place_on_a_mark_behind_you():
+    result = _repro(_shot("s1", "yard", {"dad": {"at": "by_table", "holding": "cap", "facing": "left"}},
+                          [{"t": 1, "do": "place_on", "who": "dad", "what": "cap", "on": "table_spot"}]))
+    assert result.ok, _errors(result)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "verbs_objects.py _open_close (line 275, arm from locate.gesture_arm): opening a suitcase (or a "
+    "gift or a box) the puppet holds in its other hand is out of reach for every build: "
+    "'out_of_reach: shot s1, t=1: mom cannot open \"suitcase\"; mom\'s arm_l cannot reach: target "
+    "is 0.22 from the shoulder, reach is 0.17'. A director writes \"she opened the case she was "
+    "carrying\"; the same open on a table top compiles."
+))
+def test_open_a_box_you_are_holding():
+    result = _repro(_shot("s1", "yard", {"mom": {"at": "door", "holding": "suitcase"}},
+                          [{"t": 1, "do": "open", "who": "mom", "what": "suitcase"}]))
+    assert result.ok, _errors(result)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "verbs_core.py _pick_up_in_place (line 326) and _reach_spot (line 393): the walk-up and every "
+    "candidate spot keep the puppet's current height (p.pos[1]), so from a raised mark (the church "
+    "steps, a stage) a prop on the floor below is never reached: mom on a mark 0.3 up picking up "
+    "the cap at curb gets 'out_of_reach: shot s1, t=1: mom cannot pick_up \"cap\"; mom\'s arm_r "
+    "cannot reach: target is 0.35 from the shoulder, reach is 0.17'. Where it does reach, the "
+    "puppet stands at the old height off the mark (it walks out over the floor 0.15 up)."
+))
+def test_pick_up_from_a_raised_mark_reaches_the_floor_below():
+    result = _repro(_shot("s1", "yard", {"mom": {"at": "stage"}},
+                          [{"t": 1, "do": "pick_up", "who": "mom", "what": "cap"}],
+                          prop_start={"cap": {"at": "curb"}}, marks={"stage": [0.4, 0.3]}))
+    assert result.ok, _errors(result)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "errors.py error (line 62) and validate.py _Site.error (line 122): an action written with "
+    "t = inf or nan gets CompileError.t = inf / nan ('bad_time: shot s1, t=inf: dad cannot wave; t "
+    "must be a finite number >= 0, not inf' has t=inf), which JSON turns into null, so the result "
+    "the director reads differs from the one the compiler built. t should be None when the written "
+    "t is not finite (the message still says t=inf)."
+))
+def test_an_error_on_a_non_finite_t_has_a_json_safe_t():
+    raw = _shot("s1", "yard", {"dad": {"at": "door"}}, [{"t": float("inf"), "do": "wave", "who": "dad"}])
+    sp = Screenplay.model_validate({"memoryId": "repro", "cast": list(CAST), "props": list(PROPS), "shots": [raw]})
+    result = _compile(sp, base_scene())
+    assert [e.code for e in result.errors] == ["bad_time"]
+    assert error_site_problems(sp, result, tolerate_non_finite_t=False) == []
+    assert CompileResult.model_validate_json(result.model_dump_json()) == result
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "state.py World._apply_prop_start (line 570, via _check_socket_for_prop at line 602): propStart is "
+    "applied in dict order and each `on` checks its socket at once, so moving the cap off the table "
+    "and putting the hymn books there in one propStart fails when the books come first: "
+    "'socket_taken: shot s2: table.top is taken by cap' (listing the cap first compiles). The "
+    "not_on_stage check after it is order-free already; the socket check should be too."
+))
+def test_prop_start_can_swap_what_sits_on_a_socket_in_any_order():
+    result = _repro(
+        _shot("s1", "yard", {"dad": {"at": "door"}}, [{"t": 1, "do": "wave", "who": "dad"}],
+              prop_start={"table": {"at": "table_spot"}, "cap": {"on": "table.top"}}),
+        _shot("s2", "yard", {"dad": {"at": "door"}}, [{"t": 1, "do": "wave", "who": "dad"}],
+              prop_start={"hymn_books": {"on": "table.top"}, "cap": {"at": "curb"}}),
+    )
+    assert result.ok, _errors(result)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "verbs_vehicles.py apply_get_out (line 203): a puppet gets out at its seat's x with no clamp to "
+    "the stage, so getting out of the passenger seat of a car parked near the edge (x = 0.84) puts "
+    "it past x = 1 with no error, and its next action fails as if it had left: 'offstage: shot s1, "
+    "t=9: dad cannot kneel; dad is offstage; use enter first'. get_out should land on stage (or "
+    "fail there with a precise reason)."
+))
+def test_getting_out_of_a_car_by_the_edge_stays_on_stage():
+    result = _repro(_shot("s1", "yard", {"dad": {"at": "edge", "in": "sedan.passenger"}},
+                          [{"t": 1, "do": "wave", "who": "dad"}, {"t": 5, "do": "get_out", "who": "dad", "what": "sedan"},
+                           {"t": 9, "do": "kneel", "who": "dad"}],
+                          prop_start={"sedan": {"at": "edge"}}, marks={"edge": [0.92, 0.0]}))
+    assert result.ok, _errors(result)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "verbs_body.py apply_stand_up (line 221; and the start block's `in`): the same as the car, for a seat: "
+    "a two-seat pew placed at the back yard's gate (x = 0.84) has its aisle seat past x = 1; "
+    "starting in it and standing up are accepted, then 'shot s1, t=5: dad cannot kneel; dad is "
+    "offstage; use enter first'."
+))
+def test_standing_up_from_a_pew_by_the_edge_stays_on_stage():
+    sets, props, people = story_scene()
+    sp = Screenplay.model_validate({"memoryId": "repro", "cast": ["dad"], "props": ["pew"], "shots": [_shot(
+        "s1", "backyard", {"dad": {"at": "gate", "in": "pew.seat_aisle"}},
+        [{"t": 1, "do": "stand_up", "who": "dad"}, {"t": 5, "do": "kneel", "who": "dad"}],
+        prop_start={"pew": {"at": "gate"}})]})
+    result = _compile(sp, Scene(sets=sets, props=props, people=people))
+    assert result.ok, _errors(result)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "verbs_objects.py _crouch_place_on_keys (line 203): place_on's crouch never bends as deep as "
+    "pick_up lets arm_l bend (verbs_core._reach_spot's CROUCH_DEEP_BEND: arm_l's shoulder sits "
+    "behind the hip), so a cap picked up into the left hand (the right holds the hymn books) cannot "
+    "be put back where it was: 'out_of_reach: shot s1, t=7: dad cannot place_on \"cap\"; dad's "
+    "arm_l cannot reach: target is 0.20 from the shoulder, reach is 0.19'. With the right hand free "
+    "it compiles."
+))
+def test_put_a_prop_back_down_with_the_left_hand():
+    result = _repro(_shot("s1", "yard", {"dad": {"at": "door", "facing": "right", "holding": "hymn_books"}},
+                          [{"t": 1, "do": "pick_up", "who": "dad", "what": "cap"},
+                           {"t": 7, "do": "place_on", "who": "dad", "what": "cap", "on": "spot"}],
+                          prop_start={"cap": {"at": "spot"}}, marks={"spot": [0.16, 0.0]}))
+    assert result.ok, _errors(result)
+
+
+def test_put_a_prop_back_down_with_the_right_hand_compiles():
+    """Control for the left-hand reproduction above."""
+    result = _repro(_shot("s1", "yard", {"dad": {"at": "door", "facing": "right"}},
+                          [{"t": 1, "do": "pick_up", "who": "dad", "what": "cap"},
+                           {"t": 7, "do": "place_on", "who": "dad", "what": "cap", "on": "spot"}],
+                          prop_start={"cap": {"at": "spot"}}, marks={"spot": [0.16, 0.0]}))
+    assert result.ok, _errors(result)
