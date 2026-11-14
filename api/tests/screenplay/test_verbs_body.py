@@ -11,11 +11,13 @@ import pytest
 
 import schemas
 from screenplay import verbs_body
+from screenplay.compiler import compile
 from screenplay.ik import RIG, scale, shoulder_world
 from screenplay.schema import VOCABULARY, Action, Shot
 from screenplay.state import StateError, World
 from screenplay.tracks import TrackSet
 from screenplay.verbs_body import HANDLERS, HUG_GAP
+from verb_cases import _a, _at, _one, base_scene
 
 AS = 2.0  # timeline time of the shot's t=0
 WALK = VOCABULARY["speeds"]["walk"]
@@ -497,6 +499,104 @@ def test_hug_a_kneeling_hugger_cannot_walk_over(world):
     begin(world, {"dad": {"at": "left", "pose": "kneel"}, "mom": {"at": "mid"}})
     tracks = TrackSet()
     fails(world, tracks, "not_standing", "dad is kneeling; stand_up first", 3.0, "hug", who="dad", target="mom")
+
+
+# A kneeling target's root is lowered by the kneel rootOffset (-0.24 * scale), but World keeps
+# its standing mark in people[id].pos. The hugger walks to the target's x (less HUG_GAP) and z
+# at that standing height, never down to the kneeling root.
+
+KNEEL_DROP = -0.24 * scale("average")  # mom's kneeling root, relative to her standing surface
+
+
+def _hug_a_kneeling_mom(world: World, mom_at: str, dad_at: str = "left") -> tuple[TrackSet, float]:
+    begin(world, {"dad": {"at": dad_at, "facing": "right"}, "mom": {"at": mom_at, "facing": "left"}})
+    tracks = TrackSet()
+    run(world, tracks, 2.0, "kneel", who="mom")
+    world.occupy("mom", round(2.4 - AS, 6), "kneeling", at=0.0)  # the compiler's occupy; free by 3.0
+    end = run(world, tracks, 3.0, "hug", who="dad", target="mom")
+    return tracks, end
+
+
+def test_hug_a_kneeling_target_walks_at_standing_height(world):
+    tracks, end = _hug_a_kneeling_mom(world, "mid")
+    assert at(tracks, "mom", "root.position", 3.0) == pytest.approx([0.0, KNEEL_DROP, 0.5], abs=1e-3)
+    arrive = 3.0 + (0.6 - HUG_GAP) / WALK
+    assert end == pytest.approx(arrive + 1.5)
+    dad_keys = keys(tracks, "puppet:dad", "root.position")
+    assert dad_keys and all(k[1][1] == 0.0 for k in dad_keys)
+    assert at(tracks, "dad", "root.position", arrive) == pytest.approx([-HUG_GAP, 0.0, 0.5], abs=1e-3)
+    dad, mom = world.people["dad"], world.people["mom"]
+    assert dad.pos == pytest.approx((-HUG_GAP, 0.0, 0.5))
+    assert dad.pose == "stand"
+    # mom stays kneeling where she was, turns to face dad and hugs
+    assert (mom.pos, mom.pose) == ((0.0, 0.0, 0.5), "kneel")
+    assert keys(tracks, "puppet:mom", "root.facing") == []  # already facing left, toward dad
+    assert at(tracks, "mom", "arm_r.upper.rot", arrive + 0.4) == pytest.approx(1.3)
+    assert (mom.activity, mom.busy_until) == ("hugging", pytest.approx(end - AS))
+
+
+def test_hug_a_kneeling_target_on_a_raised_mark_walks_to_its_surface(world):
+    # mom kneels on the platform at (-0.4, 0.3, 0.5); dad walks left to her from the right mark
+    tracks, _ = _hug_a_kneeling_mom(world, "stage", dad_at="right")
+    assert at(tracks, "mom", "root.position", 3.0) == pytest.approx([-0.4, 0.3 + KNEEL_DROP, 0.5], abs=1e-3)
+    dad_keys = keys(tracks, "puppet:dad", "root.position")
+    assert dad_keys[0][1] == pytest.approx([0.6, 0.0, 0.5])
+    assert dad_keys[-1][1] == pytest.approx([-0.4 + HUG_GAP, 0.3, 0.5], abs=1e-3)
+    assert world.people["dad"].pos == pytest.approx((-0.4 + HUG_GAP, 0.3, 0.5))
+    assert world.people["dad"].facing == -1
+
+
+def test_hug_a_kneeling_target_close_enough_does_not_walk(world):
+    begin(world, {"dad": {"at": "close", "facing": "right"}, "mom": {"at": "mid", "facing": "left"}})
+    tracks = TrackSet()
+    run(world, tracks, 2.0, "kneel", who="mom")
+    world.occupy("mom", round(2.4 - AS, 6), "kneeling", at=0.0)
+    run(world, tracks, 3.0, "hug", who="dad", target="mom")
+    assert not tracks.has_track("puppet:dad", "root.position")
+    assert world.people["dad"].pos == (-0.15, 0.0, 0.5)
+
+
+def test_a_kneeling_hugger_close_enough_hugs_in_place(world):
+    # The no-walk branch: the hugger is never moved, so its standing mark is untouched.
+    begin(world, {"dad": {"at": "close", "facing": "right", "pose": "kneel"}, "mom": {"at": "mid"}})
+    tracks = TrackSet()
+    run(world, tracks, 3.0, "hug", who="dad", target="mom")
+    assert not tracks.has_track("puppet:dad", "root.position")
+    dad = world.people["dad"]
+    assert (dad.pos, dad.pose) == ((-0.15, 0.0, 0.5), "kneel")
+    assert at(tracks, "dad", "arm_r.upper.rot", 3.4) == pytest.approx(1.3)
+
+
+# ------------------------------------------------- hug a kneeling target, through compile()
+
+def _compiled_dad_root_keys(*actions: dict) -> list:
+    scene = base_scene()
+    sp = _one(_a(0, "kneel", who="mom"), _a(2, "hug", who="dad", target="mom"), *actions,
+              start={"dad": _at("door"), "mom": _at("curb")})
+    result = compile(sp, sets=scene.sets, props=scene.props, people=scene.people)
+    assert result.ok, result.errors
+    assert result.timeline is not None
+    tracks = {(tr.target, tr.channel): [list(k) for k in tr.keys] for tr in result.timeline.tracks}
+    mom = tracks[("puppet:mom", "root.position")]
+    assert mom[-1][1][1] == pytest.approx(KNEEL_DROP, abs=1e-3)  # mom really is kneeling
+    return tracks[("puppet:dad", "root.position")]
+
+
+def test_compile_hug_a_kneeling_target_keeps_the_hugger_at_yard_height():
+    # yard marks have h=0: dad walks from the door (x=-0.8) to the kneeling mom at the curb (x=0.8)
+    dad = _compiled_dad_root_keys()
+    assert dad[0][1] == pytest.approx([-0.8, 0.0, 0.5])
+    assert dad[-1][1] == pytest.approx([0.8 - HUG_GAP, 0.0, 0.5], abs=1e-3)
+    assert all(k[1][1] == 0.0 for k in dad)
+
+
+def test_compile_hug_a_kneeling_target_stores_the_huggers_standing_height():
+    # World is internal to compile(); its stored position shows in the timeline when dad kneels
+    # and stands back up: stand_up returns the root to World.people["dad"].pos.
+    dad = _compiled_dad_root_keys(_a(8, "kneel", who="dad"), _a(9, "stand_up", who="dad"))
+    knelt = round(-0.24 * scale("tall"), 3)
+    assert dad[-1][1] == pytest.approx([0.8 - HUG_GAP, 0.0, 0.5], abs=1e-3)
+    assert min(k[1][1] for k in dad) == pytest.approx(knelt, abs=1e-3)  # only the kneel goes below 0
 
 
 # ------------------------------------------------------------------ atomicity

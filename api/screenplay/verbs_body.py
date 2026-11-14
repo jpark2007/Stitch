@@ -337,7 +337,11 @@ def apply_hug(world: World, tracks: TrackSet, action: Action, t: float, action_s
               locate: Locate) -> float:
     """hug(target, dur=1.5): walk up to the target if needed, then both puppets hug.
 
-    The target must be on stage and free; it is occupied ('hugging') until the hug ends.
+    The target must be on stage and free; it is occupied ('hugging') until the hug ends. It may
+    be kneeling: its posed root is then lowered by the kneel rootOffset, so the walk goal takes
+    x and z from that root but y from the target's standing surface (``World`` keeps
+    ``people[id].pos`` at standing height while a puppet kneels). The hugger stands on its own
+    surface: the walk ends at standing height, which is what ``world.move`` stores.
     """
     who = _who(world, action)
     other = _require(action, "target")
@@ -355,7 +359,8 @@ def apply_hug(world: World, tracks: TrackSet, action: Action, t: float, action_s
     if abs(dx) > HUG_GAP + HUG_SLACK:
         _not_standing(world, who)  # a kneeling puppet cannot walk over
         side = 1 if dx > 0 else -1
-        goal: Vec3 = (b_root[0] - side * HUG_GAP, b_root[1], b_root[2])
+        surface = world.people[other].pos[1]  # not b_root[1]: a kneeling target's root is lowered
+        goal: Vec3 = (b_root[0] - side * HUG_GAP, surface, b_root[2])
         walk, t_hug, facing = _walk(world, who, t, a_root, goal, a.facing)
         keys += walk
         rots_a = _after_walk(rots_a, walk, who)
