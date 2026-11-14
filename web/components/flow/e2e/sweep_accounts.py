@@ -18,9 +18,9 @@ the visual order. It also types into the server-rendered form before React hydra
 
 Every check is a seam in seams.json with a screenshot under shots/. Exit code 1 when a
 'pages' or 'api' seam failed, else 0. Without Playwright's Chromium it prints the SKIP
-line and exits 0. In mock mode, server errors and the pending state need the mock
-backend's fault injection (window.__stitchMock.inject); without it they are recorded as
-skipped.
+line and exits 0. In mock mode, server errors and the pending state use the mock
+backend's fault injection (window.__stitchMock.inject, on main since #194); a mock
+without it fails those checks rather than skipping them.
 """
 
 from __future__ import annotations
@@ -127,10 +127,6 @@ def api_messages() -> dict[int, str]:
 # ----------------------------------------------------------------------------- small helpers
 
 
-class Skip(Exception):
-    """The check cannot run in this mode; recorded as ok with the reason."""
-
-
 class Seam(Exception):
     """A failure whose fix belongs to someone other than the check's owner."""
 
@@ -227,7 +223,19 @@ SENTINEL_UNUSED_JS = """async path => {
   return r.status;
 }"""
 
-MOCK_FAMILIES_NAMED_JS = """async name => {
+# Every frame from now on, note any visible password field with text in it (by its page path).
+WATCH_PASSWORDS_JS = """() => {
+  window.__sweepPasswordsSeen = [];
+  const look = () => {
+    for (const el of document.querySelectorAll('input[type=password]')) {
+      if (el.value && el.offsetParent !== null) window.__sweepPasswordsSeen.push(location.pathname);
+    }
+    requestAnimationFrame(look);
+  };
+  requestAnimationFrame(look);
+}"""
+
+MOCK_FAMILIES_NAMED_JS ="""async name => {
   const r = await window.__stitchMock.fetch('/me');
   const me = await r.json();
   return (me.families || []).filter(f => f.name === name).length;
@@ -273,7 +281,6 @@ class AccountSweep:
         browser: Any,
         seams: SeamLog,
         view: str,
-        mock_faults: bool,
     ) -> None:
         from playwright.sync_api import expect
 
@@ -288,7 +295,6 @@ class AccountSweep:
         self.tag = f"{self.mode}/{view}"
         self.web = stack.web_url
         self.api = stack.api_url or ""
-        self.mock_faults = mock_faults
         self.messages = api_messages()
         self.pw_min = password_min()
         self.seed_email = MOCK_SEED_EMAIL if self.mock else REAL_SEED_EMAIL
@@ -323,8 +329,10 @@ class AccountSweep:
         try:
             detail = fn() or ""
             ok = True
-        except Skip as exc:
-            ok, detail = True, f"SKIPPED: {exc}"
+            # Every state must fit the window: at 390 px nothing may scroll sideways.
+            over = who.page.evaluate("() => document.documentElement.scrollWidth - window.innerWidth")
+            if isinstance(over, (int, float)) and over > 1:
+                ok, detail = False, f"the page scrolls sideways by {over}px at {self.viewport[0]}px wide"
         except Seam as exc:
             ok, result_owner, detail = False, exc.owner, self.failure_detail(exc, who)
         except Exception as exc:  # noqa: BLE001 - every failure becomes a recorded seam
@@ -459,13 +467,6 @@ class AccountSweep:
 
     # ------------------------------------------------------------------ faults
 
-    def mock_skip(self) -> None:
-        if not self.mock_faults:
-            raise Skip(
-                "this branch's mock backend has no fault injection (window.__stitchMock.inject, PR #194); "
-                "covered in real mode"
-            )
-
     def arm_real(self, who: Person, path: str, *, status: int | None = None, abort: bool = False,
                  hold: list[Any] | None = None) -> Callable[[], None]:
         """Fail (or hold) the next POST to the API's `path` on this page; returns the disarm."""
@@ -530,8 +531,6 @@ class AccountSweep:
             what = f"HTTP {status}" if status else "a dropped connection"
 
             def run(status: int = status) -> str:
-                if self.mock:
-                    self.mock_skip()
                 expected = self.messages.get(status)
                 if not expected:
                     raise AssertionError(f"lib/api.ts has no message for status {status}")
@@ -579,7 +578,6 @@ class AccountSweep:
         disarm: Callable[[], None] | None = None
         before = who.posts_to(url)
         if self.mock:
-            self.mock_skip()
             self.arm_mock(who, [
                 {"method": "POST", "path": api_path, "delayMs": 2500, "times": 1},
                 {"method": "POST", "path": api_path, "status": SENTINEL_STATUS, "detail": SENTINEL_DETAIL, "times": 1},
@@ -876,9 +874,6 @@ class AccountSweep:
                 self.expect(page.get_by_role("heading", level=1, name="Start your family")).to_be_visible()
                 return f"signed up -> {self.path_of(page)}"
 
-            if self.mock and not self.mock_faults:
-                create.click()
-                return "pending not checked (no mock faults); " + after()
             return self.pending_check(who, "/auth/signup", "Create account", "Creating your account…",
                                       ["Your name", "Email", "Password"], after)
 
@@ -970,15 +965,12 @@ class AccountSweep:
                 # invite step of the demo path), not home.
                 self.expect(page).to_have_url(re.compile(r"/families/[^/?]+/settings\?welcome=1$"))
                 self.expect(page.get_by_role("heading", level=1, name=family)).to_be_visible()
-                if self.mock and self.mock_faults:  # window.__stitchMock came with fault injection
+                if self.mock:
                     n = page.evaluate(MOCK_FAMILIES_NAMED_JS, family)
                     if n != 1:
                         raise AssertionError(f"{n} families named {family!r} exist after one double click")
                 return f"family made -> {self.path_of(page)}"
 
-            if self.mock and not self.mock_faults:
-                start.click()
-                return "pending not checked (no mock faults); " + after()
             return self.pending_check(who, "/families", "Start the family", "Starting your family…",
                                       ["Family name", "Your name", OPTIONAL_LABEL], after)
 
@@ -1018,6 +1010,22 @@ class AccountSweep:
 
         self.check("login: an unsafe ?next= is ignored", unsafe, unsafe_next)
 
+        # "/.//evil.example/x" starts with one slash, but URL parsing drops the "." segment and
+        # leaves the path "//evil.example/x", which history reads as another host.
+        dotted = self.person("next-dot-segment")
+
+        def dot_segment_next() -> str:
+            p = dotted.page
+            self.goto(dotted, "/login?next=%2F.%2F%2Fevil.example%2Fx")
+            lab(p, "Email").fill(self.seed_email)
+            lab(p, "Password").fill(self.seed_password)
+            self.submit_button(p, "Log in").click()
+            self.expect(p).to_have_url(f"{self.web}/")
+            href = p.evaluate("() => location.href")
+            return f"next=/.//evil.example/x ignored -> {href}"
+
+        self.check("login: a ?next= whose dot segment collapses to //host is ignored", dotted, dot_segment_next)
+
         def signup_next(who: Person, query: str, expect_path: re.Pattern[str]) -> str:
             p = who.page
             self.goto(who, f"/signup{query}")
@@ -1056,12 +1064,47 @@ class AccountSweep:
 
         self.check("signup: input typed before hydration is kept", early, early_signup)
 
+        # Back after signing up: /login -> "Create an account" -> sign up -> /families/new, then
+        # the browser's Back. Sign up replaces /signup in history, so Back is /login, which
+        # sees a signed-in visitor and sends them on to /families/new again. No filled-in
+        # form (above all, no password) may show on the way.
+        back = self.person("signup-back")
+
+        def back_after_signup() -> str:
+            p = back.page
+            self.goto(back, "/login")
+            p.get_by_role("link", name="Create an account").click()
+            self.expect(p).to_have_url(re.compile(r"/signup$"))
+            lab(p, "Your name").fill(f"Sweep Back {self.run_tag}")
+            lab(p, "Email").fill(self.new_email("back"))
+            lab(p, "Password").fill(PASSWORD)
+            self.submit_button(p, "Create account").click()
+            self.expect(p).to_have_url(re.compile(r"/families/new$"))
+            self.expect(p.get_by_role("heading", level=1, name="Start your family")).to_be_visible()
+            p.evaluate(WATCH_PASSWORDS_JS)
+            p.go_back()
+            self.expect(p).to_have_url(re.compile(r"/families/new$"))
+            self.expect(p.get_by_role("heading", level=1, name="Start your family")).to_be_visible()
+            p.wait_for_timeout(300)
+            shown = p.evaluate("() => window.__sweepPasswordsSeen || []")
+            if shown:
+                raise AssertionError(f"a password field showed with text in it on the way back: {shown}")
+            if p.get_by_role("button", name="Create account").count() > 0:
+                raise AssertionError("the sign up form is showing again after Back")
+            return "Back -> /login (signed in) -> /families/new; no filled form or password shown"
+
+        self.check("signup: Back after signing up never reopens a filled form", back, back_after_signup)
+
 
 # ----------------------------------------------------------------------------- main
 
 
-def probe_mock_faults(stack: Stack, browser: Any, seams: SeamLog) -> bool:
-    """True when the mock backend on this branch can inject faults (window.__stitchMock.inject)."""
+def probe_mock_faults(stack: Stack, browser: Any, seams: SeamLog) -> None:
+    """Record whether the mock backend can inject faults (window.__stitchMock.inject, PR #194).
+
+    Mock-mode server errors and pending states depend on it. It has been on main since #194,
+    so its absence is a failure (a regression in components/flow/mock), not a skip.
+    """
     who = Person(browser, "mock probe", VIEWPORTS["desktop"])
     try:
         # /families/new asks /me at once (SessionGate), which creates the mock backend.
@@ -1070,18 +1113,17 @@ def probe_mock_faults(stack: Stack, browser: Any, seams: SeamLog) -> bool:
         ok = bool(who.page.evaluate("() => !!(window.__stitchMock && typeof window.__stitchMock.inject === 'function')"))
     except Exception as exc:  # noqa: BLE001
         seams.record("[mock] probe the mock backend for fault injection", False, first_lines(str(exc)), "pages")
-        return False
+        return
     finally:
         who.close()
     seams.record(
         "[mock] mock backend fault injection",
-        True,
-        "available: server errors and pending states are checked in mock mode too"
+        ok,
+        "available: server errors and pending states are checked in mock mode"
         if ok
-        else "SKIPPED: window.__stitchMock.inject is missing on this branch (PR #194); mock-mode server errors "
-        "and pending states are skipped, real mode covers them",
+        else "window.__stitchMock.inject is missing: the mock-mode server error and pending checks below "
+        "cannot inject their faults and fail",
     )
-    return ok
 
 
 def summarize(seams: SeamLog, out: Path) -> int:
@@ -1130,9 +1172,10 @@ def main(argv: list[str] | None = None) -> int:
                 with sync_playwright() as pw:
                     browser = pw.chromium.launch(headless=not args.headed)
                     try:
-                        faults = probe_mock_faults(stack, browser, seams) if mock else True
+                        if mock:
+                            probe_mock_faults(stack, browser, seams)
                         for view in VIEWPORTS:
-                            AccountSweep(stack, browser, seams, view, faults).run()
+                            AccountSweep(stack, browser, seams, view).run()
                     finally:
                         browser.close()
         except StackError as exc:
