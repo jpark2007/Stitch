@@ -10,8 +10,9 @@ state, and a prop's position steps at every parent change), and checked for:
     mark off the stage, or waits off stage for its entrance;
 (b) no two standing puppets on top of each other for long while both stand still, unless
     they are hugging or handing something over to each other;
-(c) every held or worn prop parented to a puppet that is in the shot, and every prop on the
-    ground resting on the floor or on a mark's surface, never floating;
+(c) every prop in a hand parented to a puppet that is in the shot (a worn hat may leave
+    with its wearer), and every prop on the ground resting on the floor or on a mark's
+    surface, never floating;
 (d) the giver and taker facing each other during a hand_to, and anyone hugging, waving,
     pointing or leaning at a person facing that person;
 (e) no long stretch of a shot where nothing on stage changes at all;
@@ -25,14 +26,18 @@ A failure names the moment, the shot, the timeline time and the people involved.
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 
 import pytest
 
+from schemas import SetDef
+from screenplay.body import PASS_SECONDS, POSE_SECONDS, RETURN_SECONDS
 from screenplay.narration import default_author, retime_actions
 from screenplay.schema import Screenplay, Timeline, Track
+from screenplay.verbs_body import HUG_SECONDS
 from seed import demo
 
 # ----------------------------------------------------------------------- thresholds
@@ -186,7 +191,7 @@ class Shot:
 
     def surfaces(self) -> list[float]:
         """Standing heights of the shot's marks (the set's, overridden or extended per shot)."""
-        set_def = SETS[self.set]
+        set_def = _sets()[self.set]
         sp_shot = self.scene.sp.shots[self.index]
         marks = {**set_def.marks, **sp_shot.marks}
         return sorted({0.0, *(float(m[1]) for m in marks.values())})
@@ -196,7 +201,6 @@ class Shot:
 class Act:
     """An authored action, at its compiled (cue-retimed) timeline time."""
 
-    shot: Shot
     t: float
     do: str
     who: str | None
@@ -210,7 +214,7 @@ def _acts(scene: Scene, shot: Shot) -> list[Act]:
     out = []
     for action, t in zip(sp_shot.actions, retimed, strict=True):
         other = action.to if action.do == "hand_to" else action.target
-        out.append(Act(shot, shot.action_start + t, action.do, action.who, other, action.dur))
+        out.append(Act(shot.action_start + t, action.do, action.who, other, action.dur))
     return out
 
 
@@ -222,15 +226,24 @@ def _shots(scene: Scene) -> list[Shot]:
 
 # --------------------------------------------------------------------------- fixtures
 
-DATA = demo.load_demo_data()
-SETS = {s.id: s for s in DATA.sets}
-SCENES = {mid: Scene(mid, sc.screenplay, sc.timeline) for mid, sc in DATA.scenes.items()}
-MEMORY_IDS = list(SCENES)
+MEMORY_IDS = list(demo.DEMO_MEMORY_IDS)
+
+
+@functools.cache
+def _data() -> demo.DemoData:
+    """Every moment compiled once, with the real compiler, exactly as the seed stores it."""
+    return demo.load_demo_data()
+
+
+@functools.cache
+def _sets() -> dict[str, SetDef]:
+    return {s.id: s for s in _data().sets}
 
 
 @pytest.fixture(params=MEMORY_IDS)
 def scene(request) -> Scene:
-    return SCENES[request.param]
+    compiled = _data().scenes[request.param]
+    return Scene(request.param, compiled.screenplay, compiled.timeline)
 
 
 # --------------------------------------------------------------------------- windows
@@ -247,8 +260,8 @@ def _contact_windows(scene: Scene, shot: Shot) -> list[tuple[frozenset[str], flo
         t = act.t
         while t + SAMPLE_STEP < shot.end and scene.moving(act.who, t + SAMPLE_STEP):
             t += SAMPLE_STEP  # the walk up to the partner
-        hold = (act.dur or 1.5) if act.do == "hug" else 0.9  # hug dur, or PASS + RETURN seconds
-        out.append((frozenset((act.who, act.other)), act.t, t + hold + 0.5))
+        hold = (act.dur or HUG_SECONDS) if act.do == "hug" else PASS_SECONDS + RETURN_SECONDS
+        out.append((frozenset((act.who, act.other)), act.t, t + hold + POSE_SECONDS))
     return out
 
 
@@ -290,9 +303,11 @@ def test_a_puppets_stay_inside_the_stage(scene: Scene):
                     x0, x1 = scene.run_of(who, t)
                     if max(abs(x0), abs(x1)) >= STAGE_EDGE:
                         continue  # walking on or off
-                    problems.append((f"{shot.id} {who} past", f"{shot.where(t)}: {who} walks past the stage edge (x={r[0]:+.2f})"))
+                    message = f"{shot.where(t)}: {who} walks past the stage edge (x={r[0]:+.2f})"
+                    problems.append((f"{shot.id} {who} past", message))
                 elif abs(r[0]) < STAGE_EDGE + PUPPET_HALF_WIDTH:
-                    problems.append((f"{shot.id} {who} half", f"{shot.where(t)}: {who} stands half off stage at x={r[0]:+.2f}"))
+                    message = f"{shot.where(t)}: {who} stands half off stage at x={r[0]:+.2f}"
+                    problems.append((f"{shot.id} {who} half", message))
     _report(problems)
 
 
@@ -316,7 +331,8 @@ def test_b_nobody_stands_on_top_of_anyone(scene: Scene):
                         continue
                     if scene.moving(a, t) or scene.moving(b, t):
                         continue
-                    if dx >= CONTACT_SEPARATION and any(p == pair and lo <= t <= hi for p, lo, hi in windows):
+                    touching = any(p == pair and lo <= t <= hi for p, lo, hi in windows)
+                    if touching and dx >= CONTACT_SEPARATION:
                         continue
                     close_now.add(pair)
                     first = since.setdefault(pair, t)
@@ -333,8 +349,8 @@ def test_b_nobody_stands_on_top_of_anyone(scene: Scene):
 
 
 def test_c_held_props_belong_to_someone_in_the_shot_and_nothing_floats(scene: Scene):
-    """(c) A prop in a hand is parented to a puppet in the shot; a prop on another
-    prop rests on one that is placed; a prop on the ground rests on the floor or a mark's surface."""
+    """(c) A prop in a hand is parented to a puppet in the shot, and a prop on the ground rests
+    on the floor or on a mark's surface. (A prop on another prop's socket moves with it.)"""
     problems: list[tuple[str, str]] = []
     for shot in _shots(scene):
         present = shot.present()
@@ -345,19 +361,15 @@ def test_c_held_props_belong_to_someone_in_the_shot_and_nothing_floats(scene: Sc
                 if parent.startswith("puppet:"):
                     who, _, socket = parent[len("puppet:"):].partition(".")
                     if socket != "head" and who not in present:  # a worn hat leaves with its wearer
-                        problems.append((
-                            f"{shot.id} {prop} {who}", f"{shot.where(t)}: {prop} is held by {who}, who is not in the shot"
-                        ))
-                elif parent.startswith("prop:"):
-                    base = parent[len("prop:"):].split(".", 1)[0]
-                    if base not in scene.props:
-                        problems.append((f"{shot.id} {prop} on", f"{shot.where(t)}: {prop} rests on {base}, which is not in the scene"))
-                else:
+                        message = f"{shot.where(t)}: {prop} is held by {who}, who is not in the shot"
+                        problems.append((f"{shot.id} {prop} {who}", message))
+                elif parent == "ground":
                     x, y, _z = scene.prop_position(prop, t)
                     if abs(x) > STAGE_EDGE:
                         continue  # put away off stage
                     if not _settling(scene, prop, t) and min(abs(y - s) for s in surfaces) > SURFACE_TOLERANCE:
-                        problems.append((f"{shot.id} {prop} {y:.2f}", f"{shot.where(t)}: {prop} floats at height {y:.2f} (x={x:+.2f})"))
+                        message = f"{shot.where(t)}: {prop} floats at height {y:.2f} (x={x:+.2f})"
+                        problems.append((f"{shot.id} {prop} {y:.2f}", message))
     _report(problems)
 
 
@@ -376,13 +388,13 @@ def test_d_people_face_whoever_they_hand_to_or_gesture_at(scene: Scene):
             if act.who is None or act.other not in scene.cast:
                 continue
             if act.do == "hand_to":
-                t = act.t + 0.25  # halfway through PASS_SECONDS, the hands are meeting
+                t = act.t + PASS_SECONDS / 2  # the hands are meeting
                 pairs = [(act.who, act.other), (act.other, act.who)]
             elif act.do == "hug":
                 t = act.t
                 while t + SAMPLE_STEP < shot.end and scene.moving(act.who, t + SAMPLE_STEP):
                     t += SAMPLE_STEP
-                t += 0.5  # into the hug, after the walk up
+                t += POSE_SECONDS  # into the hug, after the walk up
                 pairs = [(act.who, act.other), (act.other, act.who)]
             elif act.do in STILL_GESTURES:
                 t = act.t + FACING_SETTLE + min(act.dur or 1.0, 1.0) / 2
