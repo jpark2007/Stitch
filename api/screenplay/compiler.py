@@ -22,7 +22,7 @@ as of its own time: a puppet's own actions keep their order, and an action on a 
 hands dad the books while dad follows kid) sees the follower where the follow put him, never a
 stale position. A ``follow`` of a cast member is runnable only once every action that can move
 its leader has run (the leader's own actions except STILL_VERBS such as wave or point_at, and
-any drive_to / ride_to of a vehicle the leader rides in), so the follower sees the leader's
+any drive_to / ride_to of a vehicle while the leader sits in it), so the follower sees the leader's
 whole path; the follower's later actions wait behind the follow. Without follows this is plain
 time order. When nothing can run, the waits form a loop through a follow: a loop of follows
 only (puppets that follow one another round a loop) is reported as ``follow_cycle`` on its
@@ -225,16 +225,29 @@ def _touches(action: Action, cast: Mapping[str, object], props: Collection[str])
     return frozenset(names)
 
 
-def _moves(actions: list[Action], who: str, seated_in: Mapping[str, str]) -> list[int]:
-    """Every action in the shot that can move ``who``'s root: its own actions except the
-    STILL_VERBS, and any drive_to / ride_to of a vehicle it starts the shot in or gets into."""
-    rides = {a.what for a in actions if a.who == who and a.do == "get_in"}
-    if who in seated_in:
-        rides.add(seated_in[who])
-    return [
-        i for i, a in enumerate(actions)
-        if (a.who == who and a.do not in STILL_VERBS) or (a.do in _VEHICLE_MOVES and a.what in rides)
-    ]
+def _moves(actions: list[Action], who: str, seated_in: Mapping[str, str], by_time: list[int]) -> list[int]:
+    """Every action in the shot that can move ``who``'s root, in ``by_time`` order: its own
+    actions except the STILL_VERBS, and every drive_to / ride_to of the vehicle ``who`` sits
+    in when it runs (the one it starts the shot in, until its get_out, or one it gets into,
+    from its get_in to its get_out). A drive before the get_in or after the get_out leaves
+    ``who`` where it is.
+
+    ``by_time`` is the (retimed t, index) order. It is also the order those actions run in:
+    the get_in, get_out and drive all name the vehicle, so they keep time order."""
+    riding = seated_in.get(who)
+    out: list[int] = []
+    for i in by_time:
+        a = actions[i]
+        if a.who == who:
+            if a.do not in STILL_VERBS:
+                out.append(i)
+            if a.do == "get_in":
+                riding = a.what
+            elif a.do == "get_out" and a.what == riding:
+                riding = None
+        elif a.do in _VEHICLE_MOVES and a.what is not None and a.what == riding:
+            out.append(i)
+    return out
 
 
 def _called(action: Action) -> str:
@@ -309,7 +322,8 @@ def _schedule(
       time; that includes every earlier action of its own puppet; and
     - for a follow of a cast member, every action that can move the leader has run
       (``_moves``), so the follower sees the leader's whole path. The leader's still actions
-      (a wave, a point_at, a hand_to) do not hold the follow back.
+      (a wave, a point_at, a hand_to), and a drive of a vehicle the leader is not in at the
+      time, do not hold the follow back.
 
     Without follows that is plain time order. When nothing can run, the waits form a loop
     that goes through a follow's wait for its leader. A loop of follows only is reported as
@@ -326,7 +340,7 @@ def _schedule(
     movers: list[list[int]] = []
     for i, a in enumerate(actions):
         leader = _follows_a_leader(a, cast)
-        movers.append(sorted(_moves(actions, leader, seated_in), key=rank.__getitem__) if leader else [])
+        movers.append(_moves(actions, leader, seated_in, by_time) if leader else [])
     done: set[int] = set()
     order: list[int] = []
     left_out: list[tuple[int, str, str]] = []
