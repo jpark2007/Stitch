@@ -32,6 +32,8 @@ export interface RenderViewProps {
   ui?: boolean;
   /** Timeline scenes: print the frame rate (?fps). */
   fps?: boolean;
+  /** A saved moment's family, to load it from the API (?family). */
+  family?: string | null;
 }
 
 /** The closed book, centred: the intro state a scrubbed ?open=0 starts from. */
@@ -52,10 +54,11 @@ function ReadyProbe() {
 
 export function RenderView(props: RenderViewProps) {
   if (props.memoryId === "demo") return <DioramaView {...props} />;
-  // A timeline scene (checker-injected or a local sample), else the empty stage.
+  // A timeline scene (checker-injected, a local sample or a saved moment), else the empty stage.
   return (
     <TimelineView
       memoryId={props.memoryId}
+      family={props.family ?? null}
       time={props.time}
       narrator={props.narrator ?? null}
       autoplay={props.autoplay ?? true}

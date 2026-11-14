@@ -10,7 +10,10 @@
  *      unsaved draft, so nothing is fetched). Shown with no chrome and no
  *      captions, paused at ?t, filling the viewport.
  *   2. A local sample (web/public/samples/<id>.{screenplay,timeline,memory}.json).
- *   3. Nothing: the host's fallback (the empty stage).
+ *   3. With ?family=<familyId>: the saved moment from the API (getMemory),
+ *      its compiled timeline with its sets, props and people; a moment with
+ *      no compiled timeline says so.
+ *   4. Nothing: the host's fallback (the empty stage).
  * Paper, puppet kit and cutouts are built in idle time before mounting.
  * Media references resolve through the API (samples have none, so their
  * narration plays as silent timing).
@@ -54,6 +57,8 @@ declare global {
 
 export interface TimelineViewProps {
   memoryId: string;
+  /** Family of a saved moment to load from the API (?family), or null. */
+  family?: string | null;
   /** Frozen scene time (?t), or null to play. */
   time: number | null;
   /** Starting teller (?narrator), or null for the default. */
@@ -68,14 +73,27 @@ export interface TimelineViewProps {
   fallback?: ReactNode;
 }
 
-type Source = { kind: "scene"; scene: SceneData; checker: boolean } | { kind: "missing" } | { kind: "error" };
+type Source =
+  | { kind: "scene"; scene: SceneData; checker: boolean }
+  | { kind: "missing" }
+  | { kind: "error"; detail: string | null };
+
+/** Said when a saved moment has not been compiled into a scene yet. */
+const NOT_COMPILED = "This moment has no compiled scene yet.";
 
 function markReady() {
   document.documentElement.dataset.stageReady = "1";
   window.__STITCH_READY__ = true;
 }
 
-export function TimelineView({ memoryId, fallback = null, ...rest }: TimelineViewProps) {
+/** A saved moment's scene from the API (?family), or throws NOT_COMPILED. */
+async function loadSavedScene(familyId: string, memoryId: string): Promise<SceneData> {
+  const scene = sceneFromMemory(await api.getMemory(familyId, memoryId));
+  if (!scene) throw new Error(NOT_COMPILED);
+  return scene;
+}
+
+export function TimelineView({ memoryId, family = null, fallback = null, ...rest }: TimelineViewProps) {
   const [source, setSource] = useState<Source | null>(null);
 
   useEffect(() => {
@@ -87,23 +105,37 @@ export function TimelineView({ memoryId, fallback = null, ...rest }: TimelineVie
       await preloadScene(scene);
       done({ kind: "scene", scene, checker });
     };
+    const failed = (e: unknown) => {
+      if (ctl.signal.aborted) return;
+      console.warn(`[render] ${memoryId}:`, e);
+      done({ kind: "error", detail: e instanceof Error && e.message === NOT_COMPILED ? NOT_COMPILED : null });
+    };
     const injected = window.__STITCH_RENDER__;
     const fromChecker = injected ? sceneFromMemory(injected) : null;
-    if (fromChecker) ready(fromChecker, true).catch(() => done({ kind: "error" }));
+    if (fromChecker) ready(fromChecker, true).catch(failed);
     else if (Object.hasOwn(SAMPLE_SCENES, memoryId))
       loadSampleScene(memoryId, ctl.signal)
         .then((s) => ready(s, false))
-        .catch(() => done({ kind: "error" }));
+        .catch(failed);
+    else if (family && memoryId !== "demo")
+      loadSavedScene(family, memoryId)
+        .then((s) => ready(s, false))
+        .catch(failed);
     else done({ kind: "missing" });
     return () => ctl.abort();
-  }, [memoryId]);
+  }, [memoryId, family]);
 
   if (!source) return null;
   if (source.kind === "missing") return <>{fallback}</>;
   if (source.kind === "error") {
     return (
-      <div className="grid h-full place-items-center font-hand text-2xl text-[#e9dcbd]/80">
-        This moment could not be opened.
+      <div className="grid h-full place-items-center p-8 text-center">
+        <p className="font-hand text-2xl text-[#e9dcbd]/80">
+          This moment could not be opened.
+          {source.detail && (
+            <span className="mt-2 block font-serif text-base italic text-[#e9dcbd]/55">{source.detail}</span>
+          )}
+        </p>
       </div>
     );
   }
@@ -150,7 +182,7 @@ function Player({
   ui,
   fps = false,
   captions = true,
-}: Omit<TimelineViewProps, "memoryId" | "fallback"> & { scene: SceneData; captions?: boolean }) {
+}: Omit<TimelineViewProps, "memoryId" | "family" | "fallback"> & { scene: SceneData; captions?: boolean }) {
   // Stable, so the memoised stage never re-renders for it.
   const overlay = useMemo(() => <FpsProbe target={fps ? FPS_READOUT : undefined} />, [fps]);
   const familyId = scene.familyId;
