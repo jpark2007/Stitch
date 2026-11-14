@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,8 @@ from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
 from db import users as users_db
-from screenplay.schema import VOCABULARY
+from screenplay import compiler
+from screenplay.schema import VOCABULARY, Screenplay
 from seed import demo
 from seed.demo import DEMO_ACCOUNTS, DEMO_FAMILY_ID, DEMO_PASSWORD, DEMO_PERSON_IDS, seed_demo
 from seed.fake import install_fake_db
@@ -123,6 +125,17 @@ def test_character_sheets_are_distinct_and_valid(seeded):
         notes = next(p for p in people if p.id == gid).character.notes
         assert notes and notes.strip()
     assert next(p for p in people if p.id == "grandpa_joseph").character.notes == "walks slowly with a cane"
+    assert len({p.character.build for p in people}) >= 3, "builds vary"
+
+
+def test_signature_hats_are_props_of_the_family(seeded):
+    mdb, _ = seeded
+    worn = {p.id: p.character.item_prop_id for p in people_db.list_people(mdb, DEMO_FAMILY_ID)
+            if p.character.item_prop_id}
+    assert worn == {"grandpa_luis": "luis_straw_hat", "sam": "sam_cap"}
+    for prop_id in worn.values():
+        prop = props_db.get_prop(mdb, DEMO_FAMILY_ID, prop_id)
+        assert prop is not None and prop.size in ("tiny", "hand", "carried")
 
 
 # ------------------------------------------------------------------------------ memories
@@ -130,23 +143,38 @@ def test_character_sheets_are_distinct_and_valid(seeded):
 def test_memories_span_eras_and_generations(seeded):
     mdb, result = seeded
     summaries = memories_db.moment_summaries(mdb, DEMO_FAMILY_ID)
-    assert len(summaries) >= 5
-    assert {s.id for s in summaries} == set(result.memory_ids)
-    assert len({s.era for s in summaries}) >= 4
+    assert len(summaries) >= 7
+    assert {s.id for s in summaries} == set(result.memory_ids) == set(demo.DEMO_MEMORY_IDS)
+    assert len({s.era for s in summaries}) >= 5
     participants = {pid for s in summaries for pid in s.participant_ids}
-    assert participants >= {"grandpa_joseph", "grandma_rosa", "dad", "mom", "sam", "lily"}
+    assert participants == set(DEMO_PERSON_IDS)
 
-    extras = [m for m in memories_db.get_memories(mdb, DEMO_FAMILY_ID, result.memory_ids)
-              if m.id != SAMPLE.memory.id]
-    assert len(extras) >= 4
-    for memory in extras:
-        assert memory.screenplay is None and memory.timeline is None
+    memories = memories_db.get_memories(mdb, DEMO_FAMILY_ID, result.memory_ids)
+    assert len(memories) == len(result.memory_ids)
+    for memory in memories:
+        assert memory.screenplay is not None and memory.timeline is not None, memory.id
         assert 1 <= len(memory.tellings) <= 2
+        assert len({t.author_id for t in memory.tellings}) == len(memory.tellings)
         for telling in memory.tellings:
-            assert telling.text.strip()
+            assert telling.text.strip() and telling.question
             assert people_db.get_person(mdb, DEMO_FAMILY_ID, telling.author_id) is not None
-    bike = next(m for m in extras if m.id == "demo_sams_first_bike")
-    assert [t.author_id for t in bike.tellings] == ["dad", "sam"]
+    by_id = {m.id: m for m in memories}
+    assert [t.author_id for t in by_id["demo_sams_first_bike"].tellings] == ["dad", "sam"]
+    assert sum(len(m.tellings) == 2 for m in memories) >= 2
+    assert sum(2 <= len(m.participant_ids) <= 3 for m in memories) >= 3
+    assert by_id["demo_sam_wedding_2019"].year == 2019
+    assert set(by_id["demo_sam_wedding_2019"].participant_ids) >= {"lily", "sam", "mom", "dad"}
+
+
+def test_existing_memory_ids_are_kept():
+    """Other code and saved links use these ids."""
+    assert {"demo_rosa_joseph_wedding", "demo_sunday_tamales", "demo_green_sedan_trip", "demo_sams_first_bike",
+            "demo_lily_graduation", demo.HYMN_MEMORY_ID} <= set(demo.DEMO_MEMORY_IDS)
+    assert demo.HYMN_MEMORY_ID == "sample_hymn_books"
+    years = {m.id: m.year for m in demo.MOMENTS}
+    assert (years["demo_rosa_joseph_wedding"], years["demo_sunday_tamales"], years["demo_green_sedan_trip"],
+            years[demo.HYMN_MEMORY_ID], years["demo_sams_first_bike"], years["demo_lily_graduation"]) == (
+        1958, 1970, 1972, 1988, 1997, 2015)
 
 
 def test_book_includes_the_hymn_book_scene(seeded):
@@ -163,6 +191,7 @@ def test_book_includes_the_hymn_book_scene(seeded):
 
 
 def test_hymn_book_memory_round_trips_the_sample(seeded):
+    """The memory is the sample's; its timeline is the real compiler's, not the sample's file."""
     mdb, _ = seeded
     stored = memories_db.get_memory(mdb, DEMO_FAMILY_ID, SAMPLE.memory.id)
     assert stored is not None
@@ -174,8 +203,17 @@ def test_hymn_book_memory_round_trips_the_sample(seeded):
         (t.author_id, t.question, t.text, t.photo_ids) for t in want.tellings
     ]
     assert stored.prop_ids == want.prop_ids and stored.set_ids == want.set_ids
-    assert stored.screenplay == want.screenplay
-    assert stored.timeline == want.timeline
+    # The seeded copy of the screenplay is the sample's, unchanged: it compiles as it is.
+    assert stored.screenplay == demo.load_screenplay(demo.HYMN_MEMORY_ID) == want.screenplay
+    fresh = compiler.compile(
+        want.screenplay,
+        sets={s.id: s for s in props_db.list_sets(mdb, DEMO_FAMILY_ID)},
+        props={p.id: p for p in props_db.list_props(mdb, DEMO_FAMILY_ID)},
+        people={p.id: p for p in people_db.list_people(mdb, DEMO_FAMILY_ID)},
+    )
+    assert fresh.ok and stored.timeline == fresh.timeline
+    assert [s.id for s in stored.timeline.shots] == [s.id for s in want.timeline.shots]
+    assert set(stored.timeline.narrations) == set(want.timeline.narrations) == {"dad", "mom"}
     assert stored.version == want.version == 1
 
 
@@ -188,34 +226,230 @@ def test_sample_props_and_sets_are_in_the_demo_family(seeded):
     want_prop = SAMPLE.props[0].model_copy(update={"family_id": DEMO_FAMILY_ID})
     want_set = SAMPLE.sets[0].model_copy(update={"family_id": DEMO_FAMILY_ID})
     assert props[0] == want_prop and sets[0] == want_set
-    assert [p.id for p in props_db.list_props(mdb, DEMO_FAMILY_ID)] == ["hymn_books"]
 
 
-SAM_QUESTION = "Mom and Dad met on the church steps. What's the version of that day you grew up hearing?"
+def test_every_prop_and_set_file_entry_is_in_the_demo_family(seeded):
+    mdb, _ = seeded
+    stored_props = {p.id: p for p in props_db.list_props(mdb, DEMO_FAMILY_ID)}
+    stored_sets = {s.id: s for s in props_db.list_sets(mdb, DEMO_FAMILY_ID)}
+    assert stored_props == {p.id: p for p in demo.load_props()}
+    assert stored_sets == {s.id: s for s in demo.load_sets()}
+    used_props = {pid for m in memories_db.get_memories(mdb, DEMO_FAMILY_ID, list(demo.DEMO_MEMORY_IDS))
+                  for pid in m.prop_ids}
+    used_sets = {sid for m in memories_db.get_memories(mdb, DEMO_FAMILY_ID, list(demo.DEMO_MEMORY_IDS))
+                 for sid in m.set_ids}
+    assert used_props == set(stored_props), "every seeded prop is in a scene"
+    assert used_sets == set(stored_sets), "every seeded set is in a scene"
+
+
 ANA_QUESTION = "What do you remember about the day Lily was born?"
 
 
-def test_open_questions_for_mom_and_sam(seeded):
+def _all_open_questions(mdb) -> list[schemas.Question]:
+    return [q for pid in DEMO_PERSON_IDS for q in memories_db.open_questions(mdb, DEMO_FAMILY_ID, pid)]
+
+
+def test_seeded_questions_are_all_open(seeded):
     mdb, _ = seeded
-    sam = memories_db.open_questions(mdb, DEMO_FAMILY_ID, "sam")
+    questions = _all_open_questions(mdb)
+    assert sorted((q.person_id, q.text, q.memory_id) for q in questions) == sorted(demo.DEMO_QUESTIONS)
+    assert all(q.status == "open" for q in questions)
+    assert mdb.questions.count_documents({}) == len(demo.DEMO_QUESTIONS)
     ana = memories_db.open_questions(mdb, DEMO_FAMILY_ID, "mom")
-    assert [(q.text, q.memory_id, q.status) for q in sam] == [(SAM_QUESTION, demo.HYMN_MEMORY_ID, "open")]
-    assert [(q.text, q.memory_id, q.status) for q in ana] == [(ANA_QUESTION, None, "open")]
-    assert mdb.questions.count_documents({}) == 2
+    assert (ANA_QUESTION, None) in [(q.text, q.memory_id) for q in ana]
+
+
+def test_sam_ana_and_david_each_have_an_open_question(seeded):
+    mdb, _ = seeded
+    for account in DEMO_ACCOUNTS:
+        questions = memories_db.open_questions(mdb, DEMO_FAMILY_ID, account.person_id)
+        assert questions, f"{account.email} has no open question"
+        assert any(q.memory_id is not None for q in questions), account.email
+
+
+def test_one_general_question_without_a_memory():
+    general = [q for q in demo.DEMO_QUESTIONS if q[2] is None]
+    assert len(general) == 1
+
+
+def test_every_question_asks_a_participant_for_their_own_version(seeded):
+    """The asked person was there, was born (and alive) by then, has not told it yet, and the
+    moment has a compiled scene, so answering it adds a telling with either studio."""
+    mdb, _ = seeded
+    questions = [q for q in _all_open_questions(mdb) if q.memory_id is not None]
+    assert len(questions) >= 4
+    for question in questions:
+        memory = memories_db.get_memory(mdb, DEMO_FAMILY_ID, question.memory_id)
+        person = people_db.get_person(mdb, DEMO_FAMILY_ID, question.person_id)
+        where = (question.person_id, question.memory_id)
+        assert memory is not None and person is not None, where
+        assert question.person_id in memory.participant_ids, where
+        assert question.person_id not in {t.author_id for t in memory.tellings}, where
+        assert person.born is not None and person.born <= memory.year, where
+        assert person.died is None, where
+        assert memory.screenplay is not None and memory.timeline is not None, where
+        assert question.text.rstrip().endswith("?") and len(question.text.split()) >= 6, where
 
 
 def test_every_question_with_a_memory_points_at_a_scene(seeded):
     """Regression: the real studio raises MemoryNotFound for a memory with no scene, so a
     seeded question aimed at one gave a 404 (now 409) when answered on stage."""
     mdb, _ = seeded
-    questions = [q for pid in DEMO_PERSON_IDS for q in memories_db.open_questions(mdb, DEMO_FAMILY_ID, pid)]
-    assert len(questions) == 2
-    targeted = [q for q in questions if q.memory_id is not None]
-    assert targeted  # the church-steps question adds to the hymn-book scene
+    targeted = [q for q in _all_open_questions(mdb) if q.memory_id is not None]
+    assert targeted
     for question in targeted:
         memory = memories_db.get_memory(mdb, DEMO_FAMILY_ID, question.memory_id)
         assert memory is not None, question.memory_id
         assert memory.screenplay is not None and memory.timeline is not None, question.memory_id
+
+
+# ------------------------------------------------------------------- broken authoring
+
+
+def _copy_data(tmp_path: Path) -> Path:
+    target = tmp_path / "demo_family"
+    shutil.copytree(demo.DATA_DIR, target)
+    return target
+
+
+def test_a_screenplay_that_does_not_compile_stops_the_seed_with_the_exact_errors(mdb, tmp_path, monkeypatch):
+    data = _copy_data(tmp_path)
+    path = data / "demo_green_sedan_trip.screenplay.json"
+    raw = json.loads(path.read_text())
+    # Rosa hands David peaches she never picked up: a world-state error, found by compile().
+    raw["shots"][1]["actions"] = [a for a in raw["shots"][1]["actions"] if a["do"] != "pick_up"]
+    path.write_text(json.dumps(raw))
+    broken = Screenplay.model_validate(raw)
+    want = compiler.compile(
+        broken,
+        sets={s.id: s for s in demo.load_sets()},
+        props={p.id: p for p in demo.load_props()},
+        people=demo.scene_people(),
+    )
+    assert not want.ok and want.errors
+    monkeypatch.setattr(demo, "DATA_DIR", data)
+
+    with pytest.raises(demo.DemoCompileError) as caught:
+        seed_demo(mdb)
+
+    message = str(caught.value)
+    assert "demo_green_sedan_trip" in message
+    for error in want.errors:
+        assert error.message in message
+    assert caught.value.memory_id == "demo_green_sedan_trip"
+    assert caught.value.errors == want.errors
+    assert counts(mdb) == {}, "nothing is written when a scene does not compile"
+
+
+def test_a_static_compile_error_is_reported_too(mdb, tmp_path, monkeypatch):
+    data = _copy_data(tmp_path)
+    path = data / "demo_sunday_tamales.screenplay.json"
+    raw = json.loads(path.read_text())
+    raw["shots"][0]["actions"][1]["to"] = "the_moon"
+    path.write_text(json.dumps(raw))
+    monkeypatch.setattr(demo, "DATA_DIR", data)
+    with pytest.raises(demo.DemoCompileError) as caught:
+        seed_demo(mdb)
+    assert "demo_sunday_tamales" in str(caught.value)
+    assert '"the_moon" is not a mark in this shot' in str(caught.value)
+
+
+def test_a_failed_reset_keeps_the_existing_demo(seeded, tmp_path, monkeypatch):
+    mdb, _ = seeded
+    before = counts(mdb)
+    data = _copy_data(tmp_path)
+    (data / "props.json").write_text("[{")
+    monkeypatch.setattr(demo, "DATA_DIR", data)
+    with pytest.raises(demo.DemoDataError, match=r"props\.json: invalid JSON"):
+        seed_demo(mdb, reset=True)
+    assert counts(mdb) == before
+
+
+@pytest.mark.parametrize(
+    ("file", "edit", "match"),
+    [
+        ("props.json", lambda raw: raw[0].update(size="enormous"), r"props\.json: item 0 \('hymn_books'\)"),
+        ("sets.json", lambda raw: raw.append(dict(raw[0])), r"sets\.json: duplicate ids church_steps_1988"),
+        ("demo_sam_wedding_2019.screenplay.json", lambda raw: raw.update(memoryId="other"),
+         r"memoryId is 'other', expected 'demo_sam_wedding_2019'"),
+        ("demo_sam_wedding_2019.screenplay.json", lambda raw: raw.update(cast=[*raw["cast"], "grandpa_joseph"]),
+         r"cast grandpa_joseph not among the participants"),
+        ("demo_sam_wedding_2019.screenplay.json", lambda raw: raw.pop("narrations"),
+         r"narrated by \['sam'\], but the tellings are by \['dad', 'sam'\]"),
+        ("demo_sam_wedding_2019.screenplay.json", lambda raw: raw.update(bogus=1),
+         r"demo_sam_wedding_2019\.screenplay\.json: not a valid Screenplay"),
+    ],
+    ids=["bad-prop", "duplicate-set", "wrong-memory-id", "cast-not-there", "teller-missing", "unknown-field"],
+)
+def test_bad_demo_files_fail_loudly_with_the_file_name(mdb, tmp_path, monkeypatch, file, edit, match):
+    data = _copy_data(tmp_path)
+    path = data / file
+    raw = json.loads(path.read_text())
+    edit(raw)
+    path.write_text(json.dumps(raw))
+    monkeypatch.setattr(demo, "DATA_DIR", data)
+    with pytest.raises(demo.DemoDataError, match=match):
+        seed_demo(mdb)
+    assert counts(mdb) == {}
+
+
+def test_a_stray_screenplay_file_is_an_error(mdb, tmp_path, monkeypatch):
+    data = _copy_data(tmp_path)
+    (data / "demo_typo.screenplay.json").write_text("{}")
+    monkeypatch.setattr(demo, "DATA_DIR", data)
+    with pytest.raises(demo.DemoDataError, match="demo_typo.screenplay.json"):
+        seed_demo(mdb)
+
+
+def test_a_moment_before_a_participant_was_born_is_an_error(monkeypatch):
+    moment = next(m for m in demo.MOMENTS if m.id == "demo_sunday_tamales")
+    early = moment._replace(year=1960)  # Ana was born in 1964
+    with pytest.raises(demo.DemoDataError, match="participant mom was born in 1964"):
+        demo._check_moment(early, demo.load_screenplay(moment.id), demo.scene_people())
+    late = moment._replace(year=2016)  # Luis died in 2015
+    with pytest.raises(demo.DemoDataError, match="participant grandpa_luis died in 2015"):
+        demo._check_moment(late, demo.load_screenplay(moment.id), demo.scene_people())
+
+
+def test_effects_are_compiled_and_stored_not_left_out(seeded):
+    """Regression: an earlier seed stripped every effect verb missing from compiler.HANDLERS,
+    so after the compiler started running effects through its own path every stored timeline
+    still had `effects: []`. The stored scene keeps every authored effect and plays it."""
+    mdb, _ = seeded
+    memory = memories_db.get_memory(mdb, DEMO_FAMILY_ID, "demo_sam_wedding_2019")
+    assert memory is not None and memory.screenplay is not None and memory.timeline is not None
+    authored = demo.load_screenplay("demo_sam_wedding_2019")
+    assert memory.screenplay == authored
+    stored = [a.do for shot in memory.screenplay.shots for a in shot.actions if a.do in demo.EFFECT_VERBS]
+    assert stored == ["time_of_day", "confetti"]
+    assert [e.kind for e in memory.timeline.effects] == ["time_of_day", "confetti"]
+    confetti = memory.timeline.effects[1]
+    assert confetti.at is not None and confetti.dur == 3.0
+
+
+def test_an_effect_that_cannot_be_placed_stops_the_seed(mdb, tmp_path, monkeypatch):
+    """Effects go through the real compiler like any other action: a bad one fails loudly."""
+    data = _copy_data(tmp_path)
+    path = data / "demo_sam_wedding_2019.screenplay.json"
+    raw = json.loads(path.read_text())
+    confetti = next(a for a in raw["shots"][1]["actions"] if a["do"] == "confetti")
+    confetti["at"] = "grandpa_joseph"  # not in this scene
+    path.write_text(json.dumps(raw))
+    broken = Screenplay.model_validate(raw)
+    want = compiler.compile(
+        broken,
+        sets={s.id: s for s in demo.load_sets()},
+        props={p.id: p for p in demo.load_props()},
+        people=demo.scene_people(),
+    )
+    assert not want.ok and want.errors
+    monkeypatch.setattr(demo, "DATA_DIR", data)
+    with pytest.raises(demo.DemoCompileError) as caught:
+        seed_demo(mdb)
+    assert caught.value.memory_id == "demo_sam_wedding_2019"
+    for error in want.errors:
+        assert error.message in str(caught.value)
+    assert counts(mdb) == {}
 
 
 def test_seed_source_has_no_raw_collection_access():
@@ -335,7 +569,7 @@ def test_reset_twice_is_idempotent_and_leaves_other_data_alone(seeded):
     assert first.created is True and second.created is True
     assert counts(mdb) == after_first
     assert demo_ids() == ids_first
-    assert mdb.questions.count_documents({"familyId": DEMO_FAMILY_ID}) == 2
+    assert mdb.questions.count_documents({"familyId": DEMO_FAMILY_ID}) == len(demo.DEMO_QUESTIONS)
     assert mdb.users.count_documents({"_id": {"$in": list(demo.DEMO_USER_IDS)}}) == 3
     assert mdb[media_db.INLINE].count_documents({"metadata.familyId": DEMO_FAMILY_ID}) == 2
     assert _non_demo_snapshot(mdb, other_family) == before

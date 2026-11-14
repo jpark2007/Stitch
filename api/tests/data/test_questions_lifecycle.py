@@ -256,3 +256,46 @@ def test_text_only_question_closes_when_answered_with_a_new_memory(app: App):
     )
     assert memory.memory.tellings[0].author_id == sam
     assert memory.memory.tellings[0].question == text
+
+
+@pytest.mark.parametrize("email", ["david@demo.stitch", "ana@demo.stitch", "sam@demo.stitch"])
+def test_each_demo_account_answers_a_seeded_question_about_a_moment_they_were_in(app: App, email: str):
+    """The stage demo can show the flow from any account: each has a question asking for their
+    version of a moment they took part in, the moment already has a compiled scene, and the
+    answer lands on that moment as their telling while the scene stays playable."""
+    me = _login(app.client, email)
+    person = next(f for f in me.families if f.id == FID).person_id
+    assert person is not None
+    before = _open_questions(app.client)
+    question = next(q for q in before if q.memory_id is not None)
+    assert question.person_id == person
+
+    moment = schemas.MemoryResponse.model_validate(
+        _ok(app.client.get(f"/families/{FID}/memories/{question.memory_id}")), by_alias=True, by_name=False
+    )
+    assert person in moment.memory.participant_ids
+    assert person not in [t.author_id for t in moment.memory.tellings]
+    assert moment.memory.screenplay is not None and moment.memory.timeline is not None
+    seeded = [q for q in demo.DEMO_QUESTIONS if q[0] == person and q[2] == question.memory_id]
+    assert [q[1] for q in seeded] == [question.text]
+
+    memory_id = answer_question(app, question)
+
+    assert memory_id == question.memory_id
+    assert question.id not in {q.id for q in _open_questions(app.client)}
+    after = schemas.MemoryResponse.model_validate(
+        _ok(app.client.get(f"/families/{FID}/memories/{memory_id}")), by_alias=True, by_name=False
+    )
+    assert person in [t.author_id for t in after.memory.tellings]
+    assert len(after.memory.tellings) == len(moment.memory.tellings) + 1
+    # A second telling keeps the compiled scene: the shared action is untouched. (The studio
+    # may also give the new teller a narration track, so only the action is compared.)
+    assert after.memory.screenplay is not None and after.memory.timeline is not None
+    assert after.memory.screenplay.shots == moment.memory.screenplay.shots
+    assert after.memory.timeline.tracks == moment.memory.timeline.tracks
+    assert after.memory.timeline.effects == moment.memory.timeline.effects
+    assert set(moment.memory.timeline.narrations or {}) <= set(after.memory.timeline.narrations or {})
+    book = schemas.BookResponse.model_validate(
+        _ok(app.client.get(f"/families/{FID}/people/{person}/book")), by_alias=True, by_name=False
+    )
+    assert memory_id in [m.id for m in book.memories]

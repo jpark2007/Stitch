@@ -201,10 +201,20 @@ def test_fake_db_mode_serves_the_seeded_demo_family(monkeypatch, caplog):
         hymn = [m for m in book.json()["memories"] if m["id"] == HYMN_MEMORY_ID]
         assert len(hymn) == 1
         assert hymn[0]["timeline"] is not None
+        # Every moment David took part in opens on a compiled scene, oldest first.
+        memories = book.json()["memories"]
+        assert {m["id"] for m in memories} == {"demo_green_sedan_trip", HYMN_MEMORY_ID, "demo_sams_first_bike",
+                                               "demo_lily_graduation", "demo_sam_wedding_2019"}
+        assert all(m["screenplay"] and m["timeline"] and m["timeline"]["tracks"] for m in memories)
+        assert [m["year"] for m in memories] == sorted(m["year"] for m in memories)
 
         props = c.get(f"/families/{DEMO_FAMILY_ID}/props")
         assert props.status_code == 200
-        assert "hymn_books" in {p["id"] for p in props.json()["props"]}
+        assert {"hymn_books", "green_sedan"} <= {p["id"] for p in props.json()["props"]}
+
+        questions = c.get(f"/families/{DEMO_FAMILY_ID}/questions")
+        assert questions.status_code == 200
+        assert any(q["memoryId"] == "demo_lily_graduation" for q in questions.json()["questions"])
 
         assert client._db_override is not None
     assert client._db_override is None, "fake db override must be cleared on shutdown"

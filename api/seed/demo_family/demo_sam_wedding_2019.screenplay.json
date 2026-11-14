@@ -1,0 +1,148 @@
+{
+  "memoryId": "demo_sam_wedding_2019",
+  "cast": ["sam", "lily", "mom", "dad"],
+  "props": ["ring_box", "garden_bench"],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "wedding_garden_2019",
+      "marks": {},
+      "start": {
+        "mom": {"at": "bench_spot", "in": "garden_bench.left", "facing": "right"},
+        "dad": {"at": "bench_spot", "in": "garden_bench.right", "facing": "right"},
+        "sam": {"at": "arch", "facing": "left"},
+        "lily": {"at": "offstage_left", "holding": "ring_box", "facing": "right"}
+      },
+      "propStart": {"garden_bench": {"at": "bench_spot"}},
+      "camera": [
+        {"t": 0, "move": "wide"},
+        {"t": 4.6, "move": "close_up", "target": "ring_box", "dur": 1.2},
+        {"t": 8.0, "move": "pan_to", "target": "garden_bench", "dur": 1.5}
+      ],
+      "actions": [
+        {"t": 0.3, "who": "lily", "do": "enter", "from": "offstage_left", "to": "beside_groom"},
+        {"t": 5.1, "who": "lily", "do": "hand_to", "what": "ring_box", "to": "sam", "id": "rings"},
+        {"t": 7.0, "who": "sam", "do": "set_state", "what": "ring_box", "state": "open"},
+        {"t": 9.5, "who": "mom", "do": "lean_toward", "target": "dad", "dur": 2.0, "id": "lean"}
+      ],
+      "narration": [
+        {"t": 0, "text": "I was so nervous I forgot Lily had the rings.", "source": "telling:sam:s1"},
+        {
+          "t": 3.6,
+          "text": "She walked up the aisle and pressed the box into my hand like it was nothing.",
+          "source": "telling:sam:s2",
+          "cue": "rings",
+          "cueWord": "pressed"
+        },
+        {
+          "t": 7.8,
+          "text": "Mom and Dad sat on the front bench holding hands the whole time.",
+          "source": "telling:sam:s3",
+          "cue": "lean",
+          "cueWord": "holding"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "September 2019, in the orchard. Sam forgot who had the rings. Lily didn't."
+    },
+    {
+      "id": "s2",
+      "set": "reception_tent_2019",
+      "marks": {},
+      "start": {
+        "sam": {"at": "floor_mid", "facing": "left"},
+        "mom": {"at": "floor_left", "facing": "right"},
+        "dad": {"at": "tent_right", "facing": "left"},
+        "lily": {"at": "floor_right", "facing": "left"}
+      },
+      "propStart": {},
+      "camera": [
+        {"t": 0, "move": "wide"},
+        {"t": 1.4, "move": "dolly_to", "target": "sam", "dur": 1.5},
+        {"t": 5.5, "move": "pull_back", "dur": 2}
+      ],
+      "actions": [
+        {"t": 0, "do": "time_of_day", "value": "dusk", "dur": 1.5},
+        {"t": 1.5, "who": "mom", "do": "hug", "target": "sam", "dur": 2.0, "id": "hug"},
+        {"t": 3.0, "do": "confetti", "at": "sam", "dur": 3.0},
+        {"t": 4.5, "who": "dad", "do": "wave", "target": "sam", "dur": 1.6, "id": "wave_all"},
+        {"t": 6.4, "who": "lily", "do": "hug", "target": "dad", "id": "lily_hug"}
+      ],
+      "narration": [
+        {
+          "t": 0.5,
+          "text": "At the party Mom hugged me so hard my boutonniere fell off.",
+          "source": "telling:sam:s4",
+          "cue": "hug",
+          "cueWord": "hugged"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Under the lights of the tent: confetti, one lost boutonniere, and Dad waving at everyone."
+    }
+  ],
+  "narrations": {
+    "dad": {
+      "s1": [
+        {
+          "t": 0,
+          "text": "Sam looked exactly like he did on that red bike, terrified and pretending not to be.",
+          "source": "telling:dad:s1"
+        },
+        {
+          "t": 4.85,
+          "text": "Lily saved the day with the rings.",
+          "source": "telling:dad:s2",
+          "cue": "rings",
+          "cueWord": "saved"
+        }
+      ],
+      "s2": [
+        {
+          "t": 2.25,
+          "text": "When the confetti came down, Ana cried and I waved at everyone like a fool.",
+          "source": "telling:dad:s3",
+          "cue": "wave_all",
+          "cueWord": "waved"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "ring_tab",
+      "kind": "pull_tab",
+      "label": "Pull to open the ring box",
+      "shot": "s1",
+      "page": "stage",
+      "at": [0.7, 0.8],
+      "drives": {"type": "prop_state", "prop": "ring_box", "states": ["closed", "open"]}
+    },
+    {
+      "id": "hug_tab",
+      "kind": "pull_tab",
+      "label": "Pull for Mom's hug",
+      "shot": "s2",
+      "page": "story",
+      "at": [0.4, 0.82],
+      "drives": {"type": "scrub", "from": 1.5, "to": 3.5, "targets": ["puppet:mom", "puppet:sam"]}
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:sam",
+      "text": "Sam was twenty-nine and so nervous he forgot who was carrying the rings."
+    },
+    {"target": "puppet:lily", "text": "Lily was in charge of the rings, and of keeping Sam calm."},
+    {"target": "puppet:mom", "text": "Ana cried through the vows and most of the party."},
+    {"target": "puppet:dad", "text": "David waved at every single guest, including several he had never met."},
+    {
+      "target": "prop:ring_box",
+      "text": "A navy velvet ring box. Lily kept it in her coat pocket all morning and checked it every five minutes."
+    },
+    {
+      "target": "prop:garden_bench",
+      "text": "The front bench in the orchard, where David and Ana held hands through the whole ceremony."
+    }
+  ]
+}

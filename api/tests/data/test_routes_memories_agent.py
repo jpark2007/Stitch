@@ -40,6 +40,7 @@ from agent.tools.family import make_family_tools
 from db import client as db_client
 from db import families as families_db
 from db import media as media_db
+from db import memories as memories_db
 from db import people as people_db
 from db import users as users_db
 from routes import memories as memories_routes
@@ -49,7 +50,9 @@ FID = DEMO_FAMILY_ID
 DAVID = "demo_user_david"  # person "dad", admin
 ANA = "demo_user_ana"  # person "mom", member
 SAM = "demo_user_sam"  # person "sam", member
-NO_SCENE_MEMORY = "demo_sunday_tamales"  # a demo memory without a screenplay yet
+# Every seeded demo memory has a scene, so the `world` fixture adds this one without a
+# screenplay: a moment someone started that the director has not staged yet.
+NO_SCENE_MEMORY = "test_memory_without_a_scene"
 
 READ_TIMEOUT = 10.0  # one stream read, one HTTP call, or one wait on the run
 SCENARIO_TIMEOUT = 25.0  # a whole async scenario
@@ -391,6 +394,12 @@ def scenario(world: World, body: Callable[[World], Any]) -> Any:
 @pytest.fixture
 def world(mdb) -> Iterator[World]:
     seed_demo(mdb)
+    unstaged = memories_db.create_memory(
+        mdb, DEMO_FAMILY_ID, title="The day the lights went out", year=2003, participant_ids=["mom", "sam"],
+        telling=schemas.Telling(author_id="mom", text="The whole street lost power, so we ate ice cream by candlelight."),
+        memory_id=NO_SCENE_MEMORY,
+    )
+    assert unstaged.screenplay is None and unstaged.timeline is None
     # Family B, with one member who has a person.
     bob = users_db.create_user(mdb, email="bob@b.example", password_hash="x", name="Bob")
     fam_b = families_db.create_family(mdb, name="Baker", creator_user_id=bob.id)
@@ -671,8 +680,6 @@ def test_submit_errors_from_the_real_seam_delete_the_photos(world: World, monkey
 
 def _family_b_memory(w: World) -> str:
     """A memory of family B (the route refuses it before the seam is reached)."""
-    from db import memories as memories_db
-
     bob_person = people_db.get_person_for_user(w.db, w.fid_b, w.bob)
     assert bob_person is not None
     memory = memories_db.create_memory(w.db, w.fid_b, title="Baker picnic", year=1990, participant_ids=[bob_person.id])

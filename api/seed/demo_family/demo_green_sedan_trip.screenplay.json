@@ -1,0 +1,196 @@
+{
+  "memoryId": "demo_green_sedan_trip",
+  "cast": ["dad", "grandpa_joseph", "grandma_rosa"],
+  "props": ["green_sedan", "peaches", "fruit_crate"],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "mao_driveway_1972",
+      "marks": {},
+      "start": {
+        "grandpa_joseph": {"at": "front_walk", "facing": "right"},
+        "grandma_rosa": {"at": "porch", "facing": "right"},
+        "dad": {"at": "porch", "facing": "right"}
+      },
+      "propStart": {"green_sedan": {"at": "car_spot"}},
+      "camera": [{"t": 0, "move": "wide"}, {"t": 8.2, "move": "pan_to", "target": "green_sedan", "dur": 2}],
+      "actions": [
+        {
+          "t": 0,
+          "who": "grandpa_joseph",
+          "do": "get_in",
+          "what": "green_sedan",
+          "socket": "driver",
+          "id": "driver"
+        },
+        {"t": 0.6, "who": "grandma_rosa", "do": "get_in", "what": "green_sedan", "socket": "passenger"},
+        {
+          "t": 5.0,
+          "who": "dad",
+          "do": "get_in",
+          "what": "green_sedan",
+          "socket": "back_seat",
+          "id": "back_seat"
+        },
+        {"t": 8.5, "do": "smoke", "at": "green_sedan", "dur": 1.2},
+        {
+          "t": 8.5,
+          "who": "grandpa_joseph",
+          "do": "drive_to",
+          "what": "green_sedan",
+          "to": "road_out",
+          "id": "drive"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "Dad bought a green sedan that summer and decided we had to drive it all the way to the coast.",
+          "source": "telling:dad:s1"
+        },
+        {
+          "t": 5.0,
+          "text": "I sat in the back with a map I could not read.",
+          "source": "telling:dad:s2",
+          "cue": "back_seat",
+          "cueWord": "sat"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Summer 1972. Joseph bought a green sedan and decided the whole family was driving it to the coast."
+    },
+    {
+      "id": "s2",
+      "set": "coast_road_1972",
+      "marks": {"beside_crate": [0.78, 0.0]},
+      "start": {
+        "grandpa_joseph": {"at": "road_in", "in": "green_sedan.driver"},
+        "grandma_rosa": {"at": "road_in", "in": "green_sedan.passenger"},
+        "dad": {"at": "road_in", "in": "green_sedan.back_seat"}
+      },
+      "propStart": {"green_sedan": {"at": "road_in"}, "fruit_crate": {"at": "crate_spot"}, "peaches": {"at": "stand"}},
+      "camera": [
+        {"t": 0, "move": "wide"},
+        {"t": 9.0, "move": "close_up", "target": "dad", "dur": 1.5},
+        {"t": 12.5, "move": "pull_back", "dur": 2}
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "who": "grandpa_joseph",
+          "do": "drive_to",
+          "what": "green_sedan",
+          "to": "roadside",
+          "id": "arrive"
+        },
+        {"t": 2.4, "do": "smoke", "at": "green_sedan", "dur": 1.5},
+        {"t": 2.6, "who": "grandpa_joseph", "do": "get_out", "what": "green_sedan"},
+        {"t": 2.8, "who": "grandma_rosa", "do": "get_out", "what": "green_sedan"},
+        {"t": 3.0, "who": "dad", "do": "get_out", "what": "green_sedan"},
+        {"t": 4.0, "who": "grandpa_joseph", "do": "kneel", "dur": 2.5, "id": "fix"},
+        {"t": 4.2, "who": "dad", "do": "sit_on", "what": "fruit_crate", "id": "crate"},
+        {"t": 3.8, "who": "grandma_rosa", "do": "pick_up", "what": "peaches"},
+        {"t": 7.6, "who": "grandma_rosa", "do": "walk_to", "to": "beside_crate"},
+        {"t": 9.5, "who": "grandma_rosa", "do": "hand_to", "what": "peaches", "to": "dad", "id": "peaches"}
+      ],
+      "narration": [
+        {
+          "t": 3.4,
+          "text": "We got a flat tire outside a peach stand.",
+          "source": "telling:dad:s3",
+          "cue": "fix",
+          "cueWord": "flat"
+        },
+        {
+          "t": 8.0,
+          "text": "We sat on a fruit crate and ate peaches while he fixed it.",
+          "source": "telling:dad:s4",
+          "cue": "peaches",
+          "cueWord": "ate"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "A flat tire outside a peach stand. Joseph fixed it in his church trousers while David ate peaches."
+    }
+  ],
+  "narrations": {
+    "grandma_rosa": {
+      "s1": [
+        {
+          "t": 7.0,
+          "text": "Joseph would not let anyone else drive that car.",
+          "source": "telling:grandma_rosa:s1",
+          "cue": "drive",
+          "cueWord": "drive"
+        }
+      ],
+      "s2": [
+        {
+          "t": 2.9,
+          "text": "When the tire went, he changed it in his church trousers.",
+          "source": "telling:grandma_rosa:s2",
+          "cue": "fix",
+          "cueWord": "changed"
+        },
+        {
+          "t": 9.5,
+          "text": "David ate so many peaches he was sick the rest of the way.",
+          "source": "telling:grandma_rosa:s3",
+          "cue": "peaches",
+          "cueWord": "ate"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "wheel_tab",
+      "kind": "pull_tab",
+      "label": "Pull to spin the front wheel",
+      "shot": "s1",
+      "page": "stage",
+      "at": [0.86, 0.82],
+      "drives": {
+        "type": "prop_part",
+        "prop": "green_sedan",
+        "part": "wheel_front",
+        "channel": "rot",
+        "range": [0, 6.28]
+      }
+    },
+    {
+      "id": "drive_tab",
+      "kind": "pull_tab",
+      "label": "Pull to drive to the peach stand",
+      "shot": "s2",
+      "page": "story",
+      "at": [0.14, 0.8],
+      "drives": {
+        "type": "scrub",
+        "from": 0,
+        "to": 2.2,
+        "targets": ["prop:green_sedan", "puppet:grandpa_joseph", "puppet:grandma_rosa", "puppet:dad"]
+      }
+    }
+  ],
+  "explanations": [
+    {"target": "puppet:dad", "text": "David was ten. He held the road map upside down for most of the trip."},
+    {
+      "target": "puppet:grandpa_joseph",
+      "text": "Joseph drove every mile himself. Nobody else was allowed behind the wheel of the green sedan."
+    },
+    {"target": "puppet:grandma_rosa", "text": "Rosa packed sandwiches nobody ate, because of the peaches."},
+    {
+      "target": "prop:green_sedan",
+      "text": "The family car, a green 1968 sedan. Joseph bought it secondhand and kept it until 1984."
+    },
+    {
+      "target": "prop:peaches",
+      "text": "A paper bag of peaches from the stand. David ate most of them before the tire was fixed."
+    },
+    {
+      "target": "prop:fruit_crate",
+      "text": "An upturned peach crate the farmer brought out so David had somewhere to sit."
+    }
+  ]
+}

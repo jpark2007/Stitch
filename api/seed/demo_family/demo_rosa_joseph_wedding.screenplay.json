@@ -1,0 +1,129 @@
+{
+  "memoryId": "demo_rosa_joseph_wedding",
+  "cast": ["grandma_rosa", "grandpa_joseph"],
+  "props": ["black_umbrella"],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "church_steps_1988",
+      "marks": {"steps_near": [0.54, 0.0], "upper_step": [0.62, 0.16], "below_steps": [0.62, 0.0]},
+      "start": {
+        "grandpa_joseph": {"at": "steps_left", "holding": "black_umbrella", "facing": "right"},
+        "grandma_rosa": {"at": "upper_step", "facing": "left"}
+      },
+      "propStart": {},
+      "camera": [
+        {"t": 0, "move": "wide"},
+        {"t": 11.4, "move": "close_up", "target": "grandpa_joseph", "dur": 1.2},
+        {"t": 14, "move": "pull_back", "dur": 2}
+      ],
+      "actions": [
+        {"t": 0, "do": "rain", "dur": 6},
+        {"t": 0, "who": "grandpa_joseph", "do": "walk_to", "to": "steps_near", "id": "arrive"},
+        {
+          "t": 5.5,
+          "who": "grandpa_joseph",
+          "do": "hand_to",
+          "what": "black_umbrella",
+          "to": "grandma_rosa",
+          "id": "umbrella"
+        },
+        {"t": 8.0, "who": "grandma_rosa", "do": "walk_to", "to": "below_steps"},
+        {"t": 9.5, "do": "time_of_day", "value": "day", "dur": 1.5},
+        {"t": 10.0, "who": "grandma_rosa", "do": "hug", "target": "grandpa_joseph", "id": "hug"},
+        {"t": 12.0, "who": "grandpa_joseph", "do": "kneel", "dur": 1.6, "id": "socks"},
+        {"t": 12.2, "do": "confetti", "at": "grandma_rosa", "dur": 2.5},
+        {"t": 13.2, "who": "grandma_rosa", "do": "wave", "target": "grandpa_joseph"}
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "It rained all morning, and I was sure the whole day was ruined.",
+          "source": "telling:grandma_rosa:s1"
+        },
+        {
+          "t": 3.4,
+          "text": "Joseph showed up with his good shoes soaked through and gave me his umbrella without a word.",
+          "source": "telling:grandma_rosa:s2",
+          "cue": "umbrella",
+          "cueWord": "gave"
+        },
+        {
+          "t": 7.8,
+          "text": "By the time we came out of the church the sun was out.",
+          "source": "telling:grandma_rosa:s3",
+          "cue": "hug",
+          "cueWord": "sun"
+        },
+        {
+          "t": 11.6,
+          "text": "And everyone was laughing at his socks.",
+          "source": "telling:grandma_rosa:s4",
+          "cue": "socks",
+          "cueWord": "laughing"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "June 1958. It poured on the church steps, and Joseph gave Rosa his umbrella without a word."
+    }
+  ],
+  "narrations": {
+    "dad": {
+      "s1": [
+        {
+          "t": 0,
+          "text": "Mom always says it rained, and Dad always says it didn't.",
+          "source": "telling:dad:s1"
+        },
+        {
+          "t": 4.5,
+          "text": "The one photo we have shows wet steps and a lot of umbrellas.",
+          "source": "telling:dad:s2",
+          "cue": "umbrella",
+          "cueWord": "umbrellas"
+        },
+        {
+          "t": 9.5,
+          "text": "So I think she wins that one.",
+          "source": "telling:dad:s3",
+          "cue": "socks",
+          "cueWord": "wins"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "umbrella_tab",
+      "kind": "pull_tab",
+      "label": "Pull to open Joseph's umbrella",
+      "shot": "s1",
+      "page": "stage",
+      "at": [0.18, 0.8],
+      "drives": {"type": "prop_state", "prop": "black_umbrella", "states": ["closed", "open"]}
+    },
+    {
+      "id": "hug_tab",
+      "kind": "pull_tab",
+      "label": "Pull to bring them together",
+      "shot": "s1",
+      "page": "story",
+      "at": [0.82, 0.74],
+      "drives": {"type": "scrub", "from": 8.0, "to": 11.8, "targets": ["puppet:grandma_rosa", "puppet:grandpa_joseph"]}
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:grandma_rosa",
+      "text": "Rosa was twenty and had sewn the hem of her dress herself the night before."
+    },
+    {
+      "target": "puppet:grandpa_joseph",
+      "text": "Joseph was twenty-four. He walked the whole way from the bus stop in the rain rather than be late."
+    },
+    {
+      "target": "prop:black_umbrella",
+      "text": "Joseph's only umbrella. He gave it to Rosa on the steps and stood in the rain himself."
+    }
+  ]
+}
