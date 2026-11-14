@@ -146,6 +146,66 @@ describe("layoutNote", () => {
   });
 });
 
+describe("writeSchedule", () => {
+  it("writes word after word, longer words taking longer, a beat after a full stop", () => {
+    const s = x.writeSchedule(["Dad", "was", "twenty-six.", "He"]);
+    for (let i = 1; i < s.length; i++) assert.ok(s[i].delay >= s[i - 1].delay + s[i - 1].dur, JSON.stringify(s));
+    assert.ok(s[2].dur > s[1].dur);
+    const afterStop = s[3].delay - (s[2].delay + s[2].dur);
+    const afterWord = s[1].delay - (s[0].delay + s[0].dur);
+    assert.ok(afterStop > afterWord);
+  });
+
+  it("never keeps the reader waiting longer than its total", () => {
+    const words = Array.from({ length: 120 }, (_, i) => `word${i}`);
+    const s = x.writeSchedule(words, { ...x.WRITE, total: 1500 });
+    const end = s[s.length - 1].delay + s[s.length - 1].dur;
+    assert.ok(end <= 1500 + 30, String(end));
+    assert.equal(s.length, 120);
+  });
+});
+
+describe("writePlan / writeAt", () => {
+  const l = x.layoutNote("David", "Dad was 26 and had only come to church that Sunday because his mother asked.", measure);
+  const plan = x.writePlan(l, measure);
+
+  it("has a row for the heading and each line, and a step per word", () => {
+    assert.equal(plan.rowW.length, 1 + l.lines.length);
+    const words = 1 + l.lines.join(" ").split(" ").length;
+    assert.equal(plan.row.length, words);
+    // The heading's stitch can reach past its word.
+    assert.ok(plan.rowW[0] >= x.underlineEnd(measure("David", l.titleFont), l) - 1e-9);
+  });
+
+  it("moves the pen forward, row by row, and ends with everything written", () => {
+    assert.equal(x.writeAt(plan, -5), -1);
+    let last = -1;
+    for (let ms = 0; ms < plan.total; ms += 7) {
+      const p = x.writeAt(plan, ms);
+      assert.ok(p >= last - 1e-9, `${ms}: ${p} < ${last}`);
+      assert.ok(p <= l.lines.length + 1);
+      last = p;
+    }
+    assert.equal(x.writeAt(plan, plan.total), x.WRITTEN);
+    assert.ok(plan.total <= x.WRITE.total + 30);
+  });
+
+  it("finishes each row before the next starts", () => {
+    for (let i = 1; i < plan.row.length; i++) {
+      if (plan.row[i] !== plan.row[i - 1]) {
+        assert.equal(plan.row[i], plan.row[i - 1] + 1);
+        assert.equal(plan.f0[i], 0);
+      }
+      assert.ok(plan.f1[i] <= 1 && plan.f0[i] <= plan.f1[i]);
+    }
+  });
+
+  it("writes an empty note at once", () => {
+    const empty = x.writePlan({ ...l, title: "", lines: [] }, measure);
+    assert.equal(x.writeAt(empty, 0), x.WRITTEN);
+  });
+});
+
 /**
  * A camera looking at the stage from the front: stage x maps linearly to
  * screen x, and a note standing at x, h tall, covers [x - w/2, x + w/2] by

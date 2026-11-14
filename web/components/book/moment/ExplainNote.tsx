@@ -79,6 +79,7 @@ import {
   LIFT_GLOW,
   LIFT_RISE,
   RISE_MS,
+  WRITTEN,
   explainItems,
   explainStep,
   layoutNote,
@@ -91,6 +92,9 @@ import {
   resumesAfter,
   sewAt,
   stepLift,
+  underlineEnd,
+  writeAt,
+  writePlan,
   type CloseReason,
   type ExplainEvent,
   type ExplainItem,
@@ -98,6 +102,7 @@ import {
   type NoteLayout,
   type PlaceInput,
   type Rect,
+  type WritePlan,
 } from "../explain";
 import { PAGE_W } from "../leafShape";
 import { INK, INK_SOFT, canvas, drawStitchLine, paper, rng, type PageFonts } from "../paperArt";
@@ -281,24 +286,128 @@ function deckledCard(aspect: number, seed: number): Shape {
   return s;
 }
 
+/**
+ * A note's face, drawn once (ahead of time, while the page is idle, or on
+ * the first click): its words set on the card, the bare paper, the ink on
+ * its own transparent sheet (so the face can write it in), and when each
+ * word is written.
+ */
+interface NoteArt {
+  /** What it was drawn from: the target's text and the fonts, so a change draws it again. */
+  key: string;
+  layout: NoteLayout;
+  /** The bare paper and the ink, as textures every opening of this note shares (the stage disposes them). */
+  paper: CanvasTexture;
+  ink: CanvasTexture;
+  plan: WritePlan;
+}
+
 /** The note's face: paper, the heading in the handwriting font over a short running stitch, then the words. */
-function drawNote(item: ExplainItem, l: NoteLayout, fonts: PageFonts, thread: string): HTMLCanvasElement {
-  const { c, ctx } = canvas(Math.ceil(l.width * SUPER), Math.ceil(l.height * SUPER));
+function drawNote(item: ExplainItem, fonts: PageFonts, measure: Measure): NoteArt {
+  const l = layoutNote(item.title, item.text, measure);
+  const W = Math.ceil(l.width * SUPER);
+  const H = Math.ceil(l.height * SUPER);
+  const sheet = canvas(W, H);
+  sheet.ctx.scale(SUPER, SUPER);
+  paper(sheet.ctx, l.width, l.height, { seed: seedOf(item.target, 7), tone: "#f8f2e4" });
+  const { c, ctx } = canvas(W, H);
   ctx.scale(SUPER, SUPER);
-  paper(ctx, l.width, l.height, { seed: seedOf(item.target, 7), tone: "#f8f2e4" });
   ctx.textBaseline = "alphabetic";
   ctx.textAlign = "left";
   ctx.fillStyle = INK;
-  ctx.font = `600 ${l.titleFont}px ${fonts.hand}`;
+  const title = `600 ${l.titleFont}px ${fonts.hand}`;
+  ctx.font = title;
   const ty = l.pad + l.titleFont * 0.86;
   ctx.fillText(l.title, l.pad, ty);
-  const tw = Math.min(ctx.measureText(l.title).width, l.width - 2 * l.pad);
-  drawStitchLine(ctx, l.pad + 1, ty + 9, l.pad + Math.max(46, tw * 0.9), ty + 9, thread, 2.4, 9, 6);
+  const titleW = ctx.measureText(l.title).width;
+  drawStitchLine(ctx, l.pad + 1, ty + 9, l.pad + underlineEnd(titleW, l), ty + 9, item.color ?? THREAD, 2.4, 9, 6);
   ctx.fillStyle = INK_SOFT;
   ctx.font = `500 ${l.font}px ${fonts.hand}`;
   for (let i = 0; i < l.lines.length; i++) ctx.fillText(l.lines[i], l.pad, l.bodyTop + l.font * 0.8 + i * l.lineHeight);
-  return c;
+  // The heading is measured at its own weight.
+  const m = canvas(4, 4).ctx;
+  const plan = writePlan(l, (text, px) => {
+    m.font = px === l.titleFont ? title : `500 ${px}px ${fonts.hand}`;
+    return m.measureText(text).width;
+  });
+  const aspect = l.width / l.height;
+  return { key: artKey(item, fonts), layout: l, paper: noteTexture(sheet.c, aspect), ink: noteTexture(c, aspect), plan };
 }
+
+const artKey = (item: ExplainItem, fonts: PageFonts) => `${item.title}\n${item.text}\n${item.color}\n${fonts.hand}`;
+
+/** The thread's colour when the data gives none. */
+const THREAD = "#b9573d";
+
+/** Rows of ink the face can write in: the heading and NOTE_LAYOUT.maxLines lines. */
+const INK_ROWS = 13;
+
+/**
+ * The written face's material: the paper's map, with the ink laid over it up
+ * to the pen (`uPen`, row + fraction along it; see ../explain.ts writeAt),
+ * a soft edge at the nib. One program for every note.
+ */
+function inkMaterial(paperMap: CanvasTexture, inkMap: CanvasTexture, l: NoteLayout, plan: WritePlan, pen: { value: number }) {
+  const m = new MeshStandardMaterial({ map: paperMap, roughness: 0.93, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1 });
+  const rowW = new Float32Array(INK_ROWS);
+  for (let i = 0; i < INK_ROWS; i++) rowW[i] = plan.rowW[i] ?? 1;
+  const uniforms = {
+    inkMap: { value: inkMap },
+    uPen: pen,
+    uCard: { value: [l.width, l.height] },
+    // Where the body's rows start (a hair above the first line's ascenders), how tall a row is, and the left pad.
+    uRows: { value: [l.bodyTop - 2, l.lineHeight, l.pad] },
+    uRowW: { value: rowW },
+  };
+  m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+uniform sampler2D inkMap;
+uniform float uPen;
+uniform vec2 uCard;
+uniform vec3 uRows;
+uniform float uRowW[${INK_ROWS}];`,
+      )
+      .replace(
+        "#include <map_fragment>",
+        `#include <map_fragment>
+{
+  vec4 ink = texture2D( inkMap, vMapUv );
+  vec2 cpx = vec2( vMapUv.x * uCard.x, ( 1.0 - vMapUv.y ) * uCard.y );
+  float row = cpx.y < uRows.x ? 0.0 : 1.0 + floor( ( cpx.y - uRows.x ) / uRows.y );
+  row = min( row, ${INK_ROWS - 1}.0 );
+  float w = max( 1.0, uRowW[ int( row ) ] );
+  float pos = row + clamp( ( cpx.x - uRows.z ) / w, 0.0, 1.0 );
+  float shown = clamp( ( uPen - pos ) * w / 12.0 + 0.5, 0.0, 1.0 );
+  diffuseColor.rgb = mix( diffuseColor.rgb, ink.rgb, ink.a * shown );
+}`,
+      );
+  };
+  m.customProgramCacheKey = () => "stitch-explain-ink";
+  return m;
+}
+
+/** A canvas of the note's face as a texture on the card's outline (shape x -aspect/2..aspect/2, y 0..1). */
+function noteTexture(c: HTMLCanvasElement, aspect: number): CanvasTexture {
+  const t = new CanvasTexture(c);
+  t.colorSpace = SRGBColorSpace;
+  t.anisotropy = 8;
+  t.repeat.set(1 / aspect, 1);
+  t.offset.set(0.5, 0);
+  return t;
+}
+
+/** How long after the note opens its words start to write themselves in (ms): once it is most of the way up. */
+const WRITE_AT = RISE_MS * 0.4;
+
+/** What moved on a frame: nothing, only the note's ink (no shadow changes), or the scene. */
+const STILL = 0;
+const INKED = 1;
+const MOVED = 2;
+type Motion = typeof STILL | typeof INKED | typeof MOVED;
 
 type Phase = "rise" | "stand" | "fold" | "done";
 
@@ -352,7 +461,6 @@ class NoteRig {
   private readonly knotB: Mesh;
   private readonly cardGeo: ExtrudeGeometry;
   private readonly faceGeo: ShapeGeometry;
-  private readonly texture: CanvasTexture;
   private readonly face: MeshStandardMaterial;
   private readonly back: MeshStandardMaterial;
   private readonly edge: MeshStandardMaterial;
@@ -360,6 +468,12 @@ class NoteRig {
 
   phase: Phase = "rise";
   private t0 = performance.now();
+  /** When it opened: the words write themselves in from WRITE_AT after. */
+  private readonly born = this.t0;
+  /** The pen (../explain.ts writeAt), the face's uniform. */
+  private readonly pen = { value: -1 };
+  readonly layout: NoteLayout;
+  private readonly plan: WritePlan;
   readonly aspect: number;
   /** Placement, eased toward its goal. */
   x = 0;
@@ -380,23 +494,28 @@ class NoteRig {
   private placed = false;
   private lastSew = -1;
 
+  /**
+   * `still` (prefers-reduced-motion): it opens standing, sewn and written,
+   * and goes at once.
+   */
   constructor(
     readonly item: ExplainItem,
-    readonly layout: NoteLayout,
-    fonts: PageFonts,
+    art: NoteArt,
     shared: SharedGeometry,
+    readonly still = false,
   ) {
-    const color = item.color ?? "#b9573d";
+    const color = item.color ?? THREAD;
+    const layout = (this.layout = art.layout);
+    this.plan = art.plan;
     this.aspect = layout.width / layout.height;
-    this.texture = new CanvasTexture(drawNote(item, layout, fonts, color));
-    this.texture.colorSpace = SRGBColorSpace;
-    this.texture.anisotropy = 8;
-    // Shape x (-aspect/2 .. aspect/2) and y (0 .. 1) onto the canvas.
-    this.texture.repeat.set(1 / this.aspect, 1);
-    this.texture.offset.set(0.5, 0);
+    if (still) {
+      this.phase = "stand";
+      this.pen.value = WRITTEN;
+    }
     const grain = getPaperTextures("paper", [2, 2]);
     // The written face is printed on the card's front, a hair proud of it.
-    this.face = new MeshStandardMaterial({ map: this.texture, roughness: 0.93, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1 });
+    // (Its paper and ink are the art's, shared with every opening of this note.)
+    this.face = inkMaterial(art.paper, art.ink, layout, art.plan, this.pen);
     this.face.normalMap = grain.normalMap;
     this.face.normalScale.set(0.45, 0.45);
     this.back = new MeshStandardMaterial({ color: "#efe5cf", roughness: 0.95, metalness: 0 });
@@ -482,6 +601,10 @@ class NoteRig {
 
   fold() {
     if (this.phase === "fold" || this.phase === "done") return;
+    if (this.still) {
+      this.phase = "done";
+      return;
+    }
     const now = performance.now();
     const up = this.phase === "rise" ? Math.min(1, noteRise(now - this.t0)) : 1;
     this.phase = "fold";
@@ -492,11 +615,30 @@ class NoteRig {
   }
 
   /**
-   * Pose for this frame; true while anything still moves. `toStage` maps
-   * world to stage space. `held` (ms into the rise) holds a rising note at
-   * that moment, for screenshots of the animation (the probe's hold).
+   * Pose for this frame, and what still moves: the scene (MOVED), only the
+   * words writing themselves in (INKED: no shadow changes), or nothing.
+   * `toStage` maps world to stage space. `held` (ms into the rise) holds a
+   * rising note at that moment, for screenshots of the animation (the
+   * probe's hold).
    */
-  step(now: number, dt: number, lift: Vector3 | null, toStage: Matrix4, s: Scratch, held: number | null = null): boolean {
+  step(now: number, dt: number, lift: Vector3 | null, toStage: Matrix4, s: Scratch, held: number | null = null): Motion {
+    const inked = this.write(now, held);
+    const moved = this.pose(now, dt, lift, toStage, s, held);
+    return moved ? MOVED : inked ? INKED : STILL;
+  }
+
+  /** The words, written in up to the pen; true while there is more to write. */
+  private write(now: number, held: number | null): boolean {
+    const pen = this.pen;
+    if (pen.value === WRITTEN || this.phase === "done") return false;
+    // Folding away part written: the pen stops where it is.
+    if (this.phase === "fold") return false;
+    const holding = held !== null && this.phase === "rise";
+    pen.value = writeAt(this.plan, (holding ? held : now - this.born) - WRITE_AT);
+    return !holding && pen.value !== WRITTEN;
+  }
+
+  private pose(now: number, dt: number, lift: Vector3 | null, toStage: Matrix4, s: Scratch, held: number | null): boolean {
     let moving = false;
     const ms = held !== null && this.phase === "rise" ? held : now - this.t0;
     let up: number;
@@ -624,7 +766,6 @@ class NoteRig {
     for (const p of this.parts) p.removeFromParent();
     this.cardGeo.dispose();
     this.faceGeo.dispose();
-    this.texture.dispose();
     this.face.dispose();
     this.back.dispose();
     this.edge.dispose();
@@ -723,6 +864,8 @@ class ExplainStage {
   /** The press our own targets took, so the book-wide listener leaves it be. */
   private took: Event | null = null;
   private coarse = false;
+  /** prefers-reduced-motion: notes open settled, and lifts are instant. */
+  private reduced: MediaQueryList | null = null;
   private lastT = 0;
   /** The probe holds rising notes at this many ms into their rise (null: they run). */
   private held: number | null = null;
@@ -818,11 +961,125 @@ class ExplainStage {
         ctx.font = `500 ${px}px ${hand}`;
         return ctx.measureText(text).width;
       };
-      // The heading's weight, ready for the canvas.
-      document.fonts?.load(`600 34px ${hand}`).catch(() => {});
     }
     if (!inputs.enabled && this.session.open !== null) this.session.dispatch({ type: "gone" });
+    this.scheduleWarm();
     this.get().invalidate();
+  }
+
+  /* ---------- ready before the first click ---------- */
+
+  /** Drawn faces, by target (kept while the stage is mounted; redrawn if the words or fonts change). */
+  private readonly arts = new Map<string, NoteArt>();
+  /** Faces drawn for words since changed: a note may still be folding away on one, so they go with the stage. */
+  private readonly retired: NoteArt[] = [];
+  private warmJob: { idle: number | null; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  private mounted = false;
+  /**
+   * A note drawn once, a millimetre big under the page, so every program it
+   * needs (its face, its thread's instancing, their shadows) is compiled
+   * before the first click; then kept off the stage, so they stay.
+   */
+  private warmRig: { rig: NoteRig; holder: Group; frames: number } | null = null;
+
+  /** An item's face: drawn ahead while idle, or now. */
+  private artFor(item: ExplainItem, fonts: PageFonts, measure: Measure): NoteArt {
+    const key = artKey(item, fonts);
+    const had = this.arts.get(item.target);
+    if (had && had.key === key) return had;
+    if (had) this.retired.push(had);
+    const art = drawNote(item, fonts, measure);
+    this.arts.set(item.target, art);
+    return art;
+  }
+
+  /**
+   * While the page is idle: load the handwriting, draw every explainable
+   * cutout's face and send it to the GPU, then make the shared geometry and
+   * draw the hidden warm-up note, one step per idle slice, so the first
+   * click opens without a hitch.
+   */
+  private scheduleWarm() {
+    if (!this.mounted || this.warmJob) return;
+    const job: { idle: number | null; timer: ReturnType<typeof setTimeout> | null } = { idle: null, timer: null };
+    this.warmJob = job;
+    const later = (fn: () => void) => {
+      if (typeof requestIdleCallback === "function") job.idle = requestIdleCallback(fn, { timeout: 2500 });
+      else job.timer = setTimeout(fn, 300);
+    };
+    let i = 0;
+    const step = () => {
+      job.idle = job.timer = null;
+      if (this.warmJob !== job) return;
+      const inputs = this.inputs;
+      const measure = this.measureFn;
+      if (!inputs || !measure) return this.endWarm(job);
+      const item = this.items[i++];
+      if (item) {
+        const art = this.artFor(item, inputs.fonts, measure);
+        try {
+          const gl = this.get().gl;
+          gl.initTexture(art.paper);
+          gl.initTexture(art.ink);
+        } catch {
+          // Uploaded on first use instead.
+        }
+        return later(step);
+      }
+      this.sharedGeometry();
+      this.warmPrograms();
+      this.endWarm(job);
+    };
+    const hand = this.inputs?.fonts.hand;
+    const fonts = typeof document !== "undefined" ? document.fonts : undefined;
+    if (!hand || !fonts) return later(step);
+    // Faces drawn before the handwriting has loaded would be set in a fallback.
+    Promise.all([fonts.load(`500 25px ${hand}`), fonts.load(`600 34px ${hand}`)])
+      .catch(() => {})
+      .then(() => {
+        if (this.warmJob === job) later(step);
+      });
+  }
+
+  /** The explainable cutouts changed: draw their faces ahead again. */
+  warm() {
+    this.cancelWarm();
+    this.scheduleWarm();
+  }
+
+  private endWarm(job: object) {
+    if (this.warmJob === job) this.warmJob = null;
+  }
+
+  private cancelWarm() {
+    const job = this.warmJob;
+    this.warmJob = null;
+    if (job?.idle != null && typeof cancelIdleCallback === "function") cancelIdleCallback(job.idle);
+    if (job?.timer != null) clearTimeout(job.timer);
+  }
+
+  /** Draws the warm-up note for a frame (see warmRig); frame() takes it off again. */
+  private warmPrograms() {
+    const item = this.items[0];
+    const art = item ? this.arts.get(item.target) : undefined;
+    if (this.warmRig || !this.layer || !art) return;
+    const rig = new NoteRig(item, art, this.sharedGeometry(), true);
+    rig.setGoal(0, 0.5, 0.5, 0, 0, 0, 1);
+    rig.anchor.set(0.4, 0.3, 0.5);
+    const holder = new Group();
+    holder.name = "explain:warm";
+    holder.add(...rig.parts);
+    // A millimetre big, under the page: drawn, never seen.
+    holder.scale.setScalar(1e-3);
+    holder.position.set(0, -0.05, 0.5);
+    this.layer.add(holder);
+    holder.updateMatrixWorld(true);
+    this.s.toStage.identity();
+    rig.step(performance.now(), 16, null, this.s.toStage, this.s);
+    this.warmRig = { rig, holder, frames: 0 };
+    const st = this.get();
+    st.invalidate();
+    markShadowsDirty(st);
   }
 
   setLayer(g: Group | null) {
@@ -1019,6 +1276,7 @@ class ExplainStage {
     const el = gl.domElement;
     const coarse = window.matchMedia("(pointer: coarse)");
     this.coarse = coarse.matches;
+    this.reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
     const down = (ev: PointerEvent) => {
       this.coarse = ev.pointerType === "touch" || coarse.matches;
       if (this.session.open === null || this.took === ev) return;
@@ -1081,11 +1339,26 @@ class ExplainStage {
       },
     });
 
+    this.mounted = true;
+    this.scheduleWarm();
+
     return () => {
       window.removeEventListener("pointerdown", down);
       window.removeEventListener("keydown", key, true);
       offSession();
       offProbe();
+      this.mounted = false;
+      this.cancelWarm();
+      const warm = this.warmRig;
+      this.warmRig = null;
+      warm?.holder.removeFromParent();
+      warm?.rig.dispose();
+      for (const art of [...this.arts.values(), ...this.retired]) {
+        art.paper.dispose();
+        art.ink.dispose();
+      }
+      this.arts.clear();
+      this.retired.length = 0;
       this.session.setCan(() => false);
       region.remove();
       this.liveRegion = null;
@@ -1128,7 +1401,7 @@ class ExplainStage {
       const root = this.runtime.root;
       const inputs = this.inputs;
       if (item && obj && root && this.layer && inputs && this.measureFn) {
-        const rig = new NoteRig(item, layoutNote(item.title, item.text, this.measureFn), inputs.fonts, this.sharedGeometry());
+        const rig = new NoteRig(item, this.artFor(item, inputs.fonts, this.measureFn), this.sharedGeometry(), this.reduced?.matches ?? false);
         // The thread's end on the cutout: its middle, two thirds up, on its front.
         cutoutBox(obj, rig.box);
         const t = this.targets.find((x) => x.item.target === open);
@@ -1357,6 +1630,15 @@ class ExplainStage {
     this.lastT = now;
     if (this.session.open !== null && inputs && inputs.reveal.current < 0.92) this.session.dispatch({ type: "turn" });
     let moving = false;
+    // Only the words writing themselves in: a redraw, but the shadows stay as they are.
+    let inking = false;
+
+    // The warm-up note has been drawn once (its programs compiled): off the stage it goes.
+    const warm = this.warmRig;
+    if (warm?.holder.parent) {
+      if (warm.frames++ > 0) warm.holder.removeFromParent();
+      else state.invalidate();
+    }
 
     // Lifts: the open note's cutout stands off its layer, a hovered one a little.
     const lifts = this.runtime.lifts;
@@ -1365,7 +1647,7 @@ class ExplainStage {
       const goal = this.session.open === key ? 1 : this.hover === key && this.clickable ? HOVER_LIFT : 0;
       if (t.lift === goal) continue;
       if (t.lift === 0) this.aim(t);
-      t.lift = stepLift(t.lift, goal, dt);
+      t.lift = this.reduced?.matches ? goal : stepLift(t.lift, goal, dt);
       t.off.copy(t.dir).multiplyScalar(t.lift);
       if (t.lift === 0) lifts.delete(key);
       else lifts.set(key, t.off);
@@ -1395,7 +1677,9 @@ class ExplainStage {
         if (changed && r.live) this.place(r);
         let lift: Vector3 | null = null;
         for (const t of this.targets) if (t.item.target === r.item.target) lift = t.off;
-        if (r.step(now, dt, lift, this.s.toStage, this.s, this.held)) moving = true;
+        const m = r.step(now, dt, lift, this.s.toStage, this.s, this.held);
+        if (m === MOVED) moving = true;
+        else if (m === INKED) inking = true;
         if (r.phase === "done") {
           r.dispose();
           this.rigs.splice(i, 1);
@@ -1405,7 +1689,7 @@ class ExplainStage {
     if (moving) {
       state.invalidate();
       markShadowsDirty(state);
-    }
+    } else if (inking) state.invalidate();
   }
 }
 
@@ -1437,6 +1721,7 @@ export function ExplainLayer({ session, fonts, reveal, caption = null, enabled }
 
   useEffect(() => stage.configure({ fonts, reveal, caption, enabled }), [stage, fonts, reveal, caption, enabled]);
   useEffect(() => stage.mount(), [stage]);
+  useEffect(() => stage.warm(), [stage, items]);
   useFrame((state) => stage.frame(state));
 
   if (items.length === 0) return null;

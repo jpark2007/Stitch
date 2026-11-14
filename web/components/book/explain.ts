@@ -235,6 +235,136 @@ export function layoutNote(title: string, text: string, measure: Measure, o: Not
 }
 
 /* ------------------------------------------------------------------------ */
+/* The note writes itself                                                    */
+/* ------------------------------------------------------------------------ */
+
+export interface WriteStep {
+  /** ms after the writing starts */
+  delay: number;
+  /** ms the word takes to write */
+  dur: number;
+}
+
+export interface WriteOptions {
+  perChar: number;
+  /** A beat between words, and a longer one after a full stop. */
+  gap: number;
+  stop: number;
+  /** The whole is scaled down to at most this, so a long note does not keep the reader waiting. */
+  total: number;
+}
+
+export const WRITE: WriteOptions = { perChar: 24, gap: 45, stop: 140, total: 1900 };
+
+/**
+ * When each word writes itself in, as a hand would: time per letter, a beat
+ * between words and a longer one after a full stop, the whole scaled down to
+ * at most `total` ms.
+ */
+export function writeSchedule(words: readonly string[], o: WriteOptions = WRITE): WriteStep[] {
+  const steps: WriteStep[] = [];
+  let t = 0;
+  for (const w of words) {
+    const dur = Math.max(60, w.length * o.perChar);
+    steps.push({ delay: t, dur });
+    t += dur + (/[.!?…]["”’)]?$/.test(w) ? o.stop : /[,;:—]$/.test(w) ? o.gap * 1.8 : o.gap);
+  }
+  const end = steps.length ? steps[steps.length - 1].delay + steps[steps.length - 1].dur : 0;
+  if (end > o.total) {
+    const k = o.total / end;
+    for (const s of steps) {
+      s.delay = Math.round(s.delay * k);
+      s.dur = Math.max(30, Math.round(s.dur * k));
+    }
+  }
+  return steps;
+}
+
+/**
+ * The note's ink, row by row (row 0 the heading and its stitch, then each
+ * line of words): how far along its row each word reaches (0..1 of the
+ * row's inked width) and when it is written. The note's face reveals its ink
+ * up to a pen position, `row + fraction`, that writeAt reads off this plan.
+ */
+export interface WritePlan {
+  /** Inked width of each row, card px (the heading's includes its stitch). */
+  rowW: number[];
+  /** Per word, in writing order: its row, where it starts and ends along it, and its timing. */
+  row: Float32Array;
+  f0: Float32Array;
+  f1: Float32Array;
+  delay: Float32Array;
+  dur: Float32Array;
+  /** ms from the first word starting to the last one finished. */
+  total: number;
+}
+
+/** The heading's stitch: from the pad to this far along (card px), as the note's face draws it. */
+export function underlineEnd(titleW: number, l: Pick<NoteLayout, "width" | "pad">): number {
+  return Math.max(46, Math.min(titleW, l.width - 2 * l.pad) * 0.9);
+}
+
+export function writePlan(l: NoteLayout, measure: Measure, o: WriteOptions = WRITE): WritePlan {
+  const rows = [l.title, ...l.lines];
+  const rowW: number[] = [];
+  const at: { row: number; f0: number; f1: number }[] = [];
+  const words: string[] = [];
+  rows.forEach((text, r) => {
+    const px = r === 0 ? l.titleFont : l.font;
+    const ws = text.split(/\s+/).filter(Boolean);
+    let w = Math.max(1, measure(text, px));
+    if (r === 0) w = Math.max(w, underlineEnd(w, l));
+    rowW.push(w);
+    let prefix = "";
+    ws.forEach((word, i) => {
+      const start = i === 0 ? 0 : measure(`${prefix} `, px);
+      prefix = prefix ? `${prefix} ${word}` : word;
+      // The heading's last word carries its stitch on to the row's end.
+      const end = r === 0 && i === ws.length - 1 ? w : measure(prefix, px);
+      at.push({ row: r, f0: Math.min(1, start / w), f1: Math.min(1, end / w) });
+      words.push(word);
+    });
+  });
+  const steps = writeSchedule(words, o);
+  const n = steps.length;
+  const plan: WritePlan = {
+    rowW,
+    row: new Float32Array(n),
+    f0: new Float32Array(n),
+    f1: new Float32Array(n),
+    delay: new Float32Array(n),
+    dur: new Float32Array(n),
+    total: n ? steps[n - 1].delay + steps[n - 1].dur : 0,
+  };
+  for (let i = 0; i < n; i++) {
+    plan.row[i] = at[i].row;
+    plan.f0[i] = at[i].f0;
+    plan.f1[i] = at[i].f1;
+    plan.delay[i] = steps[i].delay;
+    plan.dur[i] = steps[i].dur;
+  }
+  return plan;
+}
+
+/** Past every row: the whole note written. */
+export const WRITTEN = 1e4;
+
+/**
+ * The pen's position `ms` into the writing, as `row + fraction along it`:
+ * -1 before the first word, WRITTEN once the last is done. Allocates nothing.
+ */
+export function writeAt(plan: WritePlan, ms: number): number {
+  const n = plan.delay.length;
+  if (n === 0 || ms >= plan.total) return WRITTEN;
+  if (ms < 0) return -1;
+  // The last word started by now (words start in order).
+  let i = 0;
+  while (i + 1 < n && plan.delay[i + 1] <= ms) i++;
+  const u = Math.min(1, Math.max(0, (ms - plan.delay[i]) / Math.max(1, plan.dur[i])));
+  return plan.row[i] + plan.f0[i] + (plan.f1[i] - plan.f0[i]) * u;
+}
+
+/* ------------------------------------------------------------------------ */
 /* Where the note stands                                                     */
 /* ------------------------------------------------------------------------ */
 
