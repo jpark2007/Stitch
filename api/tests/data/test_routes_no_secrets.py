@@ -1,19 +1,27 @@
 """No response from any route carries a secret (ARCHITECTURE.md sections 4 and 7).
 
-Drives EVERY route of the full app once on its happy path, as a real family would use it
-(sign up, start a family, invite, join by adding and by claiming, add and edit people,
-upload, browse, submit a memory, stream it, answer it, remove a member, log out), and
-checks every response body and header for a password hash or a plaintext password.
+Drives EVERY route of the real app (`main.create_app()`) once on its happy path, as a real
+family would use it (health check, sign up, start a family, invite, join by adding and by
+claiming, add and edit people, upload, browse, submit a memory, stream it, answer it,
+remove a member, log out, and FastAPI's doc routes), and checks every response body and
+header for a password hash or a plaintext password.
+
+The app's lifespan is never entered (TestClient without `with`); the db is set with
+`db.client.set_db(mdb)`, so no fake-db install or index setup runs.
 
 A coverage guard compares the routes exercised with the routes the app serves, so a new
-route fails here until it is driven too. Runs on mongomock with a fake agent seam.
+route fails here until it is driven too.
+
+The auth error paths are checked as well: a taken email, a wrong or unknown login, and the
+422s of a malformed signup or login, which go through `main.validation_error_handler` and
+must never echo the submitted password (FastAPI's default handler would, via `input`).
+
+Runs on mongomock with a fake agent seam.
 """
 
 from __future__ import annotations
 
-import importlib
 import json
-import pkgutil
 import re
 import sys
 import types
@@ -22,10 +30,11 @@ from typing import Any
 
 import pytest
 from fastapi import APIRouter, FastAPI
-from fastapi.routing import APIRoute, iter_route_contexts
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import iter_route_contexts
 from fastapi.testclient import TestClient
 
-import routes
+import main
 import schemas
 from db import client as db_client
 from db import memories as memories_db
@@ -47,29 +56,21 @@ FORBIDDEN = ("passwordhash", "password_hash", "$argon2")
 
 
 def _full_app() -> FastAPI:
-    """Every router in the `routes` package, included with no prefix.
-
-    Built without main.py on purpose (main.py is wired in parallel); wave 3 switches this
-    to `main.app`.
-    """
-    app = FastAPI()
-    for info in sorted(pkgutil.iter_modules(routes.__path__), key=lambda m: m.name):
-        module = importlib.import_module(f"routes.{info.name}")
-        router = getattr(module, "router", None)
-        if isinstance(router, APIRouter):
-            app.include_router(router)
-    return app
+    """The real app, exactly as uvicorn serves it. Its lifespan is never entered here."""
+    return main.create_app()
 
 
 def _app_routes(app: FastAPI) -> set[tuple[str, str]]:
-    """Every (METHOD, path template) the app serves through an APIRoute (docs routes excluded)."""
+    """Every (METHOD, path template) the app serves, APIRoute or not (docs routes included).
+
+    A route without methods (a websocket or a mount) is listed as ("ANY", path).
+    """
     found: set[tuple[str, str]] = set()
     for ctx in iter_route_contexts(app.routes):
         route = ctx.original_route
-        if not isinstance(route, APIRoute):
-            continue
-        path = ctx.path or route.path
-        for method in route.methods or ():
+        path = ctx.path or getattr(route, "path", "")
+        methods = getattr(route, "methods", None) or {"ANY"}
+        for method in methods:
             if method != "HEAD":
                 found.add((method, path))
     return found
@@ -212,12 +213,9 @@ def _signup(d: Driver, tc: TestClient, who: str) -> dict:
 def test_every_route_on_its_happy_path_leaks_no_secret(env):
     d: Driver = env.driver
     db = env.db
-    served = _app_routes(d.app)
-
     alice, bob, carol, anon = d.client(), d.client(), d.client(), d.client()
 
-    if ("GET", "/health") in served:  # served once the app is main.app
-        d.call(anon, "GET", "/health", 200)
+    assert d.call(anon, "GET", "/health", 200).json() == {"status": "ok"}
 
     # Accounts.
     alice_user = _signup(d, alice, "alice")["user"]
@@ -345,6 +343,12 @@ def test_every_route_on_its_happy_path_leaks_no_secret(env):
     d.call(alice, "DELETE", "/families/{fid}/members/{user_id}", 204, params={**p, "user_id": bob_user["id"]})
     d.call(alice, "POST", "/auth/logout", 204)
 
+    # FastAPI's documentation routes: the OpenAPI schema must not describe a password hash.
+    d.call(anon, "GET", "/openapi.json", 200)
+    d.call(anon, "GET", "/docs", 200)
+    d.call(anon, "GET", "/docs/oauth2-redirect", 200)
+    d.call(anon, "GET", "/redoc", 200)
+
     assert _coverage_problems(d.app, d.exercised) == []
 
 
@@ -362,9 +366,8 @@ def test_coverage_guard_flags_a_route_that_is_not_driven():
     app.include_router(extra)
     exercised = _app_routes(_full_app())
     assert _coverage_problems(app, exercised) == ["route never exercised: ('GET', '/families/{fid}/new-thing')"]
-    assert _coverage_problems(FastAPI(), {("GET", "/me")}) == [
-        "exercised a route the app does not serve: ('GET', '/me')"
-    ]
+    bare = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)  # serves nothing at all
+    assert _coverage_problems(bare, {("GET", "/me")}) == ["exercised a route the app does not serve: ('GET', '/me')"]
 
 
 def test_fill_handles_path_convertors():
@@ -387,17 +390,6 @@ def test_secrets_check_catches_each_forbidden_string():
 
 # ------------------------------------------------------------------------------ error paths
 
-# FastAPI's default 422 handler echoes the offending request input back, so a malformed
-# signup or login body returns the submitted plaintext password. Routers cannot install
-# exception handlers; the fix is a RequestValidationError handler in api/main.py that drops
-# or redacts `input`. These cases XPASS (and so fail, being strict) once _full_app() is
-# switched to main.app with that handler in place; remove the marker then.
-ECHOES_PASSWORD = pytest.mark.xfail(
-    strict=True,
-    reason="Leak: FastAPI's default 422 body echoes the request input, including the plaintext password. "
-    "Needs a redacting RequestValidationError handler in api/main.py.",
-)
-
 
 @pytest.mark.parametrize(
     ("body", "path"),
@@ -416,19 +408,6 @@ ECHOES_PASSWORD = pytest.mark.xfail(
             "/auth/signup",
             id="signup-blank-name",
         ),
-        pytest.param(
-            {"email": "x@example.com", "password": SHORT_PASSWORD, "name": "X"},
-            "/auth/signup",
-            id="signup-short-password",
-            marks=ECHOES_PASSWORD,
-        ),
-        pytest.param({"password": PASSWORDS["bob"]}, "/auth/login", id="login-missing-email", marks=ECHOES_PASSWORD),
-        pytest.param(
-            {"email": "x@example.com", "password": PASSWORDS["bob"]},
-            "/auth/signup",
-            id="signup-missing-name",
-            marks=ECHOES_PASSWORD,
-        ),
     ],
 )
 def test_auth_error_responses_leak_no_secret(env, body, path):
@@ -442,3 +421,45 @@ def test_auth_error_responses_leak_no_secret(env, body, path):
 
     assert 400 <= res.status_code < 500, res.text
     assert _secrets_in(res, passwords) == [], res.text
+    assert '"input"' not in res.text, res.text
+    assert body["password"] not in res.text, res.text
+
+
+# FastAPI's default 422 handler echoes each error's `input`, which on a malformed signup or
+# login body is the plaintext password. main.validation_error_handler drops it; these cases
+# pin that down on the real app.
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        pytest.param(
+            "/auth/signup",
+            {"email": "x@example.com", "password": SHORT_PASSWORD, "name": "X"},
+            id="signup-short-password",
+        ),
+        pytest.param(
+            "/auth/signup",
+            {"email": "x@example.com", "password": PASSWORDS["bob"]},
+            id="signup-missing-name",
+        ),
+        pytest.param("/auth/login", {"password": PASSWORDS["bob"]}, id="login-missing-email"),
+    ],
+)
+def test_auth_422_does_not_echo_the_password(env, path, body):
+    """A malformed signup or login is a 422 naming neither the password, a hash, nor any `input`."""
+    tc = env.driver.client()
+
+    res = tc.post(path, json=body)
+
+    assert res.status_code == 422, res.text
+    text = res.text
+    assert body["password"] not in text, text
+    assert "passwordHash" not in text and "password_hash" not in text, text
+    assert _secrets_in(res, {**PASSWORDS, "short": SHORT_PASSWORD}) == [], text
+    detail = res.json()["detail"]
+    assert isinstance(detail, list) and detail, detail
+    for item in detail:
+        assert "input" not in item, item
+
+
+def test_main_installs_the_redacting_validation_handler():
+    assert main.create_app().exception_handlers[RequestValidationError] is main.validation_error_handler
