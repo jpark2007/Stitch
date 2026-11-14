@@ -3,15 +3,29 @@
 README "Scope for the weekend": the stage demo starts with a full tree and books. This seeds
 
 - the family "The Maos" (id `demo_family`), with David as admin and Ana and Sam as members;
-- eight people in three generations with hand-picked character sheets;
-- the hand-written hymn-book scene from web/public/samples/hymn_books.memory.json (memory,
-  prop, set, screenplay and timeline), plus five more memories without scenes across the
-  eras, and two placeholder photos;
-- two open questions the real studio can answer: Sam is asked for his telling of the
-  church-steps day (the hymn-book memory, the only one with a scene, so the studio can
-  add to it), and Ana gets a general prompt about the day Lily was born, which starts a
-  new memory. A question never points at a memory without a scene, because the real
-  studio cannot add a telling to one.
+- eight people in three generations with hand-picked character sheets (color, signature
+  item, build, how they move); Luis and Sam wear their signature hats on stage;
+- seven moments from 1958 to 2019, each with a hand-authored screenplay that the seed
+  COMPILES with the real compiler (screenplay.compiler.compile) and stores with the
+  resulting timeline, so every book opens on playable scenes. Six moments have two
+  tellings by different people, and most have two to six participants so threads cross;
+- the props and sets those scenes use (placeholder art: `art` null with a color);
+- two placeholder photos on the 1972 road trip;
+- open questions asking participants of a moment who have not told it yet for their
+  version (every one points at a moment with a scene, so either studio can add the
+  telling), and one general prompt for Ana that starts a new memory.
+
+The authored data lives next to this file in seed/demo_family/: one
+`<memoryId>.screenplay.json` per moment, plus `props.json` and `sets.json`. Edit those, then
+run the seed (or `uv run pytest tests/data/test_seed_scenes.py`): every screenplay is
+compiled before anything is written, and a screenplay that does not compile stops the seed
+with a DemoCompileError listing the memory id and every exact CompileError message. See
+seed/README.md.
+
+Effects (confetti, steam, rain, smoke, time_of_day) are authored in the screenplays. While
+the compiler has no handler for an effect verb, `playable()` leaves those actions out of the
+stored screenplay (logged as a warning); they come back on their own once the compiler
+supports them. No other verb is ever dropped.
 
 Run it against MONGODB_URI / MONGODB_DB from api/:
 
@@ -28,12 +42,15 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
 from PIL import Image, ImageDraw
+from pydantic import ValidationError
 from pymongo.database import Database
 
 import auth
@@ -44,9 +61,18 @@ from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
 from db import users as users_db
+from screenplay import compiler
+from screenplay.narration import default_author
+from screenplay.schema import VOCABULARY, CompileError, Screenplay, Timeline
+
+log = logging.getLogger(__name__)
 
 REPO_DIR = Path(__file__).resolve().parents[2]
 SAMPLE_PATH = REPO_DIR / "web" / "public" / "samples" / "hymn_books.memory.json"
+DATA_DIR = Path(__file__).resolve().parent / "demo_family"
+PROPS_PATH = DATA_DIR / "props.json"
+SETS_PATH = DATA_DIR / "sets.json"
+SCREENPLAY_SUFFIX = ".screenplay.json"
 
 DEMO_FAMILY_ID = "demo_family"
 DEMO_FAMILY_NAME = "The Maos"
@@ -80,6 +106,24 @@ class DemoSeed:
     created: bool
 
 
+class DemoDataError(ValueError):
+    """A file in seed/demo_family/ (or the moments table below) is malformed or inconsistent."""
+
+
+class DemoCompileError(RuntimeError):
+    """A seeded screenplay does not compile. The message lists every exact CompileError."""
+
+    def __init__(self, memory_id: str, errors: list[CompileError]) -> None:
+        self.memory_id = memory_id
+        self.errors = list(errors)
+        lines = "\n".join(f"  - [{e.code}] {e.message}" for e in self.errors) or "  - (no error detail)"
+        path = DATA_DIR / f"{memory_id}{SCREENPLAY_SUFFIX}"
+        super().__init__(
+            f"demo moment {memory_id!r} ({path.name}) does not compile; "
+            f"{len(self.errors)} error(s):\n{lines}"
+        )
+
+
 # ------------------------------------------------------------------------------ data
 
 def load_sample() -> schemas.MemoryResponse:
@@ -92,8 +136,63 @@ def _sample_people() -> dict[str, dict]:
     return {p["id"]: p for p in raw["people"]}
 
 
-def _cs(color: str, item: str, build: str, notes: str | None = None) -> schemas.CharacterSheet:
-    return schemas.CharacterSheet(color=color, item=item, build=build, notes=notes)
+def _read_json(path: Path) -> object:
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError as exc:
+        raise DemoDataError(f"{path.name}: file not found in {path.parent}") from exc
+    except json.JSONDecodeError as exc:
+        raise DemoDataError(f"{path.name}: invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}") from exc
+
+
+def _validate_list(path: Path, model: type[schemas.Prop] | type[schemas.SetDef]) -> list:
+    raw = _read_json(path)
+    if not isinstance(raw, list):
+        raise DemoDataError(f"{path.name}: expected a JSON list of {model.__name__} objects")
+    out = []
+    for i, item in enumerate(raw):
+        try:
+            out.append(model.model_validate(item))
+        except ValidationError as exc:
+            ident = item.get("id") if isinstance(item, dict) else None
+            raise DemoDataError(f"{path.name}: item {i} ({ident!r}) is not a valid {model.__name__}:\n{exc}") from exc
+    ids = [m.id for m in out]
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        raise DemoDataError(f"{path.name}: duplicate ids {', '.join(dupes)}")
+    return out
+
+
+def load_props(path: Path = PROPS_PATH) -> list[schemas.Prop]:
+    """seed/demo_family/props.json as Prop models (family id set to the demo family)."""
+    return [p.model_copy(update={"family_id": DEMO_FAMILY_ID}) for p in _validate_list(path, schemas.Prop)]
+
+
+def load_sets(path: Path = SETS_PATH) -> list[schemas.SetDef]:
+    """seed/demo_family/sets.json as SetDef models (family id set to the demo family)."""
+    return [s.model_copy(update={"family_id": DEMO_FAMILY_ID}) for s in _validate_list(path, schemas.SetDef)]
+
+
+def screenplay_path(memory_id: str, directory: Path = DATA_DIR) -> Path:
+    return directory / f"{memory_id}{SCREENPLAY_SUFFIX}"
+
+
+def load_screenplay(memory_id: str, directory: Path = DATA_DIR) -> Screenplay:
+    """seed/demo_family/<memoryId>.screenplay.json as a Screenplay; its memoryId must match."""
+    path = screenplay_path(memory_id, directory)
+    raw = _read_json(path)
+    try:
+        screenplay = Screenplay.model_validate(raw)
+    except ValidationError as exc:
+        raise DemoDataError(f"{path.name}: not a valid Screenplay:\n{exc}") from exc
+    if screenplay.memory_id != memory_id:
+        raise DemoDataError(f"{path.name}: memoryId is {screenplay.memory_id!r}, expected {memory_id!r}")
+    return screenplay
+
+
+def _cs(color: str, item: str, build: str, notes: str | None = None,
+        item_prop_id: str | None = None) -> schemas.CharacterSheet:
+    return schemas.CharacterSheet(color=color, item=item, build=build, notes=notes, item_prop_id=item_prop_id)
 
 
 class _P(NamedTuple):
@@ -107,7 +206,12 @@ class _P(NamedTuple):
 
 
 def demo_people() -> list[_P]:
-    """Everyone in the tree, parents before children. David and Ana match the sample scene."""
+    """Everyone in the tree, parents before children. David and Ana match the sample scene.
+
+    Builds vary (small, short, average, tall) and every color and signature item is
+    distinct. Luis and Sam wear theirs as props (`itemPropId`), so their hats go on stage
+    with them in any scene that lists the prop.
+    """
     sample = _sample_people()
     dad = schemas.CharacterSheet.model_validate(sample["dad"]["character"])
     mom = schemas.CharacterSheet.model_validate(sample["mom"]["character"])
@@ -117,21 +221,36 @@ def demo_people() -> list[_P]:
         _P("grandma_rosa", "Rosa", 1938, None, [], ["grandpa_joseph"],
            _cs("#c77d9b", "pearl necklace", "small", "small quick steps, always humming")),
         _P("grandpa_luis", "Luis", 1936, 2015, [], [],
-           _cs("#d9973a", "straw hat", "tall", "stands very straight, hands clasped behind his back")),
+           _cs("#d9973a", "straw hat", "tall", "stands very straight, hands clasped behind his back",
+               item_prop_id="luis_straw_hat")),
         _P("grandma_carmen", "Carmen", 1940, None, [], ["grandpa_luis"],
            _cs("#8a5a9e", "knitted cardigan", "short", "sways a little when she laughs")),
         _P("dad", sample["dad"]["name"], sample["dad"]["born"], None,
            ["grandpa_joseph", "grandma_rosa"], [], dad),
         _P("mom", sample["mom"]["name"], sample["mom"]["born"], None,
            ["grandpa_luis", "grandma_carmen"], ["dad"], mom),
-        _P("sam", "Sam", 1990, None, ["dad", "mom"], [], _cs("#2f8f8a", "baseball cap", "average")),
-        _P("lily", "Lily", 1993, None, ["dad", "mom"], [], _cs("#e0b84f", "yellow raincoat", "small")),
+        _P("sam", "Sam", 1990, None, ["dad", "mom"], [],
+           _cs("#2f8f8a", "baseball cap", "average", "bounces on his toes when he talks", item_prop_id="sam_cap")),
+        _P("lily", "Lily", 1993, None, ["dad", "mom"], [],
+           _cs("#e0b84f", "yellow raincoat", "small", "walks briskly, always a step ahead")),
     ]
 
 
 DEMO_PERSON_IDS: tuple[str, ...] = (
     "grandpa_joseph", "grandma_rosa", "grandpa_luis", "grandma_carmen", "dad", "mom", "sam", "lily",
 )
+
+
+def scene_people(family_id: str = DEMO_FAMILY_ID) -> dict[str, schemas.Person]:
+    """The demo people as the Person models the compiler sees, keyed by id."""
+    linked = {a.person_id: a.user_id for a in DEMO_ACCOUNTS}
+    return {
+        p.id: schemas.Person(
+            id=p.id, family_id=family_id, user_id=linked.get(p.id), name=p.name, born=p.born, died=p.died,
+            parent_ids=p.parent_ids, spouse_ids=p.spouse_ids, character=p.character, added_by=_ADMIN_USER_ID,
+        )
+        for p in demo_people()
+    }
 
 
 class _T(NamedTuple):
@@ -149,23 +268,34 @@ class _M(NamedTuple):
     tellings: list[_T]
 
 
-# Memories without a scene yet, oldest first. Every teller is in the tree; the books show
-# them as the family wrote them.
+HYMN_MEMORY_ID = "sample_hymn_books"
+
+
+def _hymn_moment() -> _M:
+    """The hymn-book memory's title, year, participants and tellings, from the sample."""
+    memory = load_sample().memory
+    return _M(memory.id, memory.title, memory.year, list(memory.participant_ids),
+              [_T(t.author_id, t.question, t.text) for t in memory.tellings])
+
+
+# Every moment, oldest first. The first telling's author tells the scene's default
+# narration (Shot.narration); every other teller has a telling in Screenplay.narrations.
+# Everyone on stage is a participant, and every participant was alive that year.
 EXTRA_MEMORIES: tuple[_M, ...] = (
     _M("demo_rosa_joseph_wedding", "Rosa and Joseph's wedding", 1958,
        ["grandma_rosa", "grandpa_joseph"], [
            _T("grandma_rosa", "What do you remember about your wedding day?",
-              "It rained all morning and I was sure the whole day was ruined. Joseph showed up "
-              "with his good shoes soaked through and did not say a word about it. By the time we "
-              "came out of the church the sun was out and everyone was laughing at his socks."),
+              "It rained all morning, and I was sure the whole day was ruined. Joseph showed up "
+              "with his good shoes soaked through and gave me his umbrella without a word. By the "
+              "time we came out of the church the sun was out. And everyone was laughing at his socks."),
            _T("dad", "What did your parents tell you about their wedding?",
               "Mom always says it rained, and Dad always says it didn't. The one photo we have "
-              "shows wet steps and a lot of umbrellas, so I think she wins that one."),
+              "shows wet steps and a lot of umbrellas. So I think she wins that one."),
        ]),
     _M("demo_sunday_tamales", "Sunday tamales at Carmen's", 1970,
        ["grandma_carmen", "grandpa_luis", "mom"], [
            _T("mom", "What did Sundays look like when you were little?",
-              "Every Sunday my mother made tamales and the whole kitchen smelled of corn husks. "
+              "Every Sunday my mother made tamales, and the whole kitchen smelled of corn husks. "
               "I was allowed to spread the masa, badly. My father pretended every lumpy one was "
               "the best he had ever eaten."),
        ]),
@@ -174,7 +304,7 @@ EXTRA_MEMORIES: tuple[_M, ...] = (
            _T("dad", "Tell me about a trip you took as a kid.",
               "Dad bought a green sedan that summer and decided we had to drive it all the way to "
               "the coast. I sat in the back with a map I could not read. We got a flat tire outside "
-              "a peach stand and ate peaches on the hood while he fixed it.", photos=True),
+              "a peach stand. We sat on a fruit crate and ate peaches while he fixed it.", photos=True),
            _T("grandma_rosa", "David remembers the green sedan trip. What do you remember?",
               "Joseph would not let anyone else drive that car. When the tire went, he changed it "
               "in his church trousers. David ate so many peaches he was sick the rest of the way."),
@@ -194,23 +324,203 @@ EXTRA_MEMORIES: tuple[_M, ...] = (
            _T("mom", "What do you remember about Lily's graduation?",
               "Both grandmothers came and sat in the front row in matching hats, which was not "
               "planned. Lily tripped on the stage stairs and turned it into a bow. Rosa clapped "
-              "louder than anyone in the hall."),
+              "louder than anyone in the hall. Outside she handed me that diploma, and I would "
+              "not let go of her."),
            _T("lily", "Mom says you turned a trip into a bow. What really happened?",
               "My gown was too long and I caught the hem on the second step. I figured if I bowed "
               "nobody would know. Sam knew, and he still brings it up every Thanksgiving."),
        ]),
+    _M("demo_sam_wedding_2019", "Sam's wedding in the orchard", 2019,
+       ["sam", "lily", "mom", "dad"], [
+           _T("sam", "What do you remember about your wedding day?",
+              "I was so nervous I forgot Lily had the rings. She walked up the aisle and pressed "
+              "the box into my hand like it was nothing. Mom and Dad sat on the front bench holding "
+              "hands the whole time. At the party Mom hugged me so hard my boutonniere fell off."),
+           _T("dad", "What do you remember about Sam's wedding?",
+              "Sam looked exactly like he did on that red bike, terrified and pretending not to be. "
+              "Lily saved the day with the rings. When the confetti came down, Ana cried and I "
+              "waved at everyone like a fool."),
+       ]),
 )
 
-HYMN_MEMORY_ID = "sample_hymn_books"
-DEMO_MEMORY_IDS: tuple[str, ...] = (HYMN_MEMORY_ID,) + tuple(m.id for m in EXTRA_MEMORIES)
+MOMENTS: tuple[_M, ...] = tuple(sorted((_hymn_moment(), *EXTRA_MEMORIES), key=lambda m: m.year))
+DEMO_MEMORY_IDS: tuple[str, ...] = tuple(m.id for m in MOMENTS)
 
-# (person id, text, memory id). A memory id must name a memory with a scene: the real
-# studio raises MemoryNotFound for one without, so answering on stage would fail.
+# (person id, text, memory id). Each memory-linked question asks a participant of that
+# moment who has not told it yet, and who was born by then, for their version; every moment
+# has a compiled scene, so either studio can add the telling. Questions go to living people
+# only. Sam, Ana and David each get at least one, so the stage demo can show the flow from
+# any of the three accounts. The last one is a general prompt that starts a new memory.
 DEMO_QUESTIONS: tuple[tuple[str, str, str | None], ...] = (
-    ("sam", "Mom and Dad met on the church steps. What's the version of that day you grew up hearing?",
-     HYMN_MEMORY_ID),
+    ("sam", "Lily says you still bring up her graduation every Thanksgiving. "
+            "What did you see from your seat that day?", "demo_lily_graduation"),
+    ("dad", "Ana and Lily have both told Lily's graduation. What do you remember about that day?",
+     "demo_lily_graduation"),
+    ("mom", "Sam says you hugged him so hard at the wedding that his flower fell off. "
+            "How do you remember that day?", "demo_sam_wedding_2019"),
+    ("lily", "You carried the rings at Sam's wedding. What was that walk up the aisle like?",
+     "demo_sam_wedding_2019"),
+    ("grandma_carmen", "Ana still talks about Sunday tamales in your kitchen. "
+                       "What were those Sundays like for you?", "demo_sunday_tamales"),
+    ("grandma_rosa", "Ana says you clapped louder than anyone at Lily's graduation. "
+                     "What do you remember about it?", "demo_lily_graduation"),
     ("mom", "What do you remember about the day Lily was born?", None),
 )
+
+
+# ------------------------------------------------------------------------- the scenes
+
+class DemoScene(NamedTuple):
+    screenplay: Screenplay  # what was compiled and is stored
+    timeline: Timeline
+    prop_ids: list[str]
+    set_ids: list[str]
+    dropped: list[str]  # authored actions left out because the compiler cannot run them yet
+
+
+EFFECT_VERBS: frozenset[str] = frozenset(VOCABULARY["effects"])
+
+
+def unsupported_effects() -> frozenset[str]:
+    """Effect verbs the compiler has no handler for (compiled as unsupported_verb)."""
+    return frozenset(v for v in EFFECT_VERBS if v not in compiler.HANDLERS)
+
+
+def playable(screenplay: Screenplay) -> tuple[Screenplay, list[str]]:
+    """The screenplay without effect actions the compiler cannot run yet, and what was dropped.
+
+    Only effect verbs (vocabulary 'effects') without a compiler handler are left out; any
+    other unsupported verb stays in and fails the compile loudly. A narration cue that names
+    a dropped action would no longer resolve, so cueing an effect is a DemoDataError.
+    """
+    skip = unsupported_effects()
+    dropped: list[str] = []
+    shots = []
+    for shot in screenplay.shots:
+        gone = [a for a in shot.actions if a.do in skip]
+        if not gone:
+            shots.append(shot)
+            continue
+        names = {a.id for a in gone if a.id} | {a.do for a in gone}
+        lines = list(shot.narration) + [
+            line for by_shot in (screenplay.narrations or {}).values() for line in by_shot.get(shot.id, [])
+        ]
+        cued = sorted({line.cue for line in lines if line.cue in names})
+        if cued:
+            raise DemoDataError(
+                f"{screenplay.memory_id}: shot {shot.id} cues narration on {', '.join(cued)}, an effect the "
+                f"compiler cannot run yet; cue a person's action instead"
+            )
+        dropped += [f"shot {shot.id}, t={a.t:g}: {a.do}" for a in gone]
+        shots.append(shot.model_copy(update={"actions": [a for a in shot.actions if a.do not in skip]}))
+    if not dropped:
+        return screenplay, []
+    return screenplay.model_copy(update={"shots": shots}), dropped
+
+
+def tellers(screenplay: Screenplay) -> set[str]:
+    """Everyone who narrates the scene: the default narrator and every other telling's author."""
+    return {default_author(screenplay), *(screenplay.narrations or {})}
+
+
+def _check_moment(moment: _M, screenplay: Screenplay, people: Mapping[str, schemas.Person]) -> None:
+    """Lifetimes, cast and tellers agree with the moment. Raises DemoDataError."""
+    where = f"{moment.id} ({moment.year})"
+    for pid in dict.fromkeys([*moment.participant_ids, *(t.author_id for t in moment.tellings)]):
+        if pid not in people:
+            raise DemoDataError(f"{where}: {pid!r} is not a demo person")
+    for pid in moment.participant_ids:
+        person = people[pid]
+        if person.born is not None and person.born > moment.year:
+            raise DemoDataError(f"{where}: participant {pid} was born in {person.born}")
+        if person.died is not None and person.died < moment.year:
+            raise DemoDataError(f"{where}: participant {pid} died in {person.died}")
+    off_list = [c for c in screenplay.cast if c not in moment.participant_ids]
+    if off_list:
+        raise DemoDataError(f"{where}: cast {', '.join(off_list)} not among the participants")
+    authors = [t.author_id for t in moment.tellings]
+    if len(set(authors)) != len(authors):
+        raise DemoDataError(f"{where}: one telling per author")
+    if tellers(screenplay) != set(authors):
+        raise DemoDataError(
+            f"{where}: the screenplay is narrated by {sorted(tellers(screenplay))}, "
+            f"but the tellings are by {sorted(authors)}"
+        )
+    if default_author(screenplay) != authors[0]:
+        raise DemoDataError(f"{where}: the default narration should be {authors[0]}'s, the first telling")
+
+
+def compile_moment(
+    screenplay: Screenplay,
+    *,
+    sets: Mapping[str, schemas.SetDef],
+    props: Mapping[str, schemas.Prop],
+    people: Mapping[str, schemas.Person],
+) -> tuple[Screenplay, Timeline, list[str]]:
+    """Compile one authored screenplay with the real compiler.
+
+    Returns (the screenplay that was compiled, its timeline, the dropped effect actions).
+    Raises DemoCompileError with every exact CompileError when it does not compile.
+    """
+    runnable, dropped = playable(screenplay)
+    result = compiler.compile(runnable, sets=sets, props=props, people=people)
+    if not result.ok or result.timeline is None:
+        raise DemoCompileError(screenplay.memory_id, result.errors)
+    return runnable, result.timeline, dropped
+
+
+@dataclass(frozen=True)
+class DemoData:
+    """Everything the seed writes from seed/demo_family/, checked and compiled."""
+
+    props: list[schemas.Prop]
+    sets: list[schemas.SetDef]
+    scenes: dict[str, DemoScene]  # memory id -> compiled scene, in MOMENTS order
+
+
+def load_demo_data(directory: Path | None = None) -> DemoData:
+    """Load, check and compile every moment's screenplay. Nothing touches a database.
+
+    `directory` defaults to DATA_DIR (read at call time). Raises DemoDataError for a
+    malformed or inconsistent file (naming it) and DemoCompileError for a screenplay that
+    does not compile.
+    """
+    directory = DATA_DIR if directory is None else directory
+    props = load_props(directory / PROPS_PATH.name)
+    sets = load_sets(directory / SETS_PATH.name)
+    by_id_props = {p.id: p for p in props}
+    by_id_sets = {s.id: s for s in sets}
+    people = scene_people()
+    for person in people.values():
+        item = person.character.item_prop_id
+        if item is not None and item not in by_id_props:
+            raise DemoDataError(f"{PROPS_PATH.name}: no prop {item!r}, the signature item of {person.id}")
+    stray = sorted(
+        p.name for p in directory.glob(f"*{SCREENPLAY_SUFFIX}")
+        if p.name[: -len(SCREENPLAY_SUFFIX)] not in DEMO_MEMORY_IDS
+    )
+    if stray:
+        raise DemoDataError(f"screenplays for no demo moment in {directory.name}/: {', '.join(stray)}")
+    scenes: dict[str, DemoScene] = {}
+    for moment in MOMENTS:
+        screenplay = load_screenplay(moment.id, directory)
+        _check_moment(moment, screenplay, people)
+        stored, timeline, dropped = compile_moment(screenplay, sets=by_id_sets, props=by_id_props, people=people)
+        set_ids = list(dict.fromkeys(shot.set for shot in stored.shots))
+        scenes[moment.id] = DemoScene(stored, timeline, list(stored.props), set_ids, dropped)
+    left_out = sum(len(s.dropped) for s in scenes.values())
+    if left_out:
+        log.warning(
+            "seed.demo: the compiler has no handler for %s yet; left %d authored effect action(s) out of %d "
+            "demo scene(s). They are stored again once the compiler supports them.",
+            ", ".join(sorted(unsupported_effects())), left_out, sum(1 for s in scenes.values() if s.dropped),
+        )
+    return DemoData(props, sets, scenes)
+
+
+def compile_demo_scenes(directory: Path | None = None) -> dict[str, DemoScene]:
+    """memory id -> compiled scene for every moment (see load_demo_data)."""
+    return load_demo_data(directory).scenes
 
 
 # ---------------------------------------------------------------------------- photos
@@ -262,8 +572,7 @@ def _demo_seed(created: bool) -> DemoSeed:
     )
 
 
-def _build(db: Database) -> None:
-    sample = load_sample()
+def _build(db: Database, data: DemoData) -> None:
     linked = {a.person_id: a.user_id for a in DEMO_ACCOUNTS}
     base = datetime.now(UTC)
 
@@ -294,40 +603,14 @@ def _build(db: Database) -> None:
             person_id=person.id,
         )
 
-    for prop in sample.props:
+    for prop in data.props:
         props_db.insert_prop(db, DEMO_FAMILY_ID, prop, prop_id=prop.id)
-    for set_def in sample.sets:
+    for set_def in data.sets:
         props_db.insert_set(db, DEMO_FAMILY_ID, set_def, set_id=set_def.id)
 
-    # The hymn-book memory: David's telling, Ana's telling, then the hand-written scene.
-    memory = sample.memory
-    first, *rest = memory.tellings
-    memories_db.create_memory(
-        db,
-        DEMO_FAMILY_ID,
-        title=memory.title,
-        year=memory.year,
-        participant_ids=memory.participant_ids,
-        telling=first,
-        prop_ids=memory.prop_ids,
-        set_ids=memory.set_ids,
-        memory_id=memory.id,
-        now=base,
-    )
-    for telling in rest:
-        memories_db.add_telling(db, DEMO_FAMILY_ID, memory.id, telling)
-    memories_db.save_scene(
-        db,
-        DEMO_FAMILY_ID,
-        memory.id,
-        screenplay=memory.screenplay,
-        timeline=memory.timeline,
-        prop_ids=memory.prop_ids,
-        set_ids=memory.set_ids,
-    )
-
     photo_ids = _put_demo_photos(db)
-    for offset, extra in enumerate(EXTRA_MEMORIES, start=1):
+    for offset, moment in enumerate(MOMENTS):
+        scene = data.scenes[moment.id]
         tellings = [
             schemas.Telling(
                 author_id=t.author_id,
@@ -335,20 +618,31 @@ def _build(db: Database) -> None:
                 text=t.text,
                 photo_ids=list(photo_ids) if t.photos else [],
             )
-            for t in extra.tellings
+            for t in moment.tellings
         ]
         memories_db.create_memory(
             db,
             DEMO_FAMILY_ID,
-            title=extra.title,
-            year=extra.year,
-            participant_ids=extra.participant_ids,
+            title=moment.title,
+            year=moment.year,
+            participant_ids=moment.participant_ids,
             telling=tellings[0],
-            memory_id=extra.id,
+            prop_ids=scene.prop_ids,
+            set_ids=scene.set_ids,
+            memory_id=moment.id,
             now=base + timedelta(seconds=offset),
         )
         for telling in tellings[1:]:
-            memories_db.add_telling(db, DEMO_FAMILY_ID, extra.id, telling)
+            memories_db.add_telling(db, DEMO_FAMILY_ID, moment.id, telling)
+        memories_db.save_scene(
+            db,
+            DEMO_FAMILY_ID,
+            moment.id,
+            screenplay=scene.screenplay,
+            timeline=scene.timeline,
+            prop_ids=scene.prop_ids,
+            set_ids=scene.set_ids,
+        )
 
     for person_id, text, memory_id in DEMO_QUESTIONS:
         memories_db.create_question(db, DEMO_FAMILY_ID, person_id=person_id, text=text, memory_id=memory_id)
@@ -365,14 +659,17 @@ def seed_demo(db: Database, *, reset: bool = False) -> DemoSeed:
     """Seed the demo family. Idempotent.
 
     When the family already exists and reset is False, nothing is written and the result
-    has created=False. Otherwise any leftover demo data (from reset, or from an interrupted
-    earlier run, since the family document is written last) is deleted and everything is
-    rebuilt. Data outside the demo family, demo users and demo media is never touched.
+    has created=False. Otherwise every screenplay is compiled first (a DemoDataError or
+    DemoCompileError is raised before anything is deleted or written), then any leftover
+    demo data (from reset, or from an interrupted earlier run, since the family document is
+    written last) is deleted and everything is rebuilt. Data outside the demo family, demo
+    users and demo media is never touched.
     """
     if not reset and families_db.get_family(db, DEMO_FAMILY_ID) is not None:
         return _demo_seed(created=False)
+    data = load_demo_data()
     _purge(db)
-    _build(db)
+    _build(db, data)
     return _demo_seed(created=True)
 
 

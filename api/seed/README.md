@@ -5,13 +5,93 @@ The stage demo starts with a full tree and books. `seed/demo.py` creates the dem
 
 - 8 people in three generations: Joseph (1934 to 2011) and Rosa (1938), Luis (1936 to 2015)
   and Carmen (1940); their children David (`dad`, 1962) and Ana (`mom`, 1964); and Sam
-  (1990) and Lily (1993). Each has a hand-picked character sheet with a distinct color.
-- The hand-written hymn-book scene from `web/public/samples/hymn_books.memory.json`, with
-  its prop (`hymn_books`), set (`church_steps_1988`), screenplay and timeline, so David's
-  and Ana's books open on a playable scene.
-- Five more memories without scenes, from 1958 to 2015, with one or two tellings each
-  and two placeholder photos on the 1972 road trip.
-- Two open questions: Sam's asks for his version of the hymn-book memory (it has a scene, so answering it adds a telling with either studio), and Ana's is a general prompt about the day Lily was born.
+  (1990) and Lily (1993). Each has a hand-picked character sheet: a distinct color and
+  signature item, a build (small, short, average or tall) and a note on how they move
+  (Joseph's cane slows him down, Lily walks briskly). Luis's straw hat and Sam's cap are
+  props (`itemPropId`), so they wear them on stage.
+- Seven moments from 1958 to 2019, every one with a **compiled scene** (screenplay and
+  timeline), so every book opens on playable pages:
+
+  | Year | Memory id | Participants | Tellings | Shots |
+  |---|---|---|---|---|
+  | 1958 | `demo_rosa_joseph_wedding` | Rosa, Joseph | Rosa, David | 1 |
+  | 1970 | `demo_sunday_tamales` | Carmen, Luis, Ana | Ana | 1 |
+  | 1972 | `demo_green_sedan_trip` (the family car) | Joseph, Rosa, David | David (with two photos), Rosa | 2, fold |
+  | 1988 | `sample_hymn_books` (the hymn-book sample) | David, Ana | David, Ana | 1 |
+  | 1997 | `demo_sams_first_bike` | David, Sam | David, Sam | 2, fold |
+  | 2015 | `demo_lily_graduation` | Lily, Ana, David, Sam, Rosa, Carmen | Ana, Lily | 2, fold |
+  | 2019 | `demo_sam_wedding_2019` | Sam, Lily, Ana, David | Sam, David | 2, fold |
+
+  Across them the scenes use walk, enter, run, hand_to, hug, sit_on, stand_up, kneel, wave,
+  point_at, lean_toward, pick_up, hold, place_on, set_state, get_in, get_out and drive_to
+  (with the green sedan), pose, the camera moves wide, dolly_to, pan_to, close_up and
+  pull_back, and the effects rain, steam, smoke, confetti and time_of_day (see
+  [Effects](#effects-are-authored-but-not-compiled-yet)). Every shot has `pageText`, every
+  moment has at least one pull tab and click-to-explain text for each puppet and prop, and
+  every teller of a moment has their own narration with cues.
+- The props and sets those scenes use, all with placeholder art (`art` null, a `color`).
+- Open questions that ask a participant who has not told a moment yet for their version:
+  Sam and David about Lily's graduation, Ana and Lily about Sam's wedding, Carmen about
+  Sunday tamales, Rosa about the graduation. Each points at a moment with a scene, so
+  answering it adds a telling with either studio. Ana also has one general prompt (the day
+  Lily was born), which starts a new memory. Sam, Ana and David each have at least one.
+
+## Edit the demo scenes
+
+Everything the scenes are made of is plain JSON in `seed/demo_family/`:
+
+| File | What it is |
+|---|---|
+| `<memoryId>.screenplay.json` | One hand-authored `Screenplay` per moment (`api/screenplay/schema.py`; conventions in `shared/CONTRACTS.md`). `sample_hymn_books.screenplay.json` is a copy of `web/public/samples/hymn_books.screenplay.json`; adjust the copy here, never the sample. |
+| `props.json` | The family's props (`schemas.Prop`): size, aspect, anchor, grip, sockets (seats, table tops, the car's `driver`, `passenger` and `back_seat`), parts (spinning wheels, a pot lid) and states. |
+| `sets.json` | The family's sets (`schemas.SetDef`): paper layers and named marks `[u, h]`. |
+
+The moments' titles, years, participants and tellings, and the seeded questions, are in
+`seed/demo.py` (`EXTRA_MEMORIES`, `DEMO_QUESTIONS`; the hymn-book memory comes from the
+sample). The first telling's author tells the scene's default narration (`Shot.narration`),
+and every other teller has their lines in `Screenplay.narrations`.
+
+After an edit, recompile and check everything with
+
+```sh
+cd api
+uv run pytest tests/data/test_seed_scenes.py tests/data/test_seed.py
+```
+
+`seed_demo` compiles every screenplay with the real compiler
+(`screenplay.compiler.compile`) against these props and sets and the demo people
+**before** it deletes or writes anything, and stores the timeline the compiler produced.
+A screenplay that does not compile stops the seed with a `DemoCompileError` naming the
+memory id and listing every exact `CompileError`, for example:
+
+```text
+demo moment 'demo_green_sedan_trip' (demo_green_sedan_trip.screenplay.json) does not compile; 1 error(s):
+  - [busy] shot s2, t=9.5: grandma_rosa cannot hand_to "peaches"; grandma_rosa is still walking until t=9.94
+```
+
+A malformed or inconsistent file stops it with a `DemoDataError` naming the file: invalid
+JSON or an invalid model, duplicate ids, a screenplay whose `memoryId` is not its file
+name, a screenplay file for no moment, someone on stage who is not a participant, a
+participant who was not born yet (or had died) that year, or tellers that do not match the
+tellings. `test_seed_scenes.py` also recompiles each stored scene from the database and
+checks it equals the stored timeline, runs the agent's scene review (it must have no
+warnings), and checks the vocabulary coverage above.
+
+### Effects are authored but not compiled yet
+
+The compiler on main has no handler for the effect verbs yet (`confetti`, `steam`,
+`rain`, `smoke`, `time_of_day` compile as `unsupported_verb`). The screenplays keep them,
+and `seed.demo.playable()` leaves only those actions out of the stored screenplay, with
+one startup warning:
+
+```text
+WARNING:  seed.demo: the compiler has no handler for confetti, rain, smoke, steam, time_of_day yet; left 9 authored effect action(s) out of 5 demo scene(s). They are stored again once the compiler supports them.
+```
+
+When the compiler gains a handler for an effect, the next seed stores it with no change
+here. Do not cue narration on an effect (that is a `DemoDataError` while it is left out).
+`test_seed_scenes.py` checks that every authored effect already validates and compiles
+with a stand-in handler.
 
 ## Demo accounts
 
@@ -60,6 +140,9 @@ password, and the agent mode (scripted runs, see [Agent runs](#agent-runs-stitch
 INFO:     STITCH_FAKE_DB: in-memory database with demo family 'demo_family'; sign in as david@demo.stitch, ana@demo.stitch, sam@demo.stitch, password 'stitch-demo'
 INFO:     STITCH_AGENT=fake: scripted agent runs, no model calls (step 0.6s)
 ```
+
+Until the compiler runs effects, seeding also logs one warning that the demo scenes' effects
+were left out (see [Effects](#effects-are-authored-but-not-compiled-yet)).
 
 `STITCH_FAKE_DB` accepts `1`, `true` or `yes`. mongomock is a dev dependency, which
 `uv sync` and `uv run` install by default.
@@ -113,7 +196,7 @@ curl -s -b /tmp/stitch-cookies.txt localhost:8000/families/demo_family/tree
 # {"familyId":"demo_family","familyName":"The Maos","people":[...8 people...]}
 
 curl -s -b /tmp/stitch-cookies.txt localhost:8000/families/demo_family/people/dad/book
-# David's book, including sample_hymn_books with its screenplay and timeline
+# David's book: his five moments, each with its screenplay and timeline
 ```
 
 Without the cookie, family routes return 401; with another family's id they return 404.

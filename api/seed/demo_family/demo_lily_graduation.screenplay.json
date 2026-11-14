@@ -1,0 +1,172 @@
+{
+  "memoryId": "demo_lily_graduation",
+  "cast": ["lily", "mom", "dad", "sam", "grandma_rosa", "grandma_carmen"],
+  "props": ["diploma", "lectern", "folding_chair_rosa", "folding_chair_carmen"],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "school_hall_2015",
+      "marks": {},
+      "start": {
+        "grandma_rosa": {"at": "row_left", "in": "folding_chair_rosa.seat", "facing": "right"},
+        "grandma_carmen": {"at": "row_right", "in": "folding_chair_carmen.seat", "facing": "right"},
+        "lily": {"at": "aisle", "facing": "right"}
+      },
+      "propStart": {
+        "folding_chair_rosa": {"at": "row_left"},
+        "folding_chair_carmen": {"at": "row_right"},
+        "lectern": {"at": "lectern_spot"},
+        "diploma": {"on": "lectern.top"}
+      },
+      "camera": [
+        {"t": 0, "move": "wide"},
+        {"t": 6.2, "move": "close_up", "target": "lily", "dur": 1.2},
+        {"t": 8.6, "move": "pull_back", "dur": 1.5}
+      ],
+      "actions": [
+        {"t": 0.5, "who": "lily", "do": "walk_to", "to": "stage_steps"},
+        {"t": 6.9, "who": "lily", "do": "pose", "pose": "bow_head", "dur": 1.2, "id": "bow"},
+        {"t": 7.6, "who": "grandma_rosa", "do": "wave", "target": "lily", "dur": 1.6, "id": "cheer"},
+        {"t": 8.0, "who": "grandma_carmen", "do": "lean_toward", "target": "grandma_rosa", "dur": 1.2},
+        {"t": 8.6, "who": "lily", "do": "walk_to", "to": "stage_edge"},
+        {"t": 9.6, "who": "lily", "do": "walk_to", "to": "lectern_front"},
+        {"t": 10.4, "who": "lily", "do": "pick_up", "what": "diploma", "id": "diploma"},
+        {"t": 12.0, "who": "lily", "do": "hold", "what": "diploma"}
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "Both grandmothers came and sat in the front row in matching hats, which was not planned.",
+          "source": "telling:mom:s1"
+        },
+        {
+          "t": 4.2,
+          "text": "Lily tripped on the stage stairs and turned it into a bow.",
+          "source": "telling:mom:s2",
+          "cue": "bow",
+          "cueWord": "bow"
+        },
+        {
+          "t": 7.4,
+          "text": "Rosa clapped louder than anyone in the hall.",
+          "source": "telling:mom:s3",
+          "cue": "cheer",
+          "cueWord": "clapped"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Class of 2015. Lily caught her hem on the second step and turned the stumble into a bow."
+    },
+    {
+      "id": "s2",
+      "set": "school_lawn_2015",
+      "marks": {},
+      "start": {
+        "lily": {"at": "lawn_center", "holding": "diploma", "facing": "left"},
+        "mom": {"at": "lawn_mid", "facing": "right"},
+        "dad": {"at": "lawn_left", "facing": "right"},
+        "sam": {"at": "lawn_right", "facing": "left"}
+      },
+      "propStart": {},
+      "camera": [
+        {"t": 0, "move": "wide"},
+        {"t": 2.6, "move": "dolly_to", "target": "mom", "dur": 1.5},
+        {"t": 7.0, "move": "wide", "dur": 1.5}
+      ],
+      "actions": [
+        {"t": 1.4, "who": "lily", "do": "hand_to", "what": "diploma", "to": "mom", "id": "handoff"},
+        {"t": 3.4, "who": "mom", "do": "hug", "target": "lily", "dur": 2.0, "id": "hug"},
+        {"t": 4.0, "do": "confetti", "at": "lily", "dur": 2.5},
+        {"t": 6.0, "who": "sam", "do": "point_at", "target": "lily", "dur": 1.4, "id": "tease"},
+        {"t": 6.4, "who": "dad", "do": "wave", "target": "lily"}
+      ],
+      "narration": [
+        {
+          "t": 0.6,
+          "text": "Outside she handed me that diploma, and I would not let go of her.",
+          "source": "telling:mom:s4",
+          "cue": "handoff",
+          "cueWord": "handed"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "On the lawn the diploma went straight to Mom, and Sam started the joke he still tells."
+    }
+  ],
+  "narrations": {
+    "lily": {
+      "s1": [
+        {
+          "t": 5.4,
+          "text": "My gown was too long and I caught the hem on the second step.",
+          "source": "telling:lily:s1",
+          "cue": "bow",
+          "cueWord": "caught"
+        },
+        {
+          "t": 8.6,
+          "text": "I figured if I bowed nobody would know.",
+          "source": "telling:lily:s2",
+          "cue": "diploma",
+          "cueWord": "know"
+        }
+      ],
+      "s2": [
+        {
+          "t": 5.8,
+          "text": "Sam knew, and he still brings it up every Thanksgiving.",
+          "source": "telling:lily:s3",
+          "cue": "tease",
+          "cueWord": "knew"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "trip_tab",
+      "kind": "pull_tab",
+      "label": "Pull to make Lily bow",
+      "shot": "s1",
+      "page": "stage",
+      "at": [0.52, 0.84],
+      "drives": {"type": "scrub", "from": 6.9, "to": 8.1, "targets": ["puppet:lily"]}
+    },
+    {
+      "id": "diploma_tab",
+      "kind": "pull_tab",
+      "label": "Pull to hand Mom the diploma",
+      "shot": "s2",
+      "page": "story",
+      "at": [0.6, 0.8],
+      "drives": {"type": "scrub", "from": 1.4, "to": 3.2, "targets": ["prop:diploma", "puppet:lily", "puppet:mom"]}
+    }
+  ],
+  "explanations": [
+    {"target": "puppet:lily", "text": "Lily was twenty-two, the first in the family to finish college."},
+    {"target": "puppet:mom", "text": "Ana cried from the first name called to the last."},
+    {"target": "puppet:dad", "text": "David took ninety photos that day. Three of them are in focus."},
+    {
+      "target": "puppet:sam",
+      "text": "Sam drove four hours to be there and has brought up the bow every Thanksgiving since."
+    },
+    {
+      "target": "puppet:grandma_rosa",
+      "text": "Rosa was seventy-seven and clapped louder than anyone in the hall."
+    },
+    {
+      "target": "puppet:grandma_carmen",
+      "text": "Carmen wore the same hat as Rosa. Neither of them has ever admitted to planning it."
+    },
+    {
+      "target": "prop:diploma",
+      "text": "Lily's diploma, tied with a blue ribbon. It hangs in Ana's hallway now."
+    },
+    {"target": "prop:lectern", "text": "The lectern where the dean handed out the diplomas."},
+    {
+      "target": "prop:folding_chair_rosa",
+      "text": "Rosa's front-row seat, saved for her since seven that morning."
+    },
+    {"target": "prop:folding_chair_carmen", "text": "Carmen's seat, right next to Rosa's, in the front row."}
+  ]
+}

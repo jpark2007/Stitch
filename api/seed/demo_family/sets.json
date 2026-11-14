@@ -1,0 +1,154 @@
+[
+  {
+    "id": "church_steps_1988",
+    "name": "St. Mary's church steps",
+    "description": "brick church front with wide stone steps",
+    "layers": [
+      {"art": null, "depth": 0, "height": 1.0, "color": "#b5654a"},
+      {"art": null, "depth": 1, "height": 0.45, "color": "#cfc6b4"},
+      {"art": null, "depth": 2, "height": 0.18, "color": "#7d9a5b"}
+    ],
+    "marks": {"steps_left": [0.2, 0.0], "steps_foot": [0.5, 0.0], "steps_top": [0.6, 0.3], "curb": [0.9, 0.0]}
+  },
+  {
+    "id": "carmen_kitchen_1970",
+    "name": "Carmen's kitchen",
+    "description": "a small yellow kitchen with a gas stove, a window over the sink and a wooden table",
+    "layers": [
+      {"art": null, "depth": 0, "height": 1.0, "color": "#e9d39b"},
+      {"art": null, "depth": 1, "height": 0.5, "color": "#b98a5e"},
+      {"art": null, "depth": 2, "height": 0.12, "color": "#7a5233"}
+    ],
+    "marks": {
+      "stove": [0.14, 0.0],
+      "by_stove": [0.24, 0.0],
+      "table_left": [0.4, 0.0],
+      "table_spot": [0.5, 0.0],
+      "table_right": [0.6, 0.0],
+      "chair_spot": [0.72, 0.0],
+      "back_door": [0.92, 0.0]
+    }
+  },
+  {
+    "id": "mao_driveway_1972",
+    "name": "The house on Alder Street",
+    "description": "a white clapboard house with a porch, a gravel driveway and a mailbox",
+    "layers": [
+      {"art": null, "depth": 0, "height": 0.95, "color": "#a9c6d9"},
+      {"art": null, "depth": 1, "height": 0.55, "color": "#f2efe6"},
+      {"art": null, "depth": 2, "height": 0.1, "color": "#c9b48a"}
+    ],
+    "marks": {"porch": [0.12, 0.0], "front_walk": [0.22, 0.0], "car_spot": [0.6, 0.0], "road_out": [1.6, 0.0]}
+  },
+  {
+    "id": "coast_road_1972",
+    "name": "The coast road",
+    "description": "a two-lane road through orchards, a hand-painted peach stand and the sea beyond",
+    "layers": [
+      {"art": null, "depth": 0, "height": 0.9, "color": "#8fc1d4"},
+      {"art": null, "depth": 1, "height": 0.4, "color": "#9fb27a"},
+      {"art": null, "depth": 2, "height": 0.1, "color": "#8a8a7a"}
+    ],
+    "marks": {
+      "road_in": [-0.6, 0.0],
+      "roadside": [0.3, 0.0],
+      "tire_spot": [0.5, 0.0],
+      "crate_spot": [0.7, 0.0],
+      "stand_front": [0.8, 0.0],
+      "stand": [0.9, 0.0]
+    }
+  },
+  {
+    "id": "maple_street_1997",
+    "name": "Maple Street driveway",
+    "description": "a brick house with a basketball hoop over the garage and a long sloping driveway",
+    "layers": [
+      {"art": null, "depth": 0, "height": 0.95, "color": "#bcd9e8"},
+      {"art": null, "depth": 1, "height": 0.5, "color": "#b0624a"},
+      {"art": null, "depth": 2, "height": 0.08, "color": "#9c9c94"}
+    ],
+    "marks": {"garage": [0.18, 0.0], "bike_spot": [0.45, 0.0], "beside_bike": [0.53, 0.0], "sidewalk": [0.8, 0.0]}
+  },
+  {
+    "id": "maple_corner_1997",
+    "name": "The corner of Maple and 5th",
+    "description": "a street corner with a stop sign, a mailbox and a long row of front lawns behind",
+    "layers": [
+      {"art": null, "depth": 0, "height": 0.9, "color": "#cde3c3"},
+      {"art": null, "depth": 1, "height": 0.35, "color": "#6f9a58"},
+      {"art": null, "depth": 2, "height": 0.08, "color": "#9c9c94"}
+    ],
+    "marks": {"halfway": [0.35, 0.0], "near_corner": [0.6, 0.0], "corner": [0.75, 0.0]}
+  },
+  {
+    "id": "school_hall_2015",
+    "name": "Westbrook College hall",
+    "description": "a school hall with a raised wooden stage, a lectern, blue curtains and rows of folding chairs",
+    "layers": [
+      {"art": null, "depth": 0, "height": 1.0, "color": "#3b5b8c"},
+      {"art": null, "depth": 1, "height": 0.25, "color": "#a0703f"},
+      {"art": null, "depth": 2, "height": 0.1, "color": "#4a4a52"}
+    ],
+    "marks": {
+      "row_left": [0.1, 0.0],
+      "row_right": [0.22, 0.0],
+      "aisle": [0.38, 0.0],
+      "stage_steps": [0.5, 0.0],
+      "stage_edge": [0.62, 0.25],
+      "lectern_front": [0.72, 0.25],
+      "lectern_spot": [0.8, 0.25]
+    }
+  },
+  {
+    "id": "school_lawn_2015",
+    "name": "The college lawn",
+    "description": "a green lawn in front of the hall, with a big oak and a banner that says Class of 2015",
+    "layers": [
+      {"art": null, "depth": 0, "height": 0.95, "color": "#a8d0e6"},
+      {"art": null, "depth": 1, "height": 0.55, "color": "#5d8a4e"},
+      {"art": null, "depth": 2, "height": 0.1, "color": "#7fb069"}
+    ],
+    "marks": {
+      "oak": [0.12, 0.0],
+      "lawn_left": [0.28, 0.0],
+      "lawn_mid": [0.48, 0.0],
+      "lawn_center": [0.58, 0.0],
+      "lawn_right": [0.74, 0.0],
+      "path": [0.88, 0.0]
+    }
+  },
+  {
+    "id": "wedding_garden_2019",
+    "name": "The orchard garden",
+    "description": "an apple orchard with a white wooden arch, paper lanterns and a long grass aisle",
+    "layers": [
+      {"art": null, "depth": 0, "height": 0.95, "color": "#cfe6d2"},
+      {"art": null, "depth": 1, "height": 0.6, "color": "#f4f1ea"},
+      {"art": null, "depth": 2, "height": 0.1, "color": "#88b06a"}
+    ],
+    "marks": {
+      "aisle_start": [0.12, 0.0],
+      "bench_spot": [0.32, 0.0],
+      "aisle_mid": [0.48, 0.0],
+      "beside_groom": [0.64, 0.0],
+      "arch": [0.74, 0.0]
+    }
+  },
+  {
+    "id": "reception_tent_2019",
+    "name": "The reception tent",
+    "description": "a white tent strung with lights over a wooden dance floor",
+    "layers": [
+      {"art": null, "depth": 0, "height": 1.0, "color": "#2e3550"},
+      {"art": null, "depth": 1, "height": 0.7, "color": "#f6efe0"},
+      {"art": null, "depth": 2, "height": 0.08, "color": "#a57c52"}
+    ],
+    "marks": {
+      "tent_left": [0.15, 0.0],
+      "floor_left": [0.35, 0.0],
+      "floor_mid": [0.5, 0.0],
+      "floor_right": [0.65, 0.0],
+      "tent_right": [0.85, 0.0]
+    }
+  }
+]
