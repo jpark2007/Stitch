@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { initialRunState, runReducer } from "../../agent/runState.ts";
 import {
   addAnotherHrefFor,
+  openRunProgress,
   pendingCard,
   pendingKey,
   sceneHrefFor,
@@ -198,4 +199,45 @@ test("tellAgainFor: not for a connection error, a finished run or one still goin
   // An error, then a wake on a reconnect: the run is going again.
   const woke = run(ev("error", { message: "boom" }), ev("subagent_start", { name: "director" }));
   assert.equal(tellAgainFor(woke, action), undefined);
+});
+
+// ---- openRunProgress: what the tab's open-run record should say ---------------
+
+test("openRunProgress: a pause marks the run waiting, with the card it waits on", () => {
+  assert.equal(openRunProgress(run(ev("plan", { todos: [] }), QUESTION)), "followup");
+  assert.equal(openRunProgress(run(ev("plan", { todos: [] }), PROPS)), "props");
+  assert.equal(openRunProgress(run(ev("plan", { todos: [] }), MERGE)), "merge");
+});
+
+test("openRunProgress: answering clears the wait (working again)", () => {
+  const paused = run(ev("plan", { todos: [] }), QUESTION);
+  assert.equal(openRunProgress(paused), "followup");
+  const answeredHere = runReducer(paused, answered("answer"));
+  assert.equal(answeredHere.phase, "running");
+  assert.equal(openRunProgress(answeredHere), "working");
+  // Answered elsewhere (another tab, before a reload): the step that asked
+  // ends and the run moves on past the pause on its own.
+  const asking = run(ev("plan", { todos: [] }), ev("subagent_start", { name: "interviewer" }), QUESTION);
+  assert.equal(openRunProgress(asking), "followup");
+  const movedOn = runReducer(asking, ev("subagent_end", { name: "interviewer", summary: "Asked." }));
+  assert.equal(movedOn.phase, "running");
+  assert.equal(openRunProgress(movedOn), "working");
+});
+
+test("openRunProgress: done and the run's own error are over", () => {
+  assert.equal(openRunProgress(run(ev("done", { memoryId: "m1" }))), "over");
+  assert.equal(openRunProgress(run(ev("plan", { todos: [] }), ev("error", { message: "The studio stopped." }))), "over");
+});
+
+test("openRunProgress: connecting or a connection that gave up changes nothing", () => {
+  assert.equal(openRunProgress(initialRunState), null);
+  const dropped = run(ev("plan", { todos: [] }), { type: "connection_error", message: "Lost" });
+  assert.equal(openRunProgress(dropped), null);
+  // Waiting with nothing pending is not a pause the person can answer.
+  assert.equal(openRunProgress({ phase: "waiting", pending: null, errorFrom: null }), null);
+});
+
+test("openRunProgress: running and a ready scene are working", () => {
+  assert.equal(openRunProgress({ phase: "running", pending: null, errorFrom: null }), "working");
+  assert.equal(openRunProgress({ phase: "scene_ready", pending: null, errorFrom: null }), "working");
 });

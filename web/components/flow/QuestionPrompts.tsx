@@ -5,7 +5,8 @@
 // pressing it answers that question (the page turns it into a draft with
 // draftFromQuestion), pressing it again lets it go. A question about a moment
 // says "Add your version": answering it adds this person's telling to that
-// moment instead of starting a new one. Two show at once; the rest
+// moment instead of starting a new one. A pressed note says what is under way
+// ("Answering this", "Adding your version") with a check mark. Two show at once; the rest
 // wait behind "More questions" so the story stays on the first screen and the
 // page never feels like an inbox.
 import { useId, useState } from "react";
@@ -73,7 +74,9 @@ export function QuestionPrompts(props: {
                   ].join(" ")}
                 >
                   {picked ? <PickedMark /> : null}
-                  {q.memoryId ? "Add your version" : "Answer this"}
+                  {promptAction(Boolean(q.memoryId), picked)}
+                  {/* Heard, not seen: the note is a toggle. */}
+                  {picked ? <span className="sr-only">, press again to let it go</span> : null}
                 </span>
               </button>
             </li>
@@ -94,6 +97,12 @@ export function QuestionPrompts(props: {
       ) : null}
     </section>
   );
+}
+
+/** A note's action label: what pressing it does, or (once pressed) what is under way. */
+function promptAction(aboutMoment: boolean, picked: boolean): string {
+  if (aboutMoment) return picked ? "Adding your version" : "Add your version";
+  return picked ? "Answering this" : "Answer this";
 }
 
 function PickedMark() {

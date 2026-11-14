@@ -7,8 +7,11 @@
 // fails with its own error offers "Tell it again": ?retry=<run> brings the
 // form back filled in with what that run was sent. ?added=<person> comes back
 // from the add-relative page: the form ticks that person, then drops it.
+// ?memoryId= without ?family= for someone in two or more families: the page
+// first finds which family holds the moment (the remembered one first) and
+// opens its second telling there.
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ButtonLink } from "@/components/flow/Button";
 import { FlowPage } from "@/components/flow/FlowPage";
@@ -17,6 +20,7 @@ import { SessionGate, type SessionValue } from "@/components/flow/SessionGate";
 import {
   addedFromQuery,
   familyChoice,
+  findMomentFamily,
   loadSentDraft,
   loadTelling,
   questionIdFromQuery,
@@ -26,16 +30,19 @@ import {
 } from "@/components/flow/addPage";
 import type { MemoryRunTelling } from "@/components/flow/MemoryRun";
 import { hrefs, recallFamily, rememberFamily } from "@/components/flow/session";
+import { isApiError } from "@/lib/api";
 
-import { AddForm, type StartedRun } from "./AddForm";
+import { AddForm, AddLoadFailed, LOAD_ERROR, messageOf, type StartedRun } from "./AddForm";
 import { AddRun } from "./AddRun";
 import {
   ADD_BACK,
+  currentPath,
   FamilyLine,
   LoadingSheet,
   NEW_MEMORY_LEDE,
   SECOND_TELLING_LEDE,
   sessionStore,
+  type MomentHome,
 } from "./parts";
 
 const TITLE = "Add a memory";
@@ -91,6 +98,9 @@ function reattach(runId: string): ShownRun {
   return { runId, telling: loadTelling(sessionStore(), runId), fresh: false };
 }
 
+/** Where the lookup for `?memoryId=`'s family ended: a family, none, or a failed load. */
+type MomentLookup = { kind: "found"; familyId: string } | { kind: "none" } | { kind: "error"; message: string };
+
 function AddFlow(props: {
   session: SessionValue;
   familyId: string | null;
@@ -106,12 +116,53 @@ function AddFlow(props: {
   const { me, api } = session;
   const router = useRouter();
 
+  // ?memoryId= with no ?family=, for someone in two or more families: ask each
+  // family for the moment, the remembered one first. A 404 moves on; the first
+  // that has it is where the second telling opens. Any other failure is the
+  // page's load error, with a retry.
+  const lookFor = memoryId && !familyId && !runId && me.families.length >= 2 ? memoryId : null;
+  const [lookupTry, setLookupTry] = useState(0);
+  const lookupKey = lookFor ? `${lookFor}#${lookupTry}` : null;
+  const [lookup, setLookup] = useState<{ key: string; result: MomentLookup } | null>(null);
+  useEffect(() => {
+    if (!lookFor || !lookupKey) return;
+    let live = true;
+    const order = familyChoice(me.families, recallFamily());
+    const ids = (order.current ? [order.current, ...order.others] : []).map((f) => f.id);
+    findMomentFamily(ids, (fid) => api.getMemory(fid, lookFor)).then(
+      (found) => {
+        if (!live) return;
+        const result: MomentLookup = found ? { kind: "found", familyId: found.familyId } : { kind: "none" };
+        setLookup({ key: lookupKey, result });
+      },
+      (e: unknown) => {
+        if (!live) return;
+        if (isApiError(e) && e.status === 401) {
+          router.replace(hrefs.login(currentPath()));
+          return;
+        }
+        setLookup({ key: lookupKey, result: { kind: "error", message: messageOf(e, LOAD_ERROR) } });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [api, me.families, lookFor, lookupKey, router]);
+  const looked = lookupKey && lookup?.key === lookupKey ? lookup.result : null;
+  const foundFid = looked?.kind === "found" ? looked.familyId : null;
+
   // Only runs in the browser (SessionGate renders this after asking the
   // server who is signed in), so reading storage here is safe. Someone in two
   // or more families sees which one this goes into, with links to the others
-  // (each to that family's plain form: no moment, no run).
-  const choice = familyChoice(me.families, familyId ?? recallFamily());
+  // (each to that family's plain form: no run, and no moment except in the
+  // family found holding it).
+  const wanted = familyId ?? foundFid ?? recallFamily();
+  const choice = useMemo(() => familyChoice(me.families, wanted), [me.families, wanted]);
   const family = choice.current;
+  const momentHome = useMemo<MomentHome | null>(
+    () => (memoryId && foundFid ? { memoryId, familyId: foundFid } : null),
+    [memoryId, foundFid],
+  );
   const fid = family?.id ?? null;
 
   useEffect(() => {
@@ -196,6 +247,17 @@ function AddFlow(props: {
     );
   }
 
+  if (lookFor && !looked) return <AddLoading kind="second" />;
+  if (looked?.kind === "error") {
+    return (
+      <AddLoadFailed
+        choice={choice}
+        message={looked.message}
+        onRetry={() => setLookupTry((n) => n + 1)}
+      />
+    );
+  }
+
   if (!family.personId) {
     return (
       <FlowPage
@@ -235,6 +297,7 @@ function AddFlow(props: {
         onStarted={onStarted}
         restore={{ runId: retryId, draft, photos: backPhotos?.runId === retryId ? backPhotos.photos : null }}
         added={added}
+        momentHome={momentHome}
       />
     );
   }
@@ -250,6 +313,7 @@ function AddFlow(props: {
       onStarted={onStarted}
       added={added}
       questionId={questionId}
+      momentHome={momentHome}
     />
   );
 }

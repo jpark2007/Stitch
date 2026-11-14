@@ -8,6 +8,8 @@ import {
   CARRY_KEY,
   DRAFT_KEY,
   DRAFT_KEY_PREFIX,
+  OPEN_RUNS_KEY,
+  OPEN_RUNS_MAX,
   RUN_GONE_MESSAGE,
   TELLING_KEY_PREFIX,
   addRelativeHref,
@@ -43,6 +45,15 @@ import {
   sentDraftFromSubmit,
   tellingFromSubmit,
   withRunGone,
+  familyAsking,
+  findMomentFamily,
+  firstWords,
+  forgetOpenRun,
+  markRunWaiting,
+  openRunNotice,
+  openRunsFor,
+  rememberOpenRun,
+  runToResume,
 } from "../addPage.ts";
 import { pickFamily, safeNext } from "../session.ts";
 
@@ -1237,5 +1248,270 @@ describe("draftForForm", () => {
     clearTypedDraft(st, "f");
     assert.equal(readTypedDraft(st, "f"), null);
     assert.equal(questionIdFromQuery(runHref({ familyId: "f", runId: "r" }).slice("/add".length)), null);
+  });
+});
+
+// ---- open runs ------------------------------------------------------------------
+
+describe("rememberOpenRun / markRunWaiting / forgetOpenRun / openRunsFor", () => {
+  const started = (runId, familyId = "f", startedAt = 1000, title = null) => ({ familyId, runId, title, startedAt });
+
+  test("round trip: a remembered run reads back, not waiting", () => {
+    const st = fullStorage();
+    rememberOpenRun(st, started("r1", "f", 1000, "  Sam's wedding "));
+    assert.deepEqual(openRunsFor(st, "f"), [
+      { familyId: "f", runId: "r1", title: "Sam's wedding", startedAt: 1000, waiting: null },
+    ]);
+    assert.ok(st.map.has(OPEN_RUNS_KEY));
+  });
+
+  test("newest first", () => {
+    const st = fullStorage();
+    rememberOpenRun(st, started("old", "f", 1000));
+    rememberOpenRun(st, started("new", "f", 3000));
+    rememberOpenRun(st, started("mid", "f", 2000));
+    assert.deepEqual(
+      openRunsFor(st, "f").map((r) => r.runId),
+      ["new", "mid", "old"],
+    );
+  });
+
+  test("each family sees only its own runs", () => {
+    const st = fullStorage();
+    rememberOpenRun(st, started("ra", "fa", 1000));
+    rememberOpenRun(st, started("rb", "fb", 2000));
+    assert.deepEqual(openRunsFor(st, "fa").map((r) => r.runId), ["ra"]);
+    assert.deepEqual(openRunsFor(st, "fb").map((r) => r.runId), ["rb"]);
+    assert.deepEqual(openRunsFor(st, "fc"), []);
+    assert.deepEqual(openRunsFor(st, ""), []);
+  });
+
+  test("markRunWaiting sets and clears the wait", () => {
+    const st = fullStorage();
+    rememberOpenRun(st, started("r1"));
+    markRunWaiting(st, "r1", "followup");
+    assert.equal(openRunsFor(st, "f")[0].waiting, "followup");
+    markRunWaiting(st, "r1", "props");
+    assert.equal(openRunsFor(st, "f")[0].waiting, "props");
+    markRunWaiting(st, "r1", null);
+    assert.equal(openRunsFor(st, "f")[0].waiting, null);
+    // The rest of the record is kept.
+    assert.deepEqual(openRunsFor(st, "f")[0], { familyId: "f", runId: "r1", title: null, startedAt: 1000, waiting: null });
+  });
+
+  test("markRunWaiting leaves alone a run this tab does not remember", () => {
+    const st = fullStorage();
+    markRunWaiting(st, "stranger", "followup");
+    assert.equal(st.map.has(OPEN_RUNS_KEY), false);
+    rememberOpenRun(st, started("r1"));
+    markRunWaiting(st, "stranger", "merge");
+    assert.deepEqual(openRunsFor(st, "f").map((r) => r.runId), ["r1"]);
+  });
+
+  test("markRunWaiting ignores a kind it does not know", () => {
+    const st = fullStorage();
+    rememberOpenRun(st, started("r1"));
+    markRunWaiting(st, "r1", "followup");
+    markRunWaiting(st, "r1", "nonsense");
+    assert.equal(openRunsFor(st, "f")[0].waiting, null);
+  });
+
+  test("forgetOpenRun removes the entry (and the key with the last one)", () => {
+    const st = fullStorage();
+    rememberOpenRun(st, started("r1", "f", 1000));
+    rememberOpenRun(st, started("r2", "f", 2000));
+    forgetOpenRun(st, "r1");
+    assert.deepEqual(openRunsFor(st, "f").map((r) => r.runId), ["r2"]);
+    forgetOpenRun(st, "r1"); // twice is fine
+    forgetOpenRun(st, "r2");
+    assert.deepEqual(openRunsFor(st, "f"), []);
+    assert.equal(st.map.has(OPEN_RUNS_KEY), false);
+    // A forgotten run cannot be marked back into being.
+    markRunWaiting(st, "r2", "followup");
+    assert.deepEqual(openRunsFor(st, "f"), []);
+  });
+
+  test("junk JSON is ignored, and remembering over it starts afresh", () => {
+    const st = fullStorage();
+    st.map.set(OPEN_RUNS_KEY, "{not json");
+    assert.deepEqual(openRunsFor(st, "f"), []);
+    st.map.set(OPEN_RUNS_KEY, JSON.stringify([1, 2]));
+    assert.deepEqual(openRunsFor(st, "f"), []);
+    st.map.set(OPEN_RUNS_KEY, "null");
+    assert.deepEqual(openRunsFor(st, "f"), []);
+    rememberOpenRun(st, started("r1"));
+    assert.deepEqual(openRunsFor(st, "f").map((r) => r.runId), ["r1"]);
+  });
+
+  test("wrong-shaped entries are skipped; the good ones still read", () => {
+    const st = fullStorage();
+    st.map.set(
+      OPEN_RUNS_KEY,
+      JSON.stringify({
+        good: { familyId: "f", title: "T", startedAt: 5, waiting: "merge" },
+        noFamily: { title: "T", startedAt: 5 },
+        noTime: { familyId: "f", startedAt: "yesterday" },
+        notObject: "r",
+        oddWait: { familyId: "f", title: 42, startedAt: 4, waiting: "lunch" },
+      }),
+    );
+    assert.deepEqual(openRunsFor(st, "f"), [
+      { familyId: "f", runId: "good", title: "T", startedAt: 5, waiting: "merge" },
+      { familyId: "f", runId: "oddWait", title: null, startedAt: 4, waiting: null },
+    ]);
+  });
+
+  test("a throwing or missing store is tolerated", () => {
+    const bad = {
+      getItem() {
+        throw new Error("SecurityError");
+      },
+      setItem() {
+        throw new Error("QuotaExceededError");
+      },
+      removeItem() {
+        throw new Error("SecurityError");
+      },
+    };
+    assert.doesNotThrow(() => rememberOpenRun(bad, started("r1")));
+    assert.doesNotThrow(() => markRunWaiting(bad, "r1", "followup"));
+    assert.doesNotThrow(() => forgetOpenRun(bad, "r1"));
+    assert.deepEqual(openRunsFor(bad, "f"), []);
+    assert.doesNotThrow(() => rememberOpenRun(null, started("r1")));
+    assert.doesNotThrow(() => markRunWaiting(null, "r1", "followup"));
+    assert.doesNotThrow(() => forgetOpenRun(null, "r1"));
+    assert.deepEqual(openRunsFor(null, "f"), []);
+    // A store that reads but cannot write keeps nothing and says nothing.
+    const readOnly = { ...fullStorage(), setItem: bad.setItem };
+    assert.doesNotThrow(() => rememberOpenRun(readOnly, started("r1")));
+    assert.deepEqual(openRunsFor(readOnly, "f"), []);
+  });
+
+  test("a blank run or family id is not remembered", () => {
+    const st = fullStorage();
+    rememberOpenRun(st, started("", "f"));
+    rememberOpenRun(st, started("r1", ""));
+    assert.equal(st.map.has(OPEN_RUNS_KEY), false);
+  });
+
+  test("only the newest OPEN_RUNS_MAX are kept", () => {
+    const st = fullStorage();
+    for (let i = 0; i < OPEN_RUNS_MAX + 3; i++) rememberOpenRun(st, started(`r${i}`, "f", 1000 + i));
+    const ids = openRunsFor(st, "f").map((r) => r.runId);
+    assert.equal(ids.length, OPEN_RUNS_MAX);
+    assert.equal(ids[0], `r${OPEN_RUNS_MAX + 2}`);
+    assert.ok(!ids.includes("r0") && !ids.includes("r1") && !ids.includes("r2"));
+  });
+
+  test("lives beside the telling slips without touching them", () => {
+    const st = fullStorage();
+    saveTelling(st, "r1", { question: null, text: "t", year: 1990, photoCount: 0, secondTellingOf: null });
+    rememberOpenRun(st, started("r1"));
+    forgetOpenRun(st, "r1");
+    assert.ok(st.map.has(TELLING_KEY_PREFIX + "r1"));
+  });
+});
+
+describe("runToResume", () => {
+  const r = (runId, startedAt, waiting = null) => ({ familyId: "f", runId, title: null, startedAt, waiting });
+
+  test("the newest waiting run beats a newer one still working", () => {
+    assert.equal(runToResume([r("a", 3), r("b", 2, "followup"), r("c", 1, "props")]).runId, "b");
+  });
+
+  test("with none waiting, the newest; with none, null", () => {
+    assert.equal(runToResume([r("a", 3), r("b", 2)]).runId, "a");
+    assert.equal(runToResume([]), null);
+  });
+});
+
+describe("firstWords / openRunNotice", () => {
+  const run = (over = {}) => ({ familyId: "f", runId: "r", title: null, startedAt: 1, waiting: null, ...over });
+
+  test("firstWords clips to n words with an ellipsis", () => {
+    assert.equal(firstWords("Every Sunday we squeezed into the green car", 6), "Every Sunday we squeezed into the…");
+    assert.equal(firstWords("  Short  one. "), "Short one.");
+    assert.equal(firstWords("One two three four five six, seven", 6), "One two three four five six…");
+    assert.equal(firstWords("   "), null);
+    assert.equal(firstWords(null), null);
+  });
+
+  test("waiting: names the run by its title, else the story's first words", () => {
+    assert.equal(
+      openRunNotice(run({ title: "Sam's wedding", waiting: "followup" }), "ignored"),
+      "Your memory ‘Sam's wedding’ is waiting for your answer.",
+    );
+    assert.equal(
+      openRunNotice(run({ waiting: "props" }), "Every Sunday we squeezed into the green car"),
+      "Your memory ‘Every Sunday we squeezed into the…’ is waiting for your answer.",
+    );
+  });
+
+  test("still working, or with nothing to name it by", () => {
+    assert.equal(openRunNotice(run(), "The porch light"), "Your memory ‘The porch light’ is still being made.");
+    assert.equal(openRunNotice(run({ waiting: "merge" }), null), "Your memory is waiting for your answer.");
+    assert.equal(openRunNotice(run(), ""), "Your memory is still being made.");
+  });
+});
+
+// ---- which family holds a moment -----------------------------------------------
+
+describe("findMomentFamily", () => {
+  const notFound = () => Object.assign(new Error("Not found"), { status: 404 });
+
+  test("the remembered family (first in the list) is tried first", async () => {
+    const asked = [];
+    const found = await findMomentFamily(["home", "other"], async (fid) => {
+      asked.push(fid);
+      return { id: "m1", in: fid };
+    });
+    assert.deepEqual(asked, ["home"]);
+    assert.deepEqual(found, { familyId: "home", memory: { id: "m1", in: "home" } });
+  });
+
+  test("a 404 moves on to the next family", async () => {
+    const asked = [];
+    const found = await findMomentFamily(["home", "b", "c"], async (fid) => {
+      asked.push(fid);
+      if (fid !== "c") throw notFound();
+      return "moment";
+    });
+    assert.deepEqual(asked, ["home", "b", "c"]);
+    assert.deepEqual(found, { familyId: "c", memory: "moment" });
+  });
+
+  test("any other failure rejects, and no later family is asked", async () => {
+    const asked = [];
+    const boom = Object.assign(new Error("Server error"), { status: 500 });
+    await assert.rejects(
+      findMomentFamily(["home", "b", "c"], async (fid) => {
+        asked.push(fid);
+        if (fid === "home") throw notFound();
+        throw boom;
+      }),
+      (e) => e === boom,
+    );
+    assert.deepEqual(asked, ["home", "b"]);
+    // A network failure (no status at all) rejects too.
+    await assert.rejects(findMomentFamily(["x"], async () => Promise.reject(new TypeError("fetch failed"))), TypeError);
+  });
+
+  test("every family 404s: null", async () => {
+    assert.equal(await findMomentFamily(["a", "b"], async () => Promise.reject(notFound())), null);
+    assert.equal(await findMomentFamily([], async () => "never"), null);
+  });
+});
+
+describe("familyAsking", () => {
+  const fams = [{ id: "a", name: "A" }, { id: "b", name: "B" }, { id: "c", name: "C" }];
+
+  test("the first family (in order) with an open question", () => {
+    assert.equal(familyAsking(fams, [[], [{ id: "q" }], [{ id: "q2" }]]).id, "b");
+  });
+
+  test("failures (null) and empty lists are passed over; none asking is null", () => {
+    assert.equal(familyAsking(fams, [null, undefined, [{ id: "q" }]]).id, "c");
+    assert.equal(familyAsking(fams, [null, [], []]), null);
+    assert.equal(familyAsking([], []), null);
   });
 });

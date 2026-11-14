@@ -32,14 +32,21 @@ import {
   clearTypedDraft,
   draftForForm,
   draftFromSent,
+  familyAsking,
   hasTold,
+  loadTelling,
   momentFromMemory,
   momentsFromThreads,
+  openRunNotice,
+  openRunsFor,
   preselectAdded,
   questionForMemory,
   readCarry,
   readTypedDraft,
+  rememberOpenRun,
   restoreNotice,
+  runHref,
+  runToResume,
   saveCarry,
   saveSentDraft,
   saveTelling,
@@ -50,6 +57,7 @@ import {
   withoutAdded,
   type FamilyChoice,
   type MomentInfo,
+  type OpenRun,
   type SentDraft,
 } from "@/components/flow/addPage";
 import { draftFromQuestion, questionAreaFor, type MemoryDraft } from "@/components/flow/memoryForm";
@@ -68,6 +76,8 @@ import {
   Notice,
   SECOND_TELLING_LEDE,
   sessionStore,
+  type AskingFamily,
+  type MomentHome,
 } from "./parts";
 
 type Moment = MomentInfo;
@@ -135,14 +145,14 @@ interface Latest {
   second: boolean;
 }
 
-const LOAD_ERROR = "We couldn't open the page for adding a memory. Check your connection and try again.";
+export const LOAD_ERROR = "We couldn't open the page for adding a memory. Check your connection and try again.";
 const PICK_ERROR = "That question didn't open. Check your connection and try again.";
 const MISSING_MOMENT =
   "We couldn't find that moment in this family, so this will start a new memory instead.";
 const MISSING_QUESTION_MOMENT =
   "We couldn't find the moment this question is about, so your answer will start a new memory.";
 
-function messageOf(e: unknown, fallback: string): string {
+export function messageOf(e: unknown, fallback: string): string {
   return isApiError(e) && e.status !== 0 && e.detail ? e.detail : fallback;
 }
 
@@ -193,6 +203,8 @@ export function AddForm(props: {
   added?: string | null;
   /** `?questionId=`: the family question to open picked (read once, when the form appears). */
   questionId?: string | null;
+  /** The moment from `?memoryId=` and the family found holding it, for the switch links. */
+  momentHome?: MomentHome | null;
 }) {
   const [attempt, setAttempt] = useState(0);
   return <AddFormLoader key={attempt} {...props} onRetry={() => setAttempt((n) => n + 1)} />;
@@ -208,10 +220,22 @@ function AddFormLoader(props: {
   restore?: Restore;
   added?: string | null;
   questionId?: string | null;
+  momentHome?: MomentHome | null;
   onRetry: () => void;
 }) {
-  const { api, fid, selfPersonId, memoryId, choice, onStarted, restore, added = null, questionId = null, onRetry } =
-    props;
+  const {
+    api,
+    fid,
+    selfPersonId,
+    memoryId,
+    choice,
+    onStarted,
+    restore,
+    added = null,
+    questionId = null,
+    momentHome = null,
+    onRetry,
+  } = props;
   const router = useRouter();
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   // The last `?added=` person seen. A new one loads the family again: this
@@ -278,7 +302,7 @@ function AddFormLoader(props: {
     return (
       <FlowPage
         title={memoryId ? "Add your telling" : "Add a memory"}
-        lede={ledeWithFamily(choice, memoryId ? SECOND_TELLING_LEDE : NEW_MEMORY_LEDE)}
+        lede={ledeWithFamily(choice, memoryId ? SECOND_TELLING_LEDE : NEW_MEMORY_LEDE, true, momentHome)}
         width="wide"
         back={BACK}
       >
@@ -288,16 +312,7 @@ function AddFormLoader(props: {
   }
 
   if (status.kind === "error") {
-    return (
-      <FlowPage title="Add a memory" lede={ledeWithFamily(choice)} width="wide" back={BACK}>
-        <PaperCard className="flex flex-col gap-5">
-          <FormError message={status.message} />
-          <div>
-            <Button onClick={onRetry}>Try again</Button>
-          </div>
-        </PaperCard>
-      </FlowPage>
-    );
+    return <AddLoadFailed choice={choice} message={status.message} onRetry={onRetry} momentHome={momentHome} />;
   }
 
   return (
@@ -311,11 +326,32 @@ function AddFormLoader(props: {
       restore={restore}
       added={added}
       questionId={questionId}
+      momentHome={momentHome}
     />
   );
 }
 
 const BACK = ADD_BACK;
+
+/** The page when it could not load: what went wrong, and a way to try again. */
+export function AddLoadFailed(props: {
+  choice: FamilyChoice;
+  message: string;
+  onRetry: () => void;
+  momentHome?: MomentHome | null;
+}) {
+  const { choice, message, onRetry, momentHome = null } = props;
+  return (
+    <FlowPage title="Add a memory" lede={ledeWithFamily(choice, undefined, true, momentHome)} width="wide" back={BACK}>
+      <PaperCard className="flex flex-col gap-5">
+        <FormError message={message} />
+        <div>
+          <Button onClick={onRetry}>Try again</Button>
+        </div>
+      </PaperCard>
+    </FlowPage>
+  );
+}
 
 function AddFormReady(props: {
   api: StitchApi;
@@ -327,8 +363,9 @@ function AddFormReady(props: {
   restore?: Restore;
   added: string | null;
   questionId: string | null;
+  momentHome: MomentHome | null;
 }) {
-  const { api, fid, selfPersonId, data, choice, onStarted, restore, added, questionId } = props;
+  const { api, fid, selfPersonId, data, choice, onStarted, restore, added, questionId, momentHome } = props;
   const { people, questions, base } = data;
   const router = useRouter();
   const baseMemoryId = base.kind === "second" ? base.memoryId : null;
@@ -380,6 +417,36 @@ function AddFormReady(props: {
   // a photo is added again.
   const [photosLeft, setPhotosLeft] = useState(start.photosLeft);
   useEffect(() => clearCarry(sessionStore()), []);
+
+  // A run of this family started in this tab and left before it was over
+  // (waiting on the person, or still being made): one calm note with the way
+  // back to it. Read once; the form below stays free to use.
+  const plain = base.kind === "new" && !restore;
+  const [openRun] = useState<{ run: OpenRun; notice: string } | null>(() => {
+    if (!plain) return null;
+    const store = sessionStore();
+    const run = runToResume(openRunsFor(store, fid));
+    return run ? { run, notice: openRunNotice(run, loadTelling(store, run.runId)?.text) } : null;
+  });
+
+  // Someone in another family asked this person something: one quiet line
+  // under the family line, pointing there. Asked of every other family at
+  // once; one that fails is left out.
+  const [asking, setAsking] = useState<AskingFamily | null>(null);
+  const others = choice.others;
+  const askOthers = plain && choice.show && others.length > 0;
+  useEffect(() => {
+    if (!askOthers) return;
+    let live = true;
+    Promise.all(others.map((f) => api.getQuestions(f.id).then((r) => r.questions, () => null))).then((qs) => {
+      if (!live) return;
+      const f = familyAsking(others, qs);
+      setAsking(f ? { id: f.id, name: f.name } : null);
+    });
+    return () => {
+      live = false;
+    };
+  }, [api, askOthers, others]);
 
   // ?added= on a form that was already here (the page kept alive while the
   // person was added): once the people are loaded fresh for them, the form
@@ -602,7 +669,11 @@ function AddFormReady(props: {
     openQuestions: questions.length,
     prefilledQuestion: !typedQuestion && (initial?.question ?? "").trim() !== "",
   });
-  const askedQuestion = base.kind === "second" && !picked ? (base.question?.text ?? null) : null;
+  // The question a second telling from ?memoryId= answers, or the family
+  // question picked for a new memory (shown as what is being answered).
+  let askedQuestion: string | null = null;
+  if (base.kind === "second" && !picked) askedQuestion = base.question?.text ?? null;
+  else if (picked && !picked.moment) askedQuestion = picked.question.text;
 
   const onSubmit = useCallback(
     async (fields: SubmitMemoryFields, photos: File[]) => {
@@ -614,6 +685,8 @@ function AddFormReady(props: {
       saveTelling(sessionStore(), res.runId, telling);
       // Kept so a run that fails can bring the form back filled in.
       saveSentDraft(sessionStore(), res.runId, sentDraftFromSubmit(fields, photos.length));
+      // An open run of this tab: /add offers the way back to it until it is over.
+      rememberOpenRun(sessionStore(), { familyId: fid, runId: res.runId, title: secondTitle, startedAt: Date.now() });
       onStarted({ runId: res.runId, telling, photos });
     },
     [api, fid, secondTitle, onStarted],
@@ -623,7 +696,7 @@ function AddFormReady(props: {
     <FlowPage
       title={second ? "Add your telling" : "Add a memory"}
       lede={
-        <FamilyLede choice={choice} onSwitch={onSwitch}>
+        <FamilyLede choice={choice} onSwitch={onSwitch} moment={momentHome} asking={askOthers ? asking : null}>
           {second ? (
             <>
               {SECOND_TELLING_LEDE}
@@ -650,6 +723,17 @@ function AddFormReady(props: {
       width="wide"
     >
       <div className="flex flex-col gap-7">
+        {openRun ? (
+          <Notice>
+            {openRun.notice}{" "}
+            <Link
+              href={runHref({ familyId: fid, runId: openRun.run.runId })}
+              className={`rounded-paper font-semibold whitespace-nowrap text-accent-deep underline decoration-1 underline-offset-[0.2em] hover:decoration-2 ${FOCUS_RING}`}
+            >
+              Go back to it
+            </Link>
+          </Notice>
+        ) : null}
         {area.showFamilyQuestions ? (
           <div className="flex flex-col gap-3">
             <QuestionPrompts
