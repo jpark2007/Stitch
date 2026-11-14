@@ -9,6 +9,7 @@ with write_file and saves them with the real `save_memory`.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import threading
 import time
@@ -442,6 +443,91 @@ def test_parallel_questions_are_asked_one_at_a_time(harnesses: list[Harness]) ->
     assert [n for n, _ in events][-2:] == ["scene_ready", "done"]
 
 
+def test_a_question_is_answerable_while_a_parallel_branch_is_still_working(harnesses: list[Harness]) -> None:
+    # The props sub-agent pauses on its review while the sets sub-agent is still painting:
+    # the run is waiting at once, and the answer is taken without blocking.
+    release = threading.Event()
+
+    def slow_sibling(messages: list[BaseMessage]) -> AIMessage:
+        assert release.wait(WAIT), "the sibling was never released"
+        return say("It was 1962.")
+
+    studio_script = script(
+        tool_calls(
+            ("task", {"subagent_type": "interviewer", "description": "Ask about the church."}),
+            ("task", {"subagent_type": "second_interviewer", "description": "Work out the year."}),
+        ),
+        say("unreachable: both task results arrive in the same step"),
+        write("/screenplay.json", SCREENPLAY_JSON),
+        write("/timeline.json", TIMELINE_JSON),
+        save(),
+        say("Saved."),
+    )
+    h = Harness(
+        make_responder(studio_script, interviewer=script(ask("Which church?"), report), second=slow_sibling),
+        subagents=[INTERVIEWER, OTHER_INTERVIEWER],
+    )
+    harnesses.append(h)
+    run_id = h.start()
+    seen_at_answer: dict[str, Any] = {}
+
+    async def follow_and_answer() -> list[tuple[str, BaseModel]]:
+        seen: list[tuple[str, BaseModel]] = []
+        async for name, model in h.manager.stream_run(FAMILY, run_id):
+            seen.append((name, model))
+            if name == "question":
+                seen_at_answer["status"] = h.manager.status(FAMILY, run_id)
+                seen_at_answer["names"] = [n for n, _ in seen]
+                began = time.monotonic()
+                h.answer(run_id, "St. Mark's, in Trenton.")
+                seen_at_answer["took"] = time.monotonic() - began
+                seen_at_answer["after"] = h.manager.status(FAMILY, run_id)
+                with pytest.raises(runs.RunNotWaiting):  # already answered; the resume is queued
+                    h.answer(run_id, "again")
+                release.set()
+        return seen
+
+    seen = asyncio.run(asyncio.wait_for(follow_and_answer(), WAIT))
+
+    assert seen_at_answer["status"] == "waiting"
+    assert "subagent_end" not in seen_at_answer["names"]  # the sibling was still working
+    assert seen_at_answer["took"] < 0.5
+    assert seen_at_answer["after"] == "running"
+    assert_typed(seen)
+    names = [n for n, _ in seen]
+    assert names.count("question") == 1
+    assert names[-2:] == ["scene_ready", "done"]
+    ends = {m.name: m.summary for n, m in seen if n == "subagent_end"}
+    assert "St. Mark's, in Trenton." in ends["interviewer"]
+    assert "1962" in ends["second_interviewer"]
+    assert dumped(seen) == dumped(h.manager.events(FAMILY, run_id))
+    assert len(h.graphs) == 1  # resumed on the same graph and thread
+
+
+# ------------------------------------------------------------------ bookkeeping
+
+
+def test_finished_runs_drop_their_graph_and_are_forgotten_after_the_ttl(harnesses: list[Harness]) -> None:
+    h = Harness(make_responder(STRAIGHT_STUDIO))
+    harnesses.append(h)
+    first = h.start()
+    assert h.wait(first) == "done"
+    assert h.manager._runs[first].graph is None  # nothing resumes a finished run
+
+    # Within the TTL a finished run is still replayable, even after other runs start.
+    second = h.start()
+    assert collect(h.manager, first)[-1][0] == "done"
+    assert h.wait(second) == "done"
+
+    h.manager.finished_run_ttl = 0
+    third = h.start()  # starting a run forgets the expired ones
+    for gone in (first, second):
+        with pytest.raises(runs.RunNotFound):
+            h.manager.status(FAMILY, gone)
+    assert h.wait(third) == "done"
+    assert h.names(third) == ["plan", "scene_ready", "done"]
+
+
 # ------------------------------------------------------------------ access
 
 
@@ -451,20 +537,16 @@ def test_stream_from_another_family_raises_and_yields_nothing(harnesses: list[Ha
     run_id = h.start()
     assert h.wait(run_id) == "done"
 
-    with pytest.raises(runs.RunNotFound):
-        h.manager.stream_run(OTHER_FAMILY, run_id)
-    with pytest.raises(runs.RunNotFound):
-        h.manager.stream_run(FAMILY, "no-such-run")
+    for family_id, rid in ((OTHER_FAMILY, run_id), (FAMILY, "no-such-run")):
+        yielded: list[Any] = []
 
-    yielded: list[Any] = []
+        async def iterate(family_id: str = family_id, rid: str = rid, yielded: list[Any] = yielded) -> None:
+            async for event in h.manager.stream_run(family_id, rid):
+                yielded.append(event)
 
-    async def iterate() -> None:
-        async for event in runs.RunManager.stream_run(h.manager, OTHER_FAMILY, run_id):
-            yielded.append(event)
-
-    with pytest.raises(runs.RunNotFound):
-        asyncio.run(iterate())
-    assert yielded == []
+        with pytest.raises(runs.RunNotFound):
+            asyncio.run(iterate())
+        assert yielded == []
     for call in (h.manager.status, h.manager.events):
         with pytest.raises(runs.RunNotFound):
             call(OTHER_FAMILY, run_id)
@@ -683,3 +765,6 @@ def test_public_interface() -> None:
     assert issubclass(runs.MemoryNotFound, LookupError)
     assert issubclass(runs.NotRunOwner, PermissionError)
     assert issubclass(runs.RunNotWaiting, RuntimeError)
+    # routes/memories.py answers 409 for a ValueError from answer_run.
+    assert issubclass(runs.RunNotWaiting, ValueError)
+    assert inspect.isasyncgenfunction(runs.RunManager.stream_run)

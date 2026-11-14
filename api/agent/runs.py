@@ -25,6 +25,13 @@ Where events come from:
   `Interrupt.id`) -> `agent.tools.ask.interrupt_to_event` -> question / props_found / merge.
 - end of stream: done(memory_id) if a scene was saved, otherwise error.
 
+A run is `waiting` from the moment its question / props review / merge streams out,
+even while a parallel branch of the same step is still working (the props sub-agent
+pauses on confirm_props while the sets sub-agent is still painting). An answer that
+arrives then is accepted at once and queued on the run; the worker resumes with it as
+soon as the current stream closes (langgraph can only resume a thread once its step
+has finished). `answer_run` never blocks on the run.
+
 Interrupts are shown one at a time. `AnswerRequest` carries no interrupt id, so when
 one step pauses on several gated calls at once (two sub-agents in parallel), the first
 one is shown and answered; it is resumed with `Command(resume={id: payload})` (langgraph
@@ -33,7 +40,10 @@ the resume, each as its own event.
 
 Runs live in a process-local dict: a restart forgets the run ids (the graph state
 itself persists in whatever checkpointer `build_graph` used). That is fine for one API
-process; several processes would need a shared run registry.
+process; several processes would need a shared run registry. A finished run (done or
+error) drops its graph at once and is forgotten `RunManager.finished_run_ttl` seconds
+after it ended (checked whenever a run starts), so late subscribers have that long to
+replay it and the dict does not grow without bound.
 """
 
 from __future__ import annotations
@@ -42,6 +52,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -73,8 +84,8 @@ TEXT_LIMIT = 500
 """Longest sub-agent task description or summary sent to the web."""
 ERROR_TEXT_LIMIT = 300
 """Longest piece of the studio's last message quoted in an error event."""
-ANSWER_SETTLE_SECONDS = 5.0
-"""How long answer_run waits for a run whose question is out but whose stream is still closing."""
+FINISHED_RUN_TTL_SECONDS = 3600.0
+"""How long a finished run stays replayable before the manager forgets it."""
 
 NEEDS_INPUT_EVENTS = frozenset({"question", "props_found", "merge"})
 TERMINAL_EVENTS = frozenset({"done", "error"})
@@ -96,8 +107,11 @@ class NotRunOwner(PermissionError):
     """An answer from a user other than the one who started the run."""
 
 
-class RunNotWaiting(RuntimeError):
-    """An answer while the run is not paused on a question, prop review or merge (the route sends 409)."""
+class RunNotWaiting(RuntimeError, ValueError):
+    """An answer while the run is not paused on a question, prop review or merge (the route sends 409).
+
+    Also a ValueError because routes/memories.py maps ValueError from answer_run to 409.
+    """
 
 
 # --------------------------------------------------------------------------- helpers
@@ -139,6 +153,12 @@ def _scene_json(model: BaseModel) -> str:
     return json.dumps(model.model_dump(mode="json", by_alias=True), indent=2, ensure_ascii=False)
 
 
+def _resume_command(pending: Interrupt, payload: Any, pending_count: int) -> Command:
+    """langgraph takes a bare resume value for one pending interrupt, and needs it keyed
+    by interrupt id when several are pending (it refuses a bare value then)."""
+    return Command(resume={pending.id: payload}) if pending_count > 1 else Command(resume=payload)
+
+
 # --------------------------------------------------------------------------- one run
 
 
@@ -150,15 +170,20 @@ class _Run:
     graph: Any = None
     events: list[Event] = field(default_factory=list)
     status: schemas.RunStatus = "running"
-    # The interrupt the family is looking at, and how many were pending when the run paused.
+    # The interrupt the family is looking at, and how many were pending when the stream closed.
     pending: Interrupt | None = None
     pending_count: int = 0
+    # An answer accepted while the worker was still streaming: (its interrupt, resume payload).
+    queued: tuple[Interrupt, Any] | None = None
+    # True while a worker owns the run (between submitting _drive and its last stream closing).
+    driving: bool = False
     seen_interrupts: set[str] = field(default_factory=set)
     memory_id: str | None = None
     last_plan: schemas.PlanEvent | None = None
     tasks: dict[str, str] = field(default_factory=dict)  # task tool_call_id -> sub-agent name
     ended_tasks: set[str] = field(default_factory=set)
     subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = field(default_factory=list)
+    finished_at: float | None = None  # time.monotonic() when done or error was appended
 
     @property
     def terminal(self) -> bool:
@@ -174,10 +199,16 @@ class _Run:
         if not isinstance(payload, expected):
             raise TypeError(f"{name} needs a {expected.__name__}, got {type(payload).__name__}")
         self.events.append((name, payload))
-        if name == "done":
-            self.status = "done"
-        elif name == "error":
-            self.status = "error"
+        if name in TERMINAL_EVENTS:
+            self.status = "done" if name == "done" else "error"
+            self.finished_at = time.monotonic()
+            # Nothing resumes a finished run: let its graph, pending answer and maps go.
+            self.graph = None
+            self.pending = None
+            self.queued = None
+            self.tasks.clear()
+            self.ended_tasks.clear()
+            self.seen_interrupts.clear()
         self.notify()
 
     def notify(self) -> None:
@@ -194,6 +225,9 @@ class _Run:
 
 class RunManager:
     """Starts, streams and resumes studio runs. Thread-safe; one instance per API process."""
+
+    finished_run_ttl: float = FINISHED_RUN_TTL_SECONDS
+    """Seconds a finished run stays replayable; set it on an instance to change it."""
 
     def __init__(self, *, repo: AgentRepo, build_graph: GraphFactory, max_workers: int = 4) -> None:
         self._repo = repo
@@ -246,22 +280,44 @@ class RunManager:
         if files:
             graph_input["files"] = files
 
-        run = _Run(info=info, config=studio.thread_config(run_id))
+        run = _Run(info=info, config=studio.thread_config(run_id), driving=True)
         with self._lock:
+            self._prune_finished()
             self._runs[run_id] = run
         self._pool.submit(self._drive, run, graph_input)
         return run_id
 
-    def stream_run(self, family_id: str, run_id: str) -> AsyncIterator[Event]:
+    async def stream_run(self, family_id: str, run_id: str) -> AsyncIterator[Event]:
         """Every event of the run from the first one, then live events, until done or error.
 
-        Checks the run eagerly: RunNotFound is raised by this call itself (so a route
-        can answer 404 before it starts the SSE response), before anything is yielded.
-        While the run waits for an answer the iterator stays open. Any number of
-        subscribers may follow one run; each gets the full sequence.
+        RunNotFound is raised on the first iteration, before anything is yielded, when
+        the run is unknown or belongs to another family. While the run waits for an
+        answer the iterator stays open. Any number of subscribers may follow one run;
+        each gets the full sequence.
         """
         run = self._get(family_id, run_id)
-        return self._follow(run)
+        loop = asyncio.get_running_loop()
+        wake = asyncio.Event()
+        with run.cond:
+            run.subscribers.append((loop, wake))
+        index = 0
+        try:
+            while True:
+                wake.clear()
+                with run.cond:
+                    batch = run.events[index:]
+                    finished = run.terminal
+                for event in batch:
+                    yield event
+                index += len(batch)
+                if finished:
+                    return  # nothing is appended after done or error
+                if not batch:
+                    await wake.wait()
+        finally:
+            with run.cond:
+                if (loop, wake) in run.subscribers:
+                    run.subscribers.remove((loop, wake))
 
     def answer_run(self, family_id: str, run_id: str, user_id: str, answer: schemas.AnswerRequest) -> None:
         """Resume a paused run with the family's answer, on the same thread. Returns at once.
@@ -270,27 +326,32 @@ class RunManager:
         started it. RunNotWaiting: not paused. ValueError: the answer does not fit the
         pending question (wrong kind, empty text); the run stays paused.
 
-        It does not wait for the run. The one wait: a question is streamed a moment
-        before the run counts as waiting (its stream is still closing), and an answer
-        that arrives in that moment waits for it, at most ANSWER_SETTLE_SECONDS.
+        The run is waiting as soon as its question is out, even if a parallel branch of
+        the same step is still working. Then the answer is queued on the run and the
+        worker resumes with it once that stream closes; otherwise a worker resumes now.
+        Either way this call only takes the run's lock briefly and never waits for it.
         """
         run = self._get(family_id, run_id)
         if run.info.user_id != user_id:
             raise NotRunOwner("only the person who started this run can answer it")
         with run.cond:
-            # The question goes out as soon as it streams; the run counts as waiting a
-            # moment later, when its stream has closed. Bridge that moment.
-            run.cond.wait_for(lambda: not (run.status == "running" and run.pending is not None), ANSWER_SETTLE_SECONDS)
             if run.status != "waiting" or run.pending is None:
                 raise RunNotWaiting(f"run {run_id} is {run.status}, not waiting for an answer")
             pending = run.pending
             payload = answer_to_resume(pending.value, answer)  # ValueError propagates; still waiting
-            resume = Command(resume={pending.id: payload}) if run.pending_count > 1 else Command(resume=payload)
             run.status = "running"
             run.pending = None
+            if run.driving:
+                # The step that asked is still streaming (a sibling branch is working);
+                # _settle resumes with this answer when the stream closes.
+                run.queued = (pending, payload)
+                run.notify()
+                return
+            resume = _resume_command(pending, payload, run.pending_count)
             run.pending_count = 0
             # Interrupts still pending after this resume surface again with the same id.
             run.seen_interrupts.clear()
+            run.driving = True
             run.notify()
         self._pool.submit(self._drive, run, resume)
 
@@ -329,44 +390,35 @@ class RunManager:
             raise RunNotFound(f"run {run_id!r} not found")
         return run
 
-    async def _follow(self, run: _Run) -> AsyncIterator[Event]:
-        loop = asyncio.get_running_loop()
-        wake = asyncio.Event()
-        with run.cond:
-            run.subscribers.append((loop, wake))
-        index = 0
-        try:
-            while True:
-                wake.clear()
-                with run.cond:
-                    batch = run.events[index:]
-                    finished = run.terminal
-                for event in batch:
-                    yield event
-                index += len(batch)
-                if finished:
-                    return  # nothing is appended after done or error
-                if not batch:
-                    await wake.wait()
-        finally:
-            with run.cond:
-                if (loop, wake) in run.subscribers:
-                    run.subscribers.remove((loop, wake))
+    def _prune_finished(self) -> None:
+        """Forget runs that ended more than `finished_run_ttl` seconds ago. Call with `_lock` held."""
+        cutoff = time.monotonic() - self.finished_run_ttl
+        stale = [rid for rid, r in self._runs.items() if r.finished_at is not None and r.finished_at <= cutoff]
+        for rid in stale:
+            del self._runs[rid]
 
     def _drive(self, run: _Run, graph_input: Any) -> None:
-        """Stream the graph once (start or resume) and translate it. Never raises."""
+        """Stream the graph (start or resume) and translate it, then resume with any
+        answer queued meanwhile, until the run waits or ends. Never raises."""
         run_id = run.info.run_id
         try:
-            if run.graph is None:
-                run.graph = self._build_graph(run.info)
-            graph = run.graph
-            for chunk in graph.stream(graph_input, run.config, stream_mode=["updates", "custom"], subgraphs=True):
-                if not self._translate(run, chunk):
-                    return
-            self._settle(run, graph)
+            with run.cond:
+                graph = run.graph
+            if graph is None:
+                graph = self._build_graph(run.info)
+                with run.cond:
+                    run.graph = graph
+            while graph_input is not None:
+                for chunk in graph.stream(graph_input, run.config, stream_mode=["updates", "custom"], subgraphs=True):
+                    if not self._translate(run, chunk):
+                        with run.cond:
+                            run.driving = False
+                        return
+                graph_input = self._settle(run, graph)
         except Exception as exc:  # noqa: BLE001 - every failure becomes the run's error event
             logger.exception("run %s failed", run_id)
             with run.cond:
+                run.driving = False
                 run.append("error", schemas.ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
 
     def _translate(self, run: _Run, chunk: Any) -> bool:
@@ -445,7 +497,7 @@ class RunManager:
         interrupt_id = getattr(interrupt, "id", None)
         if not isinstance(interrupt_id, str) or interrupt_id in run.seen_interrupts:
             return
-        if run.pending is not None:
+        if run.pending is not None or run.queued is not None:
             # One question at a time: this one surfaces again after the shown one is answered.
             return
         run.seen_interrupts.add(interrupt_id)
@@ -454,39 +506,55 @@ class RunManager:
         except ValueError as exc:
             run.append("error", schemas.ErrorEvent(message=f"the studio paused on something it cannot ask: {exc}"))
             return
+        # Waiting from the moment the family can see it, even if a sibling branch is still working.
         run.pending = interrupt
+        run.status = "waiting"
         run.append(name, payload)
 
-    def _settle(self, run: _Run, graph: Any) -> None:
-        """After the stream closes: wait for an answer, or end with done / error."""
+    def _settle(self, run: _Run, graph: Any) -> Command | None:
+        """After a stream closes: the Command to resume with if an answer was queued meanwhile;
+        otherwise wait for an answer, or end with done / error, and release the run (None)."""
         state = graph.get_state(run.config)
         interrupts = list(state.interrupts)
         with run.cond:
             if run.terminal:
-                return
+                run.driving = False
+                return None
+            ids = {i.id for i in interrupts}
+            if run.queued is not None:
+                pending, payload = run.queued
+                run.queued = None
+                if pending.id in ids:
+                    run.pending_count = 0
+                    # Interrupts still pending after this resume surface again with the same id.
+                    run.seen_interrupts.clear()
+                    return _resume_command(pending, payload, len(interrupts))
+                logger.warning("run %s: dropped an answer to %s, which is no longer pending", run.info.run_id, pending.id)
+            run.driving = False
             if interrupts:
-                ids = {i.id for i in interrupts}
                 if run.pending is None or run.pending.id not in ids:
                     run.pending = None
+                    run.status = "running"
                     run.seen_interrupts.clear()
                     self._interrupt(run, interrupts[0])
                     if run.terminal:
-                        return
+                        return None
                 run.pending_count = len(interrupts)
                 run.status = "waiting"
                 run.notify()
-                return
+                return None
             run.pending = None
             if run.memory_id is not None:
                 memory_id = run.info.fields.memory_id or run.memory_id
                 run.append("done", schemas.DoneEvent(memory_id=memory_id))
-                return
+                return None
             last = next(
                 (m for m in reversed(state.values.get("messages", [])) if isinstance(m, AIMessage)),
                 None,
             )
             said = _clip(_text_of(last), ERROR_TEXT_LIMIT) if last is not None else ""
             run.append("error", schemas.ErrorEvent(message="the studio finished without saving a scene: " + said))
+            return None
 
 
 # --------------------------------------------------------------------------- module seam
