@@ -13,6 +13,15 @@ No network by default: `embed` returns None until something calls `set_embedder`
 Answers are composed deterministically from quotes; no model is involved. A hit quotes
 only its tellings that share a word with the query, each by its best sentence; when none
 does (a title-only or vector-only match), it quotes the first sentence of every telling.
+
+Keyword matching is on normalised words, the same for the query, titles, tellings and
+the quoted sentence (see _tokens). It folds plurals (books/book), regular verb tenses
+(rain/rained/raining, marry/married, stop/stopped), a short table of irregular pasts
+(met -> meet, ran -> run, wore -> wear, ...: _IRREGULAR_PAST) and kinship synonyms (mom,
+mama, mum -> mother; dad, papa, pop -> father; nana, granny, abuela -> grandma; granddad,
+abuelo -> grandpa: _KINSHIP). So "How did you meet Mom?" finds "How I met your mother".
+Sentences do not end at the period of a title or initial ("Dr. Kim", "St. Mary's",
+"J. R.") or of "a.m." and the like inside a sentence (_ABBREVIATION).
 """
 
 from __future__ import annotations
@@ -129,9 +138,36 @@ _SENTENCE_END = re.compile(
 )
 
 _VOWELS = frozenset("aeiou")
+# For verb endings: what is left after stripping '-ed'/'-ing' must hold one of these.
+_VERB_VOWELS = frozenset("aeiouy")
+# A doubled final consonant left by '-ed'/'-ing' is undoubled (stopped -> stop), except
+# these, which English doubles in the base word too (called, kissed, buzzing).
+_KEEP_DOUBLED = frozenset("lsz")
+
+# Irregular past forms, mapped to their present before stemming, so "met" matches "meet".
+# 'saw' (also a noun) and 'left' (also a direction) are deliberately missing.
+_IRREGULAR_PAST = {
+    "met": "meet", "ran": "run", "gave": "give", "took": "take", "came": "come",
+    "went": "go", "bought": "buy", "brought": "bring", "sang": "sing", "fell": "fall",
+    "held": "hold", "made": "make", "said": "say", "wore": "wear", "drove": "drive",
+    "rode": "ride", "ate": "eat", "sat": "sit", "got": "get", "lost": "lose",
+    "found": "find", "taught": "teach", "wrote": "write", "built": "build", "flew": "fly",
+    "threw": "throw", "caught": "catch", "grew": "grow", "knew": "know",
+}
+
+# Kinship synonyms, folded to one token after possessive stripping (Mom's -> mother).
+# Plurals fold too (moms, mothers): a word is looked up as written and once de-pluralised.
+# The grandparents fold to "grandma"/"grandpa", the tokens search has always produced for
+# those words.
+_KINSHIP = {
+    **dict.fromkeys(("mom", "mother", "mama", "mum", "mommy", "momma"), "mother"),
+    **dict.fromkeys(("dad", "father", "papa", "daddy", "pop"), "father"),
+    **dict.fromkeys(("grandma", "grandmother", "granny", "nana", "abuela"), "grandma"),
+    **dict.fromkeys(("grandpa", "grandfather", "granddad", "grandad", "abuelo"), "grandpa"),
+}
 
 
-def _stem(word: str) -> str:
+def _plural(word: str) -> str:
     """Small plural stripper; singular and plural map to the same stem (as db/props.py).
 
     books/book -> book, churches/church -> church, stories/story -> story. '-ies' plurals
@@ -152,6 +188,55 @@ def _stem(word: str) -> str:
     return word
 
 
+def _verb(word: str) -> str:
+    """Fold a regular '-ed'/'-ing' ending, then a final silent 'e' (the stem need not be a word).
+
+    married -> marry, raining/rained -> rain, stopped/stopping -> stop, wedding -> wed,
+    dance/danced/dancing -> danc. An ending is stripped only when at least 3 letters,
+    one of them a vowel (or y), remain, so string, thing, king, bring, red and bed keep
+    their own stems; '-eed' words (need, agreed) and '-ee' words (tree, agree) are kept.
+    """
+    if len(word) <= 3:
+        return word
+    if word.endswith("ied") and len(word) > 4 and word[-4] not in _VOWELS:
+        return word[:-3] + "y"  # married, carried -> marry, carry
+    base = None
+    if word.endswith("ed") and not word.endswith("eed"):
+        base = word[:-2]
+    elif word.endswith("ing"):
+        base = word[:-3]
+    if base is not None and len(base) >= 3 and _VERB_VOWELS.intersection(base):
+        if (
+            len(base) >= 4
+            and base[-1] == base[-2]
+            and base[-1] not in _VERB_VOWELS
+            and base[-1] not in _KEEP_DOUBLED
+        ):
+            base = base[:-1]  # stopp, sitt, wedd -> stop, sit, wed
+        word = base
+    if len(word) >= 4 and word.endswith("e") and not word.endswith("ee"):
+        word = word[:-1]  # dance, bake, danc(e)d -> danc, bak
+    return word
+
+
+def _stem(word: str) -> str:
+    """One stem for a casefolded word: irregular pasts, kinship, plurals, then verb endings.
+
+    Singular and plural map to the same stem (books/book, stories/story, cookies/cookie
+    -> cooky), as do verb tenses (rained/raining/rains -> rain, married -> marry), the
+    irregular pasts in _IRREGULAR_PAST (met -> meet) and the kinship synonyms in _KINSHIP
+    (mom, moms, mama -> mother). Words of 3 or fewer letters and words in other scripts
+    pass through unchanged unless a table names them.
+    """
+    word = _IRREGULAR_PAST.get(word, word)
+    if word in _KINSHIP:
+        return _KINSHIP[word]
+    word = _plural(word)
+    if word in _KINSHIP:
+        return _KINSHIP[word]  # moms, mothers, grannies -> mother, grandma
+    return _verb(word)
+
+
 def _tokens(text: str | None) -> list[str]:
     """Word tokens in any script, in order: NFKC, casefolded, stopwords dropped, stemmed.
 
@@ -159,34 +244,98 @@ def _tokens(text: str | None) -> list[str]:
     written without spaces (Chinese, Japanese) come out as one token per run, and Korean
     words keep their attached particles (할머니가), so those match on whole words only.
     """
+    return [_stem(word) for word in _words(text)]
+
+
+def _words(text: str | None) -> list[str]:
+    """The words _tokens stems: NFKC, casefolded, possessives and stopwords dropped."""
     if not text:
         return []
     text = unicodedata.normalize("NFKC", text).casefold().replace("’", "'")
     text = _POSSESSIVE.sub("", text).replace("'", "")
-    return [_stem(word) for word in _WORD.findall(text) if word not in _STOPWORDS]
+    return [word for word in _WORD.findall(text) if word not in _STOPWORDS]
+
+
+# A sentence piece ending in one of these did not end a sentence: the period belongs to
+# (a) a title or place abbreviation (any case, whole word): "Dr. Kim", "St. Mary's";
+# (b) an initial, one uppercase Latin letter other than I: "J. R. drove"
+#     ("So did I. We went home." is two sentences);
+# (c) "a.m.", "p.m.", "e.g.", "i.e." or "etc.", but only when the next piece starts with a
+#     lowercase letter ("at 6 a.m. and drove" is one sentence; "...until 6 a.m. Then" two).
+# The same lists are used by seed/fake_runs.py; keep them in step.
+_ABBREVIATION = re.compile(
+    r"(?<![^\W_])(?i:mr|mrs|ms|dr|st|sr|jr|mt|ft|rev|prof|sgt|capt|lt|col|gen|gov|hon"
+    r"|ave|blvd|rd|vs|approx)\.$"
+    r"|(?<![^\W_])[A-HJ-Z]\.$"
+)
+_ABBREVIATION_BEFORE_LOWERCASE = re.compile(r"(?<![^\W_])(?:a\.m|p\.m|e\.g|i\.e|etc)\.$")
+# Longer than any abbreviation above plus the character before it, so testing only the
+# tail of a piece gives the same answer as testing all of it (and keeps splitting linear).
+_ABBREVIATION_TAIL = 12
+
+
+def _continues(piece: str, separator: str, following: str) -> bool:
+    """True when the split between piece and following was at an abbreviation's period."""
+    if "\n" in separator:
+        return False  # a line break always ends a sentence
+    tail = piece.rstrip()[-_ABBREVIATION_TAIL:]
+    if _ABBREVIATION.search(tail):
+        return True
+    return bool(_ABBREVIATION_BEFORE_LOWERCASE.search(tail)) and following[:1].islower()
 
 
 def _sentences(text: str) -> list[str]:
-    return [s.strip() for s in _SENTENCE_END.split(text or "") if s and s.strip()]
+    """Sentences of text, stripped, in order; a period after an abbreviation does not split.
+
+    Linear in len(text): one pass of _SENTENCE_END, then each piece is either a new
+    sentence or appended to the one before it, judged on its last few characters only.
+    """
+    text = text or ""
+    pieces: list[tuple[str, str]] = []  # (piece, separator before it)
+    start, separator = 0, ""
+    for match in _SENTENCE_END.finditer(text):
+        piece = text[start:match.start()]
+        if piece.strip():
+            pieces.append((piece, separator))
+            separator = match.group()
+        else:
+            separator += piece + match.group()  # keep a line break as a hard break
+        start = match.end()
+    if text[start:].strip():
+        pieces.append((text[start:], separator))
+
+    sentences: list[list[str]] = []
+    previous = ""
+    for piece, before in pieces:
+        if sentences and _continues(previous, before, piece.lstrip()):
+            sentences[-1].extend((before, piece))
+        else:
+            sentences.append([piece])
+        previous = piece
+    return [s for s in ("".join(parts).strip() for parts in sentences) if s]
 
 
 def best_sentences(text: str, query: str, k: int = 1) -> list[str]:
     """The k sentences of text that share the most tokens with query, in text order.
 
-    Falls back to the first sentence when nothing overlaps. Empty text gives [].
+    Ties go to the sentence sharing more of the query's words as written (asked "went",
+    "Then we went." beats "He said go."), then to the earlier sentence. Falls back to the
+    first sentence when nothing overlaps. Empty text gives [].
     """
     sentences = _sentences(text)
     if not sentences or k <= 0:
         return []
     wanted = set(_tokens(query))
-    scored = [
-        (len(wanted & set(_tokens(sentence))), index)
-        for index, sentence in enumerate(sentences)
-    ]
-    ranked = [item for item in sorted(scored, key=lambda s: (-s[0], s[1])) if item[0] > 0]
-    if not ranked:
+    wanted_words = set(_words(query))
+    scored = []
+    for index, sentence in enumerate(sentences):
+        words = _words(sentence)
+        shared = len(wanted & {_stem(word) for word in words})
+        if shared:
+            scored.append((-shared, -len(wanted_words.intersection(words)), index))
+    if not scored:
         return [sentences[0]]
-    chosen = sorted(index for _, index in ranked[:k])
+    chosen = sorted(index for *_, index in sorted(scored)[:k])
     return [sentences[index] for index in chosen]
 
 
