@@ -99,7 +99,10 @@ def create_family(
     family_id: str | None = None,
     now: datetime | None = None,
 ) -> schemas.Family:
-    """Create a family; the creator becomes its admin. ValueError on a blank name."""
+    """Create a family; the creator becomes its admin.
+
+    ValueError on a blank name, and on an explicit `family_id` that is already taken.
+    """
     if not isinstance(name, str) or not name.strip():
         raise ValueError("family name must not be blank")
     if not creator_user_id:
@@ -110,7 +113,10 @@ def create_family(
         "members": [{"userId": creator_user_id, "role": "admin", "joinedAt": _now(now)}],
         "invites": [],
     }
-    db.families.insert_one(doc)
+    try:
+        db.families.insert_one(doc)
+    except DuplicateKeyError as exc:
+        raise ValueError(f"family id already exists: {doc['_id']}") from exc
     return _family(doc)
 
 

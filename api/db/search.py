@@ -121,7 +121,11 @@ _SENTENCE_END = re.compile(
     # or bracket right after one stays with its sentence, which ends there only when
     # whitespace follows (「おいしい。」と言った。 is one sentence).
     r"|(?<=[。！？।])(?![」』”’)）\"'])\s*|(?<=[。！？।][」』”’)）\"'])\s+"
-    r"|\s*\n+\s*"
+    # A line break. It must start the match: a leading \s* here backtracks over every
+    # whitespace run that has no newline, which made splitting quadratic in the run's
+    # length (40k spaces in one telling took seconds per ask). Whitespace before the
+    # newline stays on the sentence, which _sentences strips.
+    r"|\n\s*"
 )
 
 _VOWELS = frozenset("aeiou")
@@ -197,15 +201,31 @@ class SearchHit:
     quotes: list[schemas.AskQuote] = field(default_factory=list)
 
 
+# Atlas rejects a $vectorSearch whose numCandidates is above 10,000 or below its limit.
+MAX_NUM_CANDIDATES = 10_000
+CANDIDATES_PER_RESULT = 20
+
+
+def vector_sizes(limit: int) -> tuple[int, int]:
+    """(numCandidates, limit) for a $vectorSearch stage, inside Atlas's bounds.
+
+    numCandidates is 20 per wanted result, and 1 <= limit <= numCandidates <= 10,000,
+    so a large limit never turns into a rejected query (and a silent keyword fallback).
+    """
+    limit = max(1, min(int(limit), MAX_NUM_CANDIDATES))
+    return min(limit * CANDIDATES_PER_RESULT, MAX_NUM_CANDIDATES), limit
+
+
 def vector_pipeline(family_id: str, vector: list[float], limit: int) -> list[dict]:
     """The $vectorSearch aggregation, pre-filtered and re-checked on familyId."""
+    num_candidates, limit = vector_sizes(limit)
     return [
         {
             "$vectorSearch": {
                 "index": VECTOR_INDEX,
                 "path": "embedding",
                 "queryVector": list(vector),
-                "numCandidates": limit * 20,
+                "numCandidates": num_candidates,
                 "limit": limit,
                 "filter": {"familyId": {"$eq": family_id}},
             }

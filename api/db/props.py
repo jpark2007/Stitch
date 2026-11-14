@@ -282,14 +282,18 @@ def _keyword_score(query: str, name: str, description: str | None) -> float:
 
 
 def _vector_pipeline(index: str, vector: list[float], family_id: str, limit: int) -> list[dict]:
-    """Atlas Vector Search pipeline with a familyId pre-filter (and a defensive $match)."""
+    """Atlas Vector Search pipeline with a familyId pre-filter (and a defensive $match).
+
+    numCandidates and limit stay inside Atlas's bounds (search.vector_sizes).
+    """
+    num_candidates, limit = search.vector_sizes(limit)
     return [
         {
             "$vectorSearch": {
                 "index": index,
                 "path": "embedding",
                 "queryVector": [float(x) for x in vector],
-                "numCandidates": max(limit, 1) * 20,
+                "numCandidates": num_candidates,
                 "limit": limit,
                 "filter": {"familyId": {"$eq": family_id}},
             }

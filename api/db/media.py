@@ -26,7 +26,7 @@ from typing import Literal, get_args
 import gridfs
 from bson import ObjectId
 from bson.errors import InvalidId
-from gridfs.errors import NoFile
+from gridfs.errors import CorruptGridFile, NoFile
 from PIL import Image
 from pymongo.database import Database
 
@@ -175,7 +175,10 @@ def get_media(db: Database, family_id: str, media_id: str) -> MediaFile | None:
     try:
         with _bucket(db).open_download_stream(oid) as stream:
             data = stream.read()
-    except NoFile:
+    except (NoFile, CorruptGridFile):
+        # NoFile: deleted between the two reads. CorruptGridFile: the file document is
+        # there but chunks are missing or the wrong size (an interrupted upload or
+        # delete). Either way there is no file to serve, not a server error.
         return None
     return _to_media_file(doc, data)
 
@@ -233,6 +236,10 @@ def delete_family_media(db: Database, family_id: str) -> int:
     Covers the inline store (mongomock) and the GridFS bucket (files and their chunks),
     each filtered by `metadata.familyId`, so a database written by either backend is
     cleaned. ValueError on a blank family_id, which would otherwise match nothing useful.
+
+    File documents go before their chunks, as GridFSBucket.delete does: if this stops
+    halfway, what is left is unreachable chunks (garbage), never a file document that
+    still lists as existing but cannot be read.
     """
     if not isinstance(family_id, str) or not family_id.strip():
         raise ValueError("family_id is required")
@@ -240,6 +247,6 @@ def delete_family_media(db: Database, family_id: str) -> int:
     deleted = db[INLINE].delete_many(owned).deleted_count
     file_ids = [doc["_id"] for doc in db[FILES].find(owned, {"_id": 1})]
     if file_ids:
-        db[CHUNKS].delete_many({"files_id": {"$in": file_ids}})
         deleted += db[FILES].delete_many({"_id": {"$in": file_ids}, **owned}).deleted_count
+        db[CHUNKS].delete_many({"files_id": {"$in": file_ids}})
     return deleted
