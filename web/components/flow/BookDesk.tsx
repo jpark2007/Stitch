@@ -12,16 +12,18 @@
 //   book's larger share once the page is being made ("run"). Narrower than
 //   1024px the page is one column and the desk mounts no book at all, so a
 //   resize across the line never leaves two canvases.
-// - BookPanel: the box the book lies in. Book3D sizes itself to the window;
-//   in the box it fills the box. Its canvas is hidden from assistive tech
-//   (the caption under it says what it shows), and its window key handlers
-//   (arrows, PageUp/PageDown, Space, Enter, Escape turn and open the pages)
-//   are kept off this page, so those keys scroll and press as anywhere else.
+// - BookPanel: the box the book lies in, beside the page or (on a phone, while
+//   /add's page is made) as a small still picture in it. Book3D sizes itself
+//   to the window; in the box it fills the box. Its canvas is hidden from
+//   assistive tech (the caption under it says what it shows), and its window
+//   key handlers (arrows, PageUp/PageDown, Space, Enter, Escape turn and open
+//   the pages) are kept off this page, so those keys scroll and press as
+//   anywhere else.
 // - useDebounced, usePrefersReducedMotion: the book reprints a while after
 //   the typing stops, and moves the camera never under reduced motion.
 //
-// /add's CraftingBook and AddDesk carry their own copies of these; they are
-// to move onto this file (see the follow-up list in the tradition book's PR).
+// Both books (/add's CraftingBook, /traditions/new's TraditionDraftBook) lie
+// on this desk and in this panel; photoPrints.ts prints their photos.
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 /** The table the book lies on. */
@@ -136,23 +138,35 @@ export function useKeepPageKeys(): void {
 /**
  * The book in its box beside the page: a square of table (no taller than the
  * window leaves room for), the book filling it, the table running on past
- * its edges, and one handwritten line under it.
+ * its edges, and one handwritten line under it. As a "preview" (a phone) it
+ * is a smaller picture with nothing in it to reach or press.
  */
 export function BookPanel(props: {
   /**
-   * Under the book: what is happening, in hand. It is the screen reader's
-   * news too (a polite live region, there from the start so a change is
-   * heard); the book itself is hidden from assistive tech.
+   * Under the book: what is happening, in hand. While `live`, it is the
+   * screen reader's news too (a polite live region, there from the start so
+   * a change is heard); the book itself is hidden from assistive tech.
    */
   caption: ReactNode;
+  /** The caption is a live region (default true); false for a hint that only sits there. */
+  live?: boolean;
   /** Dims the caption like a hint (true while writing). */
   quiet?: boolean;
+  /** A smaller plain line under the caption. */
+  note?: ReactNode;
+  /** Under the caption and note: a way on (/add's "Back to your book"). */
+  after?: ReactNode;
+  /** "side": beside the page (default). "preview": a small still picture in the page (a phone). */
+  placement?: "side" | "preview";
+  /** The book plays sound: its mute button shows (else it is hidden, nothing plays). */
+  sound?: boolean;
   /** The book. */
   children: ReactNode;
-  /** A data-* attribute for tests: what the book is showing ("writing", "saved"). */
+  /** A data-* attribute for tests: what the book is showing ("writing", "saved", a run's stage). */
   stage?: string;
 }) {
-  const { caption, quiet = false, children, stage } = props;
+  const { caption, live = true, quiet = false, note, after, placement = "side", sound = false, children, stage } = props;
+  const preview = placement === "preview";
   useKeepPageKeys();
 
   // The canvas says nothing to assistive tech (the caption does): hide each
@@ -172,26 +186,43 @@ export function BookPanel(props: {
     return () => mo.disconnect();
   }, []);
 
+  const size = quiet ? (preview ? "text-xl" : "text-2xl") : preview ? "text-[1.35rem]" : "text-[1.75rem]";
   return (
-    <div className="flex h-full w-full flex-col justify-center" data-book-stage={stage}>
-      <div className="relative aspect-square max-h-[calc(100dvh-9rem)] w-full overflow-hidden" style={{ background: TABLE_BG }}>
+    <div
+      className={`flex w-full flex-col ${preview ? "overflow-hidden rounded-paper shadow-lift" : "h-full justify-center"}`}
+      style={preview ? { background: TABLE_BG } : undefined}
+      data-book-stage={stage}
+    >
+      <div
+        className={`relative w-full overflow-hidden ${preview ? "aspect-[4/3]" : "aspect-square max-h-[calc(100dvh-9rem)]"}`}
+        style={{ background: TABLE_BG }}
+      >
         <style href="stitch-book-panel" precedence="default">
           {BOX_CSS}
         </style>
-        <div ref={boxRef} data-book-box="" className="absolute inset-0">
+        <div
+          ref={boxRef}
+          data-book-box={preview ? "preview" : "side"}
+          data-book-quiet={sound ? undefined : ""}
+          // A preview is a picture: nothing in it to reach or press.
+          inert={preview}
+          className="absolute inset-0"
+        >
           {children}
         </div>
         {/* The table runs on past the picture's edges. */}
         <div aria-hidden className="pointer-events-none absolute inset-0" style={EDGES} />
       </div>
-      <div className="flex min-h-[7rem] flex-col items-center px-6 pt-1 text-center">
+      <div className={`flex flex-col items-center px-6 text-center ${preview ? "min-h-[4.75rem] pt-1 pb-3" : "min-h-[7rem] pt-1"}`}>
         <p
-          role="status"
-          aria-live="polite"
-          className={`font-hand leading-tight text-balance ${quiet ? "text-2xl text-[#f3e6cf]/55" : "text-[1.75rem] text-[#f3e6cf]/90"}`}
+          role={live ? "status" : undefined}
+          aria-live={live ? "polite" : undefined}
+          className={`font-hand leading-tight text-balance ${size} ${quiet ? "text-[#f3e6cf]/55" : "text-[#f3e6cf]/90"}`}
         >
           {caption}
         </p>
+        {note ? <p className="mt-1 text-sm leading-snug text-[#f3e6cf]/65">{note}</p> : null}
+        {after}
       </div>
     </div>
   );
@@ -200,16 +231,19 @@ export function BookPanel(props: {
 /*
  * Book3D (and its loading table) size themselves to the viewport
  * (h-[100dvh]); inside the box they fill the box instead. One spread has no
- * pages to dot through, so its dots are left out, and nothing plays, so there
- * is no mute button.
+ * pages to dot through, so its dots are left out, and until something plays
+ * there is no mute button. A preview (a phone) has nothing to press, and the
+ * page scrolls over it.
  */
 const BOX_CSS = `
 [data-book-box] > div,
 [data-book-box] [class~="h-[100dvh]"],
 [data-book-box] [class~="min-h-[100dvh]"] { height: 100% !important; min-height: 0 !important; }
 [data-book-box] nav[aria-label="Spreads"] { display: none; }
-[data-book-box] header button[aria-label="Mute sound"],
-[data-book-box] header button[aria-label="Turn sound on"] { display: none; }
+[data-book-box="preview"] { pointer-events: none; }
+[data-book-box="preview"] header { display: none; }
+[data-book-quiet] header button[aria-label="Mute sound"],
+[data-book-quiet] header button[aria-label="Turn sound on"] { display: none; }
 `;
 
 const EDGES = {
