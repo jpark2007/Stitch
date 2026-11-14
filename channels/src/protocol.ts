@@ -18,7 +18,13 @@ export class ProtocolError extends Error {
 }
 
 export function validateSecret(secret: string): string {
-  if (Buffer.byteLength(secret) < 32) throw new Error("CHANNELS_SHARED_SECRET must be at least 32 UTF-8 bytes");
+  // Same explicit edge-whitespace set as api/channels/models.py; reject rather
+  // than trim so both peers authenticate the exact configured UTF-8 bytes.
+  if (Buffer.byteLength(secret) < 32 ||
+      /^[\u0009-\u000D\u001C-\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]|[\u0009-\u000D\u001C-\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]$/u.test(secret) ||
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(secret)) {
+    throw new Error("CHANNELS_SHARED_SECRET requires at least 32 UTF-8 bytes and no edge whitespace");
+  }
   return secret;
 }
 
