@@ -38,8 +38,10 @@ Script for a new memory (`fields.memory_id is None`), one step every `step_secon
 5. plan, subagent_start director. The director stages the sample's screenplay for this
    family and COMPILES it with the real compiler (`screenplay.compiler.compile`) against
    this family's sets, props and people. Person ids are recast: the sample's `mom` becomes
-   the teller, and `dad` the first participant who is not the teller, else the teller's
-   spouse, else another person of the family. When the family has nobody else, `dad` is
+   the teller, and `dad` the first participant who is not the teller (as named), else an
+   unnamed stand-in who was alive in the memory's year (or is living, for an undated
+   memory; `_present_in`): the teller's spouse, else another person of the family. When
+   nobody qualifies (the family has nobody else, or nobody else alive then), `dad` is
    stripped from the scene (`strip_person`): one puppet, and the books left where they
    fell. Before the hand-off the giver walks up beside the receiver (`stage_handoffs`), so
    arm reach holds for every build. The sample's prop and set are created in the run's
@@ -366,6 +368,21 @@ def remap_ids(value: Any, ids: dict[str, str], key: str | None = None) -> Any:
     if isinstance(value, str) and key not in _PROSE_KEYS:
         return _remap_str(value, ids)
     return value
+
+
+def _present_in(person: schemas.Person, year: int | None) -> bool:
+    """Whether `person` can stand in a memory from `year` (the unnamed stand-in's check).
+
+    With a year: not born after it and not died before it (dying that year still counts).
+    With no year: only someone who has not died, so an undated memory never pulls in the dead.
+    """
+    if year is None:
+        return person.died is None
+    if person.born is not None and person.born > year:
+        return False
+    if person.died is not None and person.died < year:
+        return False
+    return True
 
 
 def _dedupe(ids: list[str]) -> list[str]:
@@ -1703,17 +1720,25 @@ class ScriptedRunManager:
         """Sample person id -> this family's person id.
 
         `dad` is the first of `named` (the named participants, then an approved merge) who
-        is not the teller, else the teller's spouse, else anyone else. SAMPLE_OTHER maps to
-        None when the family has nobody but the teller: the two sample puppets are never
-        merged into one person.
+        is not the teller, as named (the teller said they were there). Else it is an unnamed
+        stand-in: someone alive in the memory's year (`_present_in`; for an undated memory,
+        someone living), the teller's spouse first, then the family's people in list order.
+        SAMPLE_OTHER maps to None when nobody qualifies (the family has nobody else, or
+        nobody else who was alive then): the teller plays alone, and the two sample puppets
+        are never merged into one person.
         """
         teller = run.person_id
         other = next((p for p in named if p != teller), None)
         if other is None:
+            year = run.fields.year
             people = people_db.list_people(db, run.family_id)
-            me = next((p for p in people if p.id == teller), None)
-            spouses = [s for s in (me.spouse_ids if me else []) if s != teller and any(p.id == s for p in people)]
-            others = [p.id for p in people if p.id != teller]
+            by_id = {p.id: p for p in people}
+            me = by_id.get(teller)
+            spouses = [
+                s for s in (me.spouse_ids if me else [])
+                if s != teller and s in by_id and _present_in(by_id[s], year)
+            ]
+            others = [p.id for p in people if p.id != teller and _present_in(p, year)]
             other = next(iter(spouses + others), None)
         return {SAMPLE_TELLER: teller, SAMPLE_OTHER: other}
 
