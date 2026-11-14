@@ -16,6 +16,7 @@ const { spreadDate }: typeof import("../book/types") = await import(paths[1]);
 const {
   WHEN_MAX,
   STORY_MAX_ALONE,
+  cleanLabel,
   dateLineOf,
   STORY_MAX_WITH_PHOTOS,
   familyCore,
@@ -104,48 +105,85 @@ describe("whenLine", () => {
   });
 });
 
-describe("dateLineOf", () => {
-  it("leads a yearly tradition with its occasion", () => {
-    assert.equal(dateLineOf({ kind: "yearly", label: "Christmas Eve", month: 12 }), "Christmas Eve, every year");
-    assert.equal(dateLineOf({ kind: "yearly", label: "Easter Sunday", month: 4 }), "Easter Sunday, every year");
-    assert.equal(dateLineOf({ kind: "yearly", label: "every July", month: 7 }), "July, every year");
-    assert.equal(dateLineOf({ kind: "yearly", label: "first Saturday in October", month: 10 }), "First Saturday in October");
-    assert.equal(dateLineOf({ kind: "yearly", label: "on the first snow" }), "On the first snow");
-    assert.equal(dateLineOf({ kind: "yearly", month: 7 }), "July, every year");
-    assert.equal(dateLineOf({ kind: "yearly" }), "Once a year");
+describe("cleanLabel", () => {
+  it("trims, collapses spaces and drops trailing punctuation, nothing else", () => {
+    assert.equal(cleanLabel("  summer   at the lake,  "), "summer at the lake");
+    assert.equal(cleanLabel("Every Sunday night?"), "Every Sunday night");
+    assert.equal(cleanLabel("Christmas Eve!!"), "Christmas Eve");
+    assert.equal(cleanLabel("eVERY sunday;:"), "eVERY sunday");
+    assert.equal(cleanLabel(null), "");
   });
+});
 
-  it("says a season by name", () => {
-    assert.equal(dateLineOf({ kind: "seasonal", label: "summer", month: 7 }), "Summer, every year");
-    assert.equal(dateLineOf({ kind: "seasonal", label: "every autumn" }), "Autumn, every year");
-    assert.equal(dateLineOf({ kind: "seasonal", month: 1 }), "Winter, every year");
-    assert.equal(dateLineOf({ kind: "seasonal", month: null }), "Once a season");
-  });
+describe("dateLineOf and the story's opening, row by row", () => {
+  // [kind, label, month, dateLineOf, whenLine (the opening of storyText's sentence)]
+  type Row = [Tradition["when"]["kind"], string | null, number | null, string, string];
+  const rows: Row[] = [
+    // No label: the kind and month.
+    ["yearly", null, 7, "July, every year", "Every July"],
+    ["yearly", null, null, "Once a year", "Every year"],
+    ["seasonal", null, 1, "Winter, every year", "Every winter"],
+    ["seasonal", null, null, "Once a season", "Every season"],
+    ["monthly", null, 12, "Once a month", "Every month"],
+    ["weekly", null, null, "Once a week", "Every week"],
+    ["occasional", null, 7, "Now and then", "Now and then"],
+    // every|each + one weekday.
+    ["weekly", "every Sunday", null, "Sundays", "Every Sunday"],
+    ["weekly", "each sundays", null, "Sundays", "Each sundays"],
+    ["yearly", "every Sunday", null, "Every Sunday", "Every Sunday"],
+    ["occasional", "every Friday", null, "Every Friday", "Every Friday"],
+    // every|each + one month.
+    ["yearly", "every July", 7, "July, every year", "Every July"],
+    ["seasonal", "every July", null, "Every July", "Every July"],
+    ["monthly", "Each march", null, "Each march", "Each march"],
+    // Any other every|each: as written, never stripped, nothing appended (findings 1-3, 5).
+    ["yearly", "every year", null, "Every year", "Every year"],
+    ["monthly", "every month", null, "Every month", "Every month"],
+    ["weekly", "every week", null, "Every week", "Every week"],
+    ["weekly", "every other Friday", null, "Every other Friday", "Every other Friday"],
+    ["weekly", "every Sunday night", null, "Every Sunday night", "Every Sunday night"],
+    ["yearly", "Every Sunday night?", null, "Every Sunday night", "Every Sunday night"],
+    ["seasonal", "each first snow", null, "Each first snow", "Each first snow"],
+    // A plural weekday, or words that already say how often: as written (findings 3-4).
+    ["weekly", "Sundays", null, "Sundays", "On Sundays"],
+    ["yearly", "sundays after church", null, "Sundays after church", "On Sundays after church"],
+    ["weekly", "Sunday nights", null, "Sunday nights", "Sunday nights"],
+    ["yearly", "saturday mornings", null, "Saturday mornings", "Saturday mornings"],
+    ["weekly", "weekly game night", null, "Weekly game night", "Weekly game night"],
+    ["yearly", "twice a year", null, "Twice a year", "Twice a year"],
+    ["weekly", "cada domingo", null, "Cada domingo", "Cada domingo"],
+    // A phrase already complete: as written.
+    ["yearly", "first Saturday in October", 10, "First Saturday in October", "First Saturday in October"],
+    ["yearly", "on the first snow", null, "On the first snow", "On the first snow"],
+    ["occasional", "when everyone is home", null, "When everyone is home", "When everyone is home"],
+    // A bare occasion: the kind's frequency after it (a seasonal one comes round every year).
+    ["yearly", "Christmas Eve", 12, "Christmas Eve, every year", "Every Christmas Eve"],
+    ["yearly", "Nochebuena", null, "Nochebuena, every year", "Every Nochebuena"],
+    ["seasonal", "summer", 7, "Summer, every year", "Every summer"],
+    ["seasonal", "summer at the lake,", null, "Summer at the lake, every year", "Every summer at the lake"],
+    ["monthly", "Full moon.", null, "Full moon, every month", "Every Full moon"],
+    ["weekly", "game night", null, "Game night, every week", "Every game night"],
+    ["occasional", "birthdays", null, "Birthdays", "Birthdays"],
+    // No letters: as written.
+    ["yearly", "🎄", null, "🎄", "🎄"],
+    // Odd casing and spaces: tidied, the case as written, the first letter up.
+    ["yearly", "  eVERY   sunday.  ", null, "EVERY sunday", "EVERY sunday"],
+    // Longer than WHEN_MAX (26): the kind and month.
+    ["yearly", "the Saturday after the first frost", 11, "November, every year", "Every November"],
+    ["weekly", "x".repeat(27), null, "Once a week", "Every week"],
+  ];
+  for (const [kind, label, month, date, opening] of rows) {
+    it(`${kind} ${JSON.stringify(label)}${month ? ` (month ${month})` : ""}`, () => {
+      const when = { kind, label, month };
+      assert.equal(dateLineOf(when), date);
+      assert.equal(whenLine(when), opening);
+      const t = tradition({ description: "", when, participantIds: ["rosa"] });
+      assert.equal(storyText(t, keepersOf(t, peopleById([person("rosa", "Rosa")]))), `${opening}, Rosa keeps it going.`);
+    });
+  }
 
-  it("says a monthly one", () => {
-    assert.equal(dateLineOf({ kind: "monthly", label: "Each full moon." }), "Full moon, every month");
-    assert.equal(dateLineOf({ kind: "monthly", label: "   " }), "Once a month");
-    assert.equal(dateLineOf({ kind: "monthly", month: 3 }), "Once a month");
-  });
-
-  it("says a weekly one by its day", () => {
-    assert.equal(dateLineOf({ kind: "weekly", label: "every Sunday" }), "Sundays");
-    assert.equal(dateLineOf({ kind: "weekly", label: "friday" }), "Fridays");
-    assert.equal(dateLineOf({ kind: "weekly", label: "game night" }), "Game night, every week");
-    assert.equal(dateLineOf({ kind: "weekly", label: null }), "Once a week");
-  });
-
-  it("keeps an occasional label as written", () => {
-    assert.equal(dateLineOf({ kind: "occasional", label: "when everyone is home" }), "When everyone is home");
-    assert.equal(dateLineOf({ kind: "occasional", label: "birthdays" }), "Birthdays");
-    assert.equal(dateLineOf({ kind: "occasional" }), "Now and then");
+  it("says Now and then for no when at all", () => {
     assert.equal(dateLineOf(null), "Now and then");
-  });
-
-  it("falls back to the kind and month when the label is too long", () => {
-    const label = "the Saturday after the first frost, if the creek is frozen";
-    assert.equal(dateLineOf({ kind: "yearly", label, month: 11 }), "November, every year");
-    assert.equal(dateLineOf({ kind: "weekly", label: "x".repeat(40) }), "Once a week");
   });
 
   it("never opens on \"Every\", so the dots tell the demo's traditions apart", () => {

@@ -83,35 +83,82 @@ function plainWhen(when: Pick<TraditionWhen, "kind" | "month">): string {
 }
 
 /**
- * When a tradition happens, as a person would say it: "Every Christmas Eve",
- * "Every Sunday", "Every July", "When everyone is home". The label leads
- * when there is one ("Christmas Eve" on a yearly tradition is "Every
- * Christmas Eve"; "every Sunday" is kept as written); without one, or when
- * it is too long for the page, the kind and month say it ("Every December",
- * "Every week", "Now and then").
+ * A family's "when" words, tidied and nothing more: trimmed, spaces
+ * collapsed, trailing punctuation (". ! ? , ; :") dropped. The case is left
+ * as written; callers capitalise the first letter where it opens a line.
+ */
+export function cleanLabel(label: string | null | undefined): string {
+  return (label ?? "").replace(/\s+/g, " ").trim().replace(/[\s.!?,;:]+$/, "");
+}
+
+const WEEKDAY = "(monday|tuesday|wednesday|thursday|friday|saturday|sunday)";
+const MONTH = `(${MONTHS.join("|")})`;
+/** "every Sunday", "Each sundays": every or each and one weekday, nothing else. */
+const EVERY_WEEKDAY = new RegExp(`^(every|each) ${WEEKDAY}s?$`, "i");
+/** "every July": every or each and one month, nothing else. */
+const EVERY_MONTH = new RegExp(`^(every|each) ${MONTH}$`, "i");
+/** "every other Friday", "each first snow". */
+const STARTS_EVERY = /^(every|each)\b/i;
+/** "Sundays", "Sunday nights": a plural weekday leads. */
+const PLURAL_WEEKDAY = new RegExp(`^${WEEKDAY}s\\b`, "i");
+/** "Sunday nights", "Saturday mornings": a weekday's plural times, already how often. */
+const WEEKDAY_TIMES = new RegExp(`^${WEEKDAY} \\p{L}+s$`, "iu");
+/** Words that already say how often ("weekly game night", "twice a year", "cada domingo"). */
+const FREQUENCY =
+  /(^|[^\p{L}])(every|each|weekly|monthly|yearly|annual|annually|daily|once|twice|always|whenever|when|cada|todos|todas)(?![\p{L}])/iu;
+/** A season's name: a seasonal tradition's bare label ("summer"). */
+const SEASON = /^(spring|summer|autumn|fall|winter)$/i;
+
+/** The family's words, read: which of the forms below they take. */
+type LabelForm = "everyWeekday" | "everyMonth" | "asWritten" | "pluralWeekday" | "occasion";
+
+function labelForm(label: string): LabelForm {
+  if (EVERY_WEEKDAY.test(label)) return "everyWeekday";
+  if (EVERY_MONTH.test(label)) return "everyMonth";
+  if (STARTS_EVERY.test(label)) return "asWritten";
+  if (PLURAL_WEEKDAY.test(label)) return "pluralWeekday";
+  // No words to say "every" of ("🎄"): as written too.
+  if (FREQUENCY.test(label) || PHRASE_START.test(label) || WEEKDAY_TIMES.test(label) || !/\p{L}/u.test(label)) return "asWritten";
+  return "occasion";
+}
+
+/** "Sunday" or "sundays" as "Sundays". */
+function pluralWeekday(word: string): string {
+  const day = word.toLowerCase().replace(/s$/, "");
+  return `${capitalize(day)}s`;
+}
+
+/**
+ * When a tradition happens, as the opening of a sentence: "Every Christmas
+ * Eve" (a bare occasion), "Every Sunday" and "Every other Friday" (as
+ * written), "On Sundays", "When everyone is home". storyText says
+ * "Every Christmas Eve, Rosa keeps it going." with it. Without a label, or
+ * one too long for the page (WHEN_MAX), the kind and month say it ("Every
+ * December", "Every week", "Now and then").
  */
 export function whenLine(when: TraditionWhen | null | undefined): string {
   if (!when) return plainWhen({ kind: "occasional" });
-  const label = (when.label ?? "").replace(/\s+/g, " ").trim().replace(/[.!]+$/, "");
-  if (label) {
-    let line: string;
-    if (PHRASE_START.test(label)) line = capitalize(label);
-    else if (when.kind === "occasional") line = capitalize(label);
-    else line = `Every ${label}`;
-    if (line.length <= WHEN_MAX) return line;
+  const label = cleanLabel(when.label);
+  if (label && label.length <= WHEN_MAX) {
+    const form = labelForm(label);
+    if (form === "pluralWeekday") {
+      const [day, ...rest] = label.split(" ");
+      return `On ${[pluralWeekday(day), ...rest].join(" ")}`;
+    }
+    if (form === "occasion" && when.kind !== "occasional") return `Every ${label}`;
+    return capitalize(label);
   }
   return plainWhen(when);
 }
 
-const WEEKDAYS = /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
-
-/** How often, said after the occasion: "every year". */
+/** How often, said after a bare occasion: "Christmas Eve, every year". */
 const OFTEN: Record<TraditionWhen["kind"], string> = {
   yearly: "every year",
+  // A seasonal tradition comes round once a year ("Summer at the lake, every year").
   seasonal: "every year",
   monthly: "every month",
   weekly: "every week",
-  occasional: "now and then",
+  occasional: "",
 };
 
 /** How often, alone: "Once a year". */
@@ -124,27 +171,36 @@ const PLAIN_OFTEN: Record<TraditionWhen["kind"], string> = {
 };
 
 /**
- * When a tradition happens, the occasion first: "Christmas Eve, every
- * year", "Sundays", "July, every year", "When everyone is home", "Once a
- * month". The spread's dateLine: printed over the title, in Contents and
- * under the navigation dots, which cut it to a few letters, so it opens on
- * the words that tell one tradition from another rather than on "Every".
- * Too long for one line (WHEN_MAX), the kind and month say it.
+ * When a tradition happens, for the spread's dateLine (printed over the
+ * title, in Contents and under the navigation dots, which cut it to a few
+ * letters). The family's words are rewritten as little as possible:
+ *
+ *   "every Sunday" (weekly)        -> "Sundays"
+ *   "every July" (yearly)          -> "July, every year"
+ *   "Christmas Eve" (bare, yearly) -> "Christmas Eve, every year"
+ *   "every other Friday", "Sundays", "weekly game night", "When everyone
+ *   is home", any occasional label -> as written
+ *
+ * Without a label, or one longer than WHEN_MAX, the kind and month say it
+ * ("July, every year", "Winter, every year", "Once a week", "Now and then").
  */
 export function dateLineOf(when: TraditionWhen | null | undefined): string {
   const kind = when?.kind && when.kind in OFTEN ? when.kind : "occasional";
-  const label = (when?.label ?? "").replace(/\s+/g, " ").trim().replace(/[.!]+$/, "");
-  const every = /^(every|each)\s+/i;
-  if (label) {
-    let line: string;
-    // An occasional tradition's label is its own words ("Every other Friday" too).
-    if (kind === "occasional" || (!every.test(label) && PHRASE_START.test(label))) line = capitalize(label);
-    else {
-      const core = label.replace(every, "");
-      if (kind === "weekly" && WEEKDAYS.test(core)) line = `${capitalize(core.toLowerCase())}s`;
-      else line = `${capitalize(core)}, ${OFTEN[kind]}`;
+  const label = cleanLabel(when?.label);
+  if (label && label.length <= WHEN_MAX) {
+    const written = capitalize(label);
+    switch (labelForm(label)) {
+      case "everyWeekday":
+        return kind === "weekly" ? pluralWeekday(label.split(" ")[1]) : written;
+      case "everyMonth":
+        return kind === "yearly" ? `${capitalize(label.split(" ")[1].toLowerCase())}, every year` : written;
+      case "occasion":
+        if (kind === "occasional") return written;
+        if (kind === "seasonal" && SEASON.test(label)) return `${capitalize(label.toLowerCase())}, every year`;
+        return `${written}, ${OFTEN[kind]}`;
+      default:
+        return written;
     }
-    if (line.length <= WHEN_MAX) return line;
   }
   const month = monthName(when?.month);
   if (month && (kind === "yearly" || kind === "seasonal")) {
