@@ -547,6 +547,196 @@ def test_a_discovered_handler_is_used_and_occupies_its_puppet(monkeypatch):
     assert messages(res) == ["shot s1, t=8.5: dad cannot wave; dad is still waving until t=9"]
 
 
+# ------------------------------------------------------------- follow scheduling and busy
+
+FOLLOW_START = {
+    "mom": {"at": "steps_top", "holding": "hymn_books", "facing": "left"},
+    "dad": {"at": "steps_foot", "facing": "right"},
+    "kid": {"at": "steps_left", "facing": "right"},
+}
+
+
+def follow_shot(actions):
+    return {
+        "memoryId": "m", "cast": ["dad", "mom", "kid"], "props": ["hymn_books"],
+        "shots": [{"id": "s1", "set": "church_steps_1988", "start": FOLLOW_START, "actions": actions}],
+    }
+
+
+def root_keys(tracks, who):
+    return [(k[0], k[1]) for tr in tracks.tracks() if (tr.target, tr.channel) == (f"puppet:{who}", "root.position")
+            for k in tr.keys]
+
+
+@pytest.fixture
+def fake_follow(monkeypatch):
+    """A stand-in follow handler (verbs_motion is another task's): it records the leader's
+    root.position track as it is when the follow runs, then moves the follower over
+    ``state["dur"]`` seconds to 0.2 left of where the leader's track ends."""
+    state = {"dur": 1.0, "calls": []}
+
+    def apply_follow(world, tracks, action, t, action_start, locate):
+        leader_keys = root_keys(tracks, action.target)
+        state["calls"].append({"who": action.who, "t": t, "now": world.now, "leader": leader_keys})
+        lx, ly, lz = leader_keys[-1][1]
+        here = tracks.value_at(f"puppet:{action.who}", "root.position", t)
+        dest = [round(lx - 0.2, 6), ly, lz]
+        tracks.extend([(f"puppet:{action.who}", "root.position", t, here),
+                       (f"puppet:{action.who}", "root.position", t + state["dur"], dest)])
+        world.move(action.who, tuple(dest))
+        return t + state["dur"]
+
+    monkeypatch.setitem(C.HANDLERS, "follow", apply_follow)
+    return state
+
+
+@pytest.fixture
+def ran(monkeypatch):
+    """The (who, do) of every real core handler call, in the order the compiler made them."""
+    calls = []
+    for verb in ("walk_to", "pose", "hand_to"):
+        real = C.HANDLERS[verb]
+
+        def wrapped(world, tracks, action, t, action_start, locate, real=real):
+            calls.append((action.who, action.do))
+            return real(world, tracks, action, t, action_start, locate)
+
+        monkeypatch.setitem(C.HANDLERS, verb, wrapped)
+    return calls
+
+
+def test_the_leaders_later_action_runs_before_the_follow(fake_follow, ran):
+    res = run(follow_shot([
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 4, "who": "kid", "do": "walk_to", "to": "curb"},
+    ]))
+    assert res.ok, messages(res)
+    assert ran == [("kid", "walk_to")]
+    (call,) = fake_follow["calls"]
+    assert (call["who"], call["t"], call["now"]) == ("dad", 2.2, 1.0)
+    # kid's walk to the curb (from t=5.2) is already on kid's track when dad starts following
+    assert call["leader"][0] == (0.0, [-0.6, 0.0, 0.5])
+    assert call["leader"][-1][1] == [0.8, 0.0, 0.5] and call["leader"][-1][0] > 5.2
+    assert value(res, "puppet:dad", "root.position", 3.2) == [0.6, 0.0, 0.5]
+
+
+def test_the_followers_next_action_waits_for_the_follow_and_starts_where_it_ended(fake_follow, ran):
+    res = run(follow_shot([
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 3, "who": "dad", "do": "walk_to", "to": "steps_left"},
+        {"t": 2, "who": "kid", "do": "walk_to", "to": "curb"},
+    ]))
+    assert res.ok, messages(res)
+    assert ran == [("kid", "walk_to"), ("dad", "walk_to")]
+    assert [c["who"] for c in fake_follow["calls"]] == ["dad"]
+    keys = track(res, "puppet:dad", "root.position")
+    # start, the follow (2.2 -> 3.2), then the walk from the follow's end point back to steps_left
+    assert keys[:3] == [(0.0, [0.0, 0.0, 0.5]), (2.2, [0.0, 0.0, 0.5]), (3.2, [0.6, 0.0, 0.5])]
+    assert keys[3] == (4.2, [0.6, 0.0, 0.5])
+    assert keys[-1][1] == [-0.6, 0.0, 0.5]
+    assert value(res, "puppet:dad", "root.facing", keys[-1][0]) == -1
+
+
+def test_a_follow_cycle_is_reported_and_the_rest_runs_in_time_order(fake_follow, ran):
+    res = run(follow_shot([
+        {"t": 2, "who": "kid", "do": "follow", "target": "dad"},
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 0, "who": "mom", "do": "pose", "pose": "wave"},
+    ]))
+    assert [(e.code, e.message, e.t, e.who, e.do) for e in res.errors] == [(
+        "follow_cycle", "shot s1, t=1: dad cannot follow; dad and kid follow each other; only one can lead",
+        1.0, "dad", "follow",
+    )]
+    assert ran == [("mom", "pose")]
+    assert [(c["who"], c["now"]) for c in fake_follow["calls"]] == [("kid", 2.0)]
+
+
+def test_schedule_runs_a_follow_chain_leader_first():
+    from screenplay.schema import Action
+
+    actions = [Action.model_validate(a) for a in (
+        {"t": 0, "who": "kid", "do": "follow", "target": "dad"},     # 0: waits for dad's follow and walk
+        {"t": 1, "who": "dad", "do": "follow", "target": "mom"},     # 1: waits for mom's walk
+        {"t": 2, "who": "dad", "do": "walk_to", "to": "curb"},       # 2: behind dad's follow
+        {"t": 3, "who": "mom", "do": "walk_to", "to": "curb"},       # 3
+        {"t": 0.5, "do": "rain"},                                    # 4: no who, never waits
+        {"t": 4, "who": "kid", "do": "follow", "target": "nobody"},  # 5: not a cast member, no wait
+    )]
+    cast = {"dad": None, "mom": None, "kid": None}
+    retimed = [a.t for a in actions]
+    assert C._schedule(actions, retimed, cast) == ([4, 3, 1, 2, 0, 5], None)
+    # a three-way cycle: the earliest blocked follow is the one reported; the rest run in time order
+    loop = [Action.model_validate(a) for a in (
+        {"t": 2, "who": "kid", "do": "follow", "target": "dad"},
+        {"t": 1, "who": "dad", "do": "follow", "target": "mom"},
+        {"t": 3, "who": "mom", "do": "follow", "target": "kid"},
+        {"t": 0, "who": "mom", "do": "wave"},
+    )]
+    assert C._schedule(loop, [a.t for a in loop], cast) == ([3, 0, 2], 1)
+
+
+def test_the_followers_own_action_inside_the_follow_is_busy(fake_follow):
+    fake_follow["dur"] = 3.0
+    res = run(follow_shot([
+        {"t": 0, "who": "kid", "do": "walk_to", "to": "curb"},
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 2, "who": "dad", "do": "pose", "pose": "wave"},
+    ]))
+    assert [(e.code, e.message) for e in res.errors] == [
+        ("busy", "shot s1, t=2: dad cannot pose; dad is still following until t=4"),
+    ]
+
+
+HAND_OVER_DURING_FOLLOW = [
+    {"t": 0, "who": "kid", "do": "walk_to", "to": "curb"},
+    {"t": 5, "who": "kid", "do": "pose", "pose": "wave"},  # holds the follow back until after the hand_to
+    {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+    {"t": 2, "who": "mom", "do": "hand_to", "what": "hymn_books", "to": "dad"},
+]
+
+
+def test_a_follow_that_runs_into_a_later_hand_over_is_busy(fake_follow, ran):
+    fake_follow["dur"] = 3.0
+    res = run(follow_shot(HAND_OVER_DURING_FOLLOW))
+    assert ran == [("kid", "walk_to"), ("mom", "hand_to"), ("kid", "pose")]
+    assert [(c["who"], c["now"]) for c in fake_follow["calls"]] == [("dad", 1.0)]
+    assert [(e.code, e.message, e.t, e.who, e.do) for e in res.errors] == [(
+        "busy",
+        "shot s1, t=1: dad cannot follow; dad would still be following until t=4, but starts taking hymn_books at t=2",
+        1.0, "dad", "follow",
+    )]
+
+
+def test_a_hand_over_after_a_later_scheduled_follow_is_not_a_false_busy(fake_follow, ran):
+    # The hand_to runs first and keeps dad busy taking the books from t=2 to 2.9. The follow
+    # (t=1 to 1.5) runs after it in schedule order but before it in time: no clash.
+    fake_follow["dur"] = 0.5
+    res = run(follow_shot(HAND_OVER_DURING_FOLLOW))
+    assert res.ok, messages(res)
+    assert ran == [("kid", "walk_to"), ("mom", "hand_to"), ("kid", "pose")]
+    assert [c["now"] for c in fake_follow["calls"]] == [1.0]
+    assert value(res, "prop:hymn_books", "parent", 5.0) == "puppet:dad.hand_r"
+    assert value(res, "puppet:dad", "root.position", 2.7) == [0.6, 0.0, 0.5]
+
+
+def test_follow_scheduling_is_deterministic(fake_follow):
+    data = follow_shot(HAND_OVER_DURING_FOLLOW)
+    fake_follow["dur"] = 0.5
+    a = run(data).model_dump_json()
+    b = run(copy.deepcopy(data)).model_dump_json()
+    assert a == b
+
+
+def test_without_follows_actions_run_in_time_order_then_list_order(ran):
+    res = run(follow_shot([
+        {"t": 2, "who": "kid", "do": "pose", "pose": "wave"},
+        {"t": 1, "who": "dad", "do": "pose", "pose": "wave"},
+        {"t": 1, "who": "mom", "do": "pose", "pose": "wave"},
+    ]))
+    assert res.ok, messages(res)
+    assert ran == [("dad", "pose"), ("mom", "pose"), ("kid", "pose")]
+
+
 # ------------------------------------------------------------------ the agent's tool
 
 def test_load_compiler_returns_the_real_adapter_and_the_sample_compiles():

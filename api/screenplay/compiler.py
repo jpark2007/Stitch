@@ -6,14 +6,26 @@
    camera move against shared/vocabulary.json and the scene. Any error stops here.
 2. For each shot, in order: apply its start block to the world state, raise the set (unless
    the previous shot used the same set), key where everyone starts, retime cued actions onto
-   their narration words, run each action through its verb handler (state + keys), move the
-   camera, time the narration, and work out when the shot ends and the next one starts (the
-   outgoing shot's transition folds its set).
+   their narration words, run each action through its verb handler (state + keys) in schedule
+   order (below), move the camera, time the narration, and work out when the shot ends and the
+   next one starts (the outgoing shot's transition folds its set).
 3. Join the tellings, carry interactions and explanations, and return the Timeline, or every
    error found as exact CompileError messages such as
    ``shot s1, t=5: dad cannot hand_to "hymn_books"; mom is holding it``.
 
 It never raises for a bad screenplay, and the same input gives byte-identical JSON.
+
+Schedule order within a shot: each puppet's actions form a queue in (retimed t, list index)
+order (an action without ``who`` is a queue of its own), and the earliest runnable queue head
+runs next. A ``follow`` of a cast member is runnable only once every action of its leader in
+the shot has run, so the follower can see where the leader goes; the follower's later actions
+wait behind the follow. A follow cycle is reported as ``follow_cycle`` and the rest of the shot
+then runs in time order.
+
+Because of that reordering, ``World.busy_until`` only describes the action running now. The
+compiler keeps every puppet's busy spans in shot time and, before each handler, sets each
+puppet's ``busy_until`` / ``activity`` to the span covering ``world.now`` (if any). A new span
+that runs into a span the puppet starts later is reported as ``busy`` too.
 
 Verb handlers come from every ``screenplay.verbs_*`` module's ``HANDLERS`` dict (verbs_core
 first, then the rest by module name), so a new verb module only has to exist to be used.
@@ -47,7 +59,7 @@ from screenplay.schema import (
     Timeline,
     TimelineShot,
 )
-from screenplay.state import HANDS, OFFSTAGE_LEFT, StateError, World
+from screenplay.state import HANDS, OFFSTAGE_LEFT, TIME_EPS, StateError, World, fmt_t
 from screenplay.tracks import Key, TrackSet, round_value
 from screenplay.validate import validate
 
@@ -145,6 +157,109 @@ class _Errors:
 
     def sorted(self) -> list[CompileError]:
         return [e for _, e in sorted(self.items, key=lambda it: it[0])]
+
+
+# ------------------------------------------------------------------- schedule and busy
+
+@dataclass(frozen=True)
+class _Span:
+    """A puppet is busy with ``activity`` from ``start`` to ``end`` (shot time)."""
+
+    start: float
+    end: float
+    activity: str
+
+
+Spans = dict[str, list[_Span]]
+
+
+def _follows_a_leader(action: Action, cast: Mapping[str, object]) -> str | None:
+    """The leader a ``follow`` waits for: its target, when that is another cast member."""
+    if action.do == "follow" and action.target is not None and action.target in cast and action.target != action.who:
+        return action.target
+    return None
+
+
+def _schedule(
+    actions: list[Action], retimed: list[float], cast: Mapping[str, object]
+) -> tuple[list[int], int | None]:
+    """The order to run a shot's actions in, and the index of a follow reported as a cycle.
+
+    Per-puppet queues in (retimed t, index) order; the earliest runnable head runs next (ties
+    by retimed t, then index). A follow of a cast member waits until every action of its
+    leader has run. When no head can run, the earliest blocked follow is the cycle: it is left
+    out of the order and everything that is left runs in time order.
+    """
+    def when(i: int) -> tuple[float, int]:
+        return (retimed[i], i)
+
+    queues: dict[tuple[str, object], list[int]] = {}
+    queue_of: dict[int, tuple[str, object]] = {}
+    for i in sorted(range(len(actions)), key=when):
+        who = actions[i].who
+        queue_of[i] = ("who", who) if who is not None else ("action", i)
+        queues.setdefault(queue_of[i], []).append(i)
+    remaining: dict[str, int] = {}
+    for a in actions:
+        if a.who is not None:
+            remaining[a.who] = remaining.get(a.who, 0) + 1
+    heads = {key: 0 for key in queues}
+    order: list[int] = []
+
+    def blocked(i: int) -> bool:
+        leader = _follows_a_leader(actions[i], cast)
+        return leader is not None and remaining.get(leader, 0) > 0
+
+    while len(order) < len(actions):
+        waiting = [queues[k][heads[k]] for k in queues if heads[k] < len(queues[k])]
+        runnable = [i for i in waiting if not blocked(i)]
+        if not runnable:
+            cycle = min(waiting, key=when)
+            rest = sorted((i for k in queues for i in queues[k][heads[k]:] if i != cycle), key=when)
+            return order + rest, cycle
+        i = min(runnable, key=when)
+        heads[queue_of[i]] += 1
+        who = actions[i].who
+        if who is not None:
+            remaining[who] -= 1
+        order.append(i)
+    return order, None
+
+
+def _set_busy_from_spans(world: World, spans: Spans, now: float) -> None:
+    """Each puppet's busy_until / activity from the span covering ``now`` (the one that ends
+    last), else free: (0.0, None)."""
+    for who, p in world.people.items():
+        covering = [s for s in spans.get(who, ()) if s.start - TIME_EPS <= now < s.end - TIME_EPS]
+        if covering:
+            s = max(covering, key=lambda s: s.end)
+            p.busy_until, p.activity = s.end, s.activity
+        else:
+            p.busy_until, p.activity = 0.0, None
+
+
+def _record_spans(
+    world: World,
+    spans: Spans,
+    now: float,
+    before: dict[str, tuple[float, str | None]],
+    first: str | None,
+) -> tuple[str, _Span, _Span] | None:
+    """Add a span (now, busy_until, activity) for every puppet the action occupied (``first``,
+    the acting puppet, before the others in cast order). Returns the first new span that runs
+    into a span its puppet starts later: (who, new span, later span)."""
+    clash: tuple[str, _Span, _Span] | None = None
+    names = ([first] if first in world.people else []) + [w for w in world.people if w != first]
+    for who in names:
+        p = world.people[who]
+        if (p.busy_until, p.activity) == before[who] or p.busy_until <= now + TIME_EPS:
+            continue
+        new = _Span(now, round(p.busy_until, 6), p.activity or "busy")
+        later = [s for s in spans.get(who, ()) if now + TIME_EPS < s.start < new.end - TIME_EPS]
+        if later and clash is None:
+            clash = (who, new, min(later, key=lambda s: (s.start, s.end)))
+        spans.setdefault(who, []).append(new)
+    return clash
 
 
 # ------------------------------------------------------------------------ start keys
@@ -289,10 +404,15 @@ def compile(
             retimed = [a.t for a in shot.actions]
 
         locate = make_locate(world, tracks, marks, shot.id)
-        order = sorted(range(len(shot.actions)), key=lambda i: (retimed[i], i))
+        order, cycle = _schedule(shot.actions, retimed, world.people)
+        if cycle is not None:
+            a = shot.actions[cycle]
+            reason = f"{a.who} and {a.target} follow each other; only one can lead"
+            errors.add(E.error("follow_cycle", reason, shot.id, a), si, cycle)
+        spans: Spans = {}
         for ai in order:
             action = shot.actions[ai]
-            err = _run_action(world, tracks, action, retimed[ai], action_start, locate, shot.id)
+            err = _run_action(world, tracks, action, retimed[ai], action_start, locate, shot.id, spans)
             if err is not None:
                 errors.add(err, si, ai)
 
@@ -357,19 +477,26 @@ def _run_action(
     action_start: float,
     locate: Locate,
     shot_id: str,
+    spans: Spans,
 ) -> CompileError | None:
-    """Run one action through its handler, with the busy check around it. Returns its error."""
+    """Run one action through its handler, with the busy checks around it. Returns its error.
+
+    Busy state comes from ``spans`` (this shot's busy spans so far), and the spans of every
+    puppet the action occupies are added to it."""
     handler = HANDLERS.get(action.do)
     if handler is None:
         return E.error("unsupported_verb", f"the compiler does not support {action.do} yet", shot_id, action)
-    world.now = round(shot_t, 6)
+    now = round(shot_t, 6)
+    world.now = now
+    _set_busy_from_spans(world, spans, now)
+    before = {w: (p.busy_until, p.activity) for w, p in world.people.items()}
     t = round(action_start + shot_t, 6)
     try:
         if action.who is not None:
             world.check_free(action.who)
         end = handler(world, tracks, action, t, action_start, locate)
         if action.who is not None:
-            world.occupy(action.who, round(end - action_start, 6), ACTIVITY[action.do], at=world.now)
+            world.occupy(action.who, round(end - action_start, 6), ACTIVITY[action.do], at=now)
     except StateError as e:
         return E.from_state_error(e, shot_id, action)
     except ik.OutOfReach as e:
@@ -378,6 +505,14 @@ def _run_action(
         return E.from_narration_error(e)
     except ValueError as e:
         return E.error("invalid_action", str(e), shot_id, action)
+    clash = _record_spans(world, spans, now, before, action.who)
+    if clash is not None:
+        who, new, later = clash
+        reason = (
+            f"{who} would still be {new.activity} until t={fmt_t(new.end)}, "
+            f"but starts {later.activity} at t={fmt_t(later.start)}"
+        )
+        return E.error("busy", reason, shot_id, action)
     return None
 
 
