@@ -34,7 +34,13 @@ import {
   type RelationshipPerson,
 } from "@/components/flow/joinFlow";
 import { PaperCard } from "@/components/flow/PaperCard";
-import { forgetFamily, hrefs, rememberFamily } from "@/components/flow/session";
+import {
+  forgetFamily,
+  forgetSignedIn,
+  hrefs,
+  rememberFamily,
+  rememberSignedIn,
+} from "@/components/flow/session";
 import { signedInLabel } from "@/components/flow/settingsPage";
 import { ApiError, isApiError } from "@/lib/api";
 import type { InvitePreview, JoinRequest, JoinResponse, MeResponse } from "@/lib/types";
@@ -75,13 +81,18 @@ export function JoinScreen(props: { code: string }) {
         if (live) setPreviewError(e ?? new Error("preview failed"));
       },
     );
+    // The server's answer keeps the signed-in hint (session.ts) true, so /login,
+    // reached from here, asks /me only when someone may really be signed in.
     api.me().then(
       (me) => {
+        rememberSignedIn();
         if (live) setMeState({ status: "signed-in", me });
       },
       (e: unknown) => {
+        const signedOut = isApiError(e) && e.status === 401;
+        if (signedOut) forgetSignedIn();
         if (!live) return;
-        setMeState(isApiError(e) && e.status === 401 ? { status: "signed-out" } : { status: "error", error: e });
+        setMeState(signedOut ? { status: "signed-out" } : { status: "error", error: e });
       },
     );
     return () => {
@@ -188,6 +199,8 @@ export function JoinScreen(props: { code: string }) {
       }
     }
     forgetFamily();
+    // Without this, the next /login would ask /me and hide its form until the 401.
+    forgetSignedIn();
     // A full load drops the hidden pages this session kept mounted.
     window.location.replace(hrefs.join(code));
   }, [code]);
