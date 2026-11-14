@@ -5,7 +5,8 @@
  * or a small table of contents"), small and sparse:
  *
  *   <ContentsCard>  with the closed book on the table, a little printed card
- *                   lying beside it: each moment's year (handwriting) and
+ *                   lying beside it: each moment's year, or its dateLine,
+ *                   (handwriting) and
  *                   title (the storybook serif). It fades as the book opens.
  *   <ContentsTab>   once the book is open, a quiet "Contents" tab by the
  *                   mute button that unfolds the same list.
@@ -18,14 +19,17 @@
 import { motion } from "framer-motion";
 import { useEffect, useId, useRef, useState, type WheelEvent } from "react";
 import type { BookView } from "./controller";
-import type { BookSpread } from "./types";
+import { spreadDate, type BookSpread } from "./types";
 
 export interface ContentsEntry {
   /** 1-based spread number, as BookControls.goTo takes it. */
   spread: number;
   id: string;
   title: string;
-  /** Empty for a moment with no year. */
+  /**
+   * What the entry is dated by: the spread's `dateLine` when it has one
+   * ("Every Christmas Eve"), else its year. Empty for a moment with neither.
+   */
   year: string;
 }
 
@@ -34,7 +38,7 @@ export function contentsOf(spreads: readonly BookSpread[]): ContentsEntry[] {
   const out: ContentsEntry[] = [];
   spreads.forEach((s, i) => {
     if (s.kind === "end") return;
-    out.push({ spread: i + 1, id: s.id, title: s.title, year: Number.isFinite(s.year) && s.year > 0 ? String(s.year) : "" });
+    out.push({ spread: i + 1, id: s.id, title: s.title, year: spreadDate(s) });
   });
   return out;
 }
@@ -68,6 +72,9 @@ function Entries({
   onPick: (spread: number) => void;
   dense?: boolean;
 }) {
+  // A dateLine ("Every Christmas Eve") is wider than a year: give the dates
+  // a wider column, the same for every entry so the titles still align.
+  const cols = entries.some((e) => e.year.length > 4) ? "grid-cols-[6.75rem_1fr]" : "grid-cols-[3.1rem_1fr]";
   return (
     <ol className={dense ? "flex flex-col" : "flex flex-col gap-0.5"}>
       {entries.map((e) => {
@@ -78,7 +85,7 @@ function Entries({
               type="button"
               onClick={() => onPick(e.spread)}
               aria-current={here ? "page" : undefined}
-              className={`group grid w-full cursor-pointer grid-cols-[3.1rem_1fr] items-baseline gap-x-2 rounded-[3px] px-1.5 text-left transition-colors duration-200 hover:bg-[#efe3cc] focus-visible:bg-[#efe3cc] ${dense ? "py-[0.2rem]" : "py-1"}`}
+              className={`group grid w-full cursor-pointer ${cols} items-baseline gap-x-2 rounded-[3px] px-1.5 text-left transition-colors duration-200 hover:bg-[#efe3cc] focus-visible:bg-[#efe3cc] ${dense ? "py-[0.2rem]" : "py-1"}`}
             >
               <span className="font-hand text-[1.3rem] leading-none text-accent">{e.year}</span>
               <span

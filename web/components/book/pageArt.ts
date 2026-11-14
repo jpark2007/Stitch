@@ -33,9 +33,11 @@ export interface StoryPageArt {
 }
 
 /**
- * Left page: year, title, storybook text, tellers and taped-in photos. With
- * `spread.tellings`, the tellers are taped labels to choose a telling by,
- * the `active` one inked as playing.
+ * Left page: year (or `spread.dateLine`), title, storybook text, tellers and
+ * taped-in photos. With `spread.tellings`, the tellers are taped labels to
+ * choose a telling by, the `active` one inked as playing. Text of any length
+ * fits (layoutStory): a long one is set smaller, leaves out photos it leaves
+ * no room for, and past that is cut with "…".
  */
 export async function drawStoryPage(
   spread: BookSpread,
@@ -57,13 +59,31 @@ export async function drawStoryPage(
   const left = 96;
   const right = W - 134;
   const width = right - left;
-  const photos = spread.photos.slice(0, 2);
+  const tellings = spread.tellings ?? [];
+  const teller = tellings.find((t) => t.id === active) ?? tellings[0];
+  const text = (spread.text ?? "").trim() || teller?.text?.trim() || "";
+  const date = spread.dateLine?.trim() || String(spread.year);
+
+  // Lay the page out before drawing it: the title, then the words at the
+  // largest size that leaves the photos their room (StoryLayout).
+  pageCtx.font = TITLE_FONT(fonts);
+  setSpacing(pageCtx, -0.8);
+  const titleLines = clampLines(pageCtx, wrap(pageCtx, spread.title ?? "", width), TITLE_MAX_LINES, () => width);
+  setSpacing(pageCtx, 0);
+  const bodyTop = TITLE_TOP + titleLines.length * TITLE_LEAD + 8 + 58;
+  const plan = layoutStory(pageCtx, text, fonts, {
+    width,
+    top: bodyTop,
+    tail: storyTailHeight(spread),
+    photos: (spread.photos ?? []).slice(0, 2).map((p) => photoAspect(p.aspect)),
+  });
+  const photos = (spread.photos ?? []).slice(0, plan.photos);
   // Without photos the words sit on their own layer, to be set in the
   // page's optical middle rather than hung from its head.
   const layer = photos.length ? null : canvas(W, H);
   const ctx = layer ? layer.ctx : pageCtx;
 
-  // Year, handwritten in the accent ink.
+  // Year (or the spread's dateLine), handwritten in the accent ink.
   ctx.save();
   ctx.translate(left - 4, 168);
   ctx.rotate(-0.035);
@@ -71,19 +91,26 @@ export async function drawStoryPage(
   ctx.font = `600 76px ${fonts.hand}`;
   ctx.textBaseline = "alphabetic";
   ctx.textAlign = "left";
-  ctx.fillText(String(spread.year), 0, 0);
+  if (spread.dateLine?.trim()) {
+    // A few words, not four digits: a size down if they would run long.
+    let size = 76;
+    while (size > 48 && ctx.measureText(date).width > width) {
+      size -= 4;
+      ctx.font = `600 ${size}px ${fonts.hand}`;
+    }
+    ctx.fillText(date, 0, 0, width);
+  } else ctx.fillText(date, 0, 0);
   ctx.restore();
 
   // Title.
   ctx.fillStyle = INK;
-  ctx.font = `600 64px ${fonts.display}`;
+  ctx.font = TITLE_FONT(fonts);
   setSpacing(ctx, -0.8);
   ctx.textAlign = "left";
-  const titleLines = wrap(ctx, spread.title, width);
-  let y = 262;
+  let y = TITLE_TOP;
   for (const line of titleLines) {
     ctx.fillText(line, left, y);
-    y += 72;
+    y += TITLE_LEAD;
   }
   setSpacing(ctx, 0);
 
@@ -94,29 +121,13 @@ export async function drawStoryPage(
 
   // Storybook text, opening on a two-line drop cap like a printed storybook.
   // A line or two is set larger, so a short page still reads as a page.
-  const tellings = spread.tellings ?? [];
-  const teller = tellings.find((t) => t.id === active) ?? tellings[0];
-  const text = spread.text.trim() || teller?.text?.trim() || "";
-  const short = text.length < 150;
-  const lead = short ? 54 : 46;
-  const first = text.charAt(0);
-  const capSize = Math.round(lead * 2.3);
-  ctx.font = `600 ${capSize}px ${fonts.display}`;
-  const capM = ctx.measureText(first);
-  // Tight to the glyph's ink, so a slim "I" still sits close to its word.
-  // A one-letter first word ("A day…") keeps a word space after the cap.
-  const capW = Math.max(capM.actualBoundingBoxRight, 18) + (/^\s/.test(text.slice(1)) ? 20 : 4);
+  const { lead, capW, lines: body } = plan.body;
+  ctx.font = `600 ${plan.body.capSize}px ${fonts.display}`;
   ctx.fillStyle = ACCENT;
   // The cap's baseline sits on the second line's baseline.
-  ctx.fillText(first, left - 2, y + lead);
+  ctx.fillText(text.charAt(0), left - 2, y + lead);
   ctx.fillStyle = INK_SOFT;
-  ctx.font = `400 ${short ? 37 : 31}px ${fonts.display}`;
-  // No widows: narrow the measure a little until the last line has company.
-  let body = wrap(ctx, text.slice(1), (i) => (i < 2 ? width - capW : width));
-  for (let k = 1; k <= 10 && body.length > 2 && !body[body.length - 1].includes(" "); k++) {
-    const w = width - k * 14;
-    body = wrap(ctx, text.slice(1), (i) => (i < 2 ? w - capW : w));
-  }
+  ctx.font = BODY_FONT(fonts, plan.body.size);
   body.forEach((line, i) => {
     ctx.fillText(line, left + (i < 2 ? capW : 0), y);
     y += lead;
@@ -151,23 +162,195 @@ export async function drawStoryPage(
     labels = labels.map((r) => ({ ...r, y: r.y + dy }));
   }
 
-  // Photos, taped into the space that is left.
-  const top = Math.max(y + 46, 700);
+  // Photos, taped into the space that is left (layoutStory kept only those
+  // at least PHOTO_MIN_W wide in it).
+  const top = photoTop(y);
+  const room = photoRoom(photos.length, y);
+  const [w0, w1] = photoWidths(room, photos.map((p) => photoAspect(p.aspect)));
   if (photos.length === 1) {
-    const pw = Math.min(520, (H - 150 - top) * (photos[0].aspect ?? 4 / 3) * 0.9);
-    await drawPhoto(ctx, photos[0], left + (width - pw) / 2 + 10, top, pw, -0.03, seed + 1, fonts, "top");
+    if (w0 > 0) await drawPhoto(ctx, photos[0], left + (width - w0) / 2 + 10, top, w0, -0.03, seed + 1, fonts, "top");
   } else if (photos.length >= 2) {
-    const room = H - 140 - top;
-    const a0 = photos[0].aspect ?? 4 / 3;
-    const a1 = photos[1].aspect ?? 4 / 3;
-    const w0 = Math.min(430, room * a0 * 0.82);
-    const w1 = Math.min(330, room * a1 * 0.72);
-    await drawPhoto(ctx, photos[0], left - 6, top, w0, -0.055, seed + 1, fonts, "top");
-    await drawPhoto(ctx, photos[1], right - w1 + 8, top + Math.min(70, room * 0.16), w1, 0.06, seed + 2, fonts, "corners");
+    if (w0 > 0) await drawPhoto(ctx, photos[0], left - 6, top, w0, -0.055, seed + 1, fonts, "top");
+    if (w1 > 0) await drawPhoto(ctx, photos[1], right - w1 + 8, top + Math.min(70, room * 0.16), w1, 0.06, seed + 2, fonts, "corners");
   }
 
   pageNumber(pageCtx, page, "left", fonts);
   return { canvas: c, labels };
+}
+
+/* ------------------------------------------------------------------------ */
+/* Story layout: fitting any length of text on the page                      */
+/* ------------------------------------------------------------------------ */
+
+const TITLE_FONT = (fonts: PageFonts) => `600 64px ${fonts.display}`;
+const BODY_FONT = (fonts: PageFonts, size: number) => `400 ${size}px ${fonts.display}`;
+const TITLE_TOP = 262;
+const TITLE_LEAD = 72;
+/** A longer title is cut to this many lines, the last ending in "…". */
+const TITLE_MAX_LINES = 3;
+/** The lowest the words (and tellers) may run on a page without photos. */
+const TEXT_FOOT = PAGE_PX_H - 150;
+/**
+ * The narrowest a taped photo is printed, page px. A photo the words leave
+ * less room than this is left out, rather than shrunk to a postage stamp
+ * (or, past zero, to nothing at all).
+ */
+export const PHOTO_MIN_W = 120;
+/**
+ * Body sizes, [font px, line lead px], largest first. A short text opens at
+ * the large size; a long one steps down to a readable floor (the last) to
+ * fit, and past that is cut, its last line ending in "…".
+ */
+const SHORT_SIZE = [37, 54] as const;
+const BODY_SIZES = [
+  [31, 46],
+  [28, 42],
+  [26, 39],
+  [24, 36],
+] as const;
+/** More text than any page holds, even at the floor: the rest is cut before wrapping. */
+const TEXT_CAP = 4000;
+/** The "Who's telling?" pencil note over the labels (labelArt.drawLabelsPrompt). */
+const PROMPT_H = 52;
+
+/** A photo's aspect (width / height), 4/3 when missing or not a usable number. */
+export function photoAspect(aspect: number | undefined): number {
+  return typeof aspect === "number" && Number.isFinite(aspect) && aspect > 0 ? Math.min(4, Math.max(0.25, aspect)) : 4 / 3;
+}
+
+/** Where the photos are taped, for words ending at y. */
+function photoTop(y: number) {
+  return Math.max(y + 46, 700);
+}
+
+/** The photos' room under words ending at y (two photos stand a little lower). */
+export function photoRoom(count: number, y: number) {
+  return PAGE_PX_H - (count >= 2 ? 140 : 150) - photoTop(y);
+}
+
+/**
+ * Each photo's print width in `room` (photoRoom), by aspect: one photo
+ * centred, or two, the second smaller and set lower. Not positive when the
+ * room is not.
+ */
+export function photoWidths(room: number, aspects: readonly number[]): number[] {
+  if (aspects.length === 1) return [Math.min(520, room * aspects[0] * 0.9)];
+  if (aspects.length >= 2) return [Math.min(430, room * aspects[0] * 0.82), Math.min(330, room * aspects[1] * 0.72)];
+  return [];
+}
+
+/** How far the tellers' line, or the tellings' labels, run below the words. */
+export function storyTailHeight(spread: Pick<BookSpread, "tellings" | "tellers">): number {
+  const tellings = spread.tellings ?? [];
+  if (tellings.length > 1) return 58 + PROMPT_H + 16 + tellerLabelsHeight(tellings.length) + 6;
+  if (spread.tellers?.length) return 34;
+  return 0;
+}
+
+/** The storybook text set at one size. */
+export interface StoryBody {
+  /** Font size and line lead, page px. */
+  size: number;
+  lead: number;
+  /** The drop cap's size and the indent it gives the first two lines. */
+  capSize: number;
+  capW: number;
+  /** The text after the drop cap, line by line. */
+  lines: string[];
+  /** Height the words take on the page, the drop cap's two lines at least. */
+  height: number;
+  /** True when the text did not fit and was cut ("…"). */
+  clamped: boolean;
+}
+
+/** The page's layout: the words, and how many photos still have room for them. */
+export interface StoryLayout {
+  body: StoryBody;
+  photos: number;
+}
+
+export interface StoryLayoutOptions {
+  /** The measure, page px. */
+  width: number;
+  /** The first body line's baseline. */
+  top: number;
+  /** What runs under the words (storyTailHeight). */
+  tail: number;
+  /** Each photo's aspect, in the order they are taped in. */
+  photos: readonly number[];
+}
+
+function setBody(ctx: Ctx, text: string, fonts: PageFonts, width: number, [size, lead]: readonly [number, number], tidy: boolean): StoryBody {
+  const capSize = Math.round(lead * 2.3);
+  ctx.font = `600 ${capSize}px ${fonts.display}`;
+  const first = text.charAt(0);
+  const capM = ctx.measureText(first);
+  // Tight to the glyph's ink, so a slim "I" still sits close to its word.
+  // A one-letter first word ("A day…") keeps a word space after the cap.
+  const capW = Math.max(capM.actualBoundingBoxRight || 0, 18) + (/^\s/.test(text.slice(1)) ? 20 : 4);
+  ctx.font = BODY_FONT(fonts, size);
+  const rest = text.slice(1);
+  let lines = wrap(ctx, rest, (i) => (i < 2 ? width - capW : width));
+  // No widows: narrow the measure a little until the last line has company.
+  for (let k = 1; tidy && k <= 10 && lines.length > 2 && !lines[lines.length - 1].includes(" "); k++) {
+    const w = width - k * 14;
+    lines = wrap(ctx, rest, (i) => (i < 2 ? w - capW : w));
+  }
+  const height = text ? Math.max(lines.length, 2) * lead : 0;
+  return { size, lead, capSize, capW, lines, height, clamped: false };
+}
+
+/**
+ * Cut `lines` to `max`, ending the last kept line in "…" (whole words, its
+ * trailing punctuation dropped) within `widthFor` that line.
+ */
+function clampLines(ctx: Ctx, lines: string[], max: number, widthFor: (line: number) => number, cut = false): string[] {
+  if (lines.length <= max && !cut) return lines;
+  const kept = lines.slice(0, Math.max(1, max));
+  const i = kept.length - 1;
+  const words = (kept[i] ?? "").split(" ");
+  const close = (ws: string[]) => `${ws.join(" ").replace(/[\s,;:.!?—–-]+$/, "")}…`;
+  let last = close(words);
+  while (words.length > 1 && ctx.measureText(last).width > widthFor(i)) {
+    words.pop();
+    last = close(words);
+  }
+  kept[i] = last;
+  return kept;
+}
+
+/**
+ * Fit a story page's text, for any length. Words and photos are set as they
+ * always were while they fit; past that the text steps down through
+ * BODY_SIZES, keeping each photo at least PHOTO_MIN_W wide, then leaves
+ * photos out (the last first), and at the floor size with no photos
+ * is cut, ending in "…". Every photo kept has a positive size. `ctx` is only
+ * measured with; its font is left changed.
+ */
+export function layoutStory(ctx: Ctx, text: string, fonts: PageFonts, o: StoryLayoutOptions): StoryLayout {
+  const cut = text.length > TEXT_CAP;
+  const words = cut ? text.slice(0, TEXT_CAP) : text;
+  const sizes = words.length < 150 ? [SHORT_SIZE, ...BODY_SIZES] : BODY_SIZES;
+  const fits = (b: StoryBody, n: number) => {
+    const end = o.top + b.height + o.tail;
+    if (n === 0) return end <= TEXT_FOOT;
+    return photoWidths(photoRoom(n, end), o.photos.slice(0, n)).every((w) => w >= PHOTO_MIN_W);
+  };
+  if (!cut) {
+    for (let n = Math.min(2, o.photos.length); n >= 0; n--) {
+      for (const size of sizes) {
+        const plain = setBody(ctx, words, fonts, o.width, size, false);
+        if (!fits(plain, n)) continue;
+        const tidy = setBody(ctx, words, fonts, o.width, size, true);
+        return { body: fits(tidy, n) ? tidy : plain, photos: n };
+      }
+    }
+  }
+  // Too long for the page at any size: the floor size, no photos, cut.
+  const body = setBody(ctx, words, fonts, o.width, sizes[sizes.length - 1], false);
+  const max = Math.max(2, Math.floor((TEXT_FOOT - o.tail - o.top) / body.lead));
+  const lines = clampLines(ctx, body.lines, max, (i) => (i < 2 ? o.width - body.capW : o.width), cut);
+  return { body: { ...body, lines, height: Math.max(lines.length, 2) * body.lead, clamped: true }, photos: 0 };
 }
 
 /**
@@ -192,7 +375,8 @@ function drawEndPage(ctx: Ctx, spread: BookSpread, fonts: PageFonts) {
   if (spread.text) {
     ctx.fillStyle = INK_SOFT;
     ctx.font = `italic 400 32px ${fonts.display}`;
-    wrap(ctx, spread.text, 560).forEach((line, i) => ctx.fillText(line, cx, top + 118 + i * 44));
+    // A small line; a long one is cut before it reaches the puppets.
+    clampLines(ctx, wrap(ctx, spread.text, 560), 3, () => 560).forEach((line, i) => ctx.fillText(line, cx, top + 118 + i * 44));
   }
   // The tellers, side by side, as on the tree.
   const tellers = spread.tellings ?? [];
@@ -275,7 +459,7 @@ export function drawStagePage(spread: BookSpread, page: number, fonts: PageFonts
   ctx.font = `700 19px ${fonts.sans}`;
   setSpacing(ctx, 4);
   ctx.fillStyle = "rgba(143,129,115,0.6)";
-  ctx.fillText(`${spread.title.toUpperCase()} · ${spread.year}`.slice(0, 60), (x0 + x1) / 2, (y0 + y1) * 0.5 + 52);
+  ctx.fillText(`${spread.title.toUpperCase()} · ${spread.dateLine?.trim() || spread.year}`.slice(0, 60), (x0 + x1) / 2, (y0 + y1) * 0.5 + 52);
   setSpacing(ctx, 0);
 
   pageNumber(ctx, page, "right", fonts);
