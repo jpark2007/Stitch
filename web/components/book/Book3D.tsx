@@ -44,7 +44,7 @@ import { createBlockGeometry } from "./blockGeometry";
 import { BOARD_D, BOARD_W, BookController, COVER_PIVOT_Y, type BookStart, type BookView } from "./controller";
 import { Leaf, type LeafTextures } from "./Leaf";
 import { BLOCK_T, COVER_T, PAGE_H, PAGE_W } from "./leafShape";
-import { isMuted, setMuted, subscribeMuted } from "./sound";
+import { isMuted, setMuted, subscribeMuted, unlockAudio } from "./sound";
 import { StageSlot, buildBookArt, useBookTextures, type BookArt, type StageSlotArgs } from "./StoryPage";
 import type { BookCover, BookSpread } from "./types";
 
@@ -110,6 +110,21 @@ export function Book3D({ spreads, cover, initial, renderStage }: Book3DProps) {
       live = false;
     };
   }, [spreads, cover]);
+
+  useEffect(() => {
+    // Start audio on the first gesture, before that gesture's turn begins.
+    const unlock = () => {
+      unlockAudio();
+      window.removeEventListener("pointerdown", unlock, true);
+      window.removeEventListener("keydown", unlock, true);
+    };
+    window.addEventListener("pointerdown", unlock, true);
+    window.addEventListener("keydown", unlock, true);
+    return () => {
+      window.removeEventListener("pointerdown", unlock, true);
+      window.removeEventListener("keydown", unlock, true);
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -435,7 +450,11 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage }: Sce
     onControls(api);
     // Test hook for the self-testing loop (FPS probe, scripted turns).
     const w = window as Window & { __stitchBook?: unknown };
-    w.__stitchBook = { ...api, frames: () => ctl.rt.frames };
+    w.__stitchBook = {
+      ...api,
+      frames: () => ctl.rt.frames,
+      leaves: () => ctl.rt.leaves.map((l) => `${l.mode}:${l.p.toFixed(3)}${l.visible ? "" : "(hidden)"}`),
+    };
     invalidate();
     return () => {
       onControls(null);

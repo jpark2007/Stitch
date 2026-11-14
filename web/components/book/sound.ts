@@ -39,6 +39,8 @@ export function setMuted(m: boolean) {
     // Private mode: keep it in memory.
   }
   if (master && ctx) master.gain.setTargetAtTime(m ? 0 : 0.9, ctx.currentTime, 0.03);
+  // Unmuting is a click: a fine moment to start audio.
+  if (!m) audio();
   listeners.forEach((l) => l(m));
 }
 
@@ -79,6 +81,15 @@ function audio(): AudioContext | null {
   }
   if (ctx.state === "suspended") void ctx.resume();
   return ctx;
+}
+
+/**
+ * Create the AudioContext inside the reader's first gesture (pointerdown or
+ * keydown), before any animation starts: constructing one can block the main
+ * thread for a while on some systems, and must not land mid-turn.
+ */
+export function unlockAudio() {
+  if (!muted) audio();
 }
 
 function noiseSource(ac: AudioContext, offset = Math.random() * 1.5) {
