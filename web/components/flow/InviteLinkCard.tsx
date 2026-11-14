@@ -3,14 +3,14 @@
 // The invite link card on family settings. Presentational: the page passes
 // the live invite (pickActiveInvite) and the create and revoke calls, and
 // this card shows the link, copies it, says how long it has left and turns it
-// off after an inline confirm. A rejected call shows its message in the card.
+// off (with every other link that still works) after an inline confirm. A rejected call shows its message in the card.
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Button, FOCUS_RING } from "./Button";
 import { TextField } from "./Field";
 import { FormError } from "./FormError";
 import { PaperCard } from "./PaperCard";
-import { describeExpiry, inviteActionOutcome, inviteUrl } from "./invites";
+import { describeExpiry, inviteActionOutcome, inviteUrl, turnOffQuestion } from "./invites";
 
 type FocusTarget = "create" | "link" | "turnOff" | "confirm";
 
@@ -22,9 +22,11 @@ export function InviteLinkCard(props: {
   origin: string;
   now?: Date;
   onCreate: () => Promise<void>;
+  /** How many other links still work; turning this one off turns them off too. */
+  otherActive?: number;
   onRevoke: (code: string) => Promise<void>;
 }) {
-  const { invite, origin, now, onCreate, onRevoke } = props;
+  const { invite, origin, now, otherActive = 0, onCreate, onRevoke } = props;
   const uid = useId();
   const headingId = `${uid}heading`;
   const questionId = `${uid}question`;
@@ -230,7 +232,7 @@ export function InviteLinkCard(props: {
                   className={`rounded-paper bg-paper px-4 py-3 ${FOCUS_RING}`}
                 >
                   <p id={questionId} className="text-[0.9375rem] leading-relaxed text-ink">
-                    Turn it off? People who haven&rsquo;t joined yet won&rsquo;t be able to use it.
+                    {turnOffQuestion(otherActive)}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button variant="danger" busy={busy === "revoke"} onClick={revoke}>

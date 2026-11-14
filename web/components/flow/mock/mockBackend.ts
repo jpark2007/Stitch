@@ -267,7 +267,15 @@ const INVALID_LOGIN = "Invalid email or password";
 const EMAIL_TAKEN = "An account with this email already exists";
 const BLANK_PERSON_NAME = "A person needs a name";
 const JOIN_EXACTLY_ONE = "Send exactly one of personId (claim) or person (add yourself)";
-const ALREADY_HAS_PERSON = "this user already has a person in this family";
+// api/routes/families.py: fixed sentences, never the db layer's own text.
+const PERSON_TAKEN = "Someone has already claimed this person";
+const ALREADY_HAVE_PERSON = "You already have a person in this family";
+const BAD_COLOR = "Color must be a hex code like #3f6fb5";
+// api/routes/families.py size limits, checked after trimming (a 422 naming the limit).
+export const MAX_FAMILY_NAME_CHARS = 100;
+export const MAX_PERSON_NAME_CHARS = 100;
+export const MAX_PERSON_TEXT_CHARS = 2_000;
+const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -461,6 +469,15 @@ function requiredString(
     errors.push({ loc: [...loc, key], msg: opts.blankMsg, type: "value_error" });
   }
   return value;
+}
+
+/**
+ * api/routes/families.py _check_length: a 422 naming the limit, e.g. "A name
+ * must be at most 100 characters" or "Notes must be at most 2,000 characters".
+ * Counts code points, like Python's len.
+ */
+function checkLength(value: string, limit: number, what: string): void {
+  if ([...value].length > limit) fail(422, `${what} must be at most ${limit.toLocaleString("en-US")} characters`);
 }
 
 function optionalString(body: Json, key: string, loc: Loc, errors: FieldError[]): string | null {
@@ -994,9 +1011,31 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     return out;
   }
 
-  /** The route's name check (api/routes/families.py _clean_new_person): 400 for a blank name. */
-  function requireName(fields: PersonFields): void {
-    if (fields.name !== undefined && !fields.name) fail(400, BLANK_PERSON_NAME);
+  /**
+   * api/routes/families.py _clean_new_person / _clean_patch, in its order: a
+   * blank name is a 400; a name over MAX_PERSON_NAME_CHARS, a color that is not
+   * a hex code, or free text over MAX_PERSON_TEXT_CHARS is a 422. Trims the
+   * color and the free text in place (blank text becomes null), as the API does.
+   */
+  function cleanPerson(fields: PersonFields): void {
+    if (fields.name !== undefined) {
+      if (!fields.name) fail(400, BLANK_PERSON_NAME);
+      checkLength(fields.name, MAX_PERSON_NAME_CHARS, "A name");
+    }
+    const sheet = fields.character;
+    if (!sheet) return;
+    sheet.color = sheet.color.trim();
+    if (!HEX_COLOR.test(sheet.color)) fail(422, BAD_COLOR);
+    for (const [key, what] of [
+      ["item", "A signature item"],
+      ["notes", "Notes"],
+    ] as const) {
+      const value = sheet[key];
+      if (value === null || value === undefined) continue;
+      const trimmed = value.trim();
+      checkLength(trimmed, MAX_PERSON_TEXT_CHARS, what);
+      sheet[key] = trimmed || null;
+    }
   }
 
   /** Everyone below `id` through parentIds (api/db/people.py _descendant_ids). */
@@ -1660,10 +1699,11 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     }
     check(errors);
     if (!name.trim()) fail(400, "A family needs a name");
+    checkLength(name.trim(), MAX_FAMILY_NAME_CHARS, "A family name");
     if (fields.parentIds?.length || fields.spouseIds?.length) {
       fail(400, "The first person in a new family cannot have parents or spouses yet");
     }
-    requireName(fields);
+    cleanPerson(fields);
     checkYears(s, fid, fields.born ?? null, fields.died ?? null, []);
     const family: MockFamily = {
       id: fid,
@@ -1754,15 +1794,15 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     if (personId !== null) {
       const target = findPerson(s, family.id, personId);
       if (!target) fail(404, PERSON_NOT_FOUND);
-      if (target.userId && target.userId !== user.id) fail(409, "Someone has already claimed this person");
-      if (mine && mine.id !== target.id) fail(409, ALREADY_HAS_PERSON);
+      if (target.userId && target.userId !== user.id) fail(409, PERSON_TAKEN);
+      if (mine && mine.id !== target.id) fail(409, ALREADY_HAVE_PERSON);
       target.userId = user.id;
       person = target;
     } else {
       const add = fields as PersonFields;
-      requireName(add);
+      cleanPerson(add);
       checkNewPerson(s, family.id, add);
-      if (mine) fail(409, "You already have a person in this family");
+      if (mine) fail(409, ALREADY_HAVE_PERSON);
       person = createPerson(s, family.id, add, user.id, user.id);
     }
     if (!family.members.some((m) => m.userId === user.id)) {
@@ -1779,7 +1819,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     const errors: FieldError[] = [];
     const fields = readPerson(body, ["body"], errors, { partial: false });
     check(errors);
-    requireName(fields);
+    cleanPerson(fields);
     checkNewPerson(s, fid, fields);
     const person = createPerson(s, fid, fields, null, user.id);
     save();
@@ -1792,7 +1832,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     const errors: FieldError[] = [];
     const fields = readPerson(body, ["body"], errors, { partial: true });
     check(errors);
-    requireName(fields);
+    cleanPerson(fields);
     const person = findPerson(s, fid, id);
     if (!person) fail(404, PERSON_NOT_FOUND);
     checkPatch(s, fid, person, fields);

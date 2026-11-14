@@ -82,6 +82,18 @@ export function activeInvites(invites: Invite[] | undefined, now: Date): Invite[
   });
 }
 
+/**
+ * The question before "Turn off this link" goes ahead. Turning it off turns
+ * off every other link that still works too (activeInvites), so when there
+ * are others the question says so, with how many.
+ */
+export function turnOffQuestion(otherActive: number): string {
+  const others = Number.isFinite(otherActive) ? Math.max(0, Math.floor(otherActive)) : 0;
+  if (others === 0) return "Turn it off? People who haven’t joined yet won’t be able to use it.";
+  const which = others === 1 ? "the other invite link" : `the other ${others} invite links`;
+  return `Turn it off? This also turns off ${which} still working for this family, so people who haven’t joined yet won’t be able to use any of them.`;
+}
+
 /** Whole calendar days from `now` to `then`, in local time (DST-safe). */
 function calendarDaysBetween(now: Date, then: Date): number {
   const a = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());

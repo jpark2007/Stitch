@@ -302,6 +302,7 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
             invite={pickActiveInvite(load.family.invites, load.now)}
             origin={load.origin}
             now={load.now}
+            otherActive={Math.max(0, activeInvites(load.family.invites, load.now).length - 1)}
             onCreate={createInvite}
             onRevoke={revokeInvite}
           />

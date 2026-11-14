@@ -337,7 +337,8 @@ export function withAddedParam(next: string, personId: string): string {
 
 /**
  * The server's 400 details for people (api/db/people.py InvalidRelation and
- * the blank-name check in api/routes/families.py), in friendlier words and on
+ * the blank-name check in api/routes/families.py) and its 422 name-length
+ * limit, in friendlier words and on
  * the field they belong to. Anything else comes back as is, on no field.
  */
 export function relativeServerError(detail: string): { field: RelativeField | null; message: string } {
@@ -367,6 +368,9 @@ export function relativeServerError(detail: string): { field: RelativeField | nu
     };
   }
   if (key === "a person needs a name") return { field: "name", message: "Enter their name." };
+  // The route's 422 size limit (api/routes/families.py _check_length).
+  const tooLong = /^a name must be at most ([\d,]+) characters$/.exec(key);
+  if (tooLong) return { field: "name", message: `Keep their name to ${tooLong[1]} characters or fewer.` };
   if (key === "a person cannot die before they were born") return { field: "died", message: MSG.diedBeforeBorn };
   // "a person cannot be born before their parent (David, born 1962)", and after a child.
   const years = /^a person cannot be born (before their parent|after their child) \((.+), born (-?\d+)\)$/.exec(key);

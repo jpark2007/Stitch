@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { activeInvites, describeExpiry, inviteActionOutcome, inviteUrl, pickActiveInvite } from "../invites.ts";
+import { activeInvites, describeExpiry, inviteActionOutcome, inviteUrl, pickActiveInvite, turnOffQuestion } from "../invites.ts";
 import {
   UNKNOWN_MEMBER_NAME,
   memberRows,
@@ -446,4 +446,14 @@ test("activeInvites: every invite that still works, so turning the link off turn
   assert.equal(pickActiveInvite(invites, now).code, "new", "the one shown is among them");
   assert.deepEqual(activeInvites(undefined, now), []);
   assert.deepEqual(activeInvites([{ code: "edge", createdBy: "u", expiresAt: now.toISOString() }], now), [], "expiring now is expired");
+});
+
+test("turnOffQuestion names the other links that go too", () => {
+  assert.equal(turnOffQuestion(0), "Turn it off? People who haven’t joined yet won’t be able to use it.");
+  assert.match(turnOffQuestion(1), /also turns off the other invite link still working/);
+  assert.match(turnOffQuestion(3), /also turns off the other 3 invite links still working/);
+  assert.match(turnOffQuestion(3), /won’t be able to use any of them\.$/);
+  // Odd counts fall back to the one-link question.
+  assert.equal(turnOffQuestion(-2), turnOffQuestion(0));
+  assert.equal(turnOffQuestion(Number.NaN), turnOffQuestion(0));
 });

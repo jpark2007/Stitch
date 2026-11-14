@@ -1456,7 +1456,57 @@ test("parity: join checks the body, then the invite, then the person", async () 
   assert.equal(ok.status, 200);
   const other = await call(b, "POST", J, { personId: "maya" });
   assert.equal(other.status, 409);
-  assert.equal(other.body.detail, "this user already has a person in this family");
+  // The route's fixed sentence, never the db layer's (api/routes/families.py ALREADY_HAVE_PERSON).
+  assert.equal(other.body.detail, "You already have a person in this family");
+  const again = await call(b, "POST", J, { person: { name: "Lena again" } });
+  assert.equal(again.status, 409);
+  assert.equal(again.body.detail, "You already have a person in this family");
+});
+
+test("parity: size and color limits are 422s naming the limit (api/routes/families.py)", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const long = (n) => "x".repeat(n);
+  const sheet = (extra) => ({ color: "#3f6fb5", ...extra });
+  const P = "/families/sample_family/people";
+  const cases = [
+    ["POST", P, { name: long(101) }, "A name must be at most 100 characters"],
+    ["POST", P, { name: "Ok", character: sheet({ color: "red" }) }, "Color must be a hex code like #3f6fb5"],
+    ["POST", P, { name: "Ok", character: sheet({ notes: long(2001) }) }, "Notes must be at most 2,000 characters"],
+    ["POST", P, { name: "Ok", character: sheet({ item: long(2001) }) }, "A signature item must be at most 2,000 characters"],
+    ["PATCH", `${P}/sam`, { name: long(101) }, "A name must be at most 100 characters"],
+    ["PATCH", `${P}/sam`, { character: sheet({ color: "#12" }) }, "Color must be a hex code like #3f6fb5"],
+    // The body is cleaned before the person is looked up, as in the API.
+    ["PATCH", `${P}/ghost`, { character: sheet({ color: "blue" }) }, "Color must be a hex code like #3f6fb5"],
+    ["POST", "/families", { name: long(101), person: { name: "Me" } }, "A family name must be at most 100 characters"],
+    ["POST", "/families", { name: "Fine", person: { name: long(101) } }, "A name must be at most 100 characters"],
+  ];
+  const before = (await call(b, "GET", "/families/sample_family/tree")).body.people.length;
+  for (const [method, path, body, detail] of cases) {
+    const r = await call(b, method, path, body);
+    assert.equal(r.status, 422, `${method} ${path} ${JSON.stringify(body).slice(0, 60)}`);
+    assert.equal(r.body.detail, detail);
+  }
+  assert.equal((await call(b, "GET", "/families/sample_family/tree")).body.people.length, before, "nothing was added");
+  assert.equal((await call(b, "GET", "/me")).body.families.length, 1, "no family was started");
+  // Limits count after trimming, and exactly at the limit is fine.
+  const edge = await call(b, "POST", P, {
+    name: `  ${long(100)}  `,
+    character: sheet({ color: " #ABC ", item: "  ", notes: ` ${long(2000)} ` }),
+  });
+  assert.equal(edge.status, 201, JSON.stringify(edge.body).slice(0, 200));
+  assert.equal(edge.body.name, long(100));
+  assert.equal(edge.body.character.color, "#ABC");
+  assert.equal(edge.body.character.item, null, "blank text becomes null");
+  assert.equal(edge.body.character.notes, long(2000));
+  // Joining by adding yourself has the same limits, after the invite is found.
+  await signup(b, "Lena", "lena@example.com");
+  const join = await call(b, "POST", "/invites/riveras-demo/join", { person: { name: long(101) } });
+  assert.equal(join.status, 422);
+  assert.equal(join.body.detail, "A name must be at most 100 characters");
+  assert.deepEqual((await call(b, "GET", "/me")).body.families, [], "a failed join leaves no membership");
+  const dead = await call(b, "POST", "/invites/nope/join", { person: { name: long(101) } });
+  assert.equal(dead.status, 404, "the invite is checked first");
 });
 
 test("parity: questions come newest first", async () => {

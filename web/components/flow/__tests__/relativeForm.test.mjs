@@ -91,6 +91,8 @@ describe("validateRelative", () => {
 
   test("blank name", () => {
     assert.equal(validateRelative(draft({ name: "   " }), PEOPLE).name, "Enter their name.");
+    // The client caps a name below the API's 100-character limit, so a long one never leaves the page.
+    assert.equal(validateRelative(draft({ name: "x".repeat(101) }), PEOPLE).name, "Keep their name to 80 characters or fewer.");
   });
 
   test("too-long name", () => {
@@ -329,6 +331,8 @@ describe("relativeServerError", () => {
       "That would make someone their own ancestor. Check the children you picked.",
     ],
     ["A person needs a name", "name", "Enter their name."],
+    // The route's 422 size limit sentence, on the name field.
+    ["A name must be at most 100 characters", "name", "Keep their name to 100 characters or fewer."],
   ];
 
   for (const [detail, field, message] of cases) {

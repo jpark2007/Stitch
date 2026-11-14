@@ -155,7 +155,8 @@ export function AddRelativeForm(props: {
           const merged = mergeServerErrors<RelativeField>({}, err.fieldErrors, RELATIVE_FIELDS);
           fields = merged.fields;
           message = merged.rest;
-        } else if (err.status === 400) {
+        } else if (err.status === 400 || err.status === 422) {
+          // A 400 rule or a 422 limit sentence ("A name must be at most 100 characters").
           const mapped = relativeServerError(err.detail);
           if (mapped.field) fields = { [mapped.field]: mapped.message };
           else message = mapped.message;
