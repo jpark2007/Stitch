@@ -10,7 +10,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 import { Button, ButtonLink } from "@/components/flow/Button";
 import { PaperCard } from "@/components/flow/PaperCard";
-import { recallFamily, rememberFamily } from "@/components/flow/session";
+import { hrefs, recallFamily, rememberFamily } from "@/components/flow/session";
 import { api, isMockMode } from "@/lib/api";
 import type { FamilySummary } from "@/lib/types";
 import { demoFamily, demoPeople } from "./demoFamily";
@@ -155,6 +155,7 @@ function FamilyHome(props: {
       title={familyName}
       caption={people.length ? "pick anyone to open their book" : undefined}
       threads={threadsHref(familyId)}
+      add={hrefs.add({ familyId })}
       switcher={
         <FamilySwitch families={view.families} currentId={familyId} busy={switching} onChange={onSwitch} />
       }
@@ -288,11 +289,13 @@ function HomeShell(props: {
   caption?: ReactNode;
   threads: string;
   switcher?: ReactNode;
+  /** "Add a memory" link: only for a signed-in viewer on a real family. */
+  add?: string;
   note?: ReactNode;
   busy?: boolean;
   children: ReactNode;
 }) {
-  const { title, caption, threads, switcher, note, busy, children } = props;
+  const { title, caption, threads, add, switcher, note, busy, children } = props;
   const placeholder = busy === true;
   return (
     <main className="mx-auto flex min-h-dvh max-w-6xl flex-col px-[var(--gutter)] pb-10 pt-8 sm:pt-12">
@@ -317,6 +320,20 @@ function HomeShell(props: {
               </svg>
               Family threads
             </Link>
+            {add && (
+              <Link
+                href={add}
+                aria-label="Add a memory"
+                className="-my-2 inline-flex shrink-0 items-center gap-1.5 py-2 text-sm text-ink-faint no-underline transition-colors hover:text-ink"
+              >
+                <span aria-hidden className="text-base leading-none">
+                  +
+                </span>
+                <span aria-hidden>
+                  Add<span className="hidden sm:inline"> a memory</span>
+                </span>
+              </Link>
+            )}
           </div>
         </nav>
         {title !== undefined &&
