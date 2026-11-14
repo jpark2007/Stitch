@@ -30,6 +30,9 @@ from story_scenes import STORIES, story_scene
 from timeline_sanity import CHECKS, SIT, sanity_problems, value_at
 
 NAMES = sorted(STORIES)
+# The scene's props, for sanity_problems: check_props_on_set then judges a grounded prop by its
+# drawn width, so a car or a pew parked half on stage is caught.
+PROPS = story_scene()[1]
 
 
 def compile_story(sp: dict[str, Any]) -> CompileResult:
@@ -105,7 +108,7 @@ def test_story_compiles_with_zero_errors(name):
 def test_story_timeline_is_sane(name):
     result = compiled(name)
     assert result.ok, "\n".join(messages(result))
-    assert sanity_problems(result.timeline) == []
+    assert sanity_problems(result.timeline, props=PROPS) == []
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -279,7 +282,7 @@ def test_a_clean_hand_built_timeline_has_no_problems():
         {"target": "prop:cup", "channel": "position",
          "keys": [[0, [0.3, 0.0, 0.5]], [2, [0, 0, 0]], [4, [0.1, 0.0, 0.5]]]},
     ])
-    assert sanity_problems(tl) == []
+    assert sanity_problems(tl, props=PROPS) == []
     assert [c.__name__ for c in CHECKS] == [
         "check_hands", "check_parent_position", "check_times", "check_seated", "check_finite", "check_props_on_set",
     ]
@@ -293,7 +296,7 @@ def test_hands_catches_two_props_in_one_hand():
         {"target": "prop:keys", "channel": "parent", "keys": [[0, "ground"], [3, "puppet:dad.hand_r"]]},
         {"target": "prop:keys", "channel": "position", "keys": [[0, [0.4, 0.0, 0.5]], [3, [0, 0, 0]]]},
     ])
-    problems = only(sanity_problems(tl), "hands")
+    problems = only(sanity_problems(tl, props=PROPS), "hands")
     assert problems == ["hands: t=3: hand puppet:dad.hand_r holds 2 props: cup, keys"]
 
 
@@ -303,7 +306,7 @@ def test_hands_catches_a_prop_with_two_parents_at_one_time():
          "keys": [[0, "ground"], [2, "puppet:dad.hand_r"], [2, "puppet:dad.hand_l"]]},
         {"target": "prop:cup", "channel": "position", "keys": [[0, [0.3, 0.0, 0.5]], [2, [0, 0, 0]]]},
     ])
-    problems = only(sanity_problems(tl), "hands")
+    problems = only(sanity_problems(tl, props=PROPS), "hands")
     assert problems == [
         "hands: t=2: prop:cup has two parents at once: 'puppet:dad.hand_r' and 'puppet:dad.hand_l'"
     ]
@@ -316,7 +319,7 @@ def test_hands_catches_a_prop_resting_on_itself_through_another():
         {"target": "prop:box_b", "channel": "parent", "keys": [[0, "ground"], [1, "prop:box_a.top"]]},
         {"target": "prop:box_b", "channel": "position", "keys": [[0, [0.2, 0.0, 0.5]], [1, [0, 0, 0]]]},
     ])
-    problems = only(sanity_problems(tl), "hands")
+    problems = only(sanity_problems(tl, props=PROPS), "hands")
     assert any("prop:box_a is its own ancestor: box_a -> box_b -> box_a" in p for p in problems)
 
 
@@ -326,7 +329,7 @@ def test_parent_position_catches_a_parent_key_without_a_position_key():
         {"target": "prop:cup", "channel": "parent", "keys": [[0, "ground"], [2, "puppet:dad.hand_r"]]},
         {"target": "prop:cup", "channel": "position", "keys": [[0, [0.3, 0.0, 0.5]], [2.5, [0, 0, 0]]]},
     ])
-    assert only(sanity_problems(tl), "parent_position") == [
+    assert only(sanity_problems(tl, props=PROPS), "parent_position") == [
         "parent_position: t=2: prop:cup parent key 'puppet:dad.hand_r' has no position key at the same time"
     ]
 
@@ -334,7 +337,7 @@ def test_parent_position_catches_a_parent_key_without_a_position_key():
 # (c) all times within duration
 def test_times_catches_a_key_after_the_end():
     tl = _timeline([{"target": "puppet:dad", "channel": "head.rot", "keys": [[1, 0.0], [6, -0.4]]}])
-    assert only(sanity_problems(tl), "times") == ["times: puppet:dad head.rot key at t=6 is outside [0, 5]"]
+    assert only(sanity_problems(tl, props=PROPS), "times") == ["times: puppet:dad head.rot key at t=6 is outside [0, 5]"]
 
 
 def test_times_catches_effects_captions_and_words_outside_the_timeline():
@@ -342,7 +345,7 @@ def test_times_catches_effects_captions_and_words_outside_the_timeline():
                    narrations={"dad": {"authorId": "dad", "lines": [
                        {"t": 4.5, "text": "too late", "words": [{"t": 4.5, "word": "too"}, {"t": 5.5, "word": "late"}]},
                    ]}})
-    assert only(sanity_problems(tl), "times") == [
+    assert only(sanity_problems(tl, props=PROPS), "times") == [
         "times: confetti effect end at t=6 is outside [0, 5]",
         "times: caption 'early' at t=-1 is outside [0, 5]",
         "times: dad's word 'late' at t=5.5 is outside [0, 5]",
@@ -358,7 +361,7 @@ def test_times_catches_unsorted_keys_and_broken_shots():
             {"id": "s2", "set": "park", "start": 4.5, "actionStart": 4.0, "end": 9.0},
         ],
     })
-    assert only(sanity_problems(tl), "times") == [
+    assert only(sanity_problems(tl, props=PROPS), "times") == [
         "times: puppet:dad head.rot: key at t=2 comes after one at t=3",
         "times: shot s2: start 4.5, actionStart 4, end 9 out of order",
         "times: shots not contiguous: s1 ends at 4, s2 starts at 4.5",
@@ -374,7 +377,7 @@ def _seated(root_keys: list, extra: list[dict] | None = None) -> Timeline:
 
 def test_seated_catches_a_seated_puppet_sliding_with_no_vehicle():
     tl = _seated([[0, [0.0, 0.08, 0.5]], [3, [0.4, 0.08, 0.5]]])
-    assert only(sanity_problems(tl), "seated") == [
+    assert only(sanity_problems(tl, props=PROPS), "seated") == [
         "seated: t=0 to t=3: puppet:dad is seated but moves (+0.400, +0.000) and no prop moves with them"
     ]
 
@@ -384,16 +387,16 @@ def test_seated_lets_a_rider_move_with_the_vehicle():
         {"target": "prop:car", "channel": "parent", "keys": [[0, "ground"]]},
         {"target": "prop:car", "channel": "position", "keys": [[0, [-0.5, 0.0, 0.5]], [3, [-0.1, 0.0, 0.5]]]},
     ]
-    assert sanity_problems(_seated([[0, [0.0, 0.08, 0.5]], [3, [0.4, 0.08, 0.5]]], car)) == []
+    assert sanity_problems(_seated([[0, [0.0, 0.08, 0.5]], [3, [0.4, 0.08, 0.5]]], car), props=PROPS) == []
     # A car that moves a different distance does not carry them.
     car[1]["keys"][1] = [3, [0.0, 0.0, 0.5]]
-    assert only(sanity_problems(_seated([[0, [0.0, 0.08, 0.5]], [3, [0.4, 0.08, 0.5]]], car)), "seated")
+    assert only(sanity_problems(_seated([[0, [0.0, 0.08, 0.5]], [3, [0.4, 0.08, 0.5]]], car), props=PROPS), "seated")
 
 
 def test_seated_catches_walk_cycle_legs_while_seated():
     walk = [{"target": "puppet:dad", "channel": "leg_l.upper.rot", "keys": [[0, 1.5], [1, 0.45], [2, 0.1], [4, 1.5]]}]
     tl = _seated([[0, [0.0, 0.08, 0.5]], [4, [0.0, 0.08, 0.5]]], walk)
-    assert only(sanity_problems(tl), "seated") == [
+    assert only(sanity_problems(tl, props=PROPS), "seated") == [
         "seated: t=1: puppet:dad is seated but leg_l.upper takes walk/run cycle value 0.45",
         "seated: t=2: puppet:dad is seated but leg_l.upper takes walk/run cycle value 0.1",
     ]
@@ -405,7 +408,7 @@ def test_finite_catches_nan_and_inf():
         {"target": "puppet:dad", "channel": "root.position", "keys": [[0, [0.0, 0.0, 0.5]], [1, [math.nan, 0.0, 0.5]]]},
         {"target": "puppet:dad", "channel": "arm_r.upper.rot", "keys": [[0, math.inf]]},
     ])
-    problems = only(sanity_problems(tl), "finite")
+    problems = only(sanity_problems(tl, props=PROPS), "finite")
     assert any("root.position" not in p and "is inf" in p for p in problems), problems
     assert any(p.endswith("is nan") for p in problems), problems
 
@@ -415,7 +418,7 @@ def test_finite_catches_a_bad_facing_and_a_short_position():
         {"target": "puppet:dad", "channel": "root.facing", "keys": [[0, 1], [2, 0]]},
         {"target": "prop:cup", "channel": "position", "keys": [[0, [0.3, 0.0]]]},
     ])
-    assert only(sanity_problems(tl), "finite") == [
+    assert only(sanity_problems(tl, props=PROPS), "finite") == [
         "finite: t=2: puppet:dad root.facing is 0.0, not 1 or -1",
         "finite: t=0: prop:cup position is [0.3, 0.0], not [x, y, z]",
     ]
@@ -513,7 +516,7 @@ def test_a_prop_put_back_at_another_x_on_a_new_set_is_keyed_there():
         _wave_shot("s2", "living_room", {"kid": {"at": "front_door"}}, {"cup": {"at": "rug"}}),
     ]})
     assert result.ok, messages(result)
-    assert sanity_problems(result.timeline) == []
+    assert sanity_problems(result.timeline, props=PROPS) == []
     assert keys(result.timeline, "prop:cup", "position")[-1] == (4.0, [-0.4, 0.0, 0.5])
 
 
@@ -533,7 +536,7 @@ def test_a_prop_put_back_at_the_same_x_on_a_new_set_is_keyed_there():
         _wave_shot("s2", "living_room", {"kid": {"at": "rug"}}, {"cup": {"at": "front_door"}}),
     ]})
     assert result.ok, messages(result)
-    assert sanity_problems(result.timeline) == []
+    assert sanity_problems(result.timeline, props=PROPS) == []
 
 
 @pytest.mark.xfail(strict=True, reason=(

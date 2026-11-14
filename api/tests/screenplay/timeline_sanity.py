@@ -4,8 +4,9 @@ Test helper only (not collected by pytest: the file name does not start with ``t
 it as ``from timeline_sanity import sanity_problems``.
 
 Everything here reads the timeline alone: no screenplay, no scene, no compiler module. The only
-other input is the rig's pose table (shared/rig/poses.json), which is part of the contract the
-stage plays. Interpolation follows shared/CONTRACTS.md: hold the first value before a track's
+other inputs are the rig's pose table (shared/rig/poses.json) and the prop size classes
+(shared/vocabulary.json), part of the contract the stage plays, plus, optionally, the scene's
+prop definitions (below). Interpolation follows shared/CONTRACTS.md: hold the first value before a track's
 first key and the last after its last; numbers and lists are linear between keys; strings step.
 Two keys at the same time are a step: the later one wins from that time on.
 
@@ -38,6 +39,13 @@ Checks:
   first key that comes later. Timeline-only, it cannot tell a prop left over from one a new
   set's propStart put back at the very same place without a key (compiler._hold_then skips an
   unchanged value); test_story_scenarios has that as a strict xfail.
+  Given the scene's props (``sanity_problems(tl, props=...)``), a prop is on stage when any part
+  of its drawn width overlaps the stage, not just its anchor: a car parked at x=-1.3 still shows.
+
+Props are the one input besides the timeline: optional, and only for that width. A drawn width
+is ``sizes[size] * aspect`` (shared/vocabulary.json, CONTRACTS.md 'World size'); the art may be
+mirrored, so the side reaching furthest from the anchor, ``max(a, 1 - a) * width``, counts on
+both sides.
 """
 
 from __future__ import annotations
@@ -47,15 +55,16 @@ import json
 import math
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+import schemas
 from screenplay.schema import Timeline
 
 __all__ = [
     "CHECKS", "SEAT_TOL", "STAGE_EDGE", "check_finite", "check_hands", "check_parent_position",
-    "check_props_on_set", "check_seated", "check_times", "sanity_problems", "value_at",
+    "check_props_on_set", "check_seated", "check_times", "half_extent", "sanity_problems", "value_at",
 ]
 
 TIME_TOL = 1e-6
@@ -64,7 +73,9 @@ SEAT_TOL = 1e-3
 # here, equal to screenplay.effects.STAGE_EDGE, so the checks stay timeline-only.
 STAGE_EDGE = 1.0
 
-_POSES = json.loads((Path(__file__).resolve().parents[3] / "shared" / "rig" / "poses.json").read_text())
+_SHARED = Path(__file__).resolve().parents[3] / "shared"
+_POSES = json.loads((_SHARED / "rig" / "poses.json").read_text())
+SIZES: dict[str, float] = {k: float(v) for k, v in json.loads((_SHARED / "vocabulary.json").read_text())["sizes"].items()}
 LEG_BONES = ("leg_l.upper", "leg_l.lower", "leg_r.upper", "leg_r.lower")
 SIT: dict[str, float] = {b: float(_POSES["poses"]["sit"][b]) for b in LEG_BONES}
 CYCLE_VALUES: dict[str, list[float]] = {
@@ -299,10 +310,18 @@ def _ground_x(parent: Keys, position: Keys, t: float) -> float | None:
     return float(pos[0])
 
 
-def check_props_on_set(tl: Timeline) -> list[str]:
+def half_extent(prop: schemas.Prop) -> float:
+    """How far a prop's drawn art reaches from its anchor on either side, mirrored or not:
+    ``max(a, 1 - a) * sizes[size] * aspect`` with ``a`` the anchor's x fraction."""
+    a = float(prop.anchor[0]) if prop.anchor else 0.5
+    return max(a, 1.0 - a) * SIZES.get(prop.size, 0.0) * float(prop.aspect)
+
+
+def check_props_on_set(tl: Timeline, *, props: Mapping[str, schemas.Prop] | None = None) -> list[str]:
     """(f) No prop shows on a set before it is placed there or after it was left behind.
 
-    At each shot's start, a prop on the ground on stage (``|x| <= STAGE_EDGE``) must have a
+    At each shot's start, a prop on the ground on stage (``|x| <= STAGE_EDGE``; with ``props``,
+    any part of ``[x - half_extent, x + half_extent]`` within ``[-STAGE_EDGE, STAGE_EDGE]``) must have a
     ``parent`` or ``position`` key in ``[shot.start, shot.end)`` (the last shot: ``[start, end]``;
     a key at a shot's end is the next shot's start key), or the shot before it must be on
     the same set and the prop must already have been placed in that run of shots (a key in one
@@ -311,6 +330,8 @@ def check_props_on_set(tl: Timeline) -> list[str]:
     tracks = _tracks(tl)
     out: list[str] = []
     for prop in sorted({tgt for tgt, _ in tracks if tgt.startswith("prop:")}):
+        defn = (props or {}).get(prop[len("prop:"):])
+        reach = half_extent(defn) if defn is not None else 0.0
         parent = tracks.get((prop, "parent"), [])
         position = tracks.get((prop, "position"), [])
         key_times = [t for t, _ in parent + position]
@@ -325,7 +346,7 @@ def check_props_on_set(tl: Timeline) -> list[str]:
                         for t in key_times)
             if not keyed and not placed_on_this_set:
                 x = _ground_x(parent, position, shot.start)
-                if x is not None and math.isfinite(x) and abs(x) <= STAGE_EDGE:
+                if x is not None and math.isfinite(x) and abs(x) - reach <= STAGE_EDGE:
                     out.append(
                         f"props_on_set: shot {shot.id} ({shot.set}) at {_t(shot.start)}: {prop} is on the ground "
                         f"at x={round(x, 3) + 0.0:g} but has no parent or position key in this shot, nor in an "
@@ -338,8 +359,16 @@ def check_props_on_set(tl: Timeline) -> list[str]:
 CHECKS: list[Check] = [
     check_hands, check_parent_position, check_times, check_seated, check_finite, check_props_on_set,
 ]
+# The checks that take the scene's props as a keyword (sanity_problems passes them).
+_TAKES_PROPS: frozenset[Callable[..., list[str]]] = frozenset({check_props_on_set})
 
 
-def sanity_problems(timeline: Timeline) -> list[str]:
-    """Every problem every check in CHECKS finds, in CHECKS order; empty when the timeline is sane."""
-    return [p for check in CHECKS for p in check(timeline)]
+def sanity_problems(timeline: Timeline, *, props: Mapping[str, schemas.Prop] | None = None) -> list[str]:
+    """Every problem every check in CHECKS finds, in CHECKS order; empty when the timeline is sane.
+
+    ``props`` (the scene's prop definitions) goes to the checks that take it (check_props_on_set,
+    which then judges a grounded prop by its drawn width); without it nothing changes."""
+    out: list[str] = []
+    for check in CHECKS:
+        out += check(timeline, props=props) if check in _TAKES_PROPS else check(timeline)
+    return out
