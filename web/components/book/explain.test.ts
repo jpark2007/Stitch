@@ -152,12 +152,14 @@ describe("layoutNote", () => {
  * [floor - h, floor] (px per stage unit `k`), its width `aspect` × height.
  */
 function camera(k: number, floor: number, cx: number, aspect: number) {
-  return (sx: number, h: number, out: Parameters<Explain["placeNote"]>[1]["rect"]) => {
-    const w = h * aspect * k;
-    out.x0 = cx + sx * k - w / 2;
-    out.x1 = cx + sx * k + w / 2;
-    out.y1 = floor;
-    out.y0 = floor - h * k;
+  return (sx: number, h: number, d: number, out: Parameters<Explain["placeNote"]>[1]["rect"]) => {
+    // Each depth slot stands nearer the reader: lower on screen and a little larger.
+    const kk = k * (1 + 0.1 * d);
+    const w = h * aspect * kk;
+    out.x0 = cx + sx * kk - w / 2;
+    out.x1 = cx + sx * kk + w / 2;
+    out.y1 = floor + 70 * d;
+    out.y0 = out.y1 - h * kk;
     return out;
   };
 }
@@ -201,6 +203,27 @@ describe("placeNote", () => {
     const left = x.placeNote(base({ target: x.rect(220, 380, 300, 590), targetX: -0.9 }), x.placement());
     assert.equal(left.side, 1);
     assert.ok(inside(left.rect, desktop.view));
+  });
+
+  it("keeps off the rest of the cast when there is room", () => {
+    // Someone stands just left of the target: the note goes right.
+    const other = x.rect(480, 380, 560, 590);
+    const p = x.placeNote(base({ others: [other] }), x.placement());
+    assert.ok(!overlaps(p.rect, other), JSON.stringify(p.rect));
+    assert.ok(!overlaps(p.rect, base().target));
+    assert.equal(p.side, 1);
+  });
+
+  it("would rather shrink or step toward the reader than hide its target", () => {
+    // A phone-sized view where a full-size note beside the target does not fit.
+    const view = x.rect(16, 64, 374, 780);
+    const rectAt = camera(150, 470, 195, 1.3);
+    const target = x.rect(205, 330, 245, 465);
+    const p = x.placeNote(base({ view, rectAt, target, targetX: 0.2, wantPx: 190, minPx: 110, depths: 3 }), x.placement());
+    assert.equal(p.fits, true);
+    assert.ok(inside(p.rect, view));
+    const hidden = Math.max(0, Math.min(p.rect.x1, target.x1) - Math.max(p.rect.x0, target.x0)) * Math.max(0, Math.min(p.rect.y1, target.y1) - Math.max(p.rect.y0, target.y0));
+    assert.ok(hidden / ((target.x1 - target.x0) * (target.y1 - target.y0)) < 0.25, JSON.stringify(p));
   });
 
   it("shrinks to fit a phone, and stays on screen", () => {

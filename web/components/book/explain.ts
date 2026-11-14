@@ -107,7 +107,9 @@ export function explainItems(
     } else {
       if (!props.has(t.id)) continue;
       const p = things.get(t.id);
-      out.push({ ...t, title: p?.name?.trim() || titleFromId(t.id), text, color: p?.color ?? null });
+      // A heading: "hymn books" -> "Hymn books".
+      const name = p?.name?.trim();
+      out.push({ ...t, title: name ? name[0].toUpperCase() + name.slice(1) : titleFromId(t.id), text, color: p?.color ?? null });
     }
     seen.add(t.target);
   }
@@ -266,12 +268,18 @@ export interface PlaceInput {
   view: Rect;
   /** Things the note may overlap but never cover entirely (the printed caption). */
   avoid: readonly Rect[];
+  /** Other cutouts on the set (the rest of the cast): better not hidden. */
+  others?: readonly Rect[];
   /**
    * The note's screen rectangle when it stands at stage x, `h` stage units
-   * tall (written into `out`). The note stands on the page, so this is the
-   * whole of the camera and the page as far as placement needs.
+   * tall, at depth slot `d` (0 the nearest the set; later slots stand
+   * further toward the reader), written into `out`. The note stands on the
+   * page, so this is the whole of the camera and the page as far as
+   * placement needs.
    */
-  rectAt(x: number, h: number, out: Rect): Rect;
+  rectAt(x: number, h: number, d: number, out: Rect): Rect;
+  /** How many depth slots there are. Default 1. */
+  depths?: number;
   /** Stage x of the target's centre, and the range the note's centre may stand in. */
   targetX: number;
   xMin: number;
@@ -288,9 +296,10 @@ export interface PlaceInput {
 }
 
 export interface Placement {
-  /** Stage x of the note's centre, and its height (stage units). */
+  /** Stage x of the note's centre, its height (stage units) and its depth slot. */
   x: number;
   h: number;
+  depth: number;
   /** Which side of the target it stands: -1 left, 1 right. */
   side: -1 | 1;
   /** Entirely inside the view (false: the least-bad spot, shrunk as far as allowed). */
@@ -299,16 +308,18 @@ export interface Placement {
   rect: Rect;
 }
 
-export const placement = (): Placement => ({ x: 0, h: 0, side: 1, fits: false, rect: rect() });
+export const placement = (): Placement => ({ x: 0, h: 0, depth: 0, side: 1, fits: false, rect: rect() });
 
-/** Candidate spots across the stage, per height tried. */
+/** Candidate spots across the stage, per height and depth tried. */
 const SAMPLES = 40;
 const SHRINK = 0.88;
+const PASSES = 8;
 
 /**
- * Where the note stands: beside its target, wholly on screen, not over the
- * target and never over all of the caption, as large as wanted when there
- * is room (shrinking toward minPx when there is not). Writes into `out` and
+ * Where the note stands: beside its target, wholly on screen, never over
+ * all of the caption, and as large as wanted while that keeps it off the
+ * target and the rest of the cast (smaller, toward minPx, or further toward
+ * the reader, when that hides less of them). Writes into `out` and
  * allocates nothing, so it can run on every frame the camera moves.
  */
 export function placeNote(p: PlaceInput, out: Placement): Placement {
@@ -319,66 +330,80 @@ export function placeNote(p: PlaceInput, out: Placement): Placement {
   const tcy = (p.target.y0 + p.target.y1) / 2;
   const vw = Math.max(1, p.view.x1 - p.view.x0);
   const gap = p.gap ?? 28;
+  const depths = Math.max(1, p.depths ?? 1);
+  const others = p.others ?? [];
   const r = out.rect;
   // Screen px per stage unit of height, where the target stands.
-  p.rectAt(p.targetX, 1, r);
+  p.rectAt(p.targetX, 1, 0, r);
   const perUnit = Math.max(1e-6, r.y1 - r.y0);
-  let h = Math.min(p.maxH, p.wantPx / perUnit);
-  const hMin = Math.min(h, p.minPx / perUnit);
+  const hWant = Math.min(p.maxH, p.wantPx / perUnit);
+  const hMin = Math.min(hWant, p.minPx / perUnit);
 
   let bestScore = Infinity;
   let bestX = p.targetX;
-  let bestH = h;
+  let bestH = hWant;
+  let bestD = 0;
   let bestOut = Infinity;
   let bestOutX = p.targetX;
   let bestOutH = hMin;
-  for (let pass = 0; pass < 12; pass++) {
-    for (let i = 0; i <= SAMPLES; i++) {
-      const x = p.xMin + ((p.xMax - p.xMin) * i) / SAMPLES;
-      p.rectAt(x, h, r);
-      const off = outside(r, p.view);
-      if (off > 0) {
-        // Remember the least-outside spot, for when nothing fits.
-        const o = off + Math.abs(x - p.targetX) * 1e-3;
-        if (o < bestOut) {
-          bestOut = o;
-          bestOutX = x;
-          bestOutH = h;
+  let bestOutD = 0;
+  let h = hWant;
+  for (let pass = 0; pass < PASSES; pass++) {
+    // A smaller note reads less well: shrinking costs a little.
+    const small = 1.4 * (1 - h / hWant);
+    if (small >= bestScore) break;
+    for (let d = 0; d < depths; d++) {
+      for (let i = 0; i <= SAMPLES; i++) {
+        const x = p.xMin + ((p.xMax - p.xMin) * i) / SAMPLES;
+        p.rectAt(x, h, d, r);
+        const off = outside(r, p.view);
+        if (off > 0) {
+          // Remember the least-outside spot, for when nothing fits.
+          const o = off + Math.abs(x - p.targetX) * 1e-3 + d;
+          if (o < bestOut) {
+            bestOut = o;
+            bestOutX = x;
+            bestOutH = h;
+            bestOutD = d;
+          }
+          continue;
         }
-        continue;
-      }
-      let covered = false;
-      let avoidCost = 0;
-      for (const a of p.avoid) {
-        const k = overlap(r, a) / Math.max(1, area(a));
-        if (k > 0.97) covered = true;
-        avoidCost += k;
-      }
-      if (covered) continue;
-      const hide = overlap(r, p.target) / tArea;
-      const cx = (r.x0 + r.x1) / 2;
-      const cy = (r.y0 + r.y1) / 2;
-      // Close beside it (a thread's length away), at about its height; off it above all.
-      const gapX = Math.max(0, Math.abs(cx - tcx) - (r.x1 - r.x0) / 2 - tw / 2);
-      const dist = (Math.abs(gapX - gap) + 0.35 * Math.abs(cy - tcy)) / vw;
-      const hop = p.prevX === null ? 0 : Math.abs(x - p.prevX) * 0.4;
-      const score = 6 * hide + 1.2 * avoidCost + dist + hop;
-      if (score < bestScore) {
-        bestScore = score;
-        bestX = x;
-        bestH = h;
+        let covered = false;
+        let avoidCost = 0;
+        for (const a of p.avoid) {
+          const k = overlap(r, a) / Math.max(1, area(a));
+          if (k > 0.97) covered = true;
+          avoidCost += k;
+        }
+        if (covered) continue;
+        let crowd = 0;
+        for (const o of others) crowd += overlap(r, o) / Math.max(1, area(o));
+        const hide = overlap(r, p.target) / tArea;
+        const cx = (r.x0 + r.x1) / 2;
+        const cy = (r.y0 + r.y1) / 2;
+        // Close beside it (a thread's length away), at about its height; off it above all.
+        const gapX = Math.max(0, Math.abs(cx - tcx) - (r.x1 - r.x0) / 2 - tw / 2);
+        const dist = (Math.abs(gapX - gap) + 0.35 * Math.abs(cy - tcy)) / vw;
+        const hop = p.prevX === null ? 0 : Math.abs(x - p.prevX) * 0.4;
+        const score = 6 * hide + 2.5 * crowd + 1.2 * avoidCost + dist + hop + small + 0.12 * d;
+        if (score < bestScore) {
+          bestScore = score;
+          bestX = x;
+          bestH = h;
+          bestD = d;
+        }
       }
     }
-    if (bestScore < Infinity) break;
     if (h <= hMin + 1e-9) break;
     h = Math.max(hMin, h * SHRINK);
   }
   const fits = bestScore < Infinity;
   out.x = fits ? bestX : bestOutX;
   out.h = fits ? bestH : bestOutH;
+  out.depth = fits ? bestD : bestOutD;
   out.fits = fits;
   out.side = out.x >= p.targetX ? 1 : -1;
-  p.rectAt(out.x, out.h, r);
+  p.rectAt(out.x, out.h, out.depth, r);
   return out;
 }
 

@@ -197,8 +197,12 @@ export class ExplainSession {
 /* The note: a card on a paper hinge, and its thread                         */
 /* ------------------------------------------------------------------------ */
 
-/** Where the note stands: stage z (in front of the front layer, behind the printed words). */
-const NOTE_Z = 0.8;
+/**
+ * Where the note may stand, stage z: just in front of the front layer (and
+ * behind the printed words) first; on a small screen, if that hides its
+ * target, further toward the reader, over the start of the words.
+ */
+const NOTE_Z = [0.8, 1.02, 1.24] as const;
 /** How high its hinge sits off the page, stage units. */
 const BASE_Y = 0.004;
 /** Card thickness, stage units (about a postcard's, at the book's scale). */
@@ -313,7 +317,7 @@ function bezier(p0: Vector3, c: Vector3, p1: Vector3, t: number, out: Vector3): 
  * One note: the card (deckled, a postcard thick, its face a canvas of
  * paper and handwriting), the little strut that props it, and the thread
  * of stitches from the cutout to the card's near top corner, with a knot at
- * each end. It stands at stage (x, 0, NOTE_Z), turned to the reader, and
+ * each end. It stands at stage (x, 0, z), turned to the reader, and
  * rises on its hinge from flat on the page.
  */
 class NoteRig {
@@ -338,13 +342,18 @@ class NoteRig {
   /** Placement, eased toward its goal. */
   x = 0;
   h = 0.3;
+  private z: number = NOTE_Z[0];
   private yaw = 0;
   private lean = 0;
-  private readonly goal = { x: 0, h: 0.3, yaw: 0, lean: 0 };
+  private readonly goal = { x: 0, h: 0.3, z: NOTE_Z[0] as number, yaw: 0, lean: 0 };
   /** The target's thread end in stage space, without its lift. */
   readonly anchor = new Vector3();
   /** The target's paper, world space, as it was when the note opened (for placement). */
   readonly box = new Box3();
+  /** The rest of the cast on the set as it opened, world boxes (placement keeps off them). */
+  readonly others: Box3[] = [];
+  /** Their screen rectangles, rewritten at each placement. */
+  readonly otherRects: Rect[] = [];
   private placed = false;
   private lastSew = -1;
 
@@ -417,10 +426,11 @@ class NoteRig {
   }
 
   /** Where it should stand, and which edge the thread leaves from; the first placement is where it rises. */
-  setGoal(x: number, h: number, yaw: number, lean: number, tie: -1 | 1) {
+  setGoal(x: number, h: number, z: number, yaw: number, lean: number, tie: -1 | 1) {
     const g = this.goal;
     g.x = x;
     g.h = h;
+    g.z = z;
     g.yaw = yaw;
     g.lean = lean;
     this.attach.position.set(tie * (this.aspect / 2 - 0.07), 0.86, 1);
@@ -428,6 +438,7 @@ class NoteRig {
       this.placed = true;
       this.x = x;
       this.h = h;
+      this.z = z;
       this.yaw = yaw;
       this.lean = lean;
     }
@@ -474,21 +485,24 @@ class NoteRig {
     // Glide to a new placement (the camera moved), quickly.
     const k = 1 - Math.exp(-dt / 90);
     const g = this.goal;
-    if (Math.abs(g.x - this.x) + Math.abs(g.h - this.h) + Math.abs(g.yaw - this.yaw) + Math.abs(g.lean - this.lean) > 1e-4) {
+    const far = Math.abs(g.x - this.x) + Math.abs(g.h - this.h) + Math.abs(g.z - this.z) + Math.abs(g.yaw - this.yaw) + Math.abs(g.lean - this.lean);
+    if (far > 1e-4) {
       this.x += (g.x - this.x) * k;
       this.h += (g.h - this.h) * k;
+      this.z += (g.z - this.z) * k;
       this.yaw += (g.yaw - this.yaw) * k;
       this.lean += (g.lean - this.lean) * k;
       moving = true;
     } else {
       this.x = g.x;
       this.h = g.h;
+      this.z = g.z;
       this.yaw = g.yaw;
       this.lean = g.lean;
     }
 
     // The card on its hinge: flat back on the page at 0, leaning a little toward the reader at 1.
-    this.root.position.set(this.x, BASE_Y, NOTE_Z);
+    this.root.position.set(this.x, BASE_Y, this.z);
     this.root.rotation.set(0, this.yaw, 0);
     this.hinge.rotation.x = -(Math.PI / 2) * (1 - up) - this.lean * up;
     this.sizer.scale.set(this.h, this.h, CARD_T);
@@ -963,6 +977,16 @@ class ExplainStage {
         rig.anchor.copy(v);
         rig.anchor.z -= lifted;
         rig.anchor.y -= lifted * LIFT_UP;
+        // The rest of the cast on the set: the note keeps off them where it can.
+        for (const other of this.items) {
+          if (other.target === open) continue;
+          const o = this.objectOf(other.target);
+          if (!o || !this.standsOnSet(o)) continue;
+          const box = cutoutBox(o, new Box3());
+          if (box.isEmpty()) continue;
+          rig.others.push(box);
+          rig.otherRects.push(rect());
+        }
         this.layer.add(...rig.parts);
         this.rigs.push(rig);
         this.place(rig);
@@ -985,30 +1009,32 @@ class ExplainStage {
     root.updateWorldMatrix(true, false);
     cam.updateMatrixWorld();
     const camStage = root.worldToLocal(s.cam.setFromMatrixPosition(cam.matrixWorld));
-    const yawAt = (x: number) => Math.max(-MAX_YAW, Math.min(MAX_YAW, Math.atan2(camStage.x - x, camStage.z - NOTE_Z) * 0.75));
-    const leanAt = (x: number, h: number) => {
-      const el = Math.atan2(camStage.y - h * 0.5, Math.hypot(camStage.x - x, camStage.z - NOTE_Z));
+    const yawAt = (x: number, z: number) => Math.max(-MAX_YAW, Math.min(MAX_YAW, Math.atan2(camStage.x - x, camStage.z - z) * 0.75));
+    const leanAt = (x: number, h: number, z: number) => {
+      const el = Math.atan2(camStage.y - h * 0.5, Math.hypot(camStage.x - x, camStage.z - z));
       return Math.max(0, Math.min(MAX_LEAN, el * 0.5));
     };
-    const rectAt: PlaceInput["rectAt"] = (x, h, out) => {
-      const yaw = yawAt(x);
-      const lean = leanAt(x, h);
+    const rectAt: PlaceInput["rectAt"] = (x, h, d, out) => {
+      const z = NOTE_Z[d] ?? NOTE_Z[0];
+      const yaw = yawAt(x, z);
+      const lean = leanAt(x, h, z);
       const cy = Math.cos(yaw);
       const sy = Math.sin(yaw);
       out.x0 = out.y0 = Infinity;
       out.x1 = out.y1 = -Infinity;
       for (let i = 0; i < 4; i++) {
-        // Card-local (u across, v up) -> leaned back -> turned -> stood at (x, BASE_Y, NOTE_Z).
+        // Card-local (u across, v up) -> leaned back -> turned -> stood at (x, BASE_Y, z).
         const u = (i & 1 ? 0.5 : -0.5) * h * rig.aspect;
         const vUp = i & 2 ? h : 0;
         const ly = vUp * Math.cos(lean);
         const lz = -vUp * Math.sin(lean);
-        s.v.set(x + u * cy + lz * sy, BASE_Y + ly, NOTE_Z - u * sy + lz * cy).applyMatrix4(root.matrixWorld);
+        s.v.set(x + u * cy + lz * sy, BASE_Y + ly, z - u * sy + lz * cy).applyMatrix4(root.matrixWorld);
         addPoint(s.v, cam, W, H, out);
       }
       return out;
     };
     projectBox(rig.box, cam, W, H, s.v, s.target);
+    for (let i = 0; i < rig.others.length; i++) projectBox(rig.others[i], cam, W, H, s.v, rig.otherRects[i]);
     const avoid: Rect[] = [];
     const caption = this.inputs?.caption;
     const at = caption?.at.current;
@@ -1034,7 +1060,9 @@ class ExplainStage {
         target: s.target,
         view,
         avoid,
+        others: rig.otherRects,
         rectAt,
+        depths: NOTE_Z.length,
         targetX: rig.anchor.x,
         xMin: -1.0,
         xMax: 1.0,
@@ -1045,7 +1073,8 @@ class ExplainStage {
       },
       s.place,
     );
-    rig.setGoal(p.x, p.h, yawAt(p.x), leanAt(p.x, p.h), p.side > 0 ? -1 : 1);
+    const z = NOTE_Z[p.depth] ?? NOTE_Z[0];
+    rig.setGoal(p.x, p.h, z, yawAt(p.x, z), leanAt(p.x, p.h, z), p.side > 0 ? -1 : 1);
   }
 
   /** A point on a clickable cutout's paper (client CSS px), or null when it cannot be clicked now. */
