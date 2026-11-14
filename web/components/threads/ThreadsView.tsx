@@ -83,6 +83,12 @@ interface Engine {
   drawMs: number;
 }
 
+/** 0 below `a`, 1 above `b`, smooth in between. */
+function ramp(a: number, b: number, x: number): number {
+  const u = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return u * u * (3 - 2 * u);
+}
+
 /**
  * How much thread runs through a title box: samples inside it, faded
  * threads counting for less. Samples are evenly spaced in x, so only the
@@ -301,10 +307,11 @@ export default function ThreadsView(props: ThreadsViewProps) {
       if (!g) return;
       const W = e.layout.width;
       const s = e.cam.s;
-      // Titles: only at close zoom (or for the followed person / hovered knot),
-      // placed greedily above or below their knot without overlapping.
-      const showAll = s >= 72;
-      const showLit = true;
+      // Titles fade in as you zoom towards single years; the followed
+      // person's and the hovered knot's show at any zoom. They are placed
+      // greedily above or below their knot without overlapping.
+      const base = ramp(50, 80, s);
+      const alpha = new Map<number, number>();
       const candidates: number[] = [];
       for (let i = 0; i < model.knots.length; i++) {
         const h = g.knots[i];
@@ -313,8 +320,11 @@ export default function ThreadsView(props: ThreadsViewProps) {
           const idx = model.strands.findIndex((q) => q.person.id === p.id);
           return e.dim[idx] < 0.5;
         });
-        const followed = e.highlight >= 0 && lit;
-        if (i === e.hoverKnot || (showAll && (e.highlight < 0 || lit)) || (showLit && followed)) candidates.push(i);
+        const o = i === e.hoverKnot || (e.highlight >= 0 && lit) ? 1 : e.highlight < 0 ? base : 0;
+        if (o > 0.02) {
+          candidates.push(i);
+          alpha.set(i, o);
+        }
       }
       candidates.sort((a, b) => {
         if (a === e.hoverKnot) return -1;
@@ -413,8 +423,9 @@ export default function ThreadsView(props: ThreadsViewProps) {
             t.dataset.at = key;
             t.style.transform = `translate(${pl.dx.toFixed(1)}px, ${pl.dy.toFixed(1)}px)`;
           }
-          t.style.opacity = "1";
-        } else {
+          const o = (alpha.get(i) ?? 1).toFixed(2);
+          if (t.style.opacity !== o) t.style.opacity = o;
+        } else if (t.style.opacity !== "0") {
           t.style.opacity = "0";
         }
       }
