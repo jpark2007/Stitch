@@ -111,7 +111,7 @@ export interface DeckledMask {
 export interface CutoutMaterialOptions extends PaperMaterialOptions {
   /** Mask from getDeckledMask, or options to build one. Default deckled 1:1. */
   mask?: DeckledMask | DeckledMaskOptions;
-  /** How much the torn rim lightens, 0..1. Default 0.5 for torn, 0.2 otherwise. */
+  /** How much the torn rim lightens, 0..1. Default 0.4 for torn, 0.2 otherwise. */
   rim?: number;
 }
 
@@ -758,7 +758,7 @@ export function createCutoutMaterial(options: CutoutMaterialOptions = {}): MeshS
   m.alphaMap = mask.alphaMap;
   m.alphaTest = 0.5;
   m.alphaToCoverage = true;
-  const rim = options.rim ?? (style === "torn" ? 0.5 : 0.2);
+  const rim = options.rim ?? (style === "torn" ? 0.4 : 0.2);
   if (rim > 0) {
     m.emissive = new Color("#fff4e2");
     m.emissiveMap = mask.rimMap;
