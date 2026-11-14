@@ -114,7 +114,7 @@ def test_production_services_with_every_key_and_the_fake_db(
     assert svc.labels["repo"] == "mongo"
     assert isinstance(svc.repo, MongoRepo) and svc.repo.db is clean_env
     assert svc.labels["persistence"] == "memory"
-    assert svc.labels["art"] == "real"
+    assert svc.labels["art"] == "openai"
     assert isinstance(svc.art.image_model, OpenAIImageModel)
     assert isinstance(svc.art.remover, AlphaAwareRemover)
     assert svc.labels["tts"] == "real" and isinstance(svc.tts, ElevenLabsTTS)

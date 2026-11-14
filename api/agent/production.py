@@ -10,7 +10,17 @@ the agent, so the API needs no startup hook. Each service is picked from env var
     MONGODB_URI            checkpoints, /memories/ and the run records on MongoDB
                            (studio.mongo_persistence), so runs survive a restart; unset, or
                            STITCH_FAKE_DB truthy: in memory, and runs are lost on restart
-    IMAGE_API_KEY          real prop and set art; unset: placeholder art (null art + color)
+    IMAGE_PROVIDER         "higgsfield" or "openai" picks the image provider; unset: Higgsfield
+                           when HIGGSFIELD_API_KEY is set, else OpenAI when IMAGE_API_KEY is
+                           set, else placeholder art (null art + color); an unknown value warns
+                           and uses that default rule (agent.adapters.image_provider). The
+                           services line names it: art=higgsfield, art=openai, art=placeholder
+    HIGGSFIELD_API_KEY     Higgsfield art (HiggsfieldImageModel): the key ID, with
+    HIGGSFIELD_API_SECRET  its secret (or id:secret in the key); HIGGSFIELD_API_URL,
+                           HIGGSFIELD_IMAGE_MODEL, HIGGSFIELD_STYLE_SUFFIX and
+                           HIGGSFIELD_RESULT_HOSTS are optional (agent/adapters/higgsfield.py);
+                           a missing secret or unknown model logs an error, placeholder art
+    IMAGE_API_KEY          OpenAI-compatible art (OpenAIImageModel; IMAGE_API_URL, IMAGE_MODEL)
     ELEVENLABS_API_KEY     real narration voices; unset: FakeTTS (silent audio, real timings)
     STITCH_WEB_URL         render_frames screenshots the web /render/[memoryId] page with
                            Playwright; unset: the Pillow diagram renderer (FakeFrameRenderer),
@@ -78,11 +88,20 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Checkpointer
 
 from agent import studio
-from agent.adapters import AlphaAwareRemover, AnthropicVision, ElevenLabsTTS, OpenAIImageModel
+from agent.adapters import (
+    AlphaAwareRemover,
+    AnthropicVision,
+    ElevenLabsTTS,
+    HiggsfieldImageModel,
+    OpenAIImageModel,
+    choose_image_provider,
+)
+from agent.adapters.higgsfield import config_problem as higgsfield_config_problem
+from agent.adapters.image_provider import PROVIDER_ENV
 from agent.guards import RunLimits, RunUsage, env_value
 from agent.mongo_repo import MongoRepo
 from agent.runs import RunManager
-from agent.tools.art import ArtService
+from agent.tools.art import ArtService, ImageModel
 from agent.tools.compile import load_compiler
 from agent.tools.frames import FakeFrameRenderer, FrameRenderer, PlaywrightFrameRenderer
 from agent.tools.narration import FakeTTS
@@ -175,6 +194,35 @@ def _persistence() -> tuple[Checkpointer, BaseStore, str]:
     return checkpointer, store, "mongo"
 
 
+def _image_model() -> tuple[ImageModel | None, str]:
+    """(image model, art label) by `choose_image_provider`; a provider that cannot be built is
+    logged (never with a key) and gives placeholder art instead of stopping the API."""
+    choice = choose_image_provider()
+    if choice.warning:
+        logger.warning("image art: %s", choice.warning)
+    if choice.provider == "placeholder":
+        if _env(PROVIDER_ENV):
+            logger.warning("image art: placeholder art (%s)", choice.reason)
+        return None, "placeholder"
+    if choice.provider == "higgsfield":
+        problem = higgsfield_config_problem()
+        if problem:
+            logger.error("image art: Higgsfield is selected but %s; using placeholder art", problem)
+            return None, "placeholder"
+        return HiggsfieldImageModel(), "higgsfield"
+    return OpenAIImageModel(), "openai"
+
+
+def _art_service(limits: RunLimits, usage: RunUsage) -> tuple[ArtService, str]:
+    """The art service and its label: 'higgsfield', 'openai' or 'placeholder'."""
+    remover = AlphaAwareRemover()
+    image_model, label = _image_model()
+    if image_model is None:
+        # placeholder art; cut_out of uploaded photos still works
+        return ArtService(None, remover, usage=usage), label
+    return ArtService(image_model, remover, max_images_per_run=limits.max_images_per_run, usage=usage), label
+
+
 def production_services() -> Services:
     """The real services, chosen from os.environ (see the module docstring).
 
@@ -205,14 +253,7 @@ def production_services() -> Services:
 
     # One registry for both per-run caps (model calls, images), kept in the run records.
     usage = RunUsage()
-    remover = AlphaAwareRemover()
-    if _env("IMAGE_API_KEY"):
-        art = ArtService(OpenAIImageModel(), remover, max_images_per_run=limits.max_images_per_run, usage=usage)
-        labels["art"] = "real"
-    else:
-        # placeholder art; cut_out of uploaded photos still works
-        art = ArtService(None, remover, usage=usage)
-        labels["art"] = "placeholder"
+    art, labels["art"] = _art_service(limits, usage)
 
     if _env("ELEVENLABS_API_KEY"):
         tts = ElevenLabsTTS()

@@ -2,6 +2,8 @@
 
 - ``AnthropicVision``: ``agent.tools.photos.VisionModel`` (Claude vision).
 - ``OpenAIImageModel``: ``agent.tools.art.ImageModel`` (an OpenAI-compatible images API).
+- ``HiggsfieldImageModel``: ``agent.tools.art.ImageModel`` (the Higgsfield API: submit, poll,
+  download). ``choose_image_provider`` picks between the two (``IMAGE_PROVIDER``).
 - ``ElevenLabsTTS``: ``agent.tools.narration.TTS`` (speech with word timings).
 - ``AlphaAwareRemover``: ``agent.tools.art.BackgroundRemover`` (local, Pillow only).
 
@@ -19,7 +21,10 @@ docstring has the details):
                                                                 never a timeout
     OpenAIImageModel   120 s read/write, 10 s connect           1, only for no connection or
                                                                 HTTP 408/429/5xx
-    ElevenLabsTTS      30 s read/write, 10 s connect            2, same rules
+    HiggsfieldImage-   120 s for submit + polls + download,     1 submit, only for no connection or
+    Model              30 s per call, 10 s connect              HTTP 408/429/5xx (same idempotency
+                                                                key); never after a request id
+    ElevenLabsTTS     30 s read/write, 10 s connect            2, same rules
 
 Every wait before a retry is capped at ``images.MAX_BACKOFF_S`` (8 s), whatever the provider's
 ``Retry-After`` asks. The anthropic SDK alone would obey any ``Retry-After`` uncapped, which is
@@ -34,8 +39,18 @@ with no network; when it raises, the cutout is a placeholder too.
 """
 
 from agent.adapters.cutout import AlphaAwareRemover
+from agent.adapters.higgsfield import HiggsfieldImageModel
+from agent.adapters.image_provider import ImageProviderChoice, choose_image_provider
 from agent.adapters.images import OpenAIImageModel
 from agent.adapters.tts import ElevenLabsTTS
 from agent.adapters.vision import AnthropicVision
 
-__all__ = ["AlphaAwareRemover", "AnthropicVision", "ElevenLabsTTS", "OpenAIImageModel"]
+__all__ = [
+    "AlphaAwareRemover",
+    "AnthropicVision",
+    "ElevenLabsTTS",
+    "HiggsfieldImageModel",
+    "ImageProviderChoice",
+    "OpenAIImageModel",
+    "choose_image_provider",
+]
