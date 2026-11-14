@@ -1,8 +1,10 @@
-"""A follow's window (compiler._schedule, compiler._LeaderWindow): a follow with ``dur`` reads
-its leader's path only up to ``t + dur``, so it waits only for the leader's moves that start
-before then. A later leader move (a hand-over or a hug with the follower afterwards) is no
-longer a false follow_order loop, and it cannot change the follow even when it runs first.
-A follow without ``dur`` still waits for every move of its leader, as before.
+"""A follow's window (compiler._schedule, compiler._LeaderWindow): when a shot has a loop while
+every follow waits for every move of its leader, it is scheduled again with windows: a follow
+with ``dur`` then reads its leader's path only up to ``t + dur``, so it waits only for the
+leader's moves that start before then. A later leader move (a hand-over or a hug with the
+follower afterwards) is no longer a false follow_order loop, and it cannot change the follow
+even when it runs first. A follow without ``dur`` still waits for every move of its leader,
+and a shot without a loop runs exactly as before windows.
 
 Everything here runs the real handlers on verb_cases.base_scene()'s back yard."""
 
@@ -174,15 +176,32 @@ def test_a_move_starting_exactly_at_the_windows_end_does_not_hold_the_follow_bac
 # ------------------------------------------------- a later move that runs before the follow
 
 
+@pytest.fixture
+def windowed(monkeypatch):
+    """(leader, window end, later) of every _LeaderWindow the compiler reads through."""
+    made: list[tuple[str, float, bool]] = []
+    real = C._LeaderWindow
+
+    def spy(tracks, leader, end, later=False):
+        made.append((leader, end, later))
+        return real(tracks, leader, end, later)
+
+    monkeypatch.setattr(C, "_LeaderWindow", spy)
+    return made
+
+
 def chain(walk_to: str, *extra: dict) -> dict:
-    """mom follows kid with no dur (so she waits for every move of kid), dad follows mom for a
-    moment (waits for mom's follow), then follows kid for 3 s: dad's second follow waits behind
-    his first, so a later move of kid runs before it."""
+    """mom follows kid until t=7.1, dad follows mom for a moment (so he waits for mom's follow),
+    then follows kid for 3 s from t=1.5: dad's second follow waits behind his first, so a move of
+    kid's at t=6 (inside mom's window, after dad's) runs before it. A hug of dad's by kid at t=12
+    makes a loop while every follow waits for every move of its leader (mom's follow waits for
+    it, it waits for dad's follows, and they wait for mom's), so the shot uses windows."""
     return shot([
         {"t": 0.5, "who": "kid", "do": "walk_to", "to": walk_to},
-        {"t": 0.1, "who": "mom", "do": "follow", "target": "kid"},
+        {"t": 0.1, "who": "mom", "do": "follow", "target": "kid", "dur": 7},
         {"t": 0.2, "who": "dad", "do": "follow", "target": "mom", "dur": 1.2},
         {"t": 1.5, "who": "dad", "do": "follow", "target": "kid", "dur": 3},
+        AFTER,
         *extra,
     ], start={"dad": {"at": "door"}, "kid": {"at": "beside_bench"}, "mom": {"at": "bench_spot"}})
 
@@ -190,10 +209,12 @@ def chain(walk_to: str, *extra: dict) -> dict:
 LATER_WALK = {"t": 6, "who": "kid", "do": "walk_to", "to": "door"}
 
 
-def test_a_later_leader_move_that_runs_first_does_not_change_the_follow(ran):
+def test_a_later_leader_move_that_runs_first_does_not_change_the_follow(ran, windowed):
     res = run(chain("curb", LATER_WALK))
     assert res.ok, errors(res)
-    # kid's walk at t=6 runs before dad's follow of kid (t=1.5) ...
+    # windows are in use (timeline t = shot t + 1.2), and kid's walk at t=6 runs before dad's
+    # follow of kid (t=1.5) ...
+    assert ("kid", 5.7, True) in windowed
     assert ran.index(("kid", "walk_to", 6.0)) < ran.index(("dad", "follow", 1.5))
     alone = run(chain("curb"))
     assert alone.ok, errors(alone)
@@ -203,19 +224,87 @@ def test_a_later_leader_move_that_runs_first_does_not_change_the_follow(ran):
     assert dad[-1] == (5.7, [0.25, 0.0, 0.5])
 
 
-def test_a_follow_whose_leader_only_moves_after_the_window_has_nothing_to_follow(ran):
+# ---------------------------------- a leader that stands still all window and moves later
+
+YARD = {"dad": {"at": "door"}, "kid": {"at": "beside_bench"}, "mom": {"at": "curb"}}
+DAD_AT_THE_DOOR = [(0.0, [-0.8, 0.0, 0.5])]
+
+
+def test_a_shot_without_a_loop_runs_as_it_always_has(ran, windowed):
+    """The reviewer's repro: kid stands still from t=1 to t=3 and walks off at t=12. Nothing
+    makes a loop, so the follow waits for the walk and reads kid's whole path, as before
+    windows: it compiles, holding dad still (main: ok, dad's one key at the door)."""
+    res = run(shot([
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid", "dur": 2},
+        {"t": 12, "who": "kid", "do": "walk_to", "to": "curb"},
+    ], start=YARD))
+    assert res.ok, errors(res)
+    assert ran == [("kid", "walk_to", 12.0), ("dad", "follow", 1.0)] and windowed == []
+    assert keys(res, "puppet:dad", "root.position") == DAD_AT_THE_DOOR
+    assert keys(res, "puppet:kid", "root.position")[-1] == (16.057, [0.8, 0.0, 0.5])  # at the curb
+
+
+def test_without_a_loop_a_later_move_that_leaves_the_ground_path_still_is_walked_up_to(windowed):
+    """kid kneels at t=12, long after dad's follow: kid's ground path never moves, so dad walks
+    up to kid inside the window, exactly as on main. A windowed follow could not tell this from
+    a later walk (held still), which is why a shot without a loop is not windowed."""
+    res = run(shot([
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid", "dur": 2},
+        {"t": 12, "who": "kid", "do": "kneel"},
+    ], start=YARD))
+    assert res.ok, errors(res)
+    assert windowed == []
+    assert keys(res, "puppet:dad", "root.position") == [
+        (0.0, [-0.8, 0.0, 0.5]), (2.2, [-0.8, 0.0, 0.5]), (3.343, [-0.4, 0.0, 0.5])]
+
+
+def test_a_windowed_follow_of_a_leader_that_only_moves_later_holds_still(ran, windowed):
+    """dad follows kid from t=1 to t=3; kid stands still all that time and hugs dad at t=12.
+    Main reports follow_order (and nothing_to_follow); with windows the follow runs first,
+    holds dad still (_LeaderWindow's stand-in for the hug), and kid hugs dad where he stands."""
+    res = run(shot([
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid", "dur": 2},
+        {"t": 12, "who": "kid", "do": "hug", "target": "dad"},
+    ], start=YARD))
+    assert res.ok, errors(res)
+    assert ran == [("dad", "follow", 1.0), ("kid", "hug", 12.0)] and windowed == [("kid", 4.2, True)]
+    assert keys(res, "puppet:dad", "root.position") == DAD_AT_THE_DOOR
+    assert keys(res, "puppet:kid", "root.position") == [
+        (0.0, [-0.2, 0.0, 0.5]), (13.2, [-0.2, 0.0, 0.5]), (14.4, [-0.62, 0.0, 0.5])]
+
+
+def test_it_holds_still_whether_the_later_move_runs_first_or_not(ran):
     """kid's walk to the table ends before dad's second follow starts (t=1.5): kid stands still
-    all window long. Whether kid's walk at t=6 runs before that follow (it does here) or not,
-    the follow finds nothing to follow; the message names the window."""
+    all window long, and the follow holds dad still whether kid's walk at t=6 runs before it
+    (it does) or there is none."""
     with_later = run(chain("by_table", LATER_WALK))
     assert ran.index(("kid", "walk_to", 6.0)) < ran.index(("dad", "follow", 1.5))
-    assert errors(with_later) == [(
-        "nothing_to_follow",
-        "shot s1, t=1.5: dad cannot follow; kid does not move between t=1.5 and t=4.5, when the follow ends",
-    )]
-    # with no later move the handler's own message stands
-    assert errors(run(chain("by_table"))) == [
-        ("nothing_to_follow", "shot s1, t=1.5: dad cannot follow; kid does not move after t=1.5")]
+    assert with_later.ok, errors(with_later)
+    assert keys(with_later, "puppet:dad", "root.position") == DAD_AT_THE_DOOR
+    alone = run(chain("by_table"))
+    assert alone.ok, errors(alone)
+    assert keys(alone, "puppet:dad", "root.position") == DAD_AT_THE_DOOR
+
+
+def test_a_leader_that_never_moves_after_t_still_has_nothing_to_follow():
+    res = run(shot([
+        {"t": 0.5, "who": "kid", "do": "walk_to", "to": "by_table"},
+        {"t": 5, "who": "dad", "do": "follow", "target": "kid", "dur": 2},
+    ], start=YARD))
+    assert errors(res) == [("nothing_to_follow", "shot s1, t=5: dad cannot follow; kid does not move after t=5")]
+
+
+def test_a_kneeling_follower_of_a_leader_that_moves_later_stands_up_and_holds():
+    res = run(shot([
+        {"t": 0, "who": "dad", "do": "kneel"},
+        {"t": 2, "who": "dad", "do": "follow", "target": "kid", "dur": 3},
+        {"t": 12, "who": "kid", "do": "walk_to", "to": "by_table"},
+    ], start={**YARD, "kid": {"at": "curb"}, "mom": {"at": "beside_bench"}}))
+    assert res.ok, errors(res)
+    # exactly main's keys: down by t=1.6, up again from t=3.2 (the follow's stand-up), then still
+    assert keys(res, "puppet:dad", "root.position") == [
+        (0.0, [-0.8, 0.0, 0.5]), (1.2, [-0.8, 0.0, 0.5]), (1.6, [-0.8, -0.132, 0.5]),
+        (3.2, [-0.8, -0.132, 0.5]), (3.6, [-0.8, 0.0, 0.5])]
 
 
 # ----------------------------------------------------------------------- the pieces
@@ -289,6 +378,33 @@ def test_leader_window_reads_clipped_and_writes_through():
     assert tracks.value_at("puppet:dad", "root.facing", 2.0) == -1
     # a leader with no track yet reads as none
     assert not C._LeaderWindow(tracks, "mom", 4.0).has_track("puppet:mom", "root.position")
+
+
+def test_leader_window_with_a_later_move_ends_with_its_stand_in():
+    tracks = TrackSet()
+    tracks.extend([("puppet:kid", "root.position", 0.0, [0.0, 0.0, 0.5]),
+                   ("puppet:kid", "root.position", 1.0, [0.5, 0.0, 0.5]),
+                   ("puppet:kid", "root.position", 6.0, [0.5, 0.0, 0.5]),
+                   ("puppet:kid", "root.position", 8.0, [-1.0, 0.0, 0.5])])
+    kid = [tr.keys for tr in C._LeaderWindow(tracks, "kid", 4.0, later=True).tracks()][0]
+    # the real later move is gone; the first key after the window's end (t=6) stays, and a
+    # 0.01 depth step a second after it stands in for that move
+    assert [(k[0], k[1]) for k in kid] == [
+        (0.0, [0.0, 0.0, 0.5]), (1.0, [0.5, 0.0, 0.5]), (6.0, [0.5, 0.0, 0.5]), (7.0, [0.5, 0.0, 0.51])]
+    # with nothing after the window's end, the stand-in holds from the end itself
+    short = TrackSet()
+    short.extend([("puppet:kid", "root.position", 0.0, [0.0, 0.0, 0.5]),
+                  ("puppet:kid", "root.position", 1.0, [0.5, 0.0, 0.5])])
+    kid = [tr.keys for tr in C._LeaderWindow(short, "kid", 4.0, later=True).tracks()][0]
+    assert [(k[0], k[1]) for k in kid][-2:] == [(4.0, [0.5, 0.0, 0.5]), (5.0, [0.5, 0.0, 0.51])]
+    # a move still under way at the window's end: the stand-in comes after its last key
+    kid = [tr.keys for tr in C._LeaderWindow(tracks, "kid", 7.0, later=True).tracks()][0]
+    assert [(k[0], k[1]) for k in kid][-2:] == [(8.0, [-1.0, 0.0, 0.5]), (9.0, [-1.0, 0.0, 0.51])]
+    # without a later move there is no stand-in
+    kid = [tr.keys for tr in C._LeaderWindow(tracks, "kid", 4.0).tracks()][0]
+    assert [k[0] for k in kid] == [0.0, 1.0, 6.0]
+    # nor without a track to end
+    assert not C._LeaderWindow(tracks, "mom", 4.0, later=True).has_track("puppet:mom", "root.position")
 
 
 def test_window_compiles_are_deterministic():

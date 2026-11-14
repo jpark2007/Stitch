@@ -916,6 +916,36 @@ def test_moves_follows_get_in_get_out_sit_on_and_stand_up():
     assert C._moves(stacked, "kid", {"kid": ("chair", "sedan")}, [0, 1]) == [0, 1]
 
 
+def test_moves_follows_props_put_on_and_taken_off_the_vehicle_mid_shot():
+    actions = acts(
+        {"t": 0, "who": "mom", "do": "place_on", "what": "chair", "on": "sedan"},     # 0: chair onto the bed
+        {"t": 1, "who": "kid", "do": "sit_on", "what": "chair"},                     # 1
+        {"t": 2, "who": "dad", "do": "drive_to", "what": "sedan", "to": "curb"},     # 2: carries kid
+        {"t": 3, "who": "kid", "do": "stand_up"},                                    # 3
+        {"t": 4, "who": "mom", "do": "pick_up", "what": "chair"},                    # 4: chair off the bed
+        {"t": 5, "who": "mom", "do": "place_on", "what": "chair", "on": "curb"},     # 5: onto a mark
+        {"t": 6, "who": "kid", "do": "sit_on", "what": "chair"},                     # 6
+        {"t": 7, "who": "dad", "do": "drive_to", "what": "sedan", "to": "steps"},    # 7: kid stays
+    )
+    by_time = list(range(len(actions)))
+    # the chair starts in mom's hands (rests on nothing): it is on the sedan only from t=0 to t=4
+    assert C._moves(actions, "kid", {}, by_time, {"chair": ()}, {"sedan"}) == [1, 2, 3, 6]
+    # a crate put on the sedan carries a chair already resting on it, and the puppet on that
+    stacked = acts(
+        {"t": 0, "who": "mom", "do": "place_on", "what": "crate", "on": "sedan"},
+        {"t": 1, "who": "dad", "do": "drive_to", "what": "sedan", "to": "curb"},
+        {"t": 2, "who": "mom", "do": "drop", "what": "crate"},
+        {"t": 3, "who": "dad", "do": "drive_to", "what": "sedan", "to": "steps"},
+    )
+    assert C._moves(stacked, "kid", {"kid": ("chair", "crate")}, [0, 1, 2, 3]) == [1]
+    # a put_on (onto a head) lifts the prop off the vehicle as well
+    worn = acts(
+        {"t": 0, "who": "mom", "do": "put_on", "what": "crate"},
+        {"t": 1, "who": "dad", "do": "drive_to", "what": "sedan", "to": "curb"},
+    )
+    assert C._moves(worn, "kid", {"kid": ("chair", "crate", "sedan")}, [0, 1]) == []
+
+
 def test_schedule_a_follow_of_a_stacked_rider_waits_for_the_drive():
     actions = acts(
         {"t": 1, "who": "mom", "do": "follow", "target": "kid"},

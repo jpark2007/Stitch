@@ -142,6 +142,36 @@ def test_a_follow_of_a_stacked_rider_with_a_window_waits_for_a_drive_inside_it()
     assert mom[-1][1][0] > kid[0][1][0]
 
 
+def test_a_follow_of_a_rider_on_a_seat_put_on_the_vehicle_mid_shot_waits_for_the_drive():
+    """mom sets a suitcase (given a seat) on the sedan's bed at t=0 and kid sits on it: what the
+    suitcase rests on changes mid-shot, and mom's follow of kid still waits for the drive."""
+    s = base_scene()
+    s.props["suitcase"] = s.props["suitcase"].model_copy(update={"sockets": {"seat": [0.5, 0.2]}})
+    s.props["sedan"] = s.props["sedan"].model_copy(update={"sockets": {"driver": [0.42, 0.55], "bed": [0.5, 0.8]}})
+    sp = Screenplay.model_validate({
+        "memoryId": "m", "cast": ["dad", "mom", "kid"], "props": ["sedan", "suitcase"],
+        "shots": [{"id": "s1", "set": "street",
+                   "start": {"dad": {"at": "garage", "in": "sedan.driver"}, "kid": {"at": "garage"},
+                             "mom": {"at": "garage", "holding": "suitcase"}},
+                   "propStart": {"sedan": {"at": "garage"}},
+                   "actions": [
+                       {"t": 0, "who": "mom", "do": "place_on", "what": "suitcase", "on": "sedan", "socket": "bed"},
+                       {"t": 2, "who": "kid", "do": "sit_on", "what": "suitcase"},
+                       {"t": 5, "who": "mom", "do": "follow", "target": "kid"},
+                       {"t": 6, "who": "dad", "do": "drive_to", "what": "sedan", "to": "corner"},
+                   ]}],
+    })
+    res = compile_screenplay(sp, sets=s.sets, props=s.props, people=s.people)
+    # before: the follow ran at t=5, ahead of the drive, and found kid sitting still
+    assert res.ok, errors(res)
+    sedan = keys(res, "prop:sedan", "position")
+    kid = keys(res, "puppet:kid", "root.position")
+    mom = keys(res, "puppet:mom", "root.position")
+    assert kid[-1][0] == sedan[-1][0] and kid[-1][1][0] == pytest.approx(kid[-2][1][0] + CORNER_X - GARAGE_X)
+    assert mom[1][0] == pytest.approx(sedan[-2][0] + 0.5)  # sets off 0.5 s after the sedan
+    assert mom[-1][1][0] == pytest.approx(kid[-1][1][0] - 0.2, abs=1e-6)
+
+
 # --------------------------------------------------------------------------- ride_to
 
 
