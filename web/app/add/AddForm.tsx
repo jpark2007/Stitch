@@ -34,7 +34,9 @@ import {
   draftFromSent,
   familyAsking,
   hasTold,
+  knownMoment,
   loadTelling,
+  mergeRefreshed,
   momentFromMemory,
   momentsFromThreads,
   openRunNotice,
@@ -52,6 +54,7 @@ import {
   saveTelling,
   saveTypedDraft,
   sentDraftFromSubmit,
+  shouldRefreshOnShow,
   tellingFromSubmit,
   withQuestionId,
   withoutAdded,
@@ -244,10 +247,19 @@ function AddFormLoader(props: {
   // form has ticked them and the URL drops it) loads nothing.
   const [loadFor, setLoadFor] = useState<string | null>(added);
   if (added && added !== loadFor) setLoadFor(added);
+  // Bumped when the window comes back (see below): loads the page again
+  // under the form, so a question asked or a relative who joined meanwhile
+  // shows up without a reload.
+  const [refresh, setRefresh] = useState(0);
+  // When the last load landed (or failed), and whether one is running: the
+  // window coming back reloads at most every ADD_REFRESH_MIN_GAP_MS.
+  const lastLoadedAt = useRef<number | null>(null);
+  const inFlight = useRef(false);
 
   useEffect(() => {
     let live = true;
     const addedFor = loadFor;
+    inFlight.current = true;
     // The family's moments, from the threads: a moment that is not there is
     // simply missing (no 404 to log). Without them, ask for the one moment.
     const known = api.getThreads(fid).then(momentsFromThreads, () => null);
@@ -264,6 +276,8 @@ function AddFormLoader(props: {
     Promise.all([api.getTree(fid), api.getQuestions(fid), moment, known]).then(
       ([tree, qs, m, all]) => {
         if (!live) return;
+        inFlight.current = false;
+        lastLoadedAt.current = Date.now();
         const people = tree.people.map((p) => ({
           id: p.id,
           name: p.name,
@@ -271,14 +285,23 @@ function AddFormLoader(props: {
           color: p.character?.color ?? null,
         }));
         const questions = qs.questions;
-        const base: Base =
-          memoryId && m
-            ? { kind: "second", memoryId, moment: m, question: questionForMemory(questions, memoryId) }
-            : { kind: "new", note: memoryId ? MISSING_MOMENT : null };
-        setStatus({ kind: "ready", data: { people, questions, base, moments: all, addedFor } });
+        setStatus((s) => {
+          // Under a form already on screen, its base stays as it is, so the
+          // form is not remounted and nothing typed is lost.
+          if (s.kind === "ready") {
+            return { kind: "ready", data: mergeRefreshed(s.data, { people, questions, moments: all }, addedFor) };
+          }
+          const base: Base =
+            memoryId && m
+              ? { kind: "second", memoryId, moment: m, question: questionForMemory(questions, memoryId) }
+              : { kind: "new", note: memoryId ? MISSING_MOMENT : null };
+          return { kind: "ready", data: { people, questions, base, moments: all, addedFor } };
+        });
       },
       (e: unknown) => {
         if (!live) return;
+        inFlight.current = false;
+        lastLoadedAt.current = Date.now();
         if (isApiError(e) && e.status === 401) {
           router.replace(hrefs.login(currentPath()));
           return;
@@ -295,8 +318,36 @@ function AddFormLoader(props: {
     );
     return () => {
       live = false;
+      inFlight.current = false;
     };
-  }, [api, fid, memoryId, router, loadFor]);
+  }, [api, fid, memoryId, router, loadFor, refresh]);
+
+  // The window coming back (the tab shown again, or the window focused):
+  // load again, quietly. Only once the form is up, and the page stays as it
+  // is (no loading sheet) until the fresh data lands.
+  const ready = status.kind === "ready";
+  useEffect(() => {
+    if (!ready) return;
+    const onShow = () => {
+      const go = shouldRefreshOnShow({
+        visible: document.visibilityState === "visible",
+        ready: true,
+        inFlight: inFlight.current,
+        lastLoadedAt: lastLoadedAt.current,
+        now: Date.now(),
+      });
+      if (!go) return;
+      // Marked now: focus and visibilitychange often fire back to back.
+      inFlight.current = true;
+      setRefresh((n) => n + 1);
+    };
+    document.addEventListener("visibilitychange", onShow);
+    window.addEventListener("focus", onShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onShow);
+      window.removeEventListener("focus", onShow);
+    };
+  }, [ready]);
 
   if (status.kind === "loading") {
     return (
@@ -575,8 +626,10 @@ function AddFormReady(props: {
         setPicked({ question: q, moment: null, note: null });
         return;
       }
-      // With the family's moments loaded, one that is not among them is gone.
-      const known = moments.current.has(mid) ? moments.current.get(mid) : data.moments ? null : undefined;
+      // The freshest moments first (one made since the page opened is there
+      // now), then any fetched one by one. With the family's moments loaded,
+      // one that is not among them is gone.
+      const known = knownMoment(mid, moments.current, data.moments);
       if (known !== undefined) {
         carryTyped();
         setPicked({ question: q, moment: known, note: known ? null : MISSING_QUESTION_MOMENT });
