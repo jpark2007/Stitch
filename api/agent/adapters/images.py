@@ -16,9 +16,16 @@ changes:
   closest to ``w / h``.
 - With no references it calls ``/images/generations`` (JSON); with references it calls
   ``/images/edits`` (multipart, one ``image[]`` file per reference).
-- Decodes the first result and resizes it to exactly ``(w, h)`` with Pillow, keeping any
-  alpha, and returns PNG bytes. The resize is a plain resize, so when ``w / h`` is far from
-  the requested size's aspect (for example a 4:1 set layer) the art is stretched.
+- Decodes the first result and fits it to exactly ``(w, h)`` with Pillow, keeping any alpha,
+  and returns PNG bytes. The art is never scaled unevenly: when its aspect ratio is within 1%
+  of ``w / h`` it is resized; otherwise it is scaled evenly until it covers ``(w, h)`` and then
+  cropped to it, anchored at the bottom edge and centered horizontally (set layers stand on
+  the ground line at the bottom, so a wide strip such as a 2048x464 middle layer keeps the
+  bottom band of a 1536x1024 canvas and loses the top).
+
+``canvas_size(size)`` returns the size actually requested from the API for ``size``
+(``closest_size``), so callers can tell the model which band of the canvas survives the crop
+(``agent.tools.art.ArtService.make_layer`` does this).
 
 Errors raise ``RuntimeError`` with the HTTP status; the API key is never put in a message.
 Tests inject an ``httpx.MockTransport``.
@@ -78,12 +85,38 @@ def _reference_file(index: int, data: bytes) -> tuple[str, bytes, str]:
     return f"reference_{index}.png", buf.getvalue(), "image/png"
 
 
+ASPECT_TOLERANCE = 0.01
+"""A plain resize is used only when the source and target aspect ratios differ by at most 1%."""
+
+
+def fit_to_size(im: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Fit ``im`` to exactly ``size`` without uneven scaling.
+
+    Within ``ASPECT_TOLERANCE`` of the target aspect it is a plain resize. Otherwise the image is
+    scaled by one factor so it covers ``size``, then cropped to ``size`` anchored at the bottom
+    edge and centered horizontally.
+    """
+    tw, th = size
+    sw, sh = im.size
+    if (sw, sh) == (tw, th):
+        return im
+    if abs((sw / sh) / (tw / th) - 1.0) <= ASPECT_TOLERANCE:
+        return im.resize((tw, th), Image.Resampling.LANCZOS)
+    scale = max(tw / sw, th / sh)
+    # One factor for both axes; rounding can only add a pixel of slack, never squash.
+    nw = max(tw, round(sw * scale))
+    nh = max(th, round(sh * scale))
+    scaled = im.resize((nw, nh), Image.Resampling.LANCZOS)
+    left = (nw - tw) // 2
+    top = nh - th
+    return scaled.crop((left, top, left + tw, top + th))
+
+
 def _to_png(data: bytes, size: tuple[int, int]) -> bytes:
     with Image.open(io.BytesIO(data)) as src:
         src.load()
         im = src.convert("RGBA" if _has_alpha(src) else "RGB")
-    if im.size != size:
-        im = im.resize(size, Image.Resampling.LANCZOS)
+    im = fit_to_size(im, size)
     buf = io.BytesIO()
     im.save(buf, format="PNG")
     return buf.getvalue()
@@ -118,6 +151,10 @@ class OpenAIImageModel:
     def close(self) -> None:
         self._client.close()
 
+    def canvas_size(self, size: tuple[int, int]) -> tuple[int, int]:
+        """The size the API is asked for when ``generate`` is called with ``size``."""
+        return closest_size((int(size[0]), int(size[1])))
+
     def generate(
         self,
         prompt: str,
@@ -126,7 +163,7 @@ class OpenAIImageModel:
         size: tuple[int, int] = (1024, 1024),
     ) -> bytes:
         out_size = (int(size[0]), int(size[1]))
-        api_w, api_h = closest_size(out_size)
+        api_w, api_h = self.canvas_size(out_size)
         api_size = f"{api_w}x{api_h}"
         if reference_images:
             path = "/images/edits"
@@ -191,4 +228,12 @@ class OpenAIImageModel:
         raise RuntimeError(f"image API {path} returned no image data")
 
 
-__all__ = ["DEFAULT_MODEL", "DEFAULT_URL", "SUPPORTED_SIZES", "OpenAIImageModel", "closest_size"]
+__all__ = [
+    "ASPECT_TOLERANCE",
+    "DEFAULT_MODEL",
+    "DEFAULT_URL",
+    "SUPPORTED_SIZES",
+    "OpenAIImageModel",
+    "closest_size",
+    "fit_to_size",
+]

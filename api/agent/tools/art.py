@@ -22,9 +22,12 @@ Auto-rig helpers (ARCHITECTURE.md section 1, Props):
 - ``snap_grip``: snap the agent's grip hint to the nearest edge of the shape.
 Scale comes from the prop's size class and is not computed here.
 
-TODO(next wave): real adapters ``HttpImageModel`` (an image API reading
-``IMAGE_API_KEY``) and ``RembgRemover`` (a background-removal model). They only
-need to satisfy the two Protocols below.
+An image model may also have the optional ``CanvasSizer`` capability,
+``canvas_size(size) -> (w, h)``: the canvas it really draws on. Set layers are wide strips
+(2048x1024 back, 2048x464 middle, 2048x192 front) while image APIs draw on a few fixed
+canvases, so the adapter fits the result by scaling evenly and cropping a bottom band, and
+``make_layer`` tells the model which band is kept. The real adapters live in
+``agent/adapters`` (``OpenAIImageModel`` has ``canvas_size``; the fakes here do not need it).
 """
 
 from __future__ import annotations
@@ -61,6 +64,20 @@ class ImageModel(Protocol):
     ) -> bytes:
         """Return PNG bytes for ``prompt``. May raise on any service error."""
         ...
+
+
+@runtime_checkable
+class CanvasSizer(Protocol):
+    """Optional capability of an ``ImageModel``.
+
+    ``canvas_size(size)`` is the size the model really draws on when asked for ``size``. When it
+    differs in aspect from ``size``, the model's adapter fits the result by scaling evenly and
+    cropping (bottom-anchored, horizontally centered), so ``ArtService.make_layer`` tells the
+    model which band of the canvas will be kept. A model without it is assumed to draw at
+    ``size`` exactly.
+    """
+
+    def canvas_size(self, size: tuple[int, int]) -> tuple[int, int]: ...
 
 
 @runtime_checkable
@@ -300,6 +317,55 @@ def snap_grip(png: bytes, hint: Sequence[float]) -> list[float]:
 # --------------------------------------------------------------------------- #
 
 
+BAND_LINE_THRESHOLD = 0.99
+"""A composition line is added to a layer prompt only when less than 99% of the canvas is kept."""
+
+
+def model_canvas_size(model: object, size: tuple[int, int]) -> tuple[int, int]:
+    """``model.canvas_size(size)`` when the model has that capability and it answers sanely, else ``size``."""
+    sizer = getattr(model, "canvas_size", None)
+    if not callable(sizer):
+        return size
+    try:
+        w, h = sizer(size)
+        w, h = int(w), int(h)
+    except Exception as exc:  # noqa: BLE001 - an optional hint; never fail a layer over it
+        log.warning("canvas_size failed, assuming the requested size: %s: %s", type(exc).__name__, exc)
+        return size
+    return (w, h) if w > 0 and h > 0 else size
+
+
+def kept_fraction(canvas: tuple[int, int], target: tuple[int, int]) -> float:
+    """Fraction of the canvas height kept (from the bottom) when it is fitted to ``target``.
+
+    The canvas is scaled evenly to cover the target and cropped, bottom-anchored, so the kept
+    band is ``(canvas aspect) / (target aspect)`` of its height, capped at 1.0 (a target taller
+    than the canvas loses its sides instead, which needs no band line).
+    """
+    cw, ch = canvas
+    tw, th = target
+    return min(1.0, (cw / ch) / (tw / th))
+
+
+def layer_band_line(layer: LayerName, kept: float) -> str | None:
+    """The composition line telling the model which part of the canvas survives, or ``None``."""
+    if kept >= BAND_LINE_THRESHOLD:
+        return None
+    pct = max(1, min(99, round(kept * 100)))
+    if layer == "back":
+        return (
+            f"Composition: this canvas will be cropped to a wide strip. The top {100 - pct}% of the "
+            f"canvas is cut off and only the bottom {pct}% is kept, so place everything important "
+            f"(the horizon, buildings, hills, the main features of the place) in the bottom {pct}% "
+            "of the canvas; only plain sky or ceiling may run into the top part."
+        )
+    return (
+        f"Composition: this canvas will be cropped to a wide strip that keeps only the bottom {pct}% "
+        f"of the canvas. Draw every piece inside the bottom {pct}% of the canvas, standing on the "
+        f"bottom edge, and leave the top {100 - pct}% plain pure white with nothing in it."
+    )
+
+
 class ArtService:
     """Image model + background removal. Returns ``None`` (placeholder path) instead of raising."""
 
@@ -347,12 +413,20 @@ class ArtService:
         not cropped. The returned ``Cutout`` covers the full frame: ``bbox`` is the whole image,
         ``aspect`` is width / height and ``anchor`` is [0.5, 1.0]. Needs only the image model for
         the back layer and both services otherwise. ``None`` means use a placeholder.
+
+        When the model draws on a canvas of another aspect (``CanvasSizer``), its adapter keeps
+        only a bottom band of that canvas, so one composition line naming the band (as a whole
+        percent of the canvas height) is appended to ``prompt`` before generating.
         """
         if layer not in ("back", "middle", "front"):
             raise ValueError("layer must be 'back', 'middle' or 'front'")
         if self.image_model is None or (layer != "back" and self.remover is None):
             return None
         try:
+            target = (int(size[0]), int(size[1]))
+            band = layer_band_line(layer, kept_fraction(model_canvas_size(self.image_model, target), target))
+            if band is not None:
+                prompt = f"{prompt}\n{band}"
             image = self.image_model.generate(prompt, reference_images=tuple(reference_images), size=size)
             if layer == "back" or self.remover is None:
                 im = _load_rgba(image)
