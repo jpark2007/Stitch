@@ -228,7 +228,7 @@ export function SetPiece({
     // whenever the card faces the light.
     front.shadowSide = DoubleSide;
     front.normalMap = grain.normalMap;
-    front.normalScale.set(0.55, 0.55);
+    front.normalScale.set(0.4, 0.4);
     front.roughnessMap = grain.roughnessMap;
     front.name = "stage:cutout-front";
     const back = createPaperMaterial({ color: backColor, kind: "card", repeat: rep, side: BackSide, grain: 0.7 });
