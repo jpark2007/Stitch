@@ -62,8 +62,8 @@ function capsule(p: [number, number], q: [number, number], w: number): string {
   const f = (n: number) => n.toFixed(2);
   return (
     `M${f(p[0] + nx)} ${f(p[1] + ny)} L${f(q[0] + nx)} ${f(q[1] + ny)} ` +
-    `A${r} ${r} 0 0 1 ${f(q[0] - nx)} ${f(q[1] - ny)} L${f(p[0] - nx)} ${f(p[1] - ny)} ` +
-    `A${r} ${r} 0 0 1 ${f(p[0] + nx)} ${f(p[1] + ny)} Z`
+    `A${r} ${r} 0 0 0 ${f(q[0] - nx)} ${f(q[1] - ny)} L${f(p[0] - nx)} ${f(p[1] - ny)} ` +
+    `A${r} ${r} 0 0 0 ${f(p[0] + nx)} ${f(p[1] + ny)} Z`
   );
 }
 

@@ -1,0 +1,135 @@
+/* Family tree (FamilyTree.tsx), prefixed ft-. Plain CSS: this app's turbopack
+ * rule compiles every *.css as global, so CSS modules are not available.
+ * Scales as one piece with its container (1 --u = 1 layout unit). */
+
+.ft-frame {
+  container-type: inline-size;
+  width: 100%;
+  margin-inline: auto;
+}
+
+.ft-tree {
+  position: relative;
+  width: 100%;
+}
+
+.ft-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* Threads draw themselves in, parents first. */
+.ft-draw {
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 1;
+  animation: ft-draw 1.1s var(--ease-paper) both;
+}
+
+@keyframes ft-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.ft-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: calc(var(--u) * 112);
+  margin-left: calc(var(--u) * -56);
+  text-decoration: none;
+  color: var(--ink);
+  border-radius: var(--radius-soft);
+  -webkit-tap-highlight-color: transparent;
+  animation: ft-rise 0.8s var(--ease-paper) both;
+}
+
+@keyframes ft-rise {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--u) * 14)) scale(0.96);
+  }
+}
+
+.ft-figure {
+  position: relative;
+  width: calc(var(--u) * 96);
+  height: calc(var(--u) * 124.8);
+  transform-origin: 50% 96%;
+  transition: transform 0.45s var(--ease-paper);
+}
+
+.ft-puppet {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 calc(var(--u) * 1.5) calc(var(--u) * 1.5) rgb(74 47 29 / 0.16));
+  transition: filter 0.45s var(--ease-paper);
+}
+
+/* Soft contact shadow under the feet. */
+.ft-ground {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--u) * 2);
+  width: calc(var(--u) * 46);
+  height: calc(var(--u) * 7);
+  margin-left: calc(var(--u) * -23);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgb(74 47 29 / 0.28), rgb(74 47 29 / 0));
+  transition:
+    transform 0.45s var(--ease-paper),
+    opacity 0.45s var(--ease-paper);
+}
+
+.ft-name {
+  margin-top: calc(var(--u) * 2);
+  font-family: var(--font-hand);
+  font-size: calc(var(--u) * 30);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--ink);
+  transition: color 0.3s var(--ease-paper);
+}
+
+@media (hover: hover) {
+  .ft-node:hover .ft-figure {
+    transform: translateY(calc(var(--u) * -7)) rotate(-2deg);
+  }
+  .ft-node:hover .ft-puppet {
+    filter: drop-shadow(0 calc(var(--u) * 6) calc(var(--u) * 4) rgb(74 47 29 / 0.2));
+  }
+  .ft-node:hover .ft-ground {
+    transform: translateY(calc(var(--u) * 7)) scale(0.78);
+    opacity: 0.6;
+  }
+  .ft-node:hover .ft-name {
+    color: var(--accent-deep);
+  }
+}
+
+.ft-node:focus-visible {
+  outline-offset: calc(var(--u) * 2);
+}
+
+.ft-node:active .ft-figure {
+  transform: translateY(calc(var(--u) * -3)) scale(0.98);
+  transition-duration: 0.12s;
+}
+
+.ft-knot {
+  animation: ft-fade 0.5s ease-out both;
+}
+
+@keyframes ft-fade {
+  from {
+    opacity: 0;
+  }
+}
