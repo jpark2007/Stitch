@@ -223,7 +223,7 @@ def test_worker_graph_has_no_submission_or_relay_tools(stack):
     _, db = stack
     service = ConversationService.for_contact(db, "family-a", "family-a:alice")
     assert {t.name for t in conversation_tools(service, worker_managed=True)} == {
-        "get_open_questions", "select_question"}
+        "get_open_questions"}
     model = ScriptedChatModel(responder=lambda *_: AIMessage(content="Draft response"))
     agent = ConversationAgent(service, model=model, worker_managed=True)
     asyncio.run(agent.ainvoke("Hello"))

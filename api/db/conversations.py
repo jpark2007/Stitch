@@ -169,6 +169,14 @@ def update_worker(db, family_id: str, contact_id: str, token: str, fields: dict)
     return row
 
 
+def locked_worker(db, family_id: str, contact_id: str, token: str) -> dict:
+    row = db.conversations.find_one({"_id": "worker:" + conversation_key(family_id, contact_id),
+        "familyId": family_id, "contactId": contact_id, "token": token, "status": "running"})
+    if row is None:
+        raise RuntimeError("Worker reservation is required")
+    return row
+
+
 def worker_receipts(db, family_id: str, contact_id: str) -> list[dict]:
     return list(db.channelMessages.find({"familyId": family_id, "contactId": contact_id,
         "kind": "inbound", "status": "received"}).sort([("createdAt", 1), ("_id", 1)]).limit(10))
