@@ -71,6 +71,8 @@ describe("authLede", () => {
       "/login?next=/join/abc",
       "/signup",
       "join/abc",
+      "/.//evil.example/join/abc",
+      "/%2e//evil.example/join/abc",
     ]) {
       assert.equal(authLede("login", next), authLede("login", null), next);
       assert.equal(authLede("signup", next), authLede("signup", null), next);
@@ -195,6 +197,22 @@ describe("afterSignupFailure", () => {
     assert.equal(afterSignupFailure("a@b.c", "/join/abc", storage), "/login?next=%2Fjoin%2Fabc");
     assert.equal(afterSignupFailure("a@b.c", "//evil.example", storage), "/login");
     assert.equal(afterSignupFailure("a@b.c", "/signup", storage), "/login");
+  });
+
+  test("drops protocol-relative, absolute and dot-segment escapes", () => {
+    for (const next of [
+      "//evil.example/x",
+      "///evil.example",
+      "https://evil.example/",
+      "http://localhost:3000/join/abc",
+      "javascript:alert(1)",
+      "/\\evil.example",
+      "/.//evil.example/x",
+      "/%2e//evil.example",
+      "/x/..//evil.example",
+    ]) {
+      assert.equal(afterSignupFailure("a@b.c", next, memoryStorage()), "/login", next);
+    }
   });
 
   test("the email never appears in the URL", () => {
