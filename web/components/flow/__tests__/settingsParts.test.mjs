@@ -3,9 +3,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { activeInvites, describeExpiry, inviteActionOutcome, inviteUrl, pickActiveInvite, turnOffQuestion } from "../invites.ts";
+import {
+  activeInvites,
+  describeExpiry,
+  inviteActionOutcome,
+  inviteFailureTitle,
+  inviteUrl,
+  pickActiveInvite,
+  turnOffQuestion,
+} from "../invites.ts";
 import {
   UNKNOWN_MEMBER_NAME,
+  isLostAdmin,
+  memberFailureTitle,
   memberRows,
   removeMemberOutcome,
   roleAfter,
@@ -430,6 +440,46 @@ test("inviteActionOutcome: a revoked link that is already gone is done; 403 and 
     message: "We can't reach Stitch right now.",
   });
   assert.equal(inviteActionOutcome(null, "create").message, "Something went wrong. Please try again.");
+});
+
+test("inviteFailureTitle: names the action when the message alone doesn't (5xx, offline, unknown)", () => {
+  const err = (status, message) => Object.assign(new Error(message), { status });
+  for (const e of [err(500, "Something went wrong on our side."), err(503, "Busy"), err(0, "Offline"), null, "boom"]) {
+    assert.equal(inviteFailureTitle(e, "create"), "We couldn’t make a link");
+    assert.equal(inviteFailureTitle(e, "revoke"), "We couldn’t turn the link off");
+  }
+  // inviteActionOutcome's own words already say what happened.
+  for (const status of [403, 404]) {
+    assert.equal(inviteFailureTitle(err(status, "x"), "create"), null, String(status));
+    assert.equal(inviteFailureTitle(err(status, "x"), "revoke"), null, String(status));
+  }
+});
+
+test("isLostAdmin: only a 403 means the viewer is no longer an admin", () => {
+  const err = (status) => Object.assign(new Error("x"), { status });
+  assert.equal(isLostAdmin(err(403)), true);
+  for (const e of [err(401), err(404), err(409), err(500), err(0), new Error("x"), null, undefined, "403", { status: "403" }]) {
+    assert.equal(isLostAdmin(e), false, String(e?.status ?? e));
+  }
+});
+
+test("memberFailureTitle: says which change failed, only when the message doesn't", () => {
+  const ana = { name: "Ana", personId: "p-ana", isYou: false };
+  const me = { name: "Rosa", personId: "p-rosa", isYou: true };
+  const ghost = { name: UNKNOWN_MEMBER_NAME, personId: null, isYou: false };
+  const err = (status) => Object.assign(new Error("Something went wrong on our side. Please try again."), { status });
+  assert.equal(memberFailureTitle(err(500), ana, "remove"), "We couldn’t remove Ana");
+  assert.equal(memberFailureTitle(err(500), ana, "promote"), "We couldn’t make Ana an admin");
+  assert.equal(memberFailureTitle(err(0), ana, "demote"), "We couldn’t make Ana a member");
+  assert.equal(memberFailureTitle(err(502), me, "demote"), "You’re still an admin");
+  assert.equal(memberFailureTitle(err(500), ghost, "remove"), "We couldn’t remove this family member");
+  assert.equal(memberFailureTitle(undefined, ana, "promote"), "We couldn’t make Ana an admin");
+  // roleChangeError and removeMemberOutcome word these themselves.
+  for (const status of [403, 404, 409]) {
+    for (const action of ["remove", "promote", "demote"]) {
+      assert.equal(memberFailureTitle(err(status), ana, action), null, `${status} ${action}`);
+    }
+  }
 });
 
 test("activeInvites: every invite that still works, so turning the link off turns them all off", () => {
