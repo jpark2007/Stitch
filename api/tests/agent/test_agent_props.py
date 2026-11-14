@@ -69,9 +69,11 @@ class FailingRemover:
         raise RuntimeError("remover down")
 
 
-def make_run(*, family_id: str = FAM, year: int = 1985, photo_ids: Sequence[str] = ()) -> RunInfo:
+def make_run(
+    *, family_id: str = FAM, year: int = 1985, photo_ids: Sequence[str] = (), run_id: str = "run_1"
+) -> RunInfo:
     return RunInfo(
-        run_id="run_1",
+        run_id=run_id,
         family_id=family_id,
         user_id="user_1",
         author_id="dad",
@@ -142,7 +144,11 @@ def test_generate_prop_schema_is_explicit() -> None:
     tool = tools_for(PropRepo(), fake_art())["generate_prop"]
     schema = tool.tool_call_schema.model_json_schema()
     props = schema["properties"]
-    assert set(props) == {"name", "description", "size", "grip", "reference_photo_id", "parts", "states"}
+    assert set(props) == {"name", "description", "size", "grip", "reference_photo_id", "parts", "states", "sockets"}
+    sockets_doc = props["sockets"]["description"]
+    for needle in ('"driver": [0.35, 0.55]', '"seat"', '"top"', "get_in", "drive_to", "ride_to", "sit_on",
+                   "place_on", "[0, 0] top-left"):
+        assert needle in sockets_doc, needle
     assert all(size in props["size"]["description"] for size in props_module.SIZES)
     assert set(schema["required"]) == {"name", "description", "size"}
     assert set(schema["$defs"]["PartSpec"]["properties"]) == {"name", "description", "at", "spin"}
@@ -176,8 +182,9 @@ def test_find_prop_returns_saved_and_library_props() -> None:
     assert [p["id"] for p in hymn] == ["hymn_books"]
     assert hymn[0]["size"] == "hand" and hymn[0]["source"] == "generated"
     assert set(hymn[0]) == {
-        "id", "name", "description", "size", "source", "aspect", "grip", "parts", "states", "preview"
+        "id", "name", "description", "size", "source", "aspect", "grip", "parts", "states", "sockets", "preview"
     }
+    assert hymn[0]["sockets"] == {}
 
     case = json.loads(find.invoke({"description": "Dad's trumpet case"}))[0]
     assert case["id"] == "trumpet_case"
@@ -540,16 +547,23 @@ def test_confirm_props_cannot_touch_another_familys_props_or_photos() -> None:
 
 def test_replace_photo_without_a_remover_uses_the_photo_itself() -> None:
     repo = seeded_repo()
+    before = repo.get_prop(FAM, "trumpet_case")
     photo = repo.put_media(FAM, png((120, 60, 20), size=(300, 200), shape=False), "image/jpeg", kind="photo")
     confirm = tools_for(repo, ArtService(FakeImageModel(), None))["confirm_props"]
     out = confirm.invoke({"props": [{"id": "trumpet_case", "name": "trumpet case", "size": "carried"}],
                           "edits": [{"id": "trumpet_case", "action": "replace_photo", "photoId": photo}]})
-    assert out.splitlines()[0] == "trumpet_case | trumpet case | size=carried | photo"
-    prop = repo.get_prop(FAM, "trumpet_case")
+    # trumpet_case was reused (not generated in this run): the photo goes on a fork.
+    assert out.splitlines()[0] == (
+        "trumpet_case_2 | trumpet case | size=carried | photo"
+        " (replaces trumpet_case; use the new id) (dropped states: open, closed)"
+    )
+    assert repo.get_prop(FAM, "trumpet_case") == before
+    prop = repo.get_prop(FAM, "trumpet_case_2")
     assert prop.art == {"body": photo}
     assert prop.aspect == pytest.approx(1.5)
     assert prop.anchor == [0.5, 1.0]
     assert prop.source == "photo" and prop.parts == {} and prop.states == {}
+    # No cutout (a raw photo has no alpha): the old grip is kept, clamped.
     assert prop.size == "carried" and prop.grip == [0.5, 0.0]
 
 
@@ -563,10 +577,11 @@ def test_replace_photo_with_a_bare_id_stores_a_media_ref() -> None:
     confirm = tools_for(repo, ArtService(FakeImageModel(), None))["confirm_props"]
     out = confirm.invoke({"props": [{"id": "trumpet_case", "name": "trumpet case", "size": "carried"}],
                           "edits": [{"id": "trumpet_case", "action": "replace_photo", "photoId": bare}]})
-    assert out.splitlines()[0] == "trumpet_case | trumpet case | size=carried | photo"
-    body = repo.get_prop(FAM, "trumpet_case").art["body"]
+    assert out.splitlines()[0].startswith("trumpet_case_2 | trumpet case | size=carried | photo")
+    body = repo.get_prop(FAM, "trumpet_case_2").art["body"]
     assert body == ref and body.startswith("media/")
     assert repo.get_media(FAM, body) == (data, "image/jpeg")
+    assert repo.get_prop(FAM, "trumpet_case").art["body"] == "media/77"
 
 
 # ------------------------------------------------- end to end through the HITL middleware
@@ -645,7 +660,8 @@ def test_confirm_props_pauses_for_review_and_applies_the_edits() -> None:
     assert hymn.model_dump(exclude={"name"}) == before["hymn_books"].model_dump(exclude={"name"})
     # remove: dropped from the result, still saved
     assert repo.get_prop(FAM, sedan["id"]) == before[sedan["id"]]
-    # replace_photo: a new cutout of the photo, rig reset, size and grip kept
+    # replace_photo on a prop this run generated: in place, a new cutout of the photo, rig
+    # reset, size kept, the grip re-snapped onto the new shape's edge
     capped = repo.get_prop(FAM, cap["id"])
     body = capped.art["body"]
     assert set(capped.art) == {"body"} and body not in (photo, cap["preview"])
@@ -654,7 +670,345 @@ def test_confirm_props_pauses_for_review_and_applies_the_edits() -> None:
     cutout = analyze_cutout(stored[0])
     assert capped.aspect == pytest.approx(cutout.aspect) and capped.anchor == pytest.approx(cutout.anchor)
     assert capped.source == "photo" and capped.parts == {} and capped.states == {}
-    assert capped.size == "hand" and capped.grip == before[cap["id"]].grip
+    assert capped.size == "hand"
+    assert capped.grip == pytest.approx(snap_grip(stored[0], before[cap["id"]].grip))
+    assert on_edge(stored[0], capped.grip)
     schemas.Prop.model_validate(capped.model_dump())
     # keep
     assert repo.get_prop(FAM, "trumpet_case") == before["trumpet_case"]
+
+
+# ------------------------------------------------------------------------ sockets
+
+
+SEDAN_SOCKETS = {"driver": [0.35, 0.55], "passenger": [0.65, 0.55]}
+
+
+@pytest.mark.parametrize("art", [ArtService(None, None), fake_art()], ids=["placeholder", "generated"])
+def test_a_vehicle_gets_driver_and_passenger_sockets_by_default(art: ArtService) -> None:
+    repo = PropRepo()
+    tools = tools_for(repo, art)
+    out = json.loads(tools["generate_prop"].invoke(
+        {"name": "green sedan", "description": "a 1985 green sedan", "size": "vehicle"}))
+    assert out["sockets"] == SEDAN_SOCKETS
+    prop = repo.get_prop(FAM, out["id"])
+    assert prop.sockets == SEDAN_SOCKETS
+    schemas.Prop.model_validate(prop.model_dump())
+
+    (found,) = json.loads(tools["find_prop"].invoke({"description": "green sedan"}))
+    assert found["id"] == out["id"] and found["sockets"] == SEDAN_SOCKETS
+
+
+@pytest.mark.parametrize(
+    ("size", "sockets", "expected"),
+    [
+        ("furniture", None, {"seat": [0.5, 0.45]}),
+        ("hand", None, {}),
+        ("tiny", None, {}),
+        ("carried", None, {}),
+        ("building", None, {}),
+        ("vehicle", {}, {}),  # explicit {} means no sockets, even for a vehicle
+        ("furniture", {"top": [0.5, 0.1]}, {"top": [0.5, 0.1]}),
+        ("vehicle", {"driver": [0.3, 0.5], "back_seat": [0.7, 0.5]}, {"driver": [0.3, 0.5], "back_seat": [0.7, 0.5]}),
+        ("furniture", {"seat_left": [0, 1], "seat_right": [1, 0]}, {"seat_left": [0.0, 1.0], "seat_right": [1.0, 0.0]}),
+    ],
+)
+def test_socket_defaults_and_explicit_sockets(size: str, sockets: dict | None, expected: dict) -> None:
+    repo = PropRepo()
+    args: dict[str, Any] = {"name": "thing", "description": "a thing", "size": size}
+    if sockets is not None:
+        args["sockets"] = sockets
+    out = json.loads(tools_for(repo, fake_art())["generate_prop"].invoke(args))
+    assert out["sockets"] == expected
+    assert repo.get_prop(FAM, out["id"]).sockets == expected
+
+
+def test_socket_values_are_rounded_in_results_but_saved_exactly() -> None:
+    repo = PropRepo()
+    tools = tools_for(repo, ArtService(None, None))
+    out = json.loads(tools["generate_prop"].invoke({"name": "bench", "description": "a park bench",
+                                                    "size": "furniture", "sockets": {"seat": [1 / 3, 0.123456]}}))
+    assert out["sockets"] == {"seat": [0.3333, 0.1235]}
+    assert repo.get_prop(FAM, "bench").sockets == {"seat": [1 / 3, 0.123456]}
+    assert json.loads(tools["find_prop"].invoke({"description": "park bench"}))[0]["sockets"] == out["sockets"]
+
+
+@pytest.mark.parametrize(
+    ("sockets", "needle"),
+    [
+        ({"Driver Seat": [0.5, 0.5]}, "snake_case"),
+        ({"9lives": [0.5, 0.5]}, "snake_case"),
+        ({"x" * 41: [0.5, 0.5]}, "snake_case"),
+        ({"hand_r": [0.5, 0.5]}, "hand_r"),
+        ({"hand_l": [0.5, 0.5]}, "hand_l"),
+        ({"head": [0.5, 0.5]}, "head"),
+        ({"body": [0.5, 0.5]}, "body"),
+        ({"seat": [1.2, 0.5]}, "between 0 and 1"),
+        ({"seat": [0.5, -0.01]}, "between 0 and 1"),
+        ({"seat": [0.5, float("nan")]}, "between 0 and 1"),
+        ({"seat": [float("inf"), 0.5]}, "between 0 and 1"),
+        ({"seat": [0.5]}, "between 0 and 1"),
+        ({"seat": [0.5, 0.5, 0.5]}, "between 0 and 1"),
+        ({f"seat_{i}": [0.1 * i, 0.5] for i in range(7)}, "at most 6"),
+    ],
+)
+def test_invalid_sockets_return_an_error_and_save_nothing(sockets: dict, needle: str) -> None:
+    repo = PropRepo()
+    model = FakeImageModel()
+    tool = tools_for(repo, ArtService(model, FakeBackgroundRemover()))["generate_prop"]
+    result = tool.invoke({"name": "green sedan", "description": "a car", "size": "vehicle", "sockets": sockets})
+    assert isinstance(result, str) and result.startswith("error:"), result
+    assert needle in result
+    assert repo.list_props(FAM) == [] and model.calls == []
+    family = repo._families.get(FAM)
+    assert family is None or not family.media
+
+
+def test_six_sockets_are_allowed() -> None:
+    repo = PropRepo()
+    sockets = {f"seat_{i}": [0.1 * i, 0.5] for i in range(6)}
+    out = json.loads(tools_for(repo, ArtService(None, None))["generate_prop"].invoke(
+        {"name": "pew", "description": "a church pew", "size": "furniture", "sockets": sockets}))
+    assert set(out["sockets"]) == set(sockets)
+
+
+# ------------------------------------------- sockets against the real compiler
+
+
+def _scene(cast: list[str], prop_id: str, actions: list[dict], start: dict) -> str:
+    return json.dumps({
+        "memoryId": "m1",
+        "cast": cast,
+        "props": [prop_id],
+        "shots": [{
+            "id": "s1",
+            "set": "church_steps_1988",
+            "start": start,
+            "propStart": {prop_id: {"at": "steps_foot"}},
+            "camera": [{"t": 0, "move": "wide"}],
+            "actions": actions,
+            "pageText": "A test page.",
+        }],
+    })
+
+
+@pytest.fixture
+def real_compiler() -> Any:
+    from agent.fake_compiler import FakeCompiler
+    from agent.tools.compile import load_compiler
+
+    compiler = load_compiler()
+    if isinstance(compiler, FakeCompiler):
+        pytest.skip("screenplay.compiler.compile is not on this branch (load_compiler() returns FakeCompiler)")
+    return compiler
+
+
+def _compile_codes(repo: InMemoryRepo, text: str, compiler: Any) -> tuple[bool, list[str]]:
+    from agent.tools.compile import parse_and_compile
+    from agent.wiring import scene_for
+
+    res = parse_and_compile(text, compiler, scene_for(repo, FAM))
+    return res.ok, [e.code for e in res.errors]
+
+
+def test_a_generated_vehicle_can_be_got_into_and_driven_with_the_real_compiler(real_compiler: Any) -> None:
+    repo = PropRepo()
+    load_sample_family(repo, FAM)
+    tool = tools_for(repo, ArtService(None, None))["generate_prop"]
+    car = json.loads(tool.invoke({"name": "green sedan", "description": "a 1985 green sedan", "size": "vehicle"}))
+    actions = [{"t": 0, "who": "dad", "do": "get_in", "what": car["id"]},
+               {"t": 3, "who": "dad", "do": "drive_to", "what": car["id"], "to": "curb"}]
+    start = {"dad": {"at": "steps_left", "facing": "right"}}
+    ok, codes = _compile_codes(repo, _scene(["dad"], car["id"], actions, start), real_compiler)
+    assert "no_free_seat" not in codes and "not_driver" not in codes
+    assert ok, codes
+
+    # Control: the same car with no sockets cannot be driven, so the check above means something.
+    bare = json.loads(tool.invoke({"name": "bare sedan", "description": "a car", "size": "vehicle", "sockets": {}}))
+    actions = [{**a, "what": bare["id"]} for a in actions]
+    ok, codes = _compile_codes(repo, _scene(["dad"], bare["id"], actions, start), real_compiler)
+    assert not ok and codes
+
+
+def test_a_generated_chair_can_be_sat_on_with_the_real_compiler(real_compiler: Any) -> None:
+    repo = PropRepo()
+    load_sample_family(repo, FAM)
+    tool = tools_for(repo, ArtService(None, None))["generate_prop"]
+    chair = json.loads(tool.invoke({"name": "kitchen chair", "description": "a wooden chair", "size": "furniture"}))
+    actions = [{"t": 0.5, "who": "dad", "do": "sit_on", "what": chair["id"]}]
+    start = {"dad": {"at": "steps_left", "facing": "right"}}
+    ok, codes = _compile_codes(repo, _scene(["dad"], chair["id"], actions, start), real_compiler)
+    assert "no_seat" not in codes
+    assert ok, codes
+
+    stool = json.loads(tool.invoke({"name": "stool", "description": "a stool", "size": "furniture", "sockets": {}}))
+    actions = [{**a, "what": stool["id"]} for a in actions]
+    ok, codes = _compile_codes(repo, _scene(["dad"], stool["id"], actions, start), real_compiler)
+    assert "no_seat" in codes
+
+
+# ------------------------------------------------- replace_photo: fork and re-rig the grip
+
+
+def l_shape_photo(size: int = 120) -> bytes:
+    """An RGBA 'L': a bar down the left side and a bar along the bottom, the rest transparent
+    (and white, so FakeBackgroundRemover also clears it). Its top-middle is empty, so a grip at
+    [0.5, 0.0] carried over from another picture would hang in the air."""
+    im = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+    bar = size // 4
+    im.paste((150, 40, 40, 255), (0, 0, bar, size))
+    im.paste((150, 40, 40, 255), (0, size - bar, size, size))
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def alpha_at(image: bytes, point: Sequence[float]) -> int:
+    with Image.open(io.BytesIO(image)) as im:
+        alpha = im.convert("RGBA").getchannel("A")
+    w, h = alpha.size
+    return alpha.getpixel((min(w - 1, int(point[0] * w)), min(h - 1, int(point[1] * h))))
+
+
+MUSIC_BOX = {
+    "name": "music box",
+    "description": "grandma's wooden music box",
+    "size": "carried",
+    "grip": [0.5, 0.0],
+    "parts": [{"name": "lid", "description": "the lid on its own", "at": [0.5, 0.1]}],
+    "states": [{"name": "open", "description": "lid open, a dancer inside"}],
+    "sockets": {"top": [0.5, 0.05]},
+}
+
+
+def test_replace_photo_on_a_prop_from_an_earlier_run_forks_it() -> None:
+    """The finding: run 2's review replaced the art of a prop run 1 made, in place, so older
+    memories lost the 'lid' part and 'open' state they use, and the old grip hung off the new
+    shape. Now run 1's prop stays exactly as it was and run 2 gets a re-rigged fork."""
+    repo = PropRepo()
+    art = fake_art()
+    run1 = {t.name: t for t in make_prop_tools(repo, make_run(run_id="run_1"), art)}
+    made = json.loads(run1["generate_prop"].invoke(MUSIC_BOX))
+    old_id = made["id"]
+    before = repo.get_prop(FAM, old_id)
+    assert list(before.parts) == ["lid"] and list(before.states) == ["open"] and before.grip is not None
+    old_body = repo.get_media(FAM, before.art["body"])
+
+    photo = repo.put_media(FAM, l_shape_photo(), "image/png", kind="photo")
+    run2 = {t.name: t for t in make_prop_tools(repo, make_run(run_id="run_2", photo_ids=[photo]), art)}
+    out = run2["confirm_props"].invoke({
+        "props": [{"id": old_id, "name": "music box", "size": "carried", "art": made["preview"], "reused": True}],
+        "edits": [{"id": old_id, "action": "replace_photo", "photoId": photo}],
+    })
+    line = out.splitlines()[0]
+    new_id = line.split(" | ", 1)[0]
+    assert new_id != old_id
+    assert line == (f"{new_id} | music box | size=carried | photo"
+                    f" (replaces {old_id}; use the new id) (dropped parts: lid; states: open)")
+    assert out.splitlines()[1] == "removed: none"
+
+    # The original is untouched: same parts, states, art, grip, everything.
+    after = repo.get_prop(FAM, old_id)
+    assert after == before
+    assert list(after.parts) == ["lid"] and list(after.states) == ["open"]
+    assert repo.get_media(FAM, after.art["body"]) == old_body
+
+    fork = repo.get_prop(FAM, new_id)
+    schemas.Prop.model_validate(fork.model_dump())
+    assert fork.family_id == FAM and fork.source == "photo"
+    assert (fork.name, fork.description, fork.size, fork.color) == (before.name, before.description, before.size,
+                                                                     before.color)
+    assert fork.parts == {} and fork.states == {}
+    assert fork.sockets == before.sockets == {"top": [0.5, 0.05]}
+    assert set(fork.art) == {"body"} and fork.art["body"] != before.art["body"]
+    cutout_png, content_type = repo.get_media(FAM, fork.art["body"])
+    assert content_type == "image/png"
+    cutout = analyze_cutout(cutout_png)
+    assert fork.aspect == pytest.approx(cutout.aspect) and fork.anchor == pytest.approx(cutout.anchor)
+    # The old grip would hang in the air on the L; the re-rigged one is on the shape.
+    assert alpha_at(cutout_png, before.grip) < ALPHA_THRESHOLD
+    assert alpha_at(cutout_png, fork.grip) >= ALPHA_THRESHOLD
+    assert on_edge(cutout_png, fork.grip)
+
+
+def test_rename_with_replace_photo_on_a_reused_prop_goes_to_the_fork_only() -> None:
+    repo = seeded_repo()
+    before = repo.get_prop(FAM, "trumpet_case")
+    photo = repo.put_media(FAM, l_shape_photo(), "image/png", kind="photo")
+    confirm = tools_for(repo, fake_art())["confirm_props"]
+    out = confirm.invoke({
+        "props": [{"id": "trumpet_case", "name": "trumpet case", "size": "carried"}],
+        "edits": [{"id": "trumpet_case", "action": "rename", "name": "silver trumpet case"},
+                  {"id": "trumpet_case", "action": "replace_photo", "photoId": photo}],
+    })
+    assert out.splitlines()[0] == (
+        "silver_trumpet_case | silver trumpet case | size=carried | photo"
+        " (replaces trumpet_case; use the new id) (dropped states: open, closed)"
+    )
+    assert repo.get_prop(FAM, "trumpet_case") == before
+    assert repo.get_prop(FAM, "silver_trumpet_case").name == "silver trumpet case"
+
+
+def test_rename_alone_on_a_reused_prop_still_renames_in_place() -> None:
+    repo = seeded_repo()
+    out = tools_for(repo, fake_art())["confirm_props"].invoke({
+        "props": [{"id": "trumpet_case", "name": "trumpet case", "size": "carried"}],
+        "edits": [{"id": "trumpet_case", "action": "rename", "name": "brass case"}],
+    })
+    assert out.splitlines()[0] == "trumpet_case | brass case | size=carried | renamed"
+    assert repo.get_prop(FAM, "trumpet_case").name == "brass case"
+
+
+def test_replace_photo_on_a_library_prop_forks_into_the_family() -> None:
+    repo = seeded_repo()
+    before = repo.get_prop(FAM, "lib_chair")
+    photo = repo.put_media(FAM, l_shape_photo(), "image/png", kind="photo")
+    out = tools_for(repo, fake_art())["confirm_props"].invoke({
+        "props": [{"id": "lib_chair", "name": "wooden chair", "size": "furniture"}],
+        "edits": [{"id": "lib_chair", "action": "replace_photo", "photoId": photo}],
+    })
+    assert out.splitlines()[0] == "wooden_chair | wooden chair | size=furniture | photo (replaces lib_chair; use the new id)"
+    assert repo.get_prop(FAM, "lib_chair") == before and before.family_id is None
+    fork = repo.get_prop(FAM, "wooden_chair")
+    assert fork.family_id == FAM and fork.grip is None
+
+
+def test_replace_photo_on_a_prop_generated_this_run_updates_it_in_place() -> None:
+    repo = PropRepo()
+    photo = repo.put_media(FAM, l_shape_photo(), "image/png", kind="photo")
+    tools = {t.name: t for t in make_prop_tools(repo, make_run(photo_ids=[photo]), fake_art())}
+    made = json.loads(tools["generate_prop"].invoke(MUSIC_BOX))
+    before = repo.get_prop(FAM, made["id"])
+    out = tools["confirm_props"].invoke({
+        "props": [{"id": made["id"], "name": "music box", "size": "carried", "art": made["preview"]}],
+        "edits": [{"id": made["id"], "action": "replace_photo", "photoId": photo}],
+    })
+    assert out.splitlines()[0] == f"{made['id']} | music box | size=carried | photo (dropped parts: lid; states: open)"
+    assert [p.id for p in repo.list_props(FAM)] == [made["id"]]
+    prop = repo.get_prop(FAM, made["id"])
+    assert prop.parts == {} and prop.states == {} and prop.sockets == before.sockets
+    cutout_png = repo.get_media(FAM, prop.art["body"])[0]
+    assert alpha_at(cutout_png, prop.grip) >= ALPHA_THRESHOLD
+    assert on_edge(cutout_png, prop.grip)
+
+
+def test_rerig_grip_falls_back_to_the_anchor_side_edge(monkeypatch: pytest.MonkeyPatch) -> None:
+    cutout = analyze_cutout(FakeBackgroundRemover().remove(l_shape_photo()))
+    real_snap = props_module.snap_grip
+    calls: list[list[float]] = []
+
+    def snap_into_the_air(png: bytes, hint: Sequence[float]) -> list[float]:
+        calls.append(list(hint))
+        return [0.9, 0.05] if len(calls) == 1 else real_snap(png, hint)  # first: a transparent spot
+
+    monkeypatch.setattr(props_module, "snap_grip", snap_into_the_air)
+    grip = props_module.rerig_grip([0.5, 0.0], cutout)
+    assert calls == [[0.5, 0.0], cutout.anchor]
+    assert grip == real_snap(cutout.png, cutout.anchor)
+    assert alpha_at(cutout.png, grip) >= ALPHA_THRESHOLD
+
+
+def test_rerig_grip_without_a_grip_or_a_cutout() -> None:
+    cutout = analyze_cutout(FakeBackgroundRemover().remove(l_shape_photo()))
+    assert props_module.rerig_grip(None, cutout) is None
+    assert props_module.rerig_grip([1.3, -0.2], None) == [1.0, 0.0]
