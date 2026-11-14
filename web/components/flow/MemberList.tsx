@@ -6,13 +6,17 @@
 // gets a quiet "Make admin" or "Make member" (on their own row "Step down as
 // admin", only while another admin remains), and each row they may remove a
 // quiet "Remove". Every action opens an inline confirm; a failed one shows
-// its message on that row, and one that worked is announced.
+// its message on that row (except a 403: the page then says once, at the
+// top, that the viewer is no longer an admin), and one that worked is
+// announced.
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Button, FOCUS_RING } from "./Button";
 import { FormError } from "./FormError";
 import { PaperCard } from "./PaperCard";
 import {
+  isLostAdmin,
+  memberFailureTitle,
   removeMemberOutcome,
   roleAfter,
   roleChangeCopy,
@@ -48,6 +52,9 @@ type Confirming =
   | { userId: string; action: "remove" }
   | { userId: string; action: "role"; row: MemberRow; roleAction: RoleAction; copy: RoleChangeCopy };
 
+/** A failed change on one row: what failed (null when the message says it) and why. */
+type RowError = { title: string | null; message: string };
+
 type Pending =
   | { kind: "remove"; userId: string } // back on this row's Remove button
   | { kind: "role"; userId: string } // back on this row's role button, else the heading
@@ -66,14 +73,15 @@ export function MemberList(props: {
 
   const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  // Per row: what failed (null when the message says it) and why.
+  const [errors, setErrors] = useState<Record<string, RowError>>({});
   const [announcement, setAnnouncement] = useState("");
   // A visible line under the list for news about someone no longer in it.
   const [notice, setNotice] = useState("");
   // A failed change for someone whose row has since gone (they left): shown under the list.
   const orphanErrors = Object.entries(errors)
     .filter(([userId]) => !rows.some((r) => r.userId === userId))
-    .map(([, message]) => message);
+    .map(([, error]) => error.message);
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const removeRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -158,8 +166,13 @@ export function MemberList(props: {
         setAnnouncement(outcome.message);
         setNotice(outcome.message);
         pendingFocus.current = { kind: "afterRemoval", userId: row.userId, index: Math.max(0, index) };
+      } else if (isLostAdmin(err)) {
+        // No longer an admin: the page says so at the top and drops the controls;
+        // focus goes to the list's heading (the row's buttons are gone).
+        pendingFocus.current = { kind: "role", userId: row.userId };
       } else {
-        setErrors((prev) => ({ ...prev, [row.userId]: outcome.message }));
+        const title = memberFailureTitle(err, row, "remove");
+        setErrors((prev) => ({ ...prev, [row.userId]: { title, message: outcome.message } }));
         pendingFocus.current = { kind: "remove", userId: row.userId };
       }
     } finally {
@@ -176,7 +189,11 @@ export function MemberList(props: {
       await onChangeRole(row.userId, roleAfter(roleAction));
       setAnnouncement(copy.done);
     } catch (err) {
-      setErrors((prev) => ({ ...prev, [row.userId]: roleChangeError(err, row) }));
+      // No longer an admin: the page says so once, at the top (see isLostAdmin).
+      if (!isLostAdmin(err)) {
+        const failed = { title: memberFailureTitle(err, row, roleAction), message: roleChangeError(err, row) };
+        setErrors((prev) => ({ ...prev, [row.userId]: failed }));
+      }
     } finally {
       setConfirming(null);
       setBusyId(null);
@@ -211,13 +228,15 @@ export function MemberList(props: {
                 key={row.userId}
                 className="border-b border-dashed border-rule py-3 last:border-b-0 last:pb-0 first:pt-0"
               >
-                <div className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1">
+                {/* Dot, name, actions in a row; on a phone the actions go under the
+                    name, so a name and its role tag never squeeze onto two lines. */}
+                <div className="grid min-h-11 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-0.5 sm:grid-cols-[auto_minmax(0,1fr)_auto]">
                   <span
                     aria-hidden="true"
                     className="size-3 shrink-0 rounded-full bg-ink-faint ring-1 ring-rule"
                     style={row.color ? { backgroundColor: row.color } : undefined}
                   />
-                  <span className="min-w-0 flex-1 break-words text-base leading-snug text-ink">
+                  <span className="min-w-0 break-words text-base leading-snug text-ink">
                     <span className={row.personId ? undefined : "italic text-ink-soft"}>
                       {row.name}
                     </span>
@@ -226,7 +245,7 @@ export function MemberList(props: {
                     <RoleLabel role={row.role} />
                   </span>
                   {(role || row.removable) && !open ? (
-                    <div className="-mr-3 flex shrink-0 flex-wrap items-center">
+                    <div className="col-start-2 -ml-3 flex flex-wrap items-center sm:col-start-3 sm:-mr-3 sm:ml-0">
                       {role ? (
                         <button
                           ref={(el) => {
@@ -321,7 +340,7 @@ export function MemberList(props: {
 
                 {error ? (
                   <div className="mt-2">
-                    <FormError message={error} />
+                    <FormError title={error.title ?? undefined} message={error.message} />
                   </div>
                 ) : null}
               </li>

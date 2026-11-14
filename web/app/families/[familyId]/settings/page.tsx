@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 
 export default function FamilySettingsPage() {
   return (
-    <Suspense fallback={<SettingsPlaceholder label="Opening your family’s pages…" />}>
+    <Suspense fallback={<SettingsPlaceholder label="Opening your family’s pages…" width="wide" />}>
       <SettingsScreen />
     </Suspense>
   );

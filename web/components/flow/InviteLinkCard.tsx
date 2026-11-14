@@ -10,7 +10,7 @@ import { Button, FOCUS_RING } from "./Button";
 import { TextField } from "./Field";
 import { FormError } from "./FormError";
 import { PaperCard } from "./PaperCard";
-import { describeExpiry, inviteActionOutcome, inviteUrl, turnOffQuestion } from "./invites";
+import { describeExpiry, inviteActionOutcome, inviteFailureTitle, inviteUrl, turnOffQuestion } from "./invites";
 
 type FocusTarget = "create" | "link" | "turnOff" | "confirm";
 
@@ -32,7 +32,8 @@ export function InviteLinkCard(props: {
   const questionId = `${uid}question`;
 
   const [busy, setBusy] = useState<"create" | "revoke" | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // What failed (null when the message says it) and why.
+  const [error, setError] = useState<{ title: string | null; message: string } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [copyMessage, setCopyMessage] = useState("");
   // A calm word that isn't an error, like a link that was already off.
@@ -82,7 +83,7 @@ export function InviteLinkCard(props: {
       await onCreate();
       pendingFocus.current = "link";
     } catch (err) {
-      setError(inviteActionOutcome(err, "create").message);
+      setError({ title: inviteFailureTitle(err, "create"), message: inviteActionOutcome(err, "create").message });
       pendingFocus.current = "create";
     } finally {
       setBusy(null);
@@ -108,7 +109,7 @@ export function InviteLinkCard(props: {
         setNotice(outcome.message);
         pendingFocus.current = "create";
       } else {
-        setError(outcome.message);
+        setError({ title: inviteFailureTitle(err, "revoke"), message: outcome.message });
         pendingFocus.current = "turnOff";
       }
     } finally {
@@ -165,7 +166,7 @@ export function InviteLinkCard(props: {
       </p>
 
       <div className="mt-6 flex flex-col gap-5">
-        {error ? <FormError message={error} /> : null}
+        {error ? <FormError title={error.title ?? undefined} message={error.message} /> : null}
 
         {!invite ? (
           <div className="flex flex-col items-start gap-3">

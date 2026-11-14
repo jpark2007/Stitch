@@ -73,8 +73,13 @@ export function SessionGate(props: {
   requireFamily?: boolean;
   /** Replaces the default placeholder while the session loads. */
   loading?: ReactNode;
+  /**
+   * The column of the loading and error sheets: the page's own FlowPage width,
+   * so the column doesn't jump when the page arrives. Default "narrow".
+   */
+  width?: "narrow" | "wide";
 }) {
-  const { children, requireFamily = false, loading } = props;
+  const { children, requireFamily = false, loading, width = "narrow" } = props;
   const router = useRouter();
   const api = getApi();
   const [status, setStatus] = useState<Status>({ kind: "loading" });
@@ -176,7 +181,7 @@ export function SessionGate(props: {
 
   if (status.kind === "error") {
     return (
-      <GateFrame>
+      <GateFrame width={width}>
         <PaperCard className="flex flex-col gap-5">
           <h1 className="font-display text-2xl text-ink sm:text-3xl">We couldn&rsquo;t open this page</h1>
           <FormError message={status.message} />
@@ -190,8 +195,8 @@ export function SessionGate(props: {
     );
   }
 
-  if (status.kind === "leaving") return <>{loading ?? <SessionPlaceholder label="One moment…" />}</>;
-  if (!value) return <>{loading ?? <SessionPlaceholder label="Opening your family’s pages…" />}</>;
+  if (status.kind === "leaving") return <>{loading ?? <SessionPlaceholder label="One moment…" width={width} />}</>;
+  if (!value) return <>{loading ?? <SessionPlaceholder label="Opening your family’s pages…" width={width} />}</>;
 
   return (
     <SessionContext.Provider value={value}>
@@ -201,17 +206,17 @@ export function SessionGate(props: {
 }
 
 /**
- * A narrow sheet where a flow page's content starts, under the same "Stitch"
- * mark, so nothing jumps when the page arrives.
+ * A sheet where a flow page's content starts, under the same "Stitch" mark
+ * and in a column as wide as the page's, so nothing jumps when it arrives.
  */
-function GateFrame(props: { children: ReactNode }) {
-  return <FlowFrame>{props.children}</FlowFrame>;
+function GateFrame(props: { width: "narrow" | "wide"; children: ReactNode }) {
+  return <FlowFrame width={props.width}>{props.children}</FlowFrame>;
 }
 
 /** A quiet sheet with a running thread while the session loads. */
-function SessionPlaceholder(props: { label: string }) {
+function SessionPlaceholder(props: { label: string; width: "narrow" | "wide" }) {
   return (
-    <GateFrame>
+    <GateFrame width={props.width}>
       <div role="status" aria-busy="true" aria-live="polite">
         <PaperCard className="flex flex-col items-center gap-4 text-center">
           <span

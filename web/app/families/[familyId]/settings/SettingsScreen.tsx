@@ -58,8 +58,9 @@ export function SettingsScreen() {
   const fid = typeof params?.familyId === "string" ? params.familyId : "";
   const welcome = isWelcome(search);
 
+  // Wide like the page, so the column doesn't jump when it arrives.
   return (
-    <SessionGate>
+    <SessionGate width="wide">
       <FamilySettingsGate fid={fid} welcome={welcome} />
     </SessionGate>
   );

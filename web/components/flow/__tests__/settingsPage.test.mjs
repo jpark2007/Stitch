@@ -242,10 +242,41 @@ describe("the family pages use the shared flow frame", () => {
     }
   });
 
-  test("the placeholder and the not-found card are wrapped in FlowFrame", () => {
+  test("the placeholder and the not-found card are wrapped in FlowFrame, wide by default", () => {
     assert.match(files.sheets, /import \{ FlowFrame \} from "@\/components\/flow\/FlowPage"/);
-    assert.match(files.sheets, /return <FlowFrame>\{sheet\}<\/FlowFrame>;/);
-    assert.match(files.sheets, /export function FamilyNotFound\(\) \{\s*return \(\s*<FlowFrame>/);
+    assert.match(files.sheets, /return <FlowFrame width=\{props\.width \?\? "wide"\}>\{sheet\}<\/FlowFrame>;/);
+    assert.match(
+      files.sheets,
+      /export function FamilyNotFound\(props: \{ width\?: Width \} = \{\}\) \{\s*return \(\s*<FlowFrame width=\{props\.width \?\? "wide"\}>/,
+    );
+  });
+
+  // Every frame a family page shows on the way in (the static shell, the
+  // session loading, the family loading, the page) has the same column, so
+  // nothing jumps from 28rem to 40rem when the page arrives.
+  test("every loading frame is as wide as the page", () => {
+    for (const src of [files.settingsRoute, files.relativeRoute]) {
+      assert.match(src, /<Suspense fallback=\{<SettingsPlaceholder label="[^"]+" width="wide" \/>\}>/);
+    }
+    assert.match(files.screen, /<SessionGate width="wide">/);
+    assert.match(files.relative, /<SessionGate requireFamily width="wide">/);
+    assert.match(files.screen, /<FlowPage title=\{name\} [^>]*width="wide"/);
+    assert.match(files.relative, /<FlowPage title="Add a relative" [^>]*width="wide"/);
+  });
+
+  test("SessionGate takes a width (default narrow) for its loading and error sheets", () => {
+    const gate = fs.readFileSync(new URL("../SessionGate.tsx", import.meta.url), "utf8");
+    assert.match(gate, /width\?: "narrow" \| "wide";/);
+    assert.match(gate, /const \{ children, requireFamily = false, loading, width = "narrow" \} = props;/);
+    // The error sheet and both placeholders use it; a caller's own `loading` node is left alone.
+    assert.match(gate, /<GateFrame width=\{width\}>/);
+    assert.equal(gate.match(/<SessionPlaceholder label="[^"]+" width=\{width\} \/>/g)?.length, 2);
+    assert.match(gate, /function GateFrame\(props: \{ width: "narrow" \| "wide"; children: ReactNode \}\) \{\s*return <FlowFrame width=\{props\.width\}>/);
+    // Other callers keep the narrow column: only the two family pages pass it.
+    const app = new URL("../../../app/", import.meta.url);
+    for (const rel of ["add/AddScreen.tsx", "families/new/NewFamilyScreen.tsx"]) {
+      assert.doesNotMatch(fs.readFileSync(new URL(rel, app), "utf8"), /<SessionGate[^>]*width=/, rel);
+    }
   });
 
   test("both pages show the same not-found card and placeholder", () => {

@@ -32,6 +32,18 @@ export function inviteActionOutcome(err: unknown, action: "create" | "revoke"): 
   return { done: false, message: own };
 }
 
+/**
+ * A heading above inviteActionOutcome's message when that message alone
+ * doesn't say what failed: a 5xx, no connection or anything unexpected
+ * ("Something went wrong on our side…" says nothing about the link). Null for
+ * the 403 and 404, whose own words already name the action.
+ */
+export function inviteFailureTitle(err: unknown, action: "create" | "revoke"): string | null {
+  const raw = typeof err === "object" && err !== null ? (err as { status?: unknown }).status : undefined;
+  if (raw === 403 || raw === 404) return null;
+  return action === "create" ? "We couldn’t make a link" : "We couldn’t turn the link off";
+}
+
 /** The link people open to join: `${origin}/join/${code}`. */
 export function inviteUrl(origin: string, code: string): string {
   return `${origin.replace(/\/+$/, "")}/join/${encodeURIComponent(code)}`;

@@ -156,6 +156,35 @@ export function removeMemberOutcome(
   return { gone: false, message: ownMessage(err) };
 }
 
+/**
+ * True for a refusal because the viewer is no longer an admin (a 403). The
+ * settings page then fetches the family, drops every admin control and says
+ * so once at the top (settingsPage.ts NO_LONGER_ADMIN), so the row needs no
+ * message of its own saying the same thing again.
+ */
+export function isLostAdmin(err: unknown): boolean {
+  return statusOf(err) === 403;
+}
+
+/**
+ * A heading above a row's failure message when the message alone doesn't say
+ * what failed: a 5xx, no connection or anything unexpected ("Something went
+ * wrong on our side…" says nothing about Ana). Null for a 403, 404 or 409,
+ * whose own words (roleChangeError, removeMemberOutcome) already say it.
+ */
+export function memberFailureTitle(
+  err: unknown,
+  row: Pick<MemberRow, "name" | "personId" | "isYou">,
+  action: RoleAction | "remove",
+): string | null {
+  const status = statusOf(err);
+  if (status === 403 || status === 404 || status === 409) return null;
+  const who = whoIn(row, "this family member");
+  if (action === "remove") return `We couldn’t remove ${who}`;
+  if (action === "promote") return `We couldn’t make ${who} an admin`;
+  return row.isYou ? "You’re still an admin" : `We couldn’t make ${who} a member`;
+}
+
 /** Shown when no person in the tree is claimed by this member's account. */
 export const UNKNOWN_MEMBER_NAME = "A family member";
 
