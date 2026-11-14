@@ -4,8 +4,11 @@
 // in), so they render inside a <Suspense> boundary in their page.tsx; the
 // boundary's fallback is <AuthScreenFallback>, the same page without the form.
 //
-// Nothing here asks the server who is signed in on mount: a signed-out visit
-// makes no requests until the form is sent.
+// A signed-in visitor is sent on (to ?next=, starting a family, or home). The
+// session cookie is httpOnly, so the page asks /me on arrival, but only when
+// this browser holds the signed-in hint (session.ts): a signed-out visit makes
+// no requests until the form is sent. While that check runs the page shows the
+// same blank sheet as the fallback, so the form never flashes on the way out.
 //
 // If sign up succeeds but the me() after it fails, the account exists, so the
 // person is sent to log in rather than shown an error (a second Create account
@@ -13,6 +16,8 @@
 // email filled in, handed over through sessionStorage (see authPages.ts).
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useLayoutEffect, useState } from "react";
+
+import { isApiError } from "@/lib/api";
 
 import {
   afterSignupFailure,
@@ -25,7 +30,14 @@ import { demoCredentials, getApi } from "@/components/flow/client";
 import { FlowPage } from "@/components/flow/FlowPage";
 import { LoginForm } from "@/components/flow/LoginForm";
 import { PaperCard } from "@/components/flow/PaperCard";
-import { destinationAfterAuth, hrefs, safeNext } from "@/components/flow/session";
+import {
+  destinationAfterAuth,
+  forgetSignedIn,
+  hrefs,
+  recallSignedIn,
+  rememberSignedIn,
+  safeNext,
+} from "@/components/flow/session";
 import { SignupForm } from "@/components/flow/SignupForm";
 import type { LoginRequest, MeResponse, SignupRequest } from "@/lib/types";
 
@@ -34,12 +46,50 @@ const AUTH_TITLES: Record<AuthKind, string> = {
   signup: "Make your account",
 };
 
+/** How long the signed-in check may hold the form back before showing it anyway. */
+const SIGNED_IN_CHECK_MS = 4000;
+
 export function AuthScreen(props: { kind: AuthKind }) {
   const { kind } = props;
   const router = useRouter();
   const next = safeNext(useSearchParams().get("next"));
   // The email handed over by a sign up whose me() failed (log in only).
   const [handoff, setHandoff] = useState<string | null>(null);
+  // True while asking /me whether this visitor is already signed in.
+  const [checking, setChecking] = useState(false);
+
+  // Already signed in? Send them on. Before paint, so a signed-in visitor sees
+  // the blank sheet rather than the form. Runs again each time a hidden page
+  // is shown (cacheComponents), which is when a signed-in person comes back.
+  useLayoutEffect(() => {
+    if (!recallSignedIn()) return;
+    let live = true;
+    // Holding the form back while the server is asked, once per arrival.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setChecking(true);
+    // A slow server never keeps the form away for long.
+    const giveUp = window.setTimeout(() => {
+      if (live) setChecking(false);
+    }, SIGNED_IN_CHECK_MS);
+    getApi()
+      .me()
+      .then(
+        (me) => {
+          // Keep the blank sheet up until the next page arrives.
+          if (live) router.replace(destinationAfterAuth(me, next));
+        },
+        (e: unknown) => {
+          if (isApiError(e) && e.status === 401) forgetSignedIn();
+          if (live) setChecking(false);
+        },
+      )
+      .finally(() => window.clearTimeout(giveUp));
+    return () => {
+      live = false;
+      window.clearTimeout(giveUp);
+      setChecking(false);
+    };
+  }, [router, next]);
 
   // Before paint, so the form first shows with the email already in it. This
   // runs again each time a hidden /login becomes visible; the handoff is read
@@ -62,6 +112,7 @@ export function AuthScreen(props: { kind: AuthKind }) {
       const api = getApi();
       await api.login(body);
       const me = await api.me();
+      rememberSignedIn();
       router.replace(destinationAfterAuth(me, next));
     },
     [router, next],
@@ -80,10 +131,13 @@ export function AuthScreen(props: { kind: AuthKind }) {
         router.replace(afterSignupFailure(body.email, next));
         return;
       }
+      rememberSignedIn();
       router.replace(destinationAfterAuth(me, next));
     },
     [router, next],
   );
+
+  if (checking) return <AuthScreenFallback kind={kind} next={next} />;
 
   return (
     <FlowPage title={AUTH_TITLES[kind]} lede={authLede(kind, next)}>
@@ -123,10 +177,10 @@ function ReadyNotice() {
  * HTML): the title and the plain lede over a blank sheet roughly the form's
  * height, so nothing jumps when the form arrives.
  */
-export function AuthScreenFallback(props: { kind: AuthKind }) {
-  const { kind } = props;
+export function AuthScreenFallback(props: { kind: AuthKind; next?: string | null }) {
+  const { kind, next = null } = props;
   return (
-    <FlowPage title={AUTH_TITLES[kind]} lede={authLede(kind, null)}>
+    <FlowPage title={AUTH_TITLES[kind]} lede={authLede(kind, next)}>
       <div role="status" aria-busy="true">
         <PaperCard className={kind === "login" ? "min-h-[17rem]" : "min-h-[24rem]"}>
           <span className="sr-only">Loading the form…</span>

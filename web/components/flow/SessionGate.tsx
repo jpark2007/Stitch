@@ -19,9 +19,10 @@ import { isApiError, type StitchApi } from "@/lib/api";
 import type { MeResponse } from "@/lib/types";
 import { Button } from "./Button";
 import { getApi } from "./client";
+import { FlowFrame } from "./FlowPage";
 import { FormError } from "./FormError";
 import { PaperCard } from "./PaperCard";
-import { forgetFamily, hrefs } from "./session";
+import { forgetFamily, forgetSignedIn, hrefs, rememberSignedIn } from "./session";
 
 export interface SessionValue {
   me: MeResponse;
@@ -82,6 +83,7 @@ export function SessionGate(props: {
   /** Apply a fresh MeResponse: redirect when it does not fit this page. */
   const settle = useCallback(
     (me: MeResponse) => {
+      rememberSignedIn();
       if (requireFamily && me.families.length === 0) {
         setStatus({ kind: "leaving" });
         router.replace(hrefs.newFamily());
@@ -96,6 +98,7 @@ export function SessionGate(props: {
   const leaveIfSignedOut = useCallback(
     (e: unknown): boolean => {
       if (!(isApiError(e) && e.status === 401)) return false;
+      forgetSignedIn();
       setStatus({ kind: "leaving" });
       router.replace(hrefs.login(currentPath()));
       return true;
@@ -155,6 +158,7 @@ export function SessionGate(props: {
       if (!(isApiError(e) && e.status === 401)) throw e;
     }
     forgetFamily();
+    forgetSignedIn();
     // A full document load, not router.replace: with cacheComponents on, the
     // pages visited this session stay mounted in hidden Activity trees with
     // their state (a sent log in form, a half-written memory). Reloading
@@ -196,13 +200,12 @@ export function SessionGate(props: {
   );
 }
 
-/** Centres a narrow sheet in the space a flow page would take. */
+/**
+ * A narrow sheet where a flow page's content starts, under the same "Stitch"
+ * mark, so nothing jumps when the page arrives.
+ */
 function GateFrame(props: { children: ReactNode }) {
-  return (
-    <div className="mx-auto flex min-h-[70dvh] w-full max-w-md items-center px-4 py-12">
-      <div className="w-full">{props.children}</div>
-    </div>
-  );
+  return <FlowFrame>{props.children}</FlowFrame>;
 }
 
 /** A quiet sheet with a running thread while the session loads. */
