@@ -831,6 +831,106 @@ def test_other_telling_cue_before_start():
         "action later"))
 
 
+# The default telling overlaps: line 0 is said until t=1.00 (last word 0.75 + WORD_SECONDS),
+# but line 1 starts at t=0.50. Line 0 cues the drop, which moves to its first word (t=0).
+OVERLAPPING_DEFAULT = [line(0, "Dropped one two three", cue="drop", cueWord="Dropped"), line(0.5, "four")]
+DEFAULT_OVERLAP = E(
+    "lines_overlap",
+    "shot s1, dad's narration line 1: line 1 starts at shot t=0.50, before line 0 has been said "
+    "(its last word ends at shot t=1.00); start line 1 later or shorten line 0")
+
+
+def test_default_overlap_with_no_other_teller_is_static():
+    sp = screenplay(shot(**DROP_SHOT, narration=OVERLAPPING_DEFAULT))
+    assert_errors(check(sp), DEFAULT_OVERLAP)
+
+
+def test_default_overlap_message_is_narrations_own():
+    from screenplay import narration as N
+
+    sp = screenplay(shot(**DROP_SHOT, narration=OVERLAPPING_DEFAULT))
+    s = sp.shots[0]
+    with pytest.raises(N.NarrationError) as raised:
+        N.build_shot_narration(s, 0.0, N.retime_actions(s, 0.0, author="dad"), {}, "dad")
+    (err,) = check(sp)
+    assert (err.code, err.message) == (raised.value.code, raised.value.message)
+
+
+def test_default_overlap_is_reported_once_with_two_clean_tellers():
+    sp = screenplay(
+        shot(**DROP_SHOT, narration=OVERLAPPING_DEFAULT),
+        narrations={"mom": {"s1": [line(0, "I let go.")]}, "kid": {"s1": [line(0, "Books everywhere.")]}},
+    )
+    assert_errors(check(sp), DEFAULT_OVERLAP)
+
+
+def test_each_tellers_own_error_comes_before_the_one_default_overlap():
+    sp = screenplay(
+        shot(**DROP_SHOT, narration=OVERLAPPING_DEFAULT),
+        narrations={
+            "mom": {"s1": [line(0, "a b c d"), line(0.2, "e")]},
+            "kid": {"s1": [line(0, "one two three four five dropped", cue="drop")]},
+        },
+    )
+    assert_errors(
+        check(sp),
+        E("lines_overlap",
+          "shot s1, mom's narration line 1: line 1 starts at shot t=0.20, before line 0 has been said "
+          "(its last word ends at shot t=1.00); start line 1 later or shorten line 0"),
+        E("cue_before_start",
+          'shot s1, kid\'s narration line 0: to land its cue word on the action, "one two three four five dropped" '
+          "would start at shot t=-1.25, before the shot starts; shorten the words before the cue word or move the "
+          "action later"),
+        DEFAULT_OVERLAP,
+    )
+
+
+def test_teller_overlap_alone_does_not_report_the_clean_default():
+    sp = screenplay(
+        shot(**DROP_SHOT, narration=[line(0, "Dropped.", cue="drop")]),
+        narrations={"mom": {"s1": [line(0, "a b c d"), line(0.2, "e")]}},
+    )
+    assert [(e.code, e.message.split(":")[0]) for e in check(sp)] == [
+        ("lines_overlap", "shot s1, mom's narration line 1")]
+
+
+def test_no_default_lines_needs_no_default_check():
+    sp = screenplay(shot(**DROP_SHOT), narrations={"mom": {"s1": [line(0, "I dropped them.", cue="drop")]}})
+    assert check(sp) == []
+
+
+def test_default_overlap_is_not_checked_when_its_lines_fail():
+    # A per-line problem in the default telling stops its timing (no retime, no overlap check).
+    sp = screenplay(shot(**DROP_SHOT, narration=[line(0, "one two three four"), line(0.5, "jumped", cue="jump")]))
+    assert [e.code for e in check(sp)] == ["cue_unknown_action"]
+
+
+def test_default_overlap_is_checked_in_every_shot():
+    sp = screenplay(
+        shot(**DROP_SHOT, narration=OVERLAPPING_DEFAULT),
+        shot(id="s2", **DROP_SHOT, narration=OVERLAPPING_DEFAULT),
+        narrations={"mom": {"s1": [line(0, "Hi.")], "s2": [line(0, "Hi.")]}},
+    )
+    assert [(e.code, e.shot) for e in check(sp)] == [("lines_overlap", "s1"), ("lines_overlap", "s2")]
+
+
+def test_compile_stops_at_a_static_default_overlap():
+    from screenplay.compiler import compile as compile_screenplay
+
+    sp = screenplay(shot(
+        start={"mom": {"at": "steps_top", "holding": "hymn_books"}},
+        # dad drops what he never held: a state error compile() would find if it simulated
+        actions=[act("drop", t=2, who="mom", what="hymn_books", id="drop"),
+                 act("drop", t=4, who="dad", what="hymn_books")],
+        narration=OVERLAPPING_DEFAULT,
+    ))
+    static = check(sp)
+    assert_errors(static, DEFAULT_OVERLAP)
+    res = compile_screenplay(sp, sets=SETS, props=PROPS, people=PEOPLE)
+    assert res.ok is False
+    assert res.errors == static
+
+
 def test_narration_line_bad_time():
     sp = screenplay(shot(narration=[line(-1, "Too early.")]))
     assert_errors(check(sp), E(
