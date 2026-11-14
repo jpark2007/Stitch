@@ -36,12 +36,25 @@
   line-height: 1.15;
   color: var(--ink);
   transition: opacity 220ms var(--ease-paper);
-  /* A paper-coloured halo keeps titles legible where threads pass behind. */
-  text-shadow:
-    0 0 2px var(--paper),
-    0 0 4px var(--paper),
-    0 0 8px var(--paper),
-    0 0 12px var(--paper);
+  /* Its own layer, so the halo below can sit under the letters. */
+  isolation: isolate;
+}
+
+/*
+ * A solid paper halo under the letters (the same text, stroked wide in the
+ * paper colour) hides any thread passing behind a title. It is a separate
+ * layer rather than paint-order on the title itself, so it can never be
+ * drawn over the letters.
+ */
+.threads-title::before {
+  content: attr(data-title);
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  color: var(--paper);
+  -webkit-text-stroke: 6px var(--paper);
+  stroke-linejoin: round;
+  text-shadow: 0 0 6px var(--paper);
 }
 
 .threads-zoom {

@@ -749,6 +749,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
                   titleRefs.current[i] = el;
                 }}
                 className="threads-title absolute left-0 top-0 whitespace-nowrap"
+                data-title={k.moment.title}
                 style={{ opacity: 0, fontSize: TITLE_FONT_PX }}
                 aria-hidden
               >
