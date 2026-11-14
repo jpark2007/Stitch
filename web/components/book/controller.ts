@@ -241,14 +241,21 @@ export class BookController {
   private tmpV = new Vector3();
   private camera: PerspectiveCamera | null = null;
   private canvasRect: () => DOMRect = () => new DOMRect();
+  // Plain fields, not parameter properties: node's type stripping (the tests) cannot load those.
+  private readonly invalidate: () => void;
+  private readonly onView: (v: BookView) => void;
+  private readonly onStages: (indices: number[]) => void;
 
   constructor(
     spreads: number,
     start: BookStart,
-    private readonly invalidate: () => void,
-    private readonly onView: (v: BookView) => void,
-    private readonly onStages: (indices: number[]) => void,
+    invalidate: () => void,
+    onView: (v: BookView) => void,
+    onStages: (indices: number[]) => void,
   ) {
+    this.invalidate = invalidate;
+    this.onView = onView;
+    this.onStages = onStages;
     this.n = spreads;
     this.rt = createRuntime(spreads + 1, start.opened ? start.spread : 0);
     this.tmpAngles = new Float32Array(this.rt.restR.length);
