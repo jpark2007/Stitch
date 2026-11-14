@@ -241,8 +241,11 @@ function PlayingBook({
     [controller, scene, playing.id, freezeAt],
   );
 
-  return (
-    <>
+  // useTimelinePlayer re-renders this component on every status change (each
+  // caption, play, pause). The same elements back again let React skip the
+  // book and its Canvas entirely: they hear what they need themselves.
+  const bookView = useMemo(
+    () => (
       <Book3D
         spreads={book.spreads}
         cover={book.cover}
@@ -253,6 +256,11 @@ function PlayingBook({
         still={still}
         debug={debug}
       />
+    ),
+    [book.spreads, book.cover, initial, renderStage, tellings, onTelling, still, debug],
+  );
+  const keys = useMemo(
+    () => (
       <MomentKeys
         controller={controller}
         title={playing.title}
@@ -260,6 +268,14 @@ function PlayingBook({
         tabs={playing.stage?.pullTabs ?? []}
         onTelling={(id) => onTelling(playing.id, id)}
       />
+    ),
+    [controller, playing, tellers, onTelling],
+  );
+
+  return (
+    <>
+      {bookView}
+      {keys}
     </>
   );
 }
