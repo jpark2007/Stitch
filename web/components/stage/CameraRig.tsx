@@ -158,39 +158,52 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
     const el = get().gl.domElement;
     const d = drag.current;
     const soft = (raw: number, max: number) => max * Math.tanh(raw / max);
+    // Down on the canvas, move/up on the window: a drag that leaves the
+    // canvas (or the window) still tracks and still lets go.
+    let id = -1;
     const onDown = (e: PointerEvent) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || d.active) return;
       d.active = true;
+      id = e.pointerId;
       d.x = e.clientX;
       d.y = e.clientY;
-      el.setPointerCapture(e.pointerId);
       el.style.cursor = "grabbing";
     };
     const onMove = (e: PointerEvent) => {
-      if (!d.active) return;
+      if (!d.active || e.pointerId !== id) return;
       const sx = 2.4 / Math.max(320, el.clientWidth);
       d.yaw = soft(-(e.clientX - d.x) * sx, maxYaw);
       d.pitch = soft((e.clientY - d.y) * sx * 0.6, maxPitch);
     };
     const onUp = (e: PointerEvent) => {
-      if (!d.active) return;
+      if (!d.active || e.pointerId !== id) return;
       d.active = false;
+      id = -1;
       d.yaw = 0;
       d.pitch = 0;
-      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      el.style.cursor = "grab";
+    };
+    const onBlur = () => {
+      if (!d.active) return;
+      d.active = false;
+      id = -1;
+      d.yaw = 0;
+      d.pitch = 0;
       el.style.cursor = "grab";
     };
     el.style.cursor = "grab";
     el.style.touchAction = "none";
     el.addEventListener("pointerdown", onDown);
-    el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerup", onUp);
-    el.addEventListener("pointercancel", onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    window.addEventListener("blur", onBlur);
     return () => {
       el.removeEventListener("pointerdown", onDown);
-      el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerup", onUp);
-      el.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("blur", onBlur);
       el.style.cursor = "";
     };
   }, [get, orbit, maxYaw, maxPitch]);
