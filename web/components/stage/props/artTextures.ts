@@ -1,21 +1,35 @@
 /**
  * Prop art textures loaded from URLs, shared and reference counted.
  *
- * `acquireArt(url)` returns an entry whose `texture` exists immediately (so a
- * material can be built once and never recompiled) and fills in when the
- * image arrives; `ready` / `failed` flip then. Callers poll those flags in
- * useFrame, so a load never causes a React re-render. `releaseArt(url)`
- * disposes the GPU texture when the last user lets go.
+ * `acquireArt(url)` returns an entry whose textures exist immediately (so a
+ * material can be built once and never recompiled) and fill in when the image
+ * arrives; `ready` / `failed` flip then. Callers poll those flags in useFrame,
+ * so a load never causes a React re-render. `releaseArt(url)` disposes the GPU
+ * textures when the last user lets go.
+ *
+ * Clean cut edges. A background-removed PNG has black, fully transparent
+ * texels around the shape; filtered at an alphaTest edge they darken it into
+ * a grey fringe. So on load the art is split in two: a colour map whose edge
+ * colours are bled outward a few pixels, and an alpha map with the original
+ * silhouette. Long sides above MAX_SIDE are scaled down.
  *
  * Browser-only: call from effects, useMemo inside a <Canvas>, or useFrame.
  */
 
-import { SRGBColorSpace, Texture, TextureLoader } from "three";
+import { ClampToEdgeWrapping, NoColorSpace, SRGBColorSpace, Texture } from "three";
+
+/** Largest side kept, in px. Prop art is never shown bigger than this. */
+const MAX_SIDE = 2048;
+/** How far (px) edge colours are bled outward. */
+const BLEED = 4;
 
 export interface ArtEntry {
   readonly url: string;
+  /** Colour, edges bled (sRGB). */
   readonly texture: Texture;
-  /** The image has loaded and the texture is ready to draw. */
+  /** Silhouette: white inside, black outside. */
+  readonly alpha: Texture;
+  /** The image has loaded and the textures are ready to draw. */
   ready: boolean;
   /** The image could not be loaded; draw a placeholder instead. */
   failed: boolean;
@@ -34,54 +48,108 @@ interface Slot {
 }
 
 const slots = new Map<string, Slot>();
-let loader: TextureLoader | null = null;
 
-/** Get (and hold a reference to) the texture for `url`. */
+function emptyTexture(srgb: boolean, name: string): Texture {
+  const t = new Texture();
+  t.colorSpace = srgb ? SRGBColorSpace : NoColorSpace;
+  t.wrapS = t.wrapT = ClampToEdgeWrapping;
+  t.anisotropy = 4;
+  t.name = name;
+  return t;
+}
+
+function canvas(w: number, h: number) {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  return { c, ctx: c.getContext("2d")! };
+}
+
+/** Split an image into a bled colour canvas and an alpha canvas. */
+function split(img: HTMLImageElement): { color: HTMLCanvasElement; alpha: HTMLCanvasElement } {
+  const k = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.max(1, Math.round(img.naturalWidth * k));
+  const h = Math.max(1, Math.round(img.naturalHeight * k));
+
+  // Alpha: the image's coverage as white on black.
+  const a = canvas(w, h);
+  a.ctx.drawImage(img, 0, 0, w, h);
+  a.ctx.globalCompositeOperation = "source-in";
+  a.ctx.fillStyle = "#fff";
+  a.ctx.fillRect(0, 0, w, h);
+  a.ctx.globalCompositeOperation = "destination-over";
+  a.ctx.fillStyle = "#000";
+  a.ctx.fillRect(0, 0, w, h);
+
+  // Colour: the image, with copies nudged outward underneath it, so pixels
+  // just outside the silhouette carry the edge's colour instead of black.
+  const col = canvas(w, h);
+  col.ctx.drawImage(img, 0, 0, w, h);
+  col.ctx.globalCompositeOperation = "destination-over";
+  for (let r = 1; r <= BLEED; r++) {
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2;
+      col.ctx.drawImage(img, Math.round(Math.cos(ang) * r), Math.round(Math.sin(ang) * r), w, h);
+    }
+  }
+  return { color: col.c, alpha: a.c };
+}
+
+/** Get (and hold a reference to) the textures for `url`. */
 export function acquireArt(url: string): ArtEntry {
   const hit = slots.get(url);
   if (hit) {
     hit.refs++;
     return hit.entry;
   }
-  loader ??= new TextureLoader();
   let settle!: () => void;
   const done = new Promise<void>((r) => (settle = r));
-  const texture = new Texture();
-  texture.colorSpace = SRGBColorSpace;
-  texture.anisotropy = 4;
-  texture.name = `prop-art:${url.slice(0, 64)}`;
-  const entry: ArtEntry = { url, texture, ready: false, failed: false, aspect: 1, pixelHeight: 0, done };
-  loader.load(
+  const label = `prop-art:${url.slice(0, 48)}`;
+  const entry: ArtEntry = {
     url,
-    (loaded) => {
-      const img = loaded.image as { width?: number; height?: number } | undefined;
-      const w = img?.width ?? 0;
-      const h = img?.height ?? 0;
-      // Hand the decoded image to the texture the materials already use.
-      texture.image = loaded.image;
-      texture.needsUpdate = true;
-      entry.aspect = w > 0 && h > 0 ? w / h : 1;
-      entry.pixelHeight = h;
+    texture: emptyTexture(true, label),
+    alpha: emptyTexture(false, `${label}:alpha`),
+    ready: false,
+    failed: false,
+    aspect: 1,
+    pixelHeight: 0,
+    done,
+  };
+  const slot: Slot = { entry, refs: 1 };
+  slots.set(url, slot);
+
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.decoding = "async";
+  img.src = url;
+  img
+    .decode()
+    .then(() => {
+      if (slots.get(url) !== slot) return; // released while loading
+      const { color, alpha } = split(img);
+      entry.texture.image = color;
+      entry.texture.needsUpdate = true;
+      entry.alpha.image = alpha;
+      entry.alpha.needsUpdate = true;
+      entry.aspect = img.naturalWidth / Math.max(1, img.naturalHeight);
+      entry.pixelHeight = img.naturalHeight;
       entry.ready = true;
-      settle();
-    },
-    undefined,
-    () => {
+    })
+    .catch(() => {
       entry.failed = true;
-      settle();
-    },
-  );
-  slots.set(url, { entry, refs: 1 });
+    })
+    .finally(settle);
   return entry;
 }
 
-/** Drop a reference taken by acquireArt; the last one disposes the texture. */
+/** Drop a reference taken by acquireArt; the last one disposes the textures. */
 export function releaseArt(url: string): void {
   const slot = slots.get(url);
   if (!slot) return;
   if (--slot.refs > 0) return;
   slots.delete(url);
   slot.entry.texture.dispose();
+  slot.entry.alpha.dispose();
 }
 
 /** Start loading a prop's art ahead of time (e.g. before a spread opens) and
