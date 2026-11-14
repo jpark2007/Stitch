@@ -321,7 +321,7 @@ def test_a_screenplay_that_does_not_compile_stops_the_seed_with_the_exact_errors
     path.write_text(json.dumps(raw))
     broken = Screenplay.model_validate(raw)
     want = compiler.compile(
-        demo.playable(broken)[0],
+        broken,
         sets={s.id: s for s in demo.load_sets()},
         props={p.id: p for p in demo.load_props()},
         people=demo.scene_people(),
@@ -411,27 +411,45 @@ def test_a_moment_before_a_participant_was_born_is_an_error(monkeypatch):
         demo._check_moment(late, demo.load_screenplay(moment.id), demo.scene_people())
 
 
-def test_only_effects_without_a_handler_are_left_out(monkeypatch):
+def test_effects_are_compiled_and_stored_not_left_out(seeded):
+    """Regression: an earlier seed stripped every effect verb missing from compiler.HANDLERS,
+    so after the compiler started running effects through its own path every stored timeline
+    still had `effects: []`. The stored scene keeps every authored effect and plays it."""
+    mdb, _ = seeded
+    memory = memories_db.get_memory(mdb, DEMO_FAMILY_ID, "demo_sam_wedding_2019")
+    assert memory is not None and memory.screenplay is not None and memory.timeline is not None
     authored = demo.load_screenplay("demo_sam_wedding_2019")
-    for verb in demo.EFFECT_VERBS:
-        monkeypatch.delitem(compiler.HANDLERS, verb, raising=False)
-    runnable, dropped = demo.playable(authored)
-    assert dropped == ["shot s2, t=0: time_of_day", "shot s2, t=3: confetti"]
-    assert {a.do for shot in runnable.shots for a in shot.actions} & demo.EFFECT_VERBS == set()
-
-    monkeypatch.setitem(compiler.HANDLERS, "confetti", lambda *a: a[3])
-    runnable, dropped = demo.playable(authored)
-    assert dropped == ["shot s2, t=0: time_of_day"]
-    assert "confetti" in {a.do for shot in runnable.shots for a in shot.actions}
+    assert memory.screenplay == authored
+    stored = [a.do for shot in memory.screenplay.shots for a in shot.actions if a.do in demo.EFFECT_VERBS]
+    assert stored == ["time_of_day", "confetti"]
+    assert [e.kind for e in memory.timeline.effects] == ["time_of_day", "confetti"]
+    confetti = memory.timeline.effects[1]
+    assert confetti.at is not None and confetti.dur == 3.0
 
 
-def test_a_cue_on_a_dropped_effect_is_an_error(monkeypatch):
-    for verb in demo.EFFECT_VERBS:
-        monkeypatch.delitem(compiler.HANDLERS, verb, raising=False)
-    raw = json.loads(demo.screenplay_path("demo_sam_wedding_2019").read_text())
-    raw["shots"][1]["narration"][0]["cue"] = "confetti"
-    with pytest.raises(demo.DemoDataError, match="cues narration on confetti"):
-        demo.playable(Screenplay.model_validate(raw))
+def test_an_effect_that_cannot_be_placed_stops_the_seed(mdb, tmp_path, monkeypatch):
+    """Effects go through the real compiler like any other action: a bad one fails loudly."""
+    data = _copy_data(tmp_path)
+    path = data / "demo_sam_wedding_2019.screenplay.json"
+    raw = json.loads(path.read_text())
+    confetti = next(a for a in raw["shots"][1]["actions"] if a["do"] == "confetti")
+    confetti["at"] = "grandpa_joseph"  # not in this scene
+    path.write_text(json.dumps(raw))
+    broken = Screenplay.model_validate(raw)
+    want = compiler.compile(
+        broken,
+        sets={s.id: s for s in demo.load_sets()},
+        props={p.id: p for p in demo.load_props()},
+        people=demo.scene_people(),
+    )
+    assert not want.ok and want.errors
+    monkeypatch.setattr(demo, "DATA_DIR", data)
+    with pytest.raises(demo.DemoCompileError) as caught:
+        seed_demo(mdb)
+    assert caught.value.memory_id == "demo_sam_wedding_2019"
+    for error in want.errors:
+        assert error.message in str(caught.value)
+    assert counts(mdb) == {}
 
 
 def test_seed_source_has_no_raw_collection_access():

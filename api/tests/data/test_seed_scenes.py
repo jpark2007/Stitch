@@ -21,7 +21,7 @@ from agent.tools.scene_review import review_scene, review_timeline
 from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
-from screenplay import compiler, effects
+from screenplay import compiler
 from screenplay.narration import default_author
 from screenplay.schema import VOCABULARY, Screenplay, Timeline
 from screenplay.validate import validate
@@ -60,10 +60,6 @@ def memories(db) -> dict[str, schemas.Memory]:
 
 def _actions(screenplay: Screenplay) -> list:
     return [a for shot in screenplay.shots for a in shot.actions]
-
-
-def _authored() -> dict[str, Screenplay]:
-    return {mid: demo.load_screenplay(mid) for mid in MEMORY_IDS}
 
 
 # ------------------------------------------------------------------------- the files
@@ -126,10 +122,20 @@ def test_stored_scene_recompiles_to_the_same_timeline(memory_id, memories, scene
 
 @pytest.mark.parametrize("memory_id", MEMORY_IDS)
 def test_stored_screenplay_is_the_authored_file(memory_id, memories):
-    stored = memories[memory_id].screenplay
-    playable, dropped = demo.playable(demo.load_screenplay(memory_id))
-    assert stored == playable
-    assert all(d.split(": ", 1)[1] in demo.unsupported_effects() for d in dropped)
+    """Nothing authored is left out: the stored screenplay is the file, effects and all."""
+    assert memories[memory_id].screenplay == demo.load_screenplay(memory_id)
+
+
+@pytest.mark.parametrize("memory_id", MEMORY_IDS)
+def test_every_authored_effect_is_in_the_stored_timeline(memory_id, memories):
+    """Each effect action in the file lands in Timeline.effects, in order, one entry per action."""
+    memory = memories[memory_id]
+    authored = [a.do for a in _actions(demo.load_screenplay(memory_id)) if a.do in EFFECTS]
+    stored = [a.do for a in _actions(memory.screenplay) if a.do in EFFECTS]
+    assert stored == authored
+    timeline = memory.timeline
+    assert sorted(e.kind for e in timeline.effects) == sorted(authored)
+    assert all(0 <= e.t <= timeline.duration for e in timeline.effects)
 
 
 @pytest.mark.parametrize("memory_id", MEMORY_IDS)
@@ -194,10 +200,11 @@ def test_vocabulary_coverage_across_the_family(memories):
     moves = {cue.move for sp in stored for shot in sp.shots for cue in shot.camera}
     assert {"wide", "close_up", "dolly_to", "pan_to", "pull_back"} <= moves
 
-    # Effects are authored in the files. The ones the compiler can run are stored too.
-    authored = {a.do for sp in _authored().values() for a in _actions(sp)}
-    assert {"confetti", "steam"} <= authored and len(authored & EFFECTS) >= 3
-    assert verbs & EFFECTS == (authored & EFFECTS) - demo.unsupported_effects()
+    # Effects are in the stored screenplays AND in the compiled timelines the stage plays.
+    assert {"confetti", "steam"} <= verbs and len(verbs & EFFECTS) >= 3
+    played = {e.kind for m in memories.values() for e in m.timeline.effects}
+    assert {"confetti", "steam"} <= played and len(played) >= 3, played
+    assert played == verbs & EFFECTS
 
     # The vehicle verbs use the family car.
     vehicle = [a for sp in stored for a in _actions(sp) if a.do in ("get_in", "drive_to")]
@@ -256,21 +263,23 @@ def test_the_car_carries_its_riders(memories):
 # ------------------------------------------------------------------------- effects
 
 
-def _effect_handler(world, tracks, action, t, action_start, locate):
-    """Stand-in effect handler: runs effects.effect_for (every check it makes) and occupies nobody."""
-    effects.effect_for(action, t, locate, shot_end=t + 60.0)
-    return t
-
-
 @pytest.mark.parametrize("memory_id", MEMORY_IDS)
-def test_authored_effects_are_valid_and_compile_once_supported(memory_id, scene, monkeypatch):
-    """The effects left out today validate statically, and compile once the compiler runs effects."""
+def test_authored_file_validates_and_compiles_as_is(memory_id, scene):
+    """The file on disk, untouched, validates statically and compiles through the real
+    compiler's effect path (no stand-in handlers), giving the effects it authors."""
     authored = demo.load_screenplay(memory_id)
     assert validate(authored, scene["sets"], scene["props"], scene["people"]) == []
-    for verb in EFFECTS:
-        monkeypatch.setitem(compiler.HANDLERS, verb, compiler.HANDLERS.get(verb, _effect_handler))
-    assert demo.unsupported_effects() == frozenset()
-    runnable, dropped = demo.playable(authored)
-    assert dropped == [] and runnable == authored
     result = compiler.compile(authored, **scene)
     assert result.ok, [e.message for e in result.errors]
+    assert result.timeline is not None
+    want = sorted(a.do for a in _actions(authored) if a.do in EFFECTS)
+    assert sorted(e.kind for e in result.timeline.effects) == want
+
+
+def test_the_stage_demo_has_its_confetti_and_steam(memories):
+    """The moments the stage demo leans on show their effects."""
+    kinds = {mid: {e.kind for e in m.timeline.effects} for mid, m in memories.items()}
+    assert "confetti" in kinds["demo_sam_wedding_2019"]
+    assert "confetti" in kinds["demo_lily_graduation"]
+    assert "steam" in kinds["demo_sunday_tamales"]
+    assert "rain" in kinds["demo_rosa_joseph_wedding"]

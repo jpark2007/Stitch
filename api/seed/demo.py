@@ -22,10 +22,9 @@ compiled before anything is written, and a screenplay that does not compile stop
 with a DemoCompileError listing the memory id and every exact CompileError message. See
 seed/README.md.
 
-Effects (confetti, steam, rain, smoke, time_of_day) are authored in the screenplays. While
-the compiler has no handler for an effect verb, `playable()` leaves those actions out of the
-stored screenplay (logged as a warning); they come back on their own once the compiler
-supports them. No other verb is ever dropped.
+Effects (confetti, steam, rain, smoke, time_of_day) are authored in the screenplays and
+compiled like every other action, so they land in each stored Timeline.effects. Nothing
+authored is ever left out: what is in the file is what is compiled and stored.
 
 Run it against MONGODB_URI / MONGODB_DB from api/:
 
@@ -42,7 +41,6 @@ from __future__ import annotations
 import argparse
 import io
 import json
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -64,8 +62,6 @@ from db import users as users_db
 from screenplay import compiler
 from screenplay.narration import default_author
 from screenplay.schema import VOCABULARY, CompileError, Screenplay, Timeline
-
-log = logging.getLogger(__name__)
 
 REPO_DIR = Path(__file__).resolve().parents[2]
 SAMPLE_PATH = REPO_DIR / "web" / "public" / "samples" / "hymn_books.memory.json"
@@ -371,51 +367,13 @@ DEMO_QUESTIONS: tuple[tuple[str, str, str | None], ...] = (
 # ------------------------------------------------------------------------- the scenes
 
 class DemoScene(NamedTuple):
-    screenplay: Screenplay  # what was compiled and is stored
+    screenplay: Screenplay  # the authored file, exactly as compiled and stored
     timeline: Timeline
     prop_ids: list[str]
     set_ids: list[str]
-    dropped: list[str]  # authored actions left out because the compiler cannot run them yet
 
 
 EFFECT_VERBS: frozenset[str] = frozenset(VOCABULARY["effects"])
-
-
-def unsupported_effects() -> frozenset[str]:
-    """Effect verbs the compiler has no handler for (compiled as unsupported_verb)."""
-    return frozenset(v for v in EFFECT_VERBS if v not in compiler.HANDLERS)
-
-
-def playable(screenplay: Screenplay) -> tuple[Screenplay, list[str]]:
-    """The screenplay without effect actions the compiler cannot run yet, and what was dropped.
-
-    Only effect verbs (vocabulary 'effects') without a compiler handler are left out; any
-    other unsupported verb stays in and fails the compile loudly. A narration cue that names
-    a dropped action would no longer resolve, so cueing an effect is a DemoDataError.
-    """
-    skip = unsupported_effects()
-    dropped: list[str] = []
-    shots = []
-    for shot in screenplay.shots:
-        gone = [a for a in shot.actions if a.do in skip]
-        if not gone:
-            shots.append(shot)
-            continue
-        names = {a.id for a in gone if a.id} | {a.do for a in gone}
-        lines = list(shot.narration) + [
-            line for by_shot in (screenplay.narrations or {}).values() for line in by_shot.get(shot.id, [])
-        ]
-        cued = sorted({line.cue for line in lines if line.cue in names})
-        if cued:
-            raise DemoDataError(
-                f"{screenplay.memory_id}: shot {shot.id} cues narration on {', '.join(cued)}, an effect the "
-                f"compiler cannot run yet; cue a person's action instead"
-            )
-        dropped += [f"shot {shot.id}, t={a.t:g}: {a.do}" for a in gone]
-        shots.append(shot.model_copy(update={"actions": [a for a in shot.actions if a.do not in skip]}))
-    if not dropped:
-        return screenplay, []
-    return screenplay.model_copy(update={"shots": shots}), dropped
 
 
 def tellers(screenplay: Screenplay) -> set[str]:
@@ -456,17 +414,16 @@ def compile_moment(
     sets: Mapping[str, schemas.SetDef],
     props: Mapping[str, schemas.Prop],
     people: Mapping[str, schemas.Person],
-) -> tuple[Screenplay, Timeline, list[str]]:
-    """Compile one authored screenplay with the real compiler.
+) -> Timeline:
+    """Compile one authored screenplay, as authored, with the real compiler.
 
-    Returns (the screenplay that was compiled, its timeline, the dropped effect actions).
-    Raises DemoCompileError with every exact CompileError when it does not compile.
+    Returns its timeline. Raises DemoCompileError with every exact CompileError when it
+    does not compile.
     """
-    runnable, dropped = playable(screenplay)
-    result = compiler.compile(runnable, sets=sets, props=props, people=people)
+    result = compiler.compile(screenplay, sets=sets, props=props, people=people)
     if not result.ok or result.timeline is None:
         raise DemoCompileError(screenplay.memory_id, result.errors)
-    return runnable, result.timeline, dropped
+    return result.timeline
 
 
 @dataclass(frozen=True)
@@ -505,16 +462,9 @@ def load_demo_data(directory: Path | None = None) -> DemoData:
     for moment in MOMENTS:
         screenplay = load_screenplay(moment.id, directory)
         _check_moment(moment, screenplay, people)
-        stored, timeline, dropped = compile_moment(screenplay, sets=by_id_sets, props=by_id_props, people=people)
-        set_ids = list(dict.fromkeys(shot.set for shot in stored.shots))
-        scenes[moment.id] = DemoScene(stored, timeline, list(stored.props), set_ids, dropped)
-    left_out = sum(len(s.dropped) for s in scenes.values())
-    if left_out:
-        log.warning(
-            "seed.demo: the compiler has no handler for %s yet; left %d authored effect action(s) out of %d "
-            "demo scene(s). They are stored again once the compiler supports them.",
-            ", ".join(sorted(unsupported_effects())), left_out, sum(1 for s in scenes.values() if s.dropped),
-        )
+        timeline = compile_moment(screenplay, sets=by_id_sets, props=by_id_props, people=people)
+        set_ids = list(dict.fromkeys(shot.set for shot in screenplay.shots))
+        scenes[moment.id] = DemoScene(screenplay, timeline, list(screenplay.props), set_ids)
     return DemoData(props, sets, scenes)
 
 

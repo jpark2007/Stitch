@@ -26,7 +26,7 @@ The stage demo starts with a full tree and books. `seed/demo.py` creates the dem
   point_at, lean_toward, pick_up, hold, place_on, set_state, get_in, get_out and drive_to
   (with the green sedan), pose, the camera moves wide, dolly_to, pan_to, close_up and
   pull_back, and the effects rain, steam, smoke, confetti and time_of_day (see
-  [Effects](#effects-are-authored-but-not-compiled-yet)). Every shot has `pageText`, every
+  [Effects](#effects)). Every shot has `pageText`, every
   moment has at least one pull tab and click-to-explain text for each puppet and prop, and
   every teller of a moment has their own narration with cues.
 - The props and sets those scenes use, all with placeholder art (`art` null, a `color`).
@@ -66,7 +66,7 @@ memory id and listing every exact `CompileError`, for example:
 
 ```text
 demo moment 'demo_green_sedan_trip' (demo_green_sedan_trip.screenplay.json) does not compile; 1 error(s):
-  - [busy] shot s2, t=9.5: grandma_rosa cannot hand_to "peaches"; grandma_rosa is still walking until t=9.94
+  - [busy] shot s2, t=9.5: grandma_rosa cannot hand_to "peaches"; grandma_rosa is still walking until t=9.69
 ```
 
 A malformed or inconsistent file stops it with a `DemoDataError` naming the file: invalid
@@ -77,21 +77,16 @@ tellings. `test_seed_scenes.py` also recompiles each stored scene from the datab
 checks it equals the stored timeline, runs the agent's scene review (it must have no
 warnings), and checks the vocabulary coverage above.
 
-### Effects are authored but not compiled yet
+### Effects
 
-The compiler on main has no handler for the effect verbs yet (`confetti`, `steam`,
-`rain`, `smoke`, `time_of_day` compile as `unsupported_verb`). The screenplays keep them,
-and `seed.demo.playable()` leaves only those actions out of the stored screenplay, with
-one startup warning:
-
-```text
-WARNING:  seed.demo: the compiler has no handler for confetti, rain, smoke, steam, time_of_day yet; left 9 authored effect action(s) out of 5 demo scene(s). They are stored again once the compiler supports them.
-```
-
-When the compiler gains a handler for an effect, the next seed stores it with no change
-here. Do not cue narration on an effect (that is a `DemoDataError` while it is left out).
-`test_seed_scenes.py` checks that every authored effect already validates and compiles
-with a stand-in handler.
+The effects (`confetti`, `steam`, `rain`, `smoke`, `time_of_day`) are compiled like every
+other action, through the compiler's effect path, and land in each stored
+`Timeline.effects`: rain on the 1958 wedding, steam over the tamales, exhaust smoke from
+the sedan, confetti at the graduation and at Sam's wedding, the sun coming out after the 1958 rain
+and dusk falling on the 2019 party.
+Nothing authored is ever left out of the stored screenplay. An effect that cannot be
+placed (say `at` names someone not on stage) fails the seed like any other `CompileError`.
+`test_seed_scenes.py` checks that every authored effect is in the stored timeline.
 
 ## Demo accounts
 
@@ -140,9 +135,6 @@ password, and the agent mode (scripted runs, see [Agent runs](#agent-runs-stitch
 INFO:     STITCH_FAKE_DB: in-memory database with demo family 'demo_family'; sign in as david@demo.stitch, ana@demo.stitch, sam@demo.stitch, password 'stitch-demo'
 INFO:     STITCH_AGENT=fake: scripted agent runs, no model calls (step 0.6s)
 ```
-
-Until the compiler runs effects, seeding also logs one warning that the demo scenes' effects
-were left out (see [Effects](#effects-are-authored-but-not-compiled-yet)).
 
 `STITCH_FAKE_DB` accepts `1`, `true` or `yes`. mongomock is a dev dependency, which
 `uv sync` and `uv run` install by default.
