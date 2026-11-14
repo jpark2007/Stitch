@@ -200,7 +200,7 @@ function YearSlider({ year, onYear, onStep }: { year: number | null; onYear: (y:
           aria-label="Year"
           aria-valuetext={year ? `${year}, ${era ? eraLabel(era) : ""}` : "not started"}
           onChange={(e) => onYear(Number(e.target.value))}
-          className="relative z-10 h-8 w-full cursor-pointer appearance-none bg-transparent [&::-moz-range-thumb]:size-5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-paper-light [&::-moz-range-thumb]:bg-accent [&::-webkit-slider-thumb]:size-5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-paper-light [&::-webkit-slider-thumb]:bg-accent [&::-webkit-slider-thumb]:shadow-[0_1px_2px_rgb(74_47_29/0.35),0_3px_8px_-2px_rgb(74_47_29/0.4)]"
+          className="relative z-10 h-8 w-full cursor-pointer appearance-none rounded-full bg-transparent focus-visible:outline-offset-0 [&::-moz-range-thumb]:size-5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-paper-light [&::-moz-range-thumb]:bg-accent [&::-webkit-slider-thumb]:size-5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-paper-light [&::-webkit-slider-thumb]:bg-accent [&::-webkit-slider-thumb]:shadow-[0_1px_2px_rgb(74_47_29/0.35),0_3px_8px_-2px_rgb(74_47_29/0.4)]"
         />
         {/* The track: a stitched thread, sewn solid up to the year. */}
         <span aria-hidden className="pointer-events-none absolute inset-x-0 top-[1.05rem] border-t-[1.5px] border-dashed border-ink-faint/45" />
@@ -209,7 +209,7 @@ function YearSlider({ year, onYear, onStep }: { year: number | null; onYear: (y:
           className="pointer-events-none absolute left-0 top-[1.0rem] h-[2.5px] rounded-full bg-accent/70"
           style={{ width: `${year ? pct(value) : 0}%` }}
         />
-        <ol aria-hidden className="pointer-events-none absolute inset-x-0 top-8 h-5">
+        <ol aria-hidden className="pointer-events-none absolute inset-x-0 top-[2.3rem] h-5">
           {ERAS.slice(1).map((e) => (
             <li key={e.id} className="absolute -translate-x-1/2" style={{ left: `${pct(e.from)}%` }}>
               <span className="mx-auto block h-1.5 w-px bg-ink-faint/50" />
