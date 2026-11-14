@@ -49,6 +49,15 @@ CROUCH_BEND_STEP = 0.05  # radians between the torso bends tried
 CROUCH_MAX_BEND = 1.2    # deepest forward bend (applied as a negative torso rotation)
 CROUCH_COMFORT = 0.95    # prefer a bend that leaves the arm at most this fraction of full stretch
 CROUCH_KNEEL_COST = 0.5  # kneeling counts as this much extra bend when choosing how to get down
+# A puppet that steps to a spot to pick up (see _reach_spot) may fold further, down to this. The
+# back arm (arm_l) needs it: a forward bend swings its shoulder pivot, which sits behind the hip,
+# up as well as forward, so even kneeling at CROUCH_MAX_BEND it cannot reach the floor.
+CROUCH_DEEP_BEND = 1.5
+
+# pick_up that the arm cannot make from where the puppet is, nor after the plain walk-up: the
+# standing spots it may step to instead (see _reach_spot).
+SPOT_STEP = 0.005  # stage units between the root positions tried, outward from the grip
+SPOT_RANGE = 2.0   # how far out to try, in arm reaches beyond the shoulder's offset from the root
 
 
 def _changes_legs(pose: str) -> bool:
@@ -235,10 +244,23 @@ def apply_pose(world: World, tracks: TrackSet, action: Action, t: float, action_
 
 def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Reach the prop's grip and take it into the free hand (hand_r first), then raise it into
-    the hold pose. Out of reach: walk toward it first, to AUTO_WALK_REACH of the arm's reach.
-    A grip still too low for a standing arm (a prop on the floor) is reached by bending forward,
-    kneeling first if needed, and the puppet comes back up holding it (see _crouch_solution).
-    A puppet already sitting or kneeling only bends, and stays down."""
+    the hold pose, with the arm of that hand.
+
+    1. From where the puppet is (``_pick_up_in_place``): a grip out of reach and more than
+       AUTO_WALK_REACH of the arm's reach away from the root is walked toward first, to that
+       distance short of it. A grip still too low for a standing arm (a prop on the floor) is
+       reached by bending forward, kneeling first if needed, and the puppet comes back up holding
+       it (see _crouch_solution). A puppet already sitting or kneeling only bends, and stays down.
+    2. When that arm still cannot take the grip and the puppet is not seated, it steps to a
+       standing spot from which it can (``_reach_spot``): on its own side of the grip, or behind
+       itself when it stands right over the grip (a cap at its feet is under the hips, out of a
+       forward bend's reach, so it steps back). Every spot is judged from the shoulder pivot of
+       the arm actually used, not the root: arm_r's sits in front of the hip and arm_l's behind
+       it, where a forward bend lifts it as well as bringing it forward, so a stepped-to spot may
+       fold down to CROUCH_DEEP_BEND. It gets up first if it is on the floor, walks there,
+       turns to face the grip, and reaches, standing or crouching.
+    3. Raises ik.OutOfReach, with the closest miss, only when no spot reaches. A seated puppet
+       never moves: it reaches from the seat or fails."""
     who = _who(world, action)
     what = _what(world, action)
     hand = world.copy().pick_up(who, what)  # validation only: the real world is untouched
@@ -248,9 +270,31 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
     if anchor is None:
         raise StateError("not_on_stage", f"{what} is not on stage")
 
-    p = world.people[who]
     arm = arm_of_hand(hand)
     geom = B.PropGeom.from_prop(world.catalog[what])
+    try:
+        keys, end, walk_to, facing = _pick_up_in_place(world, tracks, who, what, arm, geom, anchor, t)
+    except ik.OutOfReach as missed:
+        if world.people[who].seat is not None:
+            raise
+        keys, end, walk_to, facing = _pick_up_from_a_spot(world, tracks, who, what, arm, geom, anchor, t, missed)
+
+    if walk_to is not None:
+        world.move(who, walk_to, facing)
+    else:
+        world.set_facing(who, facing)
+    world.pick_up(who, what, hand)
+    tracks.extend(keys)
+    return end
+
+
+def _pick_up_in_place(
+    world: World, tracks: TrackSet, who: str, what: str, arm: str, geom: B.PropGeom, anchor: Vec3, t: float
+) -> tuple[list[Key], float, Vec3 | None, int]:
+    """pick_up from where the puppet is, or after the plain walk-up toward the grip (step 1 of
+    apply_pick_up). Returns (keys, end, where it walked to or None, facing). Raises
+    ik.OutOfReach, or StateError("seated") when a seated puppet would have to walk."""
+    p = world.people[who]
     grip = B.grip_from_anchor(geom, anchor)
     here = puppet_root(world, tracks, who, t)
     d = _sign(grip[0] - here[0])
@@ -288,14 +332,109 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
             tracks, keys, body_now, t_reach, current, what, grip, arm, z, can_kneel=not on_floor
         )
         keys += crouch
+    return keys, end, walk_to, facing
 
-    if walk_to is not None:
-        world.move(who, walk_to, facing)
-    else:
-        world.set_facing(who, facing)
-    world.pick_up(who, what, hand)
-    tracks.extend(keys)
-    return end
+
+def _spot_offsets(reach: float, shoulder_dx: float) -> list[float]:
+    """Root distances from the grip that _reach_spot tries: every SPOT_STEP out to
+    SPOT_RANGE of the arm's reach beyond the shoulder's offset from the root, plus the spot that
+    puts the shoulder (not the root) AUTO_WALK_REACH of the reach short of the grip."""
+    far = SPOT_RANGE * reach + abs(shoulder_dx)
+    n = int(math.ceil(far / SPOT_STEP))
+    return [i * SPOT_STEP for i in range(n + 1)] + [max(0.0, AUTO_WALK_REACH * reach + shoulder_dx)]
+
+
+def _reach_spot(
+    world: World, tracks: TrackSet, who: str, arm: str, grip: tuple[float, float], t: float, missed: ik.OutOfReach
+) -> tuple[Vec3, int]:
+    """The standing spot ``who`` steps to so ``arm`` can take a grip it cannot take from where
+    it is (step 2 of apply_pick_up): (spot, facing there). Raises ik.OutOfReach with the
+    closest miss over every spot tried and ``missed`` (the miss from where it is) when none
+    reaches.
+
+    Candidates lie on the puppet's side of the grip (behind it, so a step back, when it stands
+    right over the grip; its facing breaks the tie), facing the grip, with the torso the walk
+    leaves it with, every SPOT_STEP from the grip outward (see _spot_offsets). A candidate is
+    tried from the actual arm's shoulder pivot (ik.shoulder_world): it reaches standing, or
+    with _crouch_solution (kneeling allowed, bending down to CROUCH_DEEP_BEND). Best is a
+    comfortable reach (CROUCH_COMFORT) over a full stretch, then the least crouch effort
+    (standing is none), then the spot nearest the puppet's root."""
+    p = world.people[who]
+    here = puppet_root(world, tracks, who, t)
+    side = _sign(here[0] - grip[0]) or -p.facing
+    facing = -side
+    stand, _ = _stand_up_keys(world, tracks, who, t)
+    stood = B.last_values(stand).get((f"puppet:{who}", "torso.rot"))
+    torso = float(stood) if stood is not None else bone_at(tracks, who, "torso", t)  # type: ignore[arg-type]
+    s = ik.scale(p.build)
+    reach = ik.arm_reach(p.build, arm)
+    length = ik.RIG["bones"][ik.arm_bones(arm)[0]]["length"]
+    y, z = p.pos[1], p.pos[2]
+    # How far the shoulder sits from the root toward the grip (negative: away from it).
+    shoulder_dx = -side * (ik.shoulder_world(arm, (0.0, y), facing, p.build, torso=torso)[0])
+
+    best: tuple[tuple[int, float, float], float] | None = None
+    closest = missed.distance
+    seen: set[float] = set()
+    for offset in _spot_offsets(reach, shoulder_dx):
+        x = round(grip[0] + side * offset, 3)
+        if x in seen:
+            continue
+        seen.add(x)
+        ground = (x, y)
+        dist, angles = ik.arm_solution(arm, grip, ground, facing, p.build, torso=torso)
+        if angles is not None:
+            rank = (0, 0.0, abs(x - here[0]))
+        elif grip[1] >= ik.shoulder_world(arm, ground, facing, p.build, torso=torso)[1]:
+            closest = min(closest, dist * s)
+            continue
+        else:
+            body = ik.Body(who, ground, facing, p.build, torso)
+            tries = _crouch_tries(body, arm, grip, can_kneel=True, max_bend=CROUCH_DEEP_BEND)
+            pick = _crouch_pick(tries, length)
+            if pick is None:
+                closest = min(closest, min(tr[0] for tr in tries) * s)
+                continue
+            comfortable, (_, kneel, bend, _) = pick
+            rank = (0 if comfortable else 1, round(_crouch_effort(kneel, bend), 9), abs(x - here[0]))
+        if best is None or rank < best[0]:
+            best = (rank, x)
+    if best is None:
+        raise ik.OutOfReach(arm, closest, 2 * length * s, who)
+    return (best[1], y, z), facing
+
+
+def _pick_up_from_a_spot(
+    world: World, tracks: TrackSet, who: str, what: str, arm: str, geom: B.PropGeom, anchor: Vec3, t: float,
+    missed: ik.OutOfReach,
+) -> tuple[list[Key], float, Vec3, int]:
+    """Walk to _reach_spot's spot (standing up first if needed), turn to the grip, and reach it
+    standing or crouching. Raises ik.OutOfReach (the closest miss) when no spot reaches."""
+    p = world.people[who]
+    grip = B.grip_from_anchor(geom, anchor)
+    spot, facing = _reach_spot(world, tracks, who, arm, grip, t, missed)
+    keys, t_reach, walked_facing = _travel_keys(world, tracks, who, t, spot, "walk")
+    if walked_facing != facing:  # it walked away from the grip (a step back): turn around
+        keys.append((f"puppet:{who}", "root.facing", t_reach, facing))
+    emitted = B.last_values(keys)
+    target = f"puppet:{who}"
+
+    def now(bone: str) -> float:
+        v = emitted.get((target, f"{bone}.rot"))
+        return float(v) if v is not None else bone_at(tracks, who, bone, t)  # type: ignore[arg-type]
+
+    upper, lower = ik.arm_bones(arm)
+    current = (now(upper), now(lower))
+    torso = now("torso")
+    ground = (spot[0], spot[1])
+    body = ik.Body(who, ground, facing, p.build, torso)
+    if ik.can_reach(arm, grip, ground, facing, p.build, torso=torso):
+        keys += B.pick_up_keys(body, t_reach, current, geom, anchor, arm)
+        return keys, t_reach + 2 * B.REACH_SECONDS, spot, facing
+    crouch, end = _crouch_pick_up_keys(
+        tracks, keys, body, t_reach, current, what, grip, arm, spot[2], can_kneel=True, max_bend=CROUCH_DEEP_BEND
+    )
+    return keys + crouch, end, spot, facing
 
 
 def _kneeling_ground(body: ik.Body) -> tuple[float, float]:
@@ -319,8 +458,45 @@ def _solve_bent_arm(
     return ik.arm_solution(arm, target, ground, facing, build, torso=bend)
 
 
+CrouchTry = tuple[float, bool, float, "tuple[float, float] | None"]  # (dist, kneel, bend, angles)
+
+
+def _crouch_effort(kneel: bool, bend: float) -> float:
+    """How much getting down costs: the bend in radians, plus CROUCH_KNEEL_COST for kneeling."""
+    return -bend + (CROUCH_KNEEL_COST if kneel else 0.0)
+
+
+def _crouch_tries(
+    body: ik.Body, arm: str, grip: tuple[float, float], can_kneel: bool, max_bend: float = CROUCH_MAX_BEND
+) -> list[CrouchTry]:
+    """Every bend down to ``max_bend`` where it stands, and while kneeling if allowed, with the
+    arm's solve (``dist`` in rig units), least effort first (standing before kneeling on a tie)."""
+    postures = [(False, body.ground)]
+    if can_kneel:
+        postures.append((True, _kneeling_ground(body)))
+    steps = int(round(max_bend / CROUCH_BEND_STEP))
+    bends = [-i * CROUCH_BEND_STEP for i in range(steps + 1)]
+    tries: list[CrouchTry] = []
+    for kneel, ground in postures:
+        for bend in bends:
+            dist, angles = _solve_bent_arm(arm, grip, ground, body.facing, body.build, bend)
+            tries.append((dist, kneel, bend, angles))
+    tries.sort(key=lambda tr: (_crouch_effort(tr[1], tr[2]), tr[1]))
+    return tries
+
+
+def _crouch_pick(tries: list[CrouchTry], length: float) -> tuple[bool, CrouchTry] | None:
+    """(comfortable, the try) for the least effort within CROUCH_COMFORT of full stretch,
+    else (False, the least effort that reaches at all), else None."""
+    for comfortable, limit in ((True, CROUCH_COMFORT * 2 * length), (False, math.inf)):
+        for tr in tries:
+            if tr[3] is not None and tr[0] <= limit:
+                return comfortable, tr
+    return None
+
+
 def _crouch_solution(
-    body: ik.Body, arm: str, grip: tuple[float, float], can_kneel: bool
+    body: ik.Body, arm: str, grip: tuple[float, float], can_kneel: bool, max_bend: float = CROUCH_MAX_BEND
 ) -> tuple[bool, float, tuple[float, float]]:
     """The gentlest way down to a low grip: (kneel, torso bend, arm angles).
 
@@ -328,24 +504,15 @@ def _crouch_solution(
     in radians, plus CROUCH_KNEEL_COST for kneeling (so a slight stoop beats kneeling, and
     kneeling beats a deep stoop). The least effort that leaves the arm within CROUCH_COMFORT of
     full stretch wins; failing that, the least effort that reaches at all. Raises ik.OutOfReach
-    with the closest miss when nothing reaches."""
+    with the closest miss when nothing reaches. Bends go down to ``max_bend``."""
     s = ik.scale(body.build)
     length = ik.RIG["bones"][ik.arm_bones(arm)[0]]["length"]
-    postures = [(False, body.ground)]
-    if can_kneel:
-        postures.append((True, _kneeling_ground(body)))
-    steps = int(round(CROUCH_MAX_BEND / CROUCH_BEND_STEP))
-    bends = [-i * CROUCH_BEND_STEP for i in range(steps + 1)]
-    tries: list[tuple[float, bool, float, tuple[float, float] | None]] = []
-    for kneel, ground in postures:
-        for bend in bends:
-            dist, angles = _solve_bent_arm(arm, grip, ground, body.facing, body.build, bend)
-            tries.append((dist, kneel, bend, angles))
-    tries.sort(key=lambda tr: (-tr[2] + (CROUCH_KNEEL_COST if tr[1] else 0.0), tr[1]))
-    for limit in (CROUCH_COMFORT * 2 * length, math.inf):
-        for dist, kneel, bend, angles in tries:
-            if angles is not None and dist <= limit:
-                return kneel, bend, angles
+    tries = _crouch_tries(body, arm, grip, can_kneel, max_bend)
+    pick = _crouch_pick(tries, length)
+    if pick is not None:
+        _, (_, kneel, bend, angles) = pick
+        assert angles is not None
+        return kneel, bend, angles
     closest = min(dist for dist, *_ in tries)
     raise ik.OutOfReach(arm, closest * s, 2 * length * s, body.id)
 
@@ -362,12 +529,13 @@ def _crouch_pick_up_keys(
     z: float,
     *,
     can_kneel: bool,
+    max_bend: float = CROUCH_MAX_BEND,
 ) -> tuple[list[Key], float]:
     """pick_up of a low grip: bend (and kneel, if needed) over POSE_SECONDS, reach the grip over
     REACH_SECONDS and take the prop, then come back up over POSE_SECONDS with the prop raised
     into the hold pose. ``before`` are keys this action already emits (an auto-walk), whose last
     values are the puppet's bones at ``t``. Returns (keys, end)."""
-    kneel, bend, reach = _crouch_solution(body, arm, grip, can_kneel)
+    kneel, bend, reach = _crouch_solution(body, arm, grip, can_kneel, max_bend)
     who = body.id
     target = f"puppet:{who}"
     emitted = B.last_values(before)
