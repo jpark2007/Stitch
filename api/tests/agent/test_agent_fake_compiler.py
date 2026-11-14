@@ -507,6 +507,17 @@ def test_static_errors_stop_before_the_simulation(scene):
     assert [e.code for e in res.errors] == ["unknown_mark"]
 
 
+def test_unused_prop_missing_from_the_scene_passes(scene):
+    """Documented gap: a listed prop the scene lacks and nothing uses passes in the fake (the
+    studio's scene_for reports it first); a used one is unknown_prop, as in the real compiler."""
+    data = copy.deepcopy(BASE)
+    data["props"].append("car")
+    assert FakeCompiler()(Screenplay.model_validate(data), scene).ok
+    data["shots"][0]["camera"] = [{"t": 0, "move": "close_up", "target": "car"}]
+    err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
+    assert err.code == "unknown_prop" and err.message.startswith('screenplay: prop "car" is not a known prop')
+
+
 def test_effects_occupy_nobody(scene):
     res = _compile(scene, [
         {"t": 0, "do": "rain", "dur": 3},

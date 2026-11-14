@@ -42,6 +42,12 @@ explicitly):
   prop that is not on stage), not at the cue's own time.
 - Gesture facings (``wave``/``point_at``/``lean_toward`` turning toward a target) are
   approximated by the target's x.
+- **A prop listed in `props` but missing from the scene inputs, that nothing uses**, passes here;
+  the real compiler reports ``unknown_prop``. In the studio `scene_for` reports a missing prop
+  before any compiler runs, so this only shows when a compiler is called directly (some tool
+  tests use the fake as an accept-all with a smaller scene).
+- **Speed from notes** (`character.speed_scale`) is not applied: the real verb handlers do not
+  apply it yet either.
 - **Wording**: messages are the real ones (same codes, same ``shot s1, t=5: ...`` heads), except
   ``not_holding`` for a prop lying on the ground, which reads "nobody is holding it" where the
   real compiler says "it is on the ground" (`LEGACY_REASONS`).
@@ -217,7 +223,7 @@ def check(screenplay: Screenplay, scene: SceneInputs) -> CheckResult:
     `World` and every action that cannot happen is reported, sorted by (shot, action) index.
     """
     sp = screenplay
-    static = validate(sp, scene.sets, scene.props, scene.people)
+    static = [e for e in validate(sp, scene.sets, scene.props, scene.people) if not _unused_missing_prop(e, sp, scene)]
     if static:
         return CheckResult(errors=static)
     if not sp.shots:
@@ -228,7 +234,7 @@ def check(screenplay: Screenplay, scene: SceneInputs) -> CheckResult:
         return CheckResult(errors=[_from_narration(e)])
 
     world = World([scene.people[c] for c in dict.fromkeys(sp.cast)],
-                  [scene.props[p] for p in dict.fromkeys(sp.props)])
+                  [scene.props[p] for p in dict.fromkeys(sp.props) if p in scene.props])
     found: list[tuple[tuple[int, int, int], CompileError]] = []
 
     def add(err: CompileError, si: int, ai: int = -1) -> None:
@@ -277,6 +283,34 @@ def check(screenplay: Screenplay, scene: SceneInputs) -> CheckResult:
 
     out.errors = [e for _, e in sorted(found, key=lambda it: it[0])]
     return out
+
+
+def _props_in_use(sp: Screenplay) -> set[str]:
+    """Every prop id the screenplay does something with (beyond listing it in `props`)."""
+    used: set[str] = set()
+    for shot in sp.shots:
+        for s in shot.start.values():
+            used.update(x.split(".")[0] for x in (s.holding, s.in_) if x)
+        for what, ps in shot.prop_start.items():
+            used.add(what)
+            if ps.on:
+                used.add(ps.on.split(".")[0])
+        for a in shot.actions:
+            used.update(x for x in (a.what, a.on, a.target, a.at) if x)
+        used.update(c.target for c in shot.camera if c.target)
+    for it in sp.interactions or []:
+        if it.drives.prop:
+            used.add(it.drives.prop)
+        used.update(t.partition(":")[2] for t in it.drives.targets or [] if t.startswith("prop:"))
+    return used
+
+
+def _unused_missing_prop(err: CompileError, sp: Screenplay, scene: SceneInputs) -> bool:
+    """A prop listed in `props` that the scene inputs lack and nothing uses (see the module
+    docstring): the real compiler reports it; the fake lets it pass."""
+    m = re.fullmatch(r'screenplay: prop "([^"]+)" is not a known prop; .*', err.message)
+    return (err.code == "unknown_prop" and m is not None and m.group(1) not in scene.props
+            and m.group(1) not in _props_in_use(sp))
 
 
 class _ShotSim:
