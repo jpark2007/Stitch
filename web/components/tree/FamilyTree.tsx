@@ -46,11 +46,13 @@ interface Thread {
   d: string;
   color: string;
   delay: number;
+  /** People this thread belongs to (for hover highlighting). */
+  ids: string[];
 }
 
 function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>) {
   const threads: Thread[] = [];
-  const knots: { key: string; at: Pt; delay: number }[] = [];
+  const knots: { key: string; at: Pt; delay: number; ids: string[] }[] = [];
   const colorOf = (id: string) => people.get(id)?.character.color ?? "#8f8173";
 
   const coupleKnot = new Map<string, Pt>();
@@ -69,14 +71,16 @@ function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>) {
       d: wobblyCubic(left, [left[0] + 12, y + sag], [mid[0] - 12, mid[1]], mid, { seed: hashSeed(c.a), amplitude: 0.8 }),
       color: colorOf(c.a),
       delay,
+      ids: [c.a, c.b],
     });
     threads.push({
       key: `couple-${c.b}`,
       d: wobblyCubic(right, [right[0] - 12, y + sag], [mid[0] + 12, mid[1]], mid, { seed: hashSeed(c.b), amplitude: 0.8 }),
       color: colorOf(c.b),
       delay,
+      ids: [c.a, c.b],
     });
-    knots.push({ key: `${c.a}-${c.b}`, at: mid, delay: delay + 0.5 });
+    knots.push({ key: `${c.a}-${c.b}`, at: mid, delay: delay + 0.5, ids: [c.a, c.b] });
     coupleKnot.set([c.a, c.b].sort().join("+"), mid);
   }
 
@@ -108,11 +112,24 @@ function buildThreads(layout: TreeLayout, people: Map<string, TreePerson>) {
         d: `${trunk} ${branch.replace(/^M[^C]*/, "")}`,
         color: colorOf(childId),
         delay: 0.6 + parents[0].gen * 0.45,
+        ids: [childId, ...fam.parentIds],
       });
-      knots.push({ key: `end-${childId}`, at: end, delay: 1.3 + parents[0].gen * 0.45 });
+      knots.push({ key: `end-${childId}`, at: end, delay: 1.3 + parents[0].gen * 0.45, ids: [childId] });
     });
   }
   return { threads, knots };
+}
+
+/**
+ * Hovering a person fades every thread that isn't theirs, so their partner,
+ * parents and children stand out. CSS only: one :has() rule per person.
+ */
+function highlightRules(ids: string[]): string {
+  const safe = ids.filter((id) => /^[\w-]+$/.test(id));
+  const rules = safe.map(
+    (id) => `.ft-tree:has(.ft-node[data-id="${id}"]:hover) .ft-thread:not([data-ids~="${id}"]){opacity:.18}`,
+  );
+  return `@media (hover:hover){${rules.join("")}}`;
 }
 
 export function FamilyTree({ people, maxHeight, className }: FamilyTreeProps) {
@@ -130,6 +147,7 @@ export function FamilyTree({ people, maxHeight, className }: FamilyTreeProps) {
   return (
     <div className={`ft-frame ${className ?? ""}`} style={frameStyle}>
       <PuppetDefs />
+      <style>{highlightRules(layout.people.map((p) => p.id))}</style>
       <div className="ft-tree" style={{ aspectRatio: `${W.toFixed(2)} / ${H.toFixed(2)}` }}>
         <svg className="ft-lines" viewBox={`0 0 ${W.toFixed(2)} ${H.toFixed(2)}`} aria-hidden>
           <defs>
@@ -149,7 +167,14 @@ export function FamilyTree({ people, maxHeight, className }: FamilyTreeProps) {
             ))}
           </defs>
           {threads.map((t) => (
-            <g key={t.key} mask={`url(#tree-draw-${t.key})`} fill="none" strokeLinecap="round">
+            <g
+              key={t.key}
+              className="ft-thread"
+              data-ids={t.ids.join(" ")}
+              mask={`url(#tree-draw-${t.key})`}
+              fill="none"
+              strokeLinecap="round"
+            >
               {/* faint pencil guide, so the stitches read as one line */}
               <path d={t.d} stroke="#5c4e43" strokeOpacity="0.16" strokeWidth="1" />
               {/* stitch shadow, then the thread itself */}
@@ -165,7 +190,8 @@ export function FamilyTree({ people, maxHeight, className }: FamilyTreeProps) {
               r="2.4"
               fill="#5c4e43"
               fillOpacity="0.55"
-              className="ft-knot"
+              className="ft-knot ft-thread"
+              data-ids={k.ids.join(" ")}
               style={{ animationDelay: `${k.delay}s` }}
             />
           ))}
@@ -178,6 +204,7 @@ export function FamilyTree({ people, maxHeight, className }: FamilyTreeProps) {
               key={p.id}
               href={`/people/${p.id}`}
               className="ft-node"
+              data-id={p.id}
               style={{
                 left: `${((p.x / W) * 100).toFixed(3)}%`,
                 top: `${((p.y / H) * 100).toFixed(3)}%`,
