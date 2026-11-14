@@ -281,6 +281,126 @@ def test_tokens_any_script_and_apostrophes():
     assert search._tokens(None) == [] and search._tokens("") == []
 
 
+def test_question_filler_words_are_stopwords():
+    for word in ("happen", "happened", "happens", "happening", "like", "really"):
+        assert word in search._STOPWORDS, word
+    assert search._tokens("What really happened? It was like magic.") == ["magic"]
+    assert search._tokens("Like it happens") == []
+
+
+def test_telling_question_is_not_searched(mdb):
+    mdb.memories.insert_one({
+        "_id": "airship", "familyId": FAMILY_A, "title": "The county fair", "year": 1966,
+        "tellings": [{"authorId": "grandpa", "question": "Did you ever see a zeppelin?",
+                      "text": "We rode the Ferris wheel twice. Mother won a ribbon for her pie."}],
+    })
+    assert search._keyword_search(mdb, FAMILY_A, "zeppelin") == []
+    assert search_memories(mdb, FAMILY_A, "zeppelin") == []
+    assert ask_quotes(mdb, FAMILY_A, "zeppelin") == []
+    # The telling text is still searched.
+    assert [q.memory_id for q in ask_quotes(mdb, FAMILY_A, "ferris wheel")] == ["airship"]
+
+
+def test_only_overlapping_tellings_are_quoted(mdb):
+    mdb.memories.insert_one({
+        "_id": "lake_house", "familyId": FAMILY_A, "title": "Summers at the lake", "year": 1981,
+        "tellings": [
+            {"authorId": "aunt", "text": "We swam every morning. The water was freezing."},
+            {"authorId": "uncle", "text": "I mostly fished. Once I caught a canoe paddle."},
+            {"authorId": "mom", "text": ""},
+            {"authorId": "cousin", "text": "My canoe tipped over on the first day. Everyone laughed."},
+        ],
+    })
+    quotes = ask_quotes(mdb, FAMILY_A, "who tipped the canoe?")
+    assert [(q.author_id, q.text) for q in quotes] == [
+        ("uncle", "Once I caught a canoe paddle."),
+        ("cousin", "My canoe tipped over on the first day."),
+    ]
+    doc = mdb.memories.find_one({"_id": "lake_house"})
+    assert [q.author_id for q in search._quotes_for(doc, "freezing water")] == ["aunt"]
+
+
+def test_title_only_match_quotes_first_sentence_of_each_telling(mdb):
+    mdb.memories.insert_one({
+        "_id": "lake_house", "familyId": FAMILY_A, "title": "Summers at the lake", "year": 1981,
+        "tellings": [
+            {"authorId": "aunt", "text": "We swam every morning. The water was freezing."},
+            {"authorId": "mom", "text": "   "},
+            {"authorId": "uncle", "text": "I mostly fished. Once I caught a canoe paddle."},
+        ],
+    })
+    quotes = ask_quotes(mdb, FAMILY_A, "the lake")
+    assert [(q.memory_id, q.author_id, q.text) for q in quotes] == [
+        ("lake_house", "aunt", "We swam every morning."),
+        ("lake_house", "uncle", "I mostly fished."),
+    ]
+
+
+@pytest.fixture
+def demo_seeded(mdb):
+    """The seeded demo family alone, with no embedder (keywords only)."""
+    from seed.demo import DEMO_FAMILY_ID, seed_demo
+
+    seed_demo(mdb)
+    return mdb, DEMO_FAMILY_ID
+
+
+DEMO_QUERIES = ["What happened to the hymn books?", "What happened at the wedding?",
+                "Why did Sam ring the bell?"]
+
+
+@pytest.mark.parametrize("query", DEMO_QUERIES)
+def test_demo_quotes_relate_to_the_query(demo_seeded, query):
+    db, fid = demo_seeded
+    wanted = set(search._tokens(query))
+    quotes = ask_quotes(db, fid, query)
+    assert quotes, query
+    for quote in quotes:
+        if wanted & set(search._tokens(quote.text)):
+            continue
+        # The only allowed exception is the documented title-only fallback: the memory's
+        # title shares a word with the query and none of its tellings does.
+        doc = db.memories.find_one({"_id": quote.memory_id})
+        assert wanted & set(search._tokens(doc["title"])), (query, quote)
+        assert not any(wanted & set(search._tokens(t.get("text"))) for t in doc["tellings"]), (
+            query, quote,
+        )
+
+
+@pytest.mark.parametrize("query", ["What happened to the hymn books?", "Why did Sam ring the bell?"])
+def test_demo_quotes_share_a_word_with_the_query(demo_seeded, query):
+    db, fid = demo_seeded
+    wanted = set(search._tokens(query))
+    quotes = ask_quotes(db, fid, query)
+    assert quotes
+    assert all(wanted & set(search._tokens(q.text)) for q in quotes), quotes
+
+
+def test_demo_hymn_question_quotes_only_the_hymn_memory(demo_seeded):
+    db, fid = demo_seeded
+    quotes = ask_quotes(db, fid, "What happened to the hymn books?")
+    assert {q.memory_id for q in quotes} == {"sample_hymn_books"}
+    assert quotes[0].text == "And then she dropped every single hymn book."
+
+
+@pytest.mark.parametrize("query", ["What happened to the hymn books?", "What happened at the wedding?"])
+def test_demo_graduation_is_not_quoted_for_unrelated_questions(demo_seeded, query):
+    db, fid = demo_seeded
+    graduation = db.memories.find_one({"familyId": fid, "title": {"$regex": "graduation", "$options": "i"}})
+    assert graduation is not None and graduation["year"] == 2015
+    quotes = ask_quotes(db, fid, query)
+    assert quotes
+    assert all(q.year != 2015 for q in quotes), quotes
+    assert all(q.memory_id != str(graduation["_id"]) for q in quotes), quotes
+
+
+def test_demo_wedding_question_quotes_only_weddings(demo_seeded):
+    db, fid = demo_seeded
+    quotes = ask_quotes(db, fid, "What happened at the wedding?")
+    titles = {q.title for q in quotes}
+    assert titles and all("wedding" in t.lower() for t in titles), titles
+
+
 def test_ties_go_to_earlier_year(mdb):
     for year, mid in [(2001, "late"), (1950, "early"), (1980, "middle")]:
         mdb.memories.insert_one({
