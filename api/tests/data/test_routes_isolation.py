@@ -4,18 +4,20 @@ ARCHITECTURE.md section 4 "Access control" (every family-scoped route depends on
 `family_member`; another family's id is a 404, never a 403) and section 7 "Rules that keep
 it clean" (a family-scoped route without that check is a bug).
 
-The app is assembled from every module in the `routes` package (`_full_app`), so a new
-router is covered the moment it exists. The coverage guard then forces every route to be
-classified: family-scoped routes (path contains `{fid}`) must have a request builder in
-CASES, and every other route must be on the explicit UNSCOPED allowlist.
+The app under test is the real one, `main.create_app()`, so a router wired into main.py
+is covered the moment it exists. Its lifespan is never entered (TestClient without `with`):
+the db is set with `db.client.set_db(mdb)`, so no fake-db install or index setup runs.
+
+The coverage guard forces every route the app serves (APIRoutes and plain Starlette routes
+alike) to be classified: family-scoped routes (path contains `{fid}`) must have a request
+builder in CASES, and every other route must be on the UNSCOPED_REQUIRED allowlist or be
+one of FastAPI's documentation routes (DOC_ROUTES).
 
 Runs on mongomock. The agent seam (`agent.runs`) is a fake module in sys.modules.
 """
 
 from __future__ import annotations
 
-import importlib
-import pkgutil
 import re
 import sys
 import types
@@ -26,11 +28,11 @@ from typing import Any
 
 import pytest
 from fastapi import APIRouter, FastAPI
-from fastapi.routing import APIRoute, iter_route_contexts
+from fastapi.routing import iter_route_contexts
 from fastapi.testclient import TestClient
 
 import auth
-import routes
+import main
 import schemas
 from db import client as db_client
 from db import families as families_db
@@ -48,38 +50,33 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 
 def _full_app() -> FastAPI:
-    """Every router in the `routes` package, included with no prefix.
-
-    Built without main.py on purpose (main.py is wired in parallel); wave 3 switches this
-    to `main.app`.
-    """
-    app = FastAPI()
-    for info in sorted(pkgutil.iter_modules(routes.__path__), key=lambda m: m.name):
-        module = importlib.import_module(f"routes.{info.name}")
-        router = getattr(module, "router", None)
-        if isinstance(router, APIRouter):
-            app.include_router(router)
-    return app
+    """The real app, exactly as uvicorn serves it. Its lifespan is never entered here."""
+    return main.create_app()
 
 
 def _app_routes(app: FastAPI) -> set[tuple[str, str]]:
-    """Every (METHOD, path template) the app serves through an APIRoute (docs routes excluded)."""
+    """Every (METHOD, path template) the app serves, APIRoute or not (docs routes included).
+
+    A route without methods (a websocket or a mount) is listed as ("ANY", path), so it still
+    has to be classified.
+    """
     found: set[tuple[str, str]] = set()
     for ctx in iter_route_contexts(app.routes):
         route = ctx.original_route
-        if not isinstance(route, APIRoute):
-            continue
-        path = ctx.path or route.path
-        for method in route.methods or ():
+        path = ctx.path or getattr(route, "path", "")
+        methods = getattr(route, "methods", None) or {"ANY"}
+        for method in methods:
             if method != "HEAD":
                 found.add((method, path))
     return found
 
 
-# Routes that are allowed to have no `{fid}`: the account routes, starting a family, and
-# the invite routes (the code itself is the secret). Anything else needs a family check.
+# Routes that are allowed to have no `{fid}`: the health check, the account routes,
+# starting a family, and the invite routes (the code itself is the secret). Anything else
+# needs a family check. The app must serve every one of these.
 UNSCOPED_REQUIRED: frozenset[tuple[str, str]] = frozenset(
     {
+        ("GET", "/health"),
         ("POST", "/auth/signup"),
         ("POST", "/auth/login"),
         ("POST", "/auth/logout"),
@@ -89,7 +86,16 @@ UNSCOPED_REQUIRED: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/invites/{code}/join"),
     }
 )
-UNSCOPED_OPTIONAL: frozenset[tuple[str, str]] = frozenset({("GET", "/health")})
+# FastAPI's own documentation routes: no family data, allowed but not required (they go
+# away if the app is built with docs_url=None and friends).
+DOC_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", "/openapi.json"),
+        ("GET", "/docs"),
+        ("GET", "/docs/oauth2-redirect"),
+        ("GET", "/redoc"),
+    }
+)
 
 
 def _guard_problems(app: FastAPI, cases: Iterable[tuple[str, str]]) -> list[str]:
@@ -102,8 +108,7 @@ def _guard_problems(app: FastAPI, cases: Iterable[tuple[str, str]]) -> list[str]
     problems += [f"family-scoped route missing from CASES: {r}" for r in sorted(scoped - classified)]
     problems += [f"CASES entry the app does not serve: {r}" for r in sorted(classified - scoped)]
     problems += [
-        f"route without {{fid}} is not on the allowlist: {r}"
-        for r in sorted(unscoped - UNSCOPED_REQUIRED - UNSCOPED_OPTIONAL)
+        f"route without {{fid}} is not on the allowlist: {r}" for r in sorted(unscoped - UNSCOPED_REQUIRED - DOC_ROUTES)
     ]
     problems += [f"allowlisted route the app does not serve: {r}" for r in sorted(UNSCOPED_REQUIRED - unscoped)]
     return problems
@@ -382,6 +387,23 @@ def test_every_route_is_classified():
     assert _guard_problems(_full_app(), CASES) == []
 
 
+def test_the_app_under_test_is_main_with_health_and_docs():
+    """The guard sees the real app: /health and FastAPI's doc routes included."""
+    served = _app_routes(_full_app())
+    assert ("GET", "/health") in served
+    assert DOC_ROUTES <= served
+    assert {r for r in served if r[1].startswith("/families/{fid}")} == set(CASES)
+
+
+def test_health_and_doc_routes_are_not_family_data(env):
+    tc = env.client_for(env.a.admin)
+    assert tc.get("/health").json() == {"status": "ok"}
+    for _, path in sorted(DOC_ROUTES):
+        res = tc.get(path)
+        assert res.status_code == 200, (path, res.text[:200])
+        assert env.b.fid not in res.text and env.a.fid not in res.text
+
+
 def test_guard_flags_an_unclassified_family_route_and_an_unlisted_open_route():
     app = _full_app()
     extra = APIRouter()
@@ -395,7 +417,13 @@ def test_guard_flags_an_unclassified_family_route_and_an_unlisted_open_route():
         return {}
 
     app.include_router(extra)
+
+    async def raw(request):  # pragma: no cover - never called
+        return None
+
+    app.add_route("/families/{fid}/raw", raw, methods=["GET"])  # a plain Starlette route
     assert _guard_problems(app, CASES) == [
+        "family-scoped route missing from CASES: ('GET', '/families/{fid}/raw')",
         "family-scoped route missing from CASES: ('GET', '/families/{fid}/secrets')",
         "route without {fid} is not on the allowlist: ('POST', '/public/thing')",
     ]
@@ -543,7 +571,10 @@ SECOND_ID_CASES: list[SecondId] = [
 
 
 def test_second_id_cases_cover_every_route_with_a_second_id():
-    with_second_id = {key for key in CASES if len(re.findall(r"\{", key[1])) >= 2}
+    """Every family-scoped route the app serves with a second path id has a SECOND_ID case."""
+    served = _app_routes(_full_app())
+    with_second_id = {r for r in served if "{fid}" in r[1] and len(re.findall(r"\{", r[1])) >= 2}
+    assert with_second_id, "expected routes with a second id"
     assert {(c.method, c.path) for c in SECOND_ID_CASES} == with_second_id
 
 
