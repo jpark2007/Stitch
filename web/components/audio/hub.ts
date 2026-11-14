@@ -6,92 +6,118 @@
  * starts things, before that gesture's page turn begins), and suspended
  * whenever no engine is playing, so a quiet book costs nothing.
  *
- *   attachMusic(cb)        cb(ctx) at the reader's next gesture (now, if made)
- *   createMusicContext()   make it now: only from inside a gesture (unmute)
- *   wakeMusic(owner)       resume the context for this owner
- *   sleepMusic(owner)      suspend it once no owner is awake
+ *   attachMusic(cb)        cb(ctx) once the context exists (now, if it does);
+ *                          the returned detach lets go
+ *   wakeMusic(owner)       this engine wants the context running
+ *   sleepMusic(owner)      it does not; suspended once no engine does
  *
- * While the book is muted a gesture makes nothing (like sound.ts); the
- * unmute click does. The book's own sounds keep their context (sound.ts,
+ * The decisions are hubState.ts's pure step; this file only carries out its
+ * effects. While the book is muted a gesture makes nothing (like sound.ts);
+ * the unmute click does. The book's own sounds keep their context (sound.ts,
  * read-only here); the first gesture unlocks both.
  */
 
-import { isMuted, unlockAudio } from "@/components/book/sound";
+import { isMuted, subscribeMuted, unlockAudio } from "@/components/book/sound";
+import { INITIAL_HUB, hubStep, type HubEffect, type HubEvent, type HubState } from "./hubState";
 
 let ctx: AudioContext | null = null;
-const waiting = new Set<(c: AudioContext) => void>();
+let state: HubState = INITIAL_HUB;
+const clients = new Set<(c: AudioContext) => void>();
 const awake = new Set<object>();
-let armed = false;
+let unsubscribeMute: (() => void) | null = null;
 
 export function musicContext(): AudioContext | null {
   return ctx;
 }
 
-/** Make the shared context and hand it to everyone waiting. Call inside a gesture. */
-export function createMusicContext(): AudioContext | null {
-  if (ctx) return ctx;
-  if (typeof window === "undefined") return null;
+function dispatch(ev: HubEvent) {
+  const r = hubStep(state, ev);
+  state = r.state;
+  for (const fx of r.effects) apply(fx);
+}
+
+function apply(fx: HubEffect) {
+  switch (fx) {
+    case "create":
+      create();
+      break;
+    // Always ask, even when the state already looks right: a suspend() or
+    // resume() still in flight would otherwise win, and they settle in order.
+    case "resume":
+      if (ctx && ctx.state !== "closed") void ctx.resume().catch(() => {});
+      break;
+    case "suspend":
+      if (ctx && ctx.state !== "closed") void ctx.suspend().catch(() => {});
+      break;
+    case "unlockBook":
+      unlockAudio();
+      break;
+    case "listen":
+      listen(true);
+      break;
+    case "unlisten":
+      listen(false);
+      break;
+  }
+}
+
+function create() {
+  if (ctx || typeof window === "undefined") return;
   const AC = window.AudioContext ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AC) return null;
+  if (!AC) return;
+  // "playback": the largest buffers the system offers. Music needs no low
+  // latency, and fewer audio-thread wake-ups leave more for the book.
   const c = new AC({ latencyHint: "playback" });
   ctx = c;
-  disarm();
-  const list = [...waiting];
-  waiting.clear();
-  for (const cb of list) cb(c);
-  // Nobody wants to play yet: sleep rather than run silence.
-  if (!awake.size) void c.suspend().catch(() => {});
-  return c;
+  for (const cb of [...clients]) cb(c);
 }
 
-function onGesture() {
-  if (isMuted()) return;
-  unlockAudio();
-  if (waiting.size) createMusicContext();
-}
+const onGesture = () => dispatch({ type: "gesture" });
 
-function arm() {
-  if (armed || typeof window === "undefined") return;
-  armed = true;
-  window.addEventListener("pointerdown", onGesture, true);
-  window.addEventListener("keydown", onGesture, true);
-}
-
-function disarm() {
-  if (!armed) return;
-  armed = false;
-  window.removeEventListener("pointerdown", onGesture, true);
-  window.removeEventListener("keydown", onGesture, true);
+function listen(on: boolean) {
+  if (typeof window === "undefined") return;
+  if (on) {
+    window.addEventListener("pointerdown", onGesture, true);
+    window.addEventListener("keydown", onGesture, true);
+    if (isMuted() !== state.muted) dispatch({ type: "mute", on: isMuted() });
+    unsubscribeMute = subscribeMuted((m) => dispatch({ type: "mute", on: m }));
+  } else {
+    window.removeEventListener("pointerdown", onGesture, true);
+    window.removeEventListener("keydown", onGesture, true);
+    unsubscribeMute?.();
+    unsubscribeMute = null;
+  }
 }
 
 /**
- * Call `cb` with the shared context at the reader's next pointer or key
- * press (at once if it already exists). Returns a cancel function; the
- * gesture listeners go away with the last waiter.
+ * Call `cb` with the shared context as soon as it exists: now, if it does,
+ * else inside the reader's next pointer or key press (or unmute click).
+ * Returns the detach; the gesture listeners go away with the last engine.
  */
 export function attachMusic(cb: (c: AudioContext) => void): () => void {
-  if (ctx) {
-    cb(ctx);
-    return () => {};
-  }
-  waiting.add(cb);
-  arm();
+  let attached = true;
+  if (ctx) cb(ctx);
+  else clients.add(cb);
+  dispatch({ type: "attach" });
   return () => {
-    waiting.delete(cb);
-    if (!waiting.size) disarm();
+    if (!attached) return;
+    attached = false;
+    clients.delete(cb);
+    dispatch({ type: "detach" });
   };
 }
 
-// Always ask, even when the state already looks right: a suspend() or
-// resume() still in flight would otherwise win, and they settle in order.
 export function wakeMusic(owner: object) {
+  const had = awake.size > 0;
   awake.add(owner);
-  if (ctx && ctx.state !== "closed") void ctx.resume().catch(() => {});
+  if (!had) dispatch({ type: "awake", on: true });
+  // Another engine already holds it awake: still ask, in case it is interrupted.
+  else if (ctx && ctx.state !== "running" && ctx.state !== "closed") void ctx.resume().catch(() => {});
 }
 
 export function sleepMusic(owner: object) {
-  awake.delete(owner);
-  if (ctx && !awake.size && ctx.state !== "closed") void ctx.suspend().catch(() => {});
+  if (!awake.delete(owner)) return;
+  if (awake.size === 0) dispatch({ type: "awake", on: false });
 }
 
 /** True while some engine holds the context awake (tests, the lab). */
