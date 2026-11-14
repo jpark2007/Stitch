@@ -8,14 +8,16 @@ Read `README.md` for the product and the relevant section of `ARCHITECTURE.md` b
 
 ## Ownership
 
-For now all work is split between two owners, roughly half each. Ethan has everything you look at; Jonah has everything behind it plus the form-and-flow pages that talk to the API. Stay inside your half; for anything else, post a `REQUEST` on Issue #1.
+Ethan owns the visual experience; Jonah owns the backend and form-and-flow pages, except the agreed Stitch Channels paths owned by Nate below. Stay inside your area; for anything else, post a `REQUEST` on Issue #1.
 
 | Owner | GitHub | Takes | Paths |
 |---|---|---|---|
-| Jonah | `jpark2007` | Agent + compiler, Data, and the flow pages (sign-up, login, start a family, join, add-a-memory, agent feed), and the Book of Family Traditions | all of `api/`, `web/app/(auth)/`, `web/app/families/`, `web/app/join/`, `web/app/add/`, `web/app/traditions/`, `web/components/agent/`, `web/components/traditions/`, `web/lib/api.ts` |
+| Jonah | `jpark2007` | Agent + compiler, Data, and the flow pages (sign-up, login, start a family, join, add-a-memory, agent feed), and the Book of Family Traditions | all of `api/` except Nate's Channels paths below, `web/app/(auth)/`, `web/app/families/`, `web/app/join/`, `web/app/add/`, `web/app/traditions/`, `web/components/agent/`, `web/components/traditions/`, `web/lib/api.ts` |
 | Ethan | `ethanm9720` | Stage and book, tree home, person and moment pages, threads screen, global look | `web/components/stage/`, `web/components/book/`, `web/components/paper/`, `web/components/tree/`, `web/components/threads/`, `web/app/page.tsx`, `web/app/people/`, `web/app/memories/`, `web/app/render/`, `web/app/threads/`, `web/app/layout.tsx`, `web/app/globals.css`, `web/public/textures/`, web config (`web/package.json`, `next.config.ts`, etc.) |
+| Nate | `natek1228` | Stitch Channels: texting, voice interviews, contact and consent settings | `channels/`, `api/channels/`, `api/agent/conversation/`, `api/db/contacts.py`, `api/db/conversations.py`, `api/db/question_bank.py`, `api/tests/channels/`, `api/seed/channels_demo.py`, `web/app/settings/notifications/`, `web/components/channels/` |
 
-- Nate (`natek1228`) and Carsten (`CarstenMacosko`) have no fixed area yet. When either picks up work, agree on Issue #1 which paths move to them and update this table in the same PR.
+- Channels boundaries were agreed on Issue #1 ([Jonah's ACK](https://github.com/jpark2007/Stitch/issues/1#issuecomment-6882196822)). Nate uses existing public functions without editing the rest of the API or flow pages. Jonah owns the Channels mounting/index/purge hooks, shared audio/channel contracts and settings link; Jonah's reviewer must pass the HMAC routes before merge. Ethan owns book playback and teller markers.
+- Carsten (`CarstenMacosko`) has no fixed area yet. When picking up work, agree on Issue #1 which paths move and update this table in the same PR.
 - `ARCHITECTURE.md` and `DESIGN.md` describe four areas (Stage, Pages, Agent + compiler, Data). Map them with this table: Stage → Ethan; Agent + compiler and Data → Jonah; Pages is divided as listed above.
 - To change the split, agree on the issue and update this table in the same PR.
 
