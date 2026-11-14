@@ -13,7 +13,7 @@ from typing import Any
 from pymongo import ASCENDING, MongoClient
 from pymongo.collection import Collection
 from pymongo.database import Database
-from pymongo.errors import DuplicateKeyError, OperationFailure
+from pymongo.errors import CollectionInvalid, DuplicateKeyError, OperationFailure
 from pymongo.operations import SearchIndexModel
 
 log = logging.getLogger(__name__)
@@ -210,31 +210,99 @@ def _has_duplicates(coll: Collection, keys: list[tuple[str, int]], partial: dict
     return False
 
 
+# The vector field every vector index covers, and the fields its $vectorSearch stages may
+# use in `filter`. Atlas rejects a $vectorSearch whose filter names a field that is not
+# declared as a "filter" field in the index (db/search.py and db/props.py filter on
+# familyId; tests/data/test_db_hardening.py checks the two stay in step).
+VECTOR_PATH = "embedding"
+VECTOR_FILTER_PATHS: tuple[str, ...] = ("familyId",)
+VECTOR_SIMILARITY = "cosine"
+
+
 def _vector_definition() -> dict[str, Any]:
     return {
         "fields": [
-            {"type": "vector", "path": "embedding", "numDimensions": VECTOR_DIM, "similarity": "cosine"},
-            {"type": "filter", "path": "familyId"},
+            {
+                "type": "vector",
+                "path": VECTOR_PATH,
+                "numDimensions": VECTOR_DIM,
+                "similarity": VECTOR_SIMILARITY,
+            },
+            *({"type": "filter", "path": path} for path in VECTOR_FILTER_PATHS),
         ]
     }
+
+
+def vector_definition_covers(existing: dict[str, Any] | None, wanted: dict[str, Any]) -> bool:
+    """True when every field of `wanted` appears in `existing` with the same settings.
+
+    Atlas may report extra defaults on a field (e.g. a quantization setting) and an index
+    may declare extra filter fields; neither makes it stale. A missing filter field, or a
+    different numDimensions, path or similarity, does.
+    """
+    have = [f for f in ((existing or {}).get("fields") or []) if isinstance(f, dict)]
+
+    def same(a: Any, b: Any) -> bool:
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            return float(a) == float(b)
+        return a == b
+
+    return all(
+        any(all(same(field_have.get(k), v) for k, v in field.items()) for field_have in have)
+        for field in wanted.get("fields") or []
+    )
+
+
+def _ensure_collection(db: Database, name: str) -> None:
+    """Create the collection if it does not exist yet (Atlas cannot index a missing one)."""
+    if name in db.list_collection_names():
+        return
+    try:
+        db.create_collection(name)
+    except CollectionInvalid:
+        pass  # created concurrently
 
 
 def ensure_search_indexes(db: Database) -> list[str]:
     """Best-effort creation of the Atlas Vector Search indexes. Returns the names created.
 
+    An index that already exists under the right name but with a stale definition (made by
+    hand in the Atlas UI without the familyId filter field, or for another EMBEDDING_DIM)
+    is updated in place and logged, not returned: without the filter field every family
+    scoped $vectorSearch would fail and silently fall back to keywords. A same-named index
+    of another type (a plain Atlas Search index) cannot be converted; that is logged.
+
     Plain MongoDB and mongomock do not support search indexes; that is logged, not raised,
     and the db layer falls back to keyword search.
     """
     created: list[str] = []
+    wanted = _vector_definition()
     for collection, name in VECTOR_INDEXES.items():
         try:
-            existing = {ix.get("name") for ix in db[collection].list_search_indexes()}
-            if name in existing:
+            _ensure_collection(db, collection)
+            existing = {ix.get("name"): ix for ix in db[collection].list_search_indexes()}
+            current = existing.get(name)
+            if current is None:
+                db[collection].create_search_index(
+                    SearchIndexModel(definition=wanted, name=name, type="vectorSearch")
+                )
+                created.append(name)
                 continue
-            db[collection].create_search_index(
-                SearchIndexModel(definition=_vector_definition(), name=name, type="vectorSearch")
-            )
-            created.append(name)
+            kind = current.get("type")
+            if kind not in (None, "vectorSearch"):
+                log.warning(
+                    "Search index %s.%s is of type %r, not vectorSearch; drop it in Atlas so it "
+                    "can be recreated. Vector search falls back to keywords until then.",
+                    collection, name, kind,
+                )
+                continue
+            definition = current.get("latestDefinition") or current.get("definition")
+            if not vector_definition_covers(definition, wanted):
+                db[collection].update_search_index(name, wanted)
+                log.warning(
+                    "Vector search index %s.%s had a stale definition %r; updated to %r",
+                    collection, name, definition, wanted,
+                )
         except (OperationFailure, NotImplementedError, AttributeError, TypeError) as exc:
             log.warning("Vector search index %s.%s not created: %s", collection, name, exc)
         except Exception as exc:  # noqa: BLE001 - startup must never fail on a best-effort index
