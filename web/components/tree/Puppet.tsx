@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { shade, tint } from "./sketch";
+import { mix, shade, tint } from "./sketch";
 
 /**
  * A faceless split-pin paper puppet, drawn flat in SVG: the static avatar
@@ -256,7 +256,8 @@ export function Puppet({ id, color, item = "", build = "average", className, tit
   const torso = color;
   const arm = shade(color, 0.14);
   const leg = shade(color, 0.3);
-  const head = tint(color, 0.58);
+  // Heads are warm card, just touched with the body colour.
+  const head = mix(tint(color, 0.55), "#ead9bc", 0.45);
   const edge = { stroke: tint(color, 0.5), strokeWidth: 0.7 };
   const s = BUILD_SCALE[build];
   const pin = { r: 1.25, fill: "#d9b46a", stroke: "#7a5a2e", strokeWidth: 0.35 };
