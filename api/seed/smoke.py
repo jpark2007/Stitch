@@ -90,6 +90,7 @@ import pathlib
 import sys
 import time
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -299,6 +300,14 @@ def _describe(name: str, model: BaseModel) -> str:
     return ""
 
 
+def _answer_note(answer: schemas.AnswerRequest) -> str:
+    if answer.kind == "merge":
+        return ", not merged" if not answer.approve else ", merged"
+    if answer.kind == "props":
+        return f", {len(answer.props or [])} kept"
+    return ""
+
+
 def _answer_for(name: str, model: BaseModel, opts: SmokeOptions) -> schemas.AnswerRequest | None:
     """The answer a needs-input event gets, or None for every other event."""
     if name == "question":
@@ -382,7 +391,7 @@ def _follow(
                     )
                     if reply.status_code != 204:
                         raise _Fail(f"answer to {name}: {_detail(reply)}")
-                    log(f"  answered {name} ({answer.kind})")
+                    log(f"PASS {name}: answered {name} ({answer.kind}){_answer_note(answer)}")
     except ValueError as exc:  # parse_sse: data that is not a JSON object
         raise _Fail(f"stream: {exc}") from None
     except (httpx.RemoteProtocolError, httpx.ReadError) as exc:
@@ -430,12 +439,16 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
         return SmokeResult(ok=ok, run_id=run_id, memory_id=run.memory_id, events=list(run.events),
                            message=redact(message))
 
+    def failed(message: str) -> SmokeResult:
+        say(f"FAIL {message}")  # the step that failed: "<step>: <why>"
+        return result(False, message)
+
     try:
         # 1. Sign in.
         res = client.post("/auth/login", json={"email": opts.email, "password": opts.password})
         if res.status_code != 200:
             raise _Fail(f"login: could not sign in as {opts.email}: {_detail(res)}")
-        say(f"signed in as {opts.email}")
+        say(f"PASS login: signed in as {opts.email}")
 
         # 2. Membership, and 3. the teller.
         res = client.get("/me")
@@ -445,10 +458,11 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
         family = next((f for f in me.families if f.id == fid), None)
         if family is None:
             raise _Fail(f"membership: {opts.email} is not a member of family {fid!r}")
+        say(f"PASS membership: {opts.email} is in family {family.name} ({fid})")
         if not family.person_id:
             raise _Fail(f"teller: {opts.email} has no person in family {fid!r}")
         teller = family.person_id
-        say(f"family {family.name} ({fid}), teller {teller}")
+        say(f"PASS teller: {teller} tells it")
 
         # 3b. A second telling: the moment exists; note its version and year.
         moment: schemas.Memory | None = None
@@ -457,7 +471,7 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
             if res.status_code != 200:
                 raise _Fail(f"moment: GET memory {opts.memory_id}: {_detail(res)}")
             moment = _parse(schemas.MemoryResponse, res, "moment").memory
-            say(f"moment {moment.title!r} ({moment.year}), version {moment.version}, "
+            say(f"PASS moment: moment {moment.title!r} ({moment.year}), version {moment.version}, "
                 f"{len(moment.tellings)} telling(s)")
 
         # 4. Submit.
@@ -472,7 +486,7 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
             raise _Fail(f"submit: {_detail(res)}")
         submitted: schemas.SubmitMemoryResponse = _parse(schemas.SubmitMemoryResponse, res, "submit")
         run_id = submitted.run_id
-        say(f"run {run_id} started with {len(files)} photo(s)")
+        say(f"PASS submit: run {run_id} started with {len(files)} photo(s)")
 
         # 5. Stream, answering what the run asks.
         drops = 0
@@ -489,9 +503,10 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
             raise _Fail(f"run: error event: {run.error}")
         memory_id = run.memory_id
         assert memory_id is not None
-        say(f"done in {time.monotonic() - started:.1f}s: memory {memory_id}")
         if moment is not None and memory_id != moment.id:
             raise _Fail(f"stream: done names memory {memory_id}, not the moment {moment.id}")
+        say(f"PASS done: memory {memory_id} in {time.monotonic() - started:.1f}s, "
+            f"{len(run.events)} events, every one valid")
 
         # 6. The memory has its scene.
         res = client.get(f"/families/{fid}/memories/{memory_id}")
@@ -502,12 +517,13 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
             raise _Fail(f"memory: {memory_id} has no screenplay")
         if found.memory.timeline is None:
             raise _Fail(f"memory: {memory_id} has no timeline")
-        say(f"memory {found.memory.title!r} ({found.memory.year}) has its screenplay and timeline")
+        staged = f"{found.memory.title!r} ({found.memory.year}) has its screenplay and timeline"
         if moment is not None:
             _check_second_telling(moment, found.memory, teller)
             lines = len(found.memory.timeline.narrations[teller].lines)  # type: ignore[index]
-            say(f"{teller}'s telling is on it, narrated in {lines} line(s); "
-                f"version {moment.version} -> {found.memory.version}")
+            staged += (f"; {teller}'s telling is on it, narrated in {lines} line(s); "
+                       f"version {moment.version} -> {found.memory.version}")
+        say(f"PASS memory: {staged}")
 
         # 7. It opens in the teller's book.
         res = client.get(f"/families/{fid}/people/{teller}/book")
@@ -516,17 +532,17 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
         book: schemas.BookResponse = _parse(schemas.BookResponse, res, "book")
         if not any(m.id == memory_id for m in book.memories):
             raise _Fail(f"book: {teller}'s book does not list memory {memory_id}")
-        say(f"{teller}'s book lists it ({len(book.memories)} memories)")
+        say(f"PASS book: {teller}'s book lists it ({len(book.memories)} memories)")
     except _Fail as exc:
-        return result(False, str(exc))
+        return failed(str(exc))
     except _Timeout:
-        return result(False, f"timeout: no done event within {opts.timeout:g}s")
+        return failed(f"timeout: no done event within {opts.timeout:g}s")
     except httpx.ConnectError:
         raise
     except httpx.TimeoutException as exc:
-        return result(False, f"timeout: the API did not answer in time ({type(exc).__name__})")
+        return failed(f"timeout: the API did not answer in time ({type(exc).__name__})")
     except httpx.HTTPError as exc:
-        return result(False, f"http: {type(exc).__name__}: {exc}")
+        return failed(f"http: {type(exc).__name__}: {exc}")
 
     if opts.memory_id is not None:
         return result(True, f"memory {run.memory_id} has {teller}'s version and is in {teller}'s book")
@@ -591,6 +607,11 @@ def _options(args: argparse.Namespace) -> SmokeOptions:
     )
 
 
+def _client(opts: SmokeOptions, timeout: httpx.Timeout) -> AbstractContextManager[httpx.Client]:
+    """The HTTP client `main` drives the smoke with (tests swap in the in-process app)."""
+    return httpx.Client(base_url=opts.base_url, timeout=timeout)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the smoke from the command line. 0 when ok, 1 when a check failed, 2 when unreachable."""
     args = _parser().parse_args(argv)
@@ -601,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     log(f"smoke: {opts.base_url}, family {opts.family_id}, as {opts.email}")
     try:
-        with httpx.Client(base_url=opts.base_url, timeout=timeout) as client:
+        with _client(opts, timeout) as client:
             result = run_smoke(client, opts, log=log)
     except httpx.ConnectError:
         print(REACH_MESSAGE.format(url=opts.base_url), file=sys.stderr)
