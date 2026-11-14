@@ -28,18 +28,24 @@ Script for a new memory (`fields.memory_id is None`), one step every `step_secon
    this family's sets, props and people. Person ids are recast: the sample's `mom` becomes
    the teller, and `dad` the first participant who is not the teller, else the teller's
    spouse, else another person of the family. When the family has nobody else, `dad` is
-   stripped from the scene (`strip_person`): one puppet, the teller's narration, and the
-   books left where they fell. Before the hand-off the giver walks up beside the receiver
-   (`stage_handoffs`), so arm reach holds for every build. The sample's prop and set are
-   created in the run's family when missing (keeping the sample ids when free, otherwise
+   stripped from the scene (`strip_person`): one puppet, and the books left where they
+   fell. Before the hand-off the giver walks up beside the receiver (`stage_handoffs`), so
+   arm reach holds for every build. The sample's prop and set are created in the run's
+   family when missing (keeping the sample ids when free, otherwise
    `<sampleId>_<familyId>`), and the scene points at the family's copies.
-   subagent_end director reports the real outcome. If the compiler returns errors, the run
-   emits compile_error, then subagent_end director with the first error, then one plain
-   error event, and nothing is saved.
+   The sample's narration (its people's words) is then replaced by the TELLER's, in their
+   own words (`narrate_as_teller`): one line per sentence of the telling as saved (the
+   submitted text plus the follow-up answer), sources "telling:<teller>:s<n>", every action
+   pinned where the sample's narration put it. The teller is the default narrator and the
+   only narration track; the recast `dad` is a puppet and a participant but narrates
+   nothing, since they have no telling. Cued lines are tried first, uncued if they do not
+   compile. subagent_end director reports the real outcome. If the compiler returns
+   errors, the run emits compile_error, then subagent_end director with the first error,
+   then one plain error event, and nothing is saved.
 6. plan, then the memory is saved: create_memory with the telling, then save_scene with the
-   recast screenplay and the COMPILED timeline (never the sample's own timeline). The
-   memory's participants are the teller, the recast `dad` (if any) and the named
-   participants.
+   recast, teller-narrated screenplay and the COMPILED timeline (never the sample's own
+   timeline). The memory's participants are the teller, the recast `dad` (if any) and the
+   named participants.
 7. the linker (only when someone besides the teller was named in `participant_ids`): plan
    with "Ask the others for their version" in progress, then one open question per named
    participant, linked to the new memory ("<teller> told the story of "<title>". What do
@@ -54,7 +60,10 @@ memory is missing, belongs to another family, or has no screenplay or timeline y
 route answers 409 NO_SCENE. The run: plan, interviewer, then the narrator writes the new
 teller's narration from the telling text (`telling_narration`: one line per sentence,
 spread over the existing shots in order, the first line of each shot cued to an action),
-and the scene is recompiled with the real compiler. Only when that compiles are the telling
+and the scene is recompiled with the real compiler. Anyone but the default narrator (for a
+scripted memory, its first teller) gets their own `narrations[<teller>]` track and the
+default narrator stays; the default narrator's own retelling replaces the shots' narration,
+with the action pinned where it was. Only when that compiles are the telling
 added, the participants linked and the scene saved (`save_scene`: the version goes up by
 one, and the timeline carries the new teller's narration track). Participants follow
 agent/tools/family.py: the teller joins the moment; then, as the real linker does, the named
@@ -603,6 +612,22 @@ def telling_narration(screenplay: Screenplay, author_id: str, text: str, *, cued
     """
     sp = screenplay.model_copy(deep=True)
     default = narration_timing.default_author(sp)
+    by_shot = _lines_over(sp, author_id, text, cued=cued, pin=author_id == default)
+    if author_id == default:
+        for shot in sp.shots:
+            shot.narration = by_shot.get(shot.id, [])
+        others = {a: lines for a, lines in (sp.narrations or {}).items() if a != author_id}
+        sp.narrations = others or None
+    else:
+        sp.narrations = {**(sp.narrations or {}), author_id: by_shot}
+    return sp
+
+
+def _lines_over(sp: Screenplay, author_id: str, text: str, *, cued: bool, pin: bool) -> dict[str, list[NarrationLine]]:
+    """`author_id`'s lines for `text`, by shot id, over `sp`'s action as its CURRENT default
+    narration times it. With `pin`, every action of `sp` (mutated in place) is pinned at that
+    time, so the action stays put once the default narration is replaced."""
+    default = narration_timing.default_author(sp)
     sentences = split_sentences(text)
     slices = _spread(len(sentences), len(sp.shots))
     by_shot: dict[str, list[NarrationLine]] = {}
@@ -611,7 +636,7 @@ def telling_narration(screenplay: Screenplay, author_id: str, text: str, *, cued
             retimed = narration_timing.retime_actions(shot, 0.0, author=default)
         except narration_timing.NarrationError:
             retimed = [a.t for a in shot.actions]
-        if author_id == default:  # pin the action where the old narration put it
+        if pin:  # pin the action where the old narration put it
             for action, t in zip(shot.actions, retimed, strict=True):
                 action.t = t
         cue = _cue_for(shot, retimed) if cued else None
@@ -627,13 +652,31 @@ def telling_narration(screenplay: Screenplay, author_id: str, text: str, *, cued
             t += len(words) * narration_timing.WORD_SECONDS + LINE_GAP
         if lines:
             by_shot[shot.id] = lines
-    if author_id == default:
-        for shot in sp.shots:
-            shot.narration = by_shot.get(shot.id, [])
-        others = {a: lines for a, lines in (sp.narrations or {}).items() if a != author_id}
-        sp.narrations = others or None
-    else:
-        sp.narrations = {**(sp.narrations or {}), author_id: by_shot}
+    return by_shot
+
+
+def narrate_as_teller(screenplay: Screenplay, teller_id: str, text: str, *, cued: bool = True) -> Screenplay:
+    """The screenplay narrated by `teller_id` alone, in the words of `text`. Pure.
+
+    For a brand-new memory, whose only telling is the teller's: every action is pinned at the
+    time the screenplay's current default narration gives it (so the shared action does not
+    move), every shot's own `narration` becomes the teller's lines (one per sentence of
+    `text`, spread over the shots in order, source "telling:<teller>:s<n>", n 1-based over
+    the whole text; with `cued`, a shot's first line is cued on its first word to the shot's
+    earliest nameable action, as in `telling_narration`), and `narrations` is None, since
+    nobody else has told it yet. Then `narration_timing.default_author(result) == teller_id`.
+
+    A text with no spoken word gives no lines: the shots' narration is empty and, so that the
+    teller is still the default narrator (`default_author` falls back to the first cast
+    member), the teller moves to the front of `cast` when they are in it.
+    """
+    sp = screenplay.model_copy(deep=True)
+    by_shot = _lines_over(sp, teller_id, text, cued=cued, pin=True)
+    for shot in sp.shots:
+        shot.narration = by_shot.get(shot.id, [])
+    sp.narrations = None
+    if not by_shot and teller_id in sp.cast:
+        sp.cast = [teller_id, *(c for c in sp.cast if c != teller_id)]
     return sp
 
 
@@ -978,7 +1021,7 @@ class ScriptedRunManager:
         self._emit(run, "subagent_start", schemas.SubagentStartEvent(
             name="director", task="Stage the scene on the church steps"))
         self._step()
-        staged = self._stage(run, db, sample, edits, removed)
+        staged = self._stage(run, db, sample, edits, removed, text)
         result = staged.result
         if not result.ok or result.timeline is None:
             errors = result.errors or [CompileError(code="no_timeline", message="the compiler made no timeline")]
@@ -1111,13 +1154,19 @@ class ScriptedRunManager:
 
     @staticmethod
     def _narrate(
-        db: Database, family_id: str, screenplay: Screenplay, author_id: str, text: str
+        db: Database,
+        family_id: str,
+        screenplay: Screenplay,
+        author_id: str,
+        text: str,
+        write: Callable[..., Screenplay] = telling_narration,
     ) -> tuple[Screenplay, CompileResult]:
-        """The new teller's narration over the scene, compiled. Cued first; uncued if cues fail."""
-        drafted = telling_narration(screenplay, author_id, text)
+        """The teller's narration over the scene (`write`: `telling_narration` for a second
+        telling, `narrate_as_teller` for a new memory), compiled. Cued first; uncued if cues fail."""
+        drafted = write(screenplay, author_id, text)
         result = compile_scene(db, family_id, drafted)
         if not result.ok:
-            plain = telling_narration(screenplay, author_id, text, cued=False)
+            plain = write(screenplay, author_id, text, cued=False)
             plain_result = compile_scene(db, family_id, plain)
             if plain_result.ok:
                 return plain, plain_result
@@ -1177,8 +1226,10 @@ class ScriptedRunManager:
         sample: schemas.MemoryResponse,
         edits: list[schemas.PropEdit],
         removed: bool,
+        text: str,
     ) -> _Staged:
-        """The director: the sample's screenplay recast for this family, and compiled.
+        """The director: the sample's screenplay recast for this family, narrated by the
+        teller in their own words (`text`, the telling as `_save` stores it), and compiled.
 
         Creates the family's copies of the sample's set and prop when missing (and applies the
         prop review's edits), so the compiler sees exactly what the memory will point at.
@@ -1233,10 +1284,14 @@ class ScriptedRunManager:
         screenplay = remap_ids(screenplay, ids)
         screenplay["cast"] = _dedupe(screenplay.get("cast", []))
         screenplay["props"] = _dedupe(screenplay.get("props", []))
-        staged = Screenplay.model_validate(screenplay)
+        # The sample's narration is its own people's words: the teller's telling replaces it,
+        # and nobody else has a track (the recast other person has not told this memory).
+        narrated, result = self._narrate(
+            db, fid, Screenplay.model_validate(screenplay), run.person_id, text, write=narrate_as_teller
+        )
         return _Staged(
-            screenplay=staged,
-            result=compile_scene(db, fid, staged),
+            screenplay=narrated,
+            result=result,
             participants=participants,
             prop_ids=prop_ids,
             set_ids=set_ids,
@@ -1321,6 +1376,7 @@ __all__ = [
     "compile_scene",
     "install_fake_runs",
     "keep_audio",
+    "narrate_as_teller",
     "remap_ids",
     "scene_inputs",
     "short_title",

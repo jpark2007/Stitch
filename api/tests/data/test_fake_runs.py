@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import re
 import subprocess
 import sys
 import types
@@ -22,6 +23,7 @@ from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
 from screenplay import compiler as real_compiler
+from screenplay import narration as narration_timing
 from screenplay.schema import CompileResult, Screenplay, Timeline
 from seed import fake_runs
 from seed.demo import DEMO_FAMILY_ID, DEMO_PERSON_IDS, HYMN_MEMORY_ID, SAMPLE_PATH, load_sample, seed_demo
@@ -29,6 +31,7 @@ from seed.fake_runs import (
     MemoryNotFound,
     ScriptedRunManager,
     install_fake_runs,
+    narrate_as_teller,
     remap_ids,
     short_title,
     split_sentences,
@@ -405,6 +408,34 @@ def _strings(value: Any) -> list[str]:
     return [value] if isinstance(value, str) else []
 
 
+_SOURCE = re.compile(r"telling:([^:\s]+):s(\d+)")
+
+
+def assert_sources_name_real_tellings(memory: schemas.Memory) -> None:
+    """ARCHITECTURE.md section 5: every narration line is tied to a sentence of a real telling.
+
+    Every "telling:<author>:s<n>" anywhere in the screenplay and timeline names an author with
+    a Telling on the memory, and n is at most that telling's sentence count. Nobody without a
+    telling (the sample's mom and dad, or the recast other person) is named in a source.
+    """
+    sp, tl = memory.screenplay, memory.timeline
+    assert sp is not None and tl is not None
+    sentences = {t.author_id: len(split_sentences(t.text)) for t in memory.tellings}
+    strings = _strings(sp.model_dump(mode="json", by_alias=True)) + _strings(tl.model_dump(mode="json", by_alias=True))
+    found = [(m.group(1), int(m.group(2))) for s in strings for m in _SOURCE.finditer(s)]
+    assert found, "no narration line names a telling"
+    for author, n in found:
+        assert author in sentences, f"telling:{author}:s{n} names someone with no telling on the memory"
+        assert 1 <= n <= sentences[author], f"telling:{author}:s{n} is past the telling's {sentences[author]} sentences"
+    untold = {"mom", "dad", *(p for p in memory.participant_ids if p not in sentences)} - set(sentences)
+    for who in untold:
+        assert not [s for s in strings if f"telling:{who}" in s], f"a source names {who}, who has no telling"
+    if tl.default_narrator is not None:
+        assert tl.default_narrator in sentences
+    assert set(tl.narrations or {}) <= set(sentences)
+    assert set(sp.narrations or {}) <= set(sentences)
+
+
 def assert_clean_scene(memory: schemas.Memory) -> None:
     """One track per target + channel, nobody hands to themselves, and the scene validates."""
     sp, tl = memory.screenplay, memory.timeline
@@ -447,11 +478,17 @@ def test_family_made_by_post_families_gets_a_one_puppet_scene(mdb):
     assert memory.participant_ids == [me.id]
     assert memory.timeline.default_narrator == me.id
     assert scene_person_ids(memory) == {me.id}
-    # The teller's own narration plays, and the books stay where they fell.
-    assert [line.source for line in memory.screenplay.shots[0].narration] == [
-        f"telling:{me.id}:s1", f"telling:{me.id}:s2", f"telling:{me.id}:s3"
+    # The teller's own narration plays, in their own words, and the books stay where they fell.
+    [telling] = memory.tellings
+    sentences = split_sentences(telling.text)
+    assert telling.text.endswith("Only me.")
+    assert [line.source for shot in memory.screenplay.shots for line in shot.narration] == [
+        f"telling:{me.id}:s{n}" for n in range(1, len(sentences) + 1)
     ]
+    assert [line.text for shot in memory.screenplay.shots for line in shot.narration] == sentences
+    assert memory.screenplay.narrations is None and list(memory.timeline.narrations) == [me.id]
     assert memory.timeline.captions == memory.timeline.narrations[me.id].captions
+    assert_sources_name_real_tellings(memory)
     parent = next(t for t in memory.timeline.tracks if t.target.startswith("prop:") and t.channel == "parent")
     assert parent.keys[-1][1] == "ground"
     assert memories_db.open_questions(mdb, family.id, me.id) == []
@@ -468,7 +505,10 @@ def test_two_person_family_keeps_both_puppets(db, manager):
     assert set(memory.screenplay.cast) == {B_TELLER, B_OTHER}
     targets = {t.target for t in memory.timeline.tracks}
     assert {f"puppet:{B_TELLER}", f"puppet:{B_OTHER}"} <= targets
-    assert memory.timeline.default_narrator == B_OTHER  # the sample's default telling, recast
+    # The teller narrates their own new memory; Ben plays the sample's David but has no telling.
+    assert memory.timeline.default_narrator == B_TELLER
+    assert list(memory.timeline.narrations) == [B_TELLER]
+    assert_sources_name_real_tellings(memory)
     hand = [a for a in memory.screenplay.shots[0].actions if a.do == "hand_to"]
     assert [(a.who, a.to) for a in hand] == [(B_OTHER, B_TELLER)]
     # Bea and Ben have the default ('average') build: the giver walks up beside her first.
@@ -478,6 +518,152 @@ def test_two_person_family_keeps_both_puppets(db, manager):
     walk = actions[actions.index(hand[0]) - 1]
     assert (walk.do, walk.who, walk.to) == ("walk_to", B_OTHER, fake_runs.HANDOFF_MARK)
     assert_compiles(db, FAM_B, memory)
+
+
+def test_the_teller_narrates_their_new_memory_in_their_own_words(db, manager):
+    """Regression: the recast sample used to keep the sample's narration, so the recast other
+    person (who has no telling) was the default narrator, citing telling:<other>:s2..s4."""
+    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(participant_ids=[B_OTHER]), [])
+    events = drive(manager, FAM_B, run_id, B_USER, reply=answer("Ben was there, and Bo."))  # keeps the prop
+    assert_well_formed(events)
+    assert events[-1][0] == "done"
+    chip = next(p for n, p in events if n == "props_found").props[0]
+    memory = memories_db.get_memory(db, FAM_B, events[-1][1].memory_id)
+    assert memory is not None and memory.screenplay is not None and memory.timeline is not None
+    assert memory.prop_ids == [chip.id] and memory.screenplay.props == [chip.id]
+    [telling] = memory.tellings
+    assert telling.author_id == B_TELLER and telling.text.endswith("Ben was there, and Bo.")
+
+    sp, tl = memory.screenplay, memory.timeline
+    assert tl.default_narrator == B_TELLER
+    assert list(tl.narrations) == [B_TELLER]
+    assert tl.captions == tl.narrations[B_TELLER].captions
+    assert sp.narrations is None
+    lines = [line for shot in sp.shots for line in shot.narration]
+    assert all(line.source.startswith(f"telling:{B_TELLER}:") for line in lines)
+    assert [line.text for line in lines] == split_sentences(telling.text)
+    assert lines[-1].text == "Ben was there, and Bo."  # the follow-up answer is narrated too
+    assert [line.text for line in tl.narrations[B_TELLER].lines] == [line.text for line in lines]
+    assert lines[0].cue is not None  # cued to the shared action
+    assert_sources_name_real_tellings(memory)
+
+    # Ben still plays the sample's David: in the cast, a participant, with a puppet track.
+    assert B_OTHER in sp.cast and B_OTHER in memory.participant_ids
+    assert f"puppet:{B_OTHER}" in {t.target for t in tl.tracks}
+    assert director_summary(events).endswith("compiled without errors.")
+    assert_compiles(db, FAM_B, memory)
+
+
+def test_family_of_one_sources_name_only_the_teller(db, manager):
+    memory = _tell(db, manager, SOLO, SOLO_USER, SOLO_PERSON)
+    assert memory.timeline.default_narrator == SOLO_PERSON
+    assert list(memory.timeline.narrations) == [SOLO_PERSON]
+    assert_sources_name_real_tellings(memory)
+    assert_compiles(db, SOLO, memory)
+
+
+def test_demo_family_new_memory_sources_name_only_the_teller(db, manager):
+    """In the demo family the sample ids are real people: dad is cast, but did not tell this."""
+    memory = _tell(db, manager, DEMO_FAMILY_ID, ANA, "mom")
+    assert "dad" in memory.screenplay.cast and memory.timeline.default_narrator == "mom"
+    assert_sources_name_real_tellings(memory)
+    assert_compiles(db, DEMO_FAMILY_ID, memory)
+
+
+@pytest.mark.parametrize("family_id,user_id,teller,participants", [
+    (FAM_B, B_USER, B_TELLER, [B_OTHER]),
+    (SOLO, SOLO_USER, SOLO_PERSON, []),
+])
+def test_a_telling_with_no_spoken_word_still_compiles(db, family_id, user_id, teller, participants):
+    """Edge case: no sentence to narrate. The scene has no narration lines, the teller leads
+    the cast so they are still the default narrator, and it compiles."""
+    mgr = ScriptedRunManager(db_getter=lambda: db, step_seconds=0, ask_followup=False)
+    try:
+        run_id = mgr.start_run(family_id, user_id, teller, fields(text="...", participant_ids=participants), [])
+        events = drive(mgr, family_id, run_id, user_id)
+    finally:
+        mgr.shutdown()
+    assert_well_formed(events)
+    assert events[-1][0] == "done", events[-1]
+    memory = memories_db.get_memory(db, family_id, events[-1][1].memory_id)
+    assert memory is not None and memory.screenplay is not None and memory.timeline is not None
+    assert all(shot.narration == [] for shot in memory.screenplay.shots)
+    assert memory.screenplay.narrations is None
+    assert memory.screenplay.cast[0] == teller
+    assert memory.timeline.default_narrator == teller and memory.timeline.captions == []
+    strings = _strings(memory.screenplay.model_dump(mode="json", by_alias=True)) + _strings(
+        memory.timeline.model_dump(mode="json", by_alias=True)
+    )
+    assert not [s for s in strings if "telling:" in s]
+    assert_compiles(db, family_id, memory)
+
+
+def _resolved_times(sp: Screenplay) -> dict[str, list[float]]:
+    """Every shot's action times as its default narration resolves them (shot time)."""
+    author = narration_timing.default_author(sp)
+    return {shot.id: narration_timing.retime_actions(shot, 0.0, author=author) for shot in sp.shots}
+
+
+def test_narrate_as_teller_on_the_sample():
+    sample = load_sample()
+    sp = sample.memory.screenplay
+    assert narration_timing.default_author(sp) == "dad"  # the sample's default narration is dad's
+    text = "I was carrying too many books. They went everywhere! He picked them up. I could not look at him."
+    out = narrate_as_teller(sp, "mom", text)
+    assert sp == load_sample().memory.screenplay  # pure
+    assert narration_timing.default_author(out) == "mom"
+    assert out.narrations is None
+    assert out.cast == sp.cast  # only a text with no spoken word moves the teller to the front
+    lines = [line for shot in out.shots for line in shot.narration]
+    assert [line.text for line in lines] == split_sentences(text)
+    assert [line.source for line in lines] == [f"telling:mom:s{n}" for n in range(1, len(lines) + 1)]
+    # The shared action does not move: the new default narration resolves every action to the
+    # time the sample's own (dad's) narration resolved it to.
+    before, after = _resolved_times(sp), _resolved_times(out)
+    for shot in sp.shots:
+        assert len(before[shot.id]) == len(after[shot.id])
+        for old, new in zip(before[shot.id], after[shot.id], strict=True):
+            assert abs(old - new) <= 1e-6, (shot.id, before[shot.id], after[shot.id])
+    # Cues name only actions of their shot; each shot's first line is cued on its first word.
+    for shot in out.shots:
+        names_in_shot = {a.id for a in shot.actions if a.id} | {a.do for a in shot.actions}
+        for line in shot.narration:
+            assert line.cue is None or line.cue in names_in_shot
+        if shot.narration:
+            first = shot.narration[0]
+            assert first.cue is not None and first.cue_word == narration_timing.tokenize(first.text)[0]
+    # It compiles for the sample's own people, and the timeline is the teller's alone.
+    result = real_compiler.compile(
+        out, sets={s.id: s for s in sample.sets}, props={p.id: p for p in sample.props},
+        people={p.id: p for p in sample.people},
+    )
+    assert result.errors == [] and result.timeline is not None
+    assert result.timeline.default_narrator == "mom" and list(result.timeline.narrations) == ["mom"]
+
+    plain = narrate_as_teller(sp, "mom", text, cued=False)
+    assert all(line.cue is None for shot in plain.shots for line in shot.narration)
+    assert narration_timing.default_author(plain) == "mom"
+    for shot in sp.shots:
+        for old, new in zip(before[shot.id], _resolved_times(plain)[shot.id], strict=True):
+            assert abs(old - new) <= 1e-6
+
+
+def test_narrate_as_teller_with_no_spoken_word():
+    sample = load_sample()
+    sp = sample.memory.screenplay
+    out = narrate_as_teller(sp, "mom", "... !")
+    assert all(shot.narration == [] for shot in out.shots) and out.narrations is None
+    assert out.cast[0] == "mom" and sorted(out.cast) == sorted(sp.cast)
+    assert narration_timing.default_author(out) == "mom"
+    before = _resolved_times(sp)
+    for shot in out.shots:  # pinned at the sample narration's times
+        assert [a.t for a in shot.actions] == pytest.approx(before[shot.id], abs=1e-6)
+    result = real_compiler.compile(
+        out, sets={s.id: s for s in sample.sets}, props={p.id: p for p in sample.props},
+        people={p.id: p for p in sample.people},
+    )
+    assert result.errors == [] and result.timeline is not None
+    assert result.timeline.default_narrator == "mom" and result.timeline.captions == []
 
 
 # ------------------------------------------------------------------------------ strip_person
@@ -738,7 +924,10 @@ def test_remove_edit_leaves_the_prop_out(db, manager):
     assert not any(t.startswith("hymn_books") for t in tokens)
     shot = memory.screenplay.shots[0]
     assert all(a.what is None for a in shot.actions)
-    assert all(line.cue is None for line in shot.narration)  # cues on removed actions are dropped
+    # No cue names a removed action: the teller's lines are cued only to what is left.
+    left = {a.id for a in shot.actions if a.id} | {a.do for a in shot.actions}
+    assert all(line.cue is None or line.cue in left for line in shot.narration)
+    assert not {"drop", "hand_back", "pick_up", "hand_to"} & {line.cue for line in shot.narration}
     # Never created for this family, since it was left out; the set still was.
     assert props_db.list_props(db, FAM_B) == []
     assert len(props_db.list_sets(db, FAM_B)) == 1
@@ -875,23 +1064,52 @@ def test_second_telling_links_only_the_teller_without_participants(db, manager):
 
 
 def test_the_default_narrators_retelling_keeps_the_action(db, manager):
+    """The teller of a new memory is its default narrator; their retelling replaces the shots'
+    own narration and the action does not move."""
     before = _tell(db, manager, FAM_B, B_USER, B_TELLER, participant_ids=[B_OTHER])
-    assert before.timeline.default_narrator == B_OTHER  # the sample's narrator, recast
-    run_id = manager.start_run(
-        FAM_B, B_USER, B_OTHER, fields(text="She dropped them all. I picked them up.", memory_id=before.id), []
-    )
+    assert before.timeline.default_narrator == B_TELLER  # the teller narrates their new memory
+    text = "I dropped them all. Ben picked them up."
+    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(text=text, memory_id=before.id), [])
     events = collect(manager, FAM_B, run_id)
     assert_well_formed(events)
     assert events[-2][0] == "scene_ready" and events[-2][1].version == 2
     after = memories_db.get_memory(db, FAM_B, before.id)
     assert after is not None
     sp = after.screenplay
-    assert [line.text for line in sp.shots[0].narration] == ["She dropped them all.", "I picked them up."]
-    assert B_OTHER not in (sp.narrations or {})
-    assert after.timeline.default_narrator == B_OTHER
-    assert after.timeline.captions == after.timeline.narrations[B_OTHER].captions
+    lines = [line for shot in sp.shots for line in shot.narration]
+    assert [line.text for line in lines] == ["I dropped them all.", "Ben picked them up."]
+    assert [line.source for line in lines] == [f"telling:{B_TELLER}:s1", f"telling:{B_TELLER}:s2"]
+    assert sp.narrations is None  # nobody else has told it
+    assert after.timeline.default_narrator == B_TELLER
+    assert list(after.timeline.narrations) == [B_TELLER]
+    assert after.timeline.captions == after.timeline.narrations[B_TELLER].captions
     assert after.timeline.tracks == before.timeline.tracks  # the action did not move
-    assert sp.narrations == before.screenplay.narrations  # the teller's own telling is untouched
+    assert_compiles(db, FAM_B, after)
+
+
+def test_the_recast_other_persons_telling_gets_its_own_track(db, manager):
+    """Ben plays the sample's David in Bea's memory but did not tell it: his later telling is
+    a narrations[Ben] entry, and Bea stays the default narrator."""
+    before = _tell(db, manager, FAM_B, B_USER, B_TELLER, participant_ids=[B_OTHER])
+    text = "She dropped them all. I picked them up. She would not look at me."
+    run_id = manager.start_run(FAM_B, B_USER, B_OTHER, fields(text=text, memory_id=before.id), [])
+    events = collect(manager, FAM_B, run_id)
+    assert_well_formed(events)
+    assert events[-2][0] == "scene_ready" and events[-2][1].version == 2
+    after = memories_db.get_memory(db, FAM_B, before.id)
+    assert after is not None and after.screenplay is not None and after.timeline is not None
+    sp, tl = after.screenplay, after.timeline
+    assert [t.author_id for t in after.tellings] == [B_TELLER, B_OTHER]
+    assert sp.shots == before.screenplay.shots  # Bea's narration and the action stay
+    ben = [line for shot in sp.shots for line in sp.narrations[B_OTHER].get(shot.id, [])]
+    assert [line.text for line in ben] == split_sentences(text)
+    assert [line.source for line in ben] == [f"telling:{B_OTHER}:s{n}" for n in (1, 2, 3)]
+    assert tl.default_narrator == B_TELLER
+    assert list(tl.narrations) == [B_TELLER, B_OTHER]
+    assert [line.text for line in tl.narrations[B_OTHER].lines] == split_sentences(text)
+    assert tl.captions == before.timeline.captions == tl.narrations[B_TELLER].captions
+    assert tl.tracks == before.timeline.tracks
+    assert_sources_name_real_tellings(after)
     assert_compiles(db, FAM_B, after)
 
 
