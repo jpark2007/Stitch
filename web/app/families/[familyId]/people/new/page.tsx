@@ -3,13 +3,19 @@
 // Everything here depends on who is signed in, so the page is a client
 // screen; the Suspense boundary lets the static shell prerender while the
 // screen reads the URL (useParams, useSearchParams) in the browser.
+import type { Metadata } from "next";
 import { Suspense } from "react";
 
-import { AddRelativeScreen, RelativePlaceholder } from "./AddRelativeScreen";
+import { SettingsPlaceholder } from "../../settings/SettingsPlaceholder";
+import { AddRelativeScreen } from "./AddRelativeScreen";
+
+export const metadata: Metadata = {
+  title: "Add a relative · Stitch",
+};
 
 export default function AddRelativePage() {
   return (
-    <Suspense fallback={<RelativePlaceholder label="Opening your family’s pages…" />}>
+    <Suspense fallback={<SettingsPlaceholder label="Opening your family’s pages…" />}>
       <AddRelativeScreen />
     </Suspense>
   );

@@ -29,6 +29,10 @@ import { findFamily, settingsLoadError, type SettingsLoad } from "@/components/f
 import { isApiError } from "@/lib/api";
 import type { NewPerson, Person } from "@/lib/types";
 
+// The family pages share their quiet sheets: the same loading thread and the
+// same dead end as settings, under the same "Stitch" mark.
+import { FamilyNotFound, SettingsPlaceholder as RelativePlaceholder } from "../../settings/SettingsPlaceholder";
+
 const LEDE =
   "Someone who may never sign up, like a late great-grandparent or a young child. " +
   "Anyone can claim them later from an invite.";
@@ -56,21 +60,6 @@ function AddRelativeGate(props: { fid: string; next: string | null }) {
   if (!summary) return <FamilyNotFound />;
   // Keyed, so another family starts from a clean load.
   return <AddRelative key={summary.id} fid={summary.id} next={props.next} />;
-}
-
-function FamilyNotFound() {
-  return (
-    <FlowPage
-      title="We couldn’t find that family"
-      lede="It may have been removed, or this link is for a family you haven’t joined."
-    >
-      <div>
-        <ButtonLink href={hrefs.home()} variant="secondary">
-          Go home
-        </ButtonLink>
-      </div>
-    </FlowPage>
-  );
 }
 
 type Load = { kind: "loading" } | { kind: "ready"; people: PickablePerson[] } | SettingsLoad;
@@ -332,30 +321,5 @@ function DoneCard(props: {
         </div>
       </div>
     </PaperCard>
-  );
-}
-
-/**
- * A quiet sheet with a running thread while the page or the tree loads.
- * `bare` drops the centring frame, for use inside the page.
- */
-export function RelativePlaceholder(props: { label: string; bare?: boolean }) {
-  const sheet = (
-    <div role="status" aria-busy="true" aria-live="polite">
-      <PaperCard className="flex flex-col items-center gap-4 text-center">
-        <span
-          aria-hidden="true"
-          className="block h-0 w-24 border-t-[1.5px] border-dashed border-rule motion-safe:animate-pulse"
-        />
-        <p className="font-display text-lg text-ink-soft">{props.label}</p>
-      </PaperCard>
-    </div>
-  );
-  if (props.bare) return sheet;
-  // Same frame as SessionGate's placeholder, so nothing jumps when it takes over.
-  return (
-    <div className="mx-auto flex min-h-[70dvh] w-full max-w-md items-center px-4 py-12">
-      <div className="w-full">{sheet}</div>
-    </div>
   );
 }

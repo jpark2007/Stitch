@@ -12,7 +12,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } fr
 import { isApiError } from "@/lib/api";
 import type { NewPerson } from "@/lib/types";
 import { Button } from "./Button";
-import { FIELD_HINT_CLASS, FIELD_LABEL_CLASS, FIELD_OPTIONAL_CLASS, TextField } from "./Field";
+import { FIELD_HINT_CLASS, FIELD_LABEL_CLASS, OptionalMark, TextField } from "./Field";
 import { FormError, focusFirstError } from "./FormError";
 import { PaperCard } from "./PaperCard";
 import { PersonPicker } from "./PersonPicker";
@@ -57,10 +57,6 @@ function joinMessages(...msgs: (string | undefined)[]): string | null {
 /** The first field, in form order, that has a message. */
 function firstField(errors: FieldErrors<RelativeField>): RelativeField | null {
   return RELATIVE_FIELDS.find((f) => errors[f]) ?? null;
-}
-
-function Optional() {
-  return <span className={FIELD_OPTIONAL_CLASS}>(optional)</span>;
 }
 
 export function AddRelativeForm(props: {
@@ -240,7 +236,7 @@ export function AddRelativeForm(props: {
             <div className="min-w-0">
               <p className={FIELD_LABEL_CLASS}>
                 Their children
-                <Optional />
+                <OptionalMark />
               </p>
               <p className="mt-2 text-sm text-ink-soft italic">
                 {childCandidates(people, []).length === 0
@@ -253,7 +249,7 @@ export function AddRelativeForm(props: {
               legend={
                 <>
                   Their children
-                  <Optional />
+                  <OptionalMark />
                 </>
               }
               hint="Only people who don’t already have two parents are listed."
@@ -284,7 +280,7 @@ function YearsGroup(props: { children: ReactNode }) {
     <fieldset className="mx-0 min-w-0 border-0 p-0" aria-describedby={hintId}>
       <legend className={`p-0 ${FIELD_LABEL_CLASS}`}>
         Their years
-        <Optional />
+        <OptionalMark />
       </legend>
       <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
         Leave Died empty if they’re still with us.
