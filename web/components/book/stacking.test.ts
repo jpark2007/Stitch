@@ -77,6 +77,19 @@ describe("stack layers", () => {
   });
 
   it("biases toward the camera", () => {
-    assert.ok(s.FRONT_OFFSET_FACTOR < 0 && s.FRONT_OFFSET_UNITS < 0);
+    assert.ok(s.FRONT_OFFSET.units < 0);
+  });
+
+  // Regression: a slope-scaled bias (factor -2) on the curved sheet reached
+  // past the stage slot's tint (SlotProbe, 0.0008 above the page) and cut it
+  // away in vertical bands while a page was held on the stage's page.
+  it("never reaches content standing just above the page (regression)", () => {
+    assert.equal(s.FRONT_OFFSET.factor, 0, "no slope term");
+    // Book3D's camera planes, out to well past the farthest framing.
+    const [near, far] = [0.4, 40];
+    const stageLift = 0.0008;
+    for (const d of [1, 3, 4.5, 6, 10]) {
+      assert.ok(s.frontBiasReach(d, near, far) < stageLift / 4, `at distance ${d}`);
+    }
   });
 });
