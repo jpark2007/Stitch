@@ -15,11 +15,15 @@ Script for a new memory (`fields.memory_id is None`), one step every `step_secon
    The reply is kept: it is appended to the telling text as a new paragraph.
    (Skipped when `ask_followup=False`.)
 3b. merge, only when the telling (with that reply) calls someone by a family title and a
-   name that is not quite anyone's name in the tree ("Grandpa Joe" when the tree has
-   Joseph; see `merge_candidate`): "Is Grandpa Joe the Joseph in your family tree?", and the
-   run waits for AnswerRequest(kind="merge"). Approved, that person joins the memory as if
-   named in `participant_ids` (in the cast, in their book, asked for their version unless
-   they have died). Rejected, nothing changes. At most one merge per run, and never for the
+   capitalised name that is not quite anyone's name in the tree ("Grandpa Joe" when the
+   tree has Joseph; see `merge_candidate`), and that someone can carry the title (a
+   grandparent title needs a parent; "Grandma" never means a man by his record). A
+   lowercase word is never a name, so "Grandma and Grandpa were there" asks nothing. The
+   pause is "Is Grandpa Joe the Joseph in your family tree?", and the run waits for
+   AnswerRequest(kind="merge"). Approved, that person joins the memory as if named in
+   `participant_ids` (in the cast, in their book, asked for their version unless they have
+   died; with nobody else named and them dead, the linker step is not planned at all).
+   Rejected, nothing changes. At most one merge per run, and never for the
    teller or someone already named. A name that IS someone's name ("Grandma Rosa" when the
    tree has Rosa) asks nothing.
 4. plan, subagent_start prop_master, props_found with the hymn-book prop, then the run waits
@@ -190,6 +194,22 @@ KIN_TITLES: tuple[str, ...] = (
 )
 """Family titles the scripted interviewer reads as "this is someone we may already know"."""
 _KIN_NAME = re.compile(r"\b(" + "|".join(KIN_TITLES) + r")\s+([^\W\d_][^\W\d_'-]*)")
+"""A title and the word after it. Only a capitalised word is a name (`merge_candidate`):
+"Grandma and Grandpa were there" names nobody."""
+
+_ELDER_TITLES = frozenset(
+    {"grandma", "grandpa", "granny", "grandmother", "grandfather", "nana", "nonna", "abuela", "abuelo"}
+)
+"""Titles for a grandparent: only someone with a child in the tree can be one."""
+_FEMALE_WORDS = frozenset({
+    "grandma", "granny", "grandmother", "nana", "nonna", "abuela", "aunt", "auntie", "tia", "tía",
+    "mom", "mum", "mother", "mama", "sister", "daughter", "wife", "she", "her", "hers", "herself",
+})
+_MALE_WORDS = frozenset({
+    "grandpa", "grandfather", "abuelo", "uncle", "tio", "tío",
+    "dad", "father", "papa", "brother", "son", "husband", "he", "his", "him", "himself",
+})
+_WORD = re.compile(r"[^\W\d_]+")
 
 
 class MemoryNotFound(LookupError):
@@ -831,23 +851,56 @@ def merge_candidate(
 ) -> tuple[str, schemas.Person] | None:
     """The first "<title> <Name>" in `text` that may be someone already in the tree. Pure.
 
-    ("Grandpa Joe", Joseph) when Name is nobody's first name in the family but starts with
-    the same two letters (ignoring case) as exactly one person's who is neither the teller
-    nor already in `named`. None otherwise: a Name that IS someone's first name ("Grandma
+    ("Grandpa Joe", Joseph) when Name is capitalised, is nobody's first name in the family,
+    and starts with the same two letters (ignoring case) as exactly one person's who is
+    neither the teller nor already in `named` and who can carry that title
+    (`_fits_title`). None otherwise: a lowercase word is not a name ("Grandma and Grandpa
+    were there", "Grandpa liked jam"), and a Name that IS someone's first name ("Grandma
     Rosa", with Rosa in the tree) is that person, with nothing to ask.
     """
     firsts = {_first_name(p.name).casefold() for p in people}
     skip = {teller_id, *named}
+    parents = {pid for p in people for pid in p.parent_ids}
     others = [p for p in people if p.id not in skip]
     for match in _KIN_NAME.finditer(text):
-        said_name = match.group(2)
+        title, said_name = match.group(1), match.group(2)
         key = said_name.casefold()
-        if key in firsts or len(key) < 2:
+        if not said_name[0].isupper() or key in firsts or len(key) < 2:
             continue
-        alike = [p for p in others if _first_name(p.name).casefold()[:2] == key[:2]]
+        alike = [
+            p for p in others
+            if _first_name(p.name).casefold()[:2] == key[:2] and _fits_title(p, title, parents)
+        ]
         if len(alike) == 1:
-            return f"{match.group(1)} {said_name}", alike[0]
+            return f"{title} {said_name}", alike[0]
     return None
+
+
+def _gender_hint(person: schemas.Person) -> str | None:
+    """"f", "m" or None, from what the record itself says: the words of its id
+    ("grandma_rosa", "dad") and the pronouns of its character notes ("hands clasped behind
+    his back"). None when it says nothing, or both. Never guessed from the name."""
+    words = {w.casefold() for w in _WORD.findall(person.id.replace("_", " "))}
+    words |= {w.casefold() for w in _WORD.findall(person.character.notes or "")}
+    female, male = bool(words & _FEMALE_WORDS), bool(words & _MALE_WORDS)
+    if female == male:
+        return None
+    return "f" if female else "m"
+
+
+def _fits_title(person: schemas.Person, title: str, parents: set[str]) -> bool:
+    """Whether `person` can be the one a family calls "<title> ...".
+
+    A grandparent title needs someone with a child in the tree (never a child like Lily). A
+    gendered title never maps to someone whose record says the other gender ("Grandma Lu"
+    is not Luis); a record that says nothing is not ruled out. "Cousin" fits anyone.
+    """
+    key = title.casefold()
+    if key in _ELDER_TITLES and person.id not in parents:
+        return False
+    wanted = "f" if key in _FEMALE_WORDS else "m" if key in _MALE_WORDS else None
+    hint = _gender_hint(person)
+    return wanted is None or hint is None or hint == wanted
 
 
 def ask_participants(
@@ -1223,7 +1276,9 @@ class ScriptedRunManager:
 
         memory = self._save(run, db, staged, text)
 
-        if askees:
+        # The linker runs when its step is planned: for named people, and for a merged person
+        # who is alive (approving someone who has died links them, but nobody is asked).
+        if ASK_OTHERS in at:
             self._emit(run, "plan", self._plan(todos, at[ASK_OTHERS]))
             self._step()
             try:

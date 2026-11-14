@@ -22,9 +22,13 @@ Then, in a second terminal (from api/):
     # A second telling ("hear Sam's version"): Sam adds his telling to Lily's graduation.
     uv run python -m seed.smoke --email sam@demo.stitch --memory-id demo_lily_graduation
 
-    # Rehearse the merge pause too: on the scripted studio a reply that calls someone by a
-    # family title and a near-miss name asks "Is Grandpa Joe the Joseph in your family tree?".
-    uv run python -m seed.smoke --answer "Grandpa Joe was there too."
+    # Rehearse every pause kind of a new memory, one run each, on the scripted studio. The
+    # default telling calls someone "Grandpa Joe", so every run also asks the merge pause
+    # "Is Grandpa Joe the Joseph in your family tree?" (any capitalised near-miss name after
+    # a family title does, e.g. --answer "Grandpa Joe was there too.").
+    uv run python -m seed.smoke                                   # merge rejected, prop kept
+    uv run python -m seed.smoke --merge approve --props rename    # merged, prop renamed
+    uv run python -m seed.smoke --props remove                    # prop left out
 
 Every check prints one line as it finishes, "PASS <step>: <what was seen>", and the first
 one that fails prints "FAIL <step>: <why>" and ends the smoke. Between them, each run event
@@ -37,12 +41,16 @@ Options (all optional):
     --email E           the account to sign in as (default david@demo.stitch)
     --password P        its password (default: the demo password, seed.demo.DEMO_PASSWORD)
     --family FID        the family to add the memory to (default demo_family)
-    --text T            the telling (default: a short road-trip memory)
+    --text T            the telling (default: a short road-trip memory that mentions
+                        "Grandpa Joe", so the scripted studio asks its merge pause)
     --year N            the year of the moment (default 1991; with --memory-id the
                         moment's own year is sent instead)
     --question Q        the question the telling answers (default none)
     --photo PATH ...    photos to attach (default: one small generated PNG)
     --answer TEXT       the reply to the studio's follow-up question
+    --merge CHOICE      the answer to a merge pause: reject (default) or approve
+    --props CHOICE      the props review: keep (default) every prop, or rename or remove
+                        the first one offered (the others are kept)
     --memory-id M       add a second telling to the existing moment M instead of making a
                         new memory (the submit sends memoryId; see checks 3b, 6 and 7)
     --timeout SECONDS   give up after this long (default 900; a real run takes minutes)
@@ -66,9 +74,12 @@ What each check means, in order (the first one that fails is the summary's messa
                 `done` or `error`. Each event is logged as it arrives.
                 - `question`: answered with {"kind": "answer", "text": --answer}.
                 - `props_found`: answered with every prop kept ({"kind": "props",
-                  "props": [{"id": ..., "action": "keep"}, ...]}).
-                - `merge`: answered with {"kind": "merge", "approve": false}, so a smoke
-                  run never merges two people.
+                  "props": [{"id": ..., "action": "keep"}, ...]}); with --props rename
+                  or remove the first prop gets {"action": "rename", "name": "<its
+                  name> (smoke)"} or {"action": "remove"} instead.
+                - `merge`: answered with {"kind": "merge", "approve": false}, so by
+                  default a smoke run never merges two people; --merge approve sends
+                  true.
                 Every answer must get 204, and prints its own PASS line (step `question`,
                 `props_found` or `merge`). The stream's last check is step `done`. An `error` event, or no `done` before --timeout,
                 fails the smoke. If the connection drops, the stream is reopened (it
@@ -80,6 +91,10 @@ What each check means, in order (the first one that fails is the summary's messa
                 line (their version can be heard), and the version went up.
                 (Steps 2, 3 and 4 print as `membership`, `teller` and `submit`; 3b as
                 `moment`.)
+6b. answers     (only when --merge approve was sent to a merge pause, or --props rename
+                or remove to a props review) the memory shows it: the merged person is
+                among its participants, a renamed prop has its new name in
+                GET /families/{fid}/props, a removed prop is not among its props.
 7. book         GET /families/{fid}/people/{tellerId}/book lists the memory: it opens in
                 the teller's book (a second telling makes the teller a participant).
 
@@ -89,8 +104,8 @@ python -m seed.demo --reset` rebuilds the demo family without them.
 
 Passwords and session cookies are never printed or logged. See also seed/README.md.
 
-From code: `run_smoke(client, SmokeOptions(...)) -> SmokeResult`, with an httpx.Client
-(or FastAPI's TestClient) whose base_url is the API.
+From code: `run_smoke(client, SmokeOptions(...), merge="reject", props="keep") -> SmokeResult`,
+with an httpx.Client (or FastAPI's TestClient) whose base_url is the API.
 """
 
 from __future__ import annotations
@@ -117,11 +132,17 @@ DEFAULT_BASE_URL = "http://localhost:8000"
 DEFAULT_EMAIL = "david@demo.stitch"
 DEFAULT_TEXT = (
     "Every summer we drove to the lake with the windows down. "
-    "Dad sang along to the radio the whole way and we all joined in on the chorus."
+    "Grandpa Joe sang along to the radio the whole way and we all joined in on the chorus."
 )
+"""The default telling. "Grandpa Joe" is a near miss for the demo tree's Joseph, so on the
+scripted studio the default run asks the merge pause too."""
 DEFAULT_YEAR = 1991
 DEFAULT_ANSWER = "It was a warm evening and everyone was singing."
 DEFAULT_TIMEOUT = 900.0
+MERGE_CHOICES = ("reject", "approve")
+PROPS_CHOICES = ("keep", "rename", "remove")
+RENAMED = "{name} (smoke)"
+"""The new name --props rename gives the first prop offered."""
 
 MAX_RECONNECTS = 3
 """How many times a dropped stream is reopened before the smoke gives up."""
@@ -317,31 +338,52 @@ def _answer_note(answer: schemas.AnswerRequest) -> str:
     if answer.kind == "merge":
         return ", not merged" if not answer.approve else ", merged"
     if answer.kind == "props":
-        return f", {len(answer.props or [])} kept"
+        edits = answer.props or []
+        kept = sum(e.action == "keep" for e in edits)
+        notes = [f"{kept} kept"] + [
+            f"{e.id} renamed to {e.name!r}" if e.action == "rename" else f"{e.id} removed"
+            for e in edits if e.action != "keep"
+        ]
+        return ", " + ", ".join(notes)
     return ""
-
-
-def _answer_for(name: str, model: BaseModel, opts: SmokeOptions) -> schemas.AnswerRequest | None:
-    """The answer a needs-input event gets, or None for every other event."""
-    if name == "question":
-        return schemas.AnswerRequest(kind="answer", text=opts.answer)
-    if name == "props_found":
-        assert isinstance(model, schemas.PropsFoundEvent)
-        return schemas.AnswerRequest(
-            kind="props", props=[schemas.PropEdit(id=p.id, action="keep") for p in model.props]
-        )
-    if name == "merge":
-        return schemas.AnswerRequest(kind="merge", approve=False)
-    return None
 
 
 @dataclass
 class _Run:
-    """What the stream has shown so far."""
+    """What the stream has shown so far, and what the answers asked for (checked in 6b)."""
 
     events: list[str] = field(default_factory=list)
     memory_id: str | None = None
     error: str | None = None
+    merged: schemas.MergeEvent | None = None  # a merge pause answered with approve
+    prop_edit: schemas.PropEdit | None = None  # a rename or remove sent in the props review
+
+
+def _answer_for(
+    name: str, model: BaseModel, opts: SmokeOptions, run: _Run, *, merge: str = "reject", props: str = "keep"
+) -> schemas.AnswerRequest | None:
+    """The answer a needs-input event gets, or None for every other event.
+
+    Notes on `run` what an approved merge or a rename or remove asked for.
+    """
+    if name == "question":
+        return schemas.AnswerRequest(kind="answer", text=opts.answer)
+    if name == "props_found":
+        assert isinstance(model, schemas.PropsFoundEvent)
+        edits = [schemas.PropEdit(id=p.id, action="keep") for p in model.props]
+        if edits and props == "rename":
+            edits[0] = schemas.PropEdit(id=model.props[0].id, action="rename",
+                                        name=RENAMED.format(name=model.props[0].name))
+        elif edits and props == "remove":
+            edits[0] = schemas.PropEdit(id=model.props[0].id, action="remove")
+        run.prop_edit = edits[0] if edits and edits[0].action != "keep" else None
+        return schemas.AnswerRequest(kind="props", props=edits)
+    if name == "merge":
+        assert isinstance(model, schemas.MergeEvent)
+        approve = merge == "approve"
+        run.merged = model if approve else None
+        return schemas.AnswerRequest(kind="merge", approve=approve)
+    return None
 
 
 def _deadline_lines(lines: Iterable[str], deadline: float) -> Iterator[str]:
@@ -358,6 +400,9 @@ def _follow(
     run: _Run,
     deadline: float,
     log: Callable[[str], None],
+    *,
+    merge: str = "reject",
+    props: str = "keep",
 ) -> None:
     """Read the run's stream once, from its first event; skip the events already seen.
 
@@ -396,7 +441,7 @@ def _follow(
                 if isinstance(model, schemas.DoneEvent):
                     run.memory_id = model.memory_id
                     return
-                answer = _answer_for(name, model, opts)
+                answer = _answer_for(name, model, opts, run, merge=merge, props=props)
                 if answer is not None:
                     reply = client.post(
                         f"/families/{fid}/runs/{run_id}/answer",
@@ -429,14 +474,53 @@ def _check_second_telling(before: schemas.Memory, after: schemas.Memory, teller:
         raise _Fail(f"memory: {mid} is still at version {after.version} (was {before.version})")
 
 
-def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], None] = print) -> SmokeResult:
+def _check_answers(client: httpx.Client, fid: str, memory: schemas.Memory, run: _Run) -> str | None:
+    """Check 6b: the memory shows an approved merge and a renamed or removed prop.
+
+    Returns the PASS detail, or None when nothing was asked for (no step line then).
+    """
+    seen = []
+    if run.merged is not None:
+        if run.merged.person_id not in memory.participant_ids:
+            raise _Fail(f"answers: {run.merged.person_id} was merged but is not in memory {memory.id}")
+        seen.append(f"{run.merged.candidate_name} ({run.merged.person_id}) merged into the moment")
+    edit = run.prop_edit
+    if edit is not None and edit.action == "remove":
+        if edit.id in memory.prop_ids:
+            raise _Fail(f"answers: prop {edit.id} was removed but memory {memory.id} still has it")
+        seen.append(f"prop {edit.id} left out")
+    elif edit is not None:
+        res = client.get(f"/families/{fid}/props")
+        if res.status_code != 200:
+            raise _Fail(f"answers: GET props: {_detail(res)}")
+        found = next((p for p in _parse(schemas.PropsResponse, res, "answers").props if p.id == edit.id), None)
+        if found is None or found.name != edit.name:
+            now = "missing" if found is None else repr(found.name)
+            raise _Fail(f"answers: prop {edit.id} was renamed to {edit.name!r} but is {now}")
+        seen.append(f"prop {edit.id} renamed to {edit.name!r}")
+    return "; ".join(seen) or None
+
+
+def run_smoke(
+    client: httpx.Client,
+    opts: SmokeOptions,
+    *,
+    log: Callable[[str], None] = print,
+    merge: str = "reject",
+    props: str = "keep",
+) -> SmokeResult:
     """Drive add-a-memory end to end through `client` (base_url set; paths are relative).
 
     ok is True only when every check in the module docstring passed; otherwise `message`
     names the first one that failed. httpx.ConnectError (the API is not running) is not
     caught: `main` turns it into exit code 2. The password never appears in `message` or
-    in anything passed to `log`.
+    in anything passed to `log`. `merge` ("reject" or "approve") answers a merge pause and
+    `props` ("keep", "rename" or "remove") the props review, as --merge and --props do.
     """
+    if merge not in MERGE_CHOICES:
+        raise ValueError(f"merge must be one of {MERGE_CHOICES}, not {merge!r}")
+    if props not in PROPS_CHOICES:
+        raise ValueError(f"props must be one of {PROPS_CHOICES}, not {props!r}")
     redact = _redactor(opts.password)
 
     def say(text: str) -> None:
@@ -505,7 +589,7 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
         drops = 0
         while True:
             try:
-                _follow(client, opts, run_id, run, deadline, say)
+                _follow(client, opts, run_id, run, deadline, say, merge=merge, props=props)
                 break
             except _Dropped as exc:
                 drops += 1
@@ -537,6 +621,11 @@ def run_smoke(client: httpx.Client, opts: SmokeOptions, *, log: Callable[[str], 
             staged += (f"; {teller}'s telling is on it, narrated in {lines} line(s); "
                        f"version {moment.version} -> {found.memory.version}")
         say(f"PASS memory: {staged}")
+
+        # 6b. What the answers asked for is on the memory.
+        answered = _check_answers(client, fid, found.memory, run)
+        if answered is not None:
+            say(f"PASS answers: {answered}")
 
         # 7. It opens in the teller's book.
         res = client.get(f"/families/{fid}/people/{teller}/book")
@@ -594,6 +683,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--answer", default=DEFAULT_ANSWER, help="reply to the follow-up question")
     parser.add_argument(
+        "--merge", choices=MERGE_CHOICES, default="reject",
+        help="answer a merge pause: reject (default) or approve",
+    )
+    parser.add_argument(
+        "--props", choices=PROPS_CHOICES, default="keep",
+        help="the props review: keep every prop (default), or rename or remove the first one",
+    )
+    parser.add_argument(
         "--memory-id", default=None, metavar="M",
         help="add a second telling to the existing moment M instead of a new memory",
     )
@@ -633,10 +730,12 @@ def main(argv: list[str] | None = None) -> int:
     timeout = httpx.Timeout(
         min(opts.timeout, READ_TIMEOUT_CAP), connect=min(opts.timeout, CONNECT_TIMEOUT_CAP)
     )
+    # Only the answer choices that differ from run_smoke's defaults are passed on.
+    choices = {k: v for k, v in (("merge", args.merge), ("props", args.props)) if v != _parser().get_default(k)}
     log(f"smoke: {opts.base_url}, family {opts.family_id}, as {opts.email}")
     try:
         with _client(opts, timeout) as client:
-            result = run_smoke(client, opts, log=log)
+            result = run_smoke(client, opts, log=log, **choices)
     except httpx.ConnectError:
         print(REACH_MESSAGE.format(url=opts.base_url), file=sys.stderr)
         return 2

@@ -20,7 +20,11 @@ Covered, with every SSE frame validated against schemas.RUN_EVENTS:
 4. Wrong, late, foreign and racing answers.
 5. Two runs at once in one family and in two families.
 6. Text-only and very short submits.
-7. `python -m seed.smoke`: one PASS or FAIL line per step, for both paths, without network.
+7. `python -m seed.smoke`: one PASS or FAIL line per step, for both paths, without network;
+   its defaults reach the merge pause, and --merge approve / --props rename|remove are checked.
+
+The merge pause only fires on a capitalised near-miss name after a family title that the
+person can carry: "Grandma and Grandpa were there" never asks it.
 
 Memory counts and ids are never hardcoded: they come from seed.demo at test time.
 """
@@ -369,6 +373,46 @@ def test_merge_candidate_rules() -> None:
     assert merge_candidate(people, "dad", [], "Joe sang. Uncle Xavier came.") is None
 
 
+@pytest.mark.parametrize("text", [
+    "Grandma and Grandpa were there.",
+    "Grandpa liked jam.",
+    "Grandma always laughed at Grandpa's jokes.",
+    "We went to Nana's house, then Grandpa drove us home.",
+    "My aunt and uncle came, and Cousin is what we called everyone.",
+])
+def test_merge_candidate_ignores_lowercase_words_after_a_title(text: str) -> None:
+    """Only a capitalised word is a name: an ordinary sentence never asks the merge pause."""
+    people = list(PEOPLE.values())
+    for teller in PEOPLE:
+        assert merge_candidate(people, teller, [], text) is None, (teller, text)
+
+
+def test_merge_candidate_respects_the_title() -> None:
+    """A grandparent title needs someone with a child in the tree, and a gendered title never
+    maps to someone whose own record says the other gender. Read from the seed, not assumed."""
+    people = list(PEOPLE.values())
+    parents = {pid for p in people for pid in p.parent_ids}
+    for p in people:
+        near = p.name[:2] + "zz"  # a near miss for this person's name, nobody's first name
+        for title in ("Grandma", "Grandpa", "Nana", "Abuelo"):
+            found = merge_candidate(people, "nobody", [], f"{title} {near} waved.")
+            if found is None or found[1].id != p.id:
+                continue
+            assert p.id in parents, f"{title} {near} -> {p.id}, who has no child in the tree"
+            hint = fake_runs._gender_hint(p)
+            want = "f" if title in ("Grandma", "Nana") else "m"
+            assert hint in (None, want), f"{title} {near} -> {p.id}, whose record says {hint}"
+    # The reviewer's cases: a grandmother title is never a grandfather, and never a child.
+    luis = next(p for p in people if p.name.startswith("Lu"))
+    lily = next(p for p in people if p.name.startswith("Lil"))
+    assert lily.id not in parents
+    assert merge_candidate(people, "dad", [], "Grandma Lu came by.") is None
+    assert merge_candidate(people, "dad", [], "Nana Lila hugged us.") is None
+    assert merge_candidate(people, "dad", [], "Grandpa Lila waved.") is None
+    found = merge_candidate(people, "dad", [], "Grandpa Lu came by.")
+    assert found is not None and found[1].id == luis.id
+
+
 def test_new_memory_answers_every_pause_kind(api: Api) -> None:
     david, ana = api.login(DAVID.email), api.login(ANA.email)
     joe = _joe()
@@ -447,6 +491,40 @@ def test_new_memory_answers_every_pause_kind(api: Api) -> None:
     assert memory_c.screenplay is not None and dropped not in memory_c.screenplay.props
     assert memory_c.timeline is not None
     assert_is_the_compile(memory_c)
+
+
+def test_approving_a_merge_with_nobody_named_finishes(api: Api) -> None:
+    """Regression: approving the merge of someone who has died, with no one else named, used
+    to fail the run with KeyError('Ask the others for their version') after the scene was
+    staged. Now the run finishes, they are in the moment, and nobody asks them anything."""
+    joe = _joe()
+    david = api.login(DAVID.email)
+    run_id = submit(david, "We sang on the church steps after the service.", photos=1)
+    frames = read(david, run_id, answer=Replies(text=APPROVED_REPLY, approve=True))
+    check_run(frames)
+    assert "merge" in names(frames) and frames[-1][0] == "done", frames[-2:]
+    memory = get_memory(david, frames[-1][1]["memoryId"]).memory
+    assert joe.id in memory.participant_ids
+    plans = [schemas.PlanEvent.model_validate(d) for n, d in frames if n == "plan"]
+    asks = [t for t in plans[-1].todos if t.text == fake_runs.ASK_OTHERS]
+    assert len(asks) == (0 if joe.died is not None else 1)
+    if joe.died is not None:
+        assert not memories_db.open_questions(db_client.get_db(), FID, joe.id)
+
+
+def test_an_ordinary_sentence_after_a_title_asks_no_merge(api: Api) -> None:
+    """Over HTTP: "Grandma and Grandpa were there too." in the submit and the reply is not a
+    name, so the run never asks "Is Grandma and the Ana in your family tree?"."""
+    david = api.login(DAVID.email)
+    run_id = submit(david, "Grandpa liked jam. We sang on the church steps.", photos=1)
+    frames = read(david, run_id, answer=Replies(text="Grandma and Grandpa were there too.", approve=True))
+    check_run(frames)
+    assert "merge" not in names(frames) and frames[-1][0] == "done", names(frames)
+    memory = get_memory(david, frames[-1][1]["memoryId"]).memory
+    # The same people as a run with no family title at all: nobody was merged in.
+    control = read(david, submit(david, "We sang on the church steps.", photos=1), answer=Replies(text="Just us."))
+    assert "merge" not in names(control) and control[-1][0] == "done"
+    assert memory.participant_ids == get_memory(david, control[-1][1]["memoryId"]).memory.participant_ids
 
 
 def test_linker_skips_people_who_have_died(api: Api) -> None:
@@ -822,9 +900,16 @@ def _steps(lines: list[str]) -> list[tuple[str, str]]:
     return out
 
 
+def test_smoke_defaults_reach_the_merge_pause() -> None:
+    """With default flags the scripted studio asks the merge pause (the default telling)."""
+    found = merge_candidate(list(PEOPLE.values()), DAVID.person_id, [], smoke.DEFAULT_TEXT + " " + smoke.DEFAULT_ANSWER)
+    assert found is not None and found[1].id == _joe().id
+    assert smoke.DEFAULT_EMAIL == DAVID.email
+
+
 def test_smoke_new_memory_prints_a_line_per_step(api: Api) -> None:
     lines: list[str] = []
-    result = run_smoke(api.client(), _smoke_opts(answer=APPROVED_REPLY), log=lines.append)
+    result = run_smoke(api.client(), _smoke_opts(), log=lines.append)
     assert result.ok, result.message
     steps = _steps(lines)
     assert [s for s in steps if s[0] == "FAIL"] == []
@@ -865,11 +950,51 @@ def test_smoke_main_against_the_in_process_app(
     """The CLI end to end, its httpx client swapped for the in-process app (no network)."""
     client = api.client()
     monkeypatch.setattr(smoke, "_client", lambda _opts, _timeout: contextlib.nullcontext(client))
-    assert smoke.main(["--answer", APPROVED_REPLY]) == 0
+    assert smoke.main([]) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[-1].startswith("smoke OK: run ")
     assert ("PASS", "merge") in _steps(out) and not [s for s in _steps(out) if s[0] == "FAIL"]
     assert demo.DEMO_PASSWORD not in "\n".join(out)
+
+
+@pytest.mark.parametrize(("flags", "prop_action"), [
+    (["--merge", "approve", "--props", "rename"], "rename"),
+    (["--props", "remove"], "remove"),
+])
+def test_smoke_rehearses_approve_rename_and_remove(
+    api: Api, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    flags: list[str], prop_action: str,
+) -> None:
+    """--merge approve and --props rename|remove: the answers are sent, and checked on the memory."""
+    client = api.client()
+    monkeypatch.setattr(smoke, "_client", lambda _opts, _timeout: contextlib.nullcontext(client))
+    assert smoke.main(flags) == 0
+    out = capsys.readouterr().out.splitlines()
+    steps = _steps(out)
+    assert not [s for s in steps if s[0] == "FAIL"], out
+    assert [name for _, name in steps] == [
+        "login", "membership", "teller", "submit", "question", "merge", "props_found", "done", "memory",
+        "answers", "book",
+    ]
+    memory_id = out[-1].split("memory ", 1)[1].split(",", 1)[0]
+    memory = get_memory(api.login(DAVID.email), memory_id).memory
+    joe = _joe()
+    assert (joe.id in memory.participant_ids) == ("approve" in flags)
+    answers = next(line for line in out if line.startswith("PASS answers:"))
+    props = schemas.PropsResponse.model_validate(_json(client.get(f"/families/{FID}/props"))).props
+    if prop_action == "remove":
+        assert "left out" in answers and memory.prop_ids == []
+    else:
+        renamed = [p for p in props if p.id in memory.prop_ids]
+        assert renamed and renamed[0].name.endswith(" (smoke)"), [p.name for p in renamed]
+        assert "renamed to" in answers and "merged into the moment" in answers
+
+
+def test_smoke_rejects_unknown_answer_choices(api: Api) -> None:
+    with pytest.raises(ValueError):
+        run_smoke(api.client(), _smoke_opts(), merge="maybe")
+    with pytest.raises(ValueError):
+        run_smoke(api.client(), _smoke_opts(), props="burn")
 
 
 def test_two_runs_in_a_new_family_share_one_copy_of_the_scene(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
