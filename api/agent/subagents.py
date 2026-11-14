@@ -51,7 +51,7 @@ SUBAGENT_TOOLS: dict[str, list[str]] = {
     "interviewer": ["get_person", "find_memories", "ask_teller", "merge_people"],
     "storyboarder": ["get_person", "find_memories", "describe_photo"],
     "prop_master": ["find_prop", "generate_prop", "cut_out", "confirm_props", "describe_photo"],
-    "set_designer": ["find_set", "generate_set_layer", "cut_out", "describe_photo"],
+    "set_designer": ["find_set", "generate_set_layer", "describe_photo"],
     "director": ["get_person", "compile_screenplay"],
     "narrator": ["get_person", "synthesize_narration"],
     "checker": ["render_frames", "inspect_frames"],
