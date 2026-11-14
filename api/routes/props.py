@@ -70,8 +70,10 @@ def patch_prop(
     {'body': photo} plus each part's old art entry (null, the placeholder card, when it had
     none); parts are unchanged; every state name is kept, with its 'body' override dropped
     and only part art keys left (a state that only changed the body becomes {}, no visual
-    change); source becomes 'photo'; aspect comes from the photo when it can be read; size,
-    anchor, grip, sockets, color and description are kept.
+    change); source becomes 'photo'; aspect comes from the photo when it can be read,
+    clamped into [db.props.MIN_PHOTO_ASPECT, db.props.MAX_PHOTO_ASPECT] (0.5 to 2.5): a very
+    tall or very wide photo is drawn at the nearest allowed aspect, so the rig, seats and
+    marks still fit; size, anchor, grip, sockets, color and description are kept.
     """
     fid = access.family_id
     if patch.name is None and patch.photo_id is None:

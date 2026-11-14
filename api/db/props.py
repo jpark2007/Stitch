@@ -420,6 +420,20 @@ def list_props(db: Database, family_id: str) -> list[schemas.Prop]:
 
 BODY = "body"
 
+# The widest and tallest width / height a photo swap may give a prop (update_prop). A prop's
+# aspect sizes its drawn body, and so where its seats, marks and sockets land; a much wider
+# body (a 3:1 panorama on the demo's green_sedan) pushes a saved scene's blocking off the
+# set and the scene stops compiling. Measured on the seeded demo family
+# (tests/data/test_prop_photo_aspect_clamp.py): every memory recompiles, a second telling
+# included, with each of its props at either bound; 3.0 already breaks the sedan trip.
+MIN_PHOTO_ASPECT = 0.5
+MAX_PHOTO_ASPECT = 2.5
+
+
+def clamp_photo_aspect(aspect: float) -> float:
+    """`aspect` moved into [MIN_PHOTO_ASPECT, MAX_PHOTO_ASPECT]; in-range values unchanged."""
+    return min(MAX_PHOTO_ASPECT, max(MIN_PHOTO_ASPECT, aspect))
+
 
 def photo_rig(prop: schemas.Prop, photo_ref: str) -> dict:
     """The stored fields (camelCase) that replace `prop`'s art with the photo `photo_ref`,
@@ -464,9 +478,11 @@ def update_prop(db: Database, family_id: str, prop_id: str,
     had none), parts are unchanged, every state name is kept with its 'body' override
     dropped and only part art keys left (a body-only state becomes {}), and source becomes
     'photo'. aspect is set from the photo's pixel size when it can be read
-    (media.image_aspect: this family's media, EXIF orientation applied), and kept
-    otherwise. size, anchor, grip, sockets, color, name (unless also patched) and
-    description are kept.
+    (media.image_aspect: this family's media, EXIF orientation applied), clamped into
+    [MIN_PHOTO_ASPECT, MAX_PHOTO_ASPECT] (0.5 to 2.5), and kept otherwise: a very tall or
+    very wide photo is drawn at the nearest allowed aspect, so the rig, seats and marks of
+    every saved scene still fit. size, anchor, grip, sockets, color, name (unless also
+    patched) and description are kept.
 
     The current document is read once and the new fields are written with one
     find_one_and_update on the same family and id. Library props and other families'
@@ -484,7 +500,7 @@ def update_prop(db: Database, family_id: str, prop_id: str,
         bare = media.parse_media_ref(patch.photo_id)
         aspect = media.image_aspect(db, family_id, bare) if bare is not None else None
         if aspect is not None:
-            update["aspect"] = aspect
+            update["aspect"] = clamp_photo_aspect(aspect)
     if not update:
         return _get(db, PROPS, schemas.Prop, family_id, prop_id)
     doc = db[PROPS].find_one_and_update(query, {"$set": update}, projection=_NO_EMBEDDING,

@@ -267,19 +267,20 @@ def _listed(tc: TestClient, prop_id: str) -> dict:
 def test_photo_sets_the_aspect_from_its_pixel_size(env):
     tc = env["tc"]
     before = _listed(tc, "hymn_books")
-    upload = _upload(tc, FAM_A, data=_image(800, 200), filename="wide.png")
+    # In range: a wider photo is clamped (tests/data/test_prop_photo_aspect_clamp.py).
+    upload = _upload(tc, FAM_A, data=_image(480, 200), filename="wide.png")
     assert upload.status_code == 201
     media_id = upload.json()["id"]
     resp = tc.patch(f"/families/{FAM_A}/props/hymn_books", json={"photoId": media_id})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["aspect"] == 4.0
+    assert body["aspect"] == 2.4
     assert body["art"] == {"body": f"media/{media_id}"}
     assert body["source"] == "photo"
     # The rig is kept.
     for key in ("size", "anchor", "grip", "sockets", "color"):
         assert body[key] == before[key], key
-    assert _listed(tc, "hymn_books")["aspect"] == 4.0
+    assert _listed(tc, "hymn_books")["aspect"] == 2.4
 
 
 @pytest.mark.parametrize(("data", "content_type", "expected"), [
@@ -299,11 +300,11 @@ def test_photo_aspect_follows_the_displayed_image(env, data, content_type, expec
 
 def test_rename_leaves_the_aspect_alone(env):
     tc = env["tc"]
-    media_id = _upload(tc, FAM_A, data=_image(800, 200)).json()["id"]
-    assert tc.patch(f"/families/{FAM_A}/props/hymn_books", json={"photoId": media_id}).json()["aspect"] == 4.0
+    media_id = _upload(tc, FAM_A, data=_image(480, 200)).json()["id"]
+    assert tc.patch(f"/families/{FAM_A}/props/hymn_books", json={"photoId": media_id}).json()["aspect"] == 2.4
     resp = tc.patch(f"/families/{FAM_A}/props/hymn_books", json={"name": "hymnals"})
     assert resp.status_code == 200
-    assert resp.json()["aspect"] == 4.0 and resp.json()["name"] == "hymnals"
+    assert resp.json()["aspect"] == 2.4 and resp.json()["name"] == "hymnals"
 
 
 def test_photo_that_cannot_be_decoded_keeps_the_aspect(env):
