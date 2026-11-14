@@ -1218,3 +1218,46 @@ def test_run_all_main_summary_and_exit(
     monkeypatch.setattr(run_all, "run_one", lambda area, cmd, cwd, out: {
         "area": area, "exit": 0, "seconds": 0.1, "out": out})
     assert run_all.main(["--only", "demo", "--out", str(tmp_path / "out2")]) == 0
+
+
+def _memory_form_year_min() -> int:
+    source = (harness.REPO_ROOT / "web" / "components" / "flow" / "memoryForm.ts").read_text(encoding="utf-8")
+    match = re.search(r"^export const MEMORY_YEAR_MIN = (\d+);", source, re.MULTILINE)
+    assert match is not None, "memoryForm.ts lost its MEMORY_YEAR_MIN line"
+    return int(match.group(1))
+
+
+def test_memory_year_min_reads_the_form() -> None:
+    import sweep_add
+
+    assert sweep_add.memory_year_min(harness.REPO_ROOT) == _memory_form_year_min() == 1800
+
+
+def test_sweep_add_year_early_follows_the_form() -> None:
+    """The sweep expects the message the form shows, not a floor copied by hand."""
+    import sweep_add
+
+    floor = sweep_add.memory_year_min(harness.REPO_ROOT)
+    assert sweep_add.MEMORY_YEAR_MIN == floor
+    assert sweep_add.YEAR_EARLY == f"Pick a year from {floor} on."
+    # The sweep's too-early probe must still be below the floor.
+    assert 1700 < floor
+
+
+def test_sweep_add_import_needs_no_playwright() -> None:
+    """Importing sweep_add (as the tests above do) must not load Playwright."""
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); import sweep_add; "
+        "assert not any(m == 'playwright' or m.startswith('playwright.') for m in sys.modules)"
+    )
+    subprocess.run([sys.executable, "-c", code, str(Path(__file__).resolve().parent)], check=True)
+
+
+def test_memory_year_min_raises_without_the_constant(tmp_path: Path) -> None:
+    import sweep_add
+
+    form = tmp_path / "web" / "components" / "flow" / "memoryForm.ts"
+    form.parent.mkdir(parents=True)
+    form.write_text("export const SERVER_QUESTION_MAX = 1000;\nconst MEMORY_YEAR_MIN = 1800;\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="MEMORY_YEAR_MIN"):
+        sweep_add.memory_year_min(tmp_path)
