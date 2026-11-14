@@ -1275,7 +1275,8 @@ class AddSweep:
             self.expect(note).to_have_accessible_name(re.compile(r"Answering this\s*,\s*press again to let it go\s*$"))
             hidden = note.get_by_text(PICKED_SUFFIX, exact=True)
             box = hidden.bounding_box()
-            if box is None or box["width"] > 1 or box["height"] > 1:
+            # 1px clipped (sr-only); the note's slight tilt makes that a hair over 1px.
+            if box is None or box["width"] > 2 or box["height"] > 2:
                 raise AssertionError(f"'{PICKED_SUFFIX}' is meant for screen readers only, but takes {box}")
             toggle = page.get_by_role("button", name=re.compile(r"Answering a question\?"))
             self.expect(toggle).to_have_count(0)
