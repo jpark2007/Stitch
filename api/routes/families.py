@@ -43,6 +43,7 @@ from db.client import get_db
 from db.families import LastAdmin
 from db.people import AlreadyClaimed, InvalidRelation
 from screenplay import compiler as screenplay_compiler
+from screenplay.character import speed_scale
 from screenplay.schema import Screenplay
 
 router = APIRouter(tags=["families"])
@@ -55,6 +56,9 @@ BAD_COLOR = "Color must be a hex code like #3f6fb5"
 ITEM_PROP_UNKNOWN = "That item is not one of this family's props"
 BUILD_BREAKS_SCENE = 'That build would no longer fit the saved scene "{title}". Keep the current build.'
 ITEM_BREAKS_SCENE = 'That worn item would no longer fit the saved scene "{title}". Keep the current item.'
+NOTES_BREAKS_SCENE = (
+    'That description of how {name} moves would no longer fit the saved scene "{title}". Keep the current notes.'
+)
 
 MAX_FAMILY_NAME_CHARS = 100
 MAX_PERSON_NAME_CHARS = 100
@@ -422,11 +426,19 @@ def _guard_saved_scenes(
 ) -> None:
     """409 when a scene saved with this person compiles today but not with the new sheet.
 
-    Only called when the build or the worn item changes. A scene that already fails to
-    compile (or whose screenplay, sets, props or cast can no longer be loaded) never blocks
-    the edit: it is broken either way, and refusing would leave no way to fix the person.
+    Only called when the build, the worn item, or the walking-speed factor the compiler reads
+    from the notes (screenplay.character.speed_scale) changes. The message names the cause in
+    that order: a build change wins over an item change, which wins over a notes change. A
+    scene that already fails to compile (or whose screenplay, sets, props or cast can no
+    longer be loaded) never blocks the edit: it is broken either way, and refusing would
+    leave no way to fix the person.
     """
-    build_changed = sheet.build != current.character.build
+    if sheet.build != current.character.build:
+        message = BUILD_BREAKS_SCENE
+    elif sheet.item_prop_id != current.character.item_prop_id:
+        message = ITEM_BREAKS_SCENE
+    else:
+        message = NOTES_BREAKS_SCENE
     changed = current.model_copy(update={"character": sheet})
     cursor = db["memories"].find(
         {"familyId": family_id, "screenplay.cast": current.id}, {"_id": 1, "title": 1, "screenplay": 1}
@@ -445,7 +457,7 @@ def _guard_saved_scenes(
         people[current.id] = changed
         if not _compiles(screenplay, sets, props, people):
             title = str(doc.get("title") or "a saved moment")
-            raise _conflict((BUILD_BREAKS_SCENE if build_changed else ITEM_BREAKS_SCENE).format(title=title))
+            raise _conflict(message.format(title=title, name=current.name))
 
 
 @router.patch(
@@ -456,7 +468,10 @@ def _guard_saved_scenes(
         404: {"model": schemas.ErrorResponse, "description": "Unknown family, or the person is not in it"},
         409: {
             "model": schemas.ErrorResponse,
-            "description": "The new build or worn item would no longer fit a scene already saved with this person",
+            "description": (
+                "The new build, worn item, or notes that change how fast this person walks would no "
+                "longer fit a scene already saved with this person"
+            ),
         },
     },
 )
@@ -468,13 +483,15 @@ def patch_person(
 ) -> schemas.Person:
     """Edit a person, their relationships, or their character sheet.
 
-    Build guard: when the patch changes the character's `build` or `itemPropId`, every
-    scene saved in this family with this person in its cast is compiled again with the
-    new sheet. If one that compiles today would stop compiling (a smaller build can no
-    longer reach a hand_to, say), the patch is a 409 naming that moment and nothing is
-    written, since every later telling of it would fail. Scenes that already fail to
-    compile do not block the edit. A patch that keeps the build and item prop compiles
-    nothing.
+    Build guard: when the patch changes the character's `build`, `itemPropId`, or the
+    walking-speed factor the compiler reads from `notes` ("walks slowly with a cane" is
+    0.6x, see screenplay.character.speed_scale), every scene saved in this family with this
+    person in its cast is compiled again with the new sheet. If one that compiles today
+    would stop compiling (a smaller build can no longer reach a hand_to, a slower walker is
+    still walking when their next action starts), the patch is a 409 naming that moment and
+    nothing is written, since every later telling of it would fail. Scenes that already fail
+    to compile do not block the edit. A patch that keeps the build, the item prop and the
+    speed factor (a cosmetic notes edit such as "loves gardening") compiles nothing.
     """
     patch = _clean_patch(body)
     _check_item_prop(db, access.family_id, patch.character)
@@ -483,7 +500,11 @@ def patch_person(
         current = people_db.get_person(db, access.family_id, person_id)
         if current is None:
             raise _not_found("Person not found")
-        if sheet.build != current.character.build or sheet.item_prop_id != current.character.item_prop_id:
+        if (
+            sheet.build != current.character.build
+            or sheet.item_prop_id != current.character.item_prop_id
+            or speed_scale(sheet.notes) != speed_scale(current.character.notes)
+        ):
             _guard_saved_scenes(db, access.family_id, current, sheet)
     try:
         person = people_db.update_person(db, access.family_id, person_id, patch)
