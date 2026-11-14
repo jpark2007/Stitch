@@ -627,17 +627,24 @@ def test_second_telling_adds_to_the_moment(demo_app: Demo):
     _media_fetchable(d.alice, fid, tellings[1].photo_ids[0])
     assert memory.memory.screenplay is not None and memory.memory.timeline is not None
     assert memory.memory.version == before.version + 1
-    # Bob plays the sample's narrator in Alice's scene, so his telling becomes the default
-    # narration (his words, in his voice); Alice's own telling stays a narrations entry.
+    # Alice told the memory first, so she is its default narrator (her words, in her voice).
+    # Bob plays the sample's other puppet but did not tell it then: his telling is his own
+    # narrations entry, over the same action.
     sp = memory.memory.screenplay
-    bob_lines = [line for shot in sp.shots for line in shot.narration]
+    alice_lines = [line for shot in sp.shots for line in shot.narration]
+    assert alice_lines and all(line.source.startswith(f"telling:{fam.alice_pid}:") for line in alice_lines)
+    assert sp.shots == before.screenplay.shots
+    bob_lines = [line for shot in sp.shots for line in (sp.narrations or {}).get(fam.bob_pid, {}).get(shot.id, [])]
     assert [line.text for line in bob_lines] == [
         "I remember the wind more than the hymns.", "Alice chased a page down the steps."
     ]
-    assert all(line.source.startswith(f"telling:{fam.bob_pid}:") for line in bob_lines)
-    assert fam.alice_pid in (sp.narrations or {})
-    assert memory.memory.timeline.default_narrator == fam.bob_pid
-    assert {fam.bob_pid, fam.alice_pid} <= set(memory.memory.timeline.narrations or {})
+    assert [line.source for line in bob_lines] == [f"telling:{fam.bob_pid}:s1", f"telling:{fam.bob_pid}:s2"]
+    assert set(sp.narrations or {}) == {fam.bob_pid}
+    timeline = memory.memory.timeline
+    assert timeline.default_narrator == fam.alice_pid
+    assert list(timeline.narrations or {}) == [fam.alice_pid, fam.bob_pid]
+    assert timeline.captions == timeline.narrations[fam.alice_pid].captions
+    assert timeline.tracks == before.timeline.tracks
     assert_compiled(fid, memory.memory)
 
     threads = schemas.ThreadsResponse.model_validate(_ok(d.alice.get(f"/families/{fid}/threads")), by_alias=True)
