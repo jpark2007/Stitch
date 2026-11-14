@@ -1,6 +1,6 @@
-# Channels text inbox foundation
+# Channels inbox foundation
 
-This slice authenticates text messages and stores durable receipts. It does **not**
+This slice authenticates text and photo messages and stores durable receipts. It does **not**
 generate stories, enroll or verify contacts, send messages, schedule prompts, or
 make calls. The companion terminal bridge can exercise the transport without
 Photon credentials. No `.env` is loaded by this package and imports start no work.
@@ -74,3 +74,43 @@ database/model services. They cover tampering, freshness, replay across app rest
 concurrent duplicates, content collisions, UTF-8/body bounds, consent, cross-family
 mapping, STOP and the explicit inactive tick. Real Mongo durability and production
 delivery remain separate integration checks.
+
+## Signed photos and authorization
+
+`POST /internal/channels/authorize` accepts exactly `{ "provider": "terminal",
+"senderId": "alice" }` and returns `{ "allowed": true }`. It uses the same HMAC
+and contact checks, exposing no internal IDs. Unknown/ambiguous/unconsenting
+contacts return 404/409/403. Authorization is a preflight, not a lasting grant.
+
+`POST /internal/channels/inbound-photo` accepts exactly `messageId`, `provider`,
+`spaceId`, `senderId`, `attachmentId`, `mimeType`, `dataBase64`, and optional
+`caption` (default empty). IDs have the same 256-byte bound; caption allows 8000
+UTF-8 bytes. The HMAC covers the complete raw JSON, including metadata and base64;
+URLs and multipart are unsupported. `messageId` is the SDK's normalized per-content
+child Message.id, not the shared parent GUID for grouped attachments. Reusing a
+message ID for different attachment IDs, text, bytes, or metadata returns 409.
+
+Canonical base64 decodes to at most 20 MiB. Only the exact photo path permits a
+27,978,412-byte body; other signed paths retain 16,384 bytes. The main application's
+body-limit middleware must also allow that exact path (API-owner hook). Pillow
+verifies and fully decodes JPEG/PNG/WebP/GIF, capped at 40 million cumulative pixels
+and 200 frames. HEIC/HEIF requires the optional real `pillow-heif` decoder; absent
+that dependency, requests return 415. Container signatures alone are not accepted.
+No decoder dependency is added by this slice.
+
+Contact mapping and consent are checked before decoding, before upload, and before
+final receipt persistence. The family and media ID come from the server. Success
+returns 202 `{ "accepted": true, "duplicate": false }`, without exposing photo IDs.
+A family-scoped receipt in `channelMessages` has `receiptType: "photo"`,
+`status: "received"`, `text` containing the caption, and `photoIds` for a trusted
+worker to pass to `ConversationService.attach_photos`. It contains no base64.
+The worker must refresh consent before consuming any receipt, including after STOP.
+
+A durable reservation grants only one writer permission to call `put_media` for
+a deterministic ID. Retries can finalize an already complete file only after
+checking family, kind, MIME and content hash. An incomplete or uncertain upload
+stays `photo_pending`/`uploading` and returns 503; it is never blindly uploaded again.
+An operator must reconcile those records and any orphaned GridFS chunks. A retry
+can recover a complete file after receipt persistence fails. This is not an
+exactly-once guarantee across Mongo/GridFS APIs; tests use mongomock and real-Mongo
+crash qualification remains required. No worker or outbound delivery is wired here.
