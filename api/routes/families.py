@@ -10,6 +10,16 @@ Access rules:
   id is a 404 too.
 - `GET /invites/{code}` is public: the code itself is the secret.
 
+Invite answers, for `GET /invites/{code}` and `POST /invites/{code}/join`:
+- an unknown code (or an empty-ish one) is a 404 INVITE_NOT_FOUND;
+- a code that exists but can no longer be used is a 410 Gone, INVITE_REVOKED when an admin
+  revoked it (even if it has also expired) and INVITE_EXPIRED when it is past its
+  expiresAt (the boundary itself counts as expired). The detail is all a 410 says: never
+  the family's name or id, so a stale link does not reveal whose it was.
+- `DELETE /families/{fid}/invites/{code}` (admin revoke) stays a 404 INVITE_NOT_FOUND for
+  a code that is not this family's, and revoking an already revoked or expired code is a
+  204 as before.
+
 Size limits (route level; schemas.py is unbounded), checked after trimming: a family name
 MAX_FAMILY_NAME_CHARS, a person's name MAX_PERSON_NAME_CHARS, and a character sheet's
 free text (signature item, notes) MAX_PERSON_TEXT_CHARS. Over a limit is a 422 whose
@@ -48,7 +58,9 @@ from screenplay.schema import Screenplay
 
 router = APIRouter(tags=["families"])
 
-INVITE_NOT_FOUND = "Invite not found or expired"
+INVITE_NOT_FOUND = "Invite not found"
+INVITE_EXPIRED = "This invite has expired"
+INVITE_REVOKED = "This invite was revoked"
 LAST_ADMIN = "A family needs at least one admin"
 PERSON_TAKEN = "Someone has already claimed this person"
 ALREADY_HAVE_PERSON = "You already have a person in this family"
@@ -74,6 +86,10 @@ _CHARACTER_TEXT = (("item", "A signature item"), ("notes", "Notes"))
 
 def _not_found(detail: str = "Not found") -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+
+def _gone(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_410_GONE, detail=detail)
 
 
 def _bad_request(detail: str) -> HTTPException:
@@ -283,13 +299,30 @@ def revoke_invite(
         raise _not_found(INVITE_NOT_FOUND)
 
 
-@router.get("/invites/{code}")
-def preview_invite(code: str, db: Database = Depends(get_db)) -> schemas.InvitePreview:
-    """Public preview of an invite: the family name and who is left to claim."""
-    found = families_db.find_active_invite(db, code)
+def _usable_invite_family(db: Database, code: str) -> schemas.Family:
+    """The family an active invite code belongs to.
+
+    404 INVITE_NOT_FOUND for an unknown code; 410 INVITE_REVOKED or INVITE_EXPIRED for a
+    code that exists but can no longer be used (revoked wins when both apply). Reads only.
+    """
+    found = families_db.find_invite(db, code)
     if found is None:
         raise _not_found(INVITE_NOT_FOUND)
-    family, _ = found
+    family, _, state = found
+    if state == "revoked":
+        raise _gone(INVITE_REVOKED)
+    if state == "expired":
+        raise _gone(INVITE_EXPIRED)
+    return family
+
+
+@router.get("/invites/{code}")
+def preview_invite(code: str, db: Database = Depends(get_db)) -> schemas.InvitePreview:
+    """Public preview of an invite: the family name and who is left to claim.
+
+    404 for an unknown code, 410 for an expired or revoked one (see the module docstring).
+    """
+    family = _usable_invite_family(db, code)
     return schemas.InvitePreview(
         family_id=family.id,
         family_name=family.name,
@@ -304,17 +337,25 @@ def join_family(
     user: schemas.User = Depends(current_user),
     db: Database = Depends(get_db),
 ) -> schemas.JoinResponse:
-    """Join through an invite, then claim a person (`personId`) or add yourself (`person`)."""
+    """Join through an invite, then claim a person (`personId`) or add yourself (`person`).
+
+    Order of answers, first match wins:
+    1. 401 when signed out: `current_user` runs before anything else, so a signed-out
+       caller learns nothing about the code here (the public preview tells them).
+    2. 422 from FastAPI when the body does not parse as a JoinRequest (wrong types,
+       unknown fields): that validation runs before this function.
+    3. 404 for an unknown code, 410 for an expired or revoked one. Checked before the
+       body's personId / person are looked at and before any write, so a stale link
+       always explains itself, even when the body is also wrong, and a 410 writes nothing.
+    4. 422 unless exactly one of personId and person is sent, then the person checks.
+    """
+    family = _usable_invite_family(db, code)
     person_id, new = body.person_id, body.person
     if (person_id is None) == (new is None):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Send exactly one of personId (claim) or person (add yourself)",
         )
-    found = families_db.find_active_invite(db, code)
-    if found is None:
-        raise _not_found(INVITE_NOT_FOUND)
-    family, _ = found
 
     if new is not None:
         new = _clean_new_person(new)
