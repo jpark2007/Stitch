@@ -238,6 +238,37 @@ def test_create_family_with_relations_is_400_and_writes_nothing(users, client, m
     assert mdb.people.count_documents({}) == 0
 
 
+def test_create_family_died_before_born_is_400_and_writes_nothing(users, client, mdb):
+    res = client(users["a"]).post(
+        "/families", json={"name": "The Maos", "person": {"name": "Ada", "born": 1990, "died": 1980}}
+    )
+    assert res.status_code == 400
+    assert res.json() == {"detail": "a person cannot die before they were born"}
+    assert mdb.families.count_documents({}) == 0
+    assert mdb.people.count_documents({}) == 0
+
+
+def test_create_family_rolls_back_when_create_person_rejects(users, client, mdb, monkeypatch):
+    """Any InvalidRelation from create_person is a 400 and leaves no family behind."""
+    from db import people as people_db
+
+    def reject(*args, **kwargs):
+        raise people_db.InvalidRelation("nope")
+
+    monkeypatch.setattr(people_db, "create_person", reject)
+    res = client(users["a"]).post("/families", json={"name": "The Maos", "person": {"name": "Ada"}})
+    assert res.status_code == 400
+    assert res.json() == {"detail": "nope"}
+    assert mdb.families.count_documents({}) == 0
+    assert mdb.people.count_documents({}) == 0
+
+
+def test_create_family_with_matching_or_unknown_years_is_201(users, client):
+    for i, years in enumerate([{"born": 1990, "died": 1990}, {"born": None, "died": 1980}, {"died": None}]):
+        res = client(users["a"]).post("/families", json={"name": f"F{i}", "person": {"name": "Ada", **years}})
+        assert res.status_code == 201, res.text
+
+
 @pytest.mark.parametrize(
     "body",
     [{"name": "   ", "person": {"name": "Ada"}}, {"name": "The Maos", "person": {"name": "  "}}],

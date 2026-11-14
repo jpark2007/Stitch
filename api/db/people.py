@@ -239,7 +239,11 @@ def _year_docs(db: Database, query: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
 
-def _check_lifespan(born: int | None, died: int | None) -> None:
+def check_lifespan(born: int | None, died: int | None) -> None:
+    """InvalidRelation when both years are known and died is before born.
+
+    Public so a route can check a new person's years before writing anything else.
+    """
     if born is not None and died is not None and died < born:
         raise InvalidRelation("a person cannot die before they were born")
 
@@ -308,7 +312,7 @@ def create_person(
         for parent in parent_ids:
             ancestors |= _ancestor_ids(docs, parent)
         _reject_spouse_in_lineage(spouse_ids, ancestors)
-    _check_lifespan(new.born, new.died)
+    check_lifespan(new.born, new.died)
     _check_born_after_parents(db, family_id, new.born, parent_ids)
     if user_id is not None and people.find_one({"familyId": family_id, "userId": user_id}, {"_id": 1}):
         raise AlreadyClaimed("this user already has a person in this family")
@@ -456,7 +460,7 @@ def update_person(
     # checked, so older data that predates these rules can still be renamed or recolored.
     born_after = patch.born if "born" in fields else current.get("born")
     if "born" in fields or "died" in fields:
-        _check_lifespan(born_after, patch.died if "died" in fields else current.get("died"))
+        check_lifespan(born_after, patch.died if "died" in fields else current.get("died"))
     if "born" in fields or new_parents is not None:
         _check_born_after_parents(db, family_id, born_after, parents_after)
     if "born" in fields:

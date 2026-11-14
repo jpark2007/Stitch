@@ -102,9 +102,18 @@ def create_family(
     if body.person.parent_ids or body.person.spouse_ids:
         raise _bad_request("The first person in a new family cannot have parents or spouses yet")
     new = _clean_new_person(body.person)
+    try:
+        people_db.check_lifespan(new.born, new.died)
+    except InvalidRelation as exc:
+        raise _bad_request(str(exc)) from exc
 
     family = families_db.create_family(db, name=name, creator_user_id=user.id)
-    person = people_db.create_person(db, family.id, new, added_by=user.id, user_id=user.id)
+    try:
+        person = people_db.create_person(db, family.id, new, added_by=user.id, user_id=user.id)
+    except InvalidRelation as exc:
+        # Any person check not caught above: take the new family back so nothing is left.
+        families_db.purge_family(db, family.id)
+        raise _bad_request(str(exc)) from exc
     return schemas.CreateFamilyResponse(
         family=schemas.FamilySummary(id=family.id, name=family.name, role="admin", person_id=person.id),
         person=person,
