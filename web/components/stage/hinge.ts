@@ -43,22 +43,30 @@ export interface Flip {
  * up, as a page opening drives a real mechanism. The spring following it
  * carries the final speed into one small overshoot (opening) or a soft landing
  * (closing, clamped at the page).
+ *
+ * Flips apply in the order they were issued. The stagger delays a flip by a
+ * different amount per direction (an open waits for the pieces behind, a close
+ * for the pieces in front), so a quick reversal could otherwise land before
+ * the flip it reverses; instead it starts no earlier than that flip did, and
+ * the last flip issued always sets where the piece ends up.
  */
 export function hingePath(flips: readonly Flip[], order: number, count: number, size: number, t: PopUpTiming): LinearKeys {
-  const timed = flips
-    .map((f) => ({ ...f, at: f.at + (f.open ? order * t.openStagger : (count - 1 - order) * t.closeStagger) }))
-    .sort((a, b) => a.at - b.at);
+  const issued = [...flips].sort((a, b) => a.at - b.at);
   let keys: LinearKeys = [];
-  for (const f of timed) {
-    const from = linearAt(keys, f.at, 0);
-    keys = keys.filter((k) => k[0] < f.at);
-    keys.push([f.at, from]);
+  let prevAt = -Infinity;
+  for (const f of issued) {
+    const delay = f.open ? order * t.openStagger : (count - 1 - order) * t.closeStagger;
+    const at = Math.max(f.at + delay, prevAt);
+    prevAt = at;
+    const from = linearAt(keys, at, 0);
+    keys = keys.filter((k) => k[0] < at);
+    keys.push([at, from]);
     const to = f.open ? 1 : 0;
     const dist = Math.abs(to - from);
     if (dist < 1e-3) continue;
     const dur = (f.open ? t.openTime : t.closeTime) * size * (0.35 + 0.65 * dist);
-    keys.push([f.at + dur * 0.6, from + (to - from) * 0.3]);
-    keys.push([f.at + dur, to]);
+    keys.push([at + dur * 0.6, from + (to - from) * 0.3]);
+    keys.push([at + dur, to]);
   }
   return keys;
 }
