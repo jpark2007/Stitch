@@ -1,10 +1,12 @@
 """'Ask the family': memory search with quotes from the tellings (ARCHITECTURE.md section 5).
 
-The vector path is Atlas Vector Search over `memories.embedding` (index VECTOR_INDEX) with
-a `familyId` pre-filter. When there is no vector, when the server cannot run
-`$vectorSearch` (plain MongoDB raises OperationFailure, mongomock raises
-NotImplementedError) or when it finds nothing, a keyword search over titles and tellings
-takes over, so search works offline and on plain MongoDB.
+A keyword search over titles and tellings always runs. When a query vector is available
+and the server can run Atlas Vector Search over `memories.embedding` (index VECTOR_INDEX,
+`familyId` pre-filter), its hits are merged with the keyword matches (_merge_memory_hits):
+keyword matches first, then vector-only hits scoring at least VECTOR_MIN_SCORE. When there
+is no vector, or the server cannot run `$vectorSearch` (plain MongoDB raises
+OperationFailure, mongomock raises NotImplementedError), keywords alone answer, so search
+works offline and on plain MongoDB.
 
 No network by default: `embed` returns None until something calls `set_embedder`.
 Answers are composed deterministically from quotes; no model is involved.
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -29,6 +32,28 @@ VECTOR_INDEX = "memories_vector"
 MEMORIES = "memories"
 TITLE_WEIGHT = 2.0
 NO_STORY = "No one in the family has told that story yet."
+
+
+def _env_float(name: str, default: float) -> float:
+    """A finite float from the environment, or default when unset or unparsable."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value):
+        log.warning("ignoring %s=%r; using %s", name, raw, default)
+        return default
+    return value
+
+
+# The least vector score a hit needs to be returned when it shares no word with the query.
+# Atlas reports cosine similarity as vectorSearchScore = (1 + cos) / 2, in [0, 1], so 0.8
+# means cos >= 0.6. A nearest neighbour exists even for an unrelated question; this floor
+# is what still lets such a question get NO_STORY. Override with STITCH_VECTOR_MIN_SCORE.
+VECTOR_MIN_SCORE = _env_float("STITCH_VECTOR_MIN_SCORE", 0.8)
 
 Embedder = Callable[[str], list[float]]
 
@@ -213,7 +238,13 @@ def _vector_search(
     return [doc for doc in docs if doc.get("familyId") == family_id]
 
 
-def _keyword_search(db: Database, family_id: str, query: str, limit: int) -> list[tuple[dict, float]]:
+def _keyword_search(
+    db: Database, family_id: str, query: str, limit: int | None = None
+) -> list[tuple[dict, float]]:
+    """(doc, score in (0, 1]) for every family memory sharing a word with query, best first.
+
+    limit=None returns every match.
+    """
     wanted = list(dict.fromkeys(_tokens(query)))
     if not wanted:
         return []
@@ -266,14 +297,56 @@ def search_memories(
     if not family_id or limit <= 0:
         return []
     vector = vector or embed(query)
+    vector_docs = _vector_search(db, family_id, vector, limit) if vector else None
+    if vector_docs is None:
+        keyword = _keyword_search(db, family_id, query, limit)
+        return [_hit(doc, score, query) for doc, score in keyword]
+    ranked = _merge_memory_hits(_keyword_search(db, family_id, query), vector_docs)
+    return [_hit(doc, score, query) for doc, score in ranked[:limit]]
 
-    if vector:
-        docs = _vector_search(db, family_id, vector, limit)
-        if docs:
-            docs.sort(key=lambda d: (-round(float(d.get("score") or 0.0), 9), _year_key(d)))
-            return [_hit(doc, doc.get("score") or 0.0, query) for doc in docs[:limit]]
 
-    return [_hit(doc, score, query) for doc, score in _keyword_search(db, family_id, query, limit)]
+def _merge_memory_hits(
+    keyword: list[tuple[dict, float]], vector_docs: list[dict]
+) -> list[tuple[dict, float]]:
+    """Rank the union of keyword matches and vector hits, so neither path hides the other.
+
+    $vectorSearch only sees memories that have an `embedding`; seeded memories and any
+    saved without an embedder have none, so vector hits alone would hide them as soon as
+    one embedded memory exists. And a nearest neighbour comes back even for an unrelated
+    question, so vector hits alone would never let the answer be NO_STORY. Hence:
+
+    1. Every keyword match, by keyword score, ties broken by vector rank (a vector hit
+       beats a non-hit), then year, then id. Its score is the keyword score.
+    2. Then vector hits sharing no word with the query, nearest first, then by year, but
+       only those scoring at least VECTOR_MIN_SCORE. Their score is the vector score.
+
+    Each memory appears once.
+    """
+
+    def vscore(doc: dict) -> float:
+        return round(float(doc.get("score") or 0.0), 9)
+
+    vector_docs = sorted(vector_docs, key=lambda d: (-vscore(d), _year_key(d), str(d["_id"])))
+    vrank: dict[str, int] = {}
+    for rank, doc in enumerate(vector_docs):
+        vrank.setdefault(str(doc["_id"]), rank)
+    unranked = len(vector_docs)
+
+    ranked = sorted(
+        keyword,
+        key=lambda item: (
+            -item[1],
+            vrank.get(str(item[0]["_id"]), unranked),
+            _year_key(item[0]),
+            str(item[0]["_id"]),
+        ),
+    )
+    seen = {str(doc["_id"]) for doc, _ in ranked}
+    for doc in vector_docs:
+        if str(doc["_id"]) not in seen and vscore(doc) >= VECTOR_MIN_SCORE:
+            seen.add(str(doc["_id"]))
+            ranked.append((doc, vscore(doc)))
+    return ranked
 
 
 def ask_quotes(
