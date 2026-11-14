@@ -30,8 +30,10 @@ from agent.fake_studio import (
     fake_studio_model,
     file_body,
     make_fake_studio_responder,
+    narration_by_shot,
     narration_lines,
     role_of,
+    shot_sentences,
 )
 from agent.repo import InMemoryRepo, load_sample_family
 from agent.subagents import STUDIO_PROMPT, SUBAGENT_NAMES, load_prompt
@@ -541,3 +543,142 @@ def test_file_body_strips_the_read_file_header_and_old_gutters() -> None:
 
 def test_default_prop_size_is_a_size_class() -> None:
     assert FakeStory().prop_size in SIZES
+
+
+# --------------------------------------------------------------------------- story options
+
+
+def test_story_options_default_to_the_one_shot_scene() -> None:
+    story = FakeStory()
+    assert story.extra_props == () and story.max_cast == 2 and story.screenplay is None
+    assert story.objects == ["hymn books"] and story.size_of("hymn books") == "carried"
+    more = FakeStory(prop="cake", extra_props=(("table", "furniture"), ("cake", "hand")))
+    assert more.objects == ["cake", "table", "cake"]
+    assert more.size_of("table") == "furniture" and more.size_of("cake") == "carried"
+
+
+def test_extra_props_are_confirmed_in_one_review_and_max_cast_limits_the_cast(harnesses: list[Harness]) -> None:
+    h = make(harnesses, FakeStory(extra_props=(("picnic basket", "carried"), ("park bench", "furniture")), max_cast=1))
+    run_id = h.start()  # mom tells it, dad was there
+    assert h.wait(run_id) == "waiting"
+    found = [p for n, p in h.manager.events(FAMILY, run_id) if n == "props_found"]
+    assert len(found) == 1
+    chips = found[0].props  # type: ignore[attr-defined]
+    assert [c.id for c in chips][0] == "hymn_books" and len(chips) == 3
+    events = h.run_through(run_id, KEEP)
+    assert [n for n, _ in events][-1] == "done"
+    assert len(h.tool_calls("confirm_props", "prop_master")) == 1
+    assert [c["description"] for c in h.tool_calls("find_prop", "prop_master")] == [
+        "hymn books", "picnic basket", "park bench"]
+    board = h.tool_calls("write_file", "storyboarder")[0]["content"]
+    assert "picnic_basket" in board and "park_bench" in board
+
+    memory = saved_memory(h, events)
+    sp = memory.screenplay
+    assert sp is not None
+    assert sp.cast == ["mom"]  # max_cast 1: the teller only, though dad was there
+    assert sp.props[0] == "hymn_books" and len(sp.props) == 3
+    bench = next(pid for pid in sp.props if "bench" in pid)
+    assert h.repo.get_prop(FAMILY, bench).size == "furniture"  # type: ignore[union-attr]
+    assert {e.target for e in sp.explanations or []} == {"puppet:mom", *(f"prop:{p}" for p in sp.props)}
+    assert "dad" in memory.participant_ids
+
+
+def test_a_story_screenplay_replaces_the_default_draft(harnesses: list[Harness]) -> None:
+    """`FakeStory.screenplay` is the director: its first draft is broken by bad_screenplay, the
+    second compiles, and the narrator narrates both of its shots."""
+    seen: list[dict] = []
+
+    def two_shots(ctx: dict) -> dict:
+        seen.append(ctx)
+        draft = build_screenplay(ctx)
+        second = json.loads(json.dumps(draft["shots"][0]))
+        second.update(id="s2", camera=[{"t": 0, "move": "close_up", "target": ctx["teller"], "dur": 1.5}],
+                      pageText="And again.")
+        draft["shots"].append(second)
+        return draft
+
+    h = make(harnesses, FakeStory(screenplay=two_shots))
+    events = h.run_through(h.start(), KEEP)
+    assert [n for n, _ in events][-1] == "done"
+    errors = [p for n, p in events if n == "compile_error"]
+    assert len(errors) == 1 and any("nowhere" in e.message for e in errors[0].errors)  # type: ignore[attr-defined]
+    ctx = seen[-1]
+    assert {"teller", "tellerName", "text", "year", "place", "cast", "names", "props", "setId", "marks"} <= set(ctx)
+    assert ctx["props"] == [{"id": "hymn_books", "name": "hymn books", "size": "hand"}]
+
+    sp = saved_memory(h, events).screenplay
+    assert sp is not None and [s.id for s in sp.shots] == ["s1", "s2"]
+    # Three sentences over two shots: two, then one; each shot's first line cued and voiced.
+    assert [ln.source for ln in sp.shots[0].narration] == ["telling:mom:s1", "telling:mom:s2"]
+    assert [ln.source for ln in sp.shots[1].narration] == ["telling:mom:s3"]
+    for shot in sp.shots:
+        assert shot.narration[0].cue == "walk" and all(ln.words for ln in shot.narration)
+
+
+def test_bad_screenplay_breaks_the_given_draft() -> None:
+    ctx = {"teller": "mom", "cast": ["mom"], "props": [], "setId": "set", "marks": {}}
+
+    def custom(_: dict) -> dict:
+        draft = build_screenplay(ctx)
+        draft["shots"][0]["actions"].insert(0, {"t": 0, "do": "rain"})
+        return draft
+
+    bad = bad_screenplay(ctx, custom)
+    assert bad["shots"][0]["actions"][0] == {"t": 0, "do": "rain", "to": "nowhere"}
+    assert bad_screenplay(ctx)["shots"][0]["actions"][0]["to"] == "nowhere"
+
+
+def test_shot_sentences_spreads_the_telling_in_order() -> None:
+    five = ["a.", "b.", "c.", "d.", "e."]
+    assert shot_sentences(five, 2) == [[(1, "a."), (2, "b."), (3, "c.")], [(4, "d."), (5, "e.")]]
+    assert shot_sentences(five[:2], 3) == [[(1, "a.")], [(2, "b.")], [(2, "b.")]]  # the last one reused
+    assert shot_sentences(five, 1) == [[(1, "a."), (2, "b."), (3, "c."), (4, "d.")]]  # at most 4 a shot
+    assert shot_sentences([], 2) == [[], []]
+    assert shot_sentences(five, 0) == []
+
+
+def _two_shot_draft() -> dict:
+    def shot(sid: str, actions: list[dict]) -> dict:
+        return {"id": sid, "set": "set", "start": {}, "camera": [], "actions": actions, "narration": []}
+
+    return {"shots": [
+        shot("s1", [{"t": 0, "do": "rain"}, {"t": 3.5, "do": "walk_to", "id": "late"},
+                    {"t": 0.5, "do": "enter", "id": "early"}]),
+        shot("s2", [{"t": 0.2, "do": "wave", "id": "wave"}]),
+        shot("s3", []),
+    ]}
+
+
+def test_narration_by_shot_cues_each_shots_first_named_action_without_overlap() -> None:
+    text = "We got there late. Everyone was already inside the hall. She waved at me from the door."
+    by_shot = narration_by_shot({"teller": "mom", "text": text}, _two_shot_draft())
+    assert list(by_shot) == ["s1", "s2", "s3"]
+    s1, s2, s3 = by_shot["s1"], by_shot["s2"], by_shot["s3"]
+    # The earliest named action, not the first in the list; its last word lands on t=0.5 if it can.
+    assert s1[0]["cue"] == "early" and s1[0]["t"] == 0.0 and "cueWord" not in s1[0]
+    assert s2[0]["cue"] == "wave" and [ln["source"] for ln in s2] == ["telling:mom:s2"]
+    assert s3 == [{"t": 0.0, "text": "She waved at me from the door.", "source": "telling:mom:s3"}]  # nothing to cue
+    late = narration_by_shot({"teller": "mom", "text": "We got there late."},
+                             {"shots": [{"id": "s1", "actions": [{"t": 3.5, "do": "walk_to", "id": "late"}]}]})
+    assert late["s1"][0]["t"] == 2.75  # 3.5 - 3 words * 0.25: "late" is said as the walk starts
+    for lines in by_shot.values():
+        for a, b in zip(lines, lines[1:], strict=False):
+            assert b["t"] >= a["t"] + 0.25 * len(a["text"].split())
+
+
+def test_second_telling_narration_covers_every_shot_and_lands_on_the_shared_action() -> None:
+    draft = _two_shot_draft()
+    draft["shots"][0]["narration"] = [{"t": 0.0, "text": "We got there late.", "cue": "early",
+                                       "words": [{"t": 0.0, "word": "We"}, {"t": 0.3, "word": "got"},
+                                                 {"t": 0.6, "word": "there"}, {"t": 0.9, "word": "late"}]}]
+    long = "I remember every single second of that long and very strange and wonderful evening at the hall."
+    ctx = {"teller": "dad", "text": f"{long} We danced. Then she waved. It was late.", "mode": "second_telling"}
+    by_shot = narration_by_shot(ctx, draft)
+    assert list(by_shot) == ["s1", "s2", "s3"]
+    first = by_shot["s1"][0]
+    # The shared action is at 0.9 s; a last-word cue would start the line 3.1 s before the shot's
+    # t=0 (more than the 1.2 s its set takes to rise), so the line is cued on an earlier word.
+    assert first["cue"] == "early" and first["cueWord"] == "and"  # the 9th word: starts at 0.9 - 8 * 0.25
+    assert by_shot["s1"][1]["t"] > 0.9 + 0.25 * (len(long.split()) - 8)  # after the shifted line is said
+    assert by_shot["s2"][0]["cue"] == "wave" and "cueWord" not in by_shot["s2"][0]

@@ -27,6 +27,27 @@ Passing data between roles: every task description the studio writes ends with o
 `CONTEXT: <json>`, and every sub-agent's final message ends with `RESULT: <json>`, which
 the studio parses from the task ToolMessage.
 
+What a story can change (`FakeStory`, all optional, defaults give the one-shot hymn-books
+style scene):
+
+- `place`, `prop`, `prop_size`: the place and the first object.
+- `extra_props`: more (name, size) objects. The storyboarder lists every object; the prop
+  master finds (or generates) each one and has the family confirm them all in one
+  `confirm_props` call.
+- `max_cast`: how many people are cast, the teller first and then the participants in the
+  order the run lists them (default 2).
+- `screenplay`: a hand-written director. When set, the director's valid draft is
+  `story.screenplay(stage_ctx)` instead of `build_screenplay(stage_ctx)`; stage_ctx has
+  teller, tellerName, text, year, place, cast, names, props ([{id, name, size}]), setId
+  and marks. The first `compile_failures` drafts are `bad_screenplay(stage_ctx, build)` of
+  that draft.
+- `followup`, `compile_failures`, `checker_problems`: the detours (see the fields).
+
+The narrator narrates every shot (`narration_by_shot`): the teller's sentences are spread
+over the shots in order (`shot_sentences`, at least one line per shot), each shot's first
+line is cued to that shot's first named action, and lines never overlap. A second telling
+writes the same shape into `narrations[<teller>]`.
+
 If a tool the script wants is not bound for that call, the role skips that step (for
 example the checker without `render_frames` / `inspect_frames`). The narrator's voice pass
 calls `synthesize_narration` once more when it answers `Error...` (a media store failure),
@@ -81,6 +102,30 @@ class FakeStory:
     """The director's first N drafts carry one deliberate unknown mark (`to: "nowhere"`)."""
     checker_problems: int = 0
     """Checker rounds that report a staging problem before passing."""
+    extra_props: tuple[tuple[str, str], ...] = ()
+    """More (name, size) objects beyond `prop`. The storyboarder lists them all; the prop
+    master finds or generates each and confirms them all in one confirm_props call."""
+    max_cast: int = 2
+    """How many people (the teller first, then participants in order) are cast."""
+    screenplay: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    """The director's valid draft: `screenplay(stage_ctx)` instead of `build_screenplay`.
+
+    `stage_ctx` has teller, tellerName, text, year, place, cast, names, props
+    ([{id, name, size}] as the family kept them), setId and marks. The first
+    `compile_failures` drafts are still the bad version of this one (`bad_screenplay`).
+    """
+
+    @property
+    def objects(self) -> list[str]:
+        """Every object's name, `prop` first."""
+        return [self.prop, *(name for name, _ in self.extra_props)]
+
+    def size_of(self, name: str) -> str:
+        """The size class of one of `objects` (`prop_size` for `prop`)."""
+        for extra, size in self.extra_props:
+            if extra == name and name != self.prop:
+                return size
+        return self.prop_size
 
 
 # --------------------------------------------------------------------------- roles
@@ -330,7 +375,7 @@ def _studio_new_memory(s: _Script, ctx: dict[str, Any], story: FakeStory) -> Non
     items = [
         "Check the story with the teller",
         "Storyboard the shots",
-        f"Find the props and the set: {story.prop}, {story.place}",
+        f"Find the props and the set: {', '.join(story.objects)}, {story.place}",
         "Stage the scene",
         f"Write {teller_name}'s narration",
         "Check the frames",
@@ -358,18 +403,20 @@ def _studio_new_memory(s: _Script, ctx: dict[str, Any], story: FakeStory) -> Non
     names.setdefault(teller, teller_name)
     others = [pid for pid in participants if pid in people]
     living = [pid for pid in others if not people[pid].get("died")]
-    cast = [teller, *others[:1]]
+    cast = [teller, *others[: max(0, story.max_cast - 1)]]
 
     # 2. storyboarder
-    board_ctx = {**base, "place": place, "cast": cast, "names": names, "objects": [story.prop],
+    objects = story.objects
+    board_ctx = {**base, "place": place, "cast": cast, "names": names, "objects": objects,
                  "answers": interview.get("answers") or []}
     s.one(*_task("storyboarder", f"Write /shotlist.md for the story at the {place}.", board_ctx),
           todos=_todos(items, 1))
 
     # 3. prop_master and set_designer, in one turn
     props_text, sets_text = s.do(
-        _task("prop_master", f"Find or make the props in /shotlist.md: {story.prop}. Have the family confirm them.",
-              {**base, "objects": [story.prop]}),
+        _task("prop_master",
+              f"Find or make the props in /shotlist.md: {', '.join(objects)}. Have the family confirm them.",
+              {**base, "objects": objects}),
         _task("set_designer", f"Reuse or make the set for the {place}, with marks for the cast.",
               {**base, "place": place}),
         todos=_todos(items, 2),
@@ -550,19 +597,22 @@ def _storyboarder(s: _Script, ctx: dict[str, Any], story: FakeStory) -> None:
         described = s.one("describe_photo", {"photo_id": photo_id})
         if described and not described.startswith(("unknown", "could not", "photo ")):
             seen.append(f"photo:{photo_id} ({_words(described, 20)})")
+    objects = [str(o) for o in ctx.get("objects") or story.objects]
+    listed = [f"{_slug(objects[0])} ({names.get(teller, teller)} carries it)", *(_slug(o) for o in objects[1:])]
     shotlist = "\n".join([
         "## s1",
         f"place: {ctx.get('place') or story.place} (from telling:{teller}:s1)",
         "who: " + ", ".join(cast),
         f"moment: {_words(ctx.get('text') or '', 25)}",
-        f"objects: {_slug(story.prop)} ({names.get(teller, teller)} carries it)",
+        "objects: " + ", ".join(listed),
         "sources: " + ", ".join([f"telling:{teller}:s1", *seen]),
         "",
     ])
     s.one("write_file", {"file_path": SHOTLIST_PATH, "content": shotlist})
     s.finish(_report(
-        f"1 shot.\ns1 | {ctx.get('place') or story.place} | {_words(ctx.get('text') or '', 12)}\nobjects: {story.prop}",
-        {"shots": ["s1"], "objects": [story.prop]},
+        f"1 shot.\ns1 | {ctx.get('place') or story.place} | {_words(ctx.get('text') or '', 12)}\n"
+        f"objects: {', '.join(objects)}",
+        {"shots": ["s1"], "objects": objects},
     ))
 
 
@@ -573,42 +623,57 @@ def _slug(name: str) -> str:
 _CONFIRM_LINE = re.compile(r"^(?P<id>[^|]+?)\s*\|\s*(?P<name>[^|]*?)\s*\|\s*size=(?P<size>\S+)\s*\|\s*(?P<status>kept|renamed|photo)\s*$")
 
 
-def _prop_master(s: _Script, ctx: dict[str, Any], story: FakeStory) -> None:
-    found = s.one("find_prop", {"description": story.prop})
-    chip: dict[str, Any] | None = None
+def _find_or_make(s: _Script, ctx: dict[str, Any], name: str, size: str, taken: set[str]) -> dict[str, Any] | None:
+    """One object's chip: the first saved match not already used for another object, else a
+    generated prop (None when generation failed)."""
+    found = s.one("find_prop", {"description": name})
     matches: Any = None
     if found and not found.startswith(("error", "no saved")):
         try:
             matches = json.loads(found)
         except ValueError:
             matches = None
-    if isinstance(matches, list) and matches:
-        match = matches[0]
-        chip = {"id": match["id"], "name": match.get("name") or story.prop,
-                "description": match.get("description"), "size": match.get("size") or story.prop_size,
+    match = None
+    if isinstance(matches, list):
+        match = next((m for m in matches if isinstance(m, dict) and m.get("id") and m["id"] not in taken), None)
+    if match is not None:
+        return {"id": match["id"], "name": match.get("name") or name,
+                "description": match.get("description"), "size": match.get("size") or size,
                 "art": match.get("preview"), "reused": True}
-    else:
-        made_text = s.one("generate_prop", {
-            "name": story.prop,
-            "description": f"the {story.prop} from {ctx.get('tellerName') or 'the teller'}'s telling",
-            "size": story.prop_size,
-            "grip": [0.5, 0.0],
-        })
-        try:
-            made = json.loads(made_text or "")
-        except ValueError:
-            made = None
-        if isinstance(made, dict) and made.get("id"):
-            chip = {"id": made["id"], "name": made.get("name") or story.prop,
-                    "description": f"the {story.prop} from the telling", "size": made.get("size") or story.prop_size,
-                    "art": made.get("preview"), "reused": False}
-    if chip is None:
-        s.finish(_report(f"could not make: {story.prop}", {"props": [], "removed": [], "failed": [story.prop]}))
-    reviewed = s.one("confirm_props", {"props": [chip]})
+    made_text = s.one("generate_prop", {
+        "name": name,
+        "description": f"the {name} from {ctx.get('tellerName') or 'the teller'}'s telling",
+        "size": size,
+        "grip": [0.5, 0.0],
+    })
+    try:
+        made = json.loads(made_text or "")
+    except ValueError:
+        made = None
+    if isinstance(made, dict) and made.get("id"):
+        return {"id": made["id"], "name": made.get("name") or name,
+                "description": f"the {name} from the telling", "size": made.get("size") or size,
+                "art": made.get("preview"), "reused": False}
+    return None
+
+
+def _prop_master(s: _Script, ctx: dict[str, Any], story: FakeStory) -> None:
+    chips: list[dict[str, Any]] = []
+    failed: list[str] = []
+    for name in story.objects:
+        chip = _find_or_make(s, ctx, name, story.size_of(name), {c["id"] for c in chips})
+        if chip is None:
+            failed.append(name)
+        else:
+            chips.append(chip)
+    if not chips:
+        s.finish(_report(f"could not make: {', '.join(failed)}", {"props": [], "removed": [], "failed": failed}))
+    reused = {c["id"]: bool(c.get("reused")) for c in chips}
+    reviewed = s.one("confirm_props", {"props": chips})
     kept: list[dict[str, Any]] = []
     removed: list[str] = []
     if reviewed is None:  # confirm_props not bound: keep what was found
-        kept.append({"id": chip["id"], "name": chip["name"], "size": chip["size"], "status": "kept"})  # type: ignore[index]
+        kept = [{"id": c["id"], "name": c["name"], "size": c["size"], "status": "kept"} for c in chips]
     else:
         for line in reviewed.splitlines():
             line = line.strip()
@@ -621,13 +686,18 @@ def _prop_master(s: _Script, ctx: dict[str, Any], story: FakeStory) -> None:
                 kept.append({"id": m["id"], "name": m["name"], "size": m["size"], "status": m["status"]})
     teller = ctx.get("teller")
     lines = [
-        f"{p['id']} | {p['name']} | size={p['size']} | held by {teller} | shots s1 | "
-        f"{'reused' if chip.get('reused') else 'generated'} | parts: none | states: none"  # type: ignore[union-attr]
-        for p in kept
+        f"{p['id']} | {p['name']} | size={p['size']} | {'held by ' + str(teller) if i == 0 else 'on the set'} | "
+        f"shots s1 | {'reused' if reused.get(p['id']) else 'generated'} | parts: none | states: none"
+        for i, p in enumerate(kept)
     ]
     if removed:
         lines.append(f"removed by the family: {', '.join(removed)}")
-    s.finish(_report("\n".join(lines) or "no props kept", {"props": kept, "removed": removed}))
+    if failed:
+        lines.append(f"could not make: {', '.join(failed)}")
+    result: dict[str, Any] = {"props": kept, "removed": removed}
+    if failed:
+        result["failed"] = failed
+    s.finish(_report("\n".join(lines) or "no props kept", result))
 
 
 def _set_designer(s: _Script, ctx: dict[str, Any], story: FakeStory) -> None:
@@ -807,9 +877,13 @@ def build_screenplay(ctx: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def bad_screenplay(ctx: dict[str, Any]) -> dict[str, Any]:
-    """The valid draft with one deliberate mistake: the first action goes to an unknown mark."""
-    draft = build_screenplay(ctx)
+def bad_screenplay(
+    ctx: dict[str, Any],
+    build: Callable[[dict[str, Any]], dict[str, Any]] = build_screenplay,
+) -> dict[str, Any]:
+    """The valid draft from `build` with one deliberate mistake: the first action of the first
+    shot goes `to` an unknown mark (on a verb without `to` that is an unexpected parameter)."""
+    draft = build(ctx)
     draft["shots"][0]["actions"][0]["to"] = BAD_MARK
     return draft
 
@@ -821,16 +895,20 @@ def _dump(data: dict[str, Any]) -> str:
 def _director(s: _Script, ctx: dict[str, Any], story: FakeStory) -> None:
     if ctx.get("pass") == "fix":
         _director_fix(s, ctx)
+    build = story.screenplay or build_screenplay
     failures = 0
     while True:
-        draft = bad_screenplay(ctx) if failures < story.compile_failures else build_screenplay(ctx)
+        draft = bad_screenplay(ctx, build) if failures < story.compile_failures else build(ctx)
         s.one("write_file", {"file_path": SCREENPLAY_PATH, "content": _dump(draft)})
         result = s.one("compile_screenplay", {})
         if result is None or _compiled(result):
+            shots = "\n".join(
+                f"{shot.get('id')} | {shot.get('set')} | " + ", ".join(a.get("do", "?") for a in shot.get("actions") or [])
+                for shot in draft.get("shots") or []
+            )
+            tabs = ", ".join(str(i.get("id")) for i in draft.get("interactions") or []) or "none"
             s.finish(_report(
-                f"compiled: yes\nrounds: {failures + 1}\ns1 | {ctx.get('setId')} | "
-                + ", ".join(a["do"] for a in draft["shots"][0]["actions"])
-                + "\ninteractions: pull_beat",
+                f"compiled: yes\nrounds: {failures + 1}\n{shots}\ninteractions: {tabs}",
                 {"compiled": True, "rounds": failures + 1},
             ))
         failures += 1
@@ -860,47 +938,151 @@ def _director_fix(s: _Script, ctx: dict[str, Any]) -> None:
 # ------------------------------------------------------------------ narrator
 
 
-def _cue_time(shots: list[dict[str, Any]], action_id: str) -> float | None:
-    """Shot time the shared action starts on, from the default telling's cued line.
+MAX_LINES_PER_SHOT = 4
+RISE_SECONDS = 1.2
+"""A shot's set rises this long before its t = 0; another telling's line may start no earlier."""
 
-    The compiler moves a cued action onto its line's cue word (default: the last word),
-    spoken `WORD_SECONDS` apart when a line has no word timings. None if no default line
-    cues `action_id`.
+
+def _tokens(text: str) -> list[str]:
+    """Spoken words as the compiler counts them: whitespace tokens with their edge punctuation
+    stripped, punctuation-only tokens dropped (screenplay.narration.tokenize)."""
+    out: list[str] = []
+    for raw in text.split():
+        start, end = 0, len(raw)
+        while start < end and not raw[start].isalnum():
+            start += 1
+        while end > start and not raw[end - 1].isalnum():
+            end -= 1
+        if start < end:
+            out.append(raw[start:end])
+    return out
+
+
+def _cue_index(line: dict[str, Any], tokens: list[str]) -> int:
+    """Index of the line's cue word among its spoken words (default and fallback: the last)."""
+    cue_word = line.get("cueWord")
+    if cue_word:
+        for i, token in enumerate(tokens):
+            if token.casefold() == str(cue_word).casefold():
+                return i
+    return max(0, len(tokens) - 1)
+
+
+def _cue_time(shot: dict[str, Any], action_id: str) -> float | None:
+    """Shot time the shared action starts on, from the shot's default-telling cued line.
+
+    The compiler moves a cued action onto its line's cue word (`cueWord`, default the last
+    word): the word's TTS timing when the line has been voiced, else spoken `WORD_SECONDS`
+    apart. None if no default line in `shot` cues `action_id`.
     """
-    for line in (shots[0].get("narration") or []) if shots else []:
-        if line.get("cue") == action_id:
-            words = line.get("words") or []
-            if words:
-                return float(line.get("t") or 0) + float(words[-1].get("t") or 0)
-            return float(line.get("t") or 0) + WORD_SECONDS * max(0, len(str(line.get("text") or "").split()) - 1)
+    for line in shot.get("narration") or []:
+        if line.get("cue") != action_id:
+            continue
+        start = float(line.get("t") or 0)
+        words = line.get("words") or []
+        if words:
+            index = _cue_index(line, [str(w.get("word") or "") for w in words])
+            return start + float(words[index].get("t") or 0)
+        tokens = _tokens(str(line.get("text") or ""))
+        return start + WORD_SECONDS * _cue_index(line, tokens)
     return None
 
 
-def narration_lines(ctx: dict[str, Any], screenplay: dict[str, Any]) -> list[dict[str, Any]]:
-    """The teller's lines for shot s1: their sentences quoted, sourced, the first one cued.
+def _first_cue(shot: dict[str, Any]) -> tuple[str, float] | None:
+    """(id, t) of the shot's earliest action that has an id (list order breaks ties)."""
+    named = [(float(a.get("t") or 0), i, str(a["id"])) for i, a in enumerate(shot.get("actions") or []) if a.get("id")]
+    if not named:
+        return None
+    t, _, action_id = min(named)
+    return action_id, t
 
-    A second telling (`ctx["mode"] == "second_telling"`) shares the action, so the
-    compiler shifts its cued first line until the cue word lands on that action; the
-    later lines start only after the shifted line has been said, so no lines overlap.
+
+def shot_sentences(sentences: Sequence[str], shots: int) -> list[list[tuple[int, str]]]:
+    """The teller's sentences (numbered from 1) spread over `shots` shots, in order.
+
+    Every shot gets at least one: with fewer sentences than shots, each later shot reuses the
+    last sentence; with more, they are split into runs as even as possible (earlier shots take
+    the extra ones), at most MAX_LINES_PER_SHOT per shot. No sentences: no lines anywhere.
+    """
+    numbered = list(enumerate(sentences, start=1))
+    if shots <= 0:
+        return []
+    if not numbered:
+        return [[] for _ in range(shots)]
+    if len(numbered) <= shots:
+        return [[numbered[min(i, len(numbered) - 1)]] for i in range(shots)]
+    base, extra = divmod(len(numbered), shots)
+    out: list[list[tuple[int, str]]] = []
+    i = 0
+    for k in range(shots):
+        size = base + (1 if k < extra else 0)
+        out.append(numbered[i : i + size][:MAX_LINES_PER_SHOT])
+        i += size
+    return out
+
+
+def _lines_for_shot(ctx: dict[str, Any], shot: dict[str, Any], numbered: list[tuple[int, str]]) -> list[dict[str, Any]]:
+    """One shot's lines: each sentence quoted and sourced, the first cued to the shot's first
+    named action, the rest after it with no overlap.
+
+    A first telling starts the cued line so its last word falls where the action already is
+    (at 0 if that is too early: the compiler then moves the action, and everything after it,
+    onto the word). Another telling (`ctx["mode"] == "second_telling"`) shares the action, so
+    the compiler shifts its cued line until the cue word lands on it; the line then may start
+    no earlier than RISE_SECONDS before the shot's t = 0, so a long first sentence is cued on
+    an earlier word (`cueWord`). Later lines start only after the shifted line has been said.
     """
     teller = ctx["teller"]
-    shots = screenplay.get("shots") or []
-    action_ids = [a["id"] for a in (shots[0].get("actions") or []) if a.get("id")] if shots else []
-    sentences = _sentences(ctx.get("text") or "")[:4]
+    second = ctx.get("mode") == SECOND_TELLING
+    cue = _first_cue(shot)
     lines: list[dict[str, Any]] = []
     t = 0.0
-    for n, sentence in enumerate(sentences, start=1):
-        line: dict[str, Any] = {"t": round(t, 2), "text": sentence, "source": f"telling:{teller}:s{n}"}
-        words = len(sentence.split())
+    for n, (number, sentence) in enumerate(numbered):
+        line: dict[str, Any] = {"t": 0.0, "text": sentence, "source": f"telling:{teller}:s{number}"}
+        tokens = _tokens(sentence)
+        words = max(1, len(tokens))
+        end_after: float | None = None
+        if n == 0 and cue is not None:
+            action_id, action_t = cue
+            line["cue"] = action_id
+            anchor = _cue_time(shot, action_id) if second else None
+            if anchor is not None:
+                index = words - 1
+                earliest = int((anchor + RISE_SECONDS - 0.1) // WORD_SECONDS)
+                if tokens and index > earliest:
+                    index = max(0, earliest)
+                    line["cueWord"] = tokens[index]
+                    index = _cue_index(line, tokens)  # the compiler takes the first match
+                end_after = anchor + WORD_SECONDS * (words - index)  # said through its last word
+            elif not second:
+                t = max(0.0, action_t - WORD_SECONDS * (words - 1))
+        line["t"] = round(t, 2)
         end = t + WORD_SECONDS * words
-        if n == 1 and action_ids:
-            line["cue"] = action_ids[0]
-            anchor = _cue_time(shots, action_ids[0]) if ctx.get("mode") == SECOND_TELLING else None
-            if anchor is not None:  # this line will be said ending on the shared action
-                end = max(end, anchor + WORD_SECONDS)
+        if end_after is not None:
+            end = max(end, end_after)
         lines.append(line)
         t = max(t + 0.3 * words, end) + 0.6
     return lines
+
+
+def narration_by_shot(ctx: dict[str, Any], screenplay: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """The teller's lines for every shot (shot id -> lines), from `ctx["text"]`.
+
+    The sentences are spread over the shots in order (`shot_sentences`): at least one line
+    per shot, each sourced `telling:<teller>:s<n>`, and each shot's first line cued to that
+    shot's first named action (see `_lines_for_shot`).
+    """
+    shots = [shot for shot in screenplay.get("shots") or [] if isinstance(shot, dict)]
+    spread = shot_sentences(_sentences(ctx.get("text") or ""), len(shots))
+    return {str(shot.get("id")): _lines_for_shot(ctx, shot, numbered) for shot, numbered in zip(shots, spread, strict=True)}
+
+
+def narration_lines(ctx: dict[str, Any], screenplay: dict[str, Any]) -> list[dict[str, Any]]:
+    """The teller's lines for the first shot (`narration_by_shot` of that shot)."""
+    shots = screenplay.get("shots") or []
+    if not shots:
+        return []
+    return narration_by_shot(ctx, screenplay).get(str(shots[0].get("id")), [])
 
 
 def _narrator(s: _Script, ctx: dict[str, Any], _story: FakeStory) -> None:
@@ -917,18 +1099,21 @@ def _narrator(s: _Script, ctx: dict[str, Any], _story: FakeStory) -> None:
     screenplay = _read_json(s.one("read_file", {"file_path": SCREENPLAY_PATH, "limit": READ_LIMIT}))
     if screenplay is None:
         s.finish(_report(f"write pass for {teller}: /screenplay.json could not be read", {"pass": "write", "lines": 0}))
-    lines = narration_lines(ctx, screenplay)  # type: ignore[arg-type]
+    by_shot = narration_by_shot(ctx, screenplay)  # type: ignore[arg-type]
     shots = screenplay.get("shots") or []  # type: ignore[union-attr]
     if ctx.get("mode") == SECOND_TELLING:
         narrations = dict(screenplay.get("narrations") or {})  # type: ignore[union-attr]
-        narrations[teller] = {shots[0]["id"]: lines} if shots else {}
+        narrations[teller] = by_shot
         screenplay["narrations"] = narrations  # type: ignore[index]
-    elif shots:
-        shots[0]["narration"] = lines
+    else:
+        for shot in shots:
+            shot["narration"] = by_shot.get(str(shot.get("id")), [])
     s.one("write_file", {"file_path": SCREENPLAY_PATH, "content": _dump(screenplay)})  # type: ignore[arg-type]
-    cues = [f"{ln['text']!r} -> {ln['cue']}" for ln in lines if ln.get("cue")]
-    s.finish(_report(f"write pass for {teller}: s1 has {len(lines)} line(s); cues: {', '.join(cues) or 'none'}",
-                     {"pass": "write", "lines": len(lines)}))
+    counts = "; ".join(f"{sid} has {len(lines)} line(s)" for sid, lines in by_shot.items()) or "no shots"
+    cues = [f"{ln['text']!r} -> {ln['cue']}" for lines in by_shot.values() for ln in lines if ln.get("cue")]
+    total = sum(len(lines) for lines in by_shot.values())
+    s.finish(_report(f"write pass for {teller}: {counts}; cues: {', '.join(cues) or 'none'}",
+                     {"pass": "write", "lines": total}))
 
 
 # ------------------------------------------------------------------- checker
@@ -1021,6 +1206,8 @@ __all__ = [
     "file_body",
     "linker_question",
     "make_fake_studio_responder",
+    "narration_by_shot",
     "narration_lines",
     "role_of",
+    "shot_sentences",
 ]
