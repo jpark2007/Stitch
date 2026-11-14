@@ -69,6 +69,20 @@ describe("gain curves", () => {
     close(pts[0][1], mid);
   });
 
+  it("soft ceiling: transparent where the music lives, never above -12 dBFS", () => {
+    const curve = f.softClipCurve(2049, f.CEILING);
+    close(f.gainToDb(f.CEILING), -12.04, 0.01);
+    const at = (x: number) => curve[Math.round(((x + 1) / 2) * 2048)];
+    assert.ok(Math.abs(at(0)) < 1e-9);
+    for (let i = 1; i < curve.length; i++) assert.ok(curve[i] > curve[i - 1], "monotonic");
+    for (const v of curve) assert.ok(Math.abs(v) <= f.CEILING);
+    // Around -24 dBFS (the music's peaks are rarely above) it changes the level by under 0.3 dB.
+    const x = f.dbToGain(-24);
+    assert.ok(Math.abs(f.gainToDb(Math.abs(at(x))) - f.gainToDb(x)) < 0.3);
+    // Odd symmetry: no DC from the shaper.
+    close(at(0.3), -at(-0.3), 1e-6);
+  });
+
   it("ducks down quicker than it comes back", () => {
     assert.ok(f.DUCK_DOWN < f.DUCK_UP);
     assert.ok(f.MUTE_FADE < f.ACTIVE_FADE);

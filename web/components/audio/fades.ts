@@ -79,6 +79,23 @@ export function crossfadeShape(from: number, to: number): Shape {
   return to >= from ? "in" : "out";
 }
 
+/** The music's absolute output ceiling: -12 dBFS. */
+export const CEILING = 0.25;
+
+/**
+ * A WaveShaper curve over input -1..1: c * tanh(x / c). Within a few dB of
+ * silence it is the identity; it bends smoothly toward ±c and never passes
+ * it, so the output can never exceed the ceiling or clip.
+ */
+export function softClipCurve(n: number, c: number): Float32Array {
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    out[i] = c * Math.tanh(x / c);
+  }
+  return out;
+}
+
 /** Largest change in value between consecutive points (a click check). */
 export function maxStep(points: [number, number][]): number {
   let m = 0;

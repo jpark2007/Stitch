@@ -176,7 +176,7 @@ describe("scores", () => {
   it("every part names a known role and the melody leaves room", () => {
     for (const id of ERA_IDS) {
       const p = PALETTES[id];
-      assert.ok(p.parts.length >= 2 && p.parts.length <= 7, `${id} parts`);
+      assert.ok(p.parts.length >= 2 && p.parts.length <= 8, `${id} parts`);
       for (const part of p.parts) assert.ok(part.gain <= -5, `${id} ${part.inst} is quiet`);
     }
   });

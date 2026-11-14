@@ -7,25 +7,28 @@
  *   music.setActive(false);    // the book closed: ebb away, then sleep
  *   music.dispose();
  *
- * Lazy: creating one costs a mute subscription and nothing else. The shared
- * AudioContext (hub.ts) is made at the reader's first gesture once there is
- * something to play, and suspended whenever nothing is (muted, closed, no
- * era), so a quiet page spends no audio CPU at all.
+ * Lazy: until the reader's first pointer or key press an engine is a mute
+ * subscription and two event listeners, nothing more. That gesture makes the
+ * shared AudioContext and this engine's graph (hub.ts), before the gesture's
+ * own animation starts; the context then sleeps (suspended) whenever there is
+ * nothing to hear (muted, closed, no era), so a quiet page spends no audio CPU.
  *
  * It obeys the book's mute (sound.ts): muting fades the music out in 0.3 s
  * and suspends the context; unmuting resumes it and fades back in. One
  * button silences music, narration and paper sounds together.
  *
- * Scheduling runs on a lookahead timer (setTimeout every 100 ms, notes made
- * 0.4 s ahead at exact AudioContext times), never in requestAnimationFrame,
- * and only while the music is awake.
+ * Every call is cheap and returns at once: the work (building a voice,
+ * scheduling notes) happens on the engine's lookahead timer (setTimeout every
+ * 100 ms, notes made 0.4 s ahead at exact AudioContext times), never in
+ * requestAnimationFrame and never inside the caller's effect, and only while
+ * the music is awake.
  */
 
 import { isMuted, subscribeMuted } from "@/components/book/sound";
 import { MusicCore, type MeterReading } from "./core";
 import type { EraId } from "./eras";
-import { stepTransport, tickTransport, wantsSound, type Phase, type TransportAction } from "./fades";
-import { requestMusicContext, sleepMusic, wakeMusic } from "./hub";
+import { stepTransport, tickTransport, type Phase, type TransportAction } from "./fades";
+import { attachMusic, createMusicContext, sleepMusic, wakeMusic } from "./hub";
 
 /** Scheduler period. The lookahead (core.ts) covers four of these. */
 const TICK_MS = 100;
@@ -63,8 +66,9 @@ export function createEraMusic(opts: { active?: boolean } = {}): EraMusic {
   let core: MusicCore | null = null;
   let phase: Phase = { kind: "asleep" };
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let cancelRequest: (() => void) | null = null;
   let disposed = false;
+  /** The last change's reason, for the transport's fade length. */
+  let why: "mute" | "active" | "era" | null = null;
   const owner = {};
   const st = { ticks: 0, busyMs: 0, maxTickMs: 0, notes: 0 };
 
@@ -78,24 +82,31 @@ export function createEraMusic(opts: { active?: boolean } = {}): EraMusic {
     }
   }
 
-  function startTimer() {
-    if (timer === null && !disposed) timer = setTimeout(tick, 0);
-  }
-
+  /** One pass: apply what changed, schedule ahead, advance the transport. */
   function tick() {
     timer = null;
     if (disposed || !core || !ctx) return;
     const t0 = performance.now();
     const now = ctx.currentTime;
-    st.notes += core.tick(now);
-    if (!core.sounding && phase.kind === "playing") {
-      const r = stepTransport(phase, input(), now);
+    if (why) {
+      core.setEra(era, now);
+      core.setDucked(ducked, now);
+      const r = stepTransport(phase, input(), now, why);
+      phase = r.phase;
+      run(r.actions, now);
+      why = null;
+    }
+    if (phase.kind !== "asleep") {
+      st.notes += core.tick(now);
+      if (!core.sounding && phase.kind === "playing") {
+        const r = stepTransport(phase, input(), now);
+        phase = r.phase;
+        run(r.actions, now);
+      }
+      const r = tickTransport(phase, now);
       phase = r.phase;
       run(r.actions, now);
     }
-    const r = tickTransport(phase, now);
-    phase = r.phase;
-    run(r.actions, now);
     const ms = performance.now() - t0;
     st.ticks++;
     st.busyMs += ms;
@@ -103,57 +114,52 @@ export function createEraMusic(opts: { active?: boolean } = {}): EraMusic {
     if (phase.kind !== "asleep") timer = setTimeout(tick, TICK_MS);
   }
 
-  function update(why: "mute" | "active" | "era") {
+  /** Something changed: handle it on the next pass (never inside the caller). */
+  function changed(reason: "mute" | "active" | "era") {
     if (disposed) return;
-    if (!core || !ctx) {
-      // Nothing is made until there is something to hear.
-      if (wantsSound(input()) && !cancelRequest) {
-        cancelRequest = requestMusicContext((c) => {
-          cancelRequest = null;
-          if (disposed) return;
-          ctx = c;
-          core = new MusicCore(c, c.destination);
-          update(why);
-        });
-      }
-      return;
-    }
-    const now = ctx.currentTime;
-    core.setEra(era, now);
-    core.setDucked(ducked, now);
-    const r = stepTransport(phase, input(), now, why);
-    phase = r.phase;
-    run(r.actions, now);
-    if (phase.kind !== "asleep") startTimer();
+    // A mute decides the fade length over an era change in the same pass.
+    if (why !== "mute") why = reason;
+    if (!core) return;
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(tick, 0);
   }
+
+  const detach = attachMusic((c) => {
+    if (disposed) return;
+    ctx = c;
+    core = new MusicCore(c, c.destination);
+    why ??= "era";
+    changed(why);
+  });
 
   const unsubscribe = subscribeMuted((m) => {
     muted = m;
-    update("mute");
+    // The unmute click is a gesture: the moment the context may be made.
+    if (!m && !ctx) createMusicContext();
+    changed("mute");
   });
 
   return {
     setEra(id) {
       if (id === era) return;
       era = id;
-      update("era");
+      changed("era");
     },
     setDucked(on) {
       if (on === ducked) return;
       ducked = on;
-      update("era");
+      changed("era");
     },
     setActive(on) {
       if (on === active) return;
       active = on;
-      update("active");
+      changed("active");
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       unsubscribe();
-      cancelRequest?.();
-      cancelRequest = null;
+      detach();
       if (timer !== null) clearTimeout(timer);
       timer = null;
       if (core && ctx) {

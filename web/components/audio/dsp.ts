@@ -49,18 +49,26 @@ export function karplusStrong(freq: number, sampleRate: number, spec: StringSpec
   const t60 = spec.t60 * Math.pow(110 / Math.max(55, freq), 0.35);
   const loss = Math.pow(10, -3 / (t60 * freq));
 
-  // Excitation: one period of seeded noise, lowpassed (brightness), combed (pick position).
+  // Excitation: the string's shape when the finger lets go (a triangle peaked
+  // at the pick position, zero mean), plus a little lowpassed noise for the
+  // pick's grain. A pure noise burst would be far brighter and spikier
+  // (~20 dB crest); this keeps a pluck round and its peak near its body.
   const r = rng(spec.seed);
-  const exc = new Float32Array(delay);
+  const pick = Math.max(1, Math.min(delay - 1, Math.round(delay * spec.pickPos)));
+  const line = new Float32Array(delay);
+  let mean = 0;
+  for (let i = 0; i < delay; i++) {
+    const tri = i < pick ? i / pick : (delay - i) / (delay - pick);
+    line[i] = tri;
+    mean += tri;
+  }
+  mean /= delay;
   const a = 0.15 + 0.8 * spec.brightness;
   let lp = 0;
   for (let i = 0; i < delay; i++) {
     lp += a * (r() * 2 - 1 - lp);
-    exc[i] = lp;
+    line[i] = line[i] - mean + spec.brightness * 0.6 * lp;
   }
-  const pick = Math.max(1, Math.round(delay * spec.pickPos));
-  const line = new Float32Array(delay);
-  for (let i = 0; i < delay; i++) line[i] = exc[i] - 0.6 * exc[(i + delay - pick) % delay];
 
   let idx = 0;
   let prev = 0;
@@ -80,53 +88,8 @@ export function karplusStrong(freq: number, sampleRate: number, spec: StringSpec
     if (idx === delay) idx = 0;
   }
   removeDc(out);
-  normalise(out, 0.7);
   fadeEdges(out, Math.round(0.0015 * sampleRate), Math.round(0.06 * sampleRate));
-  return out;
-}
-
-/**
- * Vinyl: a faint warm hiss with sparse, soft crackles (each a tiny damped
- * ring, never a full-scale spike). Loops seamlessly: the tail is crossfaded
- * into the head, and no crackle crosses the loop point.
- */
-export function vinylLoop(sampleRate: number, seconds: number, seed: number): Float32Array {
-  const n = Math.round(sampleRate * seconds);
-  const xf = Math.round(sampleRate * 0.08);
-  const raw = new Float32Array(n + xf);
-  const r = rng(seed);
-  // Hiss: pink-ish noise, bandlimited.
-  let b0 = 0;
-  let b1 = 0;
-  let lp = 0;
-  const lpA = 1 - Math.exp((-2 * Math.PI * 3500) / sampleRate);
-  for (let i = 0; i < raw.length; i++) {
-    const w = r() * 2 - 1;
-    b0 = 0.997 * b0 + w * 0.029591;
-    b1 = 0.985 * b1 + w * 0.032534;
-    lp += lpA * (b0 + b1 + w * 0.02 - lp);
-    raw[i] = lp * 0.25;
-  }
-  // Crackles: ~7 per second, a few loud pops, mostly ticks.
-  const count = Math.round(seconds * 7);
-  const ringLen = Math.round(sampleRate * 0.004);
-  for (let k = 0; k < count; k++) {
-    const at = Math.floor(r() * (n - ringLen - xf));
-    const amp = (r() < 0.12 ? 0.5 : 0.18) * (0.4 + r() * 0.6) * (r() < 0.5 ? -1 : 1);
-    const f = 1800 + r() * 2500;
-    const w = (2 * Math.PI * f) / sampleRate;
-    for (let i = 0; i < ringLen; i++) {
-      const env = Math.sin((Math.PI * Math.min(i, 6)) / 12) * Math.exp(-i / (ringLen * 0.25));
-      raw[at + i] += amp * env * Math.sin(w * i);
-    }
-  }
-  // Seamless loop: blend the overrun into the head with an equal-power crossfade.
-  const out = raw.slice(0, n);
-  for (let i = 0; i < xf; i++) {
-    const x = i / xf;
-    out[i] = out[i] * Math.sin((x * Math.PI) / 2) + raw[n + i] * Math.cos((x * Math.PI) / 2);
-  }
-  removeDc(out);
+  normalise(out, 0.7);
   return out;
 }
 
@@ -134,31 +97,49 @@ export function vinylLoop(sampleRate: number, seconds: number, seed: number): Fl
  * A stereo room: early reflections then an exponentially decaying, darkening
  * tail, with decorrelated left and right. Energy-normalised so a full send
  * comes back at about the dry level.
+ *
+ * Made once per AudioContext inside the reader's first gesture, so it is
+ * written to be cheap (~3 ms warm, ~7 ms cold, for 2.6 s at 48 kHz): the
+ * random generator is inlined, the decay is a running product and the
+ * darkening filter's coefficient updates every 64 samples.
  */
 export function reverbImpulse(sampleRate: number, seconds: number, seed: number): [Float32Array, Float32Array] {
   const n = Math.round(sampleRate * seconds);
   const pre = Math.round(sampleRate * 0.014);
   const chans: [Float32Array, Float32Array] = [new Float32Array(n), new Float32Array(n)];
-  const decay = seconds / 6.9; // amplitude falls 60 dB over `seconds`
-  chans.forEach((ch, c) => {
-    const r = rng(seed + c * 7919);
+  // Amplitude falls 60 dB over `seconds`.
+  const step = Math.exp(-6.9 / (seconds * sampleRate));
+  const fadeLen = Math.round(sampleRate * 0.006);
+  for (let c = 0; c < 2; c++) {
+    const ch = chans[c];
+    // mulberry32, inlined (this loop is the hot one).
+    let s = (seed + c * 7919) >>> 0;
     let lp = 0;
+    let env = 1;
+    let a = 1;
     for (let i = pre; i < n; i++) {
-      const t = (i - pre) / sampleRate;
-      // The tail darkens: the lowpass closes from ~9 kHz to ~1.5 kHz.
-      const fc = 1500 + 7500 * Math.exp(-t / 0.35);
-      const a = 1 - Math.exp((-2 * Math.PI * fc) / sampleRate);
-      lp += a * (r() * 2 - 1 - lp);
-      const fadeIn = Math.min(1, (i - pre) / (sampleRate * 0.006));
-      ch[i] = lp * Math.exp(-t / decay) * fadeIn;
+      const k = i - pre;
+      if ((k & 63) === 0) {
+        // The tail darkens: the lowpass closes from ~9 kHz to ~1.5 kHz.
+        const fc = 1500 + 7500 * Math.exp(-k / sampleRate / 0.35);
+        a = 1 - Math.exp((-2 * Math.PI * fc) / sampleRate);
+      }
+      s = (s + 0x6d2b79f5) | 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      lp += a * (((t ^ (t >>> 14)) >>> 0) / 2147483648 - 1 - lp);
+      ch[i] = lp * env;
+      env *= step;
     }
+    for (let i = 0; i < fadeLen; i++) ch[pre + i] *= i / fadeLen;
     // A few early reflections.
+    const r = rng(seed + c * 104729);
     for (let k = 0; k < 6; k++) {
       const at = pre + Math.round(sampleRate * (0.007 + r() * 0.045));
       if (at < n) ch[at] += (r() < 0.5 ? -1 : 1) * (0.35 - k * 0.04);
     }
     fadeEdges(ch, 0, Math.round(sampleRate * 0.05));
-  });
+  }
   let energy = 0;
   for (const ch of chans) for (let i = 0; i < n; i++) energy += ch[i] * ch[i];
   const g = 1 / Math.sqrt(Math.max(1e-9, energy / 2));
@@ -166,7 +147,7 @@ export function reverbImpulse(sampleRate: number, seconds: number, seed: number)
   return chans;
 }
 
-/** Pink-ish noise (Paul Kellet's economy filter), seamless when looped. */
+/** Pink-ish noise (Paul Kellet's economy filter), seamless when looped, peak 0.9. */
 export function pinkNoise(sampleRate: number, seconds: number, seed: number): Float32Array {
   const n = Math.round(sampleRate * seconds);
   const xf = Math.round(sampleRate * 0.05);
@@ -187,6 +168,7 @@ export function pinkNoise(sampleRate: number, seconds: number, seed: number): Fl
     const x = i / xf;
     out[i] = out[i] * Math.sin((x * Math.PI) / 2) + raw[n + i] * Math.cos((x * Math.PI) / 2);
   }
+  normalise(out, 0.9);
   return out;
 }
 

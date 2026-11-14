@@ -12,7 +12,7 @@
  * same patches as the live engine.
  */
 
-import { karplusStrong, pinkNoise, vinylLoop, type StringSpec } from "./dsp";
+import { karplusStrong, pinkNoise, type StringSpec } from "./dsp";
 import { dbToGain } from "./fades";
 import type { PartFx } from "./score";
 
@@ -21,14 +21,19 @@ export interface Kit {
   noise: AudioBuffer;
   /** A Karplus-Strong string, cached per patch and note. */
   string(name: string, midi: number): AudioBuffer;
+  /** True once `string(name, midi)` would not have to build a buffer. */
+  hasString(name: string, midi: number): boolean;
   wave(name: "piano" | "pulse"): PeriodicWave;
-  vinyl(): AudioBuffer;
 }
 
+/** Patches that play Karplus-Strong buffers (the voice warms these ahead). */
+export const STRING_PATCHES = new Set(["guitar", "eguitar", "upright"]);
+
+// Buffers are only as long as the longest note needs (held + release).
 const STRINGS: Record<string, StringSpec> = {
-  guitar: { brightness: 0.55, t60: 2.6, pickPos: 0.18, seconds: 2.4, seed: 11 },
-  eguitar: { brightness: 0.45, t60: 1.6, pickPos: 0.12, seconds: 1.6, seed: 23 },
-  upright: { brightness: 0.18, t60: 1.5, pickPos: 0.3, seconds: 1.4, seed: 37 },
+  guitar: { brightness: 0.45, t60: 2.4, pickPos: 0.18, seconds: 1.7, seed: 11 },
+  eguitar: { brightness: 0.4, t60: 1.5, pickPos: 0.12, seconds: 1.3, seed: 23 },
+  upright: { brightness: 0.2, t60: 1.4, pickPos: 0.3, seconds: 1.1, seed: 37 },
 };
 
 const MAX_STRINGS = 96;
@@ -44,10 +49,12 @@ export function createKit(ctx: BaseAudioContext): Kit {
   const noise = toBuffer(pinkNoise(rate, 2, 5));
   const strings = new Map<string, AudioBuffer>();
   const waves = new Map<string, PeriodicWave>();
-  let vinyl: AudioBuffer | null = null;
   return {
     ctx,
     noise,
+    hasString(name, midi) {
+      return strings.has(`${name}:${midi}`);
+    },
     string(name, midi) {
       const key = `${name}:${midi}`;
       let b = strings.get(key);
@@ -74,10 +81,6 @@ export function createKit(ctx: BaseAudioContext): Kit {
         waves.set(name, w);
       }
       return w;
-    },
-    vinyl() {
-      if (!vinyl) vinyl = toBuffer(vinylLoop(rate, 6, 9));
-      return vinyl;
     },
   };
 }
@@ -236,12 +239,13 @@ const PATCHES: Record<string, Patch> = {
     release(car, [car, mod, idx, g]);
   },
 
-  // Plucked strings: precomputed Karplus-Strong buffers.
+  // Plucked strings: precomputed Karplus-Strong buffers, through a body
+  // lowpass that softens the pick with the velocity.
   guitar(k, out, n) {
-    stringNote(k, out, n, "guitar", 0.5, 0.12);
+    stringNote(k, out, n, "guitar", 0.5, 0.12, 2400 + 1600 * n.vel);
   },
   eguitar(k, out, n) {
-    stringNote(k, out, n, "eguitar", 0.45, 0.1);
+    stringNote(k, out, n, "eguitar", 0.45, 0.1, 2200 + 1200 * n.vel);
   },
   upright(k, out, n) {
     stringNote(k, out, n, "upright", 0.7, 0.08, 900);
@@ -428,6 +432,12 @@ const PATCHES: Record<string, Patch> = {
 
   brushtap(k, out, n) {
     noiseHit(k, out, n.t, { type: "bandpass", f0: 2600, q: 0.8, peak: 0.24 * n.vel, attack: 0.002, tc: 0.06 });
+  },
+
+  // A speck of dust under the needle: a tiny, damped tick at a varying pitch.
+  crackle(k, out, n) {
+    const f0 = 1800 + ((n.t * 9173.13) % 1) * 2400;
+    noiseHit(k, out, n.t, { type: "bandpass", f0, q: 1.4, peak: 0.5 * n.vel * n.vel, attack: 0.0006, tc: 0.0028 });
   },
 };
 
@@ -668,13 +678,38 @@ export function createPartBus(
   };
 }
 
-/** A looping texture (vinyl) for the life of a voice, faded in at `t`. */
-export function startBed(k: Kit, inst: string, out: AudioNode, t: number): AudioScheduledSourceNode | null {
+/**
+ * A texture for the life of a voice. "vinyl" is the record's surface hiss:
+ * the shared pink-noise loop, band-limited (its crackles are a "crackle"
+ * drum part, so they are scheduled like notes and cost no buffer).
+ */
+export function startBed(k: Kit, inst: string, out: AudioNode, t: number): { stop(t: number): void; disconnect(): void } | null {
   if (inst !== "vinyl") return null;
   const src = k.ctx.createBufferSource();
-  src.buffer = k.vinyl();
+  src.buffer = k.noise;
   src.loop = true;
-  src.connect(out);
-  src.start(t);
-  return src;
+  const hp = k.ctx.createBiquadFilter();
+  hp.type = "highpass";
+  hp.frequency.value = 900;
+  hp.Q.value = 0.5;
+  const lp = k.ctx.createBiquadFilter();
+  lp.type = "lowpass";
+  lp.frequency.value = 4800;
+  lp.Q.value = 0.5;
+  src.connect(hp).connect(lp).connect(out);
+  src.start(t, 0.37);
+  return {
+    stop(at) {
+      try {
+        src.stop(at);
+      } catch {
+        // Already stopped.
+      }
+    },
+    disconnect() {
+      src.disconnect();
+      hp.disconnect();
+      lp.disconnect();
+    },
+  };
 }

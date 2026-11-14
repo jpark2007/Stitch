@@ -25,7 +25,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["I", "I", "IV", "I", "V7", "V7", "I", "V7", "I", "I", "IV", "iv", "I", "V7", "I", "I"],
     loopBars: 16,
-    level: 0,
+    level: 1,
     parts: [
       { role: "melody", inst: "musicbox", range: [72, 88], density: 5, grid: 2, gain: -7, send: 0.5, vel: 0.62, pan: 0.1 },
       { role: "arp", inst: "musicbox", range: [65, 81], grid: 2, pattern: "..x.xx", order: "up", len: 2, gain: -16, send: 0.45, vel: 0.5, pan: -0.15 },
@@ -46,7 +46,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["I6", "vi7", "ii7", "V7", "iii7", "vi7", "ii7", "V7"],
     loopBars: 16,
-    level: 0,
+    level: -0.5,
     parts: [
       { role: "bass", inst: "upright", range: [34, 50], grid: 1, pattern: "xxxx", style: "walk", len: 0.95, gain: -6, send: 0.12, vel: 0.7 },
       { role: "drum", inst: "brush", grid: 1, pattern: "xxxx", len: 0.9, gain: -22, send: 0.15, vel: 0.5, pan: -0.2 },
@@ -78,7 +78,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["I", "vi", "IV", "V", "I", "vi", "IV", "V", "I", "vi", "ii7", "V7", "I", "vi", "IV", "V7"],
     loopBars: 16,
-    level: 0,
+    level: -0.5,
     parts: [
       {
         role: "pad",
@@ -91,7 +91,7 @@ export const PALETTES: Record<EraId, Palette> = {
         fx: [{ kind: "wobble", rate: 5, depth: 0.00035 }],
       },
       { role: "chords", inst: "piano", range: [64, 76], voices: 3, grid: 3, pattern: "Xxxxxxxxxxxx", len: 0.9, gain: -21, send: 0.3, vel: 0.4, pan: 0.15 },
-      { role: "bass", inst: "bass", range: [36, 48], grid: 3, pattern: "x.....x....x", style: "rootFifth", len: 3, gain: -9, send: 0.1, vel: 0.65 },
+      { role: "bass", inst: "bass", range: [36, 48], grid: 3, pattern: "x.....x....x", style: "rootFifth", len: 3, gain: -12, send: 0.1, vel: 0.65 },
       { role: "drum", inst: "rim", grid: 3, pattern: "...x.....x..", gain: -24, send: 0.35, vel: 0.5, pan: -0.1 },
     ],
   },
@@ -107,7 +107,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["I", "V", "vi", "IV", "I", "IV", "I", "V", "vi", "IV", "I", "V", "vi", "IV", "V", "V"],
     loopBars: 16,
-    level: 0,
+    level: 3.5,
     parts: [
       { role: "pick", inst: "guitar", range: [59, 71], bass: [40, 52], grid: 2, pattern: "ptbtbtbt", len: 3, gain: -6, send: 0.25, vel: 0.65, pan: -0.1 },
       { role: "melody", inst: "guitar", range: [67, 81], density: 4, grid: 2, gain: -10, send: 0.35, vel: 0.6, pan: 0.2, bars: secondHalf },
@@ -126,7 +126,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["Imaj7", "vi9", "ii9", "V9", "Imaj7", "IVmaj7", "iii7", "V7sus4"],
     loopBars: 16,
-    level: 0,
+    level: -2,
     parts: [
       {
         role: "chords",
@@ -141,8 +141,8 @@ export const PALETTES: Record<EraId, Palette> = {
         vel: 0.55,
         fx: [{ kind: "autopan", rate: 3.2, depth: 0.45 }],
       },
-      { role: "bass", inst: "bass", range: [34, 50], grid: 4, pattern: "x.......x..x....", style: "rootFifth", len: 3, gain: -8, send: 0.05, vel: 0.65 },
-      { role: "drum", inst: "kick", grid: 4, pattern: "x.........x.....", gain: -15, send: 0.05, vel: 0.6 },
+      { role: "bass", inst: "bass", range: [34, 50], grid: 4, pattern: "x.......x..x....", style: "rootFifth", len: 3, gain: -12, send: 0.05, vel: 0.65 },
+      { role: "drum", inst: "kick", grid: 4, pattern: "x.........x.....", gain: -18, send: 0.05, vel: 0.6 },
       { role: "drum", inst: "rim", grid: 4, pattern: "....x.......x...", gain: -22, send: 0.2, vel: 0.5, pan: 0.1 },
       { role: "drum", inst: "hat", grid: 4, pattern: "x.o.x.o.x.o.x.o.", gain: -29, send: 0.1, vel: 0.5, pan: 0.25 },
       { role: "melody", inst: "epiano", range: [67, 82], density: 3, grid: 2, gain: -12, send: 0.35, vel: 0.55, bars: secondHalf },
@@ -160,7 +160,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "minor",
     progression: ["i", "bVI", "bIII", "bVII", "i", "bVI", "iv", "bVII"],
     loopBars: 16,
-    level: 0,
+    level: 0.5,
     reverb: 1,
     parts: [
       {
@@ -208,8 +208,8 @@ export const PALETTES: Record<EraId, Palette> = {
     loopBars: 16,
     level: 0,
     parts: [
-      { role: "drum", inst: "kick", grid: 4, pattern: "x......x..x.....", gain: -12, send: 0.05, vel: 0.65 },
-      { role: "drum", inst: "snare", grid: 4, pattern: "....x.......x...", gain: -18, send: 0.15, vel: 0.55 },
+      { role: "drum", inst: "kick", grid: 4, pattern: "x......x..x.....", gain: -16, send: 0.05, vel: 0.65 },
+      { role: "drum", inst: "snare", grid: 4, pattern: "....x.......x...", gain: -19, send: 0.15, vel: 0.55 },
       { role: "drum", inst: "hat", grid: 4, pattern: "x.o.x.o.x.o.x.ox", gain: -27, send: 0.05, vel: 0.5, pan: 0.2 },
       {
         role: "arp",
@@ -225,7 +225,7 @@ export const PALETTES: Record<EraId, Palette> = {
         pan: -0.15,
         fx: [{ kind: "chorus", rate: 0.8, depth: 0.0025, delay: 0.012, mix: 0.5 }],
       },
-      { role: "bass", inst: "subbass", range: [38, 50], grid: 4, pattern: "x.........x..x..", style: "root", len: 5, gain: -9, send: 0, vel: 0.7 },
+      { role: "bass", inst: "subbass", range: [38, 50], grid: 4, pattern: "x.........x..x..", style: "root", len: 5, gain: -13, send: 0, vel: 0.7 },
       { role: "pad", inst: "warmpad", range: [50, 65], voices: 3, gain: -21, send: 0.4, vel: 0.5 },
     ],
   },
@@ -241,13 +241,13 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["I", "iii", "vi", "IV", "I", "V", "vi", "IV"],
     loopBars: 16,
-    level: 0,
+    level: 2,
     parts: [
       { role: "chords", inst: "guitar", range: [48, 67], voices: 5, grid: 2, pattern: "d.du.udu", strum: 0.014, len: 2, gain: -12, send: 0.25, vel: 0.5, pan: -0.15 },
       { role: "melody", inst: "glock", range: [72, 86], density: 4, grid: 2, gain: -15, send: 0.45, vel: 0.55, pan: 0.2, bars: afterIntro },
-      { role: "drum", inst: "kick", grid: 2, pattern: "x...x...", gain: -16, send: 0.05, vel: 0.55 },
-      { role: "drum", inst: "shaker", grid: 4, pattern: "..x...x...x...x.", gain: -27, send: 0.1, vel: 0.5, pan: 0.3 },
-      { role: "bass", inst: "bass", range: [36, 50], grid: 2, pattern: "x..xx...", style: "rootFifth", len: 1.5, gain: -11, send: 0.05, vel: 0.6 },
+      { role: "drum", inst: "kick", grid: 2, pattern: "x...x...", gain: -19, send: 0.05, vel: 0.55 },
+      { role: "drum", inst: "shaker", grid: 4, pattern: "..x...x...x...x.", gain: -26, send: 0.1, vel: 0.5, pan: 0.3 },
+      { role: "bass", inst: "bass", range: [36, 50], grid: 2, pattern: "x..xx...", style: "rootFifth", len: 1.5, gain: -14, send: 0.05, vel: 0.6 },
     ],
   },
 
@@ -297,11 +297,13 @@ export const PALETTES: Record<EraId, Palette> = {
           { kind: "lowpass", freq: 2800 },
         ],
       },
-      { role: "drum", inst: "kick", grid: 4, pattern: "x......x..x.....", gain: -13, send: 0.05, vel: 0.6, fx: [{ kind: "lowpass", freq: 1200 }] },
+      { role: "drum", inst: "kick", grid: 4, pattern: "x......x..x.....", gain: -17, send: 0.05, vel: 0.6, fx: [{ kind: "lowpass", freq: 1200 }] },
       { role: "drum", inst: "snare", grid: 4, pattern: "....x.......x...", gain: -20, send: 0.15, vel: 0.5, humanize: 0.012, fx: [{ kind: "lowpass", freq: 3000 }] },
       { role: "drum", inst: "hat", grid: 4, pattern: "..x...x...x...x.", gain: -28, send: 0.05, vel: 0.5, pan: 0.2, fx: [{ kind: "lowpass", freq: 5000 }] },
-      { role: "bass", inst: "subbass", range: [36, 48], grid: 4, pattern: "x.......x.x.....", style: "root", len: 4, gain: -10, send: 0, vel: 0.65 },
-      { role: "bed", inst: "vinyl", gain: -24 },
+      { role: "bass", inst: "subbass", range: [36, 48], grid: 4, pattern: "x.......x.x.....", style: "root", len: 4, gain: -14, send: 0, vel: 0.65 },
+      // The record: surface hiss, and dust ticking at irregular moments.
+      { role: "bed", inst: "vinyl", gain: -36 },
+      { role: "drum", inst: "crackle", grid: 4, pattern: "o.x.o..oXo.o..x.", gain: -27, send: 0, vel: 0.6, humanize: 0.06, pan: -0.1 },
     ],
   },
 
@@ -316,7 +318,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["Imaj9", "IVmaj7", "vi9", "IVmaj7", "Imaj9", "IVmaj7", "ii9", "IVmaj7"],
     loopBars: 16,
-    level: 0,
+    level: -2,
     reverb: 1.5,
     parts: [
       {
@@ -343,7 +345,7 @@ export const PALETTES: Record<EraId, Palette> = {
         pan: 0.1,
         fx: [{ kind: "echo", beats: 0.75, feedback: 0.4, mix: 0.4, tone: 1800 }],
       },
-      { role: "bass", inst: "subbass", range: [28, 44], grid: 1, pattern: "x...", style: "root", len: 3.8, gain: -11, send: 0, vel: 0.65 },
+      { role: "bass", inst: "subbass", range: [28, 44], grid: 1, pattern: "x...", style: "root", len: 3.8, gain: -15, send: 0, vel: 0.65 },
       { role: "drum", inst: "kick", grid: 4, pattern: "x.........x.....", gain: -17, send: 0.05, vel: 0.55, bars: afterIntro },
       { role: "drum", inst: "snare", grid: 4, pattern: "........x.......", gain: -22, send: 0.4, vel: 0.5, bars: afterIntro },
     ],

@@ -11,13 +11,21 @@
 
 import { CROSSFADE, dbToGain, type Shape } from "./fades";
 import { GainLine } from "./line";
-import { createPartBus, playNote, startBed, type Kit, type PartBus } from "./patches";
+import { STRING_PATCHES, createPartBus, playNote, startBed, type Kit, type PartBus } from "./patches";
 import { scoreLoop, type Palette, type ScoreLoop } from "./score";
 
 /** Seconds a note can ring after its last event (longest release, echoes). */
 const TAIL = 4.5;
-/** Strings buffers to build per scheduling pass while warming up. */
-const WARM_PER_PASS = 3;
+/** Main-thread milliseconds a scheduling pass may spend building strings ahead of need. */
+const WARM_BUDGET_MS = 1.5;
+/**
+ * The first note waits this long after the voice is made, so the first few
+ * scheduling passes can build its strings in small slices (it is fading in
+ * from silence anyway).
+ */
+export const VOICE_LEAD_IN = 0.5;
+
+const clock = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 export class EraVoice {
   readonly id: string;
@@ -26,7 +34,7 @@ export class EraVoice {
   private readonly wet: GainNode;
   private readonly line: GainLine;
   private readonly buses: (PartBus | null)[];
-  private readonly beds: AudioScheduledSourceNode[] = [];
+  private readonly beds: { stop(t: number): void; disconnect(): void }[] = [];
   private bar = 0;
   private barStart: number;
   private cursor = 0;
@@ -44,7 +52,7 @@ export class EraVoice {
     const ctx = kit.ctx;
     this.id = palette.id;
     this.loop = scoreLoop(palette);
-    this.barStart = t0;
+    this.barStart = t0 + VOICE_LEAD_IN;
     this.dry = ctx.createGain();
     this.wet = ctx.createGain();
     this.dry.connect(dest.dry);
@@ -76,7 +84,7 @@ export class EraVoice {
     for (const bar of this.loop.bars) {
       for (const e of bar) {
         const inst = palette.parts[e.part].inst;
-        if (inst !== "guitar" && inst !== "eguitar" && inst !== "upright") continue;
+        if (!STRING_PATCHES.has(inst)) continue;
         const key = `${inst}:${e.midi}`;
         if (!seen.has(key)) {
           seen.add(key);
@@ -117,9 +125,15 @@ export class EraVoice {
   /** Schedule every note that starts before `now + horizon`. Returns notes made. */
   schedule(now: number, horizon: number): number {
     if (this.disposed) return 0;
-    for (let i = 0; i < WARM_PER_PASS && this.warm.length; i++) {
-      const [inst, midi] = this.warm.shift()!;
-      this.kit.string(inst, midi);
+    // Build strings ahead of need in small slices (always at least one).
+    const t0 = clock();
+    while (this.warm.length) {
+      const [inst, midi] = this.warm[0];
+      if (!this.kit.hasString(inst, midi)) {
+        if (clock() - t0 > WARM_BUDGET_MS) break;
+        this.kit.string(inst, midi);
+      }
+      this.warm.shift();
     }
     const until = Math.min(now + horizon, this.stopAt);
     const { bars, barDur } = this.loop;
@@ -162,13 +176,7 @@ export class EraVoice {
   dispose(at: number) {
     if (this.disposed) return;
     this.disposed = true;
-    for (const b of this.beds) {
-      try {
-        b.stop(at);
-      } catch {
-        // Already stopped.
-      }
-    }
+    for (const b of this.beds) b.stop(at);
     for (const bus of this.buses) bus?.stop(at);
     // Disconnect once the stop time has passed; the fade has made it silent.
     const drop = () => {

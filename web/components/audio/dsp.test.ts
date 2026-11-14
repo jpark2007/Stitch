@@ -66,6 +66,17 @@ describe("Karplus-Strong string", () => {
     assert.ok(Math.abs(x[1] - x[0]) < 0.05);
   });
 
+  it("plucks round, not spiky: under 15 dB crest over its first half second", () => {
+    for (const midi of [40, 55, 64, 76]) {
+      const x = d.karplusStrong(440 * Math.pow(2, (midi - 69) / 12), SR, spec);
+      const n = Math.round(SR * 0.5);
+      let s = 0;
+      for (let i = 0; i < n; i++) s += x[i] * x[i];
+      const crest = 20 * Math.log10(peak(x) / Math.sqrt(s / n));
+      assert.ok(crest < 15, `midi ${midi}: ${crest.toFixed(1)} dB`);
+    }
+  });
+
   it("decays", () => {
     const x = d.karplusStrong(110, SR, { ...spec, seconds: 2.4 });
     const early = peak(x, 0, SR * 0.2);
@@ -79,23 +90,18 @@ describe("Karplus-Strong string", () => {
   });
 });
 
-describe("loops", () => {
-  for (const [name, make] of [
-    ["vinyl", () => d.vinylLoop(SR, 6, 9)],
-    ["pink noise", () => d.pinkNoise(SR, 2, 5)],
-  ] as const) {
-    it(`${name} wraps without a jump bigger than its own sample-to-sample steps`, () => {
-      const x = make();
-      let maxStep = 0;
-      for (let i = 1; i < x.length; i++) maxStep = Math.max(maxStep, Math.abs(x[i] - x[i - 1]));
-      const seam = Math.abs(x[0] - x[x.length - 1]);
-      assert.ok(seam <= maxStep, `seam ${seam} vs max step ${maxStep}`);
-    });
-  }
+describe("pink noise loop", () => {
+  it("wraps without a jump bigger than its own sample-to-sample steps", () => {
+    const x = d.pinkNoise(SR, 2, 5);
+    let maxStep = 0;
+    for (let i = 1; i < x.length; i++) maxStep = Math.max(maxStep, Math.abs(x[i] - x[i - 1]));
+    const seam = Math.abs(x[0] - x[x.length - 1]);
+    assert.ok(seam <= maxStep, `seam ${seam} vs max step ${maxStep}`);
+  });
 
-  it("vinyl is quiet: crackles stay soft", () => {
-    const x = d.vinylLoop(SR, 6, 9);
-    assert.ok(peak(x) < 0.6, `peak ${peak(x)}`);
+  it("is deterministic and bounded", () => {
+    assert.deepEqual(d.pinkNoise(SR, 0.5, 5), d.pinkNoise(SR, 0.5, 5));
+    assert.ok(peak(d.pinkNoise(SR, 2, 5)) < 1);
   });
 });
 
@@ -114,5 +120,16 @@ describe("room impulse", () => {
     }
     assert.ok(Math.abs(dot / Math.sqrt(el * er)) < 0.2, "decorrelated");
     assert.ok(peak(l, l.length - 200) < 1e-3 * peak(l), "tail at silence");
+  });
+
+  it("is cheap enough to make inside a gesture", () => {
+    // Best of three warm runs (the test runner may be busy with other files).
+    let ms = Infinity;
+    for (let i = 0; i < 4; i++) {
+      const t = performance.now();
+      d.reverbImpulse(48000, 2.6, 3);
+      if (i) ms = Math.min(ms, performance.now() - t);
+    }
+    assert.ok(ms < 20, `${ms.toFixed(1)} ms`);
   });
 });

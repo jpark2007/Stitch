@@ -3,18 +3,23 @@
  * no idea of mute or gestures: engine.ts drives it live, offline.ts drives it
  * through OfflineAudioContext.suspend() for the verification renders.
  *
- *   voices --dry--> bus --> duck --> level --> warmth --> glue --> trim --> out
+ *   voices --dry--> bus --> warmth --> duck --> level --> trim --> ceiling --> out
  *          --wet--> room (convolver) --^
  *
- *   duck    narration ducking (-10 dB)
- *   level   the transport: mute, the book open or closed
- *   warmth  a gentle high shelf so nothing is bright
- *   glue    a slow compressor that also keeps peaks well under -12 dBFS
+ *   warmth   a gentle high shelf so nothing is bright
+ *   duck     narration ducking (-10 dB)
+ *   level    the transport: mute, the book open or closed
+ *   trim     the music's loudness: each era's `level` evens them out at
+ *            about -26 dBFS RMS, so a voice sits well on top
+ *   ceiling  a soft clipper that can never exceed -12 dBFS (transparent
+ *            where the music lives; it only rounds the odd pluck's peak)
+ *
+ * No compressor: one would undo the duck and pump with the eras' beats.
  */
 
 import { reverbImpulse } from "./dsp";
 import type { EraId } from "./eras";
-import { CROSSFADE, DUCK_DB, DUCK_DOWN, DUCK_UP, dbToGain } from "./fades";
+import { CEILING, CROSSFADE, DUCK_DB, DUCK_DOWN, DUCK_UP, dbToGain, softClipCurve } from "./fades";
 import { GainLine } from "./line";
 import { PALETTES } from "./palettes";
 import { createKit, type Kit } from "./patches";
@@ -26,8 +31,8 @@ export const LOOKAHEAD = 0.4;
 const MAX_VOICES = 2;
 /** How fast an extra voice is cut when eras flip faster than they fade. */
 const CUT = 0.35;
-/** Master trim (dB) after the compressor. */
-const TRIM_DB = -3;
+/** Master trim (dB); each palette's `level` then evens the eras out. */
+const TRIM_DB = 2;
 
 export interface MeterReading {
   /** Linear peak over the last ~40 ms, 0..1. */
@@ -44,6 +49,7 @@ export class MusicCore {
   private readonly level: GainLine;
   private readonly nodes: AudioNode[];
   private readonly trim: GainNode;
+  private readonly out: AudioNode;
   private voices: EraVoice[] = [];
   private era: EraId | null = null;
   private analyser: AnalyserNode | null = null;
@@ -62,15 +68,13 @@ export class MusicCore {
     warmth.type = "highshelf";
     warmth.frequency.value = 5200;
     warmth.gain.value = -4;
-    const glue = ctx.createDynamicsCompressor();
-    glue.threshold.value = -26;
-    glue.knee.value = 10;
-    glue.ratio.value = 3;
-    glue.attack.value = 0.015;
-    glue.release.value = 0.35;
     this.trim = ctx.createGain();
     this.trim.gain.value = dbToGain(TRIM_DB);
-    this.bus.connect(duck).connect(level).connect(warmth).connect(glue).connect(this.trim).connect(destination);
+    const ceiling = ctx.createWaveShaper();
+    ceiling.curve = softClipCurve(2049, CEILING) as Float32Array<ArrayBuffer>;
+    ceiling.oversample = "2x";
+    this.bus.connect(warmth).connect(duck).connect(level).connect(this.trim).connect(ceiling).connect(destination);
+    this.out = ceiling;
 
     this.room = ctx.createConvolver();
     this.room.normalize = false;
@@ -85,7 +89,7 @@ export class MusicCore {
 
     this.duck = new GainLine([[duck.gain, 1]], 1);
     this.level = new GainLine([[level.gain, 1]], 0);
-    this.nodes = [this.bus, duck, level, warmth, glue, this.trim, this.room, roomReturn];
+    this.nodes = [this.bus, duck, level, warmth, this.trim, ceiling, this.room, roomReturn];
   }
 
   get currentEra() {
@@ -163,7 +167,7 @@ export class MusicCore {
     if (!this.analyser) {
       this.analyser = this.ctx.createAnalyser();
       this.analyser.fftSize = 2048;
-      this.trim.connect(this.analyser);
+      this.out.connect(this.analyser);
       this.scratch = new Float32Array(this.analyser.fftSize);
     }
     const buf = this.scratch!;
