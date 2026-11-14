@@ -31,14 +31,20 @@
  *     press anywhere else on the book closes it too, and the book carries
  *     on with it as usual; so do Escape, a page turn and a telling;
  *   - the note (NoteRig): placed in screen space so it stays wholly on
- *     screen beside its target (../explain.ts placeNote), and re-placed
- *     only when the camera moves; it rises, settles, and then nothing draws;
+ *     screen beside its target and clear of the printed words (../explain.ts
+ *     placeNote; on a phone it stands up over the set on a paper post), and
+ *     re-placed only when the camera moves; it rises, its words write
+ *     themselves in (a shader reveal on its face, no texture redraws), and
+ *     then nothing draws. With prefers-reduced-motion it opens settled;
  *   - an aria-live line with the note's words, and the test hook
  *     window.__stitchExplain (./explainProbe).
  *
  * Nothing re-renders React after mount; everything moves in useFrame, and
- * only while something moves. GPU resources are made per note and disposed
- * as it folds away.
+ * only while something moves. While the page is idle each explainable
+ * cutout's face is drawn and uploaded, and one hidden note is drawn once so
+ * its shaders are compiled: the first click does no more than a later one.
+ * Faces live as long as the stage; the rest of a note is made as it opens
+ * and disposed as it folds away.
  */
 
 import { useFrame, useThree, type RootState, type ThreeEvent } from "@react-three/fiber";

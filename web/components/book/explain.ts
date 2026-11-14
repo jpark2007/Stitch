@@ -7,7 +7,8 @@
  *   parseTarget("puppet:dad")                 { kind: "puppet", id: "dad" } (or null)
  *   onSet(x, wing)                            a cutout at stage x is on the set now
  *   layoutNote(title, text, measure)          the note's lines and card size
- *   placeNote(input, out)                     where the note stands so it stays on screen
+ *   writePlan(layout, measure) / writeAt      when each word writes itself in, and the pen at a time
+ *   placeNote(input, out)                     where the note stands: on screen, clear of the words
  *   explainStep(open, event)                  which note is open after a click, key or turn
  *   resumesAfter(reason)                      whether closing hands the scene back to play
  *   noteRise(ms) / noteFold(ms) / sewAt(...)  the pop-up's motion over time
