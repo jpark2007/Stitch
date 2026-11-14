@@ -215,6 +215,9 @@ export function drawTellerLabels(
     ctx.rotate(angle);
     const w = rc.w;
     const h = rc.h;
+    // The telling playing: a ribbon end in their thread, tucked under the
+    // label and hanging out below it, like a bookmark left at their page.
+    if (on) drawRibbonEnd(ctx, w / 2 - 56, h / 2 - 34, 26, 86, t.color, seed + i);
     // The label: a cut card, a soft shadow under it on the page.
     ctx.shadowColor = on ? "rgba(74,47,29,0.3)" : "rgba(74,47,29,0.2)";
     ctx.shadowBlur = on ? 12 : 7;
@@ -290,6 +293,49 @@ export function drawTellerLabels(
     drawTape(ctx, w / 2 - tw * 0.3, -h / 2 + 8, tw, 30, 0.62 + (r() - 0.5) * 0.12, seed + i * 7, tapeTint(t.color, on));
     ctx.restore();
   });
+}
+
+/**
+ * A fabric ribbon's end, `w` wide, hanging `len` down from (x, y) (its
+ * centre line), cut in a swallowtail, with a soft sheen across the weave.
+ */
+function drawRibbonEnd(ctx: Ctx, x: number, y: number, w: number, len: number, color: string, seed: number) {
+  const r = rng(seed);
+  const lean = 0.06 + r() * 0.05;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(lean);
+  const ribbon = new Path2D();
+  ribbon.moveTo(-w / 2, 0);
+  ribbon.lineTo(w / 2, 0);
+  ribbon.lineTo(w / 2, len);
+  ribbon.lineTo(0, len - w * 0.42);
+  ribbon.lineTo(-w / 2, len);
+  ribbon.closePath();
+  ctx.shadowColor = "rgba(74,47,29,0.3)";
+  ctx.shadowBlur = 5;
+  ctx.shadowOffsetY = 2;
+  ctx.fillStyle = color;
+  ctx.fill(ribbon);
+  ctx.shadowColor = "transparent";
+  // Sheen: lighter at one edge, the fold of the weave darker at the other.
+  const g = ctx.createLinearGradient(-w / 2, 0, w / 2, 0);
+  g.addColorStop(0, "rgba(255,255,255,0.22)");
+  g.addColorStop(0.45, "rgba(255,255,255,0.04)");
+  g.addColorStop(1, "rgba(30,15,8,0.22)");
+  ctx.fillStyle = g;
+  ctx.fill(ribbon);
+  // A few threads of the weave, along the ribbon.
+  ctx.strokeStyle = "rgba(255,255,255,0.1)";
+  ctx.lineWidth = 1;
+  for (let k = 1; k < 5; k++) {
+    const tx = -w / 2 + (k * w) / 5;
+    ctx.beginPath();
+    ctx.moveTo(tx, 0);
+    ctx.lineTo(tx, len - w * 0.42 * (1 - Math.abs(tx) / (w / 2)) - 1);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** "#rrggbb" at alpha `a`. */
