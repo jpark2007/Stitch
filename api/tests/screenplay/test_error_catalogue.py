@@ -198,3 +198,40 @@ def test_error_code_is_frozen():
     entry = ERROR_CODES["offstage"]
     with pytest.raises(AttributeError):
         entry.hint = None  # type: ignore[misc]
+
+
+# ----------------------------------------- codes the director now sees under their own name
+
+@pytest.mark.parametrize("mutate,code,hint", [
+    # enter from a mark on stage: bad_exit (an exit to one stays unknown_mark: see validate.check_offstage)
+    (lambda d: d["shots"][0]["actions"][0].update({"from": "curb"}), "bad_exit",
+     "enter from offstage_left or offstage_right"),
+    # a person-only field naming a prop
+    (lambda d: d["shots"][0]["actions"].append({"t": 7.8, "who": "mom", "do": "hug", "target": "hymn_books"}),
+     "bad_target", "name a person in the cast as target"),
+    # a shot mark below the ground
+    (lambda d: d["shots"][0]["marks"].update({"steps_foot": [0.5, -0.2]}), "bad_mark",
+     "give mark steps_foot an h from 0 to 1.5"),
+    # a dur far past MAX_SECONDS
+    (lambda d: d["shots"][0]["actions"].append({"t": 7.8, "who": "mom", "do": "wave", "dur": 1e6}), "bad_dur",
+     "give dur at most 600 seconds"),
+], ids=["bad_exit", "bad_target", "bad_mark", "bad_dur"])
+def test_codes_that_were_shadowed_now_reach_the_director(mutate, code, hint):
+    """bad_exit, bad_target, bad_mark and bad_dur used to be pre-empted by a more general code
+    (unknown_mark, unknown_target, invalid_value, or none at all); validate reports them now,
+    with a hint that names the fix."""
+    errors = _compile_sample(mutate)
+    assert [e.code for e in errors] == [code]
+    assert hint_for(errors[0]) == hint
+
+
+def test_codes_kept_for_another_streams_pins():
+    """tests/agent/test_agent_skills.py pins exit to a mark as unknown_mark and set_state to a
+    missing state as invalid_value (the directing skill's error table lists them so). The codes
+    stay; the exit still gets the exit hint."""
+    def exit_to_curb(data):
+        data["shots"][0]["actions"].append({"t": 7.8, "who": "mom", "do": "exit", "to": "curb"})
+
+    errors = _compile_sample(exit_to_curb)
+    assert [e.code for e in errors] == ["unknown_mark"]
+    assert hint_for(errors[0]) == "exit to offstage_left or offstage_right"
