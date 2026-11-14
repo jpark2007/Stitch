@@ -44,7 +44,7 @@ import {
 import { createCardEdgeMaterial, createPaperMaterial, getPaperTextures } from "@/components/paper/materials";
 import { markShadowsDirty, useStageTime } from "./clock";
 import type { Cutout } from "./cutout";
-import { DEFAULT_TIMING, hingePath, riseAlong, type Flip, type PopUpTiming } from "./hinge";
+import { DEFAULT_TIMING, hingePath, riseAlong, trimFlips, type Flip, type PopUpTiming } from "./hinge";
 import { clamp, smootherstep, smoothstep, type LinearKeys, type Vec3 } from "./timeline";
 
 export type { PopUpTiming };
@@ -112,7 +112,8 @@ export function PopUp({ open = true, openAt = 0.4, closeAt = null, timing, child
   useEffect(() => {
     if (typeof open !== "boolean" || open === last.current) return;
     last.current = open;
-    live.current = [...live.current, { at: now(get()), open }];
+    const at = now(get());
+    live.current = trimFlips([...live.current, { at, open }], at);
     version.current += 1;
   }, [open, now, get]);
 

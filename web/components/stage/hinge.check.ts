@@ -5,7 +5,7 @@
  *   cd web && npx jiti components/stage/hinge.check.ts
  */
 
-import { DEFAULT_TIMING, hingePath, riseAlong, type Flip } from "./hinge";
+import { DEFAULT_TIMING, hingePath, riseAlong, trimFlips, type Flip } from "./hinge";
 
 const COUNT = 6;
 const SIZE = Math.sqrt(1.62);
@@ -45,6 +45,23 @@ for (const startOpen of [true, false]) {
     let open = startOpen;
     for (let i = 0; i < 4; i++, open = !open) flips.push({ at: 1 + i * gap, open });
     for (let n = 1; n <= flips.length; n++) expectEnd(`toggles gap ${gap.toFixed(2)} x${n}`, flips.slice(0, n));
+  }
+}
+
+// Trimming keeps the list short without changing where pieces end up.
+{
+  let flips: Flip[] = [];
+  let open = false;
+  let at = 0;
+  for (let i = 0; i < 40; i++) {
+    open = !open;
+    at += [0.05, 0.3, 12, 0.6, 2, 0.15, 25][i % 7];
+    flips = trimFlips([...flips, { at, open }], at);
+    if (flips.length > 4) {
+      failures++;
+      console.error(`FAIL trim: ${flips.length} flips kept`);
+    }
+    expectEnd(`trimmed after ${i + 1} flips`, flips);
   }
 }
 

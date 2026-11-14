@@ -75,3 +75,19 @@ export function hingePath(flips: readonly Flip[], order: number, count: number, 
 export function riseAlong(keys: LinearKeys, time: number, size: number, t: PopUpTiming): number {
   return Math.max(0, followAt(keys, time, t.omega / Math.sqrt(size), 0));
 }
+
+/** Seconds after which a flip has finished for any set: stagger, ramp and settle. */
+const SETTLE_WINDOW = 10;
+/** Most flips kept, however fast they come (the last one still sets the end pose). */
+const MAX_FLIPS = 4;
+
+/**
+ * Bound a growing list of issued flips at stage time `now`. Flips that have
+ * long settled are dropped, except the newest of them, which holds the pose
+ * the later ones start from. The present and future poses are unchanged.
+ */
+export function trimFlips(flips: readonly Flip[], now: number): Flip[] {
+  let first = 0;
+  for (let i = 0; i < flips.length - 1; i++) if (flips[i + 1].at < now - SETTLE_WINDOW) first = i + 1;
+  return flips.slice(Math.max(first, flips.length - MAX_FLIPS));
+}
