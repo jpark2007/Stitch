@@ -187,7 +187,7 @@ export function AddRelativeForm(props: {
             label="Their name"
             // A non-breaking hyphen keeps the example in one piece on phones.
             // Someone with this name already in the tree swaps the example for a gentle check.
-            hint={duplicateNameHint(draft.name, people) ?? "The name the family uses, like“Great\u2011grandma Inés”."}
+            hint={duplicateNameHint(draft.name, people) ?? "The name the family uses, like “Great\u2011grandma Inés”."}
             name="name"
             autoComplete="off"
             required

@@ -330,6 +330,11 @@ export function MemberList(props: {
         </ul>
       )}
 
+      {rows.length === 1 && rows[0].isYou ? (
+        <p className="mt-4 border-t border-dashed border-rule pt-3 text-[0.9375rem] leading-relaxed text-pretty text-ink-soft">
+          It’s just you so far. Everyone who joins through an invite link shows up here.
+        </p>
+      ) : null}
       {orphanErrors.length ? (
         <div className="mt-4">
           <FormError message={[...new Set(orphanErrors)].join(" ")} />

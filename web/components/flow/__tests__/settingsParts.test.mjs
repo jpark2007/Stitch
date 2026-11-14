@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { describeExpiry, inviteActionOutcome, inviteUrl, pickActiveInvite } from "../invites.ts";
+import { activeInvites, describeExpiry, inviteActionOutcome, inviteUrl, pickActiveInvite } from "../invites.ts";
 import {
   UNKNOWN_MEMBER_NAME,
   memberRows,
@@ -430,4 +430,20 @@ test("inviteActionOutcome: a revoked link that is already gone is done; 403 and 
     message: "We can't reach Stitch right now.",
   });
   assert.equal(inviteActionOutcome(null, "create").message, "Something went wrong. Please try again.");
+});
+
+test("activeInvites: every invite that still works, so turning the link off turns them all off", () => {
+  const now = new Date("2026-11-14T12:00:00Z");
+  const invites = [
+    { code: "old", createdBy: "u", expiresAt: "2026-11-20T00:00:00Z", revoked: false },
+    { code: "off", createdBy: "u", expiresAt: "2026-11-25T00:00:00Z", revoked: true },
+    { code: "gone", createdBy: "u", expiresAt: "2026-11-01T00:00:00Z", revoked: false },
+    { code: "new", createdBy: "u", expiresAt: "2026-11-28T00:00:00Z" },
+    { code: "bad", createdBy: "u", expiresAt: "not a date", revoked: false },
+    null,
+  ];
+  assert.deepEqual(activeInvites(invites, now).map((i) => i.code), ["old", "new"]);
+  assert.equal(pickActiveInvite(invites, now).code, "new", "the one shown is among them");
+  assert.deepEqual(activeInvites(undefined, now), []);
+  assert.deepEqual(activeInvites([{ code: "edge", createdBy: "u", expiresAt: now.toISOString() }], now), [], "expiring now is expired");
 });

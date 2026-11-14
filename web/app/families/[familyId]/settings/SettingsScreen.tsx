@@ -15,7 +15,7 @@ import { FamilySwitcher } from "@/components/flow/FamilySwitcher";
 import { FlowPage } from "@/components/flow/FlowPage";
 import { FormError } from "@/components/flow/FormError";
 import { InviteLinkCard } from "@/components/flow/InviteLinkCard";
-import { pickActiveInvite } from "@/components/flow/invites";
+import { activeInvites, pickActiveInvite } from "@/components/flow/invites";
 import { MemberList } from "@/components/flow/MemberList";
 import { memberRows, type MemberRow } from "@/components/flow/members";
 import { PaperCard } from "@/components/flow/PaperCard";
@@ -37,7 +37,8 @@ import type { Family, FamilySummary, Member, TreeResponse } from "@/lib/types";
 
 import { SettingsPlaceholder } from "./SettingsPlaceholder";
 
-const BACK = { href: hrefs.home(), label: "Home" };
+// Named like the add page's way back, so both lead to the same place in the same words.
+const BACK = { href: hrefs.home(), label: "Family tree" };
 
 /**
  * The kit's quiet button look for "Sign out", sized to its text. Button
@@ -217,12 +218,18 @@ function FamilySettings(props: { summary: FamilySummary; welcome: boolean }) {
     await reloadFamily();
   }, [api, fid, guarded, reloadFamily]);
 
+  // Every other link that still works goes too: the card shows one link, and
+  // turning it off must not just bring an older one into view.
+  const otherCodes =
+    load.kind === "ready" ? activeInvites(load.family.invites, load.now).map((i) => i.code).join(" ") : "";
   const revokeInvite = useCallback(
     async (code: string) => {
       await guarded(() => api.revokeInvite(fid, code));
+      const rest = otherCodes.split(" ").filter((c) => c && c !== code);
+      await Promise.allSettled(rest.map((c) => api.revokeInvite(fid, c)));
       await reloadFamily();
     },
-    [api, fid, guarded, reloadFamily],
+    [api, fid, guarded, otherCodes, reloadFamily],
   );
 
   const removeMember = useCallback(

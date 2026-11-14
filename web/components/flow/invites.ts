@@ -66,6 +66,22 @@ export function pickActiveInvite(invites: Invite[] | undefined, now: Date): Invi
   return best;
 }
 
+/**
+ * Every invite that still works: not revoked and not yet expired. The page
+ * shows one link (pickActiveInvite), but a family can hold several (made on
+ * another device, or before a reload), and "Turn off this link" must turn
+ * them all off, or the next one would simply take its place.
+ */
+export function activeInvites(invites: Invite[] | undefined, now: Date): Invite[] {
+  if (!Array.isArray(invites)) return [];
+  const nowMs = now.getTime();
+  return invites.filter((invite) => {
+    if (!invite || invite.revoked) return false;
+    const t = timeOf(invite.expiresAt);
+    return t !== null && t > nowMs;
+  });
+}
+
 /** Whole calendar days from `now` to `then`, in local time (DST-safe). */
 function calendarDaysBetween(now: Date, then: Date): number {
   const a = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
