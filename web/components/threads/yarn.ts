@@ -270,7 +270,34 @@ export function drawTiedKnot(
   }
 }
 
-/** A French knot: a tight little coil of one thread, for single-person moments. */
+/**
+ * A cross-stitch: one person's moment, sewn as an X over their own thread.
+ * Two yarn diagonals, the second laid over the first, with needle holes at
+ * the four corners where they go through the paper.
+ */
+export function drawCrossStitch(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  r: number,
+  ink: YarnInk,
+  width: number,
+  seed: number,
+  lod: number,
+  alpha = 1,
+) {
+  knotShadow(ctx, x, y, r * 0.8, alpha * 0.7);
+  const a = r * 0.92;
+  // A hand-sewn X is never quite square.
+  const j = (seed - 0.5) * r * 0.16;
+  const under: Polyline = [x - a, y - a + j, x + a, y + a - j];
+  const over: Polyline = [x - a + j, y + a, x + a - j, y - a];
+  drawHoles(ctx, [...under, ...over], Math.max(0.9, width * 0.32), ink);
+  drawYarn(ctx, [under], ink, width, lod);
+  drawYarn(ctx, [over], ink, width, lod);
+}
+
+/** A French knot: a tight little coil of one thread. */
 export function drawFrenchKnot(
   ctx: CanvasRenderingContext2D,
   x: number,

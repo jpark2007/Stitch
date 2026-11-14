@@ -10,7 +10,7 @@
 
 import { toX, type Camera } from "./camera";
 import { relax, strandAt, type Knot, type Shape, type Strand, type ThreadsModel } from "./model";
-import { drawFrenchKnot, drawHoles, drawTiedKnot, drawYarn, hashSeed, yarnInk, type Polyline } from "./yarn";
+import { drawCrossStitch, drawHoles, drawTiedKnot, drawYarn, hashSeed, yarnInk, type Polyline } from "./yarn";
 
 export interface Layout {
   width: number;
@@ -255,7 +255,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
     const seed = hashSeed(k.moment.id);
     if (k.people.length === 1) {
       const idx = model.strands.findIndex((q) => q.person.id === k.people[0].id);
-      drawFrenchKnot(ctx, x, y, r, yarnInk(k.people[0].color, st.dim[idx] ?? 0), width * 1.05, seed, Math.max(1, lod), 1 - fade * 0.75);
+      drawCrossStitch(ctx, x, y, r, yarnInk(k.people[0].color, st.dim[idx] ?? 0), width * 1.15, seed, Math.max(1, lod), 1 - fade * 0.75);
     } else {
       // A knot keeps everyone's colour; it fades only when none of its people is lit.
       const inks = k.people.map((p) => {
