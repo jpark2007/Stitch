@@ -95,7 +95,10 @@ export async function renderEraMusic(cues: OfflineCue[], seconds: number, sample
  * scheduling passes, which build its strings), cold or after prefetch(),
  * each on a fresh core. For checking what prefetching saves.
  */
-export function measureEraStart(era: EraId, passes = 6): { coldMs: number; prefetchedMs: number } {
+export function measureEraStart(
+  era: EraId,
+  passes = 12,
+): { coldMs: number; prefetchedMs: number; coldWorstPassMs: number; prefetchedWorstPassMs: number } {
   const run = (prefetch: boolean) => {
     const ctx = new OfflineAudioContext(2, 44100, 44100);
     const core = new MusicCore(ctx, ctx.destination);
@@ -103,17 +106,25 @@ export function measureEraStart(era: EraId, passes = 6): { coldMs: number; prefe
       core.prefetch(era);
       while (core.warmingUp) core.warm(50);
     }
-    const t0 = performance.now();
-    core.setEra(era, 0);
-    for (let i = 0; i < passes; i++) core.tick(i * STEP);
-    const ms = performance.now() - t0;
+    let worst = 0;
+    let total = 0;
+    for (let i = 0; i < passes; i++) {
+      const t0 = performance.now();
+      if (i === 0) core.setEra(era, 0);
+      core.tick(i * STEP);
+      const ms = performance.now() - t0;
+      worst = Math.max(worst, ms);
+      total += ms;
+    }
     core.dispose(0, 0);
-    return ms;
+    return { total, worst };
   };
   // Once each to warm the JIT, then the measured pair.
   run(false);
   run(true);
-  return { coldMs: run(false), prefetchedMs: run(true) };
+  const cold = run(false);
+  const warm = run(true);
+  return { coldMs: cold.total, prefetchedMs: warm.total, coldWorstPassMs: cold.worst, prefetchedWorstPassMs: warm.worst };
 }
 
 /** 16-bit PCM WAV of a buffer (for saving renders). */

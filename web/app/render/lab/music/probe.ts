@@ -23,7 +23,7 @@ export interface MusicProbe {
   stats(): ReturnType<EraMusic["stats"]> | null;
   prefetch(era: EraId): void;
   /** Main-thread ms to start an era cold vs prefetched (fresh offline cores). */
-  startCost(era: EraId): { coldMs: number; prefetchedMs: number };
+  startCost(era: EraId): ReturnType<typeof import("@/components/audio/offline").measureEraStart>;
   mount(on: boolean): void;
   hub(): { context: AudioContextState | "none"; awake: boolean };
 }
