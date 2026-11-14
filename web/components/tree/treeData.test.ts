@@ -179,5 +179,7 @@ describe("links", () => {
     assert.equal(personHref("luis"), "/people/luis");
     assert.equal(threadsHref("maos"), "/threads?family=maos");
     assert.equal(threadsHref(null), "/threads");
+    assert.equal(threadsHref(null, { demo: true }), "/threads?demo=1");
+    assert.equal(personHref("grandma rosa", null, { demo: true }), "/people/grandma%20rosa?demo=1");
   });
 });

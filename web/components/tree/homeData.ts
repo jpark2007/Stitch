@@ -91,12 +91,24 @@ export async function loadHome(
 
 const enc = encodeURIComponent;
 
-/** A person's book, in this family. */
-export function personHref(personId: string, familyId?: string | null): string {
-  return familyId ? `/people/${enc(personId)}?family=${enc(familyId)}` : `/people/${enc(personId)}`;
+/**
+ * Where a link leads: a real family (?family=<id>), the local demo family
+ * (?demo=1, so the next screen shows the demo too and can tell a demo id from
+ * a real one), or neither (the next screen picks the family itself).
+ */
+export type LinkScope = { demo?: boolean };
+
+function query(familyId: string | null | undefined, scope: LinkScope | undefined): string {
+  if (scope?.demo) return "?demo=1";
+  return familyId ? `?family=${enc(familyId)}` : "";
 }
 
-/** The threads screen, for this family. */
-export function threadsHref(familyId?: string | null): string {
-  return familyId ? `/threads?family=${enc(familyId)}` : "/threads";
+/** A person's book, in this family (or the demo family). */
+export function personHref(personId: string, familyId?: string | null, scope?: LinkScope): string {
+  return `/people/${enc(personId)}${query(familyId, scope)}`;
+}
+
+/** The threads screen, for this family (or the demo family). */
+export function threadsHref(familyId?: string | null, scope?: LinkScope): string {
+  return `/threads${query(familyId, scope)}`;
 }

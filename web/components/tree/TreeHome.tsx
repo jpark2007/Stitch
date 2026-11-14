@@ -196,12 +196,25 @@ function DemoHome(props: { reason: "chosen" | "offline" | "mock"; onRetry?: () =
   } else {
     note = <>This is a demo family.</>;
   }
+  // Chosen or mock: the demo all the way through, so threads opens the demo
+  // family too. Offline: plain /threads, which falls back by itself and shows
+  // the real family once Stitch answers again. Demo people are always marked.
+  const threads = reason === "offline" ? threadsHref(null) : threadsHref(null, DEMO_SCOPE);
   return (
-    <HomeShell title={demoFamily.name} caption="pick anyone to open their book" threads={threadsHref(null)} note={note}>
-      <FamilyTree people={demoPeople} maxHeight={TREE_MAX_HEIGHT} minScale={TREE_MIN_SCALE} maxScale={TREE_MAX_SCALE} />
+    <HomeShell title={demoFamily.name} caption="pick anyone to open their book" threads={threads} note={note}>
+      <FamilyTree
+        people={demoPeople}
+        hrefFor={demoPersonHref}
+        maxHeight={TREE_MAX_HEIGHT}
+        minScale={TREE_MIN_SCALE}
+        maxScale={TREE_MAX_SCALE}
+      />
     </HomeShell>
   );
 }
+
+const DEMO_SCOPE = { demo: true } as const;
+const demoPersonHref = (id: string) => personHref(id, null, DEMO_SCOPE);
 
 function SignedOutHome() {
   return (
