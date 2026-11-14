@@ -27,7 +27,6 @@ import {
 } from "./camera";
 import { buildModel, type ThreadMoment, type ThreadPerson } from "./model";
 import { drawFrame, makeLayout, type FrameGeometry, type Layout } from "./renderer";
-import css from "./threads.module.css";
 
 export interface ThreadsViewProps {
   familyName: string;
@@ -650,7 +649,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
               ref={(el) => {
                 linkRefs.current[i] = el;
               }}
-              className={`${css.moment} absolute left-0 top-0 no-underline`}
+              className="threads-moment absolute left-0 top-0"
               style={{ visibility: "hidden" }}
               aria-label={`${k.moment.title}, ${k.moment.year}. ${k.people.map((p) => p.name).join(", ")}.`}
             >
@@ -658,13 +657,13 @@ export default function ThreadsView(props: ThreadsViewProps) {
                 ref={(el) => {
                   ringRefs.current[i] = el;
                 }}
-                className={`${css.ring} absolute left-0 top-0 block rounded-full`}
+                className="threads-ring absolute left-0 top-0 block"
               />
               <span
                 ref={(el) => {
                   titleRefs.current[i] = el;
                 }}
-                className={`${css.title} absolute left-0 top-0 whitespace-nowrap`}
+                className="threads-title absolute left-0 top-0 whitespace-nowrap"
                 style={{ opacity: 0, fontSize: TITLE_FONT_PX }}
                 aria-hidden
               >
@@ -703,10 +702,10 @@ export default function ThreadsView(props: ThreadsViewProps) {
 
       {/* Zoom: two small paper buttons. */}
       <div className="absolute bottom-5 right-[var(--gutter)] flex gap-2 sm:bottom-6">
-        <button type="button" onClick={() => zoomButton(-1)} className={css.zoom} aria-label="Zoom out towards decades">
+        <button type="button" onClick={() => zoomButton(-1)} className="threads-zoom" aria-label="Zoom out towards decades">
           <span aria-hidden>&minus;</span>
         </button>
-        <button type="button" onClick={() => zoomButton(1)} className={css.zoom} aria-label="Zoom in towards single years">
+        <button type="button" onClick={() => zoomButton(1)} className="threads-zoom" aria-label="Zoom in towards single years">
           <span aria-hidden>+</span>
         </button>
       </div>

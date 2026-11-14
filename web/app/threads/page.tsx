@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import ThreadsView from "@/components/threads/ThreadsView";
 import type { ThreadMoment, ThreadPerson } from "@/components/threads/model";
 import { demoFamily, demoMoments, demoPeople } from "@/components/tree/demoFamily";
+import "./threads.css";
 
 export const metadata: Metadata = {
   title: "Threads · Stitch",

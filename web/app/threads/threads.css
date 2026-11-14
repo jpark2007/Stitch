@@ -1,30 +1,37 @@
-/* Overlay pieces of the threads screen: moment links, titles, zoom buttons. */
+/*
+ * Overlay pieces of the threads screen: moment links, titles, zoom buttons.
+ * Plain global CSS (prefixed `threads-`): the turbopack CSS rule in
+ * next.config.ts turns CSS Modules into global CSS, so modules are not used.
+ * Font variables are the next/font ones (`--font-caveat`, `--font-nunito`);
+ * the Tailwind `--font-*` theme aliases are inlined and do not exist at runtime.
+ */
 
-.moment {
+.threads-moment {
   color: var(--ink);
+  text-decoration: none;
   will-change: transform;
 }
 
+.threads-moment:focus-visible {
+  outline: none;
+}
+
 /* Invisible until focused with the keyboard: then a stitched ring marks the knot. */
-.ring {
-  outline: none;
+.threads-ring {
+  border-radius: 999px;
 }
 
-.moment:focus-visible {
-  outline: none;
-}
-
-.moment:focus-visible .ring {
+.threads-moment:focus-visible .threads-ring {
   outline: 2px dashed var(--accent);
   outline-offset: 2px;
 }
 
-.moment:focus-visible .title {
+.threads-moment:focus-visible .threads-title {
   opacity: 1 !important;
 }
 
-.title {
-  font-family: var(--font-hand);
+.threads-title {
+  font-family: var(--font-caveat), "Bradley Hand", cursive;
   font-weight: 500;
   line-height: 1.15;
   color: var(--ink);
@@ -37,7 +44,8 @@
     0 0 12px var(--paper);
 }
 
-.zoom {
+.threads-zoom {
+  position: relative;
   display: grid;
   place-items: center;
   width: 2.5rem;
@@ -45,7 +53,7 @@
   border-radius: 999px;
   background: var(--paper-light);
   color: var(--ink-soft);
-  font-family: var(--font-sans);
+  font-family: var(--font-nunito), ui-sans-serif, system-ui, sans-serif;
   font-size: 1.25rem;
   line-height: 1;
   box-shadow: var(--shadow-paper);
@@ -56,27 +64,30 @@
     color 160ms;
 }
 
-.zoom:hover {
+.threads-zoom:hover {
   color: var(--ink);
   box-shadow: var(--shadow-lift);
   transform: translateY(-1px);
 }
 
-.zoom:active {
+.threads-zoom:active {
   transform: translateY(0);
   box-shadow: var(--shadow-paper);
 }
 
-/* Stitched ring inside the button, like a sewn-on patch. */
-.zoom::after {
+.threads-zoom:disabled {
+  opacity: 0.45;
+  cursor: default;
+  box-shadow: var(--shadow-paper);
+  transform: none;
+}
+
+/* A stitched ring inside the button, like a sewn-on patch. */
+.threads-zoom::after {
   content: "";
   position: absolute;
   inset: 4px;
   border-radius: 999px;
   border: 1px dashed var(--rule);
   pointer-events: none;
-}
-
-.zoom {
-  position: relative;
 }
