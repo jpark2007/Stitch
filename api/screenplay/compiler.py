@@ -28,11 +28,10 @@ from dataclasses import dataclass, field
 
 import schemas
 import screenplay as _pkg
+from screenplay import body, ik, layout, motion, verbs_core
 from screenplay import camera as camera_mod
 from screenplay import errors as E
-from screenplay import ik, layout, motion
 from screenplay import narration as N
-from screenplay import verbs_core
 from screenplay.locate import BONES, arm_of_hand, make_locate
 from screenplay.schema import (
     VOCABULARY,
@@ -258,7 +257,7 @@ def _start_keys(world: World, tracks: TrackSet, shot: Shot, t: float, same_set: 
             if hand in world.people[who].holding:
                 arm = arm_of_hand(hand)
                 upper, lower = ik.arm_bones(arm)
-                out[upper], out[lower] = verbs_core.B.hold_pose(arm)
+                out[upper], out[lower] = body.hold_pose(arm)
         return out
 
     for who, start in shot.start.items():
@@ -291,7 +290,7 @@ def _start_keys(world: World, tracks: TrackSet, shot: Shot, t: float, same_set: 
             keys.append((f"prop:{start.holding}", "position", t, [0.0, 0.0, 0.0]))
 
     if not same_set:  # everyone not listed waits offstage
-        for who, p in world.people.items():
+        for who in world.people:
             if who not in shot.start:
                 puppet(who, OFFSTAGE_LEFT, held_bones(who))
 
@@ -307,7 +306,7 @@ def _start_keys(world: World, tracks: TrackSet, shot: Shot, t: float, same_set: 
 
 # --------------------------------------------------------------------------- compile
 
-def compile(  # noqa: A001 - the name is the contract (agent/tools/compile.py)
+def compile(
     screenplay: Screenplay,
     *,
     sets: Mapping[str, schemas.SetDef],
