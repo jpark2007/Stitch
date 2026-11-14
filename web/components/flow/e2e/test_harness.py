@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -433,3 +436,248 @@ def test_owner_for_url() -> None:
     assert demo_path.problem_owner({"kind": "http", "pageUrl": "http://localhost:3201/add"}) == "api"
     assert demo_path.problem_owner({"kind": "console.error", "pageUrl": "http://localhost:3201/threads"}) == "ethan"
     assert demo_path.problem_owner({"kind": "requestfailed", "pageUrl": "http://localhost:3201/join/c"}) == "pages"
+
+
+# --------------------------------------------------------------------------- sweep helpers
+
+
+def test_viewports() -> None:
+    assert harness.VIEWPORTS == {"desktop": (1280, 900), "phone": (390, 844)}
+    assert list(harness.VIEWPORTS) == ["desktop", "phone"]  # the order sweeps walk them
+
+
+def test_sweep_args_defaults() -> None:
+    args = harness.sweep_args("a sweep", [])
+    assert args.mode == "both"
+    assert args.headed is False
+    assert args.out is None
+    assert args.api_port is None
+    assert args.web_port is None
+
+
+def test_sweep_args_every_flag(tmp_path: Path) -> None:
+    args = harness.sweep_args(
+        "a sweep",
+        ["--mode", "real", "--headed", "--out", str(tmp_path), "--api-port", "8215", "--web-port", "3215"],
+    )
+    assert args.mode == "real"
+    assert args.headed is True
+    assert args.out == tmp_path
+    assert (args.api_port, args.web_port) == (8215, 3215)
+    assert harness.sweep_args("a sweep", ["--mode", "mock"]).mode == "mock"
+
+
+def test_sweep_args_rejects_unknown_modes_and_ports(capsys: pytest.CaptureFixture[str]) -> None:
+    for argv in (["--mode", "fake"], ["--web-port", "abc"], ["--keep-going"]):
+        with pytest.raises(SystemExit) as exc:
+            harness.sweep_args("a sweep", argv)
+        assert exc.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
+def test_sweep_args_help_names_the_description(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        harness.sweep_args("Sweep the join page.", ["--help"])
+    out = capsys.readouterr().out
+    assert "Sweep the join page." in out
+    for flag in ("--mode", "--headed", "--out", "--api-port", "--web-port"):
+        assert flag in out
+
+
+def test_sweep_modes() -> None:
+    assert harness.sweep_modes("mock") == [True]
+    assert harness.sweep_modes("real") == [False]
+    assert harness.sweep_modes("both") == [True, False]
+    with pytest.raises(ValueError):
+        harness.sweep_modes("fake")
+
+
+def test_sweep_out_dir(tmp_path: Path) -> None:
+    given = tmp_path / "a" / "b"
+    assert harness.sweep_out_dir(given) == given.resolve()
+    assert given.is_dir()
+    temp = harness.sweep_out_dir(None, prefix="stitch-test-sweep-")
+    try:
+        assert temp.is_dir() and temp.name.startswith("stitch-test-sweep-")
+        assert harness.REPO_ROOT not in temp.parents  # never inside the repo by default
+    finally:
+        temp.rmdir()
+
+
+def test_wait_port_free() -> None:
+    assert harness.wait_port_free(None)
+    assert harness.wait_port_free(free_port(), timeout=1.0)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(64)  # room for every probe: nothing accepts them
+        assert not harness.wait_port_free(sock.getsockname()[1], timeout=0.3)
+
+
+PAGE = "http://localhost:3215/login"
+
+
+def test_expected_noise_4xx_console_lines() -> None:
+    for status in (401, 404, 409, 422):
+        line = (
+            f"[A] console.error at {PAGE}: Failed to load resource: the server responded with a status of "
+            f"{status} (Conflict) (source: http://localhost:8215/auth/signup)"
+        )
+        assert harness.expected_noise(line), line
+    # 5xx is not noise; neither is any other console error.
+    assert not harness.expected_noise(
+        f"[A] console.error at {PAGE}: Failed to load resource: the server responded with a status of 500 "
+        "(Internal Server Error) (source: http://localhost:8215/auth/login)"
+    )
+    assert not harness.expected_noise(f"[A] console.error at {PAGE}: Warning: Each child in a list needs a key")
+    assert not harness.expected_noise(f"[A] console.error at {PAGE}: status of 404 in a message of our own")
+
+
+def test_expected_noise_aborted_rsc_prefetch() -> None:
+    assert harness.expected_noise(
+        f"[A] requestfailed at {PAGE}: GET http://localhost:3215/signup?_rsc=1x2y3 net::ERR_ABORTED"
+    )
+    assert harness.expected_noise(
+        f"[A] requestfailed at {PAGE}: GET http://localhost:3215/families/new?next=%2F&_rsc=ab net::ERR_ABORTED"
+    )
+    # Not a prefetch, or not an abort: a real problem.
+    assert not harness.expected_noise(
+        f"[A] requestfailed at {PAGE}: GET http://localhost:8215/families/f/runs/r/events net::ERR_ABORTED"
+    )
+    assert not harness.expected_noise(
+        f"[A] requestfailed at {PAGE}: GET http://localhost:3215/signup?_rsc=1x net::ERR_CONNECTION_REFUSED"
+    )
+    assert not harness.expected_noise(f"[A] pageerror at {PAGE}: _rsc= net::ERR_ABORTED")
+
+
+def test_app_problems_drops_noise_after_the_mark() -> None:
+    page = _WatchedPage(PAGE)
+    watch = harness.PageWatch()
+    watch.attach(page, "A")
+    page.emit("console", _Msg("error", "early boom", "http://localhost:3215/x.js"))
+    mark = len(watch.problems)
+    page.emit("console", _Msg("error", "Failed to load resource: the server responded with a status of 409 (Conflict)",
+                              "http://localhost:8215/auth/signup"))
+    page.emit("request", prefetch := _Req("http://localhost:3215/signup?_rsc=abc", "net::ERR_ABORTED"))
+    page.emit("requestfailed", prefetch)
+    page.emit("pageerror", RuntimeError("late boom"))
+    assert len(watch.problems) == 4
+    assert harness.app_problems(watch, mark) == [f"[A] pageerror at {PAGE}: late boom"]
+    assert harness.app_problems(watch) == [
+        f"[A] console.error at {PAGE}: early boom (source: http://localhost:3215/x.js)",
+        f"[A] pageerror at {PAGE}: late boom",
+    ]
+
+
+def test_finish_exit_codes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    seams = SeamLog()
+    seams.record("fine", True)
+    assert harness.finish(seams, tmp_path) == 0
+    assert json.loads((tmp_path / "seams.json").read_text())["counts"]["ok"] == 1
+
+    seams.record("Ethan's page", False, "REQUEST for Ethan: ...", "ethan")
+    assert harness.finish(seams, tmp_path) == 0, "Ethan's seams are reported, not failed"
+
+    for owner in ("pages", "api"):
+        failing = SeamLog()
+        failing.record("fine", True)
+        failing.record("broken", False, "boom", owner)
+        assert harness.finish(failing, tmp_path / owner) == 1
+        written = json.loads((tmp_path / owner / "seams.json").read_text())
+        assert written["counts"]["failedByOwner"][owner] == 1
+    capsys.readouterr()
+
+
+def test_mock_faults_script_shape() -> None:
+    faults = [
+        {"method": "POST", "path": "/auth/login", "status": 503, "times": 2},
+        {"path": "/families/{fid}/invites", "network": True},
+        {"method": "POST", "path": "/families", "delayMs": 1500, "times": 1},
+        {"path": "/auth/signup", "status": 409, "detail": "Taken   “quoted” </script>"},
+    ]
+    script = harness.mock_faults_script(faults)
+    assert "window" in script and "__stitchMockFaults" in script
+    assert " " not in script  # escaped, so it cannot end a JS line early
+    payload = re.search(r"armed\.concat\((.*)\);", script)
+    assert payload is not None
+    assert json.loads(payload.group(1)) == faults
+    assert harness.mock_faults_script([]).count("concat([])") == 1
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        {"status": 500},  # no path
+        {"path": "auth/login", "status": 500},  # not absolute
+        {"path": "/x", "status": 99},
+        {"path": "/x", "status": True},
+        {"path": "/x", "status": 500, "times": 0},
+        {"path": "/x", "status": 500, "times": 1.5},
+        {"path": "/x", "delayMs": -1},
+        {"path": "/x", "network": "yes"},
+        {"path": "/x", "status": 500, "detail": 5},
+        {"path": "/x", "status": 500, "method": ""},
+        {"path": "/x"},  # does nothing
+        {"path": "/x", "status": 500, "retry": True},  # unknown key
+        "not a dict",
+    ],
+)
+def test_mock_faults_script_rejects_bad_faults(fault: object) -> None:
+    with pytest.raises(ValueError):
+        harness.mock_faults_script([fault])  # type: ignore[list-item]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_mock_faults_script_runs_and_appends(tmp_path: Path) -> None:
+    """The script really sets window.__stitchMockFaults, keeping faults armed before it."""
+    first = harness.mock_faults_script([{"path": "/a", "status": 500, "times": 2}])
+    second = harness.mock_faults_script([{"method": "POST", "path": "/b", "network": True}])
+    probe = tmp_path / "probe.js"
+    probe.write_text(
+        "globalThis.window = {};\n" + first + second + "console.log(JSON.stringify(window.__stitchMockFaults));\n"
+    )
+    out = subprocess.run(["node", str(probe)], capture_output=True, text=True, timeout=30, check=True).stdout  # noqa: S603, S607
+    assert json.loads(out) == [
+        {"path": "/a", "status": 500, "times": 2},
+        {"method": "POST", "path": "/b", "network": True},
+    ]
+
+
+# --------------------------------------------------------------------------- sweep_accounts.py
+
+
+def test_sweep_accounts_skips_without_chromium(monkeypatch: pytest.MonkeyPatch,
+                                               capsys: pytest.CaptureFixture[str]) -> None:
+    import sweep_accounts
+
+    monkeypatch.setattr(harness, "chromium_available", lambda: False)
+
+    def no_stack(**_: object) -> None:
+        raise AssertionError("run_stack must not start without Chromium")
+
+    monkeypatch.setattr(sweep_accounts, "run_stack", no_stack)
+    with pytest.raises(SystemExit) as exc:
+        sweep_accounts.main(["--mode", "both"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == SKIP_LINE
+
+
+def test_sweep_accounts_reads_the_app_s_own_messages() -> None:
+    import sweep_accounts
+
+    messages = sweep_accounts.api_messages()
+    for status in (0, 500, 502, 503):
+        assert messages.get(status), f"lib/api.ts has no message for {status}"
+    assert "reach Stitch" in messages[0]
+    assert sweep_accounts.password_min() >= 8
+    assert sweep_accounts.mock_seed_password()
+
+
+def test_sweep_accounts_owners() -> None:
+    import sweep_accounts
+
+    assert sweep_accounts.owner_for_url("http://localhost:3215/") == "ethan"
+    assert sweep_accounts.owner_for_url("http://localhost:3215/threads") == "ethan"
+    assert sweep_accounts.owner_for_url("http://localhost:3215/login?next=%2F") == "pages"
+    assert sweep_accounts.owner_for_url("http://localhost:3215/families/new") == "pages"
+    assert sweep_accounts.problem_owner({"kind": "http", "pageUrl": "http://localhost:3215/login"}) == "api"
+    assert sweep_accounts.problem_owner({"kind": "pageerror", "pageUrl": "http://localhost:3215/"}) == "ethan"
