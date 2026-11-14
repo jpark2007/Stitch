@@ -49,3 +49,13 @@ export function addAnotherHrefFor(
 ): string | undefined {
   return s.phase === "done" && addAnotherHref ? addAnotherHref : undefined;
 }
+
+/**
+ * "Tell it again" shows only when the run ended with its own error: replaying
+ * the run (all a reconnect can do) brings that error straight back, so the way
+ * on is to send the story again. A connection that gave up keeps the feed's
+ * Retry instead. Returns `action` then, otherwise undefined.
+ */
+export function tellAgainFor<T>(s: Pick<RunState, "phase" | "errorFrom">, action?: T): T | undefined {
+  return s.phase === "error" && s.errorFrom === "run" ? action : undefined;
+}

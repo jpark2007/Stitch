@@ -13,11 +13,13 @@ import type { PlanItem } from "@/lib/types";
 import {
   answeredLine,
   compileNote,
+  errorRecovery,
   finishedHeading,
   finishedNote,
   hiddenEntryCount,
   pauseLine,
   phaseLine,
+  startOverNote,
   stepDetail,
   toggleLabel,
   visibleEntries,
@@ -73,12 +75,18 @@ export default function AgentFeed(props: {
   state: RunState;
   mediaUrl: (mediaId: string) => string;
   sceneHref?: string;
+  /** Reconnects; offered only when the connection gave up (see errorRecovery). */
   onRetry?: () => void;
+  /**
+   * The way on after the run's own error, shown in the error box in place of
+   * Retry (which would only replay the same error): "Tell it again", say.
+   */
+  startOver?: ReactNode;
   /** What the run adds, for the finished heading (default "memory"). */
   subject?: FeedSubject;
   children?: ReactNode;
 }) {
-  const { state, mediaUrl, sceneHref, onRetry, subject = "memory", children } = props;
+  const { state, mediaUrl, sceneHref, onRetry, startOver, subject = "memory", children } = props;
   const headingId = useId();
   const feedId = useId();
   const [showAll, setShowAll] = useState(false);
@@ -88,6 +96,8 @@ export default function AgentFeed(props: {
   const hiddenCount = hiddenEntryCount(state);
 
   const finished = state.phase === "done";
+  const recovery = errorRecovery(state);
+  const hasStartOver = startOver != null && startOver !== false;
   const sceneReady = state.phase === "scene_ready" || (finished && state.memoryId !== null);
   const line = phaseLine(state);
   // A stitched rule sets the log off from what is above it, but only when it
@@ -213,10 +223,19 @@ export default function AgentFeed(props: {
                 className="mt-7 rounded-card border border-accent/30 border-l-[3px] border-l-accent bg-accent/8 px-4 py-3.5 text-accent-deep"
               >
                 <p className="font-semibold leading-snug">{state.error ?? "The studio stopped unexpectedly."}</p>
-                {onRetry && (
-                  <Button variant="secondary" onClick={onRetry} className="mt-3">
-                    Retry
-                  </Button>
+                {recovery === "start_over" ? (
+                  <>
+                    <p className="mt-1.5 text-[0.9375rem] leading-snug text-pretty text-ink-soft">
+                      {startOverNote(hasStartOver)}
+                    </p>
+                    {hasStartOver && <div className="mt-3">{startOver}</div>}
+                  </>
+                ) : (
+                  onRetry && (
+                    <Button variant="secondary" onClick={onRetry} className="mt-3">
+                      Retry
+                    </Button>
+                  )
                 )}
               </div>
             )}
