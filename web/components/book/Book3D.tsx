@@ -170,8 +170,8 @@ export function Book3D({ spreads, cover, initial, renderStage }: Book3DProps) {
         </motion.div>
       ) : null}
 
-      {/* Lens: soft focus toward the frame edges, and a warm vignette. */}
-      <div aria-hidden className="pointer-events-none absolute inset-0" style={LENS_BLUR} />
+      {/* Lens: a warm vignette. Depth of field is faked in the scene (fog and
+          the lamp's falloff); a CSS backdrop blur here cost frames mid-turn. */}
       <div aria-hidden className="pointer-events-none absolute inset-0" style={VIGNETTE} />
 
       <header className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between px-4 pt-4 sm:px-6 sm:pt-5">
@@ -203,13 +203,6 @@ const VIGNETTE = {
     "radial-gradient(115% 95% at 50% 46%, transparent 52%, rgb(16 9 5 / 0.38) 78%, rgb(12 7 4 / 0.72) 100%)",
 } as const;
 
-const LENS_BLUR = {
-  backdropFilter: "blur(3px)",
-  WebkitBackdropFilter: "blur(3px)",
-  maskImage: "radial-gradient(85% 80% at 50% 48%, transparent 58%, black 92%)",
-  WebkitMaskImage: "radial-gradient(85% 80% at 50% 48%, transparent 58%, black 92%)",
-} as const;
-
 function MuteButton({ muted }: { muted: boolean }) {
   return (
     <button
@@ -218,7 +211,7 @@ function MuteButton({ muted }: { muted: boolean }) {
       aria-pressed={muted}
       aria-label={muted ? "Turn sound on" : "Mute sound"}
       title={muted ? "Sound off" : "Sound on"}
-      className="pointer-events-auto grid size-11 place-items-center rounded-full bg-[#f5eee1]/90 text-[#5c4e43] shadow-[0_2px_3px_rgb(0_0_0/0.25),0_8px_20px_-6px_rgb(0_0_0/0.5)] backdrop-blur-sm transition-transform duration-200 hover:scale-105 active:scale-95"
+      className="pointer-events-auto grid size-11 place-items-center rounded-full bg-[#f5eee1]/95 text-[#5c4e43] shadow-[0_2px_3px_rgb(0_0_0/0.25),0_8px_20px_-6px_rgb(0_0_0/0.5)] transition-transform duration-200 hover:scale-105 active:scale-95"
     >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
         <path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z" fill="currentColor" fillOpacity="0.14" />
@@ -245,7 +238,7 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
       transition={{ duration: 0.6, delay: view.opened ? 0.8 : 0, ease: [0.22, 1, 0.36, 1] }}
       style={{ pointerEvents: view.opened ? "auto" : "none" }}
     >
-      <ol className="flex items-start gap-1 rounded-full bg-[#140c07]/35 px-3 py-1.5 backdrop-blur-[2px]">
+      <ol className="flex items-start gap-1 rounded-full bg-[#140c07]/45 px-3 py-1.5">
         {spreads.map((s, i) => {
           const active = view.spread === i + 1;
           return (
