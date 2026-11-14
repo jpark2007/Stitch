@@ -20,11 +20,15 @@ registerHooks({
 const {
   MEMORY_FIELDS,
   QUESTION_MAX,
+  SUBMIT_ERRORS,
   SUGGESTED_QUESTIONS,
   TEXT_MAX,
   draftFromQuestion,
   emptyDraft,
+  filterPeople,
+  pickerSearchKey,
   questionAreaFor,
+  submitErrorMessage,
   toSubmitFields,
   validateDraft,
 } = await import("../memoryForm.ts");
@@ -241,4 +245,87 @@ test("questionAreaFor: a bad count reads as no questions", () => {
     assert.equal(area.showFamilyQuestions, false, String(openQuestions));
     assert.equal(area.showStarters, true, String(openQuestions));
   }
+});
+
+// ---- submitErrorMessage -------------------------------------------------------------
+
+test("submitErrorMessage: no connection, signed out, forbidden, busy and server errors each say what happened", () => {
+  assert.equal(submitErrorMessage({ status: 0, detail: "We can't reach Stitch" }), SUBMIT_ERRORS.network);
+  assert.equal(submitErrorMessage({ status: 401, detail: "Not signed in" }), SUBMIT_ERRORS.signedOut);
+  assert.equal(submitErrorMessage({ status: 403, detail: "Forbidden" }), SUBMIT_ERRORS.forbidden);
+  assert.equal(submitErrorMessage({ status: 429, detail: "Slow down" }), SUBMIT_ERRORS.busy);
+  for (const status of [500, 502, 503]) {
+    assert.equal(submitErrorMessage({ status, detail: "Internal Server Error" }), SUBMIT_ERRORS.server);
+  }
+});
+
+test("submitErrorMessage: every message says the story is still here", () => {
+  for (const msg of Object.values(SUBMIT_ERRORS)) assert.match(msg, /still here/);
+});
+
+test("submitErrorMessage: a 404 on a second telling means its moment has gone", () => {
+  assert.equal(submitErrorMessage({ status: 404, detail: "Not found" }, true), SUBMIT_ERRORS.momentGone);
+  assert.equal(submitErrorMessage({ status: 404, detail: "Not found" }, false), "Not found");
+});
+
+test("submitErrorMessage: other statuses show the server's own sentence, else the server message", () => {
+  assert.equal(submitErrorMessage({ status: 409, detail: "That run is already going." }), "That run is already going.");
+  assert.equal(submitErrorMessage({ status: 409, detail: "  " }), SUBMIT_ERRORS.server);
+  assert.equal(submitErrorMessage(null), SUBMIT_ERRORS.network);
+  assert.equal(submitErrorMessage({ status: Number.NaN }), SUBMIT_ERRORS.network);
+});
+
+// ---- filterPeople -------------------------------------------------------------------
+
+const family = [
+  { id: "rosa", name: "Rosa" },
+  { id: "jose", name: "José Mao" },
+  { id: "ana", name: "Ana  Mao" },
+  { id: "sam", name: "Sam" },
+  { id: "lily", name: "Lily" },
+];
+
+test("filterPeople: a blank search keeps everyone, as a copy", () => {
+  const all = filterPeople(family, "   ");
+  assert.deepEqual(all, family);
+  assert.notEqual(all, family);
+});
+
+test("filterPeople: matches anywhere in the name, ignoring case, accents and extra spaces", () => {
+  assert.deepEqual(filterPeople(family, "jose").map((p) => p.id), ["jose"]);
+  assert.deepEqual(filterPeople(family, "MAO").map((p) => p.id), ["jose", "ana"]);
+  assert.deepEqual(filterPeople(family, "ana mao").map((p) => p.id), ["ana"]);
+  assert.deepEqual(filterPeople(family, "il").map((p) => p.id), ["lily"]);
+});
+
+test("filterPeople: the picked stay in view, in family order", () => {
+  assert.deepEqual(filterPeople(family, "lily", ["sam"]).map((p) => p.id), ["sam", "lily"]);
+  assert.deepEqual(filterPeople(family, "zzz", ["rosa"]).map((p) => p.id), ["rosa"]);
+});
+
+// ---- pickerSearchKey ------------------------------------------------------------------
+
+test("pickerSearchKey: Enter never falls through to the form", () => {
+  // Blank search, several matches, no match: Enter is swallowed, nothing changes.
+  assert.deepEqual(pickerSearchKey("Enter", "", family), { action: "stay" });
+  assert.deepEqual(pickerSearchKey("Enter", "   ", family), { action: "stay" });
+  assert.deepEqual(pickerSearchKey("Enter", "mao", family), { action: "stay" });
+  assert.deepEqual(pickerSearchKey("Enter", "zzz", family), { action: "stay" });
+});
+
+test("pickerSearchKey: Enter with exactly one match picks that person", () => {
+  assert.deepEqual(pickerSearchKey("Enter", "Sof", [...family, { id: "sofia", name: "Sofía" }]), {
+    action: "pick",
+    pickId: "sofia",
+  });
+  assert.deepEqual(pickerSearchKey("Enter", "jose", family), { action: "pick", pickId: "jose" });
+  // Already picked (or locked, passed in pickedIds): never unpicks, just stays.
+  assert.deepEqual(pickerSearchKey("Enter", "jose", family, ["jose"]), { action: "stay" });
+});
+
+test("pickerSearchKey: Escape clears a search, other keys are left alone", () => {
+  assert.deepEqual(pickerSearchKey("Escape", "ro", family), { action: "clear" });
+  assert.equal(pickerSearchKey("Escape", "", family), null);
+  assert.equal(pickerSearchKey("a", "ro", family), null);
+  assert.equal(pickerSearchKey("Tab", "ro", family), null);
 });

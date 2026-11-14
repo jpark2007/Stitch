@@ -7,7 +7,14 @@
 // file directly. Tests: components/flow/__tests__/addPage.test.mjs.
 import type { RunSource } from "@/components/agent/useAgentRun";
 import type { RunEventMessage } from "@/components/agent/runState";
-import type { FamilySummary, MemoryResponse, Question, SubmitMemoryFields } from "../../lib/types";
+import type {
+  FamilySummary,
+  MemoryResponse,
+  MomentSummary,
+  Question,
+  SubmitMemoryFields,
+  ThreadsResponse,
+} from "../../lib/types";
 import type { MemoryRunTelling } from "./MemoryRun";
 import type { MemoryDraft } from "./memoryForm";
 
@@ -257,19 +264,130 @@ export function restoreNotice(photoCount: number, photosBack: number | null): st
 }
 
 // ---------------------------------------------------------------------------
+// The story typed so far, carried across a switch to another family. A switch
+// is a page change, so the form would start blank; this keeps the words and
+// the year (not the people: they belong to the family left behind). Kept in
+// sessionStorage for one read. These helpers never throw.
+
+/** sessionStorage key for the story carried into another family's form. */
+export const CARRY_KEY = "stitch.addCarry";
+
+/** What is carried: the story and year, for the form of family `familyId`. */
+export interface CarriedStory {
+  familyId: string;
+  text: string;
+  year: string;
+}
+
+/**
+ * Keeps what was typed for the form of family `familyId`. Nothing typed
+ * clears anything kept before, so an old story never turns up later.
+ */
+export function saveCarry(
+  storage: Pick<Storage, "setItem" | "removeItem"> | null,
+  c: CarriedStory,
+): void {
+  if (!storage) return;
+  try {
+    if (!c.familyId || (!c.text.trim() && !c.year.trim())) storage.removeItem(CARRY_KEY);
+    else storage.setItem(CARRY_KEY, JSON.stringify({ familyId: c.familyId, text: c.text, year: c.year }));
+  } catch {
+    // Not kept: the other family's form starts blank.
+  }
+}
+
+/**
+ * The story carried into family `familyId`'s form, or null when there is
+ * none, it was for another family, or it is unreadable. Reading leaves it in
+ * place (React may run a state initializer twice); clearCarry drops it once
+ * the form has it, so a reload or a later visit starts blank.
+ */
+export function readCarry(
+  storage: Pick<Storage, "getItem"> | null,
+  familyId: string,
+): { text: string; year: string } | null {
+  if (!storage || !familyId) return null;
+  let raw: string | null;
+  try {
+    raw = storage.getItem(CARRY_KEY);
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "string" || !raw) return null;
+  let o: unknown;
+  try {
+    o = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof o !== "object" || o === null || Array.isArray(o)) return null;
+  const c = o as Record<string, unknown>;
+  if (c.familyId !== familyId || typeof c.text !== "string" || typeof c.year !== "string") return null;
+  const year = /^\d{1,4}$/.test(c.year.trim()) ? c.year.trim() : "";
+  if (!c.text.trim() && !year) return null;
+  return { text: c.text, year };
+}
+
+/** Drops the carried story. Never throws. */
+export function clearCarry(storage: Pick<Storage, "removeItem"> | null): void {
+  try {
+    storage?.removeItem(CARRY_KEY);
+  } catch {
+    // Blocked storage: nothing was kept either.
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Second tellings
 
-/** The parts of a moment a second telling needs: its title, year and people. */
-export function momentFromMemory(m: MemoryResponse): {
+/** The parts of a moment a second telling needs: its title, year, people and who told it. */
+export interface MomentInfo {
   title: string;
   year: number;
   participantIds: string[];
-} {
+  /** Person ids of everyone who has told this moment, in order, once each. */
+  tellerIds: string[];
+}
+
+/** The moment a second telling joins, from GET /memories/{id}. */
+export function momentFromMemory(m: MemoryResponse): MomentInfo {
   return {
     title: m.memory.title,
     year: m.memory.year,
     participantIds: [...(m.memory.participantIds ?? [])],
+    tellerIds: uniqueStrings((m.memory.tellings ?? []).map((t) => t?.authorId)),
   };
+}
+
+/** The same, from a moment in GET /threads (no scene, so nothing that can 404). */
+export function momentFromSummary(s: MomentSummary): MomentInfo {
+  return {
+    title: s.title,
+    year: s.year,
+    participantIds: [...(s.participantIds ?? [])],
+    tellerIds: uniqueStrings(s.tellingAuthorIds ?? []),
+  };
+}
+
+/**
+ * Every moment of the family by id, from GET /threads, so /add can open a
+ * second telling (from `?memoryId=` or a picked question) without asking for
+ * the whole scene, and can tell a moment that is not there from a failed
+ * load. Null when the threads could not be read: the page then asks for the
+ * one moment instead.
+ */
+export function momentsFromThreads(t: ThreadsResponse | null | undefined): Map<string, MomentInfo> | null {
+  if (!t || !Array.isArray(t.moments)) return null;
+  const out = new Map<string, MomentInfo>();
+  for (const s of t.moments) {
+    if (s && typeof s.id === "string" && s.id && !out.has(s.id)) out.set(s.id, momentFromSummary(s));
+  }
+  return out;
+}
+
+/** True when `personId` has already told this moment (telling it again replaces theirs). */
+export function hasTold(moment: Pick<MomentInfo, "tellerIds"> | null | undefined, personId: string): boolean {
+  return Boolean(moment && personId && moment.tellerIds.includes(personId));
 }
 
 /** The open question asking the caller about moment `memoryId`, if there is one. */
@@ -320,4 +438,38 @@ export function withRunGone(
     },
     answer: (body) => source.answer(body),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Carrying a draft into a remounted form
+
+/** What the add page carries from one form into the next (photos travel apart). */
+export interface CarriedDraft {
+  text: string;
+  year: string;
+  /** People picked for a new memory; null when none were chosen (a second telling). */
+  participantIds: string[] | null;
+}
+
+/**
+ * The starting values for a form that replaces another (a picked question, a
+ * released one, another family's form), with what was typed carried in: the
+ * story always; the year and people only into a new memory that has none of
+ * its own (a second telling keeps its moment's). Nothing carried leaves
+ * `initial` as it was.
+ */
+export function carryInto(
+  initial: Partial<MemoryDraft> | undefined,
+  carried: CarriedDraft,
+  secondTelling: boolean,
+): Partial<MemoryDraft> | undefined {
+  const out: Partial<MemoryDraft> = {};
+  if (carried.text) out.text = carried.text;
+  if (!secondTelling) {
+    if (carried.year && !initial?.year) out.year = carried.year;
+    if (carried.participantIds && carried.participantIds.length > 0 && !initial?.participantIds?.length) {
+      out.participantIds = uniqueStrings(carried.participantIds);
+    }
+  }
+  return Object.keys(out).length ? { ...initial, ...out } : initial;
 }

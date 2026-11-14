@@ -12,7 +12,9 @@
 // set, so the year is shown as text and the participant picker is hidden.
 // `questionArea` (from questionAreaFor) says whether the typed question field
 // and the generic starters show; `askedQuestion` is a question shown read-only
-// in the second-telling banner.
+// in the second-telling banner. `onDraftChange` hears every edit, so the page
+// can carry what was typed into a form it remounts (a picked question, another
+// family).
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { SubmitMemoryFields } from "@/lib/types";
 import { isApiError } from "@/lib/api";
@@ -24,6 +26,7 @@ import {
   SUGGESTED_QUESTIONS,
   emptyDraft,
   questionAreaFor,
+  submitErrorMessage,
   toSubmitFields,
   validateDraft,
   type MemoryDraft,
@@ -36,7 +39,7 @@ import { PhotoUpload } from "./PhotoUpload";
 import { mergeServerErrors, type FieldErrors } from "./validation";
 import { YearInput } from "./YearInput";
 
-const GENERIC_ERROR = "That didn't save. Check your connection and try again.";
+const GENERIC_ERROR = "That didn't save. Your story is still here: try sending it again.";
 const PHOTOS_TOO_BIG = "Those photos are too big to send together. Try fewer or smaller ones.";
 const PHOTOS_WRONG_TYPE = "One of those photos isn't a kind we can use. Try a JPEG, PNG, WebP, HEIC or GIF.";
 const YEAR_MIN = 1850;
@@ -59,11 +62,15 @@ export function AddMemoryForm(props: {
   secondTellingOf?: { title: string; year: number } | null;
   /** The question a second telling answers, shown read-only in its banner. */
   askedQuestion?: string | null;
+  /** This person has told the moment before: sending replaces their telling. */
+  alreadyTold?: boolean;
   /** Which question controls show. Defaults to questionAreaFor with no family questions. */
   questionArea?: Pick<QuestionArea, "showQuestionField" | "showStarters">;
   disabled?: boolean;
   submitLabel?: string;
   onSubmit: (fields: SubmitMemoryFields, photos: File[]) => Promise<void>;
+  /** Told after every change to the draft or the photos. */
+  onDraftChange?: (draft: MemoryDraft, photos: File[]) => void;
 }) {
   const {
     people,
@@ -72,10 +79,12 @@ export function AddMemoryForm(props: {
     initialPhotos,
     secondTellingOf = null,
     askedQuestion = null,
+    alreadyTold = false,
     questionArea,
     disabled = false,
     submitLabel = "Save this memory",
     onSubmit,
+    onDraftChange,
   } = props;
 
   const [draft, setDraft] = useState<MemoryDraft>(() => emptyDraft(selfPersonId, initial));
@@ -83,6 +92,8 @@ export function AddMemoryForm(props: {
   const [errors, setErrors] = useState<FieldErrors<MemoryField>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  // Counts sends, so the photo field drops notes about an earlier pick.
+  const [attempt, setAttempt] = useState(0);
   // Bumped after a failed submit; the effect moves focus once errors render.
   const [focusTick, setFocusTick] = useState(0);
   const formRef = useRef<HTMLFormElement>(null);
@@ -100,7 +111,7 @@ export function AddMemoryForm(props: {
   if (seenKey !== initKey) {
     setSeenKey(initKey);
     setDraft(emptyDraft(selfPersonId, initial));
-    setPhotos([]);
+    setPhotos(initialPhotos ?? []);
     setErrors({});
     setFormError(null);
     setQuestionOpen((initial?.question ?? "").trim() !== "");
@@ -109,6 +120,10 @@ export function AddMemoryForm(props: {
   useEffect(() => {
     if (focusTick > 0) focusFirstError(formRef.current);
   }, [focusTick]);
+
+  useEffect(() => {
+    onDraftChange?.(draft, photos);
+  }, [draft, photos, onDraftChange]);
 
   useEffect(() => {
     if (questionOpen && focusQuestionOnOpen.current) {
@@ -160,6 +175,7 @@ export function AddMemoryForm(props: {
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (locked) return;
+    setAttempt((n) => n + 1);
 
     const current: MemoryDraft = secondTellingOf
       ? { ...draft, year: String(secondTellingOf.year) }
@@ -182,6 +198,10 @@ export function AddMemoryForm(props: {
         if (err.status === 413 || err.status === 415) {
           setErrors({ photos: err.status === 413 ? PHOTOS_TOO_BIG : PHOTOS_WRONG_TYPE });
           setFormError(null);
+        } else if (err.status !== 400 && err.status !== 422) {
+          // Not about a field: say what happened, and that nothing typed is lost.
+          setErrors({});
+          setFormError(submitErrorMessage(err, Boolean(secondTellingOf)));
         } else {
           const merged = mergeServerErrors<MemoryField>({}, err.fieldErrors, MEMORY_FIELDS);
           const { fields, rest } = splitHidden(merged.fields, merged.rest);
@@ -215,6 +235,7 @@ export function AddMemoryForm(props: {
           </p>
           <p className="mt-1 text-sm leading-snug text-ink-soft">
             The same scene will play again, told in your words.
+            {alreadyTold ? " You’ve told this one before: this replaces your earlier telling." : null}
           </p>
           {askedQuestion ? (
             <p className="mt-3 border-t border-dashed border-rule pt-2.5 text-sm leading-snug text-ink-soft">
@@ -229,12 +250,13 @@ export function AddMemoryForm(props: {
 
       <fieldset disabled={locked} className="m-0 min-w-0 space-y-8 border-0 p-0">
         <div>
-          <p className="mb-5 text-sm text-ink-soft">
-            <span aria-hidden="true">* </span>
-            {secondTellingOf
-              ? "Only your story is needed. Everything else is optional."
-              : "Your story and the year are needed. Everything else is optional."}
-          </p>
+          {/* A second telling needs only the story, so no key to the asterisk. */}
+          {secondTellingOf ? null : (
+            <p className="mb-5 text-sm text-ink-soft">
+              <span aria-hidden="true">* </span>
+              Needed: your story and the year.
+            </p>
+          )}
           <TextAreaField
             label={
               <>
@@ -351,6 +373,7 @@ export function AddMemoryForm(props: {
           }}
           error={errors.photos}
           disabled={locked}
+          attempt={attempt}
         />
 
         {secondTellingOf ? null : (

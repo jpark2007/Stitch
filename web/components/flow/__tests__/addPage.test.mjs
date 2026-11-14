@@ -5,19 +5,27 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  CARRY_KEY,
   DRAFT_KEY_PREFIX,
   RUN_GONE_MESSAGE,
   TELLING_KEY_PREFIX,
+  carryInto,
+  clearCarry,
   draftFromSent,
   familyChoice,
+  hasTold,
   loadSentDraft,
   loadTelling,
   momentFromMemory,
+  momentFromSummary,
+  momentsFromThreads,
   questionForMemory,
   readAddQuery,
+  readCarry,
   restoreNotice,
   retryHref,
   runHref,
+  saveCarry,
   saveSentDraft,
   saveTelling,
   sentDraftFromSubmit,
@@ -332,14 +340,80 @@ describe("momentFromMemory", () => {
       props: [],
     };
     const m = momentFromMemory(res);
-    assert.deepEqual(m, { title: "The hymn books", year: 1988, participantIds: ["dad", "mom"] });
+    assert.deepEqual(m, { title: "The hymn books", year: 1988, participantIds: ["dad", "mom"], tellerIds: [] });
     m.participantIds.push("x");
     assert.deepEqual(ids, ["dad", "mom"]);
   });
 
   test("no participants listed", () => {
     const res = { memory: { id: "m", familyId: "f", title: "T", year: 1970 } };
-    assert.deepEqual(momentFromMemory(res), { title: "T", year: 1970, participantIds: [] });
+    assert.deepEqual(momentFromMemory(res), { title: "T", year: 1970, participantIds: [], tellerIds: [] });
+  });
+
+  test("tellers from the tellings, in order, once each", () => {
+    const res = {
+      memory: {
+        id: "m",
+        familyId: "f",
+        title: "T",
+        year: 1970,
+        tellings: [
+          { authorId: "dad", text: "a" },
+          { authorId: "mom", text: "b" },
+          { authorId: "dad", text: "c" },
+          { authorId: "", text: "d" },
+        ],
+      },
+    };
+    assert.deepEqual(momentFromMemory(res).tellerIds, ["dad", "mom"]);
+  });
+});
+
+describe("momentFromSummary / momentsFromThreads", () => {
+  const threads = {
+    people: [],
+    moments: [
+      { id: "hymn", title: "The hymn books", year: 1988, participantIds: ["dad", "mom"], tellingAuthorIds: ["dad", "mom"] },
+      { id: "bike", title: "Sam's first bike", year: 1997, participantIds: ["sam"] },
+      { id: "hymn", title: "A duplicate id", year: 2000, participantIds: [] },
+      { id: "", title: "No id", year: 2001, participantIds: [] },
+    ],
+  };
+
+  test("a summary gives the same shape as a memory", () => {
+    const s = threads.moments[0];
+    const m = momentFromSummary(s);
+    assert.deepEqual(m, { title: "The hymn books", year: 1988, participantIds: ["dad", "mom"], tellerIds: ["dad", "mom"] });
+    m.participantIds.push("x");
+    assert.deepEqual(s.participantIds, ["dad", "mom"]);
+  });
+
+  test("no tellingAuthorIds means no tellers yet", () => {
+    assert.deepEqual(momentFromSummary(threads.moments[1]).tellerIds, []);
+  });
+
+  test("moments by id; the first of a duplicate id wins; blank ids are skipped", () => {
+    const all = momentsFromThreads(threads);
+    assert.deepEqual([...all.keys()], ["hymn", "bike"]);
+    assert.equal(all.get("hymn").title, "The hymn books");
+    assert.equal(all.get("nope"), undefined);
+  });
+
+  test("no threads (the request failed) is null, an empty family an empty map", () => {
+    assert.equal(momentsFromThreads(null), null);
+    assert.equal(momentsFromThreads(undefined), null);
+    assert.equal(momentsFromThreads({ people: [] }), null);
+    assert.equal(momentsFromThreads({ people: [], moments: [] }).size, 0);
+  });
+});
+
+describe("hasTold", () => {
+  test("only someone among the tellers", () => {
+    const m = { tellerIds: ["dad", "mom"] };
+    assert.equal(hasTold(m, "mom"), true);
+    assert.equal(hasTold(m, "sam"), false);
+    assert.equal(hasTold(m, ""), false);
+    assert.equal(hasTold(null, "mom"), false);
   });
 });
 
@@ -622,5 +696,118 @@ describe("restoreNotice", () => {
     assert.equal(restoreNotice(3, 1), `${LEAD} Your photos didn't come along; add them again.`);
     assert.equal(restoreNotice(1, null), `${LEAD} Your photo didn't come along; add it again.`);
     assert.equal(restoreNotice(1, 0), `${LEAD} Your photo didn't come along; add it again.`);
+  });
+});
+
+// ---- carrying the story into another family's form ---------------------------------
+
+function fullStorage() {
+  const map = new Map();
+  return {
+    map,
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => void map.set(k, String(v)),
+    removeItem: (k) => void map.delete(k),
+  };
+}
+
+describe("saveCarry / readCarry / clearCarry", () => {
+  test("the story and year reach that family's form, and only that family's", () => {
+    const st = fullStorage();
+    saveCarry(st, { familyId: "fam2", text: "The green bike", year: "1997" });
+    assert.deepEqual(readCarry(st, "fam2"), { text: "The green bike", year: "1997" });
+    assert.equal(readCarry(st, "fam1"), null);
+  });
+
+  test("reading leaves it for a second read (a state initializer can run twice); clearing drops it", () => {
+    const st = fullStorage();
+    saveCarry(st, { familyId: "f", text: "t", year: "" });
+    assert.deepEqual(readCarry(st, "f"), { text: "t", year: "" });
+    assert.deepEqual(readCarry(st, "f"), { text: "t", year: "" });
+    clearCarry(st);
+    assert.equal(readCarry(st, "f"), null);
+    assert.equal(st.map.size, 0);
+  });
+
+  test("nothing typed clears an older carry instead of keeping it", () => {
+    const st = fullStorage();
+    saveCarry(st, { familyId: "f", text: "old", year: "" });
+    saveCarry(st, { familyId: "g", text: "   ", year: "" });
+    assert.equal(st.map.has(CARRY_KEY), false);
+  });
+
+  test("a year that is not a year is dropped; a story with only a bad year is nothing", () => {
+    const st = fullStorage();
+    st.setItem(CARRY_KEY, JSON.stringify({ familyId: "f", text: "t", year: "19x7" }));
+    assert.deepEqual(readCarry(st, "f"), { text: "t", year: "" });
+    st.setItem(CARRY_KEY, JSON.stringify({ familyId: "f", text: " ", year: "abc" }));
+    assert.equal(readCarry(st, "f"), null);
+  });
+
+  test("unreadable, wrong-shaped or missing values are null", () => {
+    const st = fullStorage();
+    assert.equal(readCarry(st, "f"), null);
+    for (const raw of ["{", "[]", "null", JSON.stringify({ familyId: "f", text: 3, year: "" })]) {
+      st.setItem(CARRY_KEY, raw);
+      assert.equal(readCarry(st, "f"), null, raw);
+    }
+    assert.equal(readCarry(null, "f"), null);
+    assert.equal(readCarry(st, ""), null);
+  });
+
+  test("storage that throws never throws out", () => {
+    const bad = {
+      getItem() {
+        throw new Error("blocked");
+      },
+      setItem() {
+        throw new Error("blocked");
+      },
+      removeItem() {
+        throw new Error("blocked");
+      },
+    };
+    assert.doesNotThrow(() => saveCarry(bad, { familyId: "f", text: "t", year: "" }));
+    assert.equal(readCarry(bad, "f"), null);
+    assert.doesNotThrow(() => clearCarry(bad));
+    assert.doesNotThrow(() => clearCarry(null));
+  });
+});
+
+describe("carryInto", () => {
+  const typed = { text: "The green bike", year: "1997", participantIds: ["sam", "dad"] };
+
+  test("into a general question: story, year and people all come along", () => {
+    const initial = { question: "How did you two meet?", memoryId: null };
+    assert.deepEqual(carryInto(initial, typed, false), {
+      question: "How did you two meet?",
+      memoryId: null,
+      text: "The green bike",
+      year: "1997",
+      participantIds: ["sam", "dad"],
+    });
+  });
+
+  test("into a second telling: only the story; the moment keeps its year and people", () => {
+    const initial = { question: "Q", memoryId: "hymn", year: "1988", participantIds: ["dad", "mom"] };
+    assert.deepEqual(carryInto(initial, typed, true), { ...initial, text: "The green bike" });
+  });
+
+  test("a form that already has its own year or people keeps them", () => {
+    const initial = { year: "2001", participantIds: ["mom"] };
+    assert.deepEqual(carryInto(initial, typed, false), { year: "2001", participantIds: ["mom"], text: "The green bike" });
+  });
+
+  test("nothing carried returns the same starting values (even undefined)", () => {
+    const none = { text: "", year: "", participantIds: null };
+    const initial = { question: "Q" };
+    assert.equal(carryInto(initial, none, false), initial);
+    assert.equal(carryInto(undefined, none, false), undefined);
+    assert.equal(carryInto(undefined, { ...none, participantIds: [] }, false), undefined);
+  });
+
+  test("people are deduped and blanks dropped", () => {
+    const res = carryInto(undefined, { text: "", year: "", participantIds: ["a", "", "a", "b"] }, false);
+    assert.deepEqual(res, { participantIds: ["a", "b"] });
   });
 });

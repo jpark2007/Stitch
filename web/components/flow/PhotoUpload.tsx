@@ -3,7 +3,9 @@
 // Add up to six photos to a memory: a paper drop area over a real (visually
 // hidden, still focusable) file input, with taped-photo thumbnails. Each
 // thumbnail owns its object URL and revokes it when it unmounts, so removing
-// a photo or leaving the page never leaks, including under StrictMode.
+// a photo or leaving the page never leaks, including under StrictMode. A
+// photo the browser cannot draw (HEIC outside Safari) shows a paper tile with
+// its kind instead of a broken image; it is still sent as it is.
 import {
   useEffect,
   useId,
@@ -42,8 +44,13 @@ export function PhotoUpload(props: {
   hint?: ReactNode;
   error?: string | null;
   disabled?: boolean;
+  /**
+   * Changed by the form on each send: the notes about files left out of the
+   * last pick ("already added", "too big") are about that pick, so they go.
+   */
+  attempt?: number;
 }) {
-  const { label, files, onChange, hint, error, disabled } = props;
+  const { label, files, onChange, hint, error, disabled, attempt = 0 } = props;
   const uid = useId();
   const inputId = `${uid}-input`;
   const labelId = `${uid}-label`;
@@ -53,6 +60,11 @@ export function PhotoUpload(props: {
   const problemsId = `${uid}-problems`;
 
   const [problems, setProblems] = useState<string[]>([]);
+  const [seenAttempt, setSeenAttempt] = useState(attempt);
+  if (seenAttempt !== attempt) {
+    setSeenAttempt(attempt);
+    setProblems([]);
+  }
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const removeRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -208,7 +220,10 @@ export function PhotoUpload(props: {
       ) : null}
 
       {files.length > 0 ? (
-        <ul aria-label="Photos added" className="mt-4 flex list-none flex-wrap gap-x-5 gap-y-6 p-0 pt-2">
+        <ul
+          aria-label="Photos added"
+          className="mt-4 flex list-none flex-wrap gap-x-4 gap-y-6 p-0 pt-2 sm:gap-x-5"
+        >
           {files.map((file, i) => (
             <li key={keys[i]}>
               <Thumb
@@ -242,6 +257,8 @@ function Thumb({
   registerButton(el: HTMLButtonElement | null): void;
 }) {
   const imgRef = useRef<HTMLImageElement>(null);
+  // The browser could not draw this file (a HEIC photo outside Safari, say).
+  const [unreadable, setUnreadable] = useState(false);
 
   // The object URL lives exactly as long as this thumbnail shows this file.
   useEffect(() => {
@@ -257,7 +274,7 @@ function Thumb({
 
   return (
     <figure
-      className="relative m-0 w-24 bg-paper-light p-1.5 pb-5 shadow-paper"
+      className="relative m-0 w-20 bg-paper-light p-1.5 pb-5 shadow-paper sm:w-24"
       style={{ transform: `rotate(${tilt}deg)` }}
     >
       {/* Masking tape holding the photo down. */}
@@ -272,8 +289,18 @@ function Thumb({
       <img
         ref={imgRef}
         alt=""
-        className="block aspect-square w-full bg-paper-deep object-cover text-[0px]"
+        onError={() => setUnreadable(true)}
+        className={`aspect-square w-full bg-paper-deep object-cover text-[0px] ${unreadable ? "hidden" : "block"}`}
       />
+      {unreadable ? (
+        <span
+          aria-hidden="true"
+          className="flex aspect-square w-full flex-col items-center justify-center gap-0.5 bg-paper-deep text-center"
+        >
+          <span className="font-display text-sm tracking-wide text-ink-soft">{photoKind(file)}</span>
+          <span className="text-[10px] leading-tight text-ink-faint">no preview</span>
+        </span>
+      ) : null}
       <figcaption className="mt-1 truncate text-center text-[11px] leading-tight text-ink-faint">
         {file.name}
       </figcaption>
@@ -302,6 +329,15 @@ function Thumb({
       </button>
     </figure>
   );
+}
+
+/** A short name for a photo's kind ("HEIC", "JPEG"), from its extension or type. */
+function photoKind(file: File): string {
+  const dot = file.name.lastIndexOf(".");
+  const ext = dot > 0 ? file.name.slice(dot + 1) : "";
+  if (ext && ext.length <= 5) return ext.toUpperCase();
+  const sub = file.type.split("/")[1] ?? "";
+  return sub ? sub.toUpperCase() : "Photo";
 }
 
 function PhotoIcon() {

@@ -62,9 +62,15 @@ function joiner(i: number, n: number): string {
  * family the memory goes into and, unless `switchable` is false, a link to
  * each other family's plain form (no moment, no run: a moment belongs to one
  * family). Renders nothing for one family, so that page stays as it was.
+ * `onSwitch` is told the family about to be opened, before the page changes,
+ * so the form can hand what was typed on to it.
  */
-export function FamilyLine(props: { choice: FamilyChoice; switchable?: boolean }) {
-  const { choice, switchable = true } = props;
+export function FamilyLine(props: {
+  choice: FamilyChoice;
+  switchable?: boolean;
+  onSwitch?: (familyId: string) => void;
+}) {
+  const { choice, switchable = true, onSwitch } = props;
   const { current, others, show } = choice;
   if (!show || !current) return null;
   const links = switchable ? others : [];
@@ -83,7 +89,11 @@ export function FamilyLine(props: { choice: FamilyChoice; switchable?: boolean }
             {links.map((f, i) => (
               <Fragment key={f.id}>
                 {joiner(i, links.length)}
-                <Link href={hrefs.add({ familyId: f.id })} className={SWITCH_LINK}>
+                <Link
+                  href={hrefs.add({ familyId: f.id })}
+                  onClick={onSwitch ? () => onSwitch(f.id) : undefined}
+                  className={SWITCH_LINK}
+                >
                   {f.name}
                 </Link>
               </Fragment>
@@ -105,6 +115,26 @@ export function ledeWithFamily(choice: FamilyChoice, lede?: ReactNode, switchabl
     <>
       <FamilyLine choice={choice} switchable={switchable} />
       {lede == null || lede === false ? null : <p className="mt-3 text-pretty">{lede}</p>}
+    </>
+  );
+}
+
+/**
+ * ledeWithFamily as a component, for a page whose switch links hand the
+ * typed story on (`onSwitch`). The lede goes in a paragraph either way.
+ */
+export function FamilyLede(props: {
+  choice: FamilyChoice;
+  onSwitch?: (familyId: string) => void;
+  children?: ReactNode;
+}) {
+  const { choice, onSwitch, children } = props;
+  const lede = children == null || children === false ? null : <p className="text-pretty">{children}</p>;
+  if (!choice.show || !choice.current) return lede;
+  return (
+    <>
+      <FamilyLine choice={choice} onSwitch={onSwitch} />
+      {lede ? <div className="mt-3">{lede}</div> : null}
     </>
   );
 }

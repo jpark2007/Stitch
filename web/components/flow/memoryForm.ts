@@ -164,3 +164,103 @@ export function toSubmitFields(d: MemoryDraft): SubmitMemoryFields {
   else fields.participantIds = uniqueIds(d.participantIds);
   return fields;
 }
+
+// ---------------------------------------------------------------------------
+// When sending fails
+
+/** Shown when sending failed for a reason that is not about one field. */
+export const SUBMIT_ERRORS = {
+  network:
+    "We couldn't reach Stitch, so nothing was sent. Your story is still here: check your connection and send it again.",
+  signedOut:
+    "You've been signed out, so this wasn't sent. Log in again in another tab, then come back and send it: your story is still here.",
+  forbidden: "You can't add memories to this family any more. Your story is still here if you want to copy it.",
+  server:
+    "The studio couldn't take your story just now. Everything you wrote is still here; try sending it again in a moment.",
+  busy: "The studio is busy. Wait a moment, then send it again: your story is still here.",
+  momentGone:
+    "That moment isn't in the family any more, so your telling couldn't join it. Your story is still here.",
+} as const;
+
+/**
+ * The form-level message for a failed send, from the error's HTTP status
+ * (0 when the server was never reached) and its detail. Field problems (422)
+ * and photo problems (413/415) are shown on their fields; this covers the
+ * rest, and always says the draft is safe.
+ */
+export function submitErrorMessage(
+  err: { status: number; detail?: string | null } | null | undefined,
+  secondTelling = false,
+): string {
+  const status = err && Number.isFinite(err.status) ? err.status : 0;
+  if (status === 0) return SUBMIT_ERRORS.network;
+  if (status === 401) return SUBMIT_ERRORS.signedOut;
+  if (status === 403) return SUBMIT_ERRORS.forbidden;
+  if (status === 404 && secondTelling) return SUBMIT_ERRORS.momentGone;
+  if (status === 429) return SUBMIT_ERRORS.busy;
+  if (status >= 500) return SUBMIT_ERRORS.server;
+  const detail = (err?.detail ?? "").trim();
+  return detail || SUBMIT_ERRORS.server;
+}
+
+// ---------------------------------------------------------------------------
+// Finding people in a big family
+
+/** A family with more people than this gets a "Find someone" field over the picker. */
+export const PICKER_SEARCH_FROM = 10;
+
+/** Lowercased, accents and extra spaces removed, for forgiving name matching. */
+function foldName(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * The people whose name contains `query`, ignoring case, accents and extra
+ * spaces, keeping their order.
+ * People in `keepIds` (the picked ones) always stay, so a search never hides
+ * who is already in. A blank query keeps everyone.
+ */
+export function filterPeople<P extends { id: string; name: string }>(
+  people: readonly P[],
+  query: string,
+  keepIds: readonly string[] = [],
+): P[] {
+  const q = foldName(query);
+  if (!q) return [...people];
+  return people.filter((p) => {
+    if (keepIds.includes(p.id)) return true;
+    return foldName(p.name).includes(q);
+  });
+}
+
+/**
+ * What a key press in the picker's "Find someone" field does. The field sits
+ * inside the memory form, so Enter must never fall through to the form (that
+ * would send the memory, or fire its validation, mid-search):
+ * - "pick": Enter with exactly one unpicked match picks that person
+ *   (`pickId`) and clears the search;
+ * - "stay": any other Enter is swallowed and nothing changes;
+ * - "clear": Escape with something typed empties the search;
+ * - null: every other key behaves as normal.
+ * Callers call preventDefault for any non-null action.
+ */
+export function pickerSearchKey<P extends { id: string; name: string }>(
+  key: string,
+  query: string,
+  people: readonly P[],
+  pickedIds: readonly string[] = [],
+): { action: "pick"; pickId: string } | { action: "stay" | "clear" } | null {
+  if (key === "Escape") return query ? { action: "clear" } : null;
+  if (key !== "Enter") return null;
+  if (!foldName(query)) return { action: "stay" };
+  const matches = filterPeople(people, query);
+  if (matches.length === 1 && !pickedIds.includes(matches[0].id)) {
+    return { action: "pick", pickId: matches[0].id };
+  }
+  return { action: "stay" };
+}

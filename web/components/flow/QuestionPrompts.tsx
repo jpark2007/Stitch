@@ -3,7 +3,9 @@
 // Questions family members asked this person, as small handwritten notes
 // above the story on the add-a-memory page. Each note is one toggle button:
 // pressing it answers that question (the page turns it into a draft with
-// draftFromQuestion), pressing it again lets it go. Two show at once; the rest
+// draftFromQuestion), pressing it again lets it go. A question about a moment
+// says "Add your version": answering it adds this person's telling to that
+// moment instead of starting a new one. Two show at once; the rest
 // wait behind "More questions" so the story stays on the first screen and the
 // page never feels like an inbox.
 import { useId, useState } from "react";
@@ -49,7 +51,7 @@ export function QuestionPrompts(props: {
                 aria-pressed={picked}
                 onClick={() => onPick(q)}
                 className={[
-                  "group relative flex min-h-11 w-full flex-col items-start gap-1 rounded-paper border bg-paper-light px-4 py-2.5 text-left shadow-paper",
+                  "group relative flex min-h-11 w-full flex-col items-start gap-0.5 rounded-paper border bg-paper-light px-4 py-2 text-left shadow-paper sm:py-2.5",
                   "sm:flex-row sm:items-center sm:justify-between sm:gap-5",
                   "transition-colors duration-150 ease-paper motion-reduce:transition-none",
                   FOCUS_RING,
@@ -61,7 +63,7 @@ export function QuestionPrompts(props: {
                   aria-hidden="true"
                   className="absolute -top-1.5 left-6 h-3 w-10 -rotate-3 bg-[#e9dcbd]/80 mix-blend-multiply"
                 />
-                <span className="min-w-0 font-hand text-[1.375rem] leading-[1.15] text-pretty break-words text-ink">
+                <span className="min-w-0 font-hand text-[1.25rem] leading-[1.15] text-pretty break-words text-ink sm:text-[1.375rem]">
                   {q.text}
                 </span>
                 <span
@@ -71,7 +73,7 @@ export function QuestionPrompts(props: {
                   ].join(" ")}
                 >
                   {picked ? <PickedMark /> : null}
-                  Answer this
+                  {q.memoryId ? "Add your version" : "Answer this"}
                 </span>
               </button>
             </li>
