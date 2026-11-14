@@ -89,7 +89,9 @@ def test_kinship_depends_on_who_asks():
     assert _resolved("my grandma", "dad") == []
     assert search._resolve("my grandma", TREE, "dad")[1] == ["grandma"]
     assert _resolved("Max's grandma", "dad") == [("grandparents", {"dad", "mom"})]
-    assert _resolved("Walter's grandma", "dad") == []  # anchored to Walter: no fallback
+    # Anchored to Walter, who has no grandparents: no fallback, only Walter himself is named.
+    assert _resolved("Walter's grandma", "dad") == [("name", {"gp"})]
+    assert search._resolve("Walter's grandma", TREE, "dad")[1] == ["grandma"]
 
 
 def test_without_an_asker_or_when_asking_you_only_names_resolve():
