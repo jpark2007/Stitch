@@ -59,8 +59,8 @@ const STAGE_DEPTH = 1.6;
 /** World units per stage unit, and where stage (0, 0, 0) sits, on a page of `size`. */
 export function stageLayout(size: StageSize = DEFAULT_STAGE_SIZE) {
   const scale = Math.min(size[0] / PAGE_PER_STAGE, size[1] / STAGE_DEPTH);
-  // Centre the acting area (back fold z = 0 to the front layer, ~0.8) on the page.
-  const origin = [0, 0, -0.5 * scale] as const;
+  // Centre the set (back fold z = 0 to the front layer, ~0.8) on the page.
+  const origin = [0, 0, -0.4 * scale] as const;
   return { scale, origin };
 }
 
