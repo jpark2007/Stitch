@@ -1092,7 +1092,7 @@ def test_a_puppet_parked_by_a_new_set_enters_from_the_right_without_gliding():
 
 def test_enter_from_where_the_puppet_already_is_adds_no_key():
     """The hymn sample: dad waits at offstage_left and enters from there, so his root keys
-    stay exactly the reference's."""
+    stay exactly the reference's (unplanted, like the reference)."""
     import json
     from pathlib import Path
 
@@ -1103,6 +1103,7 @@ def test_enter_from_where_the_puppet_already_is_adds_no_key():
         sets={s["id"]: schemas.SetDef.model_validate(s) for s in memory["sets"]},
         props={p["id"]: schemas.Prop.model_validate(p) for p in memory["props"]},
         people={p["id"]: schemas.Person.model_validate(p) for p in memory["people"]},
+        plant_feet=False,
     )
     assert res.ok, [e.message for e in res.errors]
     pos = _track(res, "puppet:dad", "root.position")

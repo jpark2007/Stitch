@@ -35,9 +35,12 @@ def shot(actions: list[dict], start: dict | None = None) -> dict:
     }
 
 
-def run(data: dict) -> CompileResult:
+def run(data: dict, plant_feet: bool = False) -> CompileResult:
+    """Compiled unplanted by default: these tests pin exact root.position keys, and foot planting
+    (test_foot_planting.py) adds keys at every walk cycle key."""
     scene = base_scene()
-    return compile_screenplay(Screenplay.model_validate(data), sets=scene.sets, props=scene.props, people=scene.people)
+    return compile_screenplay(Screenplay.model_validate(data), sets=scene.sets, props=scene.props, people=scene.people,
+                              plant_feet=plant_feet)
 
 
 def keys(result: CompileResult, target: str, channel: str) -> list:
@@ -410,3 +413,17 @@ def test_leader_window_with_a_later_move_ends_with_its_stand_in():
 def test_window_compiles_are_deterministic():
     data = chain("curb", LATER_WALK)
     assert run(data).model_dump_json() == run(copy.deepcopy(data)).model_dump_json()
+
+
+def test_a_windowed_follows_walk_is_planted(windowed):
+    """_LeaderWindow forwards every key the follow adds, foot-planting markers included, to the
+    real tracks: the windowed follower's walk is planted like any other."""
+    from test_foot_planting import cycle_key_times, planting_problems
+
+    planted = run(shot(HAND_OVER_LATER), plant_feet=True)
+    assert windowed  # the follow really ran through a _LeaderWindow
+    unplanted = run(shot(HAND_OVER_LATER))
+    assert planted.ok and unplanted.ok
+    assert cycle_key_times(planted.timeline, "puppet:dad")
+    builds = {pid: p.character.build for pid, p in base_scene().people.items()}
+    assert planting_problems(planted.timeline, unplanted.timeline, builds) == []
