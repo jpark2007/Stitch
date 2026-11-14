@@ -62,6 +62,8 @@ export interface PaperEffectProps {
   end?: number;
   /** Overall size multiplier. */
   scale?: number;
+  /** Sideways drift of smoke and steam (stage units over a puff's life, +x right). */
+  wind?: number;
   colors?: string[];
   seed?: number;
 }
@@ -123,6 +125,7 @@ export function PaperEffect({
   start = 0,
   end = Infinity,
   scale = 1,
+  wind,
   colors,
   seed = 1,
 }: PaperEffectProps) {
@@ -185,7 +188,7 @@ export function PaperEffect({
         const age = t - delay;
         if (age < 0 || !source(start + delay)) visible = false;
         const fall = 0.32 + h2 * 0.18;
-        const top = at[1] + 1.05 + h3 * 0.5;
+        const top = at[1] + 0.75 + h3 * 0.4;
         const y = top - fall * Math.max(0, age);
         const rest = ground + 0.004 + h1 * 0.003;
         const landed = y <= rest;
@@ -231,7 +234,8 @@ export function PaperEffect({
         if (t < phase || !source(start + bornRel)) visible = false;
         const k = clamp(age / life);
         const rise = (smoke ? 1.35 : 0.75) * easeOutCubic(k) + k * (smoke ? 0.25 : 0.1);
-        const drift = smoke ? 0.55 * k * k + Math.sin(age * 1.4 + h2 * 6) * 0.06 : Math.sin(age * 2.2 + h2 * 6) * 0.05 * k;
+        const w = wind ?? (smoke ? 0.55 : 0.08);
+        const drift = w * k * k + Math.sin(age * (smoke ? 1.4 : 2.2) + h2 * 6) * (smoke ? 0.06 : 0.05) * (smoke ? 1 : k);
         dummy.position.set(at[0] + drift + (h3 - 0.5) * 0.04, at[1] + rise, at[2] + (h4 - 0.5) * 0.04 + i * 0.0004);
         dummy.quaternion.copy(camQ);
         dummy.rotateZ(h2 * 6.28 + age * (h3 - 0.5) * 0.6);

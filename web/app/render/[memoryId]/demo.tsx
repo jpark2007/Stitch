@@ -47,17 +47,17 @@ const LAWN = { width: 1.94, depth: 2.9, x: 0.13, z: -0.05 };
 const lawnArt = lawn(LAWN.width / LAWN.depth);
 /** The path runs from the riser's front edge towards the reader. */
 const PATH_W = 0.5;
-const PATH = { width: PATH_W, x: -0.12, z: -0.5 + PATH_W / PATH_ASPECT / 2 };
+const PATH = { width: PATH_W, x: -0.04, z: -0.5 + PATH_W / PATH_ASPECT / 2 };
 
 /** The church's stone riser: back fold, size, and where the church stands on it. */
-const RISER = { x: -0.12, z: -0.8, width: 1.02, height: 0.085, depth: 0.3 };
+const RISER = { x: -0.04, z: -0.8, width: 1.02, height: 0.085, depth: 0.3 };
 const RISER_TOP: Vec3 = [RISER.x, RISER.height + 0.007, RISER.z];
 const CHURCH: DemoLayer = { art: church, height: 1.12, x: 0, z: 0.19, order: 2, count: COUNT, vfold: 0.38 };
 
 const LAYERS: DemoLayer[] = [
   { art: skyCard, height: 1.62, x: 0.08, z: -1.25, order: 0, count: COUNT },
   { art: cottage, height: 0.6, x: 0.72, z: -0.42, yaw: -0.28, order: 3, count: COUNT },
-  { art: trees, height: 0.88, x: -0.5, z: -0.12, order: 4, count: COUNT },
+  { art: trees, height: 0.84, x: -0.58, z: -0.1, order: 4, count: COUNT },
   { art: bushLeft, height: 0.33, x: -0.6, z: 0.62, yaw: 0.06, order: 5, count: COUNT },
   { art: bushRight, height: 0.34, x: 0.52, z: 0.7, yaw: -0.08, order: 5, count: COUNT },
 ];
@@ -105,10 +105,10 @@ export function DemoDiorama({ effect }: { effect?: EffectKind | null }) {
       return on;
     };
     return {
-      confetti: { emitter: fixed(door, [-0.1, 0.4, -0.25]), spread: [0.55, 0.4], count: 90, start: CONFETTI_AT },
-      steam: { emitter: chimney, scale: 0.8 },
+      confetti: { emitter: fixed(door, [-0.02, 0.4, -0.25]), spread: [0.55, 0.4], count: 90, start: CONFETTI_AT },
+      steam: { emitter: chimney, scale: 0.8, wind: -0.1 },
       rain: { emitter: fixed(sky, [0.1, 0, -0.1]), spread: [0.9, 1.2] },
-      smoke: { emitter: chimney, scale: 0.62 },
+      smoke: { emitter: chimney, scale: 0.62, wind: -0.32 },
     };
   }, [chimney, door, sky]);
 

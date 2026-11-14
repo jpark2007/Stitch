@@ -456,7 +456,7 @@ export interface StageProps extends Omit<StageSceneProps, "surface"> {
 
 /** Share of a scrubbed `open` (0..1) the cover takes to swing open; the set
  *  starts rising a little before the cover lands. */
-export const COVER_SPAN = 0.3;
+export const COVER_SPAN = 0.22;
 const SET_FROM = COVER_SPAN * 0.75;
 
 export function Stage({
