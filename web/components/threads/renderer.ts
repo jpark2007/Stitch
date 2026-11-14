@@ -75,7 +75,7 @@ export function threadWidth(s: number): number {
 
 export function knotRadius(s: number, people: number): number {
   const base = Math.min(12.5, Math.max(7, 5.6 + s * 0.04));
-  return people > 1 ? base * (1 + Math.min(0.4, (people - 2) * 0.13)) : base * 0.72;
+  return people > 1 ? base * (1 + Math.min(0.4, (people - 2) * 0.13)) : base * 0.82;
 }
 
 function lodFor(s: number): number {
@@ -349,8 +349,9 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
   ctx.textBaseline = "top";
   const decadeFont = `700 12.5px ${st.fonts.sans}`;
   const yearFont = `600 12px ${st.fonts.sans}`;
-  for (let t = Math.ceil(lo / major) * major; t <= hi; t += major) {
-    const mid = major === 1 && s > 70 ? 0.5 : 0;
+  const mid = major === 1 && s > 70 ? 0.5 : 0;
+  for (let t = Math.ceil(lo / major) * major - (mid ? 1 : 0); t <= hi; t += major) {
+    if (t < model.tMin) continue;
     const x = toX(t + mid, cam, W);
     const isDecade = t % 10 === 0;
     ctx.font = isDecade ? decadeFont : yearFont;
@@ -380,21 +381,31 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
     if (!pts || n < 2) continue;
     const strand = model.strands[i];
     const lanePx = layout.top + strand.lane * layout.gap;
-    // First sample that sits on the lane and is clear of knots.
-    let k = 0;
+    // First sample where the whole name fits over a level stretch of the
+    // thread, clear of knots.
+    const w = ctx.measureText(strand.person.name).width;
     const startX = pts[0];
+    let k = 0;
     for (; k < n; k++) {
       const x = pts[k * 2];
       if (x < margin) continue;
       if (Math.abs(pts[k * 2 + 1] - lanePx) > 2) continue;
-      if (geom.knots.some((h) => h && h.visible && Math.abs(h.x - x) < h.r + 14 && Math.abs(h.y - lanePx) < h.r + 20)) continue;
+      // Level for the label's width?
+      let level = true;
+      for (let j = k; j < n && pts[j * 2] < x + w; j += 4) {
+        if (Math.abs(pts[j * 2 + 1] - lanePx) > 6) {
+          level = false;
+          break;
+        }
+      }
+      if (!level) continue;
+      if (geom.knots.some((h) => h && h.visible && h.x + h.r + 8 > x && h.x - h.r - 8 < x + w + 6 && Math.abs(h.y - lanePx) < h.r + 22)) continue;
       break;
     }
     if (k >= n) continue;
     const x = Math.max(margin, pts[k * 2] + (startX >= margin ? 6 : 0));
     const y = pts[k * 2 + 1] - w0 - 8;
     const riding = startX < margin;
-    const w = ctx.measureText(strand.person.name).width;
     geom.names.push({ x0: x, y0: y - size, x1: x + w, y1: y + 4 });
     ctx.globalAlpha = riding ? 0.85 : 1;
     ctx.fillStyle = yarnInk(strand.person.color, st.dim[i]).label;
