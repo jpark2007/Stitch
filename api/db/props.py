@@ -6,6 +6,9 @@ PATCH /families/{fid}/props/{id} semantics in section 6.
 Storage: one document per prop or set, `_id` = API `id` (a str), camelCase fields,
 `familyId` on every document, and an optional storage-only `embedding` used by the
 Atlas Vector Search indexes `props_vector` and `sets_vector` (created by db/client.py).
+When no embedding is passed in, saving computes one from "<name>. <description>" with
+db.search.embed (the embedder main.py installs from VOYAGE_API_KEY). With no embedder,
+or when it fails, nothing is stored and matching uses keywords; saving never fails on it.
 
 Library props are hand-rigged JSON files in shared/props/. They are not stored per
 family; they are merged into get_prop, get_props and find_props, and they can never be
@@ -30,6 +33,7 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
 import schemas
+from db import search
 
 LIBRARY_DIR = Path(__file__).resolve().parents[2] / "shared" / "props"
 
@@ -104,9 +108,26 @@ def _from_doc(cls: type[M], doc: dict) -> M:
 _NO_EMBEDDING = {"embedding": 0}
 
 
+def embedding_text(model: schemas.Prop | schemas.SetDef) -> str:
+    """The text a prop's or set's vector is computed from: "<name>. <description>"."""
+    name = (model.name or "").strip()
+    description = (model.description or "").strip()
+    return f"{name}. {description}" if description else name
+
+
+def _compute_embedding(model: schemas.Prop | schemas.SetDef) -> list[float] | None:
+    """The vector for model from the installed embedder, or None. Never raises."""
+    try:
+        return search.embed(embedding_text(model))
+    except Exception:  # noqa: BLE001 - a save must never fail because of its vector
+        return None
+
+
 def _insert(db: Database, coll: str, family_id: str, model: M, doc_id: str | None,
             embedding: list[float] | None) -> M:
     doc_id = doc_id or str(bson.ObjectId())
+    if embedding is None:
+        embedding = _compute_embedding(model)
     doc = _to_doc(model, family_id, doc_id, embedding)
     try:
         db[coll].insert_one(doc)
@@ -120,12 +141,15 @@ def _replace(db: Database, coll: str, family_id: str, model: M,
     current = db[coll].find_one({"_id": model.id, "familyId": family_id})
     if current is None:
         return None
-    if embedding is None and "embedding" in current:
+    if embedding is None:
         # The vector is computed from the description (ARCHITECTURE.md section 5), so it
         # is kept while the description is unchanged (a rename keeps it, as in
-        # update_prop) and dropped once it would be stale.
-        if current.get("description") == model.description:
+        # update_prop). Otherwise it is recomputed; with no embedder it is dropped
+        # rather than left stale.
+        if "embedding" in current and current.get("description") == model.description:
             embedding = current["embedding"]
+        else:
+            embedding = _compute_embedding(model)
     doc = _to_doc(model, family_id, model.id, embedding)
     result = db[coll].replace_one({"_id": model.id, "familyId": family_id}, doc)
     if result.matched_count == 0:
@@ -306,7 +330,11 @@ def _find(db: Database, coll: str, index: str, cls: type[M], family_id: str, tex
 
 def insert_prop(db: Database, family_id: str, prop: schemas.Prop, *, prop_id: str | None = None,
                 embedding: list[float] | None = None) -> schemas.Prop:
-    """Save a prop to the family. Ignores prop.id and prop.family_id. ValueError on a duplicate id."""
+    """Save a prop to the family. Ignores prop.id and prop.family_id. ValueError on a duplicate id.
+
+    embedding=None computes the vector from name and description (see embedding_text) when
+    an embedder is installed; with none, no vector is stored.
+    """
     return _insert(db, PROPS, family_id, prop, prop_id, embedding)
 
 
@@ -315,7 +343,8 @@ def replace_prop(db: Database, family_id: str, prop: schemas.Prop, *,
     """Full replace by prop.id within the family. None if the family has no such prop.
 
     With embedding=None the stored vector is kept if the description is unchanged (it is
-    computed from the description), and dropped otherwise (it would be stale).
+    computed from the description). Otherwise it is recomputed from name and description
+    when an embedder is installed, and dropped when not (it would be stale).
     """
     return _replace(db, PROPS, family_id, prop, embedding)
 
@@ -391,7 +420,10 @@ def find_props(db: Database, family_id: str, text: str, *, vector: list[float] |
 
 def insert_set(db: Database, family_id: str, set_def: schemas.SetDef, *, set_id: str | None = None,
                embedding: list[float] | None = None) -> schemas.SetDef:
-    """Save a set to the family. Ignores set_def.id and set_def.family_id. ValueError on a duplicate id."""
+    """Save a set to the family. Ignores set_def.id and set_def.family_id. ValueError on a duplicate id.
+
+    Embedding handling as insert_prop.
+    """
     return _insert(db, SETS, family_id, set_def, set_id, embedding)
 
 
