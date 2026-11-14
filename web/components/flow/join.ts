@@ -1,13 +1,14 @@
 // Pure logic behind the join flow (/join/[code]): who you are on the tree
 // (claim an unclaimed person, or add yourself), its checks, and the body for
-// api.joinFamily. Erasable TypeScript only. The one runtime import
-// (./validation) is extensionless for the Next build; __tests__/join.test.mjs
-// adds a resolve hook so `node --test` finds it.
+// api.joinFamily. Erasable TypeScript only. The runtime imports (./validation,
+// ./relationships) are extensionless for the Next build;
+// __tests__/join.test.mjs adds a resolve hook so `node --test` finds them.
 //
 // The invite preview only lists unclaimed people, so relationships to people
 // already on the tree are picked after joining (see JoinRelationships), not
 // sent with the join request.
 import type { JoinRequest, PersonSummary } from "@/lib/types";
+import { sortPeopleForPicking } from "./relationships";
 import { validateName, validateYear, type FieldErrors } from "./validation";
 
 export type JoinChoice =
@@ -70,4 +71,23 @@ export function inviteHeading(familyName: string): string {
   const base = startsWithThe || hasFamilyWord ? name : `${name} family`;
   const possessive = /s$/i.test(base) && startsWithThe && !hasFamilyWord ? `${base}’` : `${base}’s`;
   return `You’re invited to the ${possessive} book`;
+}
+
+/** How many waiting people the signed-out invitation names before "and N more". */
+export const WAITING_SHOWN = 8;
+
+/**
+ * The unclaimed people a signed-out visitor sees on the invitation, oldest
+ * first, at most `limit` of them, and how many more there are.
+ */
+export function waitingPeople<T extends { name: string; born?: number | null }>(
+  unclaimed: readonly T[],
+  limit: number = WAITING_SHOWN,
+): { people: T[]; more: number } {
+  const named = unclaimed.filter((p) => p.name.trim().length > 0);
+  const sorted = sortPeopleForPicking(named);
+  const cap = Math.max(0, Math.floor(limit));
+  // "and 1 more" reads worse than the one name it hides.
+  if (sorted.length <= cap + 1) return { people: sorted, more: 0 };
+  return { people: sorted.slice(0, cap), more: sorted.length - cap };
 }
