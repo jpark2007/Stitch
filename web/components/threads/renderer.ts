@@ -497,7 +497,10 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
   const { layout } = st;
   ctx.textBaseline = "alphabetic";
   ctx.textAlign = "left";
-  const size = layout.width < 640 ? 19 : 21;
+  // Big families pack the lanes closer: names shrink with them (never below
+  // a readable size) so each still sits on its own thread.
+  const full = layout.width < 640 ? 19 : 21;
+  const size = layout.gap > 0 ? Math.round(Math.max(14, Math.min(full, layout.gap * 0.6))) : full;
   ctx.font = `600 ${size}px ${st.fonts.hand}`;
   const margin = 16;
   for (let i = 0; i < model.strands.length; i++) {
