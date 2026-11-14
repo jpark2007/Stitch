@@ -9,7 +9,7 @@ and a deterministic order across shots."""
 from __future__ import annotations
 
 import pytest
-from verb_cases import TABLE, _a, _at, _shot, _sp, base_scene
+from verb_cases import SEDAN_CURB, TABLE, _a, _at, _shot, _sp, base_scene
 
 from screenplay import layout
 from screenplay.compiler import compile as compile_screenplay
@@ -115,7 +115,11 @@ def test_an_effect_at_a_prop_that_is_not_on_stage_is_a_precise_error():
     res = one(_a(1, "confetti", at="cap"))
     assert not res.ok and res.timeline is None
     (err,) = res.errors
-    assert (err.code, err.message) == ("not_on_stage", "shot s1, t=1: cannot confetti; cap is not on stage")
+    assert (err.code, err.message) == (
+        "not_on_stage",
+        'shot s1, t=1: cannot confetti; confetti at "cap": cap is not on stage at t=1; '
+        "place it with propStart or aim the effect at a mark",
+    )
     assert (err.shot, err.t, err.who, err.do) == ("s1", 1.0, None, "confetti")
 
 
@@ -123,6 +127,96 @@ def test_effects_occupy_nobody():
     # smoke at mom does not keep mom busy: she can wave while it plays
     res = one(_a(1, "smoke", at="mom", dur=3), _a(1.5, "wave", who="mom"))
     assert res.ok, [e.message for e in res.errors]
+
+
+# ------------------------------------------------------- targets nobody would see
+
+def only_error(res: CompileResult):
+    assert not res.ok and res.timeline is None
+    (err,) = res.errors
+    return err
+
+
+def test_confetti_at_a_cast_member_not_in_the_start_is_offstage():
+    # dad is not in the shot's start, so he waits offstage left; confetti there would be unseen
+    err = only_error(one(_a(1, "confetti", at="dad")))
+    assert err.code == "offstage"
+    assert err.message.startswith("shot s1, t=1: ")
+    assert err.message == (
+        'shot s1, t=1: cannot confetti; confetti at "dad": dad is offstage left at t=1; '
+        "aim it at a mark or give it a t when dad is on stage"
+    )
+    assert (err.shot, err.t, err.who, err.do) == ("s1", 1.0, None, "confetti")
+
+
+def test_confetti_at_a_person_after_they_enter_compiles():
+    res = one(_a(0, "enter", who="dad", to="curb"), _a(6, "confetti", at="dad"))
+    assert effects_of(res) == [entry(ACTION_START + 6, "confetti", CURB, layout.EFFECT_SECONDS["confetti"])]
+
+
+def test_confetti_at_a_person_still_walking_on_from_the_wings_is_offstage():
+    err = only_error(one(_a(0, "enter", who="dad", to="curb"), _a(0.1, "confetti", at="dad")))
+    assert (err.code, err.message) == (
+        "offstage",
+        'shot s1, t=0.1: cannot confetti; confetti at "dad": dad is offstage right at t=0.1; '
+        "aim it at a mark or give it a t when dad is on stage",
+    )
+
+
+def test_confetti_at_a_person_who_has_exited_is_offstage():
+    err = only_error(one(_a(0, "exit", who="mom"), _a(8, "confetti", at="mom")))
+    assert err.code == "offstage" and 'mom is offstage left at t=8' in err.message
+
+
+def test_smoke_at_a_car_on_stage_compiles():
+    res = one(_a(1, "smoke", at="sedan", dur=1.5), prop_start=SEDAN_CURB)
+    assert effects_of(res) == [entry(ACTION_START + 1, "smoke", CURB, 1.5)]
+
+
+def test_smoke_at_a_car_that_has_driven_off_is_offstage():
+    res = one(_a(0, "drive_to", who="dad", what="sedan", to="offstage_right"), _a(9, "smoke", at="sedan"),
+              start={"dad": _at("curb", **{"in": "sedan.driver"})}, prop_start=SEDAN_CURB)
+    err = only_error(res)
+    assert (err.code, err.message) == (
+        "offstage",
+        'shot s1, t=9: cannot smoke; smoke at "sedan": sedan is offstage right at t=9; '
+        "aim it at a mark or give it a t when sedan is on stage",
+    )
+
+
+def test_confetti_at_a_prop_left_behind_by_the_previous_set_is_not_on_stage():
+    res = run(_sp(
+        _shot(_a(0, "steam", at="table"), start=MOM_ON_STAGE, prop_start=TABLE),
+        _shot(_a(0.5, "confetti", at="table"), id="s2", set="street", start={"kid": _at("corner")}),
+    ))
+    err = only_error(res)
+    assert (err.code, err.message) == (
+        "not_on_stage",
+        'shot s2, t=0.5: cannot confetti; confetti at "table": table is not on stage at t=0.5; '
+        "place it with propStart or aim the effect at a mark",
+    )
+    assert (err.shot, err.t) == ("s2", 0.5)
+
+
+def test_effects_at_marks_past_the_edge_are_offstage():
+    sp = _sp(_shot(_a(1, "confetti", at="wings"), _a(2, "smoke", at="offstage_right"), start=MOM_ON_STAGE))
+    sp.shots[0].marks = {"wings": [-0.2, 0.0]}  # x = -1.4
+    res = run(sp)
+    assert not res.ok
+    assert [(e.code, e.message) for e in res.errors] == [
+        ("offstage", 'shot s1, t=1: cannot confetti; confetti at "wings": wings is a mark offstage left; '
+                     "aim it at a mark on stage"),
+        ("offstage", 'shot s1, t=2: cannot smoke; smoke at "offstage_right": offstage_right is a mark offstage '
+                     "right; aim it at a mark on stage"),
+    ]
+
+
+def test_an_effect_at_a_person_half_a_step_past_the_edge_is_pulled_on_stage():
+    sp = _sp(_shot(_a(0, "walk_to", who="mom", to="lip"), _a(8, "confetti", at="mom"), start=MOM_ON_STAGE))
+    sp.shots[0].marks = {"lip": [1.03, 0.0]}  # x = 1.06, within the slack
+    res = run(sp)
+    assert evaluate(res.timeline.tracks, "puppet:mom", "root.position", ACTION_START + 8)[0] == pytest.approx(1.06)
+    assert effects_of(res) == [entry(ACTION_START + 8, "confetti", [1.0, 0.0, 0.5], layout.EFFECT_SECONDS["confetti"])]
 
 
 # ------------------------------------------------------------------ shot end and rain
