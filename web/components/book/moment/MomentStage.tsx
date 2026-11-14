@@ -13,7 +13,7 @@
  *
  * The player lives with the page (one per moment, outside the Canvas) so the
  * story page's teller labels can switch the telling. This component decides
- * only when it plays:
+ * only when it plays (../playGate.ts):
  *
  *   - the set rises with the page: the book's `reveal` caps every fold, and
  *     the timeline (whose t = 0 is the set beginning to rise) starts from 0
@@ -44,6 +44,7 @@ import { pullTabGeometry } from "../labelArt";
 import { PAGE_H, PAGE_W } from "../leafShape";
 import { PAGE_PX_W } from "../pageArt";
 import type { PageFonts } from "../paperArt";
+import { createPlayGate, stepPlayGate, type PlayGate } from "../playGate";
 import type { StageShot } from "../shot";
 import { STAGE_SLOT } from "../StoryPage";
 import type { BookSpread, BookTeller } from "../types";
@@ -68,17 +69,6 @@ export interface MomentStageProps {
   onReady?: () => void;
 }
 
-/**
- * The spread must lie this open (the leaf over it has all but landed), and
- * this much in view, before the scene starts.
- */
-const OPEN_TO_PLAY = 0.85;
-const VIEW_TO_PLAY = 0.6;
-/** Below this the page has started to turn away: pause and re-arm. */
-const OPEN_TO_REARM = 0.4;
-const VIEW_TO_PAUSE = 0.3;
-/** Once told, the camera holds on the last line this long (ms) before it pulls back to the spread. */
-const END_HOLD_MS = 900;
 /** The page's centre line in slot space. */
 const CENTRE_X = PAGE_W / 2 - STAGE_SLOT.x;
 /** World units per page px, and the pencilled label's reach below a pull tab (page px). */
@@ -109,7 +99,7 @@ function ShotFeed({ shot, keep }: { shot: StageShot; keep: RefObject<Group | nul
 
 export function MomentStage({ controller, scene, spread, fonts, reveal, view, shot, size, freezeAt = null, onReady }: MomentStageProps) {
   const tellers: BookTeller[] = useMemo(() => spread.tellings ?? [], [spread]);
-  const gate = useRef({ ready: false, armed: true, awayPaused: false, endedAt: 0, lastView: -1 });
+  const gate = useRef<PlayGate>(null);
   const [ready, setReady] = useState(false);
   const readyRef = useRef(onReady);
   useEffect(() => {
@@ -118,7 +108,7 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
   const invalidate = useThree((s) => s.invalidate);
   const onSceneReady = useMemo(
     () => () => {
-      gate.current.ready = true;
+      (gate.current ??= createPlayGate()).ready = true;
       setReady(true);
       readyRef.current?.();
       // The book draws on demand: one more frame, for the gate to open on.
@@ -137,60 +127,40 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
   );
 
   useFrame((state) => {
-    const g = gate.current;
-    const r = reveal.current;
-    const v = view.current;
-    // The camera leans in while the telling is under way on an open page
-    // (held mid-scene too), and comes back out once it has been told.
-    // The last line is held a beat in close-up before the camera pulls back.
-    const ended = controller.getStatus().ended;
-    const now = performance.now();
-    if (!ended) g.endedAt = 0;
-    else if (!g.endedAt) g.endedAt = now;
-    const holding = ended && now - g.endedAt < END_HOLD_MS;
-    if (holding) state.invalidate();
+    gate.current ??= createPlayGate();
+    const status = controller.getStatus();
+    const step = stepPlayGate(gate.current, {
+      reveal: reveal.current,
+      view: view.current,
+      ended: status.ended,
+      playing: status.playing,
+      now: performance.now(),
+    });
     // The camera read the offer earlier this frame (CAMERA_PRIORITY): a
     // change needs one more frame to be seen, or the camera, drawn on
     // demand, stays leaned in once the hold ends.
-    if (shot.offer(!g.armed && r >= OPEN_TO_PLAY && (!ended || holding))) state.invalidate();
-    if (r < OPEN_TO_REARM) {
-      if (!g.armed) {
+    if (shot.offer(step.offer) || step.redraw) state.invalidate();
+    switch (step.action) {
+      case "rearm":
         // Folded away: next time the page opens, the set rises from the start.
         controller.pause();
         if (freezeAt === null) controller.seek(0);
-        g.armed = true;
-        g.awayPaused = false;
-      }
-      return;
-    }
-    const viewMoved = v !== g.lastView;
-    g.lastView = v;
-    if (g.armed) {
-      if (!g.ready || r < OPEN_TO_PLAY || v < VIEW_TO_PLAY) {
-        // Keep drawing while the page settles or the camera pans in (the
-        // book draws those frames too); never while the reader rests on
-        // the story page of a phone, where nothing moves.
-        if (g.ready && r >= OPEN_TO_PLAY && (r < 1 || viewMoved)) state.invalidate();
-        return;
-      }
-      g.armed = false;
-      if (freezeAt !== null) {
+        break;
+      case "start":
+        if (freezeAt !== null) {
+          controller.pause();
+          controller.seek(freezeAt);
+        } else {
+          controller.seek(0);
+          controller.play();
+        }
+        break;
+      case "pauseAway":
         controller.pause();
-        controller.seek(freezeAt);
-      } else {
-        controller.seek(0);
+        break;
+      case "resume":
         controller.play();
-      }
-      return;
-    }
-    // Reading the story page on a phone: hold the scene there, then carry on.
-    const playing = controller.getStatus().playing;
-    if (v < VIEW_TO_PAUSE && playing) {
-      controller.pause();
-      g.awayPaused = true;
-    } else if (v > VIEW_TO_PLAY && g.awayPaused) {
-      g.awayPaused = false;
-      controller.play();
+        break;
     }
   });
 
