@@ -25,7 +25,7 @@ import {
   type FamilyField,
 } from "./accountForms";
 import { Button } from "./Button";
-import { TextField } from "./Field";
+import { OptionalMark, TextField } from "./Field";
 import { FormError, focusFirstError } from "./FormError";
 import { PaperCard } from "./PaperCard";
 import type { FieldErrors } from "./validation";
@@ -137,7 +137,7 @@ export function CreateFamilyForm(props: {
           label={
             <>
               The year you were born
-              <span className="ml-1.5 font-normal text-ink-soft">(optional)</span>
+              <OptionalMark />
             </>
           }
           hint="It places you on the family timeline."
@@ -150,10 +150,6 @@ export function CreateFamilyForm(props: {
           error={errors.born}
         />
       </fieldset>
-
-      <p className="border-l-[3px] border-accent bg-paper px-4 py-3 text-[0.9375rem] leading-snug text-ink-soft">
-        You&rsquo;ll be the first person in the tree. Next, you can invite the rest of the family.
-      </p>
 
       <div className="space-y-4">
         <FormError message={formError} />

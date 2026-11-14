@@ -6,6 +6,16 @@
 // Erasable TypeScript only and no imports, so `node --test` can load this file
 // directly (see __tests__/validation.test.mjs).
 
+/**
+ * What lib/api.ts says for a 422 that carried only field messages (its
+ * STATUS_MESSAGES[422]; the two are kept equal by apiClient.test.mjs). A form
+ * must not show it when none of its fields was highlighted.
+ */
+export const CHECK_FIELDS_MESSAGE = "Please check the highlighted fields.";
+
+/** Shown instead when a 422 named no field the form has and said nothing else. */
+export const FORM_NOT_RIGHT_MESSAGE = "Something in that form isn't quite right. Check it and try again.";
+
 /** Field name -> message. A missing key means the field is fine. */
 export type FieldErrors<K extends string> = Partial<Record<K, string>>;
 
@@ -15,7 +25,8 @@ function charCount(v: string): number {
 }
 
 const NAME_MAX = 80;
-const PASSWORD_MIN = 8; // api/schemas.py SignupRequest.password min_length
+/** api/schemas.py SignupRequest.password min_length. */
+export const PASSWORD_MIN = 8;
 const YEAR_MIN = 1850;
 
 // Something@something.tld with no spaces. Deliberately loose: the server decides.
@@ -31,7 +42,7 @@ export function validateEmail(v: string): string | null {
 /** Passwords are not trimmed: spaces count. */
 export function validatePassword(v: string): string | null {
   if (!v) return "Enter a password.";
-  if (charCount(v) < PASSWORD_MIN) return `Use at least ${PASSWORD_MIN} characters.`;
+  if (charCount(v) < PASSWORD_MIN) return `That’s too short. Use at least ${PASSWORD_MIN} characters.`;
   return null;
 }
 

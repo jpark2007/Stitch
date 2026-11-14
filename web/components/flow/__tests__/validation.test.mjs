@@ -27,12 +27,12 @@ test("validateEmail: empty, invalid, valid", () => {
 
 test("validatePassword: empty, too short, valid, matches the API's min_length=8", () => {
   assert.equal(validatePassword(""), "Enter a password.");
-  assert.equal(validatePassword("1234567"), "Use at least 8 characters.");
+  assert.equal(validatePassword("1234567"), "That’s too short. Use at least 8 characters.");
   assert.equal(validatePassword("12345678"), null);
   // Not trimmed: spaces count, like the server.
   assert.equal(validatePassword("        "), null);
   // Counted in characters, not UTF-16 units: 4 emoji are 4 characters.
-  assert.equal(validatePassword("🧵🧵🧵🧵"), "Use at least 8 characters.");
+  assert.equal(validatePassword("🧵🧵🧵🧵"), "That’s too short. Use at least 8 characters.");
 });
 
 test("validateName: empty, too long, valid, custom noun", () => {

@@ -29,7 +29,7 @@ import {
   type LoginDraft,
   type LoginField,
 } from "./accountForms";
-import { Button } from "./Button";
+import { Button, FOCUS_RING } from "./Button";
 import { TextField } from "./Field";
 import { FormError, focusFirstError } from "./FormError";
 import { PaperCard } from "./PaperCard";
@@ -37,9 +37,10 @@ import type { FieldErrors } from "./validation";
 
 const GENERIC_ERROR = "We couldn't log you in just now. Check your connection and try again.";
 
+// The kit's dashed focus ring, like every other control on the page.
 const LINK =
   "rounded-[var(--radius-paper,2px)] font-semibold text-accent-deep underline decoration-1 underline-offset-[0.2em] " +
-  "hover:decoration-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
+  `hover:decoration-2 ${FOCUS_RING}`;
 
 export function LoginForm(props: {
   onSubmit: (body: LoginRequest) => Promise<void>;

@@ -7,7 +7,10 @@
 // resolve hook so `node --test` finds it.
 import type { CreateFamilyRequest, FamilySummary, LoginRequest, SignupRequest } from "@/lib/types";
 import {
+  CHECK_FIELDS_MESSAGE,
+  FORM_NOT_RIGHT_MESSAGE,
   mergeServerErrors,
+  PASSWORD_MIN,
   validateEmail,
   validateFamilyName,
   validateName,
@@ -47,10 +50,11 @@ export const SIGNUP_FIELDS: readonly SignupField[] = ["name", "email", "password
 export const FAMILY_FIELDS: readonly FamilyField[] = ["familyName", "yourName", "born"];
 
 /**
- * The password rule as a hint, taken from validatePassword itself so the hint
- * and the check can never disagree ("Use at least 8 characters.").
+ * The password rule as a hint, from the same PASSWORD_MIN validatePassword
+ * checks, so the two can never disagree ("At least 8 characters."). Worded
+ * apart from the error, so a short password does not show one line twice.
  */
-export const PASSWORD_HINT: string = validatePassword("x") ?? "";
+export const PASSWORD_HINT: string = `At least ${PASSWORD_MIN} characters.`;
 
 // ---------------------------------------------------------------------------
 // Validators
@@ -164,17 +168,25 @@ export function familyServerErrors(server: Record<string, string>): Record<strin
  * What the form shows after the server says no: each field message on its
  * field (through mergeServerErrors), and one form-level message made of the
  * error's detail plus any field messages that matched no field.
+ *
+ * "Please check the highlighted fields." is dropped when no field of this
+ * form was highlighted (the 422 named fields it does not have); if nothing
+ * else is left to say, a plain "isn't quite right" message stands in.
  */
 export function serverErrorState<K extends string>(
   err: { detail: string; fieldErrors: Record<string, string> },
   fields: readonly K[],
 ): { fields: FieldErrors<K>; formError: string | null } {
   const merged = mergeServerErrors<K>({}, err.fieldErrors, fields);
+  const highlighted = Object.keys(merged.fields).length > 0;
+  const detail = err.detail?.trim() ?? "";
+  const pointsAtNothing = !highlighted && detail === CHECK_FIELDS_MESSAGE;
   const parts: string[] = [];
-  for (const msg of [err.detail, merged.rest]) {
+  for (const msg of [pointsAtNothing ? null : detail, merged.rest]) {
     const s = msg?.trim();
     if (s && !parts.includes(s)) parts.push(s);
   }
+  if (parts.length === 0 && pointsAtNothing) parts.push(FORM_NOT_RIGHT_MESSAGE);
   return { fields: merged.fields, formError: parts.length ? parts.join(" ") : null };
 }
 
