@@ -53,16 +53,19 @@ export function TellingNote(props: {
           id={headingId}
           className="text-xs font-semibold tracking-[0.08em] text-ink-soft uppercase"
         >
-          {secondTellingOf ? (
-            <>
-              Your version of &lsquo;<span className="normal-case">{secondTellingOf}</span>&rsquo;
-            </>
-          ) : (
-            "Your telling"
-          )}
+          {secondTellingOf ? "Your version of" : "Your telling"}
+          {secondTellingOf ? <span className="sr-only"> {secondTellingOf}</span> : null}
         </h2>
         <p className="text-sm text-ink-faint tabular-nums">{meta}</p>
       </div>
+
+      {/* The moment's title on its own line in the storybook face, so a long
+          one wraps as a title instead of inside the small capitals above. */}
+      {secondTellingOf ? (
+        <p aria-hidden="true" className="mt-1 font-display text-lg leading-snug text-pretty break-words text-ink">
+          {secondTellingOf}
+        </p>
+      ) : null}
 
       {q ? (
         <p className="mt-2 font-hand text-[1.375rem] leading-[1.2] text-pretty break-words">{q}</p>

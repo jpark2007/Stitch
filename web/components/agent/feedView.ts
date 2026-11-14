@@ -31,8 +31,18 @@ const PAUSE_LINE: Record<PendingInput["kind"], string> = {
   merge: "The studio wants to check someone with you.",
 };
 
-/** The line under the heading; null when finished (the heading says it all). */
-export function phaseLine(state: Pick<RunState, "phase" | "pending">): string | null {
+/** Shown under the heading between a dropped stream and the next event. */
+export const RECONNECTING_LINE = "Lost the thread for a moment. Reconnecting…";
+
+/**
+ * The line under the heading. null when finished (the heading says it all)
+ * and when failed (the error box below says it). While a dropped stream is
+ * being reconnected it says so, whatever the phase.
+ */
+export function phaseLine(
+  state: Pick<RunState, "phase" | "pending"> & Partial<Pick<RunState, "reconnecting">>,
+): string | null {
+  if (state.reconnecting && state.phase !== "done" && state.phase !== "error") return RECONNECTING_LINE;
   switch (state.phase) {
     case "connecting":
       return "Opening the studio…";
@@ -43,7 +53,7 @@ export function phaseLine(state: Pick<RunState, "phase" | "pending">): string | 
     case "done":
       return null;
     case "error":
-      return "Something went wrong.";
+      return null;
     default:
       return "The studio is working on your moment.";
   }
@@ -62,11 +72,15 @@ export function errorRecovery(s: Pick<RunState, "phase" | "errorFrom">): "reconn
   return s.errorFrom === "run" ? "start_over" : "reconnect";
 }
 
-/** The calm sentence under a run's own error; it mentions sending again only when that is offered. */
+/**
+ * The calm sentence under a run's own error. The error's own message is the
+ * line above it (it already says the studio stopped), so this only says what
+ * happens next: sending again when that is offered, else where the story is.
+ */
 export function startOverNote(canStartOver: boolean): string {
   return canStartOver
-    ? "The studio couldn’t finish this one. Your story is kept, so you can send it again."
-    : "The studio couldn’t finish this one.";
+    ? "Your story is kept, so you can send it again."
+    : "Nothing was added to the books this time.";
 }
 
 /** The heading once the run is done. */
@@ -75,10 +89,26 @@ export function finishedHeading(subject: FeedSubject = "memory"): string {
 }
 
 /** The one sentence under the finished heading. */
-export function finishedNote(state: Pick<RunState, "memoryId">): string {
-  return state.memoryId
-    ? "Your page is ready, and it’s in everyone’s books."
-    : "All done. Thank you for sharing this one.";
+export function finishedNote(state: Pick<RunState, "memoryId">, subject: FeedSubject = "memory"): string {
+  if (!state.memoryId) return "All done. Thank you for sharing this one.";
+  return subject === "telling"
+    ? "Your version is on the moment’s page now, in your own words."
+    : "Your page is ready, and it’s in everyone’s books.";
+}
+
+/** The heading while the run works: a new page, or a telling joining one. */
+export function workingHeading(subject: FeedSubject = "memory"): string {
+  return subject === "telling" ? "Adding your version" : "Making your page";
+}
+
+/** The line once the scene is ready, before the run is done. */
+export function readyLine(subject: FeedSubject = "memory"): string {
+  return subject === "telling" ? "Your version is on the page" : "Your page is ready";
+}
+
+/** The words on the way into the finished scene. */
+export function openLabel(subject: FeedSubject = "memory"): string {
+  return subject === "telling" ? "Open the moment" : "Open your page";
 }
 
 /** The log line for a pause, while it is still open in the log (the card is not showing). */

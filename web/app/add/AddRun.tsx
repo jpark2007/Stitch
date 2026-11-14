@@ -67,15 +67,19 @@ export function AddRun(props: {
         width="wide"
       >
         {gone ? (
-          <PaperCard className="flex flex-col items-start gap-4">
-            <p role="status" className="text-[1.0625rem] leading-relaxed text-pretty text-ink">
-              {RUN_GONE_MESSAGE}
-            </p>
-            <p className="text-[0.9375rem] leading-relaxed text-pretty text-ink-soft">
-              If its scene was finished, you&rsquo;ll find it in the family tree. Otherwise you can tell
-              it again.
-            </p>
-            <div className="flex flex-wrap gap-3">
+          // Someone else's run, a run from before a restart, or a mistyped
+          // link all land here: the server answers 404 for each alike.
+          <PaperCard className="flex flex-col items-start gap-3">
+            <div role="status" className="flex flex-col gap-2">
+              <h2 className="font-display text-[1.375rem] leading-tight text-ink">
+                We can&rsquo;t find this one any more
+              </h2>
+              <p className="text-[1.0625rem] leading-relaxed text-pretty text-ink-soft">
+                It may have finished a while ago, or the studio restarted. If its page was made,
+                it&rsquo;s in the family tree; if not, you can tell the story again.
+              </p>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-3">
               <ButtonLink href={hrefs.add({ familyId: fid })}>Add a memory</ButtonLink>
               <ButtonLink variant="secondary" href={hrefs.home()}>
                 Family tree

@@ -382,30 +382,41 @@ function ChipCard(p: {
 
             {action === "replace_photo" && p.canUpload ? (
               <div className="mt-2">
-                <label htmlFor={photoInputId} className="block text-sm leading-snug font-semibold text-ink">
-                  Photo of the real {chip.name}
-                </label>
-                <input
-                  id={photoInputId}
-                  type="file"
-                  accept="image/*"
-                  disabled={p.uploading || p.disabled}
-                  aria-invalid={p.error || p.uploadError ? true : undefined}
-                  aria-describedby={
-                    [p.uploadError ? uploadErrorId : null, showError ? errorId : null]
-                      .filter(Boolean)
-                      .join(" ") || undefined
-                  }
-                  onChange={p.onFile}
-                  className={`mt-1 block w-full min-w-0 rounded-paper text-sm text-ink-soft file:mr-3 file:min-h-11 file:cursor-pointer file:rounded-card file:border file:border-ink-faint file:bg-paper-light file:px-4 file:text-sm file:font-semibold file:text-ink hover:file:border-ink-soft disabled:cursor-not-allowed disabled:opacity-60 ${FOCUS_RING}`}
-                />
-                {p.uploading ? (
-                  <p role="status" className="mt-1.5 text-sm text-ink-soft">
-                    Uploading {photo?.fileName ?? "photo"}…
-                  </p>
-                ) : photo?.photoId && photo.fileName ? (
-                  <p className="mt-1.5 text-sm break-words text-ink-soft">Using {photo.fileName}</p>
-                ) : null}
+                <p className="text-sm leading-snug font-semibold text-ink">Photo of the real {chip.name}</p>
+                {/* The browser's own file control repeats the file name next to
+                    our "Using …" line and looks like a form from elsewhere: it
+                    stays in the DOM for keyboards and screen readers, and a
+                    paper button (its label) stands in for it. */}
+                <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                  <input
+                    id={photoInputId}
+                    type="file"
+                    accept="image/*"
+                    disabled={p.uploading || p.disabled}
+                    aria-invalid={p.error || p.uploadError ? true : undefined}
+                    aria-describedby={
+                      [p.uploadError ? uploadErrorId : null, showError ? errorId : null]
+                        .filter(Boolean)
+                        .join(" ") || undefined
+                    }
+                    onChange={p.onFile}
+                    className="peer sr-only"
+                  />
+                  <label
+                    htmlFor={photoInputId}
+                    className="inline-flex min-h-11 cursor-pointer items-center rounded-card border border-ink-faint bg-paper-light px-4 text-sm font-semibold text-ink transition-colors duration-150 ease-paper hover:border-ink-soft peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+                  >
+                    {photo?.fileName ? "Choose another photo" : "Choose a photo"}
+                    <span className="sr-only"> of the real {chip.name}</span>
+                  </label>
+                  {p.uploading ? (
+                    <p role="status" className="min-w-0 text-sm break-words text-ink-soft">
+                      Uploading {photo?.fileName ?? "photo"}…
+                    </p>
+                  ) : photo?.photoId && photo.fileName ? (
+                    <p className="min-w-0 text-sm break-words text-ink-soft">Using {photo.fileName}</p>
+                  ) : null}
+                </div>
                 {p.uploadError ? (
                   <p id={uploadErrorId} role="alert" className="mt-1.5 text-sm leading-snug font-medium text-accent-deep">
                     {p.uploadError}
@@ -414,15 +425,6 @@ function ChipCard(p: {
               </div>
             ) : null}
 
-            {removed ? (
-              <button
-                type="button"
-                onClick={() => p.onAction("keep")}
-                className={`-ml-1 inline-flex min-h-11 items-center rounded-paper px-1 text-sm font-semibold text-accent-deep underline underline-offset-[0.2em] hover:decoration-2 ${FOCUS_RING}`}
-              >
-                Undo remove<span className="sr-only"> for {chip.name}</span>
-              </button>
-            ) : null}
           </fieldset>
 
           {showError ? (

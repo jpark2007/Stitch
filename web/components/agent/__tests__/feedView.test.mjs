@@ -11,9 +11,13 @@ import {
   errorRecovery,
   finishedHeading,
   finishedNote,
+  openLabel,
+  readyLine,
+  workingHeading,
   hiddenEntryCount,
   pauseLine,
   phaseLine,
+  RECONNECTING_LINE,
   startOverNote,
   stepDetail,
   toggleLabel,
@@ -135,6 +139,18 @@ test("finishedHeading names what was added", () => {
 test("finishedNote is one sentence", () => {
   assert.equal(finishedNote({ memoryId: "m" }), "Your page is ready, and it’s in everyone’s books.");
   assert.match(finishedNote({ memoryId: null }), /Thank you/);
+  assert.match(finishedNote({ memoryId: "m" }, "telling"), /your own words/);
+  assert.match(finishedNote({ memoryId: null }, "telling"), /Thank you/);
+});
+
+test("workingHeading and openLabel follow what the run adds", () => {
+  assert.equal(workingHeading(), "Making your page");
+  assert.equal(workingHeading("memory"), "Making your page");
+  assert.equal(workingHeading("telling"), "Adding your version");
+  assert.equal(openLabel(), "Open your page");
+  assert.equal(openLabel("telling"), "Open the moment");
+  assert.equal(readyLine(), "Your page is ready");
+  assert.equal(readyLine("telling"), "Your version is on the page");
 });
 
 test("answeredLine phrases each kind", () => {
@@ -332,9 +348,23 @@ test("errorRecovery on reducer states: error event, give-up, and a wake after th
 });
 
 test("startOverNote: mentions sending again only when that is offered", () => {
-  assert.equal(
-    startOverNote(true),
-    "The studio couldn’t finish this one. Your story is kept, so you can send it again.",
-  );
-  assert.equal(startOverNote(false), "The studio couldn’t finish this one.");
+  assert.equal(startOverNote(true), "Your story is kept, so you can send it again.");
+  assert.equal(startOverNote(false), "Nothing was added to the books this time.");
+  // The error message above it already says the studio stopped: never repeat it.
+  for (const note of [startOverNote(true), startOverNote(false)]) assert.doesNotMatch(note, /couldn’t finish/);
+});
+
+test("phaseLine: a dropped stream says it is reconnecting, then the phase line comes back", () => {
+  const paused = run(ev("question", { text: "Who?" }));
+  const dropped = runReducer(paused, { type: "reconnecting" });
+  assert.equal(phaseLine(dropped), RECONNECTING_LINE);
+  assert.equal(phaseLine({ ...initialRunState, reconnecting: true }), RECONNECTING_LINE);
+  const back = runReducer(dropped, ev("plan", { todos: [] }));
+  assert.notEqual(phaseLine(back), RECONNECTING_LINE);
+});
+
+test("phaseLine: none on error (the error box says it)", () => {
+  const failed = run(ev("error", { message: "The studio stopped." }));
+  assert.equal(phaseLine(failed), null);
+  assert.equal(phaseLine({ ...failed, reconnecting: true }), null);
 });
