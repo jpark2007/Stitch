@@ -38,6 +38,6 @@ export { Standing, foldToRise, layerZ, risersFor, type Mount, type Riser } from 
 export { CameraBinding, type CameraBindingProps } from "./CameraBinding";
 export { EffectBindings } from "./EffectBindings";
 export { CaptionStrip, type CaptionStripProps, type Teller } from "./CaptionStrip";
-export { PlayerControls, TellerTabs, type PlayerControlsProps, type TellerTabsProps } from "./PlayerControls";
+export { PlayerControls, SoundHint, TellerTabs, type PlayerControlsProps, type TellerTabsProps } from "./PlayerControls";
 export { SAMPLE_SCENES, loadSampleScene, personName, sceneFromMemory, type SceneData } from "./scene";
 export { preloadScene, sceneTellers } from "./preload";

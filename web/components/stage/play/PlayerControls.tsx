@@ -82,6 +82,29 @@ export function TellerTabs({ controller, tellers, className = "", onChange }: Te
 }
 
 /* ------------------------------------------------------------------------ */
+/* Sound hint                                                                */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Browsers will not start narration audio without a click. When the scene
+ * autoplayed silently for that reason, offer the click: one small paper note
+ * that resumes the voice in step with the scene.
+ */
+export function SoundHint({ controller, className = "" }: { controller: PlaybackController; className?: string }) {
+  const status = usePlayerStatus(controller);
+  if (status.audio !== "blocked") return null;
+  return (
+    <button
+      type="button"
+      onClick={() => controller.play()}
+      className={`rounded-full bg-[#f7f0e1]/95 px-4 py-1.5 font-hand text-lg text-ink shadow-[0_6px_18px_-6px_rgba(20,10,4,0.6)] transition-transform hover:-translate-y-px ${className}`}
+    >
+      Tap to hear the story
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
 /* Transport                                                                 */
 /* ------------------------------------------------------------------------ */
 

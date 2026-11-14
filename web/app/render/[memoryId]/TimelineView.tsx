@@ -21,6 +21,7 @@ import { useTimelinePlayer } from "@/components/stage/playback";
 import {
   CaptionStrip,
   PlayerControls,
+  SoundHint,
   TellerTabs,
   TimelineStage,
   loadSampleScene,
@@ -203,11 +204,13 @@ function Player({ scene, time, narrator, autoplay, ui }: Omit<TimelineViewProps,
           controller={controller}
           tellers={tellers}
           onChange={keepNarrator}
-          className="absolute right-[clamp(16px,4vw,48px)] top-[clamp(12px,3vh,30px)]"
+          // Phones: under the title. Wider: the top-right corner, like bookmark tabs.
+          className="absolute left-4 top-[88px] md:left-auto md:right-[clamp(16px,4vw,48px)] md:top-[clamp(12px,3vh,30px)]"
         />
       )}
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center gap-4 pb-[clamp(14px,3.4vh,34px)]">
+        <SoundHint controller={controller} className="pointer-events-auto" />
         <CaptionStrip controller={controller} tellers={tellers} className="w-full" />
         {ui && (
           <div
