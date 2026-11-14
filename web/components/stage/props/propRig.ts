@@ -38,6 +38,7 @@ import {
   type PropPose,
   type SocketPivot,
 } from "./rig";
+import { placeholderLook, rollsOnWheels } from "./silhouette";
 import type { SocketResolver } from "./sockets";
 
 export interface PropRigOptions {
@@ -162,14 +163,20 @@ export class PropRig {
 
   private placeholderSpec(v: Pick<Visual, "part" | "spin">): PlaceholderSpec {
     const p = this.prop;
-    const hasWheels = Object.values(p.parts ?? {}).some((x) => x.spin);
+    const spinning = Object.values(p.parts ?? {}).filter((x) => x.spin);
+    // The body is cut in the shape the prop's words name (a "red bicycle"
+    // rigged as a vehicle is still a bicycle), else by its size class.
+    const look = v.part === null ? placeholderLook(p) : { shape: null, bell: false };
     return {
       kind: v.part === null ? "body" : v.spin ? "wheel" : "piece",
       size: p.size,
       color: p.color ?? "#c4a37a",
       aspect: v.part === null ? this.dims.aspect : 1,
       seed: v.part === null ? p.id : `${p.id}.${v.part}`,
-      wheels: v.part === null && p.size === "vehicle" && !hasWheels,
+      wheels: v.part === null && rollsOnWheels(look.shape, p.size) && spinning.length === 0,
+      shape: look.shape,
+      bell: look.bell,
+      hubs: v.part === null ? spinning.map((x) => fractionOr(x.at, [0.5, 0.5])) : undefined,
     };
   }
 
