@@ -14,6 +14,14 @@ Script for a new memory (`fields.memory_id is None`), one step every `step_secon
 3. question "Who else was there that day?", then the run waits for AnswerRequest(kind="answer").
    The reply is kept: it is appended to the telling text as a new paragraph.
    (Skipped when `ask_followup=False`.)
+3b. merge, only when the telling (with that reply) calls someone by a family title and a
+   name that is not quite anyone's name in the tree ("Grandpa Joe" when the tree has
+   Joseph; see `merge_candidate`): "Is Grandpa Joe the Joseph in your family tree?", and the
+   run waits for AnswerRequest(kind="merge"). Approved, that person joins the memory as if
+   named in `participant_ids` (in the cast, in their book, asked for their version unless
+   they have died). Rejected, nothing changes. At most one merge per run, and never for the
+   teller or someone already named. A name that IS someone's name ("Grandma Rosa" when the
+   tree has Rosa) asks nothing.
 4. plan, subagent_start prop_master, props_found with the hymn-book prop, then the run waits
    for AnswerRequest(kind="props"). The chip's `reused` is True only when the family already
    had its own saved copy before the run (a fresh family gets a new copy: reused=False).
@@ -39,7 +47,12 @@ Script for a new memory (`fields.memory_id is None`), one step every `step_secon
    pinned where the sample's narration put it. The teller is the default narrator and the
    only narration track; the recast `dad` is a puppet and a participant but narrates
    nothing, since they have no telling. Cued lines are tried first, uncued if they do not
-   compile. subagent_end director reports the real outcome. If the compiler returns
+   compile. The sample is timed for its own people: when the recast scene fails only
+   because someone is still busy (a slow walker, like a grandparent with a cane, is still
+   on the way to the books), the director tries again at a slower pace (`pace`, by each of
+   PACE_FACTORS in turn). The family's copies of the set and prop are looked up and created
+   under a per-family lock, so two runs at once never make two copies.
+   subagent_end director reports the real outcome. If the compiler returns
    errors, the run emits compile_error, then subagent_end director with the first error,
    then one plain error event, and nothing is saved.
 6. plan, then the memory is saved: create_memory with the telling, then save_scene with the
@@ -49,9 +62,9 @@ Script for a new memory (`fields.memory_id is None`), one step every `step_secon
 7. the linker (only when someone besides the teller was named in `participant_ids`): plan
    with "Ask the others for their version" in progress, then one open question per named
    participant, linked to the new memory ("<teller> told the story of "<title>". What do
-   you remember?"). A person who already has an open question for the memory is skipped,
-   and a failure to create one is logged, never failing the run. The auto-recast `dad` is
-   not asked unless named.
+   you remember?"). A person who has died (agent/prompts/linker.md) or who already has an
+   open question for the memory is skipped, and a failure to create one is logged, never
+   failing the run. The auto-recast `dad` is not asked unless named.
 8. plan (all completed), scene_ready, done(memoryId)
 
 A second telling (`fields.memory_id` set) needs a memory of this family WITH a scene:
@@ -97,6 +110,15 @@ seeded demo moments):
 
 Any exception ends the run with a single error event with a plain message. Every payload is
 an instance of `schemas.RUN_EVENTS[name]`, and every run ends with exactly one done or error.
+
+Answers (`answer_run`) behave as agent.runs.RunManager's do behind the routes: an unknown or
+other-family run is a LookupError (404), another user's answer a PermissionError (403), an
+answer while the run is not paused raises `RunNotWaiting` (409 "This run is not waiting for
+an answer"; `install_fake_runs` hands the manager agent.runs.RunNotWaiting, the class the
+route recognises), and an answer of the wrong kind a ValueError (409); the run stays paused.
+Of two answers racing for one pause, exactly one is taken. A reattached stream replays the
+run's one event log from the first event, so nothing is duplicated and an answered pause is
+followed by what came after it, never asked again.
 
 This module never imports `agent` except inside `install_fake_runs`.
 """
@@ -161,6 +183,15 @@ LINE_GAP = 0.4
 """Seconds of silence between two of a second teller's lines in one shot."""
 
 
+MERGE_QUESTION = "Is {said} the {candidate} in your family tree?"
+KIN_TITLES: tuple[str, ...] = (
+    "Grandma", "Grandpa", "Granny", "Grandmother", "Grandfather", "Nana", "Nonna", "Abuela", "Abuelo",
+    "Uncle", "Aunt", "Auntie", "Tia", "Tio", "Tía", "Tío", "Cousin",
+)
+"""Family titles the scripted interviewer reads as "this is someone we may already know"."""
+_KIN_NAME = re.compile(r"\b(" + "|".join(KIN_TITLES) + r")\s+([^\W\d_][^\W\d_'-]*)")
+
+
 class MemoryNotFound(LookupError):
     """`fields.memory_id` is not a memory of this family, or it has no scene yet.
 
@@ -168,7 +199,16 @@ class MemoryNotFound(LookupError):
     memory it found but that cannot take another telling.
     """
 
-NEEDS_INPUT = {"question": "answer", "props_found": "props"}
+
+class RunNotWaiting(RuntimeError, ValueError):
+    """An answer while the run is not paused. Mirrors agent.runs.RunNotWaiting (the route sends 409).
+
+    `install_fake_runs` gives the manager agent.runs.RunNotWaiting itself, so the route's
+    `isinstance(exc, agent.runs.RunNotWaiting)` holds and the 409 says NOT_WAITING.
+    """
+
+
+NEEDS_INPUT = {"question": "answer", "props_found": "props", "merge": "merge"}
 """Event that pauses the run -> the AnswerRequest kind that resumes it."""
 TERMINAL = frozenset({"done", "error"})
 
@@ -539,6 +579,28 @@ def stage_handoffs(screenplay: dict, sets: dict[str, dict[str, list[float]]]) ->
     return sp
 
 
+def pace(screenplay: Screenplay, factor: float) -> Screenplay:
+    """The screenplay with every start time stretched by `factor`: actions, camera cues and every
+    narration line, in every shot. Durations are kept. Pure.
+
+    The sample scene is timed for its own people. A slower recast (Grandpa Joseph "walks
+    slowly with a cane") cannot reach the books in the sample's time, so the director gives
+    the whole scene more time rather than fail to stage it (see PACE_FACTORS).
+    """
+    sp = screenplay.model_copy(deep=True)
+    for shot in sp.shots:
+        for item in [*shot.actions, *shot.camera, *shot.narration]:
+            item.t = round(item.t * factor, 6)
+        for by_shot in (sp.narrations or {}).values():
+            for line in by_shot.get(shot.id, []):
+                line.t = round(line.t * factor, 6)
+    return sp
+
+
+PACE_FACTORS: tuple[float, ...] = (1.0, 1.25, 1.5, 2.0, 2.5)
+"""Paces the director tries, in order, while the compile fails only because someone is still busy."""
+
+
 def scene_inputs(
     db: Database, family_id: str, screenplay: Screenplay
 ) -> tuple[dict[str, schemas.SetDef], dict[str, schemas.Prop], dict[str, schemas.Person], list[CompileError]]:
@@ -759,14 +821,43 @@ def _askees(teller_id: str, participant_ids: list[str]) -> list[str]:
     return [pid for pid in _dedupe(participant_ids) if pid != teller_id]
 
 
+def _first_name(name: str) -> str:
+    words = name.split()
+    return words[0] if words else ""
+
+
+def merge_candidate(
+    people: list[schemas.Person], teller_id: str, named: set[str] | list[str], text: str
+) -> tuple[str, schemas.Person] | None:
+    """The first "<title> <Name>" in `text` that may be someone already in the tree. Pure.
+
+    ("Grandpa Joe", Joseph) when Name is nobody's first name in the family but starts with
+    the same two letters (ignoring case) as exactly one person's who is neither the teller
+    nor already in `named`. None otherwise: a Name that IS someone's first name ("Grandma
+    Rosa", with Rosa in the tree) is that person, with nothing to ask.
+    """
+    firsts = {_first_name(p.name).casefold() for p in people}
+    others = [p for p in people if p.id != teller_id and p.id not in set(named)]
+    for match in _KIN_NAME.finditer(text):
+        said_name = match.group(2)
+        key = said_name.casefold()
+        if key in firsts or len(key) < 2:
+            continue
+        alike = [p for p in others if _first_name(p.name).casefold()[:2] == key[:2]]
+        if len(alike) == 1:
+            return f"{match.group(1)} {said_name}", alike[0]
+    return None
+
+
 def ask_participants(
     db: Database, family_id: str, memory: schemas.Memory, teller_id: str, participant_ids: list[str]
 ) -> list[schemas.Question]:
     """The linker: one open question per named participant (never the teller) for `memory`.
 
-    A person who already has an open question for this memory is skipped, so running it
-    again creates nothing new. A failure for one person is logged and skipped. Returns the
-    questions created.
+    A person who has died (agent/prompts/linker.md: their record has `died`), who is not in
+    the family, or who already has an open question for this memory is skipped, so running
+    it again creates nothing new. A failure for one person is logged and skipped. Returns
+    the questions created.
     """
     askees = _askees(teller_id, participant_ids)
     if not askees:
@@ -774,8 +865,11 @@ def ask_participants(
     teller = people_db.get_person(db, family_id, teller_id)
     teller_name = teller.name if teller is not None else "Someone"
     text = f'{teller_name} told the story of "{memory.title}". What do you remember?'
+    living = {p.id for p in people_db.get_people(db, family_id, askees) if p.died is None}
     created = []
     for pid in askees:
+        if pid not in living:
+            continue
         try:
             if any(q.memory_id == memory.id for q in memories_db.open_questions(db, family_id, pid)):
                 continue
@@ -797,14 +891,21 @@ class ScriptedRunManager:
         db_getter: Callable[[], Database] = db_client.get_db,
         step_seconds: float = 0.6,
         ask_followup: bool = True,
+        not_waiting: type[Exception] = RunNotWaiting,
     ) -> None:
+        """`not_waiting`: what `answer_run` raises when the run is not paused; it must be a
+        ValueError (install_fake_runs passes agent.runs.RunNotWaiting)."""
+        if not (isinstance(not_waiting, type) and issubclass(not_waiting, ValueError)):
+            raise TypeError("not_waiting must be a ValueError subclass")
         self._db_getter = db_getter
         self._step_seconds = max(0.0, float(step_seconds))
         self._ask_followup = ask_followup
+        self._not_waiting = not_waiting
         self._runs: dict[str, _Run] = {}
         self._threads: list[threading.Thread] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._family_locks: dict[str, threading.Lock] = {}
 
     # ------------------------------------------------------------------ public API
 
@@ -866,14 +967,15 @@ class ScriptedRunManager:
         """Resume a paused run. Returns at once.
 
         LookupError: unknown run or another family. PermissionError: not the user who
-        started it. ValueError: not waiting, or the answer does not fit the pending event.
+        started it. `not_waiting` (RunNotWaiting, a ValueError): not paused. ValueError: the
+        answer does not fit the pending event; the run stays paused.
         """
         run = self._get(family_id, run_id)
         if run.user_id != user_id:
             raise PermissionError("only the person who started this run can answer it")
         with run.cond:
             if run.status != "waiting" or run.pending is None:
-                raise ValueError(f"run {run_id} is {run.status}, not waiting for an answer")
+                raise self._not_waiting(f"run {run_id} is {run.status}, not waiting for an answer")
             expected = NEEDS_INPUT[run.pending]
             if answer.kind != expected:
                 raise ValueError(f"run {run_id} is waiting for kind={expected!r}, got {answer.kind!r}")
@@ -881,6 +983,8 @@ class ScriptedRunManager:
                 raise ValueError("an answer needs text")
             if answer.kind == "props" and answer.props is None:
                 raise ValueError("a props review needs the props list")
+            if answer.kind == "merge" and answer.approve is None:
+                raise ValueError("a merge answer needs approve")
             run.answer = answer
             run.pending = None
             run.status = "running"
@@ -917,6 +1021,11 @@ class ScriptedRunManager:
             thread.join(timeout=2.0)
 
     # ------------------------------------------------------------------ internals
+
+    def _family_lock(self, family_id: str) -> threading.Lock:
+        """Held while a run looks up and creates the family's copies of the sample's set and prop."""
+        with self._lock:
+            return self._family_locks.setdefault(family_id, threading.Lock())
 
     def _get(self, family_id: str, run_id: str) -> _Run:
         with self._lock:
@@ -1043,6 +1152,16 @@ class ScriptedRunManager:
                 text = f"{text.rstrip()}\n\n{reply.text.strip()}"
             self._step()
 
+        # Is "Grandpa Joe" the Joseph in the tree? Approved, he is named like a participant.
+        named = _dedupe(list(fields.participant_ids))
+        merged = self._merge(run, db, named, text)
+        if merged is not None:
+            named.append(merged.id)
+            if merged.died is None and ASK_OTHERS not in todos:  # the linker will ask them
+                todos.append(ASK_OTHERS)
+                at[ASK_OTHERS] = len(todos) - 1
+        askees = _askees(run.person_id, named)
+
         # Props: review the sample's prop, as this family's copy.
         sample = demo.load_sample()
         sample_prop = sample.props[0]
@@ -1080,7 +1199,7 @@ class ScriptedRunManager:
         self._emit(run, "subagent_start", schemas.SubagentStartEvent(
             name="director", task="Stage the scene on the church steps"))
         self._step()
-        staged = self._stage(run, db, sample, edits, removed, text)
+        staged = self._stage(run, db, sample, edits, removed, text, named)
         result = staged.result
         if not result.ok or result.timeline is None:
             errors = result.errors or [CompileError(code="no_timeline", message="the compiler made no timeline")]
@@ -1211,6 +1330,24 @@ class ScriptedRunManager:
         self._step()
         self._emit(run, "done", schemas.DoneEvent(memory_id=memory_id))
 
+    def _merge(self, run: _Run, db: Database, named: list[str], text: str) -> schemas.Person | None:
+        """Ask whether a "<title> <Name>" of the telling is someone in the tree (`merge_candidate`).
+
+        Returns that person when the family approves, None when they reject or there is
+        nothing to ask.
+        """
+        found = merge_candidate(people_db.list_people(db, run.family_id), run.person_id, named, text)
+        if found is None:
+            return None
+        said, person = found
+        reply = self._ask(run, "merge", schemas.MergeEvent(
+            text=MERGE_QUESTION.format(said=said, candidate=person.name),
+            person_id=person.id,
+            candidate_name=person.name,
+        ))
+        self._step()
+        return person if reply.approve else None
+
     @staticmethod
     def _lines_of(screenplay: Screenplay, author_id: str) -> dict[str, list[NarrationLine]]:
         """`author_id`'s lines by shot, wherever they are (narrations, or the shots' own)."""
@@ -1269,14 +1406,16 @@ class ScriptedRunManager:
         except ValueError:  # the id belongs to another family
             return insert(None).id
 
-    def _people_map(self, run: _Run, db: Database) -> dict[str, str | None]:
+    def _people_map(self, run: _Run, db: Database, named: list[str]) -> dict[str, str | None]:
         """Sample person id -> this family's person id.
 
-        SAMPLE_OTHER maps to None when the family has nobody but the teller: the two
-        sample puppets are never merged into one person.
+        `dad` is the first of `named` (the named participants, then an approved merge) who
+        is not the teller, else the teller's spouse, else anyone else. SAMPLE_OTHER maps to
+        None when the family has nobody but the teller: the two sample puppets are never
+        merged into one person.
         """
         teller = run.person_id
-        other = next((p for p in run.fields.participant_ids if p != teller), None)
+        other = next((p for p in named if p != teller), None)
         if other is None:
             people = people_db.list_people(db, run.family_id)
             me = next((p for p in people if p.id == teller), None)
@@ -1293,6 +1432,7 @@ class ScriptedRunManager:
         edits: list[schemas.PropEdit],
         removed: bool,
         text: str,
+        named: list[str],
     ) -> _Staged:
         """The director: the sample's screenplay recast for this family, narrated by the
         teller in their own words (`text`, the telling as `_save` stores it), and compiled.
@@ -1301,42 +1441,43 @@ class ScriptedRunManager:
         prop review's edits), so the compiler sees exactly what the memory will point at.
         """
         fid = run.family_id
-        fields = run.fields
         sample_memory = sample.memory
         assert sample_memory.screenplay is not None and sample_memory.timeline is not None
 
-        people = self._people_map(run, db)
+        people = self._people_map(run, db, named)
         other = people[SAMPLE_OTHER]
-        participants = _dedupe([run.person_id, *([other] if other else []), *fields.participant_ids])
+        participants = _dedupe([run.person_id, *([other] if other else []), *named])
 
-        # The family's set (and prop, unless the family left it out).
+        # The family's set (and prop, unless the family left it out). One run at a time per
+        # family: two runs that both find no copy must not both insert one.
         ids: dict[str, str] = {sample_id: pid for sample_id, pid in people.items() if pid is not None}
         set_ids: list[str] = []
-        for set_def in sample.sets:
-            planned = self._planned_id(props_db.get_set, db, fid, set_def.id)
-            ids[set_def.id] = self._ensure(
-                props_db.get_set,
-                lambda doc_id, s=set_def: props_db.insert_set(db, fid, s, set_id=doc_id),
-                db, fid, planned,
-            )
-            set_ids.append(ids[set_def.id])
         prop_ids: list[str] = []
-        sample_prop = sample.props[0]
         removed_ids: list[str] = []
-        for prop in sample.props:
-            if prop is sample_prop and removed:
-                removed_ids.append(prop.id)
-                continue
-            planned = self._planned_id(props_db.get_prop, db, fid, prop.id)
-            final = self._ensure(
-                props_db.get_prop,
-                lambda doc_id, p=prop: props_db.insert_prop(db, fid, p, prop_id=doc_id),
-                db, fid, planned,
-            )
-            ids[prop.id] = final
-            prop_ids.append(final)
-            if prop is sample_prop:
-                self._apply_edits(db, fid, final, edits)
+        sample_prop = sample.props[0]
+        with self._family_lock(fid):
+            for set_def in sample.sets:
+                planned = self._planned_id(props_db.get_set, db, fid, set_def.id)
+                ids[set_def.id] = self._ensure(
+                    props_db.get_set,
+                    lambda doc_id, s=set_def: props_db.insert_set(db, fid, s, set_id=doc_id),
+                    db, fid, planned,
+                )
+                set_ids.append(ids[set_def.id])
+            for prop in sample.props:
+                if prop is sample_prop and removed:
+                    removed_ids.append(prop.id)
+                    continue
+                planned = self._planned_id(props_db.get_prop, db, fid, prop.id)
+                final = self._ensure(
+                    props_db.get_prop,
+                    lambda doc_id, p=prop: props_db.insert_prop(db, fid, p, prop_id=doc_id),
+                    db, fid, planned,
+                )
+                ids[prop.id] = final
+                prop_ids.append(final)
+                if prop is sample_prop:
+                    self._apply_edits(db, fid, final, edits)
 
         # Stage on the sample's own ids, strip what this family leaves out, then recast. The
         # sample's timeline is only carried through the strips; the compiler makes the real one.
@@ -1352,9 +1493,16 @@ class ScriptedRunManager:
         screenplay["props"] = _dedupe(screenplay.get("props", []))
         # The sample's narration is its own people's words: the teller's telling replaces it,
         # and nobody else has a track (the recast other person has not told this memory).
-        narrated, result = self._narrate(
-            db, fid, Screenplay.model_validate(screenplay), run.person_id, text, write=narrate_as_teller
-        )
+        # The sample is timed for its own people: a slower cast gets a slower pace.
+        recast = Screenplay.model_validate(screenplay)
+        tries: list[tuple[Screenplay, CompileResult]] = []
+        for factor in PACE_FACTORS:
+            tries.append(self._narrate(db, fid, pace(recast, factor), run.person_id, text, write=narrate_as_teller))
+            result = tries[-1][1]
+            if result.ok or not any(e.code == "busy" for e in result.errors):
+                break
+        # A scene that never compiles is reported as written, not at the last pace tried.
+        narrated, result = tries[-1] if tries[-1][1].ok else tries[0]
         return _Staged(
             screenplay=narrated,
             result=result,
@@ -1430,18 +1578,23 @@ def install_fake_runs(*, step_seconds: float = 0.6) -> bool:
     if not callable(configure):
         logger.warning("scripted runs not installed: agent.runs has no callable configure()")
         return False
-    configure(ScriptedRunManager(step_seconds=step_seconds))
+    not_waiting = getattr(runs, "RunNotWaiting", None)
+    if not (isinstance(not_waiting, type) and issubclass(not_waiting, ValueError)):
+        not_waiting = RunNotWaiting
+    configure(ScriptedRunManager(step_seconds=step_seconds, not_waiting=not_waiting))
     logger.info("agent runs are scripted (seed.fake_runs), step %.2fs", step_seconds)
     return True
 
 
 __all__ = [
     "MemoryNotFound",
+    "RunNotWaiting",
     "ScriptedRunManager",
     "ask_participants",
     "compile_scene",
     "install_fake_runs",
     "keep_audio",
+    "merge_candidate",
     "narrate_as_teller",
     "remap_ids",
     "scene_inputs",
