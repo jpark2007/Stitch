@@ -486,9 +486,10 @@ def test_pick_up_with_the_right_hand_full_stops_where_the_left_shoulder_reaches(
     # shoulder sits behind the hip, and kneeling at CROUCH_MAX_BEND the arm misses the floor.
     plain = ik.Body("dad", (0.6 * ik.arm_reach("tall"), 0.0), -1, "tall")
     assert verbs_core._crouch_pick(verbs_core._crouch_tries(plain, "arm_l", grip, True), 0.17) is None
-    # The spot it took reaches with the least effort the search found: kneeling, deeply bent.
+    # No spot reaches within CROUCH_MAX_BEND, so the search allows CROUCH_DEEP_BEND; weighing
+    # the walk (SPOT_WALK_COST) against the bend, it stops short and folds all the way down.
     torso = keys(tracks, "puppet:dad", "torso.rot")
-    assert torso[1][1] == pytest.approx(-1.4)
+    assert torso[1][1] == pytest.approx(-verbs_core.CROUCH_DEEP_BEND)
     assert tracks.value_at("puppet:dad", "leg_r.lower.rot", t_grab) == -1.5  # kneeling at the grab
 
 
@@ -500,6 +501,55 @@ def test_pick_up_step_search_failure_is_atomic_and_reports_the_closest_miss():
     shoulder_y = ik.shoulder_world("arm_r", (0.0, 0.0), 1, "tall")[1]
     assert e.distance == pytest.approx(grip[1] - shoulder_y, abs=1e-4)
     assert (e.who, e.arm, e.reach) == ("dad", "arm_r", pytest.approx(ik.arm_reach("tall")))
+
+
+def at_x(who, x, facing, holding=None):
+    """``who`` standing at stage x (the scene's marks are all nearer the middle)."""
+    world, tracks = scene({who: {"at": "steps_foot", "facing": facing, **({"holding": holding} if holding else {})}})
+    world.people[who].pos = (x, 0.0, 0.5)
+    tracks.add(f"puppet:{who}", "root.position", 0.0, [x, 0.0, 0.5])
+    return world, tracks
+
+
+def test_pick_up_that_fails_at_the_spot_leaves_the_world_untouched(monkeypatch):
+    """The move and the take are tried on a copy first: if World.pick_up refuses at the new
+    spot (here, with the stage bound lifted, a step back past the edge), neither the world nor
+    the tracks change."""
+    world, tracks = at_x("dad", -0.98, "right")
+    low_cup(world, -0.98)
+    monkeypatch.setattr(verbs_core, "STAGE_EDGE", 5.0)
+    e = fails(world, tracks, "offstage", who="dad", do="pick_up", what="cup")
+    assert str(e) == "dad is offstage"
+
+
+@pytest.mark.parametrize("x,facing", [(-1.0, "right"), (1.0, "left")])
+def test_pick_up_over_a_grip_on_the_stage_edge_steps_to_the_far_side(x, facing):
+    """Over a grip on the edge, a step back would leave the stage: it walks past the grip
+    instead and turns back to it."""
+    world, tracks = at_x("dad", x, facing)
+    grip = low_cup(world, x)
+    run(world, tracks, 0, who="dad", do="pick_up", what="cup")
+    spot, inward = world.people["dad"].pos[0], -int(x)
+    assert (spot - x) * inward >= 0.01  # on the stage's side of the grip
+    assert world.people["dad"].facing == -inward  # facing back out, toward the grip
+    t_grab = keys(tracks, "prop:cup", "parent")[0][0]
+    assert hand_at(world, tracks, "dad", t_grab) == pytest.approx(grip, abs=2e-3)
+    assert world.holder("cup") == ("dad", "hand_r")
+
+
+@pytest.mark.parametrize("x", [-1.0, -0.99, -0.97, -0.94, -0.9, 0.9, 0.94, 0.97, 0.99, 1.0])
+@pytest.mark.parametrize("facing", ["left", "right"])
+@pytest.mark.parametrize("holding", [None, "hat"])
+def test_pick_up_by_the_stage_edge_only_steps_to_spots_on_stage(x, facing, holding):
+    world, tracks = at_x("dad", x, facing, holding)
+    grip = low_cup(world, x)
+    run(world, tracks, 0, who="dad", do="pick_up", what="cup")
+    assert abs(world.people["dad"].pos[0]) <= 1.0 and world.on_stage("dad")
+    for _, pos in keys(tracks, "puppet:dad", "root.position"):
+        assert abs(pos[0]) <= 1.0
+    socket = "hand_l" if holding else "hand_r"
+    t_grab = keys(tracks, "prop:cup", "parent")[0][0]
+    assert hand_at(world, tracks, "dad", t_grab, socket) == pytest.approx(grip, abs=2e-3)
 
 
 def test_pick_up_from_a_seat_never_steps():

@@ -49,8 +49,8 @@ CROUCH_BEND_STEP = 0.05  # radians between the torso bends tried
 CROUCH_MAX_BEND = 1.2    # deepest forward bend (applied as a negative torso rotation)
 CROUCH_COMFORT = 0.95    # prefer a bend that leaves the arm at most this fraction of full stretch
 CROUCH_KNEEL_COST = 0.5  # kneeling counts as this much extra bend when choosing how to get down
-# A puppet that steps to a spot to pick up (see _reach_spot) may fold further, down to this. The
-# back arm (arm_l) needs it: a forward bend swings its shoulder pivot, which sits behind the hip,
+# A puppet that steps to a spot to pick up (see _reach_spot) may fold further, down to this, but
+# only when no spot on either side reaches within CROUCH_MAX_BEND. The back arm (arm_l) needs it: a forward bend swings its shoulder pivot, which sits behind the hip,
 # up as well as forward, so even kneeling at CROUCH_MAX_BEND it cannot reach the floor.
 CROUCH_DEEP_BEND = 1.5
 
@@ -58,6 +58,8 @@ CROUCH_DEEP_BEND = 1.5
 # standing spots it may step to instead (see _reach_spot).
 SPOT_STEP = 0.005  # stage units between the root positions tried, outward from the grip
 SPOT_RANGE = 2.0   # how far out to try, in arm reaches beyond the shoulder's offset from the root
+SPOT_WALK_COST = 5.0  # crouch effort (radians) a stage unit of walking costs: 0.1 walked = a kneel
+STAGE_EDGE = 1.0   # spots stay on stage: |x| at most this (World.on_stage)
 
 
 def _changes_legs(pose: str) -> bool:
@@ -256,11 +258,14 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
        itself when it stands right over the grip (a cap at its feet is under the hips, out of a
        forward bend's reach, so it steps back). Every spot is judged from the shoulder pivot of
        the arm actually used, not the root: arm_r's sits in front of the hip and arm_l's behind
-       it, where a forward bend lifts it as well as bringing it forward, so a stepped-to spot may
-       fold down to CROUCH_DEEP_BEND. It gets up first if it is on the floor, walks there,
-       turns to face the grip, and reaches, standing or crouching.
+       it, where a forward bend lifts it as well as bringing it forward, so when no spot reaches
+       within CROUCH_MAX_BEND a stepped-to spot may fold down to CROUCH_DEEP_BEND. Spots stay
+       on stage; when its own side has none (a prop by the stage edge), it walks past the grip
+       to the far side. It weighs crouch effort against the walk (SPOT_WALK_COST), gets up
+       first if it is on the floor, walks there, turns to face the grip, and reaches, standing
+       or crouching.
     3. Raises ik.OutOfReach, with the closest miss, only when no spot reaches. A seated puppet
-       never moves: it reaches from the seat or fails."""
+       never moves: it reaches from the seat or fails. On any failure the world is untouched."""
     who = _who(world, action)
     what = _what(world, action)
     hand = world.copy().pick_up(who, what)  # validation only: the real world is untouched
@@ -279,11 +284,14 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
             raise
         keys, end, walk_to, facing = _pick_up_from_a_spot(world, tracks, who, what, arm, geom, anchor, t, missed)
 
-    if walk_to is not None:
-        world.move(who, walk_to, facing)
-    else:
-        world.set_facing(who, facing)
-    world.pick_up(who, what, hand)
+    # Atomic: the move and the take are tried on a copy first, so a failure (StateError from
+    # World.pick_up at the new spot) leaves the real world as it was.
+    for w in (world.copy(), world):
+        if walk_to is not None:
+            w.move(who, walk_to, facing)
+        else:
+            w.set_facing(who, facing)
+        w.pick_up(who, what, hand)
     tracks.extend(keys)
     return end
 
@@ -336,7 +344,7 @@ def _pick_up_in_place(
 
 
 def _spot_offsets(reach: float, shoulder_dx: float) -> list[float]:
-    """Root distances from the grip that _reach_spot tries: every SPOT_STEP out to
+    """Root distances from the grip that _reach_spot tries on one side: every SPOT_STEP out to
     SPOT_RANGE of the arm's reach beyond the shoulder's offset from the root, plus the spot that
     puts the shoulder (not the root) AUTO_WALK_REACH of the reach short of the grip."""
     far = SPOT_RANGE * reach + abs(shoulder_dx)
@@ -346,23 +354,31 @@ def _spot_offsets(reach: float, shoulder_dx: float) -> list[float]:
 
 def _reach_spot(
     world: World, tracks: TrackSet, who: str, arm: str, grip: tuple[float, float], t: float, missed: ik.OutOfReach
-) -> tuple[Vec3, int]:
+) -> tuple[Vec3, int, float]:
     """The standing spot ``who`` steps to so ``arm`` can take a grip it cannot take from where
-    it is (step 2 of apply_pick_up): (spot, facing there). Raises ik.OutOfReach with the
-    closest miss over every spot tried and ``missed`` (the miss from where it is) when none
-    reaches.
+    it is (step 2 of apply_pick_up): (spot, facing there, deepest bend allowed there). Raises
+    ik.OutOfReach with the closest miss over every spot tried and ``missed`` (the miss from
+    where it is) when none reaches.
 
-    Candidates lie on the puppet's side of the grip (behind it, so a step back, when it stands
-    right over the grip; its facing breaks the tie), facing the grip, with the torso the walk
-    leaves it with, every SPOT_STEP from the grip outward (see _spot_offsets). A candidate is
-    tried from the actual arm's shoulder pivot (ik.shoulder_world): it reaches standing, or
-    with _crouch_solution (kneeling allowed, bending down to CROUCH_DEEP_BEND). Best is a
-    comfortable reach (CROUCH_COMFORT) over a full stretch, then the least crouch effort
-    (standing is none), then the spot nearest the puppet's root."""
+    Candidates face the grip, keep the torso the walk leaves the puppet with, and lie every
+    SPOT_STEP from the grip outward (see _spot_offsets), on the stage only (World.on_stage:
+    |x| <= STAGE_EDGE). Each is tried from the shoulder pivot of the arm actually used
+    (ik.shoulder_world), not the root: it reaches standing, or with a crouch (kneeling allowed;
+    see _crouch_tries). The search goes, first hit wins:
+
+    1. the puppet's own side of the grip (behind it, a step back, when it stands right over the
+       grip; its facing breaks the tie), bending down to CROUCH_MAX_BEND;
+    2. the far side of the grip (walking past it and turning back), the same way: by a stage
+       edge the own side may have no room;
+    3. and 4. both again, in that order, bending down to CROUCH_DEEP_BEND: arm_l, whose shoulder
+       sits behind the hip, needs it to reach the floor at all.
+
+    Within one of those, best is a comfortable reach (CROUCH_COMFORT) over a full stretch, then
+    the lowest cost: crouch effort (_crouch_effort, standing is none) plus SPOT_WALK_COST per
+    stage unit walked, then the spot nearest the puppet's root."""
     p = world.people[who]
     here = puppet_root(world, tracks, who, t)
-    side = _sign(here[0] - grip[0]) or -p.facing
-    facing = -side
+    own = _sign(here[0] - grip[0]) or -p.facing
     stand, _ = _stand_up_keys(world, tracks, who, t)
     stood = B.last_values(stand).get((f"puppet:{who}", "torso.rot"))
     torso = float(stood) if stood is not None else bone_at(tracks, who, "torso", t)  # type: ignore[arg-type]
@@ -370,38 +386,45 @@ def _reach_spot(
     reach = ik.arm_reach(p.build, arm)
     length = ik.RIG["bones"][ik.arm_bones(arm)[0]]["length"]
     y, z = p.pos[1], p.pos[2]
-    # How far the shoulder sits from the root toward the grip (negative: away from it).
-    shoulder_dx = -side * (ik.shoulder_world(arm, (0.0, y), facing, p.build, torso=torso)[0])
 
-    best: tuple[tuple[int, float, float], float] | None = None
     closest = missed.distance
-    seen: set[float] = set()
-    for offset in _spot_offsets(reach, shoulder_dx):
-        x = round(grip[0] + side * offset, 3)
-        if x in seen:
-            continue
-        seen.add(x)
-        ground = (x, y)
-        dist, angles = ik.arm_solution(arm, grip, ground, facing, p.build, torso=torso)
-        if angles is not None:
-            rank = (0, 0.0, abs(x - here[0]))
-        elif grip[1] >= ik.shoulder_world(arm, ground, facing, p.build, torso=torso)[1]:
-            closest = min(closest, dist * s)
-            continue
-        else:
-            body = ik.Body(who, ground, facing, p.build, torso)
-            tries = _crouch_tries(body, arm, grip, can_kneel=True, max_bend=CROUCH_DEEP_BEND)
-            pick = _crouch_pick(tries, length)
-            if pick is None:
-                closest = min(closest, min(tr[0] for tr in tries) * s)
-                continue
-            comfortable, (_, kneel, bend, _) = pick
-            rank = (0 if comfortable else 1, round(_crouch_effort(kneel, bend), 9), abs(x - here[0]))
-        if best is None or rank < best[0]:
-            best = (rank, x)
-    if best is None:
-        raise ik.OutOfReach(arm, closest, 2 * length * s, who)
-    return (best[1], y, z), facing
+    spots: dict[int, list[float]] = {}  # side -> the on-stage root x tried there
+    for side in (own, -own):
+        # How far the shoulder sits from the root toward the grip (negative: away from it).
+        shoulder_dx = -side * (ik.shoulder_world(arm, (0.0, y), -side, p.build, torso=torso)[0])
+        xs = spots.setdefault(side, [])
+        for offset in _spot_offsets(reach, shoulder_dx):
+            x = round(grip[0] + side * offset, 3)
+            if abs(x) <= STAGE_EDGE and x not in xs:
+                xs.append(x)
+    for max_bend in (CROUCH_MAX_BEND, CROUCH_DEEP_BEND):
+        for side in (own, -own):
+            facing = -side
+            best: tuple[tuple[int, float, float], float] | None = None
+            for x in spots[side]:
+                ground = (x, y)
+                walk = abs(x - here[0])
+                dist, angles = ik.arm_solution(arm, grip, ground, facing, p.build, torso=torso)
+                if angles is not None:
+                    rank = (0, round(SPOT_WALK_COST * walk, 9), walk)
+                elif grip[1] >= ik.shoulder_world(arm, ground, facing, p.build, torso=torso)[1]:
+                    closest = min(closest, dist * s)
+                    continue
+                else:
+                    body = ik.Body(who, ground, facing, p.build, torso)
+                    tries = _crouch_tries(body, arm, grip, can_kneel=True, max_bend=max_bend)
+                    pick = _crouch_pick(tries, length)
+                    if pick is None:
+                        closest = min(closest, min(tr[0] for tr in tries) * s)
+                        continue
+                    comfortable, (_, kneel, bend, _) = pick
+                    cost = _crouch_effort(kneel, bend) + SPOT_WALK_COST * walk
+                    rank = (0 if comfortable else 1, round(cost, 9), walk)
+                if best is None or rank < best[0]:
+                    best = (rank, x)
+            if best is not None:
+                return (best[1], y, z), facing, max_bend
+    raise ik.OutOfReach(arm, closest, 2 * length * s, who)
 
 
 def _pick_up_from_a_spot(
@@ -412,7 +435,7 @@ def _pick_up_from_a_spot(
     standing or crouching. Raises ik.OutOfReach (the closest miss) when no spot reaches."""
     p = world.people[who]
     grip = B.grip_from_anchor(geom, anchor)
-    spot, facing = _reach_spot(world, tracks, who, arm, grip, t, missed)
+    spot, facing, max_bend = _reach_spot(world, tracks, who, arm, grip, t, missed)
     keys, t_reach, walked_facing = _travel_keys(world, tracks, who, t, spot, "walk")
     if walked_facing != facing:  # it walked away from the grip (a step back): turn around
         keys.append((f"puppet:{who}", "root.facing", t_reach, facing))
@@ -432,7 +455,7 @@ def _pick_up_from_a_spot(
         keys += B.pick_up_keys(body, t_reach, current, geom, anchor, arm)
         return keys, t_reach + 2 * B.REACH_SECONDS, spot, facing
     crouch, end = _crouch_pick_up_keys(
-        tracks, keys, body, t_reach, current, what, grip, arm, spot[2], can_kneel=True, max_bend=CROUCH_DEEP_BEND
+        tracks, keys, body, t_reach, current, what, grip, arm, spot[2], can_kneel=True, max_bend=max_bend
     )
     return keys + crouch, end, spot, facing
 

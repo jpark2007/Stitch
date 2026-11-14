@@ -5,8 +5,9 @@ the fix, a puppet standing over it (or arriving there by walk_to) failed with ou
 every build: the plain walk-up only runs when the grip is far from the root, and a forward bend
 swings the shoulder away from a grip under the hips. With hand_r full, a walk-up from the curb
 failed on arm_l, whose shoulder pivot sits behind the hip. verbs_core.apply_pick_up now steps
-back (or stops where that arm reaches), and still fails, with the closest miss, when nothing
-reaches. A pick_up that compiled before compiles to exactly the same keys.
+back (or stops where that arm reaches), only to spots on stage (by an edge it walks past the
+cap instead), and still fails, with the closest miss, when nothing reaches. A pick_up that
+compiled before compiles to exactly the same keys.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from screenplay import body as B
-from screenplay import ik
+from screenplay import ik, verbs_core
 from screenplay.compiler import compile as compile_screenplay
 from screenplay.schema import VOCABULARY, Screenplay
 from screenplay.tracks import evaluate
@@ -145,6 +146,65 @@ def test_with_the_right_hand_full_over_the_cap_it_steps_back_and_uses_the_left_a
     assert res.ok, errors(res)
     t = assert_hand_on_the_grip(res, who, "hand_l", CAST_BUILDS[who])
     assert at(res, f"puppet:{who}", "root.position", t)[0] <= DOOR_X - 0.01
+
+
+# ------------------------------------------------------------------ stage edges
+
+EDGE_CASES = [(0.0, None), (0.01, None), (0.03, None), (0.05, None), (0.97, "left"), (1.0, "left")]
+
+
+@pytest.mark.parametrize("u,facing", EDGE_CASES)
+@pytest.mark.parametrize("who", ["dad", "mom", "kid"])
+@pytest.mark.parametrize("holding", [None, "hymn_books"])
+def test_by_the_stage_edge_it_only_steps_to_spots_on_stage(u, facing, who, holding):
+    """Over a cap by the edge the step back may have no room: it stops on the edge or walks past
+    the cap to the far side. The shot goes on: a later action is not refused as offstage."""
+    start = {who: {"at": "e", **({"facing": facing} if facing else {}), **({"holding": holding} if holding else {})}}
+    res = compile_one([{"t": 1, "who": who, "do": "pick_up", "what": "cap"}, {"t": 6, "who": who, "do": "wave"}],
+                      start, {"cap": {"at": "e"}}, marks={"e": [u, 0.0]})
+    assert res.ok, errors(res)
+    for _, pos in track(res, f"puppet:{who}", "root.position"):
+        assert abs(pos[0]) <= 1.0
+    grip = cap_grip((2 * u - 1, 0.0))
+    assert_hand_on_the_grip(res, who, "hand_l" if holding else "hand_r", CAST_BUILDS[who], grip)
+
+
+@pytest.mark.parametrize("u,facing,side", [(0.0, None, 1), (1.0, "left", -1)])
+def test_over_a_cap_on_the_edge_it_walks_past_it_and_turns_back(u, facing, side):
+    start = {"dad": {"at": "e", **({"facing": facing} if facing else {})}}
+    res = compile_one([{"t": 1, "who": "dad", "do": "pick_up", "what": "cap"}], start, {"cap": {"at": "e"}},
+                      marks={"e": [u, 0.0]})
+    assert res.ok, errors(res)
+    t = assert_hand_on_the_grip(res, "dad", "hand_r", "tall", cap_grip((2 * u - 1, 0.0)))
+    x = at(res, "puppet:dad", "root.position", t)[0]
+    assert (x - (2 * u - 1)) * side >= 0.01  # the stage's side of the cap
+    assert at(res, "puppet:dad", "root.facing", t) == -side  # facing back toward the edge
+
+
+# ------------------------------------------------------------------ spot choice
+
+def test_just_off_the_cap_it_takes_a_short_step_not_a_long_one():
+    """Dad at x = -0.81, 0.01 past the cap: the search weighs the walk against the crouch
+    (SPOT_WALK_COST), so it steps 0.04 to x = -0.85 and kneels with a moderate bend rather than
+    walking to x = -0.9 (0.09) for the shallowest bend."""
+    res = compile_one([{"t": 1, "who": "dad", "do": "pick_up", "what": "cap"}], {"dad": {"at": "e"}},
+                      marks={"e": [0.095, 0.0]})
+    assert res.ok, errors(res)
+    t = assert_hand_on_the_grip(res, "dad", "hand_r", "tall")
+    assert at(res, "puppet:dad", "root.position", t)[0] == -0.85
+    assert at(res, "puppet:dad", "torso.rot", t) == -1.0
+
+
+@pytest.mark.parametrize("u", [0.0, 0.05, 0.08, 0.095, 0.1, 0.105, 0.12, 0.2, 0.5])
+@pytest.mark.parametrize("who", ["dad", "mom", "kid"])
+def test_the_right_arm_never_folds_past_the_plain_crouch(u, who):
+    """CROUCH_DEEP_BEND is a last resort (arm_l, whose shoulder sits behind the hip): a free
+    right hand always finds a spot within CROUCH_MAX_BEND."""
+    res = compile_one([{"t": 1, "who": who, "do": "pick_up", "what": "cap"}], {who: {"at": "e"}},
+                      marks={"e": [u, 0.0]})
+    assert res.ok, errors(res)
+    for _, bend in track(res, f"puppet:{who}", "torso.rot"):
+        assert bend >= -verbs_core.CROUCH_MAX_BEND - 1e-9
 
 
 # ------------------------------------------------------------- regression guard
