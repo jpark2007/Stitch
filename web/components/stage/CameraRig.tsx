@@ -12,6 +12,8 @@
  *   - a pose object: the camera glides to it with critically damped smoothing
  *     whenever it changes;
  *   - a function of stage time: followed exactly (deterministic frames).
+ * Poses are framed for a landscape screen (REF_ASPECT); on narrower screens
+ * the rig widens the lens (fitFov) and looks at a pose's `narrowTarget`.
  * With `orbit`, dragging swings the camera a little around its target (soft
  * limits, rubber-banded) and it eases back to the pose on release.
  */
@@ -25,8 +27,12 @@ import { clamp, easeInOutSine, lerp, smoothDamp, type Ease, type Vec3 } from "./
 export interface CameraPose {
   position: Vec3;
   target: Vec3;
-  /** Vertical field of view in degrees. Default 30. */
+  /** Vertical field of view in degrees, as framed on a landscape screen
+   *  (REF_ASPECT). Narrower screens widen it to keep the sides in view. Default 30. */
   fov?: number;
+  /** Where to look instead on a narrow (portrait) screen, which cannot fit
+   *  everything `target` centres. Default: `target`. */
+  narrowTarget?: Vec3;
 }
 
 export type CameraPath = (t: number) => CameraPose;
@@ -35,6 +41,32 @@ export type CameraPath = (t: number) => CameraPose;
 export type StageSize = [number, number];
 
 export const DEFAULT_STAGE_SIZE: StageSize = [2.4, 3.2];
+
+/** The screen shape poses are framed for (1440x900). */
+export const REF_ASPECT = 1.6;
+/** The widest vertical FOV a narrow screen may widen a pose to, degrees. */
+const MAX_FOV = 65;
+/** At or below this aspect a pose looks fully at its `narrowTarget`. */
+const NARROW_ASPECT = 0.75;
+
+const DEG = Math.PI / 180;
+
+/**
+ * The vertical FOV that shows a landscape-framed pose's horizontal extent on a
+ * screen of `aspect` (width / height): unchanged at REF_ASPECT and wider,
+ * widened on narrower screens, capped at MAX_FOV.
+ */
+export function fitFov(fov: number, aspect: number): number {
+  if (!(aspect > 0) || aspect >= REF_ASPECT) return fov;
+  const wide = (2 * Math.atan((Math.tan((fov * DEG) / 2) * REF_ASPECT) / aspect)) / DEG;
+  return Math.min(Math.max(fov, MAX_FOV), wide);
+}
+
+/** How far a screen of `aspect` is towards portrait: 0 at REF_ASPECT, 1 at NARROW_ASPECT. */
+export function narrowness(aspect: number): number {
+  const k = clamp((REF_ASPECT - aspect) / (REF_ASPECT - NARROW_ASPECT));
+  return k * k * (3 - 2 * k);
+}
 
 /* ------------------------------------------------------------------------ */
 /* Presets and moves                                                         */
@@ -52,7 +84,13 @@ export function stagePoses(size: StageSize = DEFAULT_STAGE_SIZE) {
     reading: { position: [0.1 * s, 1.65 * s, 4.7 * s], target: [0, 0.5 * s, -0.25 * s], fov: 30 } as CameraPose,
     /** Wide: a three-quarter view from above of the whole open book on the
      *  table, centred between the spread and the set. */
-    wide: { position: [0.7 * s, 4.7 * s, 6.5 * s], target: [-0.36 * w, 0.2 * s, 0.1 * s], fov: 30 } as CameraPose,
+    wide: {
+      position: [0.7 * s, 4.7 * s, 6.5 * s],
+      target: [-0.36 * w, 0.2 * s, 0.1 * s],
+      // A phone cannot fit the spread: frame the set on the stage page.
+      narrowTarget: [0, 0.2 * s, 0.1 * s],
+      fov: 30,
+    } as CameraPose,
   };
 }
 
@@ -85,22 +123,31 @@ export function dollyTo(from: CameraPose, target: Vec3, amount: number, minDista
 
 /** Slide camera and target together (a truck/pedestal move). */
 export function pan(from: CameraPose, delta: Vec3): CameraPose {
-  return { position: add(from.position, delta), target: add(from.target, delta), fov: from.fov };
+  return {
+    position: add(from.position, delta),
+    target: add(from.target, delta),
+    narrowTarget: from.narrowTarget && add(from.narrowTarget, delta),
+    fov: from.fov,
+  };
 }
 
 /** Back away from the target along the view line (`factor` > 1). */
 export function pullBack(from: CameraPose, factor = 1.5): CameraPose {
   const off = sub(from.position, from.target);
-  return { position: add(from.target, scale(off, factor)), target: from.target, fov: from.fov };
+  return { position: add(from.target, scale(off, factor)), target: from.target, narrowTarget: from.narrowTarget, fov: from.fov };
 }
+
+const mix = (a: Vec3, b: Vec3, k: number): Vec3 => [lerp(a[0], b[0], k), lerp(a[1], b[1], k), lerp(a[2], b[2], k)];
 
 /** Blend two poses. Position and target move in straight lines. */
 export function blendPose(a: CameraPose, b: CameraPose, k: number): CameraPose {
-  return {
-    position: [lerp(a.position[0], b.position[0], k), lerp(a.position[1], b.position[1], k), lerp(a.position[2], b.position[2], k)],
-    target: [lerp(a.target[0], b.target[0], k), lerp(a.target[1], b.target[1], k), lerp(a.target[2], b.target[2], k)],
+  const pose: CameraPose = {
+    position: mix(a.position, b.position, k),
+    target: mix(a.target, b.target, k),
     fov: lerp(a.fov ?? 30, b.fov ?? 30, k),
   };
+  if (a.narrowTarget || b.narrowTarget) pose.narrowTarget = mix(a.narrowTarget ?? a.target, b.narrowTarget ?? b.target, k);
+  return pose;
 }
 
 /** A camera stop: be at `pose` at time `at`, arriving with `ease`. */
@@ -149,7 +196,8 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
   // and from the frame state in useFrame, never as React values.
   const get = useThree((s) => s.get);
 
-  // Smoothed pose (for object poses): 7 springs (position, target, fov).
+  // Smoothed pose (for object poses): 10 springs (position, target, fov,
+  // narrow target).
   const smooth = useRef<Spring[] | null>(null);
   // Orbit offsets: current springs and the drag target.
   const yaw = useRef<Spring>([0, 0]);
@@ -217,11 +265,16 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
     if (typeof pose === "function") {
       p = pose(now(state));
     } else {
-      const goal = [...pose.position, ...pose.target, pose.fov ?? 30];
+      const goal = [...pose.position, ...pose.target, pose.fov ?? 30, ...(pose.narrowTarget ?? pose.target)];
       if (!smooth.current) smooth.current = goal.map((v) => [v, 0] as Spring);
       const s = smooth.current;
-      for (let i = 0; i < 7; i++) smoothDamp(s[i], goal[i], smoothTime, dt);
-      p = { position: [s[0][0], s[1][0], s[2][0]], target: [s[3][0], s[4][0], s[5][0]], fov: s[6][0] };
+      for (let i = 0; i < goal.length; i++) smoothDamp(s[i], goal[i], smoothTime, dt);
+      p = {
+        position: [s[0][0], s[1][0], s[2][0]],
+        target: [s[3][0], s[4][0], s[5][0]],
+        fov: s[6][0],
+        narrowTarget: [s[7][0], s[8][0], s[9][0]],
+      };
     }
 
     const d = drag.current;
@@ -231,7 +284,12 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
 
     const { off, right, up, target } = tmp.current;
     const camera = state.camera;
-    target.set(p.target[0], p.target[1], p.target[2]);
+    // Fit the pose to the screen: on narrow screens slide the camera over to
+    // the pose's narrow target (keeping its angle) and widen the lens.
+    const aspect = state.size.width / Math.max(1, state.size.height);
+    const k = p.narrowTarget ? narrowness(aspect) : 0;
+    const look = k > 0 && p.narrowTarget ? mix(p.target, p.narrowTarget, k) : p.target;
+    target.set(look[0], look[1], look[2]);
     off.set(p.position[0] - p.target[0], p.position[1] - p.target[1], p.position[2] - p.target[2]);
     if (yw !== 0 || pt !== 0) {
       off.applyAxisAngle(up, yw);
@@ -245,8 +303,9 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
     camera.lookAt(target);
     // What the camera looks at is what stays sharp (see DepthOfField).
     camera.userData.focus = off.length();
-    if (camera instanceof PerspectiveCamera && Math.abs(camera.fov - (p.fov ?? 30)) > 1e-3) {
-      camera.fov = p.fov ?? 30;
+    const fov = fitFov(p.fov ?? 30, aspect);
+    if (camera instanceof PerspectiveCamera && Math.abs(camera.fov - fov) > 1e-3) {
+      camera.fov = fov;
       camera.updateProjectionMatrix();
     }
   });
