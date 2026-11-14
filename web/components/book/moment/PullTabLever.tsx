@@ -2,19 +2,25 @@
 
 /**
  * <PullTabLever>: a pull tab on the stage page, like a real pop-up book's: a
- * strip of folded card coming out of a slit cut in the page (the slit and
- * its pencilled label are printed on the page, labelArt.drawPullTabPrint),
- * with a pencil arrow along it and its end folded back for a grip.
+ * strip of card coming out of a slit cut in the page (the slit and its
+ * pencilled label are printed on the page, labelArt.drawPullTabPrint),
+ * stitched round its edge, chevrons pointing the way it pulls, its end
+ * folded back for a grip. The cut page's lip shades it just out of the slit.
  *
  * Drag it out and it drives its interaction (CONTRACTS.md Clarifications 7):
  * the travel, 0..1, is held on the player (holdInteraction), so a scrub plays
  * its targets while the rest of the scene holds. Let go and it springs back
  * into the slit while the targets return to the scene's time ("return").
- * After the scene ends, it nudges out once to show it can be pulled.
+ * It grabs anywhere on the strip (a hit area wider than the card), and any
+ * drag away from the slit pulls: out along the tab, or down or up the page.
+ * A hold from elsewhere (the keyboard's slider) moves it too.
+ *
+ * A beat after the scene starts it nudges out once, so the reader sees it
+ * can be pulled, and again when the scene ends if it has not been pulled.
  *
  * The lever is marked as a book control (controls.ts), so the book leaves
- * pointer events over it alone. Everything is posed in useFrame from refs; nothing
- * re-renders while it is pulled.
+ * pointer events over it alone. Everything is posed in useFrame from refs;
+ * nothing re-renders while it is pulled.
  */
 
 import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
@@ -23,32 +29,47 @@ import {
   CanvasTexture,
   ExtrudeGeometry,
   Matrix4,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   Plane,
+  PlaneGeometry,
   Raycaster,
   SRGBColorSpace,
   Shape,
   Vector2,
   Vector3,
   type Group,
+  type Mesh,
 } from "three";
 import type { PlaybackController } from "@/components/stage/playback";
-import { drawLeverFace, pullTabGeometry } from "../labelArt";
+import { holdBookControl, markBookControl } from "../controls";
+import { drawLeverFace, drawLipShade, pullTabGeometry } from "../labelArt";
 import { PAGE_H, PAGE_W } from "../leafShape";
 import { PAGE_PX_W } from "../pageArt";
-import { holdBookControl, markBookControl } from "../controls";
 import { pageHeightAt, usePageSurface } from "../pagePrint";
-import { paperLift } from "../sound";
+import { pageLand, paperLift } from "../sound";
 import { STAGE_SLOT } from "../StoryPage";
 import type { BookPullTab } from "../types";
+import { registerTabProbe } from "./probe";
 
 /** World units per page pixel. */
 const PX = PAGE_W / PAGE_PX_W;
-const CARD_T = 0.0022;
+/** Card thickness: enough to show as a darker edge along the strip and round its tip. */
+const CARD_T = 0.003;
 /** How far (of the travel) the tab eases out under a hovering pointer. */
 const HOVER_OUT = 0.07;
 /** Length of the folded-back grip, world units. */
-const FOLD = 0.024;
+const FOLD = 0.03;
+/** How far down the card the cut page's lip shades it, world units. */
+const LIP = 0.016;
+/** The grab area reaches this far past the card on every side, world units. */
+const HIT_PAD = 0.018;
+/** A drag across the tab (down or up the page) pulls this much as one along it. */
+const ACROSS = 0.7;
+/** Scene time (s) at which the tab nudges once, while the scene plays. */
+const NUDGE_AT = 2.2;
+const NUDGE_DUR = 1.4;
+const NUDGE_OUT = 0.3;
 
 export interface PullTabLeverProps {
   controller: PlaybackController;
@@ -85,15 +106,14 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
   const geo = useMemo(() => {
     const g = pullTabGeometry(tab);
     const length = g.length * PX;
-    const width = g.width * PX;
     const travel = g.travel * PX;
     // The strip runs from inside the slit (hidden by the clip) to the grip.
-    const hidden = travel + 0.01;
+    const hidden = travel + 0.012;
     return {
       slitX: g.slitX * PX - STAGE_SLOT.x,
       z: g.y * PX - PAGE_H / 2 - STAGE_SLOT.z,
       length,
-      width,
+      width: g.width * PX,
       travel,
       hidden,
     };
@@ -101,29 +121,43 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
 
   const parts = useMemo(() => {
     const total = geo.hidden + geo.length;
-    const body = stripGeometry(total, geo.width, CARD_T, 0.007);
-    const flap = stripGeometry(FOLD, geo.width * 0.98, CARD_T * 0.9, 0.007);
-    const shadow = stripGeometry(total + 0.004, geo.width + 0.008, 0.0001, 0.01);
-    // The face: pencil arrow and fold, mapped over the visible length only.
-    const pxW = 512;
-    const pxH = Math.round((pxW * geo.width) / geo.length);
-    const face = new CanvasTexture(drawLeverFace(pxW, pxH, (FOLD / geo.length) * pxW, 7));
+    const body = stripGeometry(total, geo.width, CARD_T, 0.008);
+    const flap = stripGeometry(FOLD, geo.width * 0.98, CARD_T * 0.8, 0.008);
+    const shadow = stripGeometry(total + 0.005, geo.width + 0.01, 0.0001, 0.012);
+    // The grab area, invisible: the card and a margin round it.
+    const hit = new PlaneGeometry(geo.length + 2 * HIT_PAD, geo.width + 2 * HIT_PAD);
+    hit.rotateX(-Math.PI / 2);
+    hit.translate(geo.length / 2, 0, 0);
+    // The lip's shade, fixed at the slit.
+    const lip = new PlaneGeometry(LIP, geo.width + 0.002);
+    lip.rotateX(-Math.PI / 2);
+    lip.translate(LIP / 2, 0, 0);
+    // The face covers the whole strip, so a pulled card shows card, not a smear.
+    const pxPerUnit = 1024 / total;
+    const face = new CanvasTexture(
+      drawLeverFace(1024, Math.round(geo.width * pxPerUnit), geo.length * pxPerUnit, FOLD * pxPerUnit, 7, geo.width / PX),
+    );
     face.colorSpace = SRGBColorSpace;
     face.anisotropy = 8;
-    // Shape coords -> uv: u along the length from the slit, v across.
-    face.repeat.set(1 / geo.length, 1 / geo.width);
-    face.offset.set(-geo.hidden / geo.length, 0.5);
-    const card = new MeshStandardMaterial({ map: face, roughness: 0.9, color: "#ffffff" });
-    const edge = new MeshStandardMaterial({ color: "#e8dcc4", roughness: 0.95 });
+    // Shape coords -> uv: u along the strip, v across.
+    face.repeat.set(1 / total, 1 / geo.width);
+    face.offset.set(0, 0.5);
+    const lipMap = new CanvasTexture(drawLipShade());
+    const card = new MeshStandardMaterial({ map: face, roughness: 0.88, color: "#ffffff" });
+    const edge = new MeshStandardMaterial({ color: "#c9b48e", roughness: 0.95 });
     const back = new MeshStandardMaterial({ color: "#b9573d", roughness: 0.92 });
-    const backEdge = new MeshStandardMaterial({ color: "#9a4530", roughness: 0.95 });
-    const shade = new MeshStandardMaterial({ color: "#2a170c", transparent: true, opacity: 0.22, depthWrite: false });
-    return { body, flap, shadow, face, card, edge, back, backEdge, shade };
+    const backEdge = new MeshStandardMaterial({ color: "#8e3f2b", roughness: 0.95 });
+    const shade = new MeshStandardMaterial({ color: "#2a170c", transparent: true, opacity: 0.24, depthWrite: false });
+    const lipShade = new MeshBasicMaterial({ color: "#2a170c", alphaMap: lipMap, transparent: true, opacity: 0.5, depthWrite: false });
+    const grab = new MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false });
+    return { body, flap, shadow, hit, lip, face, lipMap, card, edge, back, backEdge, shade, lipShade, grab };
   }, [geo]);
   useEffect(
     () => () => {
       const p = parts;
-      [p.body, p.flap, p.shadow, p.face, p.card, p.edge, p.back, p.backEdge, p.shade].forEach((x) => x.dispose());
+      [p.body, p.flap, p.shadow, p.hit, p.lip, p.face, p.lipMap, p.card, p.edge, p.back, p.backEdge, p.shade, p.lipShade, p.grab].forEach(
+        (x) => x.dispose(),
+      );
     },
     [parts],
   );
@@ -142,27 +176,34 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
   const root = useRef<Group>(null);
   const slider = useRef<Group>(null);
   const flapPivot = useRef<Group>(null);
+  const lipMesh = useRef<Mesh>(null);
 
   /** Lever state: how far out (0..1 of travel), held or springing back. */
   const st = useRef({
     value: 0,
     vel: 0,
+    /** Under the pointer's hand. */
     held: false,
     hover: false,
+    /** Pulled at least once (by hand or key): no more nudges. */
+    pulled: false,
     nudgeT0: -1,
-    nudged: false,
+    nudgedEarly: false,
+    nudgedEnd: false,
     lastY: Number.NaN,
     /** Lets the book have the pointer back (set while held). */
     release: () => {},
   });
 
-  // The scene ending invites a pull: one small nudge out of the slit.
+  const inShot = () => !shot || controller.frame.shot?.id == null || controller.frame.shot.id === shot;
+
+  // The scene ending invites a pull, if it has not been pulled yet.
   useEffect(
     () =>
       controller.subscribe(() => {
         const s = st.current;
-        if (controller.getStatus().ended && !s.nudged && !s.held) {
-          s.nudged = true;
+        if (controller.getStatus().ended && !s.nudgedEnd && !s.pulled && !s.held) {
+          s.nudgedEnd = true;
           s.nudgeT0 = performance.now();
           invalidate();
         }
@@ -184,38 +225,60 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     // Back into the slit as the page lifts to turn.
     const r = reveal.current;
     g.visible = r > 0.02;
+    // The lip shades card, not bare page: it fades as the card slides home.
+    const lipMat = lipMesh.current?.material as MeshBasicMaterial | undefined;
+    const lip = 0.5 * Math.min(1, Math.max(0, (r - 0.6) / 0.4));
+    if (lipMat && lipMat.opacity !== lip) lipMat.opacity = lip;
     const y = pageHeightAt(rt, geo.slitX + geo.length / 2);
     if (y !== s.lastY) {
       s.lastY = y;
       g.position.y = y + 0.0004;
     }
     let moving = false;
-    // Under the pointer, the tab eases out a touch, as if lifted by a fingernail.
-    const rest = s.hover ? HOVER_OUT : 0;
-    if (!s.held && (s.value !== rest || s.vel !== 0)) {
-      // A paper spring: quick, one soft overshoot.
-      const k = 260;
-      const c = 2 * Math.sqrt(k) * 0.62;
-      s.vel += (-k * (s.value - rest) - c * s.vel) * dt;
-      s.value += s.vel * dt;
-      if (Math.abs(s.value - rest) < 1e-4 && Math.abs(s.vel) < 1e-3) {
-        s.value = rest;
-        s.vel = 0;
-      }
-      moving = true;
-    }
-    let nudge = 0;
-    if (s.nudgeT0 > 0) {
-      const t = (performance.now() - s.nudgeT0) / 1000;
-      if (t > 1.6) s.nudgeT0 = -1;
-      else {
-        nudge = 0.22 * Math.sin(Math.min(1, t / 1.6) * Math.PI) * (1 + 0.25 * Math.sin(t * 9) * (1 - t / 1.6));
+
+    // A hold from elsewhere (the keyboard's slider): follow it.
+    const external = s.held ? null : controller.heldValue(tab.id);
+    if (external !== null) {
+      if (external !== s.value) moving = true;
+      s.value = external;
+      s.vel = 0;
+      s.pulled = true;
+      s.nudgeT0 = -1;
+    } else if (!s.held) {
+      // Under the pointer, the tab eases out a touch, as if lifted by a fingernail.
+      const rest = s.hover ? HOVER_OUT : 0;
+      if (s.value !== rest || s.vel !== 0) {
+        // A paper spring: quick, one soft overshoot.
+        const k = 260;
+        const c = 2 * Math.sqrt(k) * 0.62;
+        s.vel += (-k * (s.value - rest) - c * s.vel) * dt;
+        s.value += s.vel * dt;
+        if (Math.abs(s.value - rest) < 1e-4 && Math.abs(s.vel) < 1e-3) {
+          s.value = rest;
+          s.vel = 0;
+        }
         moving = true;
       }
     }
-    const out = Math.max(-0.04, s.value + nudge) * geo.travel;
+
+    // Once, a beat into the scene: a nudge out of the slit.
+    if (!s.nudgedEarly && !s.pulled && !s.held && r > 0.98 && controller.time >= NUDGE_AT && controller.getStatus().playing && inShot()) {
+      s.nudgedEarly = true;
+      s.nudgeT0 = performance.now();
+    }
+    let out = 0;
+    if (s.nudgeT0 > 0) {
+      const t = (performance.now() - s.nudgeT0) / 1000;
+      if (t > NUDGE_DUR || s.held) s.nudgeT0 = -1;
+      else {
+        const u = t / NUDGE_DUR;
+        out = NUDGE_OUT * Math.sin(u * Math.PI) * (1 + 0.25 * Math.sin(t * 9) * (1 - u));
+        moving = true;
+      }
+    }
+    const pos = Math.max(-0.04, s.value + out) * geo.travel;
     const folded = r < 1 ? (1 - r) * (geo.length + geo.travel) : 0;
-    sl.position.x = out - folded;
+    sl.position.x = pos - folded;
     // The folded grip lifts a touch while held.
     if (flapPivot.current) flapPivot.current.rotation.z = s.held ? -0.16 : -0.07;
     // The slit plane, in world space (the book only moves while it opens).
@@ -227,33 +290,34 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     if (moving) invalidate();
   });
 
-  // Dragging: the pointer's ray meets the page, its slot x drives the travel.
-  const pageX = (clientX: number, clientY: number): number | null => {
+  /** Where the pointer's ray meets the page, in the lever's frame (x along the tab, z across), or false. */
+  const pagePoint = (clientX: number, clientY: number, out: Vector2): boolean => {
     const g = root.current;
-    if (!g) return null;
+    if (!g) return false;
     const rect = gl.domElement.getBoundingClientRect();
     tmp.ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     tmp.ray.setFromCamera(tmp.ndc, camera);
     tmp.v.set(0, 0, 0).applyMatrix4(g.matrixWorld);
     tmp.plane.setFromNormalAndCoplanarPoint(tmp.n.set(0, 1, 0), tmp.v);
-    if (!tmp.ray.ray.intersectPlane(tmp.plane, tmp.hit)) return null;
+    if (!tmp.ray.ray.intersectPlane(tmp.plane, tmp.hit)) return false;
     tmp.m.copy(g.matrixWorld).invert();
-    return tmp.hit.applyMatrix4(tmp.m).x;
+    tmp.hit.applyMatrix4(tmp.m);
+    out.set(tmp.hit.x, tmp.hit.z);
+    return true;
   };
 
-  const inShot = () => !shot || controller.frame.shot?.id == null || controller.frame.shot.id === shot;
+  const drag = useMemo(() => ({ p0: new Vector2(), p: new Vector2() }), []);
 
   const onDown = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
-    if (e.button !== 0 || !inShot() || reveal.current < 0.9) return;
-    const x0 = pageX(e.clientX, e.clientY);
-    if (x0 === null) return;
+    if ((e.pointerType === "mouse" && e.button !== 0) || !inShot() || reveal.current < 0.9) return;
+    if (!pagePoint(e.clientX, e.clientY, drag.p0)) return;
     const s = st.current;
     const v0 = Math.max(0, s.value);
     s.held = true;
+    s.pulled = true;
     s.vel = 0;
     s.nudgeT0 = -1;
-    s.nudged = true;
     paperLift();
     s.release();
     s.release = holdBookControl(rt);
@@ -266,10 +330,10 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     };
     hold(v0);
     const move = (ev: PointerEvent) => {
-      if (ev.pointerId !== id) return;
-      const x = pageX(ev.clientX, ev.clientY);
-      if (x === null) return;
-      hold(Math.min(1, Math.max(0, v0 + (x - x0) / geo.travel)));
+      if (ev.pointerId !== id || !pagePoint(ev.clientX, ev.clientY, drag.p)) return;
+      // Out along the tab, or across it: either way away from the slit pulls.
+      const along = drag.p.x - drag.p0.x + ACROSS * Math.abs(drag.p.y - drag.p0.y);
+      hold(Math.min(1, Math.max(0, v0 + along / geo.travel)));
     };
     const up = (ev: PointerEvent) => {
       if (ev.pointerId !== id) return;
@@ -280,6 +344,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
       s.release();
       document.body.style.cursor = "";
       // Let go: the targets return to the scene's time; the lever springs home.
+      if (s.value > 0.15) pageLand(1);
       controller.releaseInteraction(tab.id, { settle: "return" });
       invalidate();
     };
@@ -288,11 +353,9 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     window.addEventListener("pointercancel", up);
   };
 
-  // Test hook, like the book's window.__stitchBook: where the grip is on
-  // screen (CSS px) and how far a full pull travels there.
+  // Test hook (window.__stitchMoment.tab): where the grip is on screen now,
+  // and how far and which way a full pull travels there.
   useEffect(() => {
-    const w = window as Window & { __stitchPullTabs?: Record<string, () => { x: number; y: number; travel: number } | null> };
-    const tabs = (w.__stitchPullTabs ??= {});
     const at = new Vector3();
     const project = (x: number) => {
       const g = root.current;
@@ -301,14 +364,14 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
       const r = gl.domElement.getBoundingClientRect();
       return { x: r.left + ((at.x + 1) / 2) * r.width, y: r.top + ((1 - at.y) / 2) * r.height };
     };
-    tabs[tab.id] = () => {
-      const a = project(geo.length - FOLD / 2);
-      const b = project(geo.length - FOLD / 2 + geo.travel);
-      return a && b ? { x: a.x, y: a.y, travel: Math.hypot(b.x - a.x, b.y - a.y) } : null;
-    };
-    return () => {
-      delete tabs[tab.id];
-    };
+    return registerTabProbe(tab.id, () => {
+      const x = (slider.current?.position.x ?? 0) + geo.length - FOLD / 2;
+      const a = project(x);
+      const b = project(x + geo.travel);
+      if (!a || !b) return null;
+      const travel = Math.hypot(b.x - a.x, b.y - a.y);
+      return { x: a.x, y: a.y, travel, dx: (b.x - a.x) / travel, dy: (b.y - a.y) / travel };
+    });
   }, [tab.id, geo, camera, gl]);
 
   // A held lever let go when the stage unmounts (the page turned mid-pull).
@@ -321,21 +384,6 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     [controller, tab.id],
   );
 
-  const handlers = {
-    onPointerDown: onDown,
-    onPointerOver: (e: ThreeEvent<PointerEvent>) => {
-      e.stopPropagation();
-      st.current.hover = e.pointerType === "mouse";
-      invalidate();
-      if (!st.current.held) document.body.style.cursor = "grab";
-    },
-    onPointerOut: () => {
-      st.current.hover = false;
-      invalidate();
-      if (!st.current.held) document.body.style.cursor = "";
-    },
-    onPointerMove: (e: ThreeEvent<PointerEvent>) => e.stopPropagation(),
-  };
   return (
     <group
       ref={(g) => {
@@ -343,27 +391,32 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
         markBookControl(g);
       }}
       position={[geo.slitX, 0, geo.z]}
+      onPointerDown={onDown}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        st.current.hover = e.pointerType === "mouse";
+        invalidate();
+        if (!st.current.held) document.body.style.cursor = "grab";
+      }}
+      onPointerOut={() => {
+        st.current.hover = false;
+        invalidate();
+        if (!st.current.held) document.body.style.cursor = "";
+      }}
+      onPointerMove={(e) => e.stopPropagation()}
     >
+      {/* The cut page's lip, shading the card just out of the slit. */}
+      <mesh ref={lipMesh} geometry={parts.lip} material={parts.lipShade} position-y={CARD_T + 0.0007} renderOrder={3} />
       <group ref={slider}>
         {/* A soft shade under the card on the page. */}
-        <mesh geometry={parts.shadow} material={parts.shade} position={[-geo.hidden + 0.0015, 0.00005, 0.0025]} renderOrder={2} />
-        <mesh
-          geometry={parts.body}
-          material={[parts.card, parts.edge]}
-          position={[-geo.hidden, 0.0004, 0]}
-          castShadow
-          {...handlers}
-        />
+        <mesh geometry={parts.shadow} material={parts.shade} position={[-geo.hidden + 0.002, 0.00005, 0.003]} renderOrder={2} />
+        <mesh geometry={parts.body} material={[parts.card, parts.edge]} position={[-geo.hidden, 0.0004, 0]} castShadow />
         {/* The grip: the card's end folded back over itself. */}
         <group ref={flapPivot} position={[geo.length, 0.0004 + CARD_T, 0]}>
-          <mesh
-            geometry={parts.flap}
-            material={[parts.back, parts.backEdge]}
-            position={[-FOLD, 0, 0]}
-            castShadow
-              {...handlers}
-          />
+          <mesh geometry={parts.flap} material={[parts.back, parts.backEdge]} position={[-FOLD, 0, 0]} castShadow />
         </group>
+        {/* Grab anywhere on the strip, or just off it. */}
+        <mesh geometry={parts.hit} material={parts.grab} position-y={CARD_T + 0.002} />
       </group>
     </group>
   );

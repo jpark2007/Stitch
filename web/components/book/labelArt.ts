@@ -323,13 +323,16 @@ export interface PullTabGeometry {
 const PAGE_W_PX = 1000;
 const PAGE_H_PX = 1300;
 
+/** The lever's size, page px: big enough to read and grab on a laptop, the grip a thumb wide. */
+const LEVER = { length: 150, width: 76, travel: 96 } as const;
+/** Kept this far inside the page's edges (the deckled edge is ~24 px). */
+const LEVER_MARGIN = { side: 40, head: 150, foot: 130 } as const;
+
 export function pullTabGeometry(tab: BookPullTab): PullTabGeometry {
-  const length = 112;
-  const travel = 70;
-  const width = 54;
-  // Keep the pulled lever on the page (the deckled edge is ~24 px).
-  const slitX = Math.min(Math.max(tab.at[0] * PAGE_W_PX, 160), PAGE_W_PX - 34 - length - travel * 0.55);
-  const y = Math.min(Math.max(tab.at[1] * PAGE_H_PX, 140), PAGE_H_PX - 120);
+  const { length, width, travel } = LEVER;
+  // Pulled all the way, the lever still ends on the page.
+  const slitX = Math.min(Math.max(tab.at[0] * PAGE_W_PX, 160), PAGE_W_PX - LEVER_MARGIN.side - length - travel);
+  const y = Math.min(Math.max(tab.at[1] * PAGE_H_PX, LEVER_MARGIN.head), PAGE_H_PX - LEVER_MARGIN.foot);
   return { slitX, y, length, width, travel };
 }
 
@@ -392,42 +395,80 @@ function splitInTwo(text: string): string[] {
 }
 
 /**
- * The lever's top face: cream card folded back on itself at the grip end
- * (the fold shows as a crease and the card's darker back), a thumb notch,
- * and a pencil arrow along the pull. `w` × `h` px, the grip end at the right.
+ * The lever's top face, the whole strip (`w` × `h` px, the grip end at the
+ * right; `shown` px of it at the right stick out of the slit at rest): cream
+ * card stitched round its edge in thread, folded back on itself at the grip
+ * (the fold shows as a crease and the card's red back), with two chevrons
+ * pointing the way it pulls.
  */
-export function drawLeverFace(w: number, h: number, fold: number, seed: number): HTMLCanvasElement {
+export function drawLeverFace(w: number, h: number, shown: number, fold: number, seed: number, cardPx: number): HTMLCanvasElement {
   const { c, ctx } = canvas(w, h);
   const r = rng(seed);
-  ctx.fillStyle = "#f3e9d6";
+  // Canvas px per page px, so thread and grain print at the page's own scale.
+  const u = h / cardPx;
+  ctx.fillStyle = "#f4ead7";
   ctx.fillRect(0, 0, w, h);
-  for (let k = 0; k < (w * h) / 70; k++) {
+  for (let k = 0; k < (w * h) / (70 * u * u); k++) {
     ctx.fillStyle = r() > 0.55 ? "rgba(120,90,60,0.06)" : "rgba(255,255,255,0.22)";
-    ctx.fillRect(r() * w, r() * h, 1 + r() * 2, 1);
+    ctx.fillRect(r() * w, r() * h, (1 + r() * 2) * u, u);
   }
-  // Toward the slit the card is in the page's shade.
-  const g = ctx.createLinearGradient(0, 0, w * 0.3, 0);
-  g.addColorStop(0, "rgba(60,40,25,0.28)");
-  g.addColorStop(1, "rgba(60,40,25,0)");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, w * 0.3, h);
-  // The folded-over end: the card's kraft back, and the crease.
+  // A cut card's rim reads a hair darker along the long edges.
+  ctx.fillStyle = "rgba(120,86,52,0.18)";
+  ctx.fillRect(0, 0, w, 2 * u);
+  ctx.fillRect(0, h - 2 * u, w, 2 * u);
+
+  // The folded-over end: the card's red back, and the crease.
   const fx = w - fold;
   ctx.fillStyle = ACCENT;
   ctx.fillRect(fx, 0, fold, h);
-  for (let k = 0; k < (fold * h) / 50; k++) {
+  for (let k = 0; k < (fold * h) / (50 * u * u); k++) {
     ctx.fillStyle = r() > 0.5 ? "rgba(255,230,200,0.08)" : "rgba(60,20,10,0.08)";
-    ctx.fillRect(fx + r() * fold, r() * h, 1 + r() * 2, 1);
+    ctx.fillRect(fx + r() * fold, r() * h, (1 + r() * 2) * u, u);
   }
-  ctx.fillStyle = "rgba(40,20,10,0.25)";
-  ctx.fillRect(fx, 0, 3, h);
-  ctx.fillStyle = "rgba(255,240,220,0.35)";
-  ctx.fillRect(fx + 3, 0, 1.5, h);
-  // Pencil arrow along the pull.
-  const y = h / 2;
-  const x0 = w * 0.16;
-  const x1 = fx - 16;
-  pencilLine(ctx, [[x0, y + 1], [(x0 + x1) / 2, y - 2], [x1, y]], seed + 3, 0.95, 7);
-  pencilHead(ctx, [x1, y], 0, h * 0.3, seed + 4, 0.95, 7);
+  ctx.fillStyle = "rgba(40,20,10,0.28)";
+  ctx.fillRect(fx, 0, 2.5 * u, h);
+  ctx.fillStyle = "rgba(255,240,220,0.4)";
+  ctx.fillRect(fx + 2.5 * u, 0, 1.2 * u, h);
+
+  // Running stitch round the card, in the book's red thread: along both
+  // long edges from inside the slit to the crease.
+  const inset = Math.round(h * 0.17);
+  const x0 = w - shown - 40 * u;
+  const thread = "rgba(185,87,61,0.9)";
+  drawStitchLine(ctx, x0, inset, fx - 9 * u, inset, thread, 2.4 * u, 9 * u, 6 * u);
+  drawStitchLine(ctx, x0, h - inset, fx - 9 * u, h - inset, thread, 2.4 * u, 9 * u, 6 * u);
+
+  // Two chevrons by the grip, pointing the way it pulls.
+  ctx.save();
+  ctx.strokeStyle = INK_SOFT;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(3, h * 0.07);
+  const ch = h * 0.2;
+  for (let i = 0; i < 2; i++) {
+    const x = fx - 16 * u - i * ch * 1.15;
+    ctx.globalAlpha = i === 0 ? 0.9 : 0.5;
+    ctx.beginPath();
+    ctx.moveTo(x - ch * 0.75, h / 2 - ch);
+    ctx.lineTo(x, h / 2);
+    ctx.lineTo(x - ch * 0.75, h / 2 + ch);
+    ctx.stroke();
+  }
+  ctx.restore();
+  return c;
+}
+
+/**
+ * The cut page's lip shading the card just out of the slit: an alpha ramp,
+ * opaque at the slit (x = 0) and gone by the right edge.
+ */
+export function drawLipShade(): HTMLCanvasElement {
+  const { c, ctx } = canvas(64, 4);
+  const g = ctx.createLinearGradient(0, 0, 64, 0);
+  g.addColorStop(0, "#fff");
+  g.addColorStop(0.35, "#888");
+  g.addColorStop(1, "#000");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 4);
   return c;
 }
