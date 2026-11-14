@@ -323,6 +323,7 @@ test("craftScene: every plan item done reads as the last touches; scene_ready an
   const done = runReducer(ready, ev("done", { memoryId: "m1" }));
   assert.equal(craftScene(done).stage, "done");
   assert.equal(craftScene(done).caption, "Your page is made.");
+  assert.equal(craftScene(done, [], { second: true }).caption, "Your version is on the page.");
 });
 
 test("craftScene: an error leaves the page unfinished and says so", () => {
@@ -446,6 +447,7 @@ test("sceneKeys: pieces in the order they arrive", () => {
   assert.deepEqual(sceneKeys(s, 2), ["frame:0", "frame:1", "prop:hymn", "prop:car"]);
   const staged = craftScene(run(start("director")));
   assert.deepEqual(sceneKeys(staged, 2), ["cast:0", "cast:1"]);
+  assert.deepEqual(sceneKeys(craftScene(run(start("linker"))), 0), ["ribbon"]);
 });
 
 // ---------------------------------------------------------------- the cast

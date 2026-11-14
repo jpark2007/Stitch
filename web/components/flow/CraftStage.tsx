@@ -21,12 +21,12 @@
 // something moves, and the pencil works in bursts with rests between.
 import { useFrame, useThree } from "@react-three/fiber";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ConeGeometry, CylinderGeometry, MeshStandardMaterial, type Group, type Mesh } from "three";
+import { BoxGeometry, ConeGeometry, CylinderGeometry, MeshStandardMaterial, type Group, type Mesh } from "three";
 
 import type { PageFonts } from "@/components/book/paperArt";
 import { PAGE_H, PAGE_W } from "@/components/book/leafShape";
 import { STAGE_SLOT } from "@/components/book/StoryPage";
-import { getPaperTextures } from "@/components/paper/materials";
+import { createPaperMaterial, getPaperTextures } from "@/components/paper/materials";
 import { Puppet } from "@/components/stage/Puppet";
 import { RiseProvider, SetPiece, type PopUpValue } from "@/components/stage/SetPiece";
 import { stageLayout } from "@/components/stage/play";
@@ -232,6 +232,7 @@ export function CraftStage({ scene, cast, fonts, width, depth, reveal, resumed, 
             <FramePiece key={`frame:${i}`} index={i} count={frames} fonts={fonts} ticked={i < scene.checked} />
           ))}
           {scene.waiting ? <WaitNote reveal={reveal} /> : null}
+          {scene.linked ? <Ribbon /> : null}
         </group>
         <Pencil scene={scene} layout={layout} frames={frames} settle={settle} />
       </group>
@@ -459,6 +460,38 @@ function FramePiece({ index, count, fonts, ticked }: { index: number; count: num
     </group>
   );
 }
+
+/**
+ * The linker puts the page in everyone's books: a cloth bookmark ribbon is
+ * drawn down the page from its head, beside the set.
+ */
+function Ribbon() {
+  const clock = useClock();
+  const parts = useMemo(() => {
+    const geo = new BoxGeometry(0.09, 0.004, RIBBON_LEN);
+    geo.translate(0, 0.002, RIBBON_LEN / 2);
+    const mat = createPaperMaterial({ color: "#9c3b2c", roughness: 0.75, grain: 0.5 });
+    return { geo, mat };
+  }, []);
+  useEffect(
+    () => () => {
+      parts.geo.dispose();
+      parts.mat.dispose();
+    },
+    [parts],
+  );
+  const mesh = useRef<Mesh>(null);
+  useFrame(() => {
+    const m = mesh.current;
+    if (!m) return;
+    const p = clock.presence("ribbon", performance.now());
+    m.scale.z = Math.max(0.001, smooth(p));
+    m.visible = p > 0.001;
+  });
+  return <mesh ref={mesh} geometry={parts.geo} material={parts.mat} position={[1.17, 0, -1.3]} rotation-y={0.04} castShadow receiveShadow />;
+}
+
+const RIBBON_LEN = 1.25;
 
 /** The folded "?" note that stands while the run waits on the teller. */
 function WaitNote({ reveal }: { reveal: { readonly current: number } }) {
