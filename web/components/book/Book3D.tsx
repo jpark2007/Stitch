@@ -301,27 +301,29 @@ function BookScene(props: SceneProps) {
     <>
       <color attach="background" args={[TABLE_BG]} />
       <fog attach="fog" args={[TABLE_BG, 4, 11]} />
-      <hemisphereLight args={["#ffe9d0", "#2a1a10", 0.32]} />
-      {/* Key: a warm lamp up and to the left, a soft pool on the table. */}
+      <hemisphereLight args={["#ffe6c8", "#24160d", 0.26]} />
+      {/* Key: a warm lamp high above, a little left, aimed at the spread. Its
+          pool is tight, so the table falls off into darkness at the frame's
+          edges: the depth-of-field feel without a blur pass. */}
       <spotLight
         castShadow
-        color="#ffdcb0"
-        intensity={64}
-        position={[-1.5, 4.6, 2.2]}
-        angle={0.5}
-        penumbra={1}
+        color="#ffd6a3"
+        intensity={130}
+        position={[-1.3, 6.2, 2.1]}
+        angle={0.34}
+        penumbra={0.95}
         decay={2}
         distance={0}
         shadow-mapSize={[2048, 2048]}
         shadow-bias={-0.0012}
         shadow-normalBias={0.02}
         shadow-radius={5}
-        shadow-camera-near={1.5}
-        shadow-camera-far={9}
+        shadow-camera-near={3}
+        shadow-camera-far={10}
       />
       {/* Fill from the reader's side, and a warm rim from behind. */}
-      <directionalLight color="#ffe4c4" intensity={0.38} position={[2.2, 2.6, 3.4]} />
-      <directionalLight color="#ffc78f" intensity={0.55} position={[0.6, 2.2, -3.5]} />
+      <directionalLight color="#ffe4c4" intensity={0.42} position={[2.2, 2.6, 3.4]} />
+      <directionalLight color="#ffc78f" intensity={0.45} position={[0.6, 2.2, -3.5]} />
 
       <mesh rotation-x={-Math.PI / 2} receiveShadow material={wood}>
         <planeGeometry args={[30, 30]} />
