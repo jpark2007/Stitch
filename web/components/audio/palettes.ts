@@ -25,7 +25,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["I", "I", "IV", "I", "V7", "V7", "I", "V7", "I", "I", "IV", "iv", "I", "V7", "I", "I"],
     loopBars: 16,
-    level: 1,
+    level: 0.8,
     parts: [
       { role: "melody", inst: "musicbox", range: [69, 84], density: 5, grid: 2, gain: -7, send: 0.5, vel: 0.62, pan: 0.1 },
       { role: "arp", inst: "musicbox", range: [62, 77], grid: 2, pattern: "..x.xx", order: "up", len: 2, gain: -16, send: 0.45, vel: 0.5, pan: -0.15 },
@@ -46,7 +46,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["I6", "vi7", "ii7", "V7", "iii7", "vi7", "ii7", "V7"],
     loopBars: 16,
-    level: -0.5,
+    level: -0.2,
     parts: [
       { role: "bass", inst: "upright", range: [34, 50], grid: 1, pattern: "xxxx", style: "walk", len: 0.95, gain: -6, send: 0.12, vel: 0.7 },
       { role: "drum", inst: "brush", grid: 1, pattern: "xxxx", len: 0.9, gain: -22, send: 0.15, vel: 0.5, pan: -0.2 },
@@ -107,7 +107,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["I", "V", "vi", "IV", "I", "IV", "I", "V", "vi", "IV", "I", "V", "vi", "IV", "V", "V"],
     loopBars: 16,
-    level: 3.5,
+    level: 3.3,
     parts: [
       { role: "pick", inst: "guitar", range: [59, 71], bass: [40, 52], grid: 2, pattern: "ptbtbtbt", len: 3, gain: -6, send: 0.25, vel: 0.65, pan: -0.1 },
       { role: "melody", inst: "guitar", range: [67, 81], density: 4, grid: 2, gain: -10, send: 0.35, vel: 0.6, pan: 0.2, bars: secondHalf },
@@ -126,7 +126,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["Imaj7", "vi9", "ii9", "V9", "Imaj7", "IVmaj7", "iii7", "V7sus4"],
     loopBars: 16,
-    level: -2,
+    level: -1.9,
     parts: [
       {
         role: "chords",
@@ -160,7 +160,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "minor",
     progression: ["i", "bVI", "bIII", "bVII", "i", "bVI", "iv", "bVII"],
     loopBars: 16,
-    level: 0.5,
+    level: 0,
     reverb: 1,
     parts: [
       {
@@ -206,7 +206,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "dorian",
     progression: ["i9", "IV9", "i9", "IV9", "bVImaj7", "bVII6", "i9", "V7sus4"],
     loopBars: 16,
-    level: 0,
+    level: -0.1,
     parts: [
       { role: "drum", inst: "kick", grid: 4, pattern: "x......x..x.....", gain: -16, send: 0.05, vel: 0.65 },
       { role: "drum", inst: "snare", grid: 4, pattern: "....x.......x...", gain: -19, send: 0.15, vel: 0.55 },
@@ -241,7 +241,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["I", "iii", "vi", "IV", "I", "V", "vi", "IV"],
     loopBars: 16,
-    level: 2,
+    level: 2.3,
     parts: [
       { role: "chords", inst: "guitar", range: [48, 67], voices: 5, grid: 2, pattern: "d.du.udu", strum: 0.014, len: 2, gain: -12, send: 0.25, vel: 0.5, pan: -0.15 },
       { role: "melody", inst: "glock", range: [69, 81], density: 4, grid: 2, gain: -15, send: 0.45, vel: 0.55, pan: 0.2, bars: afterIntro },
@@ -263,7 +263,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["ii7", "V9", "Imaj7", "vi9", "ii7", "V9", "iii7", "vi7"],
     loopBars: 16,
-    level: 0,
+    level: -1,
     parts: [
       {
         role: "chords",
@@ -318,7 +318,7 @@ export const PALETTES: Record<EraId, Palette> = {
     mode: "major",
     progression: ["Imaj9", "IVmaj7", "vi9", "IVmaj7", "Imaj9", "IVmaj7", "ii9", "IVmaj7"],
     loopBars: 16,
-    level: -2,
+    level: -2.7,
     reverb: 1.5,
     parts: [
       {

@@ -8,8 +8,11 @@
  *
  *   warmth   a gentle high shelf so nothing is bright
  *   level    the transport: mute, the book open or closed
- *   trim     the music's loudness: each era's `level` evens them out at
- *            -26 dBFS RMS, so a voice sits well on top
+ *   trim     the music's loudness: each era's `level` evens them out at one
+ *            K-weighted loudness (-24.5 LUFS, about -26 dBFS RMS; measured over
+ *            a minute, within 0.2 dB), so turning a spread never changes the
+ *            volume and a voice sits well on top. Loudness, not peak: plucked
+ *            eras peak higher than padded ones at the same perceived level
  *   ceiling  a soft clipper that can never exceed -12 dBFS (transparent
  *            where the music lives; it only rounds the odd pluck's peak)
  *   duck     narration ducking, last so it is an exact -10 dB: before the
