@@ -195,10 +195,12 @@ export default function AgentFeed(props: {
             <p className="mt-3 text-[1.0625rem] leading-relaxed text-pretty text-ink-soft">{finishedNote(state, subject)}</p>
             {sceneReady && openButton && (
               // One primary way in; watching the scene is the quiet second.
-              <div className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-1">
+              // Side by side where there is room; on a phone the link sits
+              // under the button, its text flush with the button's edge.
+              <div className="mt-5 flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:gap-3">
                 {openButton}
                 {watchHref && (
-                  <ButtonLink variant="quiet" href={watchHref} className="gap-1.5">
+                  <ButtonLink variant="quiet" href={watchHref} className="-ml-3 gap-1.5 sm:ml-0">
                     <PlayIcon className="size-3 shrink-0" />
                     {watchLabel()}
                   </ButtonLink>
