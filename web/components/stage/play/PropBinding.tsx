@@ -25,7 +25,6 @@ import {
   setState,
   type PropActorHandle,
 } from "../PropActor";
-import { LIFT_UP } from "./PuppetActor";
 import { PRIORITY, standStill, standUp, tiltAbout, useScene, useWingClip } from "./SceneProvider";
 import type { Mount } from "./standing";
 
@@ -51,10 +50,12 @@ export function PropBinding({ prop }: PropBindingProps) {
     if (!pf) return;
     const p = pf.position;
     // Picked up off its layer by the host (runtime.lifts; none by default).
-    const lift = runtime.lifts.size > 0 ? (runtime.lifts.get(pf.target) ?? 0) : 0;
-    const ly = lift * LIFT_UP;
-    if (pose.parent !== pf.parent.raw) setParent(pose, pf.parent.raw, p[0], p[1] + ly, p[2] + lift);
-    else setPosition(pose, p[0], p[1] + ly, p[2] + lift);
+    const lift = runtime.lifts.size > 0 ? runtime.lifts.get(pf.target) : undefined;
+    const lx = lift ? lift.x : 0;
+    const ly = lift ? lift.y : 0;
+    const lz = lift ? lift.z : 0;
+    if (pose.parent !== pf.parent.raw) setParent(pose, pf.parent.raw, p[0] + lx, p[1] + ly, p[2] + lz);
+    else setPosition(pose, p[0] + lx, p[1] + ly, p[2] + lz);
     setRotation(pose, pf.rotation);
     if (pose.state !== pf.state) setState(pose, pf.state);
     const parts = pf.parts;

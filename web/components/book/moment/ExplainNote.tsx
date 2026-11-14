@@ -5,8 +5,9 @@
  * that has an explanation and a small card of real paper rises on a paper
  * hinge beside it, like a pop-up's mechanism, with the "why it matters" in
  * the handwriting font, tied back to the cutout by a stitched thread. The
- * cutout lifts a few millimetres off its layer. Everything is in the
- * diorama's scene graph, lit and shadowed by the book's lamp.
+ * cutout lifts a few millimetres toward the reader (a hovered one part way)
+ * and catches a little more of the lamp. Everything is in the diorama's
+ * scene graph, lit and shadowed by the book's lamp.
  *
  *   const notes = useMemo(() => new ExplainSession(controller), [controller]);
  *   useEffect(() => notes.attach(), [notes]);
@@ -46,6 +47,7 @@ import {
   Box3,
   BoxGeometry,
   CanvasTexture,
+  Color,
   CylinderGeometry,
   ExtrudeGeometry,
   Group,
@@ -63,9 +65,10 @@ import {
   Vector3,
   type Camera,
   type Intersection,
+  type Material,
 } from "three";
 import { markShadowsDirty } from "@/components/stage/clock";
-import { cutoutBox, LIFT_UP, pickCutout, pickNear, useScene, type StageRuntime } from "@/components/stage/play";
+import { cutoutBox, pickCutout, pickNear, useScene, type StageRuntime } from "@/components/stage/play";
 import type { PlaybackController } from "@/components/stage/playback";
 import { getPaperTextures } from "@/components/paper/materials";
 import { markBookControl } from "../controls";
@@ -73,6 +76,8 @@ import {
   FOLD_MS,
   HOVER_LIFT,
   LIFT,
+  LIFT_GLOW,
+  LIFT_RISE,
   RISE_MS,
   explainItems,
   explainStep,
@@ -471,7 +476,7 @@ class NoteRig {
    * world to stage space. `held` (ms into the rise) holds a rising note at
    * that moment, for screenshots of the animation (the probe's hold).
    */
-  step(now: number, dt: number, lift: number, toStage: Matrix4, s: Scratch, held: number | null = null): boolean {
+  step(now: number, dt: number, lift: Vector3 | null, toStage: Matrix4, s: Scratch, held: number | null = null): boolean {
     let moving = false;
     const ms = held !== null && this.phase === "rise" ? held : now - this.t0;
     let up: number;
@@ -535,8 +540,7 @@ class NoteRig {
     this.root.updateMatrixWorld(true);
     const A = this.attach.getWorldPosition(s.a).applyMatrix4(toStage);
     const B = s.b.copy(this.anchor);
-    B.z += lift * LIFT;
-    B.y += lift * LIFT * LIFT_UP;
+    if (lift) B.add(lift);
     const n = Math.round(sew * STITCHES);
     if (n !== this.lastSew || moving) {
       this.lastSew = n;
@@ -601,7 +605,23 @@ interface Target {
   hit: Vector3;
   /** Eased lift, 0..1 (HOVER_LIFT under a hovering pointer, 1 with its note open). */
   lift: number;
+  /** A full lift's offset, stage units: aimed at the camera as the lift starts. */
+  dir: Vector3;
+  /** The offset now (dir * lift), the vector the stage reads from runtime.lifts. */
+  off: Vector3;
+  /** Its own materials, brightened as it lifts; null while it is not lit. */
+  glow: Glow | null;
 }
+
+/** A lifted cutout's own materials and what they were, to brighten them as it rises into the lamp. */
+interface Glow {
+  mats: MeshStandardMaterial[];
+  was: Color[];
+  add: Color[];
+}
+
+/** The lamp's warm light, added to a cutout's own colour as it lifts. */
+const WARM = new Color("#ffe2bd");
 
 interface Caption {
   at: RefObject<Group | null>;
@@ -734,12 +754,15 @@ class ExplainStage {
   setItems(items: ExplainItem[]): Target[] {
     if (items === this.items) return this.targets;
     this.items = items;
-    for (const t of this.targets) this.runtime.lifts.delete(t.item.target);
+    for (const t of this.targets) {
+      this.runtime.lifts.delete(t.item.target);
+      this.glow(t, 0);
+    }
     this.targets = items.map((item) => {
       const proxy = new Object3D();
       proxy.name = `explain:${item.target}`;
       markBookControl(proxy);
-      const t: Target = { item, proxy, hit: new Vector3(), lift: 0 };
+      const t: Target = { item, proxy, hit: new Vector3(), lift: 0, dir: new Vector3(0, LIFT_RISE, LIFT), off: new Vector3(), glow: null };
       proxy.raycast = (raycaster, intersects) => this.raycastTarget(t, raycaster, intersects);
       return t;
     });
@@ -796,6 +819,81 @@ class ExplainStage {
     if (!this.clickable || !this.items.some((i) => i.target === target)) return false;
     const obj = this.objectOf(target);
     return !!obj && this.standsOnSet(obj);
+  }
+
+  /**
+   * Points a lift at the camera from the cutout's middle, so a lifted
+   * cutout comes toward the reader along their line of sight: it stays
+   * under the pointer, grows a touch, and its shadow falls further off.
+   */
+  private aim(t: Target) {
+    const obj = this.objectOf(t.item.target);
+    const root = this.runtime.root;
+    const s = this.s;
+    t.dir.set(0, LIFT_RISE, LIFT);
+    if (!obj || !root) return;
+    cutoutBox(obj, s.box);
+    if (s.box.isEmpty()) return;
+    root.updateWorldMatrix(true, false);
+    const c = root.worldToLocal(s.box.getCenter(s.v));
+    const cam = root.worldToLocal(this.get().camera.getWorldPosition(s.w));
+    const d = cam.sub(c);
+    if (d.lengthSq() < 1e-8) return;
+    t.dir.copy(d.normalize().multiplyScalar(LIFT));
+    t.dir.y += LIFT_RISE;
+  }
+
+  /**
+   * Lights a lifted cutout a touch, as if it rose into the lamp's light: the
+   * emissive of its own materials (none it shares with the rest of the
+   * stage), back to exactly what it was at 0. Found once as it starts to
+   * lift, so nothing is made while it eases.
+   */
+  private glow(t: Target, k: number) {
+    let g = t.glow;
+    if (!g) {
+      if (k <= 0) return;
+      g = t.glow = this.ownMaterials(t.item.target);
+    }
+    for (let i = 0; i < g.mats.length; i++) {
+      const w = g.was[i];
+      const a = g.add[i];
+      g.mats[i].emissive.setRGB(w.r + a.r * k, w.g + a.g * k, w.b + a.b * k);
+    }
+    if (k <= 0) t.glow = null;
+  }
+
+  private ownMaterials(target: string): Glow {
+    const o = this.objectOf(target);
+    const root = this.runtime.root;
+    const mine = new Set<MeshStandardMaterial>();
+    const shared = new Set<Material>();
+    const each = (obj: Object3D, add: (m: Material) => void) => {
+      const m = (obj as Mesh).material as Material | Material[] | undefined;
+      if (!(obj as Mesh).isMesh || !m) return;
+      for (const x of Array.isArray(m) ? m : [m]) add(x);
+    };
+    // Under another cutout (a prop in this one's hand): that one's, not this one's.
+    const other = (obj: Object3D) => obj !== o && /^(puppet|prop):/.test(obj.name);
+    const walk = (obj: Object3D, own: boolean) => {
+      if (own && other(obj)) own = false;
+      each(obj, (m) => {
+        const sm = m as MeshStandardMaterial;
+        if (own && sm.isMeshStandardMaterial && sm.depthWrite !== false && sm.emissive) mine.add(sm);
+        else if (!own) shared.add(m);
+      });
+      for (const c of obj.children) walk(c, own || obj === o || c === o);
+    };
+    if (root) walk(root, false);
+    else if (o) walk(o, true);
+    const mats = [...mine].filter((m) => !shared.has(m));
+    return {
+      mats,
+      was: mats.map((m) => m.emissive.clone()),
+      // Plain paper brightens in its own colour; printed art (its colour is
+      // the map's) by a little warm light, so it does not wash out.
+      add: mats.map((m) => (m.map ? WARM.clone().multiplyScalar(0.1) : m.color.clone().multiplyScalar(LIFT_GLOW).add(WARM.clone().multiplyScalar(0.05)))),
+    };
   }
 
   private raycastTarget(t: Target, raycaster: Raycaster, intersects: Intersection[]) {
@@ -956,7 +1054,9 @@ class ExplainStage {
       this.rigs = [];
       for (const t of this.targets) {
         t.lift = 0;
+        t.off.set(0, 0, 0);
         this.runtime.lifts.delete(t.item.target);
+        this.glow(t, 0);
       }
       if (this.hover) setCursor("");
       this.hover = null;
@@ -993,13 +1093,12 @@ class ExplainStage {
         // The thread's end on the cutout: its middle, two thirds up, on its front.
         cutoutBox(obj, rig.box);
         const t = this.targets.find((x) => x.item.target === open);
-        const lifted = (t?.lift ?? 0) * LIFT;
         const b = rig.box;
         const v = this.s.v.set((b.min.x + b.max.x) / 2, b.min.y + 0.64 * (b.max.y - b.min.y), b.max.z);
         root.worldToLocal(v);
+        // Where it is when not lifted (a hover may have it part way up).
         rig.anchor.copy(v);
-        rig.anchor.z -= lifted;
-        rig.anchor.y -= lifted * LIFT_UP;
+        if (t) rig.anchor.sub(t.off);
         // The rest of the cast on the set: the note keeps off them where it can.
         for (const other of this.items) {
           if (other.target === open) continue;
@@ -1224,9 +1323,12 @@ class ExplainStage {
       const key = t.item.target;
       const goal = this.session.open === key ? 1 : this.hover === key && this.clickable ? HOVER_LIFT : 0;
       if (t.lift === goal) continue;
+      if (t.lift === 0) this.aim(t);
       t.lift = stepLift(t.lift, goal, dt);
+      t.off.copy(t.dir).multiplyScalar(t.lift);
       if (t.lift === 0) lifts.delete(key);
-      else lifts.set(key, t.lift * LIFT);
+      else lifts.set(key, t.off);
+      this.glow(t, t.lift);
       moving = true;
     }
 
@@ -1249,8 +1351,8 @@ class ExplainStage {
       for (let i = this.rigs.length - 1; i >= 0; i--) {
         const r = this.rigs[i];
         if (changed && r.live) this.place(r);
-        let lift = 0;
-        for (const t of this.targets) if (t.item.target === r.item.target) lift = t.lift;
+        let lift: Vector3 | null = null;
+        for (const t of this.targets) if (t.item.target === r.item.target) lift = t.off;
         if (r.step(now, dt, lift, this.s.toStage, this.s, this.held)) moving = true;
         if (r.phase === "done") {
           r.dispose();

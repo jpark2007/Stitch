@@ -475,11 +475,19 @@ export function resumesAfter(reason: CloseReason): boolean {
 /** How long the note takes to rise and settle, and to fold back down (ms). */
 export const RISE_MS = 820;
 export const FOLD_MS = 360;
-/** The cutout's lift: how long it takes, and its height off the layer (stage units). */
+/**
+ * The cutout's lift: how long it takes, how far it comes toward the reader
+ * (along the line to the camera, so it stays under the pointer, grows a
+ * touch and its shadow on the set falls further off) and how far it also
+ * rises, stage units.
+ */
 export const LIFT_MS = 220;
-export const LIFT = 0.04;
-/** A hovered cutout lifts this fraction of LIFT. */
-export const HOVER_LIFT = 0.55;
+export const LIFT = 0.07;
+export const LIFT_RISE = 0.014;
+/** A hovered cutout lifts this fraction of the way. */
+export const HOVER_LIFT = 0.65;
+/** How much a fully lifted cutout brightens, as if it rose into the lamp (a fraction of its own colour). */
+export const LIFT_GLOW = 0.28;
 
 const clamp01 = (t: number) => (t < 0 ? 0 : t > 1 ? 1 : t);
 export const smooth = (t: number) => {
