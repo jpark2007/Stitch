@@ -17,6 +17,7 @@ from db import media as media_db
 from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
+from db import traditions as traditions_db
 from db import users as users_db
 from screenplay import compiler
 from screenplay.schema import VOCABULARY, Screenplay
@@ -487,6 +488,11 @@ def _other_family(mdb) -> tuple[str, str]:
     props_db.insert_prop(mdb, family.id, SAMPLE.props[0])
     props_db.insert_set(mdb, family.id, SAMPLE.sets[0])
     media_db.put_media(mdb, family.id, b"not really a png", content_type="image/png")
+    traditions_db.create_tradition(
+        mdb, family.id,
+        schemas.CreateTraditionRequest(title="Pizza Fridays", category="food", when=schemas.TraditionWhen(kind="weekly")),
+        created_by=user.id,
+    )
     assert memory.family_id == family.id
     return user.id, family.id
 
@@ -512,7 +518,7 @@ def test_reset_rebuilds_without_touching_other_families(seeded):
         "users": mdb.users.find_one({"_id": other_user}),
         "families": mdb.families.find_one({"_id": other_family}),
         **{c: sorted(map(str, mdb[c].find({"familyId": other_family})))
-           for c in ("people", "memories", "questions", "props", "sets")},
+           for c in ("people", "memories", "questions", "props", "sets", "traditions")},
         "media": sorted(map(str, mdb[media_db.INLINE].find({"metadata.familyId": other_family}))),
     }
 
@@ -528,7 +534,7 @@ def test_reset_rebuilds_without_touching_other_families(seeded):
         "users": mdb.users.find_one({"_id": other_user}),
         "families": mdb.families.find_one({"_id": other_family}),
         **{c: sorted(map(str, mdb[c].find({"familyId": other_family})))
-           for c in ("people", "memories", "questions", "props", "sets")},
+           for c in ("people", "memories", "questions", "props", "sets", "traditions")},
         "media": sorted(map(str, mdb[media_db.INLINE].find({"metadata.familyId": other_family}))),
     }
     assert people_db.get_person(mdb, DEMO_FAMILY_ID, "dad") is not None
@@ -547,7 +553,7 @@ def _non_demo_snapshot(mdb, other_family: str) -> dict[str, list]:
         "users": list(mdb.users.find({"_id": {"$nin": list(demo.DEMO_USER_IDS)}}, **by_id)),
         "families": list(mdb.families.find({"_id": {"$ne": DEMO_FAMILY_ID}}, **by_id)),
         **{c: list(mdb[c].find({"familyId": other_family}, **by_id))
-           for c in ("people", "memories", "questions", "props", "sets")},
+           for c in ("people", "memories", "questions", "props", "sets", "traditions")},
         "media": list(mdb[media_db.INLINE].find({"metadata.familyId": {"$ne": DEMO_FAMILY_ID}}, **by_id)),
     }
 

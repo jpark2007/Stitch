@@ -17,6 +17,7 @@ from db import media as media_db
 from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
+from db import traditions as traditions_db
 from db import users as users_db
 
 mongomock = pytest.importorskip("mongomock")
@@ -459,7 +460,7 @@ def test_real_db_invite_flow(real_db):
 SAMPLE = schemas.MemoryResponse.model_validate_json(
     (Path(__file__).resolve().parents[3] / "web/public/samples/hymn_books.memory.json").read_text()
 )
-PURGED = ("people", "memories", "questions", "props", "sets")
+PURGED = ("people", "memories", "questions", "props", "sets", "traditions")
 
 
 def _fill_family(db, fid: str, admin: str) -> list[str]:
@@ -470,6 +471,12 @@ def _fill_family(db, fid: str, admin: str) -> list[str]:
     memories_db.create_question(db, fid, person_id=person.id, text="What did you sing?", memory_id=memory.id)
     props_db.insert_prop(db, fid, SAMPLE.props[0], prop_id=f"{fid}_prop")
     props_db.insert_set(db, fid, SAMPLE.sets[0], set_id=f"{fid}_set")
+    traditions_db.create_tradition(
+        db, fid,
+        schemas.CreateTraditionRequest(title="Hymns on Sunday", category="music",
+                                       when=schemas.TraditionWhen(kind="weekly"), participant_ids=[person.id]),
+        created_by=admin,
+    )
     return [
         media_db.put_media(db, fid, b"photo " + fid.encode(), content_type="image/png"),
         media_db.put_media(db, fid, b"audio " + fid.encode(), content_type="audio/mpeg", kind="audio"),

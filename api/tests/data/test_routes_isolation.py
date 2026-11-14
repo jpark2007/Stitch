@@ -40,6 +40,7 @@ from db import media as media_db
 from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
+from db import traditions as traditions_db
 from db import users as users_db
 from routes import memories as memories_routes
 
@@ -178,6 +179,7 @@ class FamilyWorld:
     invite_code: str
     question_id: str
     run_id: str
+    tradition_id: str
 
 
 def _build_family(db, fake: FakeRuns, tag: str) -> FamilyWorld:
@@ -226,6 +228,18 @@ def _build_family(db, fake: FakeRuns, tag: str) -> FamilyWorld:
         db, fid, person_id=member_p.id, text=f"What did Sundays sound like? ({tag})", memory_id=memory.id
     )
     run_id = fake.start_run(fid, admin.id, admin_p.id, schemas.SubmitMemoryFields(text="hi", year=1962), [])
+    tradition = traditions_db.create_tradition(
+        db,
+        fid,
+        schemas.CreateTraditionRequest(
+            title=f"Hymns after dinner {tag}",
+            category="music",
+            when=schemas.TraditionWhen(kind="occasional"),
+            participant_ids=[elder.id],
+            photo_ids=[media_id],
+        ),
+        created_by=admin.id,
+    )
     return FamilyWorld(
         fid=fid,
         admin=admin,
@@ -240,6 +254,7 @@ def _build_family(db, fake: FakeRuns, tag: str) -> FamilyWorld:
         invite_code=invite.code,
         question_id=question.id,
         run_id=run_id,
+        tradition_id=tradition.id,
     )
 
 
@@ -302,6 +317,7 @@ def _family_snapshot(db, fid: str) -> dict[str, Any]:
         "sets": _sorted(db[props_db.SETS].find({"familyId": fid})),
         "media": sorted(str(d["_id"]) for d in db[media_db.INLINE].find({"metadata.familyId": fid}, {"_id": 1})),
         "questions": _sorted(db.questions.find({"familyId": fid})),
+        "traditions": _sorted(db[traditions_db.COLLECTION].find({"familyId": fid})),
     }
 
 
@@ -372,6 +388,21 @@ CASES: dict[tuple[str, str], Builder] = {
     },
     ("GET", "/families/{fid}/questions"): lambda f, w: {"url": f"/families/{f}/questions"},
     ("POST", "/families/{fid}/ask"): lambda f, w: {"url": f"/families/{f}/ask", "json": {"query": "hymn books"}},
+    ("GET", "/families/{fid}/traditions"): lambda f, w: {"url": f"/families/{f}/traditions"},
+    ("POST", "/families/{fid}/traditions"): lambda f, w: {
+        "url": f"/families/{f}/traditions",
+        "json": {"title": "An outsider's tradition", "category": "other", "when": {"kind": "yearly"}},
+    },
+    ("GET", "/families/{fid}/traditions/{tradition_id}"): lambda f, w: {
+        "url": f"/families/{f}/traditions/{w.tradition_id}",
+    },
+    ("PATCH", "/families/{fid}/traditions/{tradition_id}"): lambda f, w: {
+        "url": f"/families/{f}/traditions/{w.tradition_id}",
+        "json": {"title": "Renamed by an outsider", "startedYear": None},
+    },
+    ("DELETE", "/families/{fid}/traditions/{tradition_id}"): lambda f, w: {
+        "url": f"/families/{f}/traditions/{w.tradition_id}",
+    },
 }
 
 
@@ -580,6 +611,26 @@ SECOND_ID_CASES: list[SecondId] = [
         lambda: {"json": {"kind": "answer", "text": "yes"}},
         ok=204,
     ),
+    SecondId(
+        "tradition",
+        "GET",
+        "/families/{fid}/traditions/{tradition_id}",
+        lambda f, o: f"/families/{f.fid}/traditions/{o.tradition_id}",
+    ),
+    SecondId(
+        "patch tradition",
+        "PATCH",
+        "/families/{fid}/traditions/{tradition_id}",
+        lambda f, o: f"/families/{f.fid}/traditions/{o.tradition_id}",
+        lambda: {"json": {"title": "Renamed", "startedYear": None}},
+    ),
+    SecondId(
+        "delete tradition",
+        "DELETE",
+        "/families/{fid}/traditions/{tradition_id}",
+        lambda f, o: f"/families/{f.fid}/traditions/{o.tradition_id}",
+        ok=204,
+    ),
 ]
 
 
@@ -689,6 +740,36 @@ CROSS_REF_CASES: list[CrossRef] = [
         "PATCH",
         lambda e: f"/families/{e.a.fid}/props/{e.a.prop_id}",
         lambda e: {"json": {"photoId": f"media/{e.b.media_id}"}},
+        400,
+    ),
+    CrossRef(
+        "add tradition: participantIds mixing A's and B's people",
+        "POST",
+        lambda e: f"/families/{e.a.fid}/traditions",
+        lambda e: {"json": {"title": "Ours", "category": "food", "when": {"kind": "yearly"},
+                            "participantIds": [e.a.elder.id, e.b.elder.id]}},
+        400,
+    ),
+    CrossRef(
+        "add tradition: photoId of B's media",
+        "POST",
+        lambda e: f"/families/{e.a.fid}/traditions",
+        lambda e: {"json": {"title": "Ours", "category": "food", "when": {"kind": "yearly"},
+                            "photoIds": [e.b.media_id]}},
+        400,
+    ),
+    CrossRef(
+        "patch tradition: participantIds of B's people",
+        "PATCH",
+        lambda e: f"/families/{e.a.fid}/traditions/{e.a.tradition_id}",
+        lambda e: {"json": {"participantIds": [e.b.elder.id]}},
+        400,
+    ),
+    CrossRef(
+        "patch tradition: photoId of B's media, ref form",
+        "PATCH",
+        lambda e: f"/families/{e.a.fid}/traditions/{e.a.tradition_id}",
+        lambda e: {"json": {"photoIds": [f"media/{e.b.media_id}"]}},
         400,
     ),
 ]

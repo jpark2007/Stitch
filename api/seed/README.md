@@ -156,6 +156,11 @@ The stage demo starts with a full tree and books. `seed/demo.py` creates the dem
 - The props and sets those scenes use, all with placeholder art (`art` null, a `color`).
 - Open questions that ask a participant who has not told a moment yet for their version,
   and one general prompt. See [Demo accounts and their questions](#demo-accounts-and-their-questions).
+- Five traditions for the Book of Family Traditions (`GET /families/demo_family/traditions`,
+  oldest first): `tamales_christmas_eve`, `sunday_pancakes`, `summer_road_trip` (with the
+  peach-stand photo), `hymns_after_dinner` and `rosas_easter_hats`. Same ids and text as the
+  web mock (`web/components/flow/mock/demoTraditions.ts`); the mock's `rosa`, `luis` and
+  `maya` are `grandma_rosa`, `grandpa_luis` and `lily` here (`seed.demo.DEMO_TRADITIONS`).
 
 ### The scenes
 
@@ -386,7 +391,7 @@ indexes                       PASS       1.73  0 present, 11 created (users_emai
 vector index memories_vector  PASS      31.02  created now; ready (status READY, queryable); the app wants numDimensions 1024 (EMBEDDING_DIM)
 vector index props_vector     PASS      31.02  created now; ready (status READY, queryable); the app wants numDimensions 1024 (EMBEDDING_DIM)
 vector index sets_vector      PASS      31.02  created now; ready (status READY, queryable); the app wants numDimensions 1024 (EMBEDDING_DIM)
-round trip                    PASS       1.12  wrote and read back users, families, people x2, memories, questions, props, sets, revoked_sessions, media (GridFS: media.files + 1 chunk(s) in media.chunks)
+round trip                    PASS       1.12  wrote and read back users, families, people x2, memories, questions, props, sets, traditions, revoked_sessions, media (GridFS: media.files + 1 chunk(s) in media.chunks)
 tree                          PASS       0.08  get_tree ok (2 people, 2 generations); native $graphLookup reached both
 search                        PASS       2.20  $vectorSearch ran: 1 hit(s), the throwaway memory among them; keyword fallback found the memory for 'lighthouse'
 checkpointer                  PASS       0.61  checkpoint put/get_tuple/put_writes/delete_thread in agent_checkpoints, agent_checkpoint_writes; store put/get/delete in agent_store
@@ -404,7 +409,7 @@ existed; ready`. What each row checks:
 | `server` | Version (`buildInfo`), topology (`hello`: standalone, replica set or sharded), and `is_atlas`: true when a host ends in `.mongodb.net` or the server answers `atlasVersion` (both signals are shown). | WARN when the version cannot be read (mongomock). |
 | `indexes` | `db.client.ensure_indexes`, then every index of `db.client.INDEXES` as present (already there) or created. | FAIL with the server's message on a spec conflict (an index with the same name and another definition). |
 | `vector index <name>` | One row per Atlas Vector Search index (`memories_vector`, `props_vector`, `sets_vector`): `db.client.ensure_search_indexes_report`, then `db.client.search_index_status` polled every 5 s for up to `--wait` seconds. Says whether it already existed, was created now, or had a stale definition that was updated. | PASS ready. WARN pending (with "re-run with --wait 180"), stale, or unsupported on a server that is not Atlas. FAIL when a search index of another type has the name, or when Atlas refuses to create it (the server's own message is shown). |
-| `round trip` | One document per collection through the `db/` functions, read back and compared: `users`, `families`, two `people` (parent and child), `memories` (with a telling), `questions`, `props`, `sets`, `revoked_sessions`, and one media file (real GridFS on a real server: the file is checked in `media.files` and `media.chunks`). | FAIL names the step that failed. `tree` and `search` are then skipped; cleanup still runs. |
+| `round trip` | One document per collection through the `db/` functions, read back and compared: `users`, `families`, two `people` (parent and child), `memories` (with a telling), `questions`, `props`, `sets`, `traditions`, `revoked_sessions`, and one media file (real GridFS on a real server: the file is checked in `media.files` and `media.chunks`). | FAIL names the step that failed. `tree` and `search` are then skipped; cleanup still runs. |
 | `tree` | `db.people.get_tree`, then the native `$graphLookup` pipeline once directly. | WARN "via the Python fallback" when the server refuses `$graphLookup` (the API falls back silently). |
 | `search` | Puts a synthetic unit vector (`EMBEDDING_DIM` long) on the throwaway memory, runs one `$vectorSearch` (polled for up to `--wait` seconds while it finds nothing: Atlas syncs new documents within seconds), then the keyword search, which must find the memory. | PASS when the vector search finds it. WARN when it ran but found nothing yet (index pending or not synced), or is unavailable off Atlas. FAIL when it is unavailable on Atlas, or the keyword fallback misses. |
 | `checkpointer` | The model studio's LangGraph persistence (`agent.studio.mongo_persistence`): one checkpoint put, read back, a pending write, `delete_thread`; one store item put, read, deleted; the documents are checked in `agent_checkpoints`, `agent_checkpoint_writes` and `agent_store`. | SKIP with `--skip-checkpointer`. |
@@ -463,7 +468,7 @@ supported on this server (not Atlas)"; that never stops the seed). On a new clus
 `uv run python -m seed.preflight` first.
 
 Seeding is idempotent. `--reset` deletes only demo data: the three demo users (by email),
-the `demo_family` family, and its people, memories, questions, props, sets and media. Other
+the `demo_family` family, and its people, memories, questions, props, sets, traditions and media. Other
 families are never touched. The family document is written last, with every member in the
 same insert, so a run that was cut short is cleaned up and rebuilt by the next one; a
 database where the family exists but a demo account is missing is rebuilt too
@@ -490,7 +495,7 @@ Demo seed failed: Could not reach MongoDB before the timeout: the server is down
 ```
 
 **A reseed is deterministic.** Every seed and every `--reset` writes the same ids:
-the people, memories, props and sets use the ids in the files and in `seed/demo.py`, the
+the people, memories, props, sets and traditions use the ids in the files and in `seed/demo.py`, the
 two road-trip photos are `seed.demo.DEMO_PHOTO_IDS` (`5eed00010000000000000001` and
 `5eed00010000000000000002`), and the seven questions are `seed.demo.DEMO_QUESTION_IDS`
 (`5eed00020000000000000001` to `5eed00020000000000000007`, in `DEMO_QUESTIONS` order, with

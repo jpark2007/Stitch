@@ -328,6 +328,24 @@ def test_every_route_on_its_happy_path_leaks_no_secret(env):
     assert len(d.call(alice, "GET", "/families/{fid}/questions", 200, params=p).json()["questions"]) == 1
     d.call(alice, "POST", "/families/{fid}/ask", 200, params=p, json={"query": "hymn books"})
 
+    # The Book of Family Traditions: add, list, read, edit, remove.
+    tradition_id = d.call(
+        alice,
+        "POST",
+        "/families/{fid}/traditions",
+        201,
+        params=p,
+        json={"title": "Hymns after dinner", "category": "music", "when": {"kind": "occasional"},
+              "participantIds": [grandma["id"], alice_pid], "photoIds": [media_id], "startedYear": 1962},
+    ).json()["id"]
+    tp = {**p, "tradition_id": tradition_id}
+    assert [x["id"] for x in d.call(alice, "GET", "/families/{fid}/traditions", 200, params=p).json()["traditions"]] == [
+        tradition_id
+    ]
+    d.call(alice, "GET", "/families/{fid}/traditions/{tradition_id}", 200, params=tp)
+    d.call(alice, "PATCH", "/families/{fid}/traditions/{tradition_id}", 200, params=tp, json={"startedYear": None})
+    d.call(alice, "DELETE", "/families/{fid}/traditions/{tradition_id}", 204, params=tp)
+
     # A memory run: submit with a photo, stream it, answer it.
     run_id = d.call(
         alice,
