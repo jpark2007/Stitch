@@ -13,7 +13,15 @@ from pathlib import Path
 import pytest
 
 import schemas
-from screenplay.body import POSE_SECONDS, REACH_SECONDS, PropGeom, grip_from_anchor
+from screenplay.body import (
+    POSE_SECONDS,
+    PUT_ON_SETTLE_MAX,
+    PUT_ON_SETTLE_SECONDS,
+    REACH_SECONDS,
+    PropGeom,
+    anchor_from_grip,
+    grip_from_anchor,
+)
 from screenplay.compiler import compile as compile_screenplay
 from screenplay.ik import POSES as RIG_POSES
 from screenplay.ik import RIG, Body, OutOfReach, body_socket, scale, socket_world
@@ -250,6 +258,62 @@ def test_put_on_a_prop_someone_sits_on():
     assert w.people["kid"].seat == ("cushion", "seat") and w.props["cushion"].parent == "ground"
     w2 = make_world({"dad": {"at": "home", "in": "cushion.seat"}}, {"cushion": {"at": "ledge"}})
     rejects("occupied", "dad is sitting on it", apply_put_on, w2, tracks, do="put_on", who="dad", what="cushion")
+
+
+TOP_CAP = prop("top_cap", grip=[0.5, 0.0])  # held by its top edge: the exact grip point is above the head
+
+
+def top_cap_world(start: dict, prop_start: dict | None = None) -> World:
+    w = World(PEOPLE, [*PROPS, TOP_CAP])
+    w.begin_shot(shot(start=start, propStart=prop_start or {}), MARKS, same_set_as_previous=False)
+    w.now = round(T - ACTION_START, 6)
+    return w
+
+
+def test_put_on_settle_fits_inside_the_end_time():
+    assert PUT_ON_SETTLE_SECONDS <= REACH_SECONDS
+
+
+def test_put_on_from_the_hand_with_a_grip_above_the_head_settles_before_the_end():
+    tracks = TrackSet()
+    tracks.extend([("puppet:dad", "arm_r.upper.rot", 0.0, HOLD[0]), ("puppet:dad", "arm_r.lower.rot", 0.0, HOLD[1])])
+    w = top_cap_world({"dad": {"at": "home", "holding": "top_cap", "facing": "right"}})
+    end = run(apply_put_on, w, tracks, do="put_on", who="dad", what="top_cap")
+    assert end == pytest.approx(T + 2 * R)
+    head = body_socket(DAD, "head", {})
+    assert at(tracks, "prop:top_cap", "parent", T + R) == "puppet:dad.head"
+    offset = at(tracks, "prop:top_cap", "position", T + R)
+    assert 0.0 < math.hypot(offset[0], offset[1]) <= PUT_ON_SETTLE_MAX
+    # where the hand lets go is where the stage puts the anchor at the swap
+    geom = PropGeom.from_prop(TOP_CAP)
+    hand = hand_at(tracks, DAD, "arm_r", T + R)
+    assert anchor_from_grip(geom, hand) == pytest.approx((head[0] + offset[0], head[1] + offset[1]), abs=2e-3)
+    t_settled = T + R + PUT_ON_SETTLE_SECONDS
+    assert t_settled <= end
+    assert at(tracks, "prop:top_cap", "position", t_settled) == [0.0, 0.0, 0.0]
+    assert at(tracks, "prop:top_cap", "position", end) == [0.0, 0.0, 0.0]
+    assert arm_at(tracks, "dad", "arm_r", end) == (0.0, 0.0)
+    assert w.holder("top_cap") == ("dad", "head")
+
+
+def test_put_on_straight_off_the_ground_with_a_grip_above_the_head():
+    """The ground path: reach the grip on the ledge, take it, then the clamped carry to the head."""
+    tracks = TrackSet()
+    w = top_cap_world({"dad": {"at": "home"}}, {"top_cap": {"at": "ledge"}})
+    end = run(apply_put_on, w, tracks, do="put_on", who="dad", what="top_cap")
+    assert end == pytest.approx(T + 3 * R)
+    geom = PropGeom.from_prop(TOP_CAP)
+    assert hand_at(tracks, DAD, "arm_r", T + R) == pytest.approx(grip_from_anchor(geom, MARKS["ledge"]), abs=2e-3)
+    assert at(tracks, "prop:top_cap", "parent", T + R) == "puppet:dad.hand_r"
+    assert at(tracks, "prop:top_cap", "position", T + R) == [0.0, 0.0, 0.0]
+    t_on = T + 2 * R
+    assert at(tracks, "prop:top_cap", "parent", t_on) == "puppet:dad.head"
+    offset = at(tracks, "prop:top_cap", "position", t_on)
+    assert 0.0 < math.hypot(offset[0], offset[1]) <= PUT_ON_SETTLE_MAX
+    assert t_on + PUT_ON_SETTLE_SECONDS <= end
+    assert at(tracks, "prop:top_cap", "position", t_on + PUT_ON_SETTLE_SECONDS) == [0.0, 0.0, 0.0]
+    assert arm_at(tracks, "dad", "arm_r", end) == (0.0, 0.0)
+    assert w.holder("top_cap") == ("dad", "head")
 
 
 def test_put_on_someone_out_of_reach():

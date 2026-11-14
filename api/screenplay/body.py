@@ -29,6 +29,7 @@ from screenplay.ik import (
     OutOfReach,
     Vec2,
     arm_bones,
+    arm_reach,
     arm_socket,
     body_socket,
     handover_point,
@@ -48,13 +49,29 @@ PASS_SECONDS = 0.5    # both hands travel to the handover point
 RETURN_SECONDS = 0.4  # arms settle after a handover
 DROP_OFFSET = 0.08    # a dropped prop lands this far in front of the dropper's feet (stage units)
 
+# put_on with a grip the hand cannot carry all the way to the head (a cap held by its top edge, a
+# side grip, a small build's short arm): the hand stops this fraction of full reach out along the
+# shoulder-to-target line (not 1.0, so the elbow is not locked straight), and the prop settles from
+# there onto the head socket over PUT_ON_SETTLE_SECONDS.
+PUT_ON_REACH_FRACTION = 0.98
+# Furthest the prop's anchor may be from the wearer's head socket when the hand lets go (stage
+# units). 0.12 is one and a half hand-size props (sizes.hand = 0.08): it covers every grip of a
+# hand-size prop for every build (worst case ~0.065, a corner grip on a small build) and the centre
+# and side grips of a carried one, but not a carried prop held by its top (~0.17, a visible drop),
+# and never a wearer who stands out of arm's reach.
+PUT_ON_SETTLE_MAX = 0.12
+# How long the released prop takes to settle onto the head. Shorter than REACH_SECONDS, so it is
+# down before the arm is back at rest (verbs_objects.apply_put_on's end time relies on that).
+PUT_ON_SETTLE_SECONDS = 0.15
+
 ACTING_Z = 0.5
 WAVE_SWING = 0.3      # lower-arm oscillation amplitude while waving
 LEAN_TORSO = -0.2     # torso rotation when leaning toward something (negative leans forward)
 REST_ARM: Vec2 = (0.0, 0.0)
 
 __all__ = [
-    "ACTING_Z", "DROP_OFFSET", "FALL_SECONDS", "Key", "PASS_SECONDS", "POSE_SECONDS", "PropGeom",
+    "ACTING_Z", "DROP_OFFSET", "FALL_SECONDS", "Key", "PASS_SECONDS", "POSE_SECONDS", "PUT_ON_REACH_FRACTION",
+    "PUT_ON_SETTLE_MAX", "PUT_ON_SETTLE_SECONDS", "PropGeom",
     "REACH_SECONDS", "RETURN_SECONDS", "Vec3", "anchor_from_grip", "drop_keys", "grip_from_anchor",
     "hand_to_keys", "hold_keys", "hold_pose", "hug_keys", "kneel_keys", "last_values", "lean_keys",
     "pick_up_keys", "place_on_keys", "point_keys", "pose_keys", "put_on_keys", "sit_keys",
@@ -410,15 +427,55 @@ def put_on_keys(
     """Put a held prop on a head (``wearer`` may be ``body`` itself).
 
     The hand carries the grip to where it sits when the prop's anchor rests on the wearer's head
-    socket, the prop is parented to ``puppet:<wearer>.head``, and the arm returns to rest.
+    socket, the prop is parented to ``puppet:<wearer>.head`` (position [0, 0, 0]) at
+    t + REACH_SECONDS, and the arm returns to rest by t + 2 * REACH_SECONDS.
+
+    When that grip point is out of reach (a grip above the anchor puts it above the head), the
+    hand goes as far as it can: PUT_ON_REACH_FRACTION of full reach along the shoulder-to-target
+    line. There the prop is parented to the head with a position key holding the offset from the
+    head socket to where the hand leaves the anchor, and settles to [0, 0, 0] over
+    PUT_ON_SETTLE_SECONDS. The offset is in stage axes: the stage keeps a socket-parented prop
+    upright and unmirrored (PropActor ``heldOrientation="upright"``, props/rig.ts ``socketFrame``
+    drops the socket's rotation and its facing mirror), so the anchor lands on head + offset for
+    either facing. If that offset is longer than PUT_ON_SETTLE_MAX (a wearer out of arm's reach,
+    a large prop held by its top) it raises the OutOfReach of the exact grip point, naming the
+    puppet.
     """
     head = body_socket(wearer, "head", {})
-    reach = solve_body_arm(body, arm, grip_from_anchor(prop, head))
+    target = grip_from_anchor(prop, head)
+    t_on = t + REACH_SECONDS
+    offset: Vec2 | None = None
+    try:
+        reach = solve_body_arm(body, arm, target)
+    except OutOfReach as exact:
+        hand = _reachable_toward(body, arm, target, PUT_ON_REACH_FRACTION)
+        anchor = anchor_from_grip(prop, hand)
+        offset = (anchor[0] - head[0], anchor[1] - head[1])
+        if math.hypot(*offset) > PUT_ON_SETTLE_MAX:
+            raise exact from None
+        reach = solve_body_arm(body, arm, hand)
     keys = _arm_keys(body.id, arm, t, current_arm)
-    keys += _arm_keys(body.id, arm, t + REACH_SECONDS, reach)
+    keys += _arm_keys(body.id, arm, t_on, reach)
     keys += _arm_keys(body.id, arm, t + 2 * REACH_SECONDS, REST_ARM)
-    keys += _attach_keys(prop.id, t + REACH_SECONDS, f"puppet:{wearer.id}.head", (0.0, 0.0, 0.0))
+    parent = f"puppet:{wearer.id}.head"
+    if offset is None:
+        keys += _attach_keys(prop.id, t_on, parent, (0.0, 0.0, 0.0))
+    else:
+        keys += _attach_keys(prop.id, t_on, parent, (offset[0], offset[1], 0.0))
+        keys.append((_prop(prop.id), "position", t_on + PUT_ON_SETTLE_SECONDS, [0.0, 0.0, 0.0]))
     return keys
+
+
+def _reachable_toward(body: Body, arm: str, target: Vec2, fraction: float) -> Vec2:
+    """The point ``fraction`` of the arm's full reach from the shoulder, toward ``target``.
+
+    The shoulder is where the body's torso puts it (as the IK solver has it). ``target`` must not
+    be the shoulder itself; callers use this only for a target beyond reach.
+    """
+    sh = shoulder_world(arm, body.ground, body.facing, body.build, torso=body.torso)
+    dx, dy = target[0] - sh[0], target[1] - sh[1]
+    f = fraction * arm_reach(body.build, arm) / math.hypot(dx, dy)
+    return (sh[0] + dx * f, sh[1] + dy * f)
 
 
 def place_on_keys(

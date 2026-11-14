@@ -15,6 +15,9 @@ from screenplay.body import (
     FALL_SECONDS,
     PASS_SECONDS,
     POSE_SECONDS,
+    PUT_ON_REACH_FRACTION,
+    PUT_ON_SETTLE_MAX,
+    PUT_ON_SETTLE_SECONDS,
     REACH_SECONDS,
     RETURN_SECONDS,
     PropGeom,
@@ -38,7 +41,18 @@ from screenplay.body import (
     state_keys,
     wave_keys,
 )
-from screenplay.ik import POSES, RIG, Body, OutOfReach, body_socket, scale, socket_world
+from screenplay.ik import (
+    POSES,
+    RIG,
+    Body,
+    OutOfReach,
+    arm_reach,
+    body_socket,
+    scale,
+    shoulder_world,
+    socket_world,
+    solve_body_arm,
+)
 
 SAMPLES = Path(__file__).resolve().parents[3] / "web" / "public" / "samples"
 MEMORY = json.loads((SAMPLES / "hymn_books.memory.json").read_text())
@@ -305,6 +319,85 @@ def test_put_on_someone_else():
 def test_put_on_out_of_reach():
     with pytest.raises(OutOfReach):
         put_on_keys(DAD, 1.0, HOLD, CAP, Body("kid", (0.8, 0.0), -1, "small"))
+
+
+def test_put_on_out_of_reach_raises_the_exact_grip_points_error():
+    """The clamp never hides a far wearer: the error is the one the exact grip point gives."""
+    kid = Body("kid", (0.8, 0.0), -1, "small")
+    for cap in (CAP, TOP_CAP):
+        with pytest.raises(OutOfReach) as got:
+            put_on_keys(DAD, 1.0, HOLD, cap, kid)
+        with pytest.raises(OutOfReach) as exact:
+            solve_body_arm(DAD, "arm_r", grip_from_anchor(cap, body_socket(kid, "head", {})))
+        assert str(got.value) == str(exact.value)
+        assert (got.value.who, got.value.arm) == ("dad", "arm_r")
+
+
+TOP_CAP = PropGeom("cap", 0.08, 0.12, (0.5, 1.0), (0.5, 0.0))  # held by its top edge
+
+
+def raw_track(keys, target, channel):
+    """[[t, value], ...] for one track, sorted by t, not rounded."""
+    return [[t, v] for (tg, ch, t, v) in sorted(keys, key=lambda k: k[2]) if tg == target and ch == channel]
+
+
+def test_put_on_with_a_grip_above_the_head_reaches_as_far_as_it_can_and_settles():
+    head = body_socket(DAD, "head", {})
+    with pytest.raises(OutOfReach):  # the exact grip point is above dad's reach
+        solve_body_arm(DAD, "arm_r", grip_from_anchor(TOP_CAP, head))
+    keys = put_on_keys(DAD, 2.0, HOLD, TOP_CAP, DAD)
+    assert_well_formed(keys)
+    t_on = 2.0 + REACH_SECONDS
+    assert track(keys, "prop:cap", "parent") == [[t_on, "puppet:dad.head"]]
+    (first, settled) = raw_track(keys, "prop:cap", "position")
+    assert first[0] == t_on and settled == [t_on + PUT_ON_SETTLE_SECONDS, [0.0, 0.0, 0.0]]
+    offset = first[1]
+    assert offset[2] == 0.0 and 0.0 < math.hypot(offset[0], offset[1]) <= PUT_ON_SETTLE_MAX
+    # the hand stops PUT_ON_REACH_FRACTION of full reach out, toward the exact grip point
+    vals = {ch: v for _, ch, t, v in keys if t == t_on and ch.endswith(".rot")}
+    hand = body_socket(DAD, "hand_r", {"arm_r.upper": vals["arm_r.upper.rot"], "arm_r.lower": vals["arm_r.lower.rot"]})
+    sh = shoulder_world("arm_r", DAD.ground, DAD.facing, DAD.build)
+    assert math.dist(hand, sh) == pytest.approx(PUT_ON_REACH_FRACTION * arm_reach("tall"), abs=1e-9)
+    target = grip_from_anchor(TOP_CAP, head)
+    cross = (hand[0] - sh[0]) * (target[1] - sh[1]) - (hand[1] - sh[1]) * (target[0] - sh[0])
+    assert cross == pytest.approx(0.0, abs=1e-12)
+    # the anchor, where the hand lets go, is head + offset (stage axes, as the stage applies it)
+    assert anchor_from_grip(TOP_CAP, hand) == pytest.approx((head[0] + offset[0], head[1] + offset[1]), abs=1e-9)
+    # the arm still returns to rest at t + 2R, after the settle
+    assert track(keys, "puppet:dad", "arm_r.upper.rot")[-1] == [2.0 + 2 * REACH_SECONDS, 0.0]
+    assert t_on + PUT_ON_SETTLE_SECONDS < 2.0 + 2 * REACH_SECONDS
+
+
+def test_put_on_clamp_offset_is_in_stage_axes_for_either_facing():
+    """Facing left mirrors the puppet, not the offset: the stage drops the socket's mirror."""
+    for facing in (1, -1):
+        me = Body("mom", (0.1, 0.2), facing, "average")
+        keys = put_on_keys(me, 0.0, HOLD, TOP_CAP, me, "arm_l")
+        vals = {ch: v for _, ch, t, v in keys if t == REACH_SECONDS and ch.endswith(".rot")}
+        hand = body_socket(me, "hand_l", {"arm_l.upper": vals["arm_l.upper.rot"], "arm_l.lower": vals["arm_l.lower.rot"]})
+        (first, _settled) = raw_track(keys, "prop:cap", "position")
+        head = body_socket(me, "head", {})
+        assert anchor_from_grip(TOP_CAP, hand) == pytest.approx(
+            (head[0] + first[1][0], head[1] + first[1][1]), abs=1e-9)
+
+
+def test_put_on_reachable_grip_is_unchanged_by_the_clamp():
+    """A grip the hand can carry to the head emits exactly the pre-clamp keys."""
+    keys = put_on_keys(DAD, 2.0, HOLD, CAP, DAD)
+    u, lo = solve_body_arm(DAD, "arm_r", grip_from_anchor(CAP, body_socket(DAD, "head", {})))
+    assert keys == [
+        ("puppet:dad", "arm_r.upper.rot", 2.0, 0.3), ("puppet:dad", "arm_r.lower.rot", 2.0, 1.2),
+        ("puppet:dad", "arm_r.upper.rot", 2.4, u), ("puppet:dad", "arm_r.lower.rot", 2.4, lo),
+        ("puppet:dad", "arm_r.upper.rot", 2.8, 0.0), ("puppet:dad", "arm_r.lower.rot", 2.8, 0.0),
+        ("prop:cap", "parent", 2.4, "puppet:dad.head"), ("prop:cap", "position", 2.4, [0.0, 0.0, 0.0]),
+    ]
+
+
+def test_put_on_too_far_to_settle_is_out_of_reach():
+    """Beyond PUT_ON_SETTLE_MAX the clamp gives up: a carried case held by its top."""
+    case = PropGeom("case", 0.2, 0.26, (0.5, 1.0), (0.5, 0.0))
+    with pytest.raises(OutOfReach, match="dad's arm_r cannot reach"):
+        put_on_keys(DAD, 0.0, HOLD, case, DAD)
 
 
 # ---------------------------------------------------------------------------- place on
