@@ -993,3 +993,67 @@ export function carryInto(
   }
   return Object.keys(out).length ? { ...initial, ...out } : initial;
 }
+
+// --- Loading /add again when the window comes back --------------------------
+//
+// /add can sit open in a tab while the family moves on: someone asks this
+// person a question, a relative joins, a moment is made. Coming back to the
+// window loads the questions, people and moments again, under the form
+// already on screen.
+
+/** At most one reload per this many ms, however often the window comes back. */
+export const ADD_REFRESH_MIN_GAP_MS = 2000;
+
+/**
+ * Whether the window coming back should load the page again: only when it is
+ * showing, the form is up, no load is running and the last one is not too
+ * recent (a focus and a visibilitychange often fire together).
+ */
+export function shouldRefreshOnShow(s: {
+  visible: boolean;
+  ready: boolean;
+  inFlight: boolean;
+  lastLoadedAt: number | null;
+  now: number;
+  minGapMs?: number;
+}): boolean {
+  if (!s.visible || !s.ready || s.inFlight) return false;
+  if (s.lastLoadedAt === null) return true;
+  return s.now - s.lastLoadedAt >= (s.minGapMs ?? ADD_REFRESH_MIN_GAP_MS);
+}
+
+/**
+ * A fresh load landing under a form already on screen. The base is kept as
+ * it was (the same object), so the form's key never changes and nothing typed
+ * is lost; the people, questions and moments are the fresh ones. Moments that
+ * could not be read this time keep the ones from before.
+ */
+export function mergeRefreshed<B, P, Q, M>(
+  prev: { base: B; people: P[]; questions: Q[]; moments: Map<string, M> | null; addedFor: string | null },
+  fresh: { people: P[]; questions: Q[]; moments: Map<string, M> | null },
+  addedFor: string | null,
+): { base: B; people: P[]; questions: Q[]; moments: Map<string, M> | null; addedFor: string | null } {
+  return {
+    base: prev.base,
+    people: fresh.people,
+    questions: fresh.questions,
+    moments: fresh.moments ?? prev.moments,
+    addedFor,
+  };
+}
+
+/**
+ * A question's moment, from what the page knows. The fresh moments win (one
+ * that was missing before may exist now); then the ones fetched one by one
+ * (null: it was not there). With the moments loaded and this one not among
+ * them, it is gone (null). Knowing nothing gives undefined: fetch it.
+ */
+export function knownMoment<M>(
+  id: string,
+  kept: ReadonlyMap<string, M | null>,
+  fresh: ReadonlyMap<string, M> | null,
+): M | null | undefined {
+  if (fresh && fresh.has(id)) return fresh.get(id) as M;
+  if (kept.has(id)) return kept.get(id) as M | null;
+  return fresh ? null : undefined;
+}
