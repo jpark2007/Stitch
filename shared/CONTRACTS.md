@@ -104,6 +104,19 @@ Marks come from the set (`SetDef.marks`), can be added or overridden per shot (`
 
 The compiler must reproduce `hymn_books.timeline.json` from `hymn_books.screenplay.json`: the same tracks, the same parent swaps at the same times, and numeric keys within a small tolerance.
 
+## Clarifications
+
+Answers to questions raised while building the stage. Where the stage and compiler could disagree, this is the rule.
+
+1. **Foot planting.** Bent legs shorten the puppet, so feet lift off the surface during walk and run cycles. The compiler is responsible for planting: it lowers `root.position.y` on walk/run keys by `(hipHeight − lowestFoot) × scale`, and sets `Timeline.feetPlanted = true` when it has. When `feetPlanted` is absent or false, the stage plants the feet itself; when true it must not. The reference sample is not planted.
+2. **IK frame.** The shoulder-to-target vector `v` is in the torso's frame (the shoulder's parent): rotate the world vector by `−torso` when the torso leans (hug, slumped, run) before solving.
+3. **Sockets and grip.** Only a hand socket takes a prop by its grip. On any other socket (the head, a prop's socket) the prop sits by its anchor.
+4. **Camera easing.** `position` and `lookAt` use smoothstep (`3s² − 2s³`) on each key segment. `fov` is plain linear.
+5. **Narration audio.** A narration's audio is one clip that starts at timeline `t = 0`, with silence before and between lines, so play it from 0 with the scene. Media references are `media/<id>`; fetch one at `GET /families/{fid}/media/<id>` with the `media/` prefix stripped.
+6. **Captions.** A caption shows until the next caption, or the end of its shot. There is no end time.
+7. **Pull tabs.** While dragged, a `scrub` tab drives its targets; on release they return to the scene's current time. The scene itself is never seeked by a tab. For `prop_part`, `rot` is in radians and `offset` is a translation along the part's local x in fractions of the prop's height; the default `range` is `[0, 1]`.
+8. **Defaults.** A prop with no `position` track is at `[0, 0, 0]` in its parent's space. A prop with no `parent` track is on the ground. A held prop's orientation is its own `rotation` channel only; it does not inherit the hand's angle.
+
 ## Decisions
 
 Where `ARCHITECTURE.md` was ambiguous or its example could not be followed literally:
