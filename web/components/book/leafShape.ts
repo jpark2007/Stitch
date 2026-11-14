@@ -145,3 +145,39 @@ export function tipOf(angles: Float32Array): [number, number] {
   }
   return [x, y];
 }
+
+/**
+ * How far along a turn (0 where it starts, 1 turned) the free edge crosses
+ * the spine, for the given direction, curl and rest shapes.
+ */
+export function spineCrossing(dir: 1 | -1, curl: number, right: Float32Array, left: Float32Array): number {
+  const out = new Float32Array(right.length);
+  const input: TurnInput = { p: 0, dir, curl, corner: 0 };
+  let lo = 0;
+  let hi = 1;
+  for (let k = 0; k < 20; k++) {
+    const along = (lo + hi) / 2;
+    input.p = dir > 0 ? along : 1 - along;
+    turnTargets(input, right, left, out);
+    // Still on the side it started from?
+    if (tipOf(out)[0] * dir > 0) lo = along;
+    else hi = along;
+  }
+  return (lo + hi) / 2;
+}
+
+/** How far ahead (seconds) a released page's motion is projected. */
+export const FLICK_LOOKAHEAD = 0.2;
+
+/**
+ * Whether a released drag completes the turn. `along` is progress along the
+ * turn (0 where it started, 1 turned), `speed` its rate (per second, positive
+ * toward turning), `crossing` the progress at which the free edge passes the
+ * spine (`spineCrossing`). The page keeps going if, carried on by its own
+ * motion for a moment, its edge would be past the spine; a quick flick from
+ * a page lifted only a little also completes it.
+ */
+export function releaseCompletes(along: number, speed: number, crossing: number): boolean {
+  if (speed > 1.1 && along > 0.08) return true;
+  return along + speed * FLICK_LOOKAHEAD >= crossing;
+}

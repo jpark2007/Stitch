@@ -16,7 +16,9 @@ import {
   LEAF_REST_GAP,
   PAGE_H,
   PAGE_W,
+  releaseCompletes,
   smoothstep,
+  spineCrossing,
   tipOf,
   turnTargets,
 } from "./leafShape";
@@ -317,10 +319,10 @@ export class BookController {
       this.invalidate();
       return;
     }
-    // Released: complete or spring back, from how far and how fast it went.
+    // Released: complete or spring back, from where the corner is headed.
     const along = d.dir > 0 ? leaf.p : 1 - leaf.p;
     const speed = d.dir > 0 ? d.vel : -d.vel;
-    const complete = along > 0.5 || (speed > 1.1 && along > 0.08);
+    const complete = releaseCompletes(along, speed, spineCrossing(d.dir, leaf.curl, this.rt.restR, this.rt.restL));
     const to = complete ? (d.dir > 0 ? 1 : 0) : d.dir > 0 ? 0 : 1;
     Object.assign(leaf, { mode: "auto", from: leaf.p, to, t0: now(), dur: 0.3 + 0.75 * Math.abs(to - leaf.p), stiff: 1.15 });
     if (complete) {
