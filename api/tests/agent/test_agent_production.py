@@ -6,7 +6,9 @@ family data, and sockets blocked while the services are built.
 
 from __future__ import annotations
 
+import io
 import socket
+import wave
 from typing import Any
 
 import mongomock
@@ -223,6 +225,35 @@ def test_production_manager_logs_its_services(monkeypatch: pytest.MonkeyPatch, c
         assert isinstance(manager, runs.RunManager)
         assert any(r.getMessage().startswith("studio services: ") for r in caplog.records)
         assert manager._store is built[0].store  # run records live in the persistence store
+    finally:
+        manager.shutdown()
+
+
+def test_without_a_speech_key_the_manager_narrates_in_silence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Families hear silence with real word timings, not the test fakes' hum."""
+    dummy_keys(monkeypatch, tts=False)
+    built: list[wiring.Services] = []
+    real_services = production.production_services
+
+    def spy() -> wiring.Services:
+        built.append(real_services())
+        return built[-1]
+
+    monkeypatch.setattr(production, "production_services", spy)
+    manager = production.production_manager(max_workers=1)
+    try:
+        tts = built[0].tts
+        assert isinstance(tts, FakeTTS) and built[0].labels["tts"] == "fake"
+        speech = tts.synthesize("Dad passed the hymn books down the pew.")
+        with wave.open(io.BytesIO(speech.audio)) as wav:
+            frames = wav.readframes(wav.getnframes())
+            assert wav.getnframes() / wav.getframerate() == pytest.approx(speech.duration)
+        assert frames and not any(frames)  # every sample is zero
+        # Same timings as the humming fake the tests use.
+        hum = FakeTTS().synthesize("Dad passed the hymn books down the pew.")
+        assert any(hum.audio[44:])
+        assert speech.duration == hum.duration > 0
+        assert speech.words == hum.words
     finally:
         manager.shutdown()
 

@@ -415,7 +415,8 @@ def test_second_telling_adds_a_narration_over_the_same_action(harnesses: list[Ha
     assert memory.screenplay.shots == original.screenplay.shots  # type: ignore[union-attr]
     dad_lines = (memory.screenplay.narrations or {})["dad"]["s1"]
     assert [ln.source for ln in dad_lines] == ["telling:dad:s1", "telling:dad:s2"]
-    assert h.repo.list_questions(FAMILY) and all(q.person_id == "dad" for q in h.repo.list_questions(FAMILY))
+    # The linker asked dad for his version after the first run; his telling answered it.
+    assert h.repo.list_questions(FAMILY) == []
 
 
 def test_second_telling_links_someone_new_to_the_moment(harnesses: list[Harness]) -> None:
@@ -454,7 +455,8 @@ def test_second_telling_does_not_relink_a_participant_who_was_not_cast(harnesses
     assert [n for n, _ in events][-1] == "done"
     starts = [p.name for n, p in events if n == "subagent_start"]  # type: ignore[attr-defined]
     assert starts == ["narrator", "checker", "narrator"]  # gran is already in the moment: no linker
-    assert sorted(q.person_id for q in h.repo.list_questions(FAMILY)) == ["dad", "gran"]
+    # Dad's telling answered his question; gran's is still open.
+    assert [q.person_id for q in h.repo.list_questions(FAMILY)] == ["gran"]
 
 
 # --------------------------------------------------------------------------- unit pieces

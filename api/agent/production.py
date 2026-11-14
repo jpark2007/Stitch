@@ -150,7 +150,8 @@ def production_services() -> Services:
         tts = ElevenLabsTTS()
         labels["tts"] = "real"
     else:
-        tts = FakeTTS()
+        # Silent audio with real word timings: families hear silence, not a test hum.
+        tts = FakeTTS(tone=False)
         labels["tts"] = "fake"
 
     vision = AnthropicVision()

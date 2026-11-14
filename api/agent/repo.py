@@ -25,7 +25,7 @@ from typing import Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
 
-from schemas import Memory, MemoryResponse, Person, Prop, Question, SetDef
+from schemas import Memory, MemoryResponse, Person, Prop, Question, SetDef, Telling
 
 SAMPLE_MEMORY_PATH = Path(__file__).resolve().parents[2] / "web" / "public" / "samples" / "hymn_books.memory.json"
 
@@ -152,6 +152,27 @@ def _keyword_find(items: list[PS], text: str, limit: int) -> list[PS]:
     return [_copy(r[4]) for r in ranked[:limit]]
 
 
+def _telling_key(telling: Telling) -> tuple[object, ...]:
+    """What makes two tellings the same, ignoring created_at (as in MongoRepo)."""
+    return (telling.author_id, telling.question, telling.text, tuple(telling.photo_ids))
+
+
+def _answers(question: Question, memory_id: str, telling: Telling) -> bool:
+    """Whether `telling` on `memory_id` answers this open question, as db.memories decides.
+
+    Mirrors db.memories._close_answered_questions: the author's open question pointing at
+    this memory, or one whose text equals telling.question after strip() and that is free
+    (memory_id None) or bound to this same memory. A question bound to a different memory
+    stays open even when its text is identical.
+    """
+    if question.status != "open" or question.person_id != telling.author_id:
+        return False
+    if question.memory_id == memory_id:
+        return True
+    asked = (telling.question or "").strip()
+    return bool(asked) and question.text == asked and question.memory_id in (None, memory_id)
+
+
 @dataclass
 class _Media:
     data: bytes
@@ -171,6 +192,9 @@ class _FamilyData:
 
 class InMemoryRepo:
     """Dict-per-family fake of AgentRepo.
+
+    Saving a memory with a new telling closes the questions it answers, as MongoRepo does
+    through the data layer, so tests see the same question lifecycle on both.
 
     Models are deep-copied on the way in and on the way out, so a caller can never
     mutate stored state through an object it passed in or got back. Ids from `new_id`
@@ -239,9 +263,21 @@ class InMemoryRepo:
         return f"{kind}_{next(self._counters[kind])}"
 
     def save_memory(self, family_id: str, memory: Memory) -> Memory:
+        """Store the memory. Like MongoRepo (db.memories.create_memory / add_telling), every
+        telling not in the stored version closes the author's open questions it answers
+        (status 'answered'; see `_answers`)."""
         if memory.family_id != family_id:
             raise ValueError(f"memory {memory.id!r} belongs to family {memory.family_id!r}, not {family_id!r}")
-        self._families[family_id].memories[memory.id] = _copy(memory)
+        fam = self._families[family_id]
+        stored = fam.memories.get(memory.id)
+        known = {_telling_key(t) for t in stored.tellings} if stored else set()
+        fam.memories[memory.id] = _copy(memory)
+        for telling in memory.tellings:
+            if _telling_key(telling) in known:
+                continue
+            for qid, question in fam.questions.items():
+                if _answers(question, memory.id, telling):
+                    fam.questions[qid] = question.model_copy(update={"status": "answered"})
         return _copy(memory)
 
     # --------------------------------------------------------------- questions
@@ -261,9 +297,10 @@ class InMemoryRepo:
         return _copy(question)
 
     def list_questions(self, family_id: str) -> list[Question]:
-        """Test helper (not part of AgentRepo)."""
+        """Test helper (not part of AgentRepo): every open question in the family, oldest first."""
         fam = self._fam(family_id)
-        return [_copy(q) for q in fam.questions.values()] if fam else []
+        # Dicts keep insertion order, which is creation order.
+        return [_copy(q) for q in fam.questions.values() if q.status == "open"] if fam else []
 
     # ------------------------------------------------------------------- props
 

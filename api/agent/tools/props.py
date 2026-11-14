@@ -457,9 +457,14 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
     # ------------------------------------------------------------ confirm_props
 
     def _replace_photo(prop: schemas.Prop, photo_id: str) -> tuple[schemas.Prop | None, str | None]:
-        """Return (updated prop, None) or (None, problem)."""
+        """Return (updated prop, None) or (None, problem).
+
+        The web may send the bare id POST /families/{fid}/media returned; the art always
+        stores the 'media/<id>' reference (shared/CONTRACTS.md).
+        """
+        ref = photo_id if photo_id.startswith("media/") else f"media/{photo_id}"
         try:
-            stored = repo.get_media(family_id, photo_id)
+            stored = repo.get_media(family_id, ref)
         except Exception as exc:  # noqa: BLE001 - e.g. a malformed id
             log.warning("confirm_props could not read %r: %s: %s", photo_id, type(exc).__name__, exc)
             stored = None
@@ -475,7 +480,7 @@ def make_prop_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[Base
             size_px = _image_size(data)
             if size_px is None:
                 return None, f"{prop.id}: photo {photo_id!r} could not be read; kept the current art"
-            body, aspect, anchor = photo_id, size_px[0] / size_px[1], [0.5, 1.0]
+            body, aspect, anchor = ref, size_px[0] / size_px[1], [0.5, 1.0]
         updated = _validated(
             prop,
             family_id=family_id,
