@@ -28,12 +28,25 @@ is the compiler's job, so when the tool has a compiler the voice pass:
 
 A second telling plays over the memory's saved action, not over the draft compile: each
 line keeps its offset from its own shot's `actionStart` in the recompiled draft and is laid
-over the saved timeline's shots, so a longer telling never moves a later shot.
+over the saved timeline's shots, so a longer telling never moves a later shot. A second
+teller's lines come only from `narrations[<authorId>]`, except when the memory's default
+narrator retells it: the compiler refuses `narrations[author]` for the default teller
+(`duplicate_telling`), so their retold lines are each shot's own `narration`.
 
-A failed recompile falls back to the timeline already in the files with estimated
-placement, and the tool says so with one `warning:` line. A failing TTS or media store
-never raises out of the tool: it returns an `Error: could not voice ...` string so the
-narrator can call it again.
+Degrade, don't fail (the first real run happens in front of people):
+
+- A failed recompile falls back to the timeline already in the files with estimated
+  placement, and the tool says so with one `warning:` line.
+- A TTS that raises is called once more (one retry per voice pass, shared by all lines).
+  If it fails again the teller is voiced with `FakeTTS(tone=False)`: silent audio and
+  estimated word timings, and everything else exactly as a real voice pass. The tool
+  succeeds with `warning: the speech service failed (<ExceptionType>); narrated silently
+  with estimated word timings`.
+- A failing media store never raises out of the tool: it returns an
+  `Error: could not voice ...` string so the narrator can call it again.
+
+Outside-service failures are named by exception type only in what the tool returns; their
+messages (which may carry keys, request ids or URIs) go to the server log.
 """
 
 from __future__ import annotations
@@ -245,6 +258,37 @@ def _synthesize(lines_by_shot: dict[str, list[NarrationLine]], tts: TTS, voice: 
     return out
 
 
+class _RetryOnce:
+    """A TTS that calls the real one again after its first failure, once per voice pass.
+
+    The retry budget is shared by all the pass's lines, so a TTS that is down costs at most
+    two failed calls before the pass falls back to silent narration, never one per line.
+    """
+
+    def __init__(self, tts: TTS) -> None:
+        self._tts = tts
+        self._retries_left = 1
+
+    def synthesize(self, text: str, *, voice: str | None = None) -> Speech:
+        try:
+            return self._tts.synthesize(text, voice=voice)
+        except Exception:
+            if self._retries_left <= 0:
+                raise
+            self._retries_left -= 1
+            log.warning("synthesize_narration: TTS failed; retrying once", exc_info=True)
+            return self._tts.synthesize(text, voice=voice)
+
+
+def _speech_failed_warning(exc: Exception) -> str:
+    """The voice pass's line for a TTS that failed: the exception type only, never its message
+    (a provider error can carry a request id, a key prefix or a URL)."""
+    return (
+        f"warning: the speech service failed ({type(exc).__name__}); "
+        "narrated silently with estimated word timings"
+    )
+
+
 def _lay_out(
     timeline: Timeline,
     voiced: list[_Voiced],
@@ -374,20 +418,40 @@ def apply_narration(timeline: Timeline, track: NarrationTrack, audio_end: float,
 
 
 def lines_for_author(
-    screenplay: Screenplay, author_id: str, *, second_telling: bool = False
+    screenplay: Screenplay, author_id: str, *, second_telling: bool = False, retells_default: bool = False
 ) -> dict[str, list[NarrationLine]]:
     """The author's lines by shot.
 
     `Screenplay.narrations[author_id]` if present. Otherwise, for a first telling, each
-    shot's default-telling `narration`; for a second telling, nothing: the default telling
+    shot's default-telling `narration`. For a second telling, nothing: the default telling
     belongs to someone else, so a second teller's lines only ever come from
-    `narrations[author_id]`.
+    `narrations[author_id]`. The one exception is the default narrator retelling
+    (`retells_default`): the compiler refuses narrations[author] for the default teller
+    (duplicate_telling), so their retold lines are each shot's `narration`.
     """
     if screenplay.narrations and author_id in screenplay.narrations:
         return {shot_id: list(lines) for shot_id, lines in screenplay.narrations[author_id].items()}
-    if second_telling:
+    if second_telling and not retells_default:
         return {}
     return {shot.id: list(shot.narration) for shot in screenplay.shots if shot.narration}
+
+
+def _draft_default_teller(screenplay: Screenplay) -> str | None:
+    """Who tells the draft's default narration, by the compiler's rule (None if nobody can)."""
+    try:
+        return screenplay_narration.default_author(screenplay)
+    except screenplay_narration.NarrationError:
+        return None
+
+
+def _retells_default(screenplay: Screenplay, author_id: str) -> bool:
+    """True when a second telling's author is the draft's default teller and has no
+    narrations[author] of their own: the default narrator retelling the memory."""
+    if screenplay.narrations and author_id in screenplay.narrations:
+        return False
+    if not any(line.text.strip() for shot in screenplay.shots for line in shot.narration):
+        return False
+    return _draft_default_teller(screenplay) == author_id
 
 
 def _from_default(screenplay: Screenplay, author_id: str) -> bool:
@@ -506,7 +570,9 @@ def _read_json(files: dict[str, Any], path: str) -> tuple[Any, str | None]:
 
 
 def _voice_error(exc: Exception) -> str:
-    return f"Error: could not voice the narration ({type(exc).__name__}: {exc}); try synthesize_narration again"
+    """A media store (or mix) failure: a tool error the narrator retries once. The exception
+    type only; the message (a database URI, a provider's detail) stays in the server log."""
+    return f"Error: could not voice the narration ({type(exc).__name__}); try synthesize_narration again"
 
 
 def _dump(model: Screenplay | Timeline) -> str:
@@ -557,7 +623,9 @@ def make_narration_tool(
         Run this after the last successful compile. It writes the spoken word timings into
         the teller's lines in /screenplay.json and recompiles internally, so each cued action
         lands on its spoken word. Lines that would overlap are pushed later, and the scene is
-        lengthened if the narration runs past the action.
+        lengthened if the narration runs past the action. If the speech service is down it
+        still voices (silently, with estimated timings) and says so in a `warning:` line;
+        do not retry for a warning.
         """
         files = state.get("files") or {}
         raw_sp, err = _read_json(files, SCREENPLAY_PATH)
@@ -575,13 +643,15 @@ def make_narration_tool(
         except ValidationError as e:
             return f"Error: {TIMELINE_PATH} is not a valid timeline: {e}"
 
-        lines = lines_for_author(screenplay, author_id, second_telling=second_telling)
+        retells = second_telling and _retells_default(screenplay, author_id)
+        lines = lines_for_author(screenplay, author_id, second_telling=second_telling, retells_default=retells)
         if not any(line.text.strip() for shot_lines in lines.values() for line in shot_lines):
             if second_telling:
                 return (
                     f"Error: the screenplay has no narration lines for {author_id}. A second telling is voiced "
                     f"only from narrations[{author_id}]: the narrator's write pass must put this teller's lines "
-                    f"in narrations[{author_id}] of {SCREENPLAY_PATH}."
+                    f"in narrations[{author_id}] of {SCREENPLAY_PATH} (or, when {author_id} is the memory's "
+                    f"default narrator, rewrite each shot's own narration lines)."
                 )
             return f"Error: the screenplay has no narration lines for {author_id}."
         try:
@@ -595,22 +665,33 @@ def make_narration_tool(
                 base = base_timeline()
             except Exception as e:  # noqa: BLE001 - a repo failure is a tool error, not a run failure
                 log.warning("synthesize_narration: could not load the saved timeline", exc_info=True)
-                return f"Error: could not load the saved memory's timeline ({type(e).__name__}: {e})"
+                return f"Error: could not load the saved memory's timeline ({type(e).__name__})"
             if base is None:
                 return "Error: the saved memory has no timeline to add this telling to."
+            if retells and base.default_narrator not in (None, author_id):
+                return (
+                    f"Error: each shot's narration is {base.default_narrator}'s telling, the memory's default "
+                    f"narrator, but its sources name {author_id}. A second teller's lines go only in "
+                    f"narrations[{author_id}] of {SCREENPLAY_PATH}; restore the shots' narration."
+                )
             try:
                 _check_shots(base, lines)
             except ValueError as e:
                 return f"Error: {e}"
 
+        warnings: list[str] = []
         try:
-            voiced = _synthesize(lines, tts, voice)
-        except Exception as e:  # noqa: BLE001 - TTS is an outside service; the narrator may retry
-            log.warning("synthesize_narration: TTS failed for %s", author_id, exc_info=True)
-            return _voice_error(e)
+            voiced = _synthesize(lines, _RetryOnce(tts), voice)
+        except Exception as e:  # noqa: BLE001 - TTS is an outside service; degrade, never fail the run
+            # Degrade, don't fail: the teller is voiced silently with the deterministic
+            # estimate, and everything else (word timings in the screenplay, the recompile,
+            # the track, the audio file) is exactly as for a real voice.
+            log.warning("synthesize_narration: TTS failed for %s; narrating silently", author_id, exc_info=True)
+            voiced = _synthesize(lines, FakeTTS(tone=False), voice)
+            warnings.append(_speech_failed_warning(e))
 
-        from_default = not second_telling and _from_default(screenplay, author_id)
-        warning: str | None = None
+        # The default telling: a first telling's shot narration, or the default narrator's retelling.
+        from_default = (retells or not second_telling) and _from_default(screenplay, author_id)
         draft: Screenplay | None = None
         compiled: Timeline | None = None
         starts: dict[tuple[str, int], float] = {}
@@ -622,9 +703,11 @@ def make_narration_tool(
             except Exception as e:  # noqa: BLE001 - a failed recompile only costs cue precision
                 log.warning("synthesize_narration: recompile with word timings failed", exc_info=True)
                 draft, compiled, starts = None, None, {}
-                reason = f"compile errors: {e}" if isinstance(e, _RecompileFailed) else f"{type(e).__name__}: {e}"
+                # Compiler errors are the agent's feedback; any other failure (the scene lookup
+                # reads the family store) is named by type only.
+                reason = f"compile errors: {e}" if isinstance(e, _RecompileFailed) else type(e).__name__
                 over = "the saved action" if base is not None else f"the timeline in {TIMELINE_PATH}"
-                warning = (
+                warnings.append(
                     f"warning: could not recompile with the spoken word timings ({reason}); voiced over "
                     f"{over} with estimated placement, so cued actions may not land exactly on their words."
                 )
@@ -664,7 +747,7 @@ def make_narration_tool(
             summary += " Recompiled with the spoken word timings, so cued actions land on their words."
         if base is not None:
             summary += " Laid over the saved scene's action."
-        if warning:
+        for warning in warnings:
             summary += "\n" + warning
         return Command(
             update={

@@ -747,6 +747,67 @@ def test_a_second_telling_plays_over_the_saved_action(screenplay, family_repo, c
     Timeline.model_validate(timeline.model_dump(mode="json", by_alias=True))
 
 
+DAD_RETOLD = [
+    {"t": 0, "text": "There she was, at the very top of the church steps.", "source": "telling:dad:s1"},
+    {"t": 3.0, "text": "Then she dropped the lot of them.", "source": "telling:dad:s2", "cue": "drop",
+     "cueWord": "dropped"},
+    {"t": 7.0, "text": "I handed them back, one at a time.", "source": "telling:dad:s3", "cue": "hand_back",
+     "cueWord": "handed"},
+]
+
+
+def test_the_default_narrator_retells_in_the_shots_own_narration(screenplay, compiler, lookup):
+    """Dad, the memory's default narrator, retells it: his new lines are each shot's narration
+    (the compiler refuses narrations[dad] with duplicate_telling), voiced over the saved action
+    as the new default telling."""
+    first_files = _draft_files(screenplay, _compiled(screenplay, compiler, lookup))
+    dad = make_narration_tool(FakeTTS(), MediaStore().put, author_id="dad", voice=None, second_telling=False,
+                              compiler=compiler, scene_for=lookup)
+    saved = _timeline_in(_run_tool(dad, first_files))
+    assert saved.default_narrator == "dad"
+
+    data = screenplay.model_dump(mode="json", by_alias=True)
+    data["shots"][0]["narration"] = DAD_RETOLD
+    retold = Screenplay.model_validate(data)
+    draft_timeline = _compiled(retold, compiler, lookup)  # the write pass compiles
+    tool = make_narration_tool(FakeTTS(), MediaStore().put, author_id="dad", voice=None, second_telling=True,
+                               compiler=compiler, scene_for=lookup, base_timeline=lambda: saved)
+    state = _run_tool(tool, _draft_files(retold, draft_timeline))
+    text = _tool_text(state)
+    assert text.startswith("Narrated") and "warning" not in text, text
+    voiced = _timeline_in(state)
+    assert voiced.tracks == saved.tracks
+    assert [(s.id, s.action_start) for s in voiced.shots] == [(s.id, s.action_start) for s in saved.shots]
+    track = voiced.narrations["dad"]
+    assert [line.text for line in track.lines] == [line["text"] for line in DAD_RETOLD]
+    assert voiced.default_narrator == "dad" and voiced.audio == track.audio
+    assert voiced.narrations["mom"] == saved.narrations["mom"]
+    voiced_sp = _screenplay_in(state)
+    assert all(line.words for line in voiced_sp.shots[0].narration)
+    assert "dad" not in (voiced_sp.narrations or {})
+
+
+def test_a_second_teller_never_takes_over_the_default_narration(screenplay, compiler, lookup):
+    """Mom's lines written into the shots' narration (sources telling:mom:...) are not hers to
+    voice when dad is the memory's default narrator."""
+    saved = _timeline_in(_run_tool(
+        make_narration_tool(FakeTTS(), MediaStore().put, author_id="dad", voice=None, second_telling=False),
+        _draft_files(screenplay, _compiled(screenplay, compiler, lookup)),
+    ))
+    data = screenplay.model_dump(mode="json", by_alias=True)
+    data["shots"][0]["narration"] = data["narrations"]["mom"]["s1"]
+    data["narrations"] = None
+    draft = Screenplay.model_validate(data)
+    files = _draft_files(draft, _compiled(draft, compiler, lookup))
+    tts = FakeTTS()
+    tool = make_narration_tool(tts, MediaStore().put, author_id="mom", voice=None, second_telling=True,
+                               compiler=compiler, scene_for=lookup, base_timeline=lambda: saved)
+    state = _run_tool(tool, files)
+    text = _tool_text(state)
+    assert text.startswith("Error") and "narrations[mom]" in text, text
+    assert tts.calls == [] and state["files"] == files
+
+
 def test_a_second_telling_needs_the_saved_timeline(screenplay):
     files = _files(load("hymn_books.screenplay.json"), _bare_timeline_json())
     tool = make_narration_tool(FakeTTS(), MediaStore().put, author_id="mom", voice=None, second_telling=True,
@@ -770,25 +831,130 @@ def test_a_second_telling_without_a_compiler_offsets_from_its_written_t(screenpl
 # --------------------------------------------------------------------------- outside failures
 
 
+FAKE_KEY = "sk_live_0123456789abcdefFAKEKEY"
+
+
 class BrokenTTS:
+    """A TTS whose every call fails, with a provider message that leaks a key."""
+
+    def __init__(self, exc: type[Exception] = RuntimeError) -> None:
+        self.exc = exc
+        self.calls = 0
+
     def synthesize(self, text: str, *, voice: str | None = None) -> Speech:
-        raise RuntimeError("TTS provider returned HTTP 503")
+        self.calls += 1
+        raise self.exc(f"TTS provider returned HTTP 503 for xi-api-key={FAKE_KEY}")
 
 
-def test_a_failing_tts_is_an_error_string_not_an_exception():
-    """Finding 3: an outside failure never reaches langgraph's ToolNode."""
+class FlakyTTS:
+    """FakeTTS whose first call fails, as a provider answering one HTTP 503 would."""
+
+    def __init__(self, fail_first: int = 1) -> None:
+        self.inner = FakeTTS()
+        self.fail_first = fail_first
+        self.calls = 0
+
+    def synthesize(self, text: str, *, voice: str | None = None) -> Speech:
+        self.calls += 1
+        if self.calls <= self.fail_first:
+            raise RuntimeError("TTS provider returned HTTP 503")
+        return self.inner.synthesize(text, voice=voice)
+
+
+def test_a_failing_tts_narrates_silently_with_a_warning(screenplay, compiler, lookup):
+    """Degrade, don't fail: a TTS that always raises still gives a full voice pass, silently."""
+    timeline = _compiled(screenplay, compiler, lookup)
+    files = _draft_files(screenplay, timeline)
+    media = MediaStore()
+    tts = BrokenTTS(ConnectionError)
+    tool = make_narration_tool(tts, media.put, author_id="dad", voice="voice_a", second_telling=False,
+                               compiler=compiler, scene_for=lookup)
+    state = _run_tool(tool, files)
+    text = _tool_text(state)
+    assert text.startswith("Narrated"), text
+    assert "\nwarning: the speech service failed (ConnectionError); narrated silently with estimated word timings" in text
+    assert "Recompiled with the spoken word timings" in text  # everything else as a real pass
+    assert FAKE_KEY not in text and "HTTP 503" not in text and "xi-api-key" not in text
+    assert tts.calls == 2  # the first call and one retry, never one per line
+
+    # Every teller line carries words in the screenplay and on the track.
+    voiced_sp = _screenplay_in(state)
+    spoken = [line for shot in voiced_sp.shots for line in shot.narration if line.text.strip()]
+    assert spoken and all(line.words for line in spoken)
+    voiced = _timeline_in(state)
+    track = voiced.narrations["dad"]
+    assert len(track.lines) == len(spoken) and all(line.words for line in track.lines)
+    assert voiced.default_narrator == "dad" and voiced.audio == track.audio
+    # The timings are FakeTTS's estimate; the audio is silence of the right length.
+    silent = FakeTTS(tone=False)
+    assert [w.word for w in track.lines[0].words] == [w.word for w in silent.synthesize(spoken[0].text).words]
+    data, content_type = media.items[track.audio]
+    assert content_type == "audio/wav"
+    with wave.open(io.BytesIO(data), "rb") as w:
+        pcm = w.readframes(w.getnframes())
+    assert pcm and not any(pcm)
+    Timeline.model_validate(voiced.model_dump(mode="json", by_alias=True))
+
+
+def test_a_failing_tts_without_a_compiler_still_narrates(screenplay):
     files = _files(load("hymn_books.screenplay.json"), _bare_timeline_json())
     tool = make_narration_tool(BrokenTTS(), MediaStore().put, author_id="dad", voice=None, second_telling=False)
     state = _call(tool, files)
     text = _tool_text(state)
-    assert text.startswith("Error: could not voice the narration (RuntimeError: TTS provider returned HTTP 503)")
-    assert "try synthesize_narration again" in text
-    assert state["files"]["/timeline.json"] == files["/timeline.json"]
+    assert text.startswith("Narrated") and "warning: the speech service failed (RuntimeError)" in text, text
+    assert FAKE_KEY not in text
+    assert all(line.words for line in _timeline_in(state).narrations["dad"].lines)
+
+
+def test_a_tts_that_fails_once_is_retried_in_the_tool(screenplay, compiler, lookup):
+    timeline = _compiled(screenplay, compiler, lookup)
+    tts = FlakyTTS()
+    tool = make_narration_tool(tts, MediaStore().put, author_id="dad", voice=None, second_telling=False,
+                               compiler=compiler, scene_for=lookup)
+    state = _run_tool(tool, _draft_files(screenplay, timeline))
+    text = _tool_text(state)
+    assert text.startswith("Narrated") and "warning" not in text, text
+    spoken = sum(1 for shot in screenplay.shots for line in shot.narration if line.text.strip())
+    assert tts.calls == spoken + 1
+
+
+def test_the_retry_budget_is_shared_by_the_whole_pass(screenplay, compiler, lookup):
+    """A second failure on a later line is not retried: the pass goes silent instead."""
+
+    class FailsTwice(FlakyTTS):
+        def synthesize(self, text: str, *, voice: str | None = None) -> Speech:
+            self.calls += 1
+            if self.calls in (1, 3):
+                raise RuntimeError("HTTP 503")
+            return self.inner.synthesize(text, voice=voice)
+
+    timeline = _compiled(screenplay, compiler, lookup)
+    tts = FailsTwice()
+    tool = make_narration_tool(tts, MediaStore().put, author_id="dad", voice=None, second_telling=False,
+                               compiler=compiler, scene_for=lookup)
+    text = _tool_text(_run_tool(tool, _draft_files(screenplay, timeline)))
+    assert "warning: the speech service failed (RuntimeError)" in text, text
+    assert tts.calls == 3
+
+
+def test_a_second_telling_with_a_failing_tts_narrates_silently_over_the_saved_action(
+    screenplay, compiler, lookup
+):
+    timeline = _compiled(screenplay, compiler, lookup)
+    tool = make_narration_tool(BrokenTTS(), MediaStore().put, author_id="mom", voice=None, second_telling=True,
+                               compiler=compiler, scene_for=lookup, base_timeline=lambda: timeline)
+    state = _run_tool(tool, _draft_files(screenplay, timeline))
+    text = _tool_text(state)
+    assert text.startswith("Narrated") and "warning: the speech service failed" in text, text
+    voiced = _timeline_in(state)
+    assert voiced.tracks == timeline.tracks
+    assert [s.action_start for s in voiced.shots] == [s.action_start for s in timeline.shots]
+    assert all(line.words for line in voiced.narrations["mom"].lines)
 
 
 def test_a_failing_media_store_is_an_error_string_not_an_exception(screenplay, compiler, lookup):
     def put(_data: bytes, _content_type: str) -> str:
-        raise ConnectionError("media store unreachable")
+        raise ConnectionError("media store unreachable at mongodb+srv://user:pw@cluster")
 
     timeline = _compiled(screenplay, compiler, lookup)
     files = _draft_files(screenplay, timeline)
@@ -796,5 +962,6 @@ def test_a_failing_media_store_is_an_error_string_not_an_exception(screenplay, c
                                compiler=compiler, scene_for=lookup)
     state = _run_tool(tool, files)
     text = _tool_text(state)
-    assert text.startswith("Error: could not voice the narration (ConnectionError: media store unreachable)")
+    assert text.startswith("Error: could not voice the narration (ConnectionError); try synthesize_narration again")
+    assert "unreachable" not in text  # the store's message stays in the server log
     assert state["files"] == files  # neither draft was rewritten
