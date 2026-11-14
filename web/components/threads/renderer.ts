@@ -76,7 +76,7 @@ export function threadWidth(s: number): number {
 }
 
 export function knotRadius(s: number, people: number): number {
-  const base = Math.min(12.5, Math.max(7, 5.6 + s * 0.04));
+  const base = Math.min(12.5, Math.max(8, 5.6 + s * 0.04));
   return people > 1 ? base * (1 + Math.min(0.4, (people - 2) * 0.13)) : base * 0.82;
 }
 
