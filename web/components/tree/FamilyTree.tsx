@@ -1,7 +1,8 @@
 import Link from "next/link";
 import type { CSSProperties } from "react";
 import { DEFAULT_LAYOUT, layoutFamily, type TreeLayout } from "./layout";
-import { Puppet, PuppetDefs, type Build } from "./Puppet";
+import type { CharacterSheet, Person } from "@/lib/types";
+import { Puppet, PuppetDefs } from "./Puppet";
 import { hashSeed, wobblyCubic, wobblyLine, type Pt } from "./sketch";
 import "./tree.css";
 
@@ -13,14 +14,10 @@ import "./tree.css";
  * Server component, no client JS: hover and the draw-in are CSS only.
  */
 
-/** The bits of a person the tree reads (subset of ARCHITECTURE.md `people`). */
-export interface TreePerson {
-  id: string;
-  name: string;
-  parentIds: string[];
-  spouseIds: string[];
-  character: { color: string; item?: string; build?: Build };
-}
+/** The bits of a contract `Person` the tree reads, so API people plug straight in. */
+export type TreePerson = Pick<Person, "id" | "name" | "parentIds" | "spouseIds"> & {
+  character: Pick<CharacterSheet, "color" | "item" | "build">;
+};
 
 export interface FamilyTreeProps {
   people: readonly TreePerson[];
@@ -217,7 +214,7 @@ export function FamilyTree({ people, maxHeight, className }: FamilyTreeProps) {
                 <Puppet
                   id={p.id}
                   color={person.character.color}
-                  item={person.character.item}
+                  item={person.character.item ?? undefined}
                   build={person.character.build}
                   className="ft-puppet"
                 />
