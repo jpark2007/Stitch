@@ -17,6 +17,7 @@ import pytest
 from screenplay import body as B
 from screenplay import ik, verbs_core
 from screenplay.compiler import compile as compile_screenplay
+from screenplay.errors import hint_for
 from screenplay.schema import VOCABULARY, Screenplay
 from screenplay.tracks import evaluate
 from verb_cases import base_scene
@@ -286,14 +287,25 @@ SEATED = {"chair": {"at": "bench_spot"}, "cap": {"at": "bench_spot"}}
 
 @pytest.mark.parametrize("holding,message", [
     (None, 'shot s1, t=1: mom cannot pick_up "cap"; mom\'s arm_r cannot reach: target is 0.23 from the shoulder, '
-           "reach is 0.17"),
+           "reach is 0.17; mom is seated in chair.seat; use stand_up first"),
     ("hymn_books", 'shot s1, t=1: mom cannot pick_up "cap"; mom\'s arm_l cannot reach: target is 0.28 from the '
-                   "shoulder, reach is 0.17"),
+                   "shoulder, reach is 0.17; mom is seated in chair.seat; use stand_up first"),
 ])
 def test_a_seated_puppet_that_cannot_bend_down_to_the_cap_is_out_of_reach(holding, message):
     start = {"mom": {"at": "bench_spot", "in": "chair.seat", **({"holding": holding} if holding else {})}}
     res = compile_one([{"t": 1, "who": "mom", "do": "pick_up", "what": "cap"}], start, SEATED)
     assert errors(res) == [("out_of_reach", message)]
+    assert hint_for(res.errors[0]) == "add a stand_up for mom before this pick_up"
+
+
+@pytest.mark.parametrize("holding", [None, "hymn_books"])
+def test_the_seated_hint_applied_picks_the_cap_up_off_the_floor(holding):
+    """errors.HINT_VARIANTS' fix for the seated miss works: stand_up, then the same pick_up once
+    the stand_up has ended (POSE_SECONDS later) reaches the cap at the chair's foot."""
+    start = {"mom": {"at": "bench_spot", "in": "chair.seat", **({"holding": holding} if holding else {})}}
+    res = compile_one([{"t": 1, "who": "mom", "do": "stand_up"},
+                       {"t": 1 + B.POSE_SECONDS, "who": "mom", "do": "pick_up", "what": "cap"}], start, SEATED)
+    assert res.ok, errors(res)
 
 
 def test_the_same_reach_standing_beside_the_chair_steps_instead():

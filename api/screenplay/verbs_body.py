@@ -33,7 +33,15 @@ from screenplay.locate import Locate, bones_at, gesture_arm, held_arm_bones, pup
 from screenplay.schema import Action
 from screenplay.state import HEAD, PLACE_WITH_PROPSTART, SEATED_POSES, StateError, World
 from screenplay.tracks import TrackSet
-from screenplay.verb_helpers import Handler, Key, Vec3, require_on_stage, require_param, require_person
+from screenplay.verb_helpers import (
+    Handler,
+    Key,
+    Vec3,
+    require_on_stage,
+    require_param,
+    require_person,
+    require_prop_inside_stage,
+)
 
 BONES: tuple[str, ...] = tuple(RIG["bones"])
 
@@ -236,7 +244,11 @@ def _not_standing(world: World, who: str) -> None:
 
 def apply_sit_on(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                  locate: Locate) -> float:
-    """sit_on(what, socket?): walk to the seat if needed, then sit with the hips on the socket."""
+    """sit_on(what, socket?): walk to the seat if needed, then sit with the hips on the socket.
+
+    A seat prop whose anchor lies past the stage edge is ``not_on_stage`` (verb_helpers.
+    require_prop_inside_stage: "chair is offstage at x=1.3; place it on stage with propStart"),
+    so nobody walks off the stage to sit down."""
     who = require_person(world, action.who)
     what = require_param(action, "what")
     # World.sit_on validates (unknown_id, vehicle_seat, already_seated, no_seat, unknown_socket,
@@ -252,6 +264,8 @@ def apply_sit_on(world: World, tracks: TrackSet, action: Action, t: float, actio
     anchor = world.props[what].world_pos
     if seat is None or anchor is None:
         raise StateError("not_on_stage", f"{what} is not on stage; {PLACE_WITH_PROPSTART}")
+    # Before the walk to the seat: a seat prop past the stage edge is not_on_stage, naming it.
+    require_prop_inside_stage(world, what)
 
     p = world.people[who]
     root = puppet_root(world, tracks, who, t)
