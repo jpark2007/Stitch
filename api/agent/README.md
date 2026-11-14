@@ -43,11 +43,14 @@ Put the variables in `api/.env`. The API (`main.load_env_files`) reads `api/.env
 | `ELEVENLABS_VOICES` | tts | none | Every voice uses the default voice. Format: `voice_a=<id>,voice_b=<id>` (the studio asks for `voice_a` to `voice_d`) |
 | `ELEVENLABS_DEFAULT_VOICE` | tts | `21m00Tcm4TlvDq8ikWAM` (Rachel) | |
 | `STITCH_WEB_URL` | renderer | none | The checker critiques labelled diagrams instead of screenshots |
+| `STITCH_MAX_MODEL_CALLS` | limits | `600` | see [Time and cost limits](#time-and-cost-limits) |
 | `STITCH_MAX_IMAGES_PER_RUN` | limits | `24` | see [Time and cost limits](#time-and-cost-limits) |
 | `STITCH_MAX_GRAPH_STEPS` | limits | `1000` | |
 | `STITCH_MODEL_TIMEOUT_S` | limits | `120` | |
 | `STITCH_MODEL_MAX_RETRIES` | limits | `2` | |
 | `STITCH_RUN_TIMEOUT_S` | limits | `1200` | |
+
+A model id (`STITCH_MODEL`, `STITCH_SUBAGENT_MODEL`, `STITCH_VISION_MODEL`, `IMAGE_MODEL`, `ELEVENLABS_MODEL`) that is blank or only spaces means the default, exactly as if it were unset, and a value with spaces around it is used stripped (`agent.guards.env_value`, which production and preflight both use, so the model preflight names is the model the studio calls).
 
 Not studio variables, but the API reads them too: `JWT_SECRET` (without it sessions end when the API restarts) and `VOYAGE_API_KEY` (without it "ask the family" and prop matching use keyword search). Preflight never prints them either.
 
@@ -55,7 +58,7 @@ Not studio variables, but the API reads them too: `JWT_SECRET` (without it sessi
 
 Secrets first: a key never prints, only `set (N chars), format ok` or `set (N chars)` and the problem. `MONGODB_URI` prints as scheme and hosts only; `STITCH_WEB_URL` and `IMAGE_API_URL` print without credentials or query string. Everything preflight writes (text, `--json`, provider errors and any log line) goes through one scrub that removes every secret value in the environment, raw, URL-decoded and URL-encoded, before a provider error is cut to 300 characters.
 
-Surrounding quotes, whitespace or a newline in a value are errors. `ANTHROPIC_API_KEY` should start with `sk-ant-`, `IMAGE_API_KEY` with `sk-` when `IMAGE_API_URL` is the OpenAI default, and `ELEVENLABS_API_KEY` with `sk_`; these prefix checks are warnings only. `ELEVENLABS_VOICES` and `ELEVENLABS_DEFAULT_VOICE` are checked with the TTS adapter's own rules (an error when the ElevenLabs key is set, because the studio then refuses to build). `MONGODB_URI` must start with `mongodb://` or `mongodb+srv://`; a password with an unescaped `/`, `?`, `:`, `@` or `%` is an error (pymongo would refuse or misread it: percent-encode it with `urllib.parse.quote_plus`), and `--live` skips the Mongo ping until it is fixed, because pymongo's error would quote part of the password. Each `STITCH_*` limit shows whether it is set and the value in force; an invalid value is a warning, because the studio keeps the default.
+Surrounding quotes, whitespace or a newline in a key or URL are errors. A model id is shown as the studio will use it: blank reads `blank, treated as unset (default: ...)`, and spaces around it are a warning only (the studio strips them); quotes or spaces inside it are errors. `ANTHROPIC_API_KEY` should start with `sk-ant-`, `IMAGE_API_KEY` with `sk-` when `IMAGE_API_URL` is the OpenAI default, and `ELEVENLABS_API_KEY` with `sk_`; these prefix checks are warnings only. `ELEVENLABS_VOICES` and `ELEVENLABS_DEFAULT_VOICE` are checked with the TTS adapter's own rules (an error when the ElevenLabs key is set, because the studio then refuses to build). `MONGODB_URI` must start with `mongodb://` or `mongodb+srv://`; a password with an unescaped `/`, `?`, `:`, `@` or `%` is an error (pymongo would refuse or misread it: percent-encode it with `urllib.parse.quote_plus`), and `--live` skips the Mongo ping until it is fixed, because pymongo's error would quote part of the password. Each `STITCH_*` limit shows whether it is set and the value in force; an invalid value is a warning, because the studio keeps the default.
 
 ## First real run, step by step
 
@@ -124,6 +127,8 @@ All commands run from `api/` unless they say otherwise.
 studio services: model=real subagent_model=studio repo=mongo persistence=memory art=placeholder tts=fake vision=real critic=real renderer=diagram compiler=screenplay.compiler limits=images=24 steps=1000 model_timeout=120s model_retries=2 run_timeout=1200s
 ```
 
+(The `limits` label leaves out the model call cap; preflight's `[limits]` block shows it.)
+
 With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `persistence=mongo art=real tts=real renderer=playwright`.
 
 | Label | Values |
@@ -161,12 +166,13 @@ Every service except the model has a fallback, so a missing or failing key degra
 
 ## Time and cost limits
 
-Five environment variables bound one run (`agent.guards.RunLimits`). A blank, unparsable or out-of-range value never stops the API: it logs one warning naming the variable and the default is used; preflight shows it as a warning under `[limits]`.
+Six environment variables bound a run (`agent.guards.RunLimits`). A blank, unparsable or out-of-range value never stops the API: it logs one warning naming the variable and the default is used; preflight shows it as a warning under `[limits]`. The two per-run caps are `STITCH_MAX_MODEL_CALLS` (cost) and `STITCH_RUN_TIMEOUT_S` (time); `STITCH_MAX_IMAGES_PER_RUN` caps image cost on top.
 
 | Variable | Default | Bounds |
 |---|---|---|
-| `STITCH_MAX_IMAGES_PER_RUN` | `24` | Image generations in one run; past it, the rest of the run's art is placeholder art. `0` means placeholder art only (no image cost at all). |
-| `STITCH_MAX_GRAPH_STEPS` | `1000` (at least `50`) | Graph steps in one run, so a director-checker loop cannot run forever. |
+| `STITCH_MAX_MODEL_CALLS` | `600` (at least `100`) | Chat model calls in one run, the studio's and every sub-agent's together (the eight named ones, deepagents' general-purpose one and any summarization call), across every answer, every resume and an API restart. A normal run makes roughly 60 to 200; the fake studio's runs make 23 to 57. The call past the cap is never sent: the run ends with an error event (`this run reached its limit of N model calls; please try again`) and the feed offers **Tell it again**. This is what stops a sub-agent stuck in a loop. |
+| `STITCH_MAX_IMAGES_PER_RUN` | `24` | Image generations in one run; past it, the rest of the run's art is placeholder art. `0` means placeholder art only (no image cost at all). The count survives an API restart, so a restored run never gets a second budget. |
+| `STITCH_MAX_GRAPH_STEPS` | `1000` (at least `50`) | Steps in one studio graph stream (LangGraph's `recursion_limit`), so one stream of a looping studio stops. **Not a per-run cap**: the run manager starts a new stream, with a fresh step budget, on every resume (each answer to a question, each rejected malformed question, a restart), and a sub-agent runs under the recursion limit deepagents binds on it (9999), not this one. Use `STITCH_MAX_MODEL_CALLS` and `STITCH_RUN_TIMEOUT_S` to bound a whole run. |
 | `STITCH_MODEL_TIMEOUT_S` | `120` | Seconds one Claude request may take. |
 | `STITCH_MODEL_MAX_RETRIES` | `2` | Retries of a failed Claude request. |
 | `STITCH_RUN_TIMEOUT_S` | `1200` | Seconds one run may take in all. The clock counts only while the run is running, never while it waits on the teller to answer a question, so a family that takes ten minutes to answer does not time out. The run manager (`agent/runs.py`) ends a run past it with an error event (`the studio took too long on this story (over N minutes); please try again`), and the feed offers **Tell it again**. |
@@ -192,6 +198,8 @@ The checker's Playwright renderer opens `{STITCH_WEB_URL}/render/{memoryId}?t=<s
 - **MongoDB `ServerSelectionTimeoutError` / timed out**: the cluster is not reachable from this network. On Atlas, add this machine's IP to the Network Access list; check that the URI's user and password are right; on a venue network that blocks port 27017, use a phone hotspot or run with `STITCH_FAKE_DB=1`. A ping of `mongodb://localhost:27017 (db.client's default)` means `MONGODB_URI` is not set at all.
 - **The startup log says `falling back to scripted runs`**: run `uv run python -m agent.preflight`; the reason is one of its errors.
 - **A run is slow**: `STITCH_MODEL_TIMEOUT_S` bounds each Claude request and `STITCH_RUN_TIMEOUT_S` the whole run; lower `STITCH_MAX_IMAGES_PER_RUN` to cut image time.
+- **`this run reached its limit of N model calls`**: the studio or one of its sub-agents kept calling the model (usually a director or checker going round in circles). Tell it again; if a normal story hits it, raise `STITCH_MAX_MODEL_CALLS` (the run's `model_calls` is in its run record) and look at the API log for the sub-agent that looped.
+- **A model id seems ignored**: run preflight. The `[model]`, `[vision]`, `[art]` and `[tts]` blocks show the model id each service will use; a blank value is the default.
 
 ## If a run errors in front of people
 

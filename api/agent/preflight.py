@@ -105,6 +105,7 @@ _SECRET_NAME = re.compile(r"KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL", re.IGN
 """Any other variable named like a secret is scrubbed too (when its value is 8+ characters)."""
 
 LIMIT_ENVS: tuple[tuple[str, str], ...] = (
+    (guards.ENV_MAX_MODEL_CALLS, "max_model_calls"),
     (guards.ENV_MAX_IMAGES_PER_RUN, "max_images_per_run"),
     (guards.ENV_MAX_GRAPH_STEPS, "max_graph_steps"),
     (guards.ENV_MODEL_TIMEOUT_S, "model_timeout_s"),
@@ -501,9 +502,8 @@ class LiveSeams:
 
 
 def _stripped(env: Mapping[str, str], name: str) -> str | None:
-    """agent.production._env: the value stripped, or None when unset or blank."""
-    value = env.get(name)
-    return value.strip() if value and value.strip() else None
+    """agent.production._env (guards.env_value): the value stripped, or None when unset or blank."""
+    return guards.env_value(env, name)
 
 
 def fake_db(env: Mapping[str, str]) -> bool:
@@ -557,6 +557,22 @@ def _plain_var(env: Mapping[str, str], name: str, default: str | None) -> VarRep
     return VarReport(name, True, _cut(value, 120))
 
 
+def _model_var(env: Mapping[str, str], name: str, default: str) -> VarReport:
+    """A model id (or other setting production reads with guards.env_value): blank means the
+    default and a padded value is used stripped, so the value shown is the one in use."""
+    raw = env.get(name)
+    value = guards.env_value(env, name)
+    if value is None:
+        return VarReport(name, False, _unset(raw, default))
+    if problem := shape_problem(value):
+        return VarReport(name, True, f"set ({len(raw or '')} chars)", problem, "error")
+    var = VarReport(name, True, _cut(value, 120))
+    if raw != value:
+        var.problem = "has leading or trailing whitespace; the studio uses it stripped"
+        var.severity = "warning"
+    return var
+
+
 def _secret_var(
     env: Mapping[str, str],
     name: str,
@@ -589,15 +605,27 @@ def _url_var(env: Mapping[str, str], name: str, default: str | None = None) -> V
 
 
 def _studio_model(env: Mapping[str, str]) -> str:
+    """The studio's model id as studio.make_model picks it."""
     from agent.studio import DEFAULT_MODEL
 
-    return env.get(STUDIO_MODEL_ENV) or DEFAULT_MODEL
+    return guards.env_value(env, STUDIO_MODEL_ENV) or DEFAULT_MODEL
 
 
 def _vision_model(env: Mapping[str, str]) -> str:
+    """The vision model id as AnthropicVision picks it."""
     from agent.studio import DEFAULT_MODEL
 
-    return env.get(vision_adapter.MODEL_ENV) or DEFAULT_MODEL
+    return guards.env_value(env, vision_adapter.MODEL_ENV) or DEFAULT_MODEL
+
+
+def _image_model(env: Mapping[str, str]) -> str:
+    """The image model id as OpenAIImageModel picks it."""
+    return guards.env_value(env, images_adapter.MODEL_ENV) or images_adapter.DEFAULT_MODEL
+
+
+def _image_url(env: Mapping[str, str]) -> str:
+    """The image API base URL as OpenAIImageModel picks it."""
+    return (guards.env_value(env, images_adapter.URL_ENV) or images_adapter.DEFAULT_URL).rstrip("/")
 
 
 def _compiler_label() -> str:
@@ -678,8 +706,8 @@ def _model_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceR
         labels["model"],
         [
             key,
-            _plain_var(env, STUDIO_MODEL_ENV, DEFAULT_MODEL),
-            _plain_var(env, SUBAGENT_MODEL_ENV, "the studio model"),
+            _model_var(env, STUDIO_MODEL_ENV, DEFAULT_MODEL),
+            _model_var(env, SUBAGENT_MODEL_ENV, "the studio model"),
         ],
     )
     if labels["model"] == "real":
@@ -697,13 +725,13 @@ def _vision_report(env: Mapping[str, str], labels: Mapping[str, str]) -> Service
 
     key_set = _stripped(env, ANTHROPIC_KEY) is not None
     key = VarReport(ANTHROPIC_KEY, key_set, "see model" if key_set else "unset (see model)")
-    report = ServiceReport("vision", labels["vision"], [key, _plain_var(env, vision_adapter.MODEL_ENV, DEFAULT_MODEL)])
+    report = ServiceReport("vision", labels["vision"], [key, _model_var(env, vision_adapter.MODEL_ENV, DEFAULT_MODEL)])
     report.summary = (
         f"Claude vision ({_vision_model(env)}) describes photos and critiques frames"
         if key_set
         else "no vision without ANTHROPIC_API_KEY"
     )
-    if not env.get(vision_adapter.MODEL_ENV) and env.get(STUDIO_MODEL_ENV):
+    if not _stripped(env, vision_adapter.MODEL_ENV) and _stripped(env, STUDIO_MODEL_ENV):
         report.notes.append(
             f"vision does not follow {STUDIO_MODEL_ENV}; set {vision_adapter.MODEL_ENV} to change its model"
         )
@@ -756,7 +784,7 @@ def _persistence_report(env: Mapping[str, str], labels: Mapping[str, str]) -> Se
 
 
 def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceReport:
-    effective_url = (env.get(images_adapter.URL_ENV) or images_adapter.DEFAULT_URL).rstrip("/")
+    effective_url = _image_url(env)
     openai_default = effective_url == images_adapter.DEFAULT_URL.rstrip("/")
     key = _secret_var(
         env,
@@ -771,12 +799,12 @@ def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceRep
         [
             key,
             _url_var(env, images_adapter.URL_ENV, images_adapter.DEFAULT_URL),
-            _plain_var(env, images_adapter.MODEL_ENV, images_adapter.DEFAULT_MODEL),
+            _model_var(env, images_adapter.MODEL_ENV, images_adapter.DEFAULT_MODEL),
         ],
     )
     budget = RunLimits.from_env(env).max_images_per_run
     if labels["art"] == "real":
-        model = env.get(images_adapter.MODEL_ENV) or images_adapter.DEFAULT_MODEL
+        model = _image_model(env)
         report.summary = (
             f"generated prop and set art ({model} at {redact_url(effective_url)}), at most {budget} image(s) a run"
         )
@@ -848,7 +876,7 @@ def _tts_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceRep
     report = ServiceReport(
         "tts",
         labels["tts"],
-        [key, _plain_var(env, tts_adapter.MODEL_ENV, tts_adapter.DEFAULT_MODEL), voices, default_voice],
+        [key, _model_var(env, tts_adapter.MODEL_ENV, tts_adapter.DEFAULT_MODEL), voices, default_voice],
     )
     if real:
         report.summary = "ElevenLabs narration with word timings"
@@ -922,9 +950,18 @@ def _limits_report(env: Mapping[str, str], labels: Mapping[str, str]) -> Service
             var.severity = "warning"
         report.vars.append(var)
     report.summary = (
-        f"at most {limits.max_images_per_run} image(s) and {limits.max_graph_steps} graph steps a run; "
-        f"{limits.model_timeout_s:g} s per Claude request with {limits.model_max_retries} retries; "
-        f"{limits.run_timeout_s:g} s of running time per run"
+        f"at most {limits.max_model_calls} model calls and {limits.max_images_per_run} image(s) a run; "
+        f"{limits.run_timeout_s:g} s of running time per run; {limits.max_graph_steps} steps per studio graph "
+        f"stream; {limits.model_timeout_s:g} s per Claude request with {limits.model_max_retries} retries"
+    )
+    report.notes.append(
+        f"{guards.ENV_MAX_MODEL_CALLS} counts the studio's and every sub-agent's model calls together, across "
+        "every answer and a restart; a run past it ends with an error event and the feed offers Tell it again"
+    )
+    report.notes.append(
+        f"{guards.ENV_MAX_GRAPH_STEPS} bounds steps per studio graph stream only: each answer resumes with a fresh "
+        f"step budget and sub-agents keep deepagents' own limit; the per-run caps are {guards.ENV_MAX_MODEL_CALLS} "
+        f"and {guards.ENV_RUN_TIMEOUT_S}"
     )
     report.notes.append(
         f"{guards.ENV_RUN_TIMEOUT_S} counts only while a run is running, never while it waits on the teller; "
@@ -1050,8 +1087,8 @@ def _live_http(by_name: dict[str, ServiceReport], env: Mapping[str, str], seams:
         if art_key is None:
             by_name["art"].live = LiveResult("skipped", "placeholder art (IMAGE_API_KEY is not set)")
         else:
-            base = (env.get(images_adapter.URL_ENV) or images_adapter.DEFAULT_URL).strip().rstrip("/")
-            model = env.get(images_adapter.MODEL_ENV) or images_adapter.DEFAULT_MODEL
+            base = _image_url(env)
+            model = _image_model(env)
             ok, text = guarded(
                 lambda: (get(http, f"{base}/models/{model}", {"Authorization": f"Bearer {art_key}"}), "200")[1]
             )

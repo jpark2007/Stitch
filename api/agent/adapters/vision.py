@@ -60,7 +60,7 @@ import anthropic
 from PIL import Image, ImageOps
 
 from agent.adapters.images import MAX_BACKOFF_S, RETRY_BACKOFF_S
-from agent.guards import RunLimits
+from agent.guards import RunLimits, env_value
 
 log = logging.getLogger(__name__)
 
@@ -213,8 +213,8 @@ class AnthropicVision:
     ) -> None:
         """``http_client`` (an ``httpx2.Client``, what the SDK speaks) is for tests that drive the
         real SDK over a fake transport; ``sleep`` lets them record the retry waits."""
-        if model is None:
-            model = os.environ.get(MODEL_ENV)
+        # A blank or whitespace STITCH_VISION_MODEL means the default; a padded one is used stripped.
+        model = (model.strip() if model and model.strip() else None) or env_value(None, MODEL_ENV)
         if not model:
             from agent.studio import DEFAULT_MODEL
 

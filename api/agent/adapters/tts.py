@@ -51,6 +51,7 @@ from typing import Any
 import httpx
 
 from agent.adapters.images import CONNECT_TIMEOUT_S, RETRY_STATUSES, backoff_s, retryable_error
+from agent.guards import env_value
 from agent.tools.narration import _EDGE, PLACEHOLDER_VOICES, Speech, _wav_bytes
 from screenplay.schema import WordTiming
 
@@ -156,7 +157,8 @@ class ElevenLabsTTS:
         if not key and transport is None:
             raise RuntimeError(f"{API_KEY_ENV} is not set; ElevenLabsTTS needs it (or an injected transport)")
         self._key = key or ""
-        self.model = model or os.environ.get(MODEL_ENV) or DEFAULT_MODEL
+        # A blank or whitespace ELEVENLABS_MODEL means the default; a padded one is used stripped.
+        self.model = (model.strip() if model and model.strip() else None) or env_value(None, MODEL_ENV) or DEFAULT_MODEL
         mapping = dict(voices) if voices is not None else parse_voices(os.environ.get(VOICES_ENV))
         self.voices = {name: _check_voice_id(vid) for name, vid in mapping.items()}
         self.default_voice_id = _check_voice_id(os.environ.get(DEFAULT_VOICE_ENV) or DEFAULT_VOICE_ID)

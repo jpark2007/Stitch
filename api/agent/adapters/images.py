@@ -58,6 +58,8 @@ from typing import Any
 import httpx
 from PIL import Image
 
+from agent.guards import env_value
+
 API_KEY_ENV = "IMAGE_API_KEY"
 URL_ENV = "IMAGE_API_URL"
 MODEL_ENV = "IMAGE_MODEL"
@@ -168,6 +170,11 @@ def backoff_s(attempt: int, response: httpx.Response | None) -> float:
     return min(MAX_BACKOFF_S, wait)
 
 
+def _given(value: str | None) -> str | None:
+    """An explicit constructor argument, stripped; None when it is None or blank."""
+    return (value.strip() or None) if value is not None else None
+
+
 class OpenAIImageModel:
     """``art.ImageModel`` over an OpenAI-compatible images API (provider is configurable)."""
 
@@ -190,8 +197,9 @@ class OpenAIImageModel:
         if not key and transport is None:
             raise RuntimeError(f"{API_KEY_ENV} is not set; OpenAIImageModel needs it (or an injected transport)")
         self._key = key or ""
-        self.base_url = (base_url or os.environ.get(URL_ENV) or DEFAULT_URL).rstrip("/")
-        self.model = model or os.environ.get(MODEL_ENV) or DEFAULT_MODEL
+        # A blank or whitespace IMAGE_API_URL / IMAGE_MODEL means the default; a padded one is used stripped.
+        self.base_url = (_given(base_url) or env_value(None, URL_ENV) or DEFAULT_URL).rstrip("/")
+        self.model = _given(model) or env_value(None, MODEL_ENV) or DEFAULT_MODEL
         self._transport = transport
         self.max_retries = max_retries
         self._sleep = sleep

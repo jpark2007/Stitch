@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from PIL import Image, ImageDraw
 
+from agent.guards import RunUsage
 from agent.tools import art
 from agent.tools.art import (
     PLACEHOLDER_PALETTE,
@@ -660,9 +661,43 @@ def test_budget_memory_is_bounded(monkeypatch):
     service = ArtService(None, None, max_images_per_run=1)
     for run in ("r1", "r2", "r3", "r4"):
         assert service._take_image(run)
-    assert len(service._used) == 3 and "r1" not in service._used
+    assert [service.images_used(r) for r in ("r1", "r2", "r3", "r4")] == [0, 1, 1, 1]
     assert service.images_left("r1") == 1  # a forgotten run starts over
     assert service.images_left("r4") == 0
+
+
+def test_the_budget_counts_in_a_shared_usage_registry():
+    usage = RunUsage()
+    model = FakeImageModel()
+    service = ArtService(model, FakeBackgroundRemover(), max_images_per_run=3, usage=usage)
+    assert service.usage is usage
+    service.make_cutout("a cup", size=(64, 64), run_id="r")
+    assert usage.images_used("r") == 1 == service.images_used("r")
+    assert usage.model_calls("r") == 0  # images and model calls are counted apart
+    # A default service keeps a registry of its own.
+    assert ArtService(None, None).usage is not ArtService(None, None).usage
+
+
+def test_the_image_cap_holds_across_a_restart():
+    """Finding 4: three cutouts before and three after a restart, cap 2, make 2 image calls in all.
+
+    The run manager writes images_used into the run record and seeds the new process's registry
+    from it (test_agent_run_budget.py drives that through a real RunManager); here the new
+    ArtService is seeded the way the manager seeds it."""
+    model = FakeImageModel()
+    before = ArtService(model, FakeBackgroundRemover(), max_images_per_run=2, usage=RunUsage())
+    for i in range(3):
+        before.make_cutout(f"cup {i}", size=(64, 64), run_id="run_r")
+    persisted = before.images_used("run_r")
+    assert persisted == 2 and len(model.calls) == 2
+
+    after = ArtService(model, FakeBackgroundRemover(), max_images_per_run=2, usage=RunUsage())  # a new process
+    after.seed_images("run_r", persisted)
+    assert after.images_left("run_r") == 0
+    assert all(after.make_cutout(f"plate {i}", size=(64, 64), run_id="run_r") is None for i in range(3))
+    assert len(model.calls) == 2
+    after.seed_images("run_r", 1)  # seeding never lowers the count
+    assert after.images_used("run_r") == 2
 
 
 def test_budget_note_wording():

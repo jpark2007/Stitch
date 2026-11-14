@@ -195,6 +195,68 @@ def test_the_step_limit_stops_a_looping_studio(monkeypatch: pytest.MonkeyPatch) 
     assert 0 < len(looping.calls) < 50  # each model turn plus its tool call is at least 2 steps
 
 
+SEEN_LIMITS: dict[str, Any] = {}
+
+
+@tool
+def probe_limit(where: str) -> str:
+    """Record the recursion limit of the graph this tool runs in."""
+    from langgraph.config import get_config
+
+    SEEN_LIMITS[where] = get_config().get("recursion_limit")
+    return "ok"
+
+
+def test_the_step_limit_bounds_the_studio_stream_only_and_the_budget_counts_every_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STITCH_MAX_GRAPH_STEPS is the studio stream's recursion_limit; a sub-agent runs under the
+    limit deepagents binds on it (9999), which is why the per-run cap is the model call budget.
+    The budget, bound on the studio's config, sees the studio's calls, a declared sub-agent's and
+    deepagents' own general-purpose sub-agent's: every call the model makes is counted."""
+    from agent.guards import RunBudgetExceeded, RunUsage
+
+    monkeypatch.setenv("STITCH_MAX_GRAPH_STEPS", "120")
+    SEEN_LIMITS.clear()
+
+    def responder(messages: list[BaseMessage], names: list[str]) -> AIMessage:
+        done = [m for m in messages if isinstance(m, ToolMessage)]
+        if "task" in names:  # the studio
+            if len(done) == 0:
+                return tool_call("task", {"description": "Look.", "subagent_type": "general-purpose"})
+            if len(done) == 1:
+                return tool_call("task", {"description": "Look.", "subagent_type": "helper"})
+            if len(done) == 2:
+                return tool_call("probe_limit", {"where": "studio"})
+            return AIMessage(content="done")
+        if not done:
+            return tool_call("probe_limit", {"where": f"sub-{len(SEEN_LIMITS)}"})
+        return AIMessage(content="sub done")
+
+    model = ScriptedChatModel(responder=responder)
+    usage = RunUsage()
+    helper = {"name": "helper", "description": "Helps.", "system_prompt": "You help.", "tools": [probe_limit]}
+
+    def build(cap: int | None) -> Any:
+        return studio.build_studio(
+            family_id="fam_budget", model=model, tools=[probe_limit], subagents=[helper], interrupt_on={},
+            checkpointer=InMemorySaver(), store=InMemoryStore(), system_prompt=STUDIO_PROMPT,
+            run_id="run-budget", usage=usage, max_model_calls=cap,
+        )
+
+    build(None).invoke({"messages": [HumanMessage(content="go")]}, studio.thread_config("run-budget"))
+    assert SEEN_LIMITS["studio"] == 120
+    assert SEEN_LIMITS["sub-0"] == SEEN_LIMITS["sub-1"] == 9999  # general-purpose, then helper
+    assert len(model.calls) == 8  # studio 4, general-purpose 2, helper 2
+    assert usage.model_calls("run-budget") == 8
+
+    # The same run, built again (a resume or a restart builds a new graph), keeps counting.
+    before = len(model.calls)
+    with pytest.raises(RunBudgetExceeded):
+        build(10).invoke({"messages": [HumanMessage(content="again")]}, studio.thread_config("run-budget-2"))
+    assert len(model.calls) - before == 2 and usage.model_calls("run-budget") == 10
+
+
 # ---------------------------------------------------------------- skills
 
 
@@ -475,6 +537,21 @@ def test_make_model_reads_the_model_id_from_env(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.delenv("STITCH_MODEL")
     assert studio.make_model().model == studio.DEFAULT_MODEL
     assert studio.make_model("claude-sonnet-5-5").model == "claude-sonnet-5-5"
+
+
+@pytest.mark.parametrize("blank", ["", " ", "  \t ", "\n"])
+def test_a_blank_stitch_model_means_the_default(monkeypatch: pytest.MonkeyPatch, blank: str) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")  # constructing makes no request
+    monkeypatch.setenv("STITCH_MODEL", blank)
+    assert studio.make_model().model == studio.DEFAULT_MODEL
+    assert studio.make_model(" ").model == studio.DEFAULT_MODEL  # a blank explicit id too
+
+
+def test_a_padded_stitch_model_is_used_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.setenv("STITCH_MODEL", "  claude-haiku-5-5 \n")
+    assert studio.make_model().model == "claude-haiku-5-5"
+    assert studio.make_model(" claude-sonnet-5-5 ").model == "claude-sonnet-5-5"
 
 
 def test_make_model_bounds_each_request(monkeypatch: pytest.MonkeyPatch) -> None:

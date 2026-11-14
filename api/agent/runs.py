@@ -69,6 +69,19 @@ generation, a compile, a narration), whichever was in flight. A stream chunk wri
 record once ELAPSED_RECORD_INTERVAL_S of running time is not in it yet, so when the process
 dies at most that much (plus the call in flight) goes uncounted after the restart.
 
+The model call cap (STITCH_MAX_MODEL_CALLS, `RunLimits.max_model_calls`). Every chat model
+call of a run, the studio's and every sub-agent's, is counted in a `guards.RunUsage` registry
+under the run id (`studio.build_studio` binds a `guards.ModelCallBudget` on the graph; the
+manager's `usage` is the same registry, `wiring.Services.usage`, which the art service also
+counts images in). The count does not restart with a new stream, so it holds across every
+answer, queued answer and malformed-pause rejection. The run record keeps `model_calls` and
+`images_used` next to `elapsed_s` (written whenever either moves, at the next stream chunk),
+and a restored run seeds them back into the registry before it is driven again, so a restart
+gives a run neither cap again. The call past the cap raises `guards.RunBudgetExceeded` before
+it reaches the model; the worker ends the run through the same safe path as the time limit:
+one error event (`run_budget_message`), status error, the record written, one warning log
+line. Nothing here waits on the event loop.
+
 Interrupts are shown one at a time. `AnswerRequest` carries no interrupt id, so when
 one step pauses on several gated calls at once (two sub-agents in parallel), the first
 one is shown and answered; it is resumed with `Command(resume={id: payload})` (langgraph
@@ -132,7 +145,7 @@ from pydantic import BaseModel, ValidationError
 
 import schemas
 from agent import studio
-from agent.guards import RunLimits
+from agent.guards import RunBudgetExceeded, RunLimits, RunUsage
 from agent.repo import AgentRepo
 from agent.run_info import RunInfo
 from agent.tools.ask import answer_to_resume, interrupt_to_event, reject_to_resume
@@ -161,6 +174,8 @@ RUN_ERROR = "the studio ran into a problem ({kind}); please try again"
 """The error the family sees when building, driving or restoring a run raises; `kind` is the
 exception's class name. The exception's own text (which can carry a provider's response body,
 a URL or a connection string) goes to the log only (`run_error_message`)."""
+RUN_BUDGET_ERROR = "this run reached its limit of {limit} model calls; please try again"
+"""The error the family sees when a run reaches STITCH_MAX_MODEL_CALLS; `limit` is the cap."""
 ELAPSED_RECORD_INTERVAL_S = 30.0
 """Running time after which a stream chunk writes the record even with no new event, so a
 restart loses at most this much of the time used (plus the call in flight)."""
@@ -245,6 +260,32 @@ def _resume_command(pending: Interrupt, payload: Any, pending_count: int) -> Com
 def run_timeout_message(limit_s: float) -> str:
     """RUN_TIMEOUT_ERROR for a run whose limit is `limit_s` seconds (minutes rounded up, at least 1)."""
     return RUN_TIMEOUT_ERROR.format(minutes=max(1, math.ceil(limit_s / 60)))
+
+
+def run_budget_message(limit: int) -> str:
+    """RUN_BUDGET_ERROR for a run whose model call cap is `limit`."""
+    return RUN_BUDGET_ERROR.format(limit=limit)
+
+
+def budget_exceeded(exc: BaseException) -> RunBudgetExceeded | None:
+    """The RunBudgetExceeded behind `exc` (itself, or its cause or context, a few levels deep),
+    or None. A sub-agent's call past the cap is raised inside the `task` tool, so a wrapper
+    might carry it as the cause."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen and len(seen) < 8:
+        if isinstance(current, RunBudgetExceeded):
+            return current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _count(value: Any) -> int | None:
+    """`value` as a count (a whole number >= 0), or None."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def run_error_message(exc: BaseException) -> str:
@@ -335,6 +376,11 @@ class _Run:
     workers: int = 0
     # elapsed_s as of the last persist (what the next record will hold, at least).
     persisted_elapsed_s: float = 0.0
+    # ---- the model call cap and the image budget (see "The model call cap" in the module docstring)
+    # Where this run's model calls and images are counted (the manager's registry).
+    usage: RunUsage | None = None
+    # (model calls, images used) as of the last persist.
+    persisted_usage: tuple[int, int] = (0, 0)
     # ---- record writes (see "Writing the run record" in the module docstring)
     # Serializes the store writes of this run. Never taken on the event loop, never with cond held.
     write_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -380,6 +426,14 @@ class _Run:
         if self.stretch_started is not None:
             self.elapsed_s += max(0.0, now - self.stretch_started)
         self.stretch_started = now if self.counting else None
+
+    def usage_now(self) -> tuple[int, int]:
+        """(model calls, images used) so far, from the usage registry. Cheap, no I/O."""
+        if self.usage is None:
+            return self.persisted_usage
+        calls, images = self.usage.counts(self.info.run_id)
+        # Never below what the record already says (a registry that forgot the run).
+        return max(calls, self.persisted_usage[0]), max(images, self.persisted_usage[1])
 
     def over_time(self) -> bool:
         """The run has used more running time than its limit. Call with cond held."""
@@ -442,6 +496,8 @@ class _Run:
             "malformed_pauses": self.malformed_pauses,
             "elapsed_s": self.elapsed_s,
             "run_timeout_s": self.run_timeout_s,
+            "model_calls": self.persisted_usage[0],
+            "images_used": self.persisted_usage[1],
             "tasks": [[call_id, name] for call_id, name in self.tasks.items()],
             "ended_tasks": sorted(self.ended_tasks),
             "events": [list(pair) for pair in self.event_json],
@@ -465,6 +521,7 @@ class _Run:
         the running time so far is added into `elapsed_s` (every status change comes here)."""
         self.tick()
         self.persisted_elapsed_s = self.elapsed_s
+        self.persisted_usage = self.usage_now()
         if self.store is None:
             self.published = len(self.events)
             return
@@ -540,6 +597,7 @@ class RunManager:
         store: BaseStore | None = None,
         run_timeout_s: float | None = None,
         clock: Callable[[], float] = time.monotonic,
+        usage: RunUsage | None = None,
     ) -> None:
         """`store`: where run records are kept so runs survive a restart (module docstring).
         None keeps runs in this process only.
@@ -547,7 +605,12 @@ class RunManager:
         `run_timeout_s`: seconds of running time one run may use ("The time limit" in the
         module docstring). None reads STITCH_RUN_TIMEOUT_S (`RunLimits.from_env`) as each
         run starts. Each run keeps its limit in its record. `clock`: what the limit is
-        measured with (monotonic seconds; tests pass a fake one)."""
+        measured with (monotonic seconds; tests pass a fake one).
+
+        `usage`: the registry the runs' model calls and images are counted in (the one
+        `build_graph`'s studios and art service count in; `wiring.make_manager` passes
+        `Services.usage`). Each run record keeps both counts, and a restored run seeds them
+        back. None: a registry of this manager's own (nothing counts in it unless the graphs do)."""
         if run_timeout_s is not None and _seconds(run_timeout_s, positive=True) is None:
             raise ValueError(f"run_timeout_s must be a number of seconds > 0, not {run_timeout_s!r}")
         self._repo = repo
@@ -555,6 +618,7 @@ class RunManager:
         self._store = store
         self._run_timeout_s = None if run_timeout_s is None else float(run_timeout_s)
         self._clock = clock
+        self._usage = usage if usage is not None else RunUsage()
         self._runs: dict[str, _Run] = {}
         self._lock = threading.Lock()
         # Serializes loading runs from the store, so one run id is never restored twice.
@@ -589,7 +653,7 @@ class RunManager:
         graph_input = self._initial_input(info)  # ValueError / MemoryNotFound: nothing started
 
         run = _Run(info=info, config=studio.thread_config(run_id), driving=True, store=self._store,
-                   run_timeout_s=self._run_limit(), clock=self._clock)
+                   run_timeout_s=self._run_limit(), clock=self._clock, usage=self._usage)
         with run.changing():
             run.persist()
         with self._lock:
@@ -747,6 +811,24 @@ class RunManager:
         run.append("error", schemas.ErrorEvent(message=run_timeout_message(run.run_timeout_s)))
         return True
 
+    def _fail(self, run: _Run, exc: BaseException, what: str) -> None:
+        """End the run after `exc` escaped its graph: past the model call cap, the cap's own
+        message and a warning; anything else, RUN_ERROR and the traceback in the log. Call
+        WITHOUT cond held, from the worker; the record is written once cond is released."""
+        run_id = run.info.run_id
+        budget = budget_exceeded(exc)
+        if budget is not None:
+            calls, _ = run.usage_now() if run.usage is not None else (budget.limit, 0)
+            logger.warning("run %s: reached its limit of %d model calls (%d made); ending it",
+                           run_id, budget.limit, calls)
+            message = run_budget_message(budget.limit)
+        else:
+            logger.exception("run %s %s", run_id, what, exc_info=exc)
+            message = run_error_message(exc)
+        with run.changing():
+            run.driving = False
+            run.append("error", schemas.ErrorEvent(message=message))
+
     @contextmanager
     def _on_worker(self, run: _Run) -> Iterator[None]:
         """Mark the run as driven by this worker thread, so its running time counts."""
@@ -814,6 +896,7 @@ class RunManager:
         stale = [rid for rid, r in self._runs.items() if r.finished_at is not None and r.finished_at <= cutoff]
         for rid in stale:
             del self._runs[rid]
+            self._usage.forget(rid)  # its counts are in its record
 
     # ------------------------------------------------------------------ restore after a restart
 
@@ -860,6 +943,16 @@ class RunManager:
                 run_timeout_s = _seconds(record.get("run_timeout_s"), positive=True)
                 if run_timeout_s is None:
                     run_timeout_s = self._run_limit()
+                # Records from before the model call cap have neither: nothing used.
+                used: list[int] = []
+                for key in ("model_calls", "images_used"):
+                    count = _count(record.get(key, 0))
+                    if count is None:
+                        logger.warning("run %s: unreadable %s %r in the run record; counting from 0",
+                                       run_id, key, record.get(key))
+                        count = 0
+                    used.append(count)
+                model_calls, images_used = used
             except (KeyError, TypeError, ValueError) as exc:  # pydantic ValidationError is a ValueError
                 logger.error("run %s: unreadable run record: %s", run_id, exc)
                 return None
@@ -868,9 +961,12 @@ class RunManager:
                 return None
 
             # The clock starts again in this process: time while the API was down is not counted.
+            # Both caps go on from what the run had used: seeded before its graph is built or driven.
+            if status in ("running", "waiting"):
+                self._usage.seed(run_id, model_calls=model_calls, images_used=images_used)
             run = _Run(info=info, config=studio.thread_config(run_id), store=self._store, events=events,
                        run_timeout_s=run_timeout_s, elapsed_s=elapsed_s, persisted_elapsed_s=elapsed_s,
-                       clock=self._clock)
+                       clock=self._clock, usage=self._usage, persisted_usage=(model_calls, images_used))
             run.memory_id = record.get("memory_id")
             run.tasks = {str(call_id): str(name) for call_id, name in record.get("tasks") or ()}
             run.ended_tasks = {str(call_id) for call_id in record.get("ended_tasks") or ()}
@@ -970,10 +1066,7 @@ class RunManager:
                 if match is not None and answered is not None:
                     graph_input = _resume_command(match, answered[1], len(interrupts))
         except Exception as exc:  # noqa: BLE001 - every failure becomes the run's error event
-            logger.exception("run %s failed to resume", run_id)
-            with run.changing():
-                run.driving = False
-                run.append("error", schemas.ErrorEvent(message=run_error_message(exc)))
+            self._fail(run, exc, "failed to resume")
             return
         self._drive_on(run, graph_input, from_checkpoint=graph_input is None)
 
@@ -989,7 +1082,6 @@ class RunManager:
 
     def _drive_on(self, run: _Run, graph_input: Any, *, from_checkpoint: bool = False) -> None:
         """`_drive` on a worker already marked (`_on_worker`)."""
-        run_id = run.info.run_id
         try:
             with run.cond:
                 graph = run.graph
@@ -1006,10 +1098,8 @@ class RunManager:
                         return
                 graph_input = self._settle(run, graph)
         except Exception as exc:  # noqa: BLE001 - every failure becomes the run's error event
-            logger.exception("run %s failed", run_id)
-            with run.changing():
-                run.driving = False
-                run.append("error", schemas.ErrorEvent(message=run_error_message(exc)))
+            # RunBudgetExceeded (the model call cap) ends the run here too, with its own message.
+            self._fail(run, exc, "failed")
 
     def _translate(self, run: _Run, chunk: Any) -> bool:
         """Turn one stream chunk into events. Returns False once the run has ended (or has
@@ -1020,6 +1110,8 @@ class RunManager:
                 return False
             if run.elapsed_s - run.persisted_elapsed_s >= ELAPSED_RECORD_INTERVAL_S:
                 run.persist()  # keep the time used in the record through a quiet stretch
+            elif run.usage_now() != run.persisted_usage:
+                run.persist()  # a model call or an image since the last write: keep the counts
             if mode == "custom":
                 self._custom(run, data)
             elif mode == "updates" and isinstance(data, dict):
@@ -1298,11 +1390,14 @@ __all__ = [
     "RunNotFound",
     "RunNotWaiting",
     "RUNS_NAMESPACE",
+    "RUN_BUDGET_ERROR",
     "RUN_ERROR",
     "RUN_TIMEOUT_ERROR",
     "answer_run",
+    "budget_exceeded",
     "configure",
     "get_manager",
+    "run_budget_message",
     "run_error_message",
     "run_namespace",
     "run_timeout_message",
