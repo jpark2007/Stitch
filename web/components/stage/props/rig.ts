@@ -54,6 +54,41 @@ export function createPropPose(init: Partial<PropPose> = {}): PropPose {
   };
 }
 
+/*
+ * Setters. A pose is a mutable per-frame object (like a three.js Vector3), but
+ * React's lint forbids assigning fields of a value that was passed to a hook
+ * or as a prop. Mutate through these instead; none of them allocate.
+ */
+
+export function setPosition(pose: PropPose, x: number, y: number, z: number): PropPose {
+  pose.position[0] = x;
+  pose.position[1] = y;
+  pose.position[2] = z;
+  return pose;
+}
+
+/** Change parent. Per the contract a parent change always comes with its
+ *  position (an offset when held, normally 0), applied as a step. */
+export function setParent(pose: PropPose, parent: string, x = 0, y = 0, z = 0): PropPose {
+  pose.parent = parent;
+  return setPosition(pose, x, y, z);
+}
+
+export function setRotation(pose: PropPose, radians: number): PropPose {
+  pose.rotation = radians;
+  return pose;
+}
+
+export function setState(pose: PropPose, state: string | null): PropPose {
+  pose.state = state;
+  return pose;
+}
+
+export function setPartRotation(pose: PropPose, part: string, radians: number): PropPose {
+  pose.parts[part] = radians;
+  return pose;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Sizes and points                                                          */
 /* ------------------------------------------------------------------------ */
