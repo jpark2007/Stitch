@@ -199,7 +199,7 @@ def test_imessage_group_or_unproven_receipt_never_reaches_model(scheduled, space
     assert send(client, envelope(provider="imessage", spaceId=space)).status_code == 202
     assert worker.tick()["blocked"] == 1 and not sender.messages
     row = db.conversations.find_one({"principal": {"$exists": True}})
-    assert not row["draft"]["text"]
+    assert row is None or not row["draft"]["text"]
 
 
 def test_verified_imessage_direct_reply_works(scheduled):
@@ -361,3 +361,158 @@ def test_model_cannot_switch_notified_second_telling_target(scheduled):
         assert worker.tick()["blocked"] == 0
     assert runs.starts[0][3].memory_id == notified.memory_id
     assert runs.starts[0][3].question == notified.text
+
+
+def test_changed_cadence_before_send_cancels_known_unsent_prompt(scheduled, monkeypatch):
+    _, db, worker, sender, *_ = scheduled
+    db.contacts.update_one({}, {"$set": {"optInAt": NOW - timedelta(days=8)}})
+    original = conversations.update_worker
+    def extend_cadence(db, family, contact, token, fields):
+        result = original(db, family, contact, token, fields)
+        if any(x.get("notificationId") for x in fields.get("outbox", [])):
+            db.contacts.update_one({}, {"$set": {"cadenceDays": 30}})
+        return result
+    monkeypatch.setattr(conversations, "update_worker", extend_cadence)
+    assert worker.tick()["blocked"] == 0
+    assert not sender.messages
+    assert db.notifications.find_one({})["status"] == "cancelled"
+    assert db.conversations.find_one({"kind": "channelWorker"})["status"] == "idle"
+
+
+@pytest.mark.parametrize("change", [{"spaceId": "replacement-room"}, {"spaceKind": "group"},
+    {"handle": "replacement-handle"}, {"channel": "terminal"},
+    {"verifiedAt": NOW + timedelta(seconds=1)}, {"optInAt": NOW + timedelta(seconds=1)}])
+def test_proof_change_after_draft_save_prevents_first_model_call(scheduled, monkeypatch, change):
+    from agent.conversation.agent import ConversationAgent
+    from agent.fake_llm import ScriptedChatModel
+    from langchain_core.messages import AIMessage
+    client, db, worker, sender, *_ = scheduled
+    db.contacts.update_one({}, {"$set": {"channel": "imessage"}})
+    calls = []
+    def respond(*args):
+        calls.append(1)
+        return AIMessage(content="Private question?")
+    worker.agent_factory = lambda service: ConversationAgent(service, worker_managed=True,
+        model=ScriptedChatModel(responder=respond))
+    original = question_bank.answer_prompt
+    def remap(*args):
+        original(*args)
+        db.contacts.update_one({}, {"$set": change})
+    monkeypatch.setattr(question_bank, "answer_prompt", remap)
+    assert send(client, envelope(provider="imessage")).status_code == 202
+    assert worker.tick()["blocked"] == 1
+    assert not calls and not sender.messages
+
+
+@pytest.mark.parametrize("tool_name,args", [("write_todos", {"todos": [{"content": "Ask a question", "status": "pending"}]}),
+    ("task", {"description": "Ask a concise follow-up", "subagent_type": "general-purpose"})])
+def test_each_model_boundary_rejects_fresh_same_space_reconsent(scheduled, tool_name, args):
+    from agent.conversation.agent import ConversationAgent
+    from agent.fake_llm import ScriptedChatModel, tool_call
+    from langchain_core.messages import AIMessage
+    client, db, worker, sender, *_ = scheduled
+    db.contacts.update_one({}, {"$set": {"channel": "imessage"}})
+    calls = []
+    def respond(*unused):
+        calls.append(1)
+        if len(calls) == 1:
+            # STOP followed by fresh consent in the SAME verified space must not
+            # revive this invocation, including built-in subagent model calls.
+            db.contacts.update_one({}, {"$set": {"status": "stopped"}})
+            db.contacts.update_one({}, {"$set": {"status": "active", "verifiedAt": NOW + timedelta(seconds=1),
+                                                 "optInAt": NOW + timedelta(seconds=1)}})
+            return tool_call(tool_name, args)
+        return AIMessage(content="This model call must not occur")
+    worker.agent_factory = lambda service: ConversationAgent(service, worker_managed=True,
+        model=ScriptedChatModel(responder=respond))
+    assert send(client, envelope(provider="imessage")).status_code == 202
+    assert worker.tick()["blocked"] == 1
+    assert calls == [1] and not sender.messages
+    assert db.conversations.find_one({"principal": {"$exists": True}})["modelCalls"] == 1
+
+
+def test_old_receipt_cannot_run_under_fresh_same_space_consent(scheduled):
+    client, db, worker, sender, *_ = scheduled
+    db.contacts.update_one({}, {"$set": {"channel": "imessage"}})
+    assert send(client, envelope(provider="imessage")).status_code == 202
+    receipt = db.channelMessages.find_one({"kind": "inbound"})
+    assert set(receipt["contactProof"]) == {"handle", "channel", "spaceId", "spaceKind", "verifiedAt", "optInAt"}
+    db.contacts.update_one({}, {"$set": {"verifiedAt": NOW + timedelta(days=1), "optInAt": NOW + timedelta(days=1)}})
+    worker.agent_factory = lambda _: pytest.fail("old consent must not reach model")
+    assert worker.tick()["blocked"] == 1 and not sender.messages
+    assert not db.conversations.find_one({"principal": {"$exists": True}})["draft"]["text"]
+
+
+def test_legacy_imessage_receipt_without_proof_fails_closed(scheduled):
+    client, db, worker, sender, *_ = scheduled
+    db.contacts.update_one({}, {"$set": {"channel": "imessage"}})
+    send(client, envelope(provider="imessage"))
+    db.channelMessages.update_one({"kind": "inbound"}, {"$unset": {"contactProof": ""}})
+    worker.agent_factory = lambda _: pytest.fail("unproven receipt must not reach model")
+    assert worker.tick()["blocked"] == 1 and not sender.messages
+
+
+def test_changed_cadence_after_send_reservation_still_cancels(scheduled, monkeypatch):
+    _, db, worker, sender, *_ = scheduled
+    db.contacts.update_one({}, {"$set": {"optInAt": NOW - timedelta(days=8)}})
+    original = question_bank.update_notification
+    def extend(db, family, contact, notice, expected, fields):
+        result = original(db, family, contact, notice, expected, fields)
+        if fields.get("status") == "sending":
+            db.contacts.update_one({}, {"$set": {"cadenceDays": 30}})
+        return result
+    monkeypatch.setattr(question_bank, "update_notification", extend)
+    assert worker.tick()["blocked"] == 0 and not sender.messages
+    assert db.notifications.find_one({})["status"] == "cancelled"
+
+
+def test_voice_reconsent_during_provider_call_prevents_transcript_use(voice_stack):
+    client, db, worker, transcriber, sender, _ = voice_stack
+    db.contacts.update_one({}, {"$set": {"channel": "imessage", "spaceKind": "direct", "spaceId": "room-1"}})
+    async def reconsent(*args, **kwargs):
+        transcriber.calls.append(1)
+        db.contacts.update_one({}, {"$set": {"verifiedAt": NOW + timedelta(days=1), "optInAt": NOW + timedelta(days=1)}})
+        return "Private transcript"
+    transcriber.transcribe = reconsent
+    assert post_voice(client, voice_envelope(provider="imessage")).status_code == 202
+    assert worker.tick()["blocked"] == 1 and len(transcriber.calls) == 1 and not sender.messages
+    receipt = db.channelMessages.find_one({"receiptType": "voice"})
+    assert "contactProof" in receipt and "transcript" not in receipt
+    assert not db.conversations.find_one({"principal": {"$exists": True}})["draft"]["text"]
+
+
+def test_photo_receipt_keeps_original_proof_and_blocks_reconsent(scheduled):
+    import json
+    from tests.channels.test_inbox import sign
+    from tests.channels.test_photos import envelope as photo_envelope
+    client, db, worker, sender, *_ = scheduled
+    db.contacts.update_one({}, {"$set": {"channel": "imessage"}})
+    path = "/internal/channels/inbound-photo"
+    raw = json.dumps(photo_envelope(provider="imessage")).encode()
+    assert client.post(path, content=raw, headers=sign(raw, path)).status_code == 202
+    receipt = db.channelMessages.find_one({"receiptType": "photo"})
+    assert receipt["contactProof"]["spaceId"] == "room-1"
+    db.contacts.update_one({}, {"$set": {"optInAt": NOW + timedelta(days=1)}})
+    assert worker.tick()["blocked"] == 1 and not sender.messages
+    assert not db.conversations.find_one({"principal": {"$exists": True}})["draft"].get("photoIds")
+
+
+def test_proof_change_during_model_budget_reservation_prevents_provider(scheduled, monkeypatch):
+    from agent.conversation.agent import ConversationAgent
+    from agent.fake_llm import ScriptedChatModel
+    from langchain_core.messages import AIMessage
+    client, db, worker, sender, *_ = scheduled
+    db.contacts.update_one({}, {"$set": {"channel": "imessage"}})
+    calls = []
+    def respond(*args):
+        calls.append(1)
+        return AIMessage(content="Must not run")
+    worker.agent_factory = lambda service: ConversationAgent(service, worker_managed=True,
+        model=ScriptedChatModel(responder=respond))
+    original = conversations.take_conversation_model_call
+    def reserve(*args):
+        original(*args)
+        db.contacts.update_one({}, {"$set": {"optInAt": NOW + timedelta(days=1)}})
+    monkeypatch.setattr(conversations, "take_conversation_model_call", reserve)
+    send(client, envelope(provider="imessage"))
+    assert worker.tick()["blocked"] == 1 and not calls and not sender.messages
