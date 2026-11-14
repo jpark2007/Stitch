@@ -1,26 +1,216 @@
 @import "tailwindcss";
 
+/*
+ * Stitch global look: warm, papery, clean.
+ *
+ * Every colour, shadow and radius used across the app lives here as a CSS
+ * variable on :root, and is mirrored into the Tailwind theme below so it is
+ * available as utilities (bg-paper, text-ink, shadow-lift, font-display,
+ * rounded-card, ...). Stitch is a physical object (a book on a table), so
+ * it keeps the same warm paper look in light and dark OS themes.
+ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Paper */
+  --paper: #f5eee1; /* page background: warm cream */
+  --paper-light: #fbf8f1; /* bright sheet, photo borders */
+  --paper-deep: #ebe0cb; /* recessed paper, wells */
+  --card: #e2d2b4; /* thicker card stock */
+  --kraft: #c4a37a; /* kraft / cardboard */
+  --wood: #7a4f31; /* the table */
+  --wood-dark: #4a2f1d;
+
+  /* Ink */
+  --ink: #2f2620; /* body text: warm near-black */
+  --ink-soft: #5c4e43; /* secondary text */
+  --ink-faint: #8f8173; /* captions, meta */
+  --rule: rgb(47 38 32 / 0.14); /* hairlines, stitched rules */
+
+  /* Accents (thread colours, used sparingly in chrome) */
+  --accent: #b9573d; /* terracotta: primary accent */
+  --accent-deep: #8f3f2a;
+  --mustard: #d3a03d;
+  --sage: #7f9873;
+  --sky: #5b82a6;
+  --plum: #8b5a7c;
+
+  /* Shadows: soft, warm, never grey */
+  --shadow-paper: 0 1px 1px rgb(74 47 29 / 0.08), 0 2px 6px rgb(74 47 29 / 0.08);
+  --shadow-lift: 0 2px 3px rgb(74 47 29 / 0.1), 0 10px 24px -6px rgb(74 47 29 / 0.22);
+  --shadow-float: 0 6px 10px rgb(74 47 29 / 0.08), 0 24px 48px -12px rgb(74 47 29 / 0.3);
+  --shadow-inset: inset 0 1px 3px rgb(74 47 29 / 0.14);
+
+  /* Radii: paper has nearly square corners */
+  --radius-paper: 2px;
+  --radius-card: 6px;
+  --radius-soft: 14px;
+
+  /* Spacing rhythm */
+  --gutter: clamp(1rem, 4vw, 3rem);
+  --measure: 62ch;
+
+  /* Motion */
+  --ease-paper: cubic-bezier(0.22, 0.8, 0.24, 1);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-paper: var(--paper);
+  --color-paper-light: var(--paper-light);
+  --color-paper-deep: var(--paper-deep);
+  --color-card: var(--card);
+  --color-kraft: var(--kraft);
+  --color-wood: var(--wood);
+  --color-wood-dark: var(--wood-dark);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-faint: var(--ink-faint);
+  --color-rule: var(--rule);
+  --color-accent: var(--accent);
+  --color-accent-deep: var(--accent-deep);
+  --color-mustard: var(--mustard);
+  --color-sage: var(--sage);
+  --color-sky: var(--sky);
+  --color-plum: var(--plum);
+
+  --font-display: var(--font-fraunces), "Iowan Old Style", Georgia, serif;
+  --font-serif: var(--font-fraunces), "Iowan Old Style", Georgia, serif;
+  --font-hand: var(--font-caveat), "Bradley Hand", cursive;
+  --font-sans: var(--font-nunito), ui-sans-serif, system-ui, sans-serif;
+
+  --shadow-paper: var(--shadow-paper);
+  --shadow-lift: var(--shadow-lift);
+  --shadow-float: var(--shadow-float);
+  --shadow-inset: var(--shadow-inset);
+
+  --radius-paper: var(--radius-paper);
+  --radius-card: var(--radius-card);
+  --radius-soft: var(--radius-soft);
+
+  --ease-paper: var(--ease-paper);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ---------- Base ----------
+ * In @layer base so Tailwind utilities (text-*, font-*, outline-*, ...) on
+ * these elements still win; unlayered CSS would beat every layer. */
+
+@layer base {
+  html {
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /*
+   * Paper grain + a soft warm vignette, on a fixed composited layer so it costs
+   * nothing on scroll. The grain is an inline SVG turbulence tile (no network).
+   */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image:
+      radial-gradient(120% 90% at 50% 0%, rgb(255 251 242 / 0.7), transparent 60%),
+      radial-gradient(140% 120% at 50% 100%, rgb(122 79 49 / 0.1), transparent 55%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .29 0 0 0 0 .2 0 0 0 0 .13 0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='.35'/%3E%3C/svg%3E"),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.01 .03' numOctaves='3' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .45 0 0 0 0 .33 0 0 0 0 .2 0 0 0 .5 -.12'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)' opacity='.3'/%3E%3C/svg%3E");
+    background-size: auto, auto, 240px 240px, 600px 600px;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    font-weight: 560;
+    line-height: 1.12;
+    letter-spacing: -0.012em;
+    color: var(--ink);
+    font-variation-settings: "SOFT" 60, "WONK" 0;
+    text-wrap: balance;
+  }
+
+  h1 {
+    font-size: clamp(2.5rem, 5.5vw, 4.25rem);
+    font-variation-settings: "SOFT" 100, "WONK" 1;
+    letter-spacing: -0.02em;
+  }
+
+  h2 {
+    font-size: clamp(1.75rem, 3.2vw, 2.5rem);
+  }
+
+  h3 {
+    font-size: clamp(1.25rem, 2vw, 1.5rem);
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  a {
+    color: var(--accent-deep);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.18em;
+  }
+
+  ::selection {
+    background: rgb(211 160 61 / 0.35);
+    color: var(--ink);
+  }
+
+  :focus-visible {
+    outline: 2px dashed var(--accent);
+    outline-offset: 3px;
+    border-radius: var(--radius-paper);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ---------- Small reusable type helpers ---------- */
+
+/* Handwritten caption (Caveat), for notes beside photos and figures */
+@utility caption {
+  font-family: var(--font-hand);
+  font-size: 1.35rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--ink-soft);
+}
+
+/* Small-caps label: years, meta, section kickers */
+@utility kicker {
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* A stitched (dashed) rule, like thread running through paper */
+@utility stitch-rule {
+  height: 0;
+  border: 0;
+  border-top: 1.5px dashed var(--rule);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -1,15 +1,27 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Caveat, Fraunces, Nunito_Sans } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Storybook serif for headings (soft, slightly wonky at display sizes).
+const fraunces = Fraunces({
+  variable: "--font-fraunces",
   subsets: ["latin"],
+  axes: ["SOFT", "WONK", "opsz"],
+  display: "swap",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+// Handwriting for captions and notes.
+const caveat = Caveat({
+  variable: "--font-caveat",
   subsets: ["latin"],
+  display: "swap",
+});
+
+// Quiet, rounded sans for UI text.
+const nunito = Nunito_Sans({
+  variable: "--font-nunito",
+  subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -17,13 +29,17 @@ export const metadata: Metadata = {
   description: "A pop-up storybook of your family, made from everyone's memories.",
 };
 
+export const viewport: Viewport = {
+  themeColor: "#f5eee1",
+};
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${fraunces.variable} ${caveat.variable} ${nunito.variable} antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body>{children}</body>
     </html>
   );
 }
