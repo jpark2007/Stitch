@@ -11,7 +11,8 @@ import type { Person, Tradition } from "@/lib/types";
 
 // By a computed path, so the type check reads it as the app does (no ".ts").
 type Module = typeof import("./traditionBook");
-const paths = ["./traditionBook.ts"];
+const paths = ["./traditionBook.ts", "../book/types.ts"];
+const { spreadDate }: typeof import("../book/types") = await import(paths[1]);
 const {
   WHEN_MAX,
   STORY_MAX_ALONE,
@@ -169,6 +170,17 @@ describe("the spreads", () => {
     assert.equal(storyText(t, []), "Every Christmas Eve, without fail.");
   });
 
+  it("says keeps for one keeper, keep for several, and needs none", () => {
+    const known = peopleById([...people, person("pat", "Pat Probe")]);
+    const monthly = tradition({ description: "", when: { kind: "monthly" } });
+    const line = (ids: string[]) => storyText(monthly, keepersOf({ participantIds: ids }, known));
+    assert.equal(line(["pat"]), "Every month, Pat Probe keeps it going.");
+    assert.equal(line(["pat", "rosa"]), "Every month, Pat Probe & Rosa keep it going.");
+    assert.equal(line(["pat", "rosa", "luis"]), "Every month, Pat Probe, Rosa & Luis keep it going.");
+    assert.equal(line([]), "Every month, without fail.");
+    assert.equal(line(["ghost"]), "Every month, without fail.");
+  });
+
   it("binds one spread per tradition, then the closing spread", () => {
     const traditions = [tradition(), tradition({ id: "t2", title: "Hymns", startedYear: null, participantIds: ["dad"], category: "music" })];
     const book = traditionBook(traditions, people, {
@@ -178,8 +190,12 @@ describe("the spreads", () => {
     assert.equal(book.title, "The Rivera Book of Traditions");
     assert.deepEqual(book.spreads.map((s) => s.id), ["t1", "t2", "traditions:end"]);
     const first = book.spreads[0];
-    assert.equal(String(first.year), "Every Christmas Eve");
-    assert.ok(!(Number.isFinite(first.year) && first.year > 0), "the dots and contents read it as undated");
+    assert.equal(first.dateLine, "Every Christmas Eve");
+    assert.equal(first.year, 1962);
+    assert.equal(spreadDate(first), "Every Christmas Eve", "contents and the dots show the when line");
+    const undated = book.spreads[1];
+    assert.equal(undated.dateLine, "Every Christmas Eve");
+    assert.equal(undated.year, 0, "no year it began: 0, which the book reads as undated");
     assert.deepEqual(first.stage, {});
     assert.deepEqual(first.photos, [{ id: "t1:keepers", src: "data:image/png;base64,t1-2", caption: "since 1962" }]);
     assert.equal(book.spreads[1].photos[0].caption, undefined);
@@ -263,6 +279,27 @@ describe("the story fits the page", () => {
     assert.ok(plain.spreads[0].text.length <= STORY_MAX_ALONE, `${plain.spreads[0].text.length}`);
     assert.ok(plain.spreads[0].text.endsWith("… Kept since 1962."), plain.spreads[0].text.slice(-40));
   });
+});
+
+describe("a long title", () => {
+  const people = [person("rosa", "Rosa"), person("luis", "Luis", "#5f7f52")];
+  const long = "We walk to the old orchard and pick apples for the pies. ".repeat(20);
+
+  // The book cuts a title to three lines (pageArt TITLE_MAX_LINES) and never
+  // prints a photo narrower than PHOTO_MIN_W, so even the longest title the
+  // API allows (200) leaves the prints their size: they stay, captioned.
+  for (const n of [60, 120, 200]) {
+    it(`keeps the prints and their "since" under a ${n}-character title`, () => {
+      const t = tradition({ title: "x".repeat(n), description: long, photoIds: ["m1"] });
+      const spread = traditionBook([t], people, { photoUrl: (id) => `blob:${id}`, snapshot: () => "data:x" }).spreads[0];
+      assert.deepEqual(spread.photos.map((p) => [p.id, p.caption]), [
+        ["m1", undefined],
+        ["t1:keepers", "since 1962"],
+      ]);
+      assert.ok(!spread.text.includes("since"));
+      assert.ok(spread.text.length <= storyBudget(t.title, true), `${spread.text.length}`);
+    });
+  }
 });
 
 describe("since, on the left page", () => {

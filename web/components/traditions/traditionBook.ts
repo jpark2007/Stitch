@@ -218,23 +218,17 @@ export function orderTraditions<T extends Pick<Tradition, "id" | "title" | "star
 }
 
 /**
- * The page's top line goes where a moment prints its year. BookSpread.year
- * is a number, and the story page prints it with String() (pageArt.ts),
- * while Contents and the dots read anything but a positive number as
- * undated; so the words are handed through as they are. Requested of the
- * book's owner: a `dateLine?: string` of its own on BookSpread.
+ * The words of a spread: the story, or a line made from the tradition when
+ * it has none ("Every month, Pat keeps it going.", "Every Christmas Eve,
+ * Rosa & Luis keep it going.", "Every Christmas Eve, without fail.").
  */
-export function printedLine(line: string): number {
-  return line as unknown as number;
-}
-
-/** The words of a spread: the story, or a line made from the tradition when it has none. */
 export function storyText(tradition: Pick<Tradition, "description" | "title" | "when">, keepers: readonly TraditionPerson[]): string {
   const story = (tradition.description ?? "").trim();
   if (story) return story;
   const when = whenLine(tradition.when);
-  const who = namesLine(keepers.map((k) => k.name));
-  return who ? `${when}, ${who} keep it going.` : `${when}, without fail.`;
+  const names = keepers.map((k) => k.name.trim()).filter(Boolean);
+  if (!names.length) return `${when}, without fail.`;
+  return `${when}, ${namesLine(names)} ${names.length === 1 ? "keeps" : "keep"} it going.`;
 }
 
 /**
@@ -295,20 +289,26 @@ export function traditionSpread(tradition: Tradition, keepers: readonly Traditio
   const shot = keepers.length && options.snapshot ? options.snapshot(tradition, keepers) : null;
   // The page holds two prints: with a snapshot of the people, one photo beside it.
   const photos: BookPhoto[] = shot ? [...real.slice(0, 1), { id: `${tradition.id}:keepers`, src: shot }] : real.slice(0, 2);
+  const title = tradition.title.trim() || "A family tradition";
+  const story = storyText(tradition, keepers);
   if (since && photos.length) {
     const last = photos[photos.length - 1];
     photos[photos.length - 1] = { ...last, caption: since };
   }
   // With no print to caption, the year closes the story instead ("Kept since 2001.").
   const closing = since && !photos.length ? ` Kept ${since}.` : "";
-  const title = tradition.title.trim() || "A family tradition";
   const budget = storyBudget(title, photos.length > 0) - closing.length;
   return {
     id: tradition.id,
     title,
-    year: printedLine(whenLine(tradition.when)),
+    // The book is not re-ordered by year (traditionBook orders it), and with
+    // a dateLine the year is printed nowhere: the year it began, else 0
+    // ("undated", as the book reads it).
+    year: since ? (tradition.startedYear as number) : 0,
+    // "Every Christmas Eve": printed over the title, in Contents and the dots.
+    dateLine: whenLine(tradition.when),
     // Cut to what the page holds: the printer has no overflow of its own.
-    text: fitStory(storyText(tradition, keepers), budget) + closing,
+    text: fitStory(story, budget) + closing,
     photos,
     // The kit stands on the right page: printed plain, no "the pop-up rises here".
     stage: {},
