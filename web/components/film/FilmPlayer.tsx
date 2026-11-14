@@ -551,7 +551,7 @@ export function FilmPlayer(props: {
           {caption ? (
             <p
               key={view.shot}
-              className="truncate font-hand text-[1.3rem] leading-none text-ink-soft sm:text-[1.85rem]"
+              className="min-w-0 flex-1 truncate pe-[0.3em] font-hand text-[1.3rem] leading-none text-ink-soft sm:text-[1.85rem]"
               style={reduced ? undefined : { animation: "stitch-film-fade 0.7s ease-out both" }}
             >
               {caption}
