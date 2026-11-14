@@ -94,6 +94,7 @@ import {
   type PlaceInput,
   type Rect,
 } from "../explain";
+import { PAGE_W } from "../leafShape";
 import { INK, INK_SOFT, canvas, drawStitchLine, paper, rng, type PageFonts } from "../paperArt";
 import { paperLift } from "../sound";
 import { registerExplainProbe, type ExplainNoteBox, type ExplainPoint } from "./explainProbe";
@@ -1037,6 +1038,9 @@ class ExplainStage {
     pl.camera = cam;
     pl.w = W;
     pl.h = H;
+    // The stage stands centred on its page (PAGE_W world units wide).
+    const e = root.matrixWorld.elements;
+    pl.pageHalf = PAGE_W / 2 / Math.max(1e-6, Math.hypot(e[0], e[1], e[2])) - 0.06;
     projectBox(rig.box, cam, W, H, s.v, s.target);
     for (let i = 0; i < rig.others.length; i++) projectBox(rig.others[i], cam, W, H, s.v, rig.otherRects[i]);
     const input = pl.input;
@@ -1091,6 +1095,13 @@ class ExplainStage {
     out.x0 = out.y0 = Infinity;
     out.x1 = out.y1 = -Infinity;
     if (!rig || !root || !camera) return out;
+    // It stands on the stage's page, never across the fold or off its edge:
+    // anywhere else is as good as off screen.
+    if (Math.abs(x) + (h * rig.aspect) / 2 > this.pl.pageHalf) {
+      out.x0 = out.y0 = -1e6;
+      out.x1 = out.y1 = 1e6;
+      return out;
+    }
     const z = NOTE_Z[d] ?? NOTE_Z[0];
     const yaw = this.yawAt(x, z);
     const lean = this.leanAt(x, h, z);
@@ -1116,6 +1127,8 @@ class ExplainStage {
     camera: Camera | null;
     w: number;
     h: number;
+    /** Half the page's width, stage units (less a margin). */
+    pageHalf: number;
     input: PlaceInput;
   } = {
     rig: null,
@@ -1123,6 +1136,7 @@ class ExplainStage {
     camera: null,
     w: 1,
     h: 1,
+    pageHalf: 1.2,
     input: {
       target: this.s.target,
       view: this.s.view,
