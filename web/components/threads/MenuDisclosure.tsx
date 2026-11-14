@@ -16,6 +16,12 @@ export function MenuDisclosure(props: {
   className?: string;
   /** Wraps the button, e.g. in a heading; the menu stays outside it. */
   trigger?: (button: ReactNode) => ReactNode;
+  /**
+   * The menu's own classes, in place of the paper menu under the button's
+   * left edge ("threads-menu left-0 top-full mt-1.5"): to open it from the
+   * right edge, say, or to style it where threads.css is not loaded.
+   */
+  panelClassName?: string;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -63,7 +69,7 @@ export function MenuDisclosure(props: {
         // Choosing an item (a link or button inside) closes the menu.
         <div
           id={id}
-          className="threads-menu left-0 top-full mt-1.5"
+          className={props.panelClassName ?? "threads-menu left-0 top-full mt-1.5"}
           onClick={(e) => {
             if ((e.target as HTMLElement).closest("a,button")) setOpen(false);
           }}
