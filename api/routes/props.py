@@ -19,9 +19,11 @@ from db.client import get_db
 
 router = APIRouter(tags=["props"])
 
-# What the upload accepts: the photo formats phones and browsers produce.
+# What the upload accepts: the photo formats phones and browsers produce. Kept equal to
+# routes.memories.ALLOWED_PHOTO_TYPES (a test asserts it) without importing that module,
+# so a photo that works on a memory also works as a prop's art.
 ALLOWED_IMAGE_TYPES: frozenset[str] = frozenset(
-    {"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic"}
+    {"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"}
 )
 
 
@@ -107,14 +109,14 @@ async def upload_media(
 ) -> dict[str, str]:
     """Upload a photo for this family. Returns {"id": <bare media id>}.
 
-    415 for anything but jpeg, png, webp, gif or heic; 413 over db.media.MAX_BYTES;
+    415 for anything but a JPEG, PNG, WebP, GIF or HEIC/HEIF image; 413 over db.media.MAX_BYTES;
     400 for an empty file. The bytes land in GridFS tagged with the family id.
     """
     content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
     if content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Upload a JPEG, PNG, WebP, GIF or HEIC image",
+            detail="Upload a JPEG, PNG, WebP, GIF or HEIC/HEIF image",
         )
     limit = media_db.MAX_BYTES  # read at call time so tests can lower it
     try:

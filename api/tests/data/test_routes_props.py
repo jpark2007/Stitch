@@ -231,16 +231,36 @@ def test_upload_returns_201_and_is_retrievable(env, content_type):
     assert media_db.get_media(env["db"], FAM_B, body["id"]) is None
 
 
+def test_upload_heif_is_201_and_stored_as_heif(env):
+    resp = _upload(env["tc"], FAM_A, data=PNG, content_type="image/heif", filename="IMG_0001.heif")
+    assert resp.status_code == 201
+    body = resp.json()
+    assert set(body) == {"id"} and body["id"]
+    stored = media_db.get_media(env["db"], FAM_A, body["id"])
+    assert stored is not None
+    assert stored.content_type == "image/heif"
+
+
+def test_allowed_types_match_memory_submit():
+    # The prop-art upload and the memory photo upload must accept the same formats.
+    from routes import memories as memories_routes
+
+    assert props_routes.ALLOWED_IMAGE_TYPES == memories_routes.ALLOWED_PHOTO_TYPES
+
+
 def test_upload_content_type_with_parameters(env):
     resp = _upload(env["tc"], FAM_A, content_type="IMAGE/PNG; foo=bar")
     assert resp.status_code == 201
     assert media_db.get_media(env["db"], FAM_A, resp.json()["id"]).content_type == "image/png"
 
 
-@pytest.mark.parametrize("content_type", ["text/plain", "application/pdf", "image/svg+xml", "video/mp4"])
+@pytest.mark.parametrize(
+    "content_type", ["text/plain", "application/pdf", "image/svg+xml", "image/tiff", "video/mp4"]
+)
 def test_upload_wrong_type_is_415(env, content_type):
     resp = _upload(env["tc"], FAM_A, content_type=content_type, filename="notes.txt")
     assert resp.status_code == 415
+    assert resp.json()["detail"] == "Upload a JPEG, PNG, WebP, GIF or HEIC/HEIF image"
     assert env["db"][media_db.INLINE].count_documents({"metadata.familyId": FAM_A}) == 0
 
 
