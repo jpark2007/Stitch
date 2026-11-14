@@ -200,9 +200,11 @@ export function Snapshot({ scene = "hills" }: { scene?: SnapshotScene }) {
       style={{
         ...fill,
         background:
-          "radial-gradient(120% 70% at 20% 120%, #6f8458 0 40%, transparent 41%), radial-gradient(110% 60% at 85% 115%, #8a9a64 0 45%, transparent 46%), radial-gradient(18% 14% at 72% 30%, #f6e6bf 0 60%, transparent 62%), linear-gradient(#e3cfa6, #d9bf93 70%, #c4ac7f)",
+          "radial-gradient(120% 70% at 20% 120%, #6f8458 0 40%, transparent 41%), radial-gradient(110% 60% at 85% 115%, #8a9a64 0 45%, transparent 46%), linear-gradient(#e3cfa6, #d9bf93 70%, #c4ac7f)",
       }}
-    />
+    >
+      <div style={{ position: "absolute", left: "66%", top: "20%", width: "12%", aspectRatio: "1", borderRadius: "50%", background: "#f6e6bf", boxShadow: "0 0 22px 6px rgb(246 230 191 / 0.55)" }} />
+    </div>
   );
 }
 
