@@ -31,6 +31,7 @@ from __future__ import annotations
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import ValidationError
 from pymongo.database import Database
 
 import schemas
@@ -41,6 +42,8 @@ from db import props as props_db
 from db.client import get_db
 from db.families import LastAdmin
 from db.people import AlreadyClaimed, InvalidRelation
+from screenplay import compiler as screenplay_compiler
+from screenplay.schema import Screenplay
 
 router = APIRouter(tags=["families"])
 
@@ -50,6 +53,8 @@ PERSON_TAKEN = "Someone has already claimed this person"
 ALREADY_HAVE_PERSON = "You already have a person in this family"
 BAD_COLOR = "Color must be a hex code like #3f6fb5"
 ITEM_PROP_UNKNOWN = "That item is not one of this family's props"
+BUILD_BREAKS_SCENE = 'That build would no longer fit the saved scene "{title}". Keep the current build.'
+ITEM_BREAKS_SCENE = 'That worn item would no longer fit the saved scene "{title}". Keep the current item.'
 
 MAX_FAMILY_NAME_CHARS = 100
 MAX_PERSON_NAME_CHARS = 100
@@ -373,16 +378,113 @@ def add_person(
         raise _bad_request(str(exc)) from exc
 
 
-@router.patch("/families/{fid}/people/{person_id}")
+def _scene_inputs(
+    db: Database, family_id: str, screenplay: Screenplay
+) -> tuple[dict[str, schemas.SetDef], dict[str, schemas.Prop], dict[str, schemas.Person]] | None:
+    """This family's sets, props and cast for a stored screenplay, or None if any is missing."""
+    sets: dict[str, schemas.SetDef] = {}
+    props: dict[str, schemas.Prop] = {}
+    people: dict[str, schemas.Person] = {}
+    for set_id in dict.fromkeys(shot.set for shot in screenplay.shots):
+        set_def = props_db.get_set(db, family_id, set_id)
+        if set_def is None:
+            return None
+        sets[set_id] = set_def
+    for prop_id in dict.fromkeys(screenplay.props):
+        prop = props_db.get_prop(db, family_id, prop_id)
+        if prop is None:
+            return None
+        props[prop_id] = prop
+    for cast_id in dict.fromkeys(screenplay.cast):
+        person = people_db.get_person(db, family_id, cast_id)
+        if person is None:
+            return None
+        people[cast_id] = person
+    return sets, props, people
+
+
+def _compiles(
+    screenplay: Screenplay,
+    sets: dict[str, schemas.SetDef],
+    props: dict[str, schemas.Prop],
+    people: dict[str, schemas.Person],
+) -> bool:
+    """True when the real compiler turns this screenplay into a timeline. Never raises."""
+    try:
+        result = screenplay_compiler.compile(screenplay, sets=sets, props=props, people=people)
+    except Exception:  # noqa: BLE001 - a compiler crash is a failed compile, never a crashed request
+        return False
+    return bool(result.ok) and result.timeline is not None
+
+
+def _guard_saved_scenes(
+    db: Database, family_id: str, current: schemas.Person, sheet: schemas.CharacterSheet
+) -> None:
+    """409 when a scene saved with this person compiles today but not with the new sheet.
+
+    Only called when the build or the worn item changes. A scene that already fails to
+    compile (or whose screenplay, sets, props or cast can no longer be loaded) never blocks
+    the edit: it is broken either way, and refusing would leave no way to fix the person.
+    """
+    build_changed = sheet.build != current.character.build
+    changed = current.model_copy(update={"character": sheet})
+    cursor = db["memories"].find(
+        {"familyId": family_id, "screenplay.cast": current.id}, {"_id": 1, "title": 1, "screenplay": 1}
+    )
+    for doc in cursor:
+        try:
+            screenplay = Screenplay.model_validate(doc.get("screenplay"))
+        except ValidationError:
+            continue
+        loaded = _scene_inputs(db, family_id, screenplay)
+        if loaded is None:
+            continue
+        sets, props, people = loaded
+        if not _compiles(screenplay, sets, props, people):
+            continue
+        people[current.id] = changed
+        if not _compiles(screenplay, sets, props, people):
+            title = str(doc.get("title") or "a saved moment")
+            raise _conflict((BUILD_BREAKS_SCENE if build_changed else ITEM_BREAKS_SCENE).format(title=title))
+
+
+@router.patch(
+    "/families/{fid}/people/{person_id}",
+    response_model=schemas.Person,
+    responses={
+        400: {"model": schemas.ErrorResponse, "description": "A blank name or an impossible relation"},
+        404: {"model": schemas.ErrorResponse, "description": "Unknown family, or the person is not in it"},
+        409: {
+            "model": schemas.ErrorResponse,
+            "description": "The new build or worn item would no longer fit a scene already saved with this person",
+        },
+    },
+)
 def patch_person(
     person_id: str,
     body: schemas.PersonPatch,
     access: FamilyAccess = Depends(family_member),
     db: Database = Depends(get_db),
 ) -> schemas.Person:
-    """Edit a person, their relationships, or their character sheet."""
+    """Edit a person, their relationships, or their character sheet.
+
+    Build guard: when the patch changes the character's `build` or `itemPropId`, every
+    scene saved in this family with this person in its cast is compiled again with the
+    new sheet. If one that compiles today would stop compiling (a smaller build can no
+    longer reach a hand_to, say), the patch is a 409 naming that moment and nothing is
+    written, since every later telling of it would fail. Scenes that already fail to
+    compile do not block the edit. A patch that keeps the build and item prop compiles
+    nothing.
+    """
     patch = _clean_patch(body)
     _check_item_prop(db, access.family_id, patch.character)
+    sheet = patch.character if "character" in patch.model_fields_set else None
+    if sheet is not None:
+        current = people_db.get_person(db, access.family_id, person_id)
+        if current is None:
+            raise _not_found("Person not found")
+        if sheet.build != current.character.build or sheet.item_prop_id != current.character.item_prop_id:
+            _guard_saved_scenes(db, access.family_id, current, sheet)
     try:
         person = people_db.update_person(db, access.family_id, person_id, patch)
     except InvalidRelation as exc:
