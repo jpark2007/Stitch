@@ -13,6 +13,8 @@
 export interface ThreadPerson {
   id: string;
   name: string;
+  /** Shorter name written on the thread when the full one is long; else `name`. */
+  label?: string;
   born: number;
   parentIds: string[];
   spouseIds: string[];
@@ -23,6 +25,8 @@ export interface ThreadPerson {
 export interface ThreadMoment {
   id: string;
   title: string;
+  /** Shorter title set by the knot when the full one is long; else `title`. */
+  label?: string;
   year: number;
   participantIds: string[];
 }
@@ -113,6 +117,7 @@ function orderLanes(people: ThreadPerson[], moments: ThreadMoment[]): ThreadPers
   };
 
   const n = people.length;
+  if (n > SMALL_FAMILY) return orderLargeFamily(people, groups, pairs);
   const posOf = (order: number[]) => {
     const pos = new Array<number>(n);
     order.forEach((personIdx, lane) => (pos[personIdx] = lane));
@@ -178,6 +183,81 @@ function orderLanes(people: ThreadPerson[], moments: ThreadMoment[]): ThreadPers
     ? [...winner.order].reverse()
     : winner.order;
   return order.map((i) => people[i]);
+}
+
+/** Up to this many people, lanes are found by the full search above. */
+const SMALL_FAMILY = 20;
+
+/**
+ * The same cost for big families, solved fast enough to stay interactive:
+ * a moment's spread is rewritten as pairwise pulls (the spread of a group
+ * is the sum of its squared pairwise distances over its size), so trying a
+ * swap only needs the two people's rows: O(n) instead of a full re-score.
+ * Swaps only, from the birth-order seed; then oldest generation on top.
+ */
+function orderLargeFamily(people: ThreadPerson[], groups: number[][], pairs: [number, number, number][]): ThreadPerson[] {
+  const n = people.length;
+  const w = Array.from({ length: n }, () => new Float64Array(n));
+  for (const g of groups) {
+    const k = 1 / g.length;
+    for (let a = 0; a < g.length; a++) {
+      for (let b = a + 1; b < g.length; b++) {
+        if (g[a] === g[b]) continue;
+        w[g[a]][g[b]] += k;
+        w[g[b]][g[a]] += k;
+      }
+    }
+  }
+  for (const [a, b, wt] of pairs) {
+    if (a === b) continue;
+    w[a][b] += wt;
+    w[b][a] += wt;
+  }
+  const order = people
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => a.p.born - b.p.born || a.i - b.i)
+    .map((x) => x.i);
+  const pos = new Float64Array(n);
+  order.forEach((personIdx, lane) => (pos[personIdx] = lane));
+  for (let iter = 0; iter < 60; iter++) {
+    let improved = false;
+    for (let la = 0; la < n; la++) {
+      for (let lb = la + 1; lb < n; lb++) {
+        const A = order[la];
+        const B = order[lb];
+        const pa = pos[A];
+        const pb = pos[B];
+        let delta = 0;
+        for (let k = 0; k < n; k++) {
+          if (k === A || k === B) continue;
+          const pk = pos[k];
+          const da = (pb - pk) ** 2 - (pa - pk) ** 2;
+          delta += (w[A][k] - w[B][k]) * da;
+        }
+        if (delta < -1e-9) {
+          order[la] = B;
+          order[lb] = A;
+          pos[A] = pb;
+          pos[B] = pa;
+          improved = true;
+        }
+      }
+    }
+    if (!improved) break;
+  }
+  const mean = (pick: (p: ThreadPerson) => boolean) => {
+    let sum = 0;
+    let count = 0;
+    people.forEach((p, i) => {
+      if (pick(p)) {
+        sum += pos[i];
+        count++;
+      }
+    });
+    return sum / Math.max(1, count);
+  };
+  const flip = mean((p) => p.parentIds.length === 0) > mean((p) => p.parentIds.length > 0);
+  return (flip ? [...order].reverse() : order).map((i) => people[i]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -353,13 +433,18 @@ export function buildModel(people: ThreadPerson[], moments: ThreadMoment[], now:
   // Strands, parents first so a child can be spun from their threads.
   const strands = new Map<string, Strand>();
   const end = Math.max(now, ...sorted.map((m) => m.year + 1));
+  const building = new Set<string>();
   const build = (p: ThreadPerson): Strand => {
     const existing = strands.get(p.id);
     if (existing) return existing;
+    building.add(p.id);
     const lane = laneOf.get(p.id)!;
     const mine = knots.filter((k) => k.people.some((q) => q.id === p.id));
     const anchors: Anchor[] = mine.map((k) => ({ t: k.t, y: k.y }));
-    const parents = p.parentIds.map((id) => byId.get(id)).filter((q): q is ThreadPerson => !!q && laneOf.has(q.id));
+    // A parent link that loops back (bad data) is ignored rather than followed forever.
+    const parents = p.parentIds
+      .map((id) => byId.get(id))
+      .filter((q): q is ThreadPerson => !!q && laneOf.has(q.id) && !building.has(q.id));
     let start: Anchor = { t: p.born, y: lane };
     let fromParents = false;
     const firstKnot = mine[0];
@@ -374,6 +459,7 @@ export function buildModel(people: ThreadPerson[], moments: ThreadMoment[], now:
     }
     const s: Strand = { person: p, lane, start, fromParents, end, anchors, momentIds: mine.map((k) => k.moment.id) };
     strands.set(p.id, s);
+    building.delete(p.id);
     return s;
   };
   ordered.forEach(build);
@@ -384,7 +470,8 @@ export function buildModel(people: ThreadPerson[], moments: ThreadMoment[], now:
     s.start.parents ? 1 + Math.max(...s.start.parents.map(depth)) : 0;
   const birthOrder = [...out].sort((a, b) => depth(a) - depth(b));
 
-  const born = Math.min(...people.map((p) => p.born));
+  // The earliest birth or moment (a moment can predate a birth year typed wrong).
+  const born = Math.min(now, ...people.map((p) => p.born), ...sorted.map((m) => m.year));
   return {
     strands: out,
     birthOrder,

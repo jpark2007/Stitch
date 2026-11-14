@@ -506,7 +506,8 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
     const lanePx = layout.top + strand.lane * layout.gap;
     // First sample where the whole name fits over a level stretch of the
     // thread, clear of knots.
-    const w = ctx.measureText(strand.person.name).width;
+    const label = strand.person.label ?? strand.person.name;
+    const w = ctx.measureText(label).width;
     const startX = pts[0];
     const right = layout.width - margin;
     // Does a label starting at x sit over level thread, clear of knots?
@@ -563,7 +564,7 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
     geom.names.push({ x0: x, y0: y - size, x1: x + w, y1: y + 4 });
     ctx.globalAlpha = riding ? 0.85 : 1;
     ctx.fillStyle = yarnInk(strand.person.color, st.dim[i]).label;
-    ctx.fillText(strand.person.name, x, y);
+    ctx.fillText(label, x, y);
   }
   ctx.globalAlpha = 1;
 }
