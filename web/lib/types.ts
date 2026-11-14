@@ -144,6 +144,15 @@ export interface CreateFamilyResponse {
   person: Person;
 }
 
+/** POST /families/{fid}/films -> 202 Film. Bounds (422 when broken): title at most 200 characters after trimming (blank or omitted = the server picks one); text 1-20,000 after trimming; year from 1800 to this year; 8-40 photoIds (bare media ids already uploaded to this family); at most 100 participantIds. */
+export interface CreateFilmRequest {
+  title?: string | null;
+  text: string;
+  year: number;
+  photoIds: string[];
+  participantIds?: string[];
+}
+
 /** POST /families/{fid}/traditions. Bounds (422 when broken): title 1-200 characters after trimming; description at most 5,000 (may be empty); when.label at most 100; when.month 1-12; at most 100 participantIds and 10 photoIds; startedYear from 1800 to this year. */
 export interface CreateTraditionRequest {
   title: string;
@@ -188,6 +197,88 @@ export interface FamilySummary {
   role: "admin" | "member";
   /** The caller's person in this family */
   personId?: string | null;
+}
+
+/** A photo film. Every field is always sent: shots, beats and words are empty and duration is 0 until status is "ready". */
+export interface Film {
+  id: string;
+  familyId: string;
+  /** Person id of the teller */
+  authorId: string;
+  title: string;
+  year: number;
+  /** The teller's story, as written */
+  text: string;
+  /** Person ids of the people in it */
+  participantIds: string[];
+  status: "processing" | "ready" | "failed";
+  /** A safe message for people when status is failed, else null */
+  error: string | null;
+  /** Every photo uploaded for it (bare media ids), chosen or not */
+  photoIds: string[];
+  /** In play order */
+  shots: FilmShot[];
+  beats: FilmBeat[];
+  /** Narrated words with their times, for captions */
+  words: FilmWord[];
+  /** Narration 'media/<id>'; null = silent, play on a clock */
+  audio: string | null;
+  /** Seconds; 0 until ready */
+  duration: number;
+  createdAt: string;
+}
+
+/** One beat of the story: a run of shots under one narration line. */
+export interface FilmBeat {
+  title: string;
+  /** Seconds from the start of the film */
+  start: number;
+  /** The line spoken over this beat, in the teller's words */
+  narration: string;
+}
+
+/** One photo on screen: a slow pan/zoom toward `focus` for `duration` seconds. */
+export interface FilmShot {
+  /** Bare media id (as returned by POST /families/{fid}/media) */
+  photoId: string;
+  /** Seconds from the start of the film */
+  start: number;
+  /** Seconds on screen, crossfades included */
+  duration: number;
+  /** Index into Film.beats */
+  beat: number;
+  /** Handwritten caption, if any */
+  caption?: string | null;
+  /** [u, v]: fraction across and down the photo the motion moves toward */
+  focus?: [number, number];
+  /** in/out = zoom, left/right = pan */
+  motion?: "in" | "out" | "left" | "right";
+}
+
+/** A film without its cut, for lists. */
+export interface FilmSummary {
+  id: string;
+  title: string;
+  year: number;
+  authorId: string;
+  status: "processing" | "ready" | "failed";
+  /** Seconds; 0 until ready */
+  duration: number;
+  /** Bare media id of the first shot (or photo) */
+  coverPhotoId?: string | null;
+  createdAt: string;
+}
+
+/** One narrated word and when it is spoken (the Timeline's word timing, in film time). */
+export interface FilmWord {
+  /** Seconds from the start of the film */
+  t: number;
+  word: string;
+}
+
+/** GET /families/{fid}/films: every film in the family, newest first. */
+export interface FilmsResponse {
+  films: FilmSummary[];
 }
 
 export interface FrameShot {

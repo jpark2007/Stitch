@@ -36,6 +36,7 @@ import main
 import schemas
 from db import client as db_client
 from db import families as families_db
+from db import films as films_db
 from db import media as media_db
 from db import memories as memories_db
 from db import people as people_db
@@ -180,6 +181,8 @@ class FamilyWorld:
     question_id: str
     run_id: str
     tradition_id: str
+    film_photo_ids: list[str]  # media_id plus seven more photos: enough for a film
+    film_id: str
 
 
 def _build_family(db, fake: FakeRuns, tag: str) -> FamilyWorld:
@@ -240,6 +243,19 @@ def _build_family(db, fake: FakeRuns, tag: str) -> FamilyWorld:
         ),
         created_by=admin.id,
     )
+    film_photo_ids = [media_id] + [
+        media_db.put_media(db, fid, PNG + f"{tag}-film-{i}".encode(), content_type="image/png", filename=f"{tag}-{i}.png")
+        for i in range(schemas.MIN_FILM_PHOTOS - 1)
+    ]
+    film = films_db.create_film(
+        db,
+        fid,
+        author_id=admin_p.id,
+        text=f"The summer at the lake ({tag}).",
+        year=1998,
+        photo_ids=film_photo_ids,
+        participant_ids=[elder.id],
+    )
     return FamilyWorld(
         fid=fid,
         admin=admin,
@@ -255,6 +271,8 @@ def _build_family(db, fake: FakeRuns, tag: str) -> FamilyWorld:
         question_id=question.id,
         run_id=run_id,
         tradition_id=tradition.id,
+        film_photo_ids=film_photo_ids,
+        film_id=film.id,
     )
 
 
@@ -318,6 +336,7 @@ def _family_snapshot(db, fid: str) -> dict[str, Any]:
         "media": sorted(str(d["_id"]) for d in db[media_db.INLINE].find({"metadata.familyId": fid}, {"_id": 1})),
         "questions": _sorted(db.questions.find({"familyId": fid})),
         "traditions": _sorted(db[traditions_db.COLLECTION].find({"familyId": fid})),
+        "films": _sorted(db[films_db.COLLECTION].find({"familyId": fid})),
     }
 
 
@@ -403,6 +422,12 @@ CASES: dict[tuple[str, str], Builder] = {
     ("DELETE", "/families/{fid}/traditions/{tradition_id}"): lambda f, w: {
         "url": f"/families/{f}/traditions/{w.tradition_id}",
     },
+    ("GET", "/families/{fid}/films"): lambda f, w: {"url": f"/families/{f}/films"},
+    ("POST", "/families/{fid}/films"): lambda f, w: {
+        "url": f"/families/{f}/films",
+        "json": {"text": "An outsider's film", "year": 1998, "photoIds": w.film_photo_ids},
+    },
+    ("GET", "/families/{fid}/films/{film_id}"): lambda f, w: {"url": f"/families/{f}/films/{w.film_id}"},
 }
 
 
@@ -501,8 +526,9 @@ def test_world_is_not_empty(env):
     # Stored under the family-scoped key, with the API id as a plain field.
     assert [(p["_id"], p["id"]) for p in snap["props"]] == [(f"{env.b.fid}:{env.b.prop_id}", env.b.prop_id)]
     assert [(s["_id"], s["id"]) for s in snap["sets"]] == [(f"{env.b.fid}:{env.b.set_id}", env.b.set_id)]
-    assert snap["media"] == [env.b.media_id]
+    assert snap["media"] == sorted(env.b.film_photo_ids) and env.b.media_id in snap["media"]
     assert len(snap["questions"]) == 1
+    assert [f["_id"] for f in snap["films"]] == [env.b.film_id]
     assert env.fake.runs[env.b.run_id] == (env.b.fid, env.b.admin.id)
 
 
@@ -630,6 +656,12 @@ SECOND_ID_CASES: list[SecondId] = [
         "/families/{fid}/traditions/{tradition_id}",
         lambda f, o: f"/families/{f.fid}/traditions/{o.tradition_id}",
         ok=204,
+    ),
+    SecondId(
+        "film",
+        "GET",
+        "/families/{fid}/films/{film_id}",
+        lambda f, o: f"/families/{f.fid}/films/{o.film_id}",
     ),
 ]
 
@@ -770,6 +802,21 @@ CROSS_REF_CASES: list[CrossRef] = [
         "PATCH",
         lambda e: f"/families/{e.a.fid}/traditions/{e.a.tradition_id}",
         lambda e: {"json": {"photoIds": [f"media/{e.b.media_id}"]}},
+        400,
+    ),
+    CrossRef(
+        "add film: photoIds with one of B's media",
+        "POST",
+        lambda e: f"/families/{e.a.fid}/films",
+        lambda e: {"json": {"text": "Ours", "year": 1998, "photoIds": [*e.a.film_photo_ids[1:], e.b.media_id]}},
+        400,
+    ),
+    CrossRef(
+        "add film: participantIds of B's people",
+        "POST",
+        lambda e: f"/families/{e.a.fid}/films",
+        lambda e: {"json": {"text": "Ours", "year": 1998, "photoIds": e.a.film_photo_ids,
+                            "participantIds": [e.a.elder.id, e.b.elder.id]}},
         400,
     ),
 ]

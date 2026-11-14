@@ -3,7 +3,7 @@
 // in-memory mock backend instead of the server; everything else is the same.
 
 import type { RunSource, UseAgentRunOptions } from "@/components/agent/useAgentRun";
-import { api, createApiClient, isMockMode, type StitchApi } from "@/lib/api";
+import { api, createApiClient, isMockMode, withMockFilms, type StitchApi } from "@/lib/api";
 import { DEMO_PASSWORD, getMockBackend } from "./mock";
 
 let client: StitchApi | null = null;
@@ -13,7 +13,7 @@ export function getApi(): StitchApi {
   if (!client) {
     if (isMockMode()) {
       const backend = getMockBackend();
-      client = createApiClient({ fetch: backend.fetch, mediaUrl: backend.mediaUrl });
+      client = createApiClient({ fetch: withMockFilms(backend.fetch), mediaUrl: backend.mediaUrl });
     } else {
       client = api;
     }
