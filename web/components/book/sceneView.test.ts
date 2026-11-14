@@ -43,7 +43,7 @@ const sv: SceneViewModule = await import(paths[0]);
 const C: ControllerModule = await import(paths[1]);
 const { PAGE_W }: LeafShapeModule = await import(paths[2]);
 const T: Three = await import(paths[3]);
-const { SceneView, readSceneViewPref, writeSceneViewPref, escapeAction, stepViewShot, chooseViewShot } = sv;
+const { SceneView, readSceneViewPref, writeSceneViewPref, escapeAction, stepViewShot, chooseViewShot, viewSwitch } = sv;
 
 const DT = 1 / 60;
 
@@ -160,6 +160,41 @@ describe("SceneView", () => {
     off();
     view.offer(true);
     assert.equal(n, 0);
+  });
+});
+
+describe("viewSwitch", () => {
+  it("names the view it goes to: the whole book from the cutscene, the cutscene from the whole book", () => {
+    assert.deepEqual(viewSwitch("scene"), {
+      to: "book",
+      label: "Whole book",
+      action: "See the whole book",
+      title: "See the whole book (Esc)",
+    });
+    assert.deepEqual(viewSwitch("book"), {
+      to: "scene",
+      label: "Cutscene",
+      action: "Back to the cutscene",
+      title: "Back to the cutscene (Esc)",
+    });
+  });
+
+  it("its spoken action contains the visible label, so voice control finds it", () => {
+    for (const mode of ["scene", "book"] as const) {
+      const sw = viewSwitch(mode);
+      assert.ok(sw.action.toLowerCase().includes(sw.label.toLowerCase()), sw.action);
+    }
+  });
+
+  it("choosing what it offers switches the view, and then it offers the way back", () => {
+    const view = new SceneView("scene");
+    view.offer(true);
+    assert.equal(view.choose(viewSwitch(view.mode).to), true);
+    assert.equal(view.mode, "book");
+    assert.equal(viewSwitch(view.mode).label, "Cutscene");
+    assert.equal(view.choose(viewSwitch(view.mode).to), true);
+    assert.equal(view.mode, "scene");
+    assert.equal(viewSwitch(view.mode).label, "Whole book");
   });
 });
 
