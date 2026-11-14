@@ -1,9 +1,10 @@
 # Contact-bound conversation core
 
 This layer collects a text story and year, starts the existing studio, and relays
-its follow-up/prop/merge pauses. It is **not wired into the inbox or tick router**
-yet. Nothing here sends a message, makes a call, enrolls contacts, or starts an
-API background task. A receipt in the inbox still does not generate a story.
+its follow-up/prop/merge pauses. The opt-in manual `channels.worker` connects this
+service to inbox receipts and signed replies. This package itself sends no message,
+makes no call, enrolls no contact, and starts no API background task. A receipt does
+not generate a story while the worker is disabled.
 
 ## Worker interface
 
@@ -34,6 +35,10 @@ or `contact:<contactId>`. It rechecks mapping and consent for every action.
 - `answer_run_question(kind, text=None, approve=None)` answers only the pending
   pause using the original principal/run. Props auto-keeps only the relayed IDs;
   merge requires an explicit boolean. It cannot answer a caller-supplied run ID.
+- Worker relay calls add `durable=True`: cursor/pending state and `relayBuffer`
+  persist atomically. An unacknowledged buffer is returned again without reading
+  more events. `acknowledge_relay(events)` clears only that exact buffer, after
+  outbox persistence. Direct callers retain the non-buffered default.
 
 All synchronous methods perform database work and belong off an ASGI event loop.
 `submit_story` and `answer_run_question` explicitly reject event-loop calls so a
@@ -49,6 +54,14 @@ The model-call budget is persisted in the family-scoped conversation document;
 callbacks count nested/subagent and summarization calls too. Consent is checked
 before each model call and again before returning output. The model receives no
 tools for changing family/person/principal/run IDs or for direct outbound delivery.
+
+`worker_managed=True` exposes only the two open-question tools. The worker saves
+raw words/year, and handles SUBMIT/KEEP/YES/NO and actual studio events itself.
+`await ainvoke(text, timeout=20)` supports cancellation and supplies the persisted
+draft as context; its pending worker reservation remains held if an outcome is
+uncertain. `ScriptedConversation` returns an explicit offline interview question;
+it does not fake successful generation. The demo's actual studio is the existing
+`seed.fake_runs.ScriptedRunManager`, which compiles and saves its scripted scene.
 
 The backend is the virtual `StateBackend`, with no host filesystem/shell access.
 Default message-history checkpoints are in memory for local tests. Production

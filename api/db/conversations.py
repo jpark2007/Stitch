@@ -44,6 +44,8 @@ def save_inbound(db, contact: dict, message: dict, *, stopped: bool = False) -> 
     record = {
         "_id": key, "kind": "inbound", "familyId": family_id,
         "contactId": str(contact["_id"]), "personId": contact["personId"],
+        "principal": contact.get("userId") or f"contact:{contact['_id']}",
+        "handle": contact["handle"],
         "provider": message["provider"], "messageId": message["messageId"],
         "spaceId": message["spaceId"], "text": message["text"],
         "contentHash": digest, "status": "stop_requested" if stopped else "received",
@@ -111,6 +113,79 @@ def take_conversation_model_call(db, family_id: str, contact_id: str, limit: int
         raise RuntimeError("Conversation model-call limit reached")
 
 
+def worker_candidates(db, *, limit: int = 5) -> list[tuple[str, str]]:
+    """Trusted queue discovery returns routing keys only, never story content.
+
+    All subsequent reads/writes require an explicit family. Active runs remain
+    candidates even without a new inbound message, so bounded ticks can relay done.
+    """
+    # This global queue cursor holds only opaque IDs, not family content. Rotate
+    # both the bounded scan window and source priority to avoid backlog starvation.
+    marker = db.channelMessages.find_one({"_id": "worker-scan"}) or {}
+    sources = [("inbox", {"kind": "inbound", "status": "received"}, db.channelMessages),
+               ("runs", {"kind": "channelWorker", "pollRun": True, "status": "idle"}, db.conversations)]
+    if marker.get("runsFirst"):
+        sources.reverse()
+    db.channelMessages.update_one({"_id": "worker-scan"}, {"$set": {
+        "kind": "workerScan", "runsFirst": not marker.get("runsFirst", False)}}, upsert=True)
+    keys = []
+    for source, query, collection in sources:
+        after = marker.get(source, "")
+        rows = list(collection.find({**query, "_id": {"$gt": after}},
+                    {"familyId": 1, "contactId": 1}).sort("_id", 1).limit(100))
+        if not rows:
+            rows = list(collection.find(query, {"familyId": 1, "contactId": 1}).sort("_id", 1).limit(100))
+        for row in rows:
+            db.channelMessages.update_one({"_id": "worker-scan"}, {"$set": {source: row["_id"]}})
+            key = (row["familyId"], row["contactId"])
+            worker = db.conversations.find_one({"_id": "worker:" + conversation_key(*key),
+                                                "familyId": key[0]}, {"status": 1})
+            if worker and worker["status"] != "idle":
+                continue
+            if key not in keys:
+                keys.append(key)
+            if len(keys) >= limit:
+                return keys
+    return keys
+
+
+def acquire_worker(db, family_id: str, contact_id: str, token: str) -> dict | None:
+    key = "worker:" + conversation_key(family_id, contact_id)
+    db.conversations.update_one({"_id": key, "familyId": family_id}, {"$setOnInsert": {
+        "kind": "channelWorker", "familyId": family_id, "contactId": contact_id,
+        "status": "idle", "outbox": [], "pollRun": False,
+    }}, upsert=True)
+    return db.conversations.find_one_and_update(
+        {"_id": key, "familyId": family_id, "status": "idle"},
+        {"$set": {"status": "running", "token": token}}, return_document=ReturnDocument.AFTER)
+
+
+def update_worker(db, family_id: str, contact_id: str, token: str, fields: dict) -> dict:
+    row = db.conversations.find_one_and_update(
+        {"_id": "worker:" + conversation_key(family_id, contact_id), "familyId": family_id,
+         "token": token, "status": "running"}, {"$set": fields}, return_document=ReturnDocument.AFTER)
+    if row is None:
+        raise RuntimeError("Worker reservation changed")
+    return row
+
+
+def worker_receipts(db, family_id: str, contact_id: str) -> list[dict]:
+    return list(db.channelMessages.find({"familyId": family_id, "contactId": contact_id,
+        "kind": "inbound", "status": "received"}).sort([("createdAt", 1), ("_id", 1)]).limit(10))
+
+
+def reserve_worker_receipts(db, family_id: str, contact_id: str, ids: list[str], token: str) -> None:
+    result = db.channelMessages.update_many({"familyId": family_id, "contactId": contact_id,
+        "_id": {"$in": ids}, "status": "received"}, {"$set": {"status": "processing", "workerToken": token}})
+    if result.modified_count != len(ids):
+        raise RuntimeError("Receipt reservation changed; reconciliation required")
+
+
+def complete_worker_receipts(db, family_id: str, contact_id: str, token: str) -> None:
+    db.channelMessages.update_many({"familyId": family_id, "contactId": contact_id,
+        "status": "processing", "workerToken": token}, {"$set": {"status": "processed"}})
+
+
 class PhotoConflict(ValueError):
     pass
 
@@ -142,6 +217,8 @@ def save_photo_inbound(db, contact: dict, message: dict, data: bytes) -> bool:
     media_id = hashlib.sha256((identity + "\n" + message["attachmentId"]).encode()).hexdigest()[:24]
     record = {"_id": key, "kind": "inbound", "receiptType": "photo", "familyId": family,
               "contactId": str(contact["_id"]), "personId": contact["personId"],
+              "principal": contact.get("userId") or f"contact:{contact['_id']}",
+              "handle": contact["handle"],
               "provider": message["provider"], "messageId": message["messageId"],
               "spaceId": message["spaceId"], "attachmentId": message["attachmentId"],
               "text": message["caption"], "contentHash": digest, "photoSha256": content_sha,

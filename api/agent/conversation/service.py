@@ -170,10 +170,13 @@ class ConversationService:
         self._update(row, {"draft": draft}, status="draft")
         return {"photoCount": len(combined)}
 
-    async def relay_run_events(self, *, timeout: float = 1.0, max_events: int = 50) -> list[dict]:
+    async def relay_run_events(self, *, timeout: float = 1.0, max_events: int = 50,
+                               durable: bool = False) -> list[dict]:
         if not 0 < timeout <= 10 or not 1 <= max_events <= 100:
             raise ValueError("Event read limits are out of range")
         row = await asyncio.to_thread(self._state)
+        if row.get("relayBuffer"):
+            return row["relayBuffer"]
         if not row.get("runId"):
             raise ValueError("No submitted run")
         stream = await asyncio.to_thread(self.runs.stream_run, self.context.family_id, row["runId"])
@@ -205,8 +208,18 @@ class ConversationService:
         finally:
             await asyncio.wait_for(stream.aclose(), timeout=1.0)
         await asyncio.to_thread(self._state)  # A STOP during polling prevents disclosure.
-        await asyncio.to_thread(self._update, row, {"cursor": cursor, "pending": pending})
+        fields = {"cursor": cursor, "pending": pending}
+        if durable:
+            fields["relayBuffer"] = events
+        await asyncio.to_thread(self._update, row, fields)
         return events
+
+    def acknowledge_relay(self, events: list[dict]) -> None:
+        """Trusted worker: acknowledge only after durable outbox persistence."""
+        row = self._state()
+        if row.get("relayBuffer", []) != events:
+            raise RuntimeError("Relay batch changed")
+        self._update(row, {"relayBuffer": []})
 
     def answer_run_question(self, kind: str, text: str | None = None,
                             approve: bool | None = None) -> dict:
