@@ -18,7 +18,7 @@
 import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
 import { Vector3, type PerspectiveCamera } from "three";
-import { CameraRig, type CameraPath } from "../CameraRig";
+import { CameraRig, narrowness, type CameraPath } from "../CameraRig";
 import type { PlaybackFrame } from "../playback";
 import { useScene, type StageRuntime } from "./SceneProvider";
 
@@ -59,7 +59,8 @@ export interface CameraBindingProps {
   /**
    * Lens zoom (below 1 widens the picture a little around its centre, like
    * stepping back), so the shot sits inside the room the title and captions
-   * leave. Default 1.
+   * leave. Eases back to 1 on portrait screens, which have that room
+   * already. Default 1.
    */
   zoom?: number;
 }
@@ -80,7 +81,10 @@ export function CameraBinding({ orbit = true, lift = 0, zoom = 1 }: CameraBindin
     l.h = h;
     l.lift = lift;
     l.zoom = zoom;
-    cam.zoom = zoom;
+    // Narrow screens already widen the lens to hold the shot's width (the
+    // rig's fitLens), leaving room above and below: no step back there.
+    const k = narrowness(w / Math.max(1, h));
+    cam.zoom = zoom + (1 - zoom) * k;
     if (lift) cam.setViewOffset(w, h, 0, Math.round(lift * h), w, h);
     else cam.clearViewOffset();
     cam.updateProjectionMatrix();
