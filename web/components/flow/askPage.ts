@@ -8,8 +8,8 @@
 
 import type { AskQuote, AskResponse } from "@/lib/types";
 
-/** The longest question the page sends (the field's maxLength). */
-export const ASK_MAX_LENGTH = 300;
+/** The longest question the page sends (the field's maxLength): api/routes/ask.py MAX_QUERY_CHARS. */
+export const ASK_MAX_LENGTH = 1000;
 
 /** Example questions shown as chips under the field. */
 export const ASK_EXAMPLES: readonly string[] = [
@@ -210,8 +210,8 @@ export type AskView =
   | { kind: "idle" }
   /** `shown` keeps the last result on screen (dimmed) so nothing jumps. */
   | { kind: "searching"; q: string; seq: number; shown: AskResult | null }
-  | { kind: "results"; q: string; seq: number; res: AskResponse }
-  | { kind: "nothing"; q: string; seq: number; res: AskResponse }
+  | { kind: "results"; q: string; seq: number; res: AskResponse; at: number }
+  | { kind: "nothing"; q: string; seq: number; res: AskResponse; at: number }
   | { kind: "error"; q: string; seq: number; message: string };
 
 /** A view with an answer on it. */
@@ -219,7 +219,8 @@ export type AskResult = Extract<AskView, { kind: "results" | "nothing" }>;
 
 export type AskAction =
   | { type: "start"; q: string; seq: number }
-  | { type: "done"; seq: number; res: AskResponse }
+  /** `at`: when the answer arrived (ms), for the open-on-Enter guard. */
+  | { type: "done"; seq: number; res: AskResponse; at: number }
   | { type: "failed"; seq: number; message: string }
   | { type: "clear" };
 
@@ -244,7 +245,13 @@ export function askReducer(view: AskView, action: AskAction): AskView {
     }
     case "done":
       if (view.kind !== "searching" || view.seq !== action.seq) return view;
-      return { kind: isNothing(action.res) ? "nothing" : "results", q: view.q, seq: view.seq, res: action.res };
+      return {
+        kind: isNothing(action.res) ? "nothing" : "results",
+        q: view.q,
+        seq: view.seq,
+        res: action.res,
+        at: action.at,
+      };
     case "failed":
       if (view.kind !== "searching" || view.seq !== action.seq) return view;
       return { kind: "error", q: view.q, seq: view.seq, message: action.message };
@@ -253,28 +260,71 @@ export function askReducer(view: AskView, action: AskAction): AskView {
   }
 }
 
-/** What Enter does with `typed` while the page shows `view`. */
-export type EnterIntent =
+/** How long after an answer lands Enter still will not open it: a double press must not navigate unseen. */
+export const OPEN_GUARD_MS = 400;
+
+/** What a submit does with `typed` while the page shows `view`. */
+export type SubmitIntent =
   | { kind: "none" }
-  /** The same question, answered with a confident match: open it. */
+  /** Enter on the same question, answered with a confident match: open it. */
   | { kind: "open"; href: string }
-  /** The same question that failed: ask again. */
-  | { kind: "retry"; q: string }
-  /** The same question, already answered or on its way: stay. */
+  /** The same question again (answered, nothing found or failed): ask the server afresh. */
+  | { kind: "reask"; q: string }
+  /** The same question, on its way (or answered a moment ago): do nothing. */
   | { kind: "stay" }
   /** A new question: put it in the URL. */
   | { kind: "ask"; q: string };
 
-export function enterIntent(view: AskView, typed: string, familyId: string | null): EnterIntent {
+/**
+ * What a submit does. `via` is how it was sent: Enter in the field (which
+ * opens a confident match once it has been on screen OPEN_GUARD_MS) or the
+ * Ask button (which always asks). `now` is the clock in ms.
+ */
+export function submitIntent(
+  view: AskView,
+  typed: string,
+  familyId: string | null,
+  via: "enter" | "button",
+  now: number,
+): SubmitIntent {
   const q = cleanQuestion(typed);
   if (!q) return { kind: "none" };
   if (view.kind === "idle" || !sameQuestion(view.q, q)) return { kind: "ask", q };
-  if (view.kind === "error") return { kind: "retry", q: view.q };
-  if (view.kind === "results") {
+  if (view.kind === "searching") return { kind: "stay" };
+  if (view.kind === "results" && via === "enter") {
     const best = bestMatch(view.res);
-    if (best?.confident) return { kind: "open", href: bestHref(best, familyId) };
+    if (best?.confident) {
+      if (now - view.at < OPEN_GUARD_MS) return { kind: "stay" };
+      return { kind: "open", href: bestHref(best, familyId) };
+    }
   }
-  return { kind: "stay" };
+  return { kind: "reask", q: view.q };
+}
+
+/**
+ * Whether a search may show a kept answer: only when the page was reached by
+ * Back or forward (a popstate within `windowMs`, or a document loaded by
+ * history traversal), never on a reload or a new question.
+ */
+export function fromHistory(o: { now: number; lastPopAt: number | null; docTraversal: boolean; windowMs?: number }): boolean {
+  if (o.docTraversal) return true;
+  return o.lastPopAt !== null && o.now - o.lastPopAt >= 0 && o.now - o.lastPopAt <= (o.windowMs ?? 2000);
+}
+
+/**
+ * The /ask URL the page should show for what it actually asked: the family
+ * it settled on and the cleaned question. Null when the URL already says so.
+ */
+export function canonicalAskHref(search: string | URLSearchParams | null | undefined, familyId: string): string | null {
+  const params = paramsOf(search);
+  const rawQ = params.get("q");
+  const q = cleanQuestion(rawQ);
+  const sameFamily = params.get("family") === familyId;
+  const sameQ = q === null ? !rawQ : rawQ === q;
+  if (sameFamily && sameQ) return null;
+  const parts = [`family=${enc(familyId)}`];
+  if (q) parts.push(`q=${enc(q)}`);
+  return `/ask?${parts.join("&")}`;
 }
 
 /** The one quiet line under the field: what Enter will do next. */
@@ -289,20 +339,38 @@ export function fieldHint(view: AskView, typed: string): string {
 
 // ---------------------------------------------------------------------------
 // The per-tab cache: an answer kept for this tab, so Back from the book page
-// and a reload show it at once instead of asking again. Storage can be
+// shows it at once instead of asking again (the page reads it only on
+// history traversal: see fromHistory). "Nothing found" is never kept, so a
+// story told since is found the next time. Entries are scoped to the user
+// and family (askCacheScope), and sign-out clears them. Storage can be
 // missing or throw (private mode, blocked site data); these never throw.
 
 export const ASK_CACHE_KEY = "stitch.ask";
 /** Answers kept per tab, newest first. */
 export const ASK_CACHE_MAX = 8;
 
+/** Who and which family a kept answer belongs to. */
+export function askCacheScope(userId: string, familyId: string): string {
+  return `${userId}\u0000${familyId}`;
+}
+
 interface CacheEntry {
+  /** askCacheScope(user, family). */
   familyId: string;
   q: string;
   res: AskResponse;
 }
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
+
+/** Forget every kept answer (sign-out). */
+export function clearAskCache(store: Pick<Storage, "removeItem"> | null): void {
+  try {
+    store?.removeItem(ASK_CACHE_KEY);
+  } catch {
+    // Blocked storage: nothing was kept there either.
+  }
+}
 
 function readCache(store: StorageLike | null): CacheEntry[] {
   if (!store) return [];
@@ -324,14 +392,16 @@ function readCache(store: StorageLike | null): CacheEntry[] {
   }
 }
 
-/** The answer kept for this family and question, or null. */
-export function cachedAnswer(store: StorageLike | null, familyId: string, q: string): AskResponse | null {
-  return readCache(store).find((e) => e.familyId === familyId && sameQuestion(e.q, q))?.res ?? null;
+/** The answer kept for this scope (askCacheScope) and question, or null. */
+export function cachedAnswer(store: StorageLike | null, scope: string, q: string): AskResponse | null {
+  const res = readCache(store).find((e) => e.familyId === scope && sameQuestion(e.q, q))?.res ?? null;
+  return res && !isNothing(res) ? res : null;
 }
 
-/** Keep this answer (newest first, at most ASK_CACHE_MAX). */
-export function cacheAnswer(store: StorageLike | null, familyId: string, q: string, res: AskResponse): void {
-  if (!store) return;
+/** Keep this answer (newest first, at most ASK_CACHE_MAX). "Nothing found" is not kept. */
+export function cacheAnswer(store: StorageLike | null, scope: string, q: string, res: AskResponse): void {
+  if (!store || isNothing(res)) return;
+  const familyId = scope;
   const rest = readCache(store).filter((e) => !(e.familyId === familyId && sameQuestion(e.q, q)));
   try {
     store.setItem(ASK_CACHE_KEY, JSON.stringify([{ familyId, q, res }, ...rest].slice(0, ASK_CACHE_MAX)));

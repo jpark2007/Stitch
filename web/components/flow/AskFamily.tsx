@@ -5,13 +5,16 @@
 // Arriving with ?q= runs the search. The answer shows the best match as a
 // paper card with "Open this page" (the moment's book, opened at its spread),
 // then the other moments it quotes. Enter on the same question opens a
-// confident match; nothing navigates without a press. A slower earlier search
-// never overwrites a newer one (askReducer), and an answer is kept for the tab
-// (cacheAnswer) so Back from the book shows it at once without asking again.
+// confident match (once it has been on screen OPEN_GUARD_MS); otherwise the
+// same question again asks the server afresh. Nothing navigates without a
+// press. A slower earlier search never overwrites a newer one (askReducer).
+// An answer found is kept for the tab (cacheAnswer) and shown again only on
+// Back or forward (fromHistory), never on a reload or a new submit. The URL is
+// rewritten (replace) to the family and question actually asked.
 // Signed out, no family and a family not one's own are handled as on /add.
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState, type FormEvent, type Ref } from "react";
+import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState, type FormEvent } from "react";
 
 import { Button, ButtonLink, FOCUS_RING } from "@/components/flow/Button";
 import { fieldControlClass } from "@/components/flow/Field";
@@ -25,14 +28,17 @@ import {
   ASK_IDLE,
   ASK_MAX_LENGTH,
   answerText,
+  askCacheScope,
   askReducer,
   bestHref,
   bestMatch,
   cacheAnswer,
   cachedAnswer,
+  canonicalAskHref,
   cleanQuestion,
-  enterIntent,
   fieldHint,
+  fromHistory,
+  submitIntent,
   memoryPageHref,
   momentTitle,
   otherGroups,
@@ -76,15 +82,32 @@ export function AskLoading() {
 export function AskScreen() {
   const params = useSearchParams();
   const { familyId, q } = readAskQuery(params);
+  const search = params.toString();
   return (
     <SessionGate requireFamily width="wide" loading={<AskLoading />}>
-      {(session) => <AskFlow session={session} familyId={familyId} q={q} />}
+      {(session) => <AskFlow session={session} familyId={familyId} q={q} search={search} />}
     </SessionGate>
   );
 }
 
-function AskFlow(props: { session: SessionValue; familyId: string | null; q: string | null }) {
-  const { session, familyId, q } = props;
+// When this tab last went Back or forward, and whether this document itself
+// was loaded that way: a kept answer is shown only then (fromHistory).
+let lastPopAt: number | null = null;
+let docTraversal = false;
+if (typeof window !== "undefined") {
+  window.addEventListener("popstate", () => {
+    lastPopAt = Date.now();
+  });
+  try {
+    const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+    docTraversal = nav?.type === "back_forward";
+  } catch {
+    docTraversal = false;
+  }
+}
+
+function AskFlow(props: { session: SessionValue; familyId: string | null; q: string | null; search: string }) {
+  const { session, familyId, q, search } = props;
   const { me, api } = session;
   const router = useRouter();
 
@@ -123,6 +146,7 @@ function AskFlow(props: { session: SessionValue; familyId: string | null; q: str
   const [retries, setRetries] = useState(0);
   const forceRef = useRef(false);
 
+  const userId = me.user.id;
   useEffect(() => {
     if (!fid) return;
     const n = ++seq.current;
@@ -130,29 +154,51 @@ function AskFlow(props: { session: SessionValue; familyId: string | null; q: str
       dispatch({ type: "clear" });
       return;
     }
-    const force = forceRef.current;
-    forceRef.current = false;
-    const kept = force ? null : cachedAnswer(sessionStore(), fid, q);
-    dispatch({ type: "start", q, seq: n });
-    if (kept) {
-      dispatch({ type: "done", seq: n, res: kept });
-      return;
+    const scope = askCacheScope(userId, fid);
+    // Decided a tick later: on Back the router can render this page from
+    // inside the popstate event, before this module's own listener has noted
+    // it (lastPopAt). A kept answer only for Back and forward; a reload or a
+    // new question asks the server.
+    const timer = window.setTimeout(() => {
+      // Read here, not when the effect runs: a run cancelled before its tick
+      // (strict mode, a quick second change) must leave the flag for the next.
+      const force = forceRef.current;
+      forceRef.current = false;
+      const history = !force && fromHistory({ now: Date.now(), lastPopAt, docTraversal });
+      docTraversal = false;
+      const kept = history ? cachedAnswer(sessionStore(), scope, q) : null;
+      dispatch({ type: "start", q, seq: n });
+      if (kept) dispatch({ type: "done", seq: n, res: kept, at: Date.now() });
+      else askServer(n, scope, q);
+    }, 0);
+    return () => window.clearTimeout(timer);
+
+    function askServer(n: number, scope: string, q: string) {
+      if (!fid) return;
+      api.ask(fid, { query: q }).then(
+        (res: AskResponse) => {
+          cacheAnswer(sessionStore(), scope, q, res);
+          dispatch({ type: "done", seq: n, res, at: Date.now() });
+        },
+        (e: unknown) => {
+          if (isApiError(e) && e.status === 401) {
+            router.replace(hrefs.login(currentPath()));
+            return;
+          }
+          const message = isApiError(e) && e.status !== 0 && e.status < 500 && e.detail ? e.detail : ASK_ERROR;
+          dispatch({ type: "failed", seq: n, message });
+        },
+      );
     }
-    api.ask(fid, { query: q }).then(
-      (res: AskResponse) => {
-        cacheAnswer(sessionStore(), fid, q, res);
-        dispatch({ type: "done", seq: n, res });
-      },
-      (e: unknown) => {
-        if (isApiError(e) && e.status === 401) {
-          router.replace(hrefs.login(currentPath()));
-          return;
-        }
-        const message = isApiError(e) && e.status !== 0 && e.status < 500 && e.detail ? e.detail : ASK_ERROR;
-        dispatch({ type: "failed", seq: n, message });
-      },
-    );
-  }, [api, fid, q, retries, router]);
+  }, [api, fid, q, retries, router, userId]);
+
+  // Show what was actually asked: the family it settled on and the cleaned
+  // question (replace, so Back does not return to the URL as typed).
+  useEffect(() => {
+    if (!fid) return;
+    const href = canonicalAskHref(search, fid);
+    if (href) router.replace(href, { scroll: false });
+  }, [fid, search, router]);
 
   // The field shows the URL's question; Back and forward bring theirs.
   const [typed, setTyped] = useState(q ?? "");
@@ -183,23 +229,20 @@ function AskFlow(props: { session: SessionValue; familyId: string | null; q: str
     setRetries((r) => r + 1);
   }, []);
 
-  const openRef = useRef<HTMLAnchorElement>(null);
-
-  const onSubmit = () => {
-    const intent = enterIntent(view, typed, fid);
+  const onSubmit = (via: "enter" | "button") => {
+    const intent = submitIntent(view, typed, fid, via, Date.now());
     switch (intent.kind) {
       case "ask":
         ask(intent.q);
         break;
-      case "retry":
+      case "reask":
         retry();
         break;
       case "open":
         router.push(intent.href);
         break;
       case "stay":
-        // Answered but not sure: take the keyboard to the match instead.
-        openRef.current?.focus();
+      case "none":
         break;
     }
   };
@@ -231,7 +274,8 @@ function AskFlow(props: { session: SessionValue; familyId: string | null; q: str
         onSubmit={onSubmit}
         busy={searching}
         hint={fieldHint(view, typed)}
-        examples={view.kind === "idle" ? ASK_EXAMPLES : null}
+        // Kept through the first search, so the card shrinks once, as the answer arrives.
+        examples={view.kind === "idle" || (view.kind === "searching" && !view.shown) ? ASK_EXAMPLES : null}
         onExample={(example) => {
           setTyped(example);
           ask(example);
@@ -249,7 +293,7 @@ function AskFlow(props: { session: SessionValue; familyId: string | null; q: str
             {shownResult.kind === "nothing" ? (
               <NothingFound fid={fid} />
             ) : (
-              <Results res={shownResult.res} fid={fid} names={nameMap} openRef={openRef} />
+              <Results res={shownResult.res} fid={fid} names={nameMap} />
             )}
           </div>
         ) : searching ? (
@@ -301,7 +345,8 @@ const INLINE_LINK = `rounded-paper font-medium text-accent-deep underline decora
 function AskForm(props: {
   typed: string;
   onType: (v: string) => void;
-  onSubmit: () => void;
+  /** `via`: Enter in the field, or the Ask button (which always asks). */
+  onSubmit: (via: "enter" | "button") => void;
   busy: boolean;
   hint: string | null;
   examples: readonly string[] | null;
@@ -327,7 +372,7 @@ function AskForm(props: {
       aria-busy={busy || undefined}
       onSubmit={(e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-        onSubmit();
+        onSubmit("button");
       }}
     >
       {/* The page title says it out loud; the field's own label is for screen readers. */}
@@ -352,7 +397,7 @@ function AskForm(props: {
           onKeyDown={(e) => {
             if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
             e.preventDefault();
-            onSubmit();
+            onSubmit("enter");
           }}
           placeholder="Where did Grandpa meet Grandma?"
           aria-describedby={hint ? hintId : undefined}
@@ -398,9 +443,8 @@ function Results(props: {
   res: AskResponse;
   fid: string;
   names: ReadonlyMap<string, string> | null;
-  openRef: Ref<HTMLAnchorElement>;
 }) {
-  const { res, fid, names, openRef } = props;
+  const { res, fid, names } = props;
   const best = bestMatch(res);
   const others = otherGroups(res, best);
   const answer = answerText(res, best);
@@ -418,7 +462,7 @@ function Results(props: {
       >
         {answer}
       </p>
-      {best ? <BestCard best={best} fid={fid} names={names} openRef={openRef} /> : null}
+      {best ? <BestCard best={best} fid={fid} names={names} /> : null}
       {others.length ? <OtherMoments groups={others} fid={fid} names={names} hasBest={best !== null} /> : null}
     </section>
   );
@@ -432,9 +476,8 @@ function BestCard(props: {
   best: BestMatch;
   fid: string;
   names: ReadonlyMap<string, string> | null;
-  openRef: Ref<HTMLAnchorElement>;
 }) {
-  const { best, fid, names, openRef } = props;
+  const { best, fid, names } = props;
   const quote = best.quotes[0] ?? null;
   const headingId = `best-${best.memoryId}`;
   return (
@@ -454,7 +497,6 @@ function BestCard(props: {
       {quote ? <Quote quote={quote} names={names} large /> : null}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <Link
-          ref={openRef}
           href={bestHref(best, fid)}
           className={`relative inline-flex min-h-11 items-center justify-center gap-2 rounded-card border border-transparent bg-accent-deep px-5 py-2.5 font-sans text-base leading-tight font-semibold text-paper-light no-underline shadow-[0_1px_0_rgb(255_255_255/0.18)_inset,0_1px_2px_rgb(74_47_29/0.25)] transition-[background-color] duration-150 ease-paper select-none hover:bg-[color-mix(in_oklab,var(--accent-deep)_86%,var(--ink))] motion-reduce:transition-none ${FOCUS_RING}`}
         >

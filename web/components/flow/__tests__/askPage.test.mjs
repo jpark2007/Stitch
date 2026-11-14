@@ -16,7 +16,12 @@ import {
   cacheAnswer,
   cachedAnswer,
   cleanQuestion,
-  enterIntent,
+  OPEN_GUARD_MS,
+  askCacheScope,
+  canonicalAskHref,
+  clearAskCache,
+  fromHistory,
+  submitIntent,
   fieldHint,
   groupQuotes,
   isNothing,
@@ -198,12 +203,13 @@ describe("the state machine", () => {
     let v = askReducer(ASK_IDLE, { type: "start", q: "meet", seq: 1 });
     assert.equal(v.kind, "searching");
     assert.equal(v.shown, null);
-    v = askReducer(v, { type: "done", seq: 1, res: found });
+    v = askReducer(v, { type: "done", seq: 1, res: found, at: 1000 });
     assert.equal(v.kind, "results");
+    assert.equal(v.at, 1000);
     v = askReducer(v, { type: "start", q: "moon", seq: 2 });
     assert.equal(v.kind, "searching");
     assert.equal(v.shown.kind, "results", "the last answer stays up while the next one loads");
-    v = askReducer(v, { type: "done", seq: 2, res: none });
+    v = askReducer(v, { type: "done", seq: 2, res: none, at: 2000 });
     assert.equal(v.kind, "nothing");
     assert.equal(v.q, "moon");
   });
@@ -211,13 +217,13 @@ describe("the state machine", () => {
   test("a slower, earlier search never overwrites a newer one", () => {
     let v = askReducer(ASK_IDLE, { type: "start", q: "first", seq: 1 });
     v = askReducer(v, { type: "start", q: "second", seq: 2 });
-    const late = askReducer(v, { type: "done", seq: 1, res: found });
+    const late = askReducer(v, { type: "done", seq: 1, res: found, at: 1 });
     assert.equal(late, v);
     const lateFail = askReducer(v, { type: "failed", seq: 1, message: "x" });
     assert.equal(lateFail, v);
-    v = askReducer(v, { type: "done", seq: 2, res: none });
+    v = askReducer(v, { type: "done", seq: 2, res: none, at: 2 });
     assert.equal(v.q, "second");
-    assert.equal(askReducer(v, { type: "done", seq: 2, res: found }), v, "nothing lands after the answer");
+    assert.equal(askReducer(v, { type: "done", seq: 2, res: found, at: 3 }), v, "nothing lands after the answer");
   });
 
   test("failure keeps the question; clear goes idle", () => {
@@ -227,26 +233,58 @@ describe("the state machine", () => {
     assert.equal(askReducer(v, { type: "clear" }), ASK_IDLE);
   });
 
-  test("enterIntent", () => {
-    assert.deepEqual(enterIntent(ASK_IDLE, "  ", "f"), { kind: "none" });
-    assert.deepEqual(enterIntent(ASK_IDLE, " meet ", "f"), { kind: "ask", q: "meet" });
-    const results = { kind: "results", q: "meet", seq: 1, res: found };
-    assert.deepEqual(enterIntent(results, "Meet", "f"), {
+  test("submitIntent: new questions, same-question re-asks and the confident open", () => {
+    const later = 10_000;
+    assert.deepEqual(submitIntent(ASK_IDLE, "  ", "f", "enter", later), { kind: "none" });
+    assert.deepEqual(submitIntent(ASK_IDLE, " meet ", "f", "enter", later), { kind: "ask", q: "meet" });
+    const results = { kind: "results", q: "meet", seq: 1, res: found, at: 1000 };
+    assert.deepEqual(submitIntent(results, "Meet", "f", "enter", later), {
       kind: "open",
       href: "/memories/sample_hymn_books?family=f&state=open&narrator=dad",
     });
-    assert.deepEqual(enterIntent(results, "other", "f"), { kind: "ask", q: "other" });
+    assert.deepEqual(submitIntent(results, "meet", "f", "button", later), { kind: "reask", q: "meet" }, "Ask always asks");
+    assert.deepEqual(submitIntent(results, "other", "f", "enter", later), { kind: "ask", q: "other" });
     const unsure = { ...results, res: { ...found, best: { ...found.best, confident: false } } };
-    assert.deepEqual(enterIntent(unsure, "meet", "f"), { kind: "stay" });
+    assert.deepEqual(submitIntent(unsure, "meet", "f", "enter", later), { kind: "reask", q: "meet" });
     const error = { kind: "error", q: "meet", seq: 1, message: "x" };
-    assert.deepEqual(enterIntent(error, "meet", "f"), { kind: "retry", q: "meet" });
+    assert.deepEqual(submitIntent(error, "meet", "f", "enter", later), { kind: "reask", q: "meet" });
     const searching = { kind: "searching", q: "meet", seq: 1, shown: null };
-    assert.deepEqual(enterIntent(searching, "meet", "f"), { kind: "stay" });
-    assert.deepEqual(enterIntent({ kind: "nothing", q: "meet", seq: 1, res: none }, "meet", "f"), { kind: "stay" });
+    assert.deepEqual(submitIntent(searching, "meet", "f", "enter", later), { kind: "stay" });
+    assert.deepEqual(submitIntent(searching, "meet", "f", "button", later), { kind: "stay" });
+    const nothing = { kind: "nothing", q: "meet", seq: 1, res: none, at: 1000 };
+    assert.deepEqual(submitIntent(nothing, "meet", "f", "enter", later), { kind: "reask", q: "meet" });
+    assert.deepEqual(submitIntent(nothing, "Meet ", "f", "button", later), { kind: "reask", q: "meet" });
+  });
+
+  test("submitIntent: Enter does not open a match that arrived under OPEN_GUARD_MS ago", () => {
+    const results = { kind: "results", q: "meet", seq: 1, res: found, at: 1000 };
+    assert.deepEqual(submitIntent(results, "meet", "f", "enter", 1000), { kind: "stay" });
+    assert.deepEqual(submitIntent(results, "meet", "f", "enter", 1000 + OPEN_GUARD_MS - 1), { kind: "stay" });
+    assert.equal(submitIntent(results, "meet", "f", "enter", 1000 + OPEN_GUARD_MS).kind, "open");
+  });
+
+  test("fromHistory: a kept answer only on Back or forward", () => {
+    assert.equal(fromHistory({ now: 5000, lastPopAt: null, docTraversal: false }), false, "a reload or new question");
+    assert.equal(fromHistory({ now: 5000, lastPopAt: 4500, docTraversal: false }), true);
+    assert.equal(fromHistory({ now: 5000, lastPopAt: 1000, docTraversal: false }), false, "an old popstate");
+    assert.equal(fromHistory({ now: 5000, lastPopAt: 6000, docTraversal: false }), false);
+    assert.equal(fromHistory({ now: 5000, lastPopAt: null, docTraversal: true }), true, "a document loaded by Back");
+  });
+
+  test("canonicalAskHref: the URL of what was actually asked", () => {
+    assert.equal(canonicalAskHref("family=f1&q=meet", "f1"), null);
+    assert.equal(canonicalAskHref("family=f1", "f1"), null);
+    assert.equal(canonicalAskHref("q=meet", "f1"), "/ask?family=f1&q=meet", "family fallback");
+    assert.equal(canonicalAskHref("family=nope&q=meet", "f1"), "/ask?family=f1&q=meet", "not one's own family");
+    assert.equal(canonicalAskHref("family=f1&q=%20meet%20%20them%20", "f1"), "/ask?family=f1&q=meet%20them");
+    assert.equal(canonicalAskHref("family=f1&q=%20%20", "f1"), "/ask?family=f1", "a blank question drops");
+    assert.equal(canonicalAskHref("", "f1"), "/ask?family=f1");
+    const long = "x".repeat(ASK_MAX_LENGTH + 20);
+    assert.equal(canonicalAskHref(`family=f1&q=${long}`, "f1"), `/ask?family=f1&q=${"x".repeat(ASK_MAX_LENGTH)}`);
   });
 
   test("fieldHint says what Enter does next", () => {
-    const results = { kind: "results", q: "meet", seq: 1, res: found };
+    const results = { kind: "results", q: "meet", seq: 1, res: found, at: 0 };
     assert.match(fieldHint(results, "meet"), /Press Enter again/);
     assert.doesNotMatch(fieldHint(results, "meet them"), /Press Enter/);
     const unsure = { ...results, res: { ...found, best: { ...found.best, confident: false } } };
@@ -264,16 +302,41 @@ describe("the per-tab cache", () => {
       data,
       getItem: (k) => (data.has(k) ? data.get(k) : null),
       setItem: (k, v) => data.set(k, String(v)),
+      removeItem: (k) => data.delete(k),
     };
   }
   const res = { answer: "Found", quotes: [HYMN] };
 
-  test("keeps an answer per family and question", () => {
+  test("keeps an answer per user, family and question", () => {
     const s = memoryStore();
-    assert.equal(cachedAnswer(s, "f1", "meet"), null);
-    cacheAnswer(s, "f1", "meet", res);
-    assert.deepEqual(cachedAnswer(s, "f1", " MEET "), res);
-    assert.equal(cachedAnswer(s, "f2", "meet"), null);
+    const david = askCacheScope("user_david", "f1");
+    assert.equal(cachedAnswer(s, david, "meet"), null);
+    cacheAnswer(s, david, "meet", res);
+    assert.deepEqual(cachedAnswer(s, david, " MEET "), res);
+    assert.equal(cachedAnswer(s, askCacheScope("user_david", "f2"), "meet"), null);
+    assert.equal(cachedAnswer(s, askCacheScope("user_ana", "f1"), "meet"), null, "another user in the same tab");
+  });
+
+  test("never keeps 'nothing found', and ignores one kept by an older page", () => {
+    const s = memoryStore();
+    cacheAnswer(s, "f", "moon", { answer: "Nobody", quotes: [], best: null, mode: "search" });
+    assert.equal(s.data.has(ASK_CACHE_KEY), false);
+    assert.equal(cachedAnswer(s, "f", "moon"), null);
+    s.data.set(ASK_CACHE_KEY, JSON.stringify([{ familyId: "f", q: "moon", res: { answer: "Nobody", quotes: [] } }]));
+    assert.equal(cachedAnswer(s, "f", "moon"), null);
+  });
+
+  test("clearAskCache forgets everything (sign-out) and never throws", () => {
+    const s = memoryStore();
+    cacheAnswer(s, "f", "meet", res);
+    clearAskCache(s);
+    assert.equal(cachedAnswer(s, "f", "meet"), null);
+    clearAskCache(null);
+    clearAskCache({
+      removeItem: () => {
+        throw new Error("blocked");
+      },
+    });
   });
 
   test("newest first, capped", () => {
