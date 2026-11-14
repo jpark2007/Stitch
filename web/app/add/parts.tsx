@@ -1,7 +1,11 @@
 // Small pieces shared by the add-a-memory screens.
-import type { ReactNode } from "react";
+import Link from "next/link";
+import { Fragment, type ReactNode } from "react";
 
+import { FOCUS_RING } from "@/components/flow/Button";
 import { PaperCard } from "@/components/flow/PaperCard";
+import type { FamilyChoice } from "@/components/flow/addPage";
+import { hrefs } from "@/components/flow/session";
 
 /** window.sessionStorage, or null where it is missing or blocked. */
 export function sessionStore(): Storage | null {
@@ -41,5 +45,66 @@ export function Notice(props: { children: ReactNode }) {
     >
       {props.children}
     </p>
+  );
+}
+
+const SWITCH_LINK =
+  `rounded-paper font-medium text-accent-deep underline decoration-1 underline-offset-[0.2em] hover:decoration-2 ${FOCUS_RING}`;
+
+/** "A", "A or B", "A, B or C": what goes before link `i` of `n`. */
+function joiner(i: number, n: number): string {
+  if (i === 0) return "";
+  return i === n - 1 ? " or " : ", ";
+}
+
+/**
+ * One quiet line under the title for someone in two or more families: which
+ * family the memory goes into and, unless `switchable` is false, a link to
+ * each other family's plain form (no moment, no run: a moment belongs to one
+ * family). Renders nothing for one family, so that page stays as it was.
+ */
+export function FamilyLine(props: { choice: FamilyChoice; switchable?: boolean }) {
+  const { choice, switchable = true } = props;
+  const { current, others, show } = choice;
+  if (!show || !current) return null;
+  const links = switchable ? others : [];
+  return (
+    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-[0.9375rem] leading-snug text-ink-soft">
+      <p className="min-w-0 break-words">
+        Adding to <span className="font-semibold text-ink">{current.name}</span>
+      </p>
+      {links.length ? (
+        <>
+          <span aria-hidden="true" className="text-ink-soft/50">
+            &middot;
+          </span>
+          <nav aria-label="Add to another family" className="min-w-0 break-words">
+            Switch to{" "}
+            {links.map((f, i) => (
+              <Fragment key={f.id}>
+                {joiner(i, links.length)}
+                <Link href={hrefs.add({ familyId: f.id })} className={SWITCH_LINK}>
+                  {f.name}
+                </Link>
+              </Fragment>
+            ))}
+          </nav>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * A page lede with the family line above it when there is one to show; the
+ * lede alone (unchanged) otherwise.
+ */
+export function ledeWithFamily(choice: FamilyChoice, lede?: ReactNode, switchable = true): ReactNode {
+  if (!choice.show || !choice.current) return lede;
+  return (
+    <>
+      <FamilyLine choice={choice} switchable={switchable} />
+      {lede == null || lede === false ? null : <p className="mt-3 text-pretty">{lede}</p>}
+    </>
   );
 }

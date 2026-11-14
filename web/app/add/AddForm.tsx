@@ -16,14 +16,20 @@ import { FlowPage } from "@/components/flow/FlowPage";
 import { FormError } from "@/components/flow/FormError";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { QuestionPrompts } from "@/components/flow/QuestionPrompts";
-import { momentFromMemory, questionForMemory, saveTelling, tellingFromSubmit } from "@/components/flow/addPage";
+import {
+  momentFromMemory,
+  questionForMemory,
+  saveTelling,
+  tellingFromSubmit,
+  type FamilyChoice,
+} from "@/components/flow/addPage";
 import { draftFromQuestion, questionAreaFor, type MemoryDraft } from "@/components/flow/memoryForm";
 import type { MemoryRunTelling } from "@/components/flow/MemoryRun";
 import { hrefs } from "@/components/flow/session";
 import { isApiError, type StitchApi } from "@/lib/api";
 import type { Question, SubmitMemoryFields } from "@/lib/types";
 
-import { currentPath, LoadingSheet, Notice, sessionStore } from "./parts";
+import { currentPath, ledeWithFamily, LoadingSheet, Notice, sessionStore } from "./parts";
 
 type Moment = ReturnType<typeof momentFromMemory>;
 
@@ -72,6 +78,8 @@ export function AddForm(props: {
   fid: string;
   selfPersonId: string;
   memoryId: string | null;
+  /** Which family this goes into; named on the page only for someone in two or more. */
+  choice: FamilyChoice;
   onStarted: (run: { runId: string; telling: MemoryRunTelling }) => void;
 }) {
   const [attempt, setAttempt] = useState(0);
@@ -83,10 +91,11 @@ function AddFormLoader(props: {
   fid: string;
   selfPersonId: string;
   memoryId: string | null;
+  choice: FamilyChoice;
   onStarted: (run: { runId: string; telling: MemoryRunTelling }) => void;
   onRetry: () => void;
 }) {
-  const { api, fid, selfPersonId, memoryId, onStarted, onRetry } = props;
+  const { api, fid, selfPersonId, memoryId, choice, onStarted, onRetry } = props;
   const router = useRouter();
   const [status, setStatus] = useState<Status>({ kind: "loading" });
 
@@ -135,7 +144,12 @@ function AddFormLoader(props: {
 
   if (status.kind === "loading") {
     return (
-      <FlowPage title={memoryId ? "Add your telling" : "Add a memory"} width="wide" back={BACK}>
+      <FlowPage
+        title={memoryId ? "Add your telling" : "Add a memory"}
+        lede={ledeWithFamily(choice)}
+        width="wide"
+        back={BACK}
+      >
         <LoadingSheet label="Getting the page ready…" />
       </FlowPage>
     );
@@ -143,7 +157,7 @@ function AddFormLoader(props: {
 
   if (status.kind === "error") {
     return (
-      <FlowPage title="Add a memory" width="wide" back={BACK}>
+      <FlowPage title="Add a memory" lede={ledeWithFamily(choice)} width="wide" back={BACK}>
         <PaperCard className="flex flex-col gap-5">
           <FormError message={status.message} />
           <div>
@@ -160,6 +174,7 @@ function AddFormLoader(props: {
       fid={fid}
       selfPersonId={selfPersonId}
       data={status.data}
+      choice={choice}
       onStarted={onStarted}
     />
   );
@@ -172,9 +187,10 @@ function AddFormReady(props: {
   fid: string;
   selfPersonId: string;
   data: Loaded;
+  choice: FamilyChoice;
   onStarted: (run: { runId: string; telling: MemoryRunTelling }) => void;
 }) {
-  const { api, fid, selfPersonId, data, onStarted } = props;
+  const { api, fid, selfPersonId, data, choice, onStarted } = props;
   const { people, questions, base } = data;
 
   // Only a new memory picks questions: a second telling shows none to pick.
@@ -314,7 +330,8 @@ function AddFormReady(props: {
   return (
     <FlowPage
       title={second ? "Add your telling" : "Add a memory"}
-      lede={
+      lede={ledeWithFamily(
+        choice,
         second ? (
           <>
             Tell it as you remember it. It doesn&rsquo;t have to match anyone else&rsquo;s.
@@ -332,8 +349,8 @@ function AddFormReady(props: {
           </>
         ) : (
           "Tell it the way you would at the kitchen table. The studio turns it into a scene for the family book."
-        )
-      }
+        ),
+      )}
       back={BACK}
       width="wide"
     >

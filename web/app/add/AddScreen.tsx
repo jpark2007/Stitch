@@ -11,13 +11,13 @@ import { ButtonLink } from "@/components/flow/Button";
 import { FlowPage } from "@/components/flow/FlowPage";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { SessionGate, type SessionValue } from "@/components/flow/SessionGate";
-import { loadTelling, readAddQuery, runHref } from "@/components/flow/addPage";
+import { familyChoice, loadTelling, readAddQuery, runHref } from "@/components/flow/addPage";
 import type { MemoryRunTelling } from "@/components/flow/MemoryRun";
-import { hrefs, pickFamily, recallFamily, rememberFamily } from "@/components/flow/session";
+import { hrefs, recallFamily, rememberFamily } from "@/components/flow/session";
 
 import { AddForm } from "./AddForm";
 import { AddRun } from "./AddRun";
-import { LoadingSheet, sessionStore } from "./parts";
+import { FamilyLine, LoadingSheet, sessionStore } from "./parts";
 
 const TITLE = "Add a memory";
 
@@ -65,8 +65,11 @@ function AddFlow(props: {
   const router = useRouter();
 
   // Only runs in the browser (SessionGate renders this after asking the
-  // server who is signed in), so reading storage here is safe.
-  const family = pickFamily(me.families, familyId ?? recallFamily());
+  // server who is signed in), so reading storage here is safe. Someone in two
+  // or more families sees which one this goes into, with links to the others
+  // (each to that family's plain form: no moment, no run).
+  const choice = familyChoice(me.families, familyId ?? recallFamily());
+  const family = choice.current;
   const fid = family?.id ?? null;
 
   useEffect(() => {
@@ -109,12 +112,25 @@ function AddFlow(props: {
   }
 
   if (run) {
-    return <AddRun key={run.runId} api={api} fid={fid} run={run} />;
+    return (
+      <AddRun
+        key={run.runId}
+        api={api}
+        fid={fid}
+        run={run}
+        lede={choice.show ? <FamilyLine choice={choice} switchable={false} /> : undefined}
+      />
+    );
   }
 
   if (!family.personId) {
     return (
-      <FlowPage title={TITLE} width="wide" back={{ href: hrefs.home(), label: "Family tree" }}>
+      <FlowPage
+        title={TITLE}
+        lede={choice.show ? <FamilyLine choice={choice} /> : undefined}
+        width="wide"
+        back={{ href: hrefs.home(), label: "Family tree" }}
+      >
         <PaperCard className="flex flex-col items-start gap-4">
           <h2 className="font-display text-[1.375rem] leading-tight text-ink">
             You&rsquo;re not in the tree yet
@@ -138,6 +154,7 @@ function AddFlow(props: {
       fid={fid}
       selfPersonId={family.personId}
       memoryId={memoryId}
+      choice={choice}
       onStarted={onStarted}
     />
   );
