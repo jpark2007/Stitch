@@ -199,6 +199,154 @@ def test_ensure_search_indexes_is_best_effort_on_mongomock(mdb):
     assert client.ensure_search_indexes(mdb) == []
 
 
+# ------------------------------------------- vector index status and creation report
+
+
+class _SearchColl:
+    """A collection with an Atlas-shaped listSearchIndexes answer (or a failure)."""
+
+    def __init__(self, listed: list[dict] | None = None, fail: BaseException | None = None,
+                 refuse: BaseException | None = None) -> None:
+        self.listed = list(listed or [])
+        self.fail, self.refuse = fail, refuse
+        self.created: list[str] = []
+        self.updated: list[str] = []
+
+    def list_search_indexes(self):
+        if self.fail:
+            raise self.fail
+        return iter(self.listed)
+
+    def create_search_index(self, model):
+        if self.refuse:
+            raise self.refuse
+        self.created.append(model.document["name"])
+        return model.document["name"]
+
+    def update_search_index(self, name, definition):
+        self.updated.append(name)
+
+
+class _SearchDb:
+    def __init__(self, make) -> None:
+        self.colls = {coll: make(coll, name) for coll, name in client.VECTOR_INDEXES.items()}
+
+    def __getitem__(self, name):
+        return self.colls[name]
+
+    def list_collection_names(self):
+        return sorted(self.colls)
+
+    def create_collection(self, name):  # pragma: no cover - they all exist
+        pass
+
+
+def _listed(name: str, *, status: str = "READY", queryable: bool | None = None, kind: str = "vectorSearch",
+            definition: dict | None = None, **extra) -> dict:
+    doc = {"id": "6560", "name": name, "type": kind, "status": status,
+           "queryable": status == "READY" if queryable is None else queryable,
+           "latestDefinition": client._vector_definition() if definition is None else definition}
+    return {**doc, **extra}
+
+
+def _states(db) -> dict[str, tuple[str, str]]:
+    return {name: (s.state, s.detail) for name, s in client.search_index_status(db).items()}
+
+
+@pytest.mark.parametrize(("listing", "state", "says"), [
+    (dict(status="READY"), "ready", "READY"),
+    (dict(status="BUILDING", queryable=True), "ready", "BUILDING"),  # a rebuild keeps serving
+    (dict(status="PENDING"), "pending", "PENDING"),
+    (dict(status="BUILDING", queryable=False), "pending", "BUILDING"),
+    (dict(status="DOES_NOT_EXIST", queryable=False), "pending", "DOES_NOT_EXIST"),
+    (dict(status="STALE", queryable=True), "stale", "not syncing"),
+    (dict(definition={"fields": [{"type": "vector", "path": "embedding", "numDimensions": 7,
+                                  "similarity": "cosine"}]}), "stale", "does not cover"),
+    (dict(kind="search", definition={"mappings": {}}), "wrong_type", "'search'"),
+    (dict(status="FAILED", queryable=False, message="Index build failed: bad field"), "unsupported",
+     "FAILED: Index build failed: bad field"),
+    (dict(status="DELETING", queryable=False), "missing", "deleting"),
+])
+def test_search_index_status_maps_atlas_listings(listing, state, says):
+    db = _SearchDb(lambda coll, name: _SearchColl([_listed(name, **listing)]))
+    states = _states(db)
+    assert list(states) == list(client.VECTOR_INDEXES.values())
+    for got_state, detail in states.values():
+        assert got_state == state
+        assert says in detail
+
+
+def test_search_index_status_missing_and_unlisted():
+    db = _SearchDb(lambda coll, name: _SearchColl([_listed("someone_elses_index")]))
+    assert {s for s, _ in _states(db).values()} == {"missing"}
+
+
+@pytest.mark.parametrize("fail", [
+    OperationFailure("Unrecognized pipeline stage name: '$listSearchIndexes'", code=40324),
+    NotImplementedError("not on this server"),
+    AttributeError("no list_search_indexes"),
+])
+def test_search_index_status_unsupported_never_raises(fail):
+    db = _SearchDb(lambda coll, name: _SearchColl(fail=fail))
+    for state, detail in _states(db).values():
+        assert state == "unsupported" and type(fail).__name__ in detail
+
+
+def test_search_index_status_on_mongomock_is_unsupported(mdb):
+    statuses = client.search_index_status(mdb)
+    assert set(statuses) == set(client.VECTOR_INDEXES.values())
+    assert all(s.state == "unsupported" for s in statuses.values())
+    assert all(s.collection in client.VECTOR_INDEXES for s in statuses.values())
+
+
+def test_search_index_status_scrubs_a_uri_in_the_error(monkeypatch):
+    monkeypatch.setenv("MONGODB_URI", "mongodb+srv://presenter:hunter22@c.example.mongodb.net/?appName=x")
+    fail = OperationFailure("cannot reach mongodb+srv://presenter:hunter22@c.example.mongodb.net/?appName=x")
+    db = _SearchDb(lambda coll, name: _SearchColl(fail=fail))
+    for _state, detail in _states(db).values():
+        assert "hunter22" not in detail and "presenter" not in detail and "appName" not in detail
+        assert "c.example.mongodb.net" in detail
+
+
+def test_ensure_search_indexes_report_says_what_it_did_and_why():
+    message = "The maximum number of FTS indexes has been reached for this instance size."
+    plan = {
+        "memories": _SearchColl(),  # created
+        "props": _SearchColl([_listed("props_vector")]),  # existed
+        "sets": _SearchColl(refuse=OperationFailure(message, code=68)),  # the M0 limit
+    }
+    db = _SearchDb(lambda coll, name: plan[coll])
+    outcomes = client.ensure_search_indexes_report(db)
+    assert [(o.collection, o.name, o.action) for o in outcomes] == [
+        ("memories", "memories_vector", "created"),
+        ("props", "props_vector", "existed"),
+        ("sets", "sets_vector", "not_created"),
+    ]
+    assert message in outcomes[2].detail  # the server's words, verbatim
+    # The thin wrapper keeps its signature: the names created.
+    plan["memories"] = _SearchColl()
+    assert client.ensure_search_indexes(db) == ["memories_vector"]
+
+
+def test_ensure_search_indexes_report_stale_and_wrong_type():
+    stale = {"fields": [{"type": "vector", "path": "embedding", "numDimensions": 7, "similarity": "cosine"}]}
+    plan = {
+        "memories": _SearchColl([_listed("memories_vector", definition=stale)]),
+        "props": _SearchColl([_listed("props_vector", kind="search", definition={"mappings": {}})]),
+        "sets": _SearchColl([_listed("sets_vector")]),
+    }
+    outcomes = client.ensure_search_indexes_report(_SearchDb(lambda coll, name: plan[coll]))
+    assert [o.action for o in outcomes] == ["updated", "wrong_type", "existed"]
+    assert plan["memories"].updated == ["memories_vector"]
+    assert not plan["props"].created and not plan["props"].updated
+
+
+def test_ensure_search_indexes_report_on_mongomock(mdb):
+    outcomes = client.ensure_search_indexes_report(mdb)
+    assert [o.action for o in outcomes] == ["not_created"] * len(client.VECTOR_INDEXES)
+    assert all(o.detail for o in outcomes)
+
+
 def test_ping(mdb):
     assert client.ping(mdb) is True
 
