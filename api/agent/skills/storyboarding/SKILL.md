@@ -22,6 +22,11 @@ plays as one take.
 4. **One place per shot.** If the story moves ("we drove to the lake"), that is a new shot with
    a new set, or the travel is left to the narration.
 5. Keep story order unless the teller clearly tells it out of order on purpose.
+6. **One main beat per shot**: the moment its source sentence names ("she dropped every single
+   hymn book"). The shot's other actions only lead up to it or follow from it. The director
+   moves the camera in on that beat and its pageText tells it, and the memory's pull tab plays
+   the story's main beat, so a shot with two big moments is two shots (or one moment goes to
+   the narration).
 
 ## Action or narration?
 
@@ -74,16 +79,19 @@ per shot, shot ids `s1`, `s2`, ... in order. No other sections.
   "church steps, 1988"). If `find_memories` shows an earlier moment at the same place, use the
   same place name so the set designer finds the saved set.
 - **who**: comma-separated person ids of everyone on stage.
-- **what happens**: the visible actions in order, short clauses separated by `;`. Only things
-  the action vocabulary can show.
+- **what happens**: the visible actions in order, short clauses separated by `;`, the main beat
+  among them. Only things the action vocabulary can show. Name every object someone touches:
+  each one becomes a prop, and every person and prop on stage gets a click-to-explain note, so
+  list in your final message what the telling says about each.
 - **source**: one `telling:<authorId>:s<n>`.
 - Never put a `|` inside a cell.
 
 ## pageText (storybook text)
 
-Each shot gets `pageText`: the text printed on the page, like a picture book.
+Every shot gets `pageText`: the text printed on the page, like a picture book. The director
+writes it; choose shots whose main beat it can tell.
 
-- One or two short sentences per shot.
+- One or two short sentences per shot, at most 30 words.
 - Third person, past tense ("Dad saw Mom at the top of the church steps."), never "I".
 - Fun and warm, readable by a child and an adult.
 - **No invented facts.** Only names, places, years and events from the tellings and the

@@ -19,6 +19,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
+from langchain_core.messages import ToolMessage
 from PIL import Image
 from pydantic import BaseModel
 
@@ -27,6 +28,7 @@ from agent import runs, wiring
 from agent.fake_studio import FakeStory, fake_studio_model
 from agent.repo import InMemoryRepo, load_sample_family
 from agent.tools.compile import MAX_COMPILE_ROUNDS
+from agent.tools.narration import FakeTTS, Speech
 from agent.tools.photos import FakeVision
 
 FAMILY = "fam_e2e"
@@ -444,3 +446,137 @@ def test_compile_rounds_stop_at_the_cap(studios: list[Studio]) -> None:
     director_runs = [p for n, p in events if n == "subagent_start" and p.name == "director"]  # type: ignore[attr-defined]
     assert len(director_runs) == 1
     assert s.repo.find_memories(FAMILY, limit=1000) == memories_before
+
+
+# --------------------------------------------------------------------------- (f) the voice pass
+
+
+FAKE_KEY = "sk_live_0123456789abcdefFAKEKEY"
+
+
+class FlakyTTS:
+    """FakeTTS that fails its first `fail_first` calls, as a TTS provider answering HTTP 503
+    would (`fail_first=None`: every call fails, as with a missing or revoked key)."""
+
+    def __init__(self, fail_first: int | None = 1) -> None:
+        self.inner = FakeTTS()
+        self.fail_first = fail_first
+        self.failures = 0
+
+    def synthesize(self, text: str, *, voice: str | None = None) -> Speech:
+        if self.fail_first is None or self.failures < self.fail_first:
+            self.failures += 1
+            raise RuntimeError(f"TTS provider returned HTTP 503 (key {FAKE_KEY})")
+        return self.inner.synthesize(text, voice=voice)
+
+
+def _with_tts(s: Studio, tts: Any) -> None:
+    s.manager.shutdown(wait=True)
+    s.services = wiring.Services(**{**s.services.__dict__, "tts": tts})
+    s.manager = wiring.make_manager(s.services)
+
+
+def _voice_replies(s: Studio) -> list[str]:
+    """Every synthesize_narration answer the studio model saw, in call order."""
+    replies: dict[str, str] = {}
+    for _, messages in s.services.model.calls:  # type: ignore[attr-defined]
+        for m in messages:
+            if isinstance(m, ToolMessage) and m.name == "synthesize_narration":
+                replies[m.tool_call_id] = str(m.content)
+    return list(replies.values())
+
+
+def _drive_mom(s: Studio) -> list[Event]:
+    _, events = s.drive(MOM_USER, "mom", MOM_TEXT, [schemas.AnswerRequest(kind="answer", text=ANSWER),
+                                                    rename_first_prop], participant_ids=["dad"])
+    names = [n for n, _ in events]
+    assert names[-1] == "done" and "error" not in names, names
+    return events
+
+
+def test_a_tts_failure_is_retried_in_the_tool_and_the_run_still_finishes(studios: list[Studio]) -> None:
+    s = new_studio(studios)
+    tts = FlakyTTS()
+    _with_tts(s, tts)
+    events = _drive_mom(s)
+    assert tts.failures == 1
+
+    # The voice tool retried the failed call itself: one voice pass, a real voice, no warning.
+    (reply,) = _voice_replies(s)
+    assert reply.startswith("Narrated") and "warning" not in reply, reply
+
+    memory = s.memory(events[-1][1].memory_id)  # type: ignore[attr-defined]
+    assert memory.timeline is not None
+    track = (memory.timeline.narrations or {})["mom"]
+    assert track.audio and s.repo.get_media(FAMILY, track.audio) is not None
+
+
+def test_a_dead_tts_still_saves_a_silently_narrated_memory(studios: list[Studio]) -> None:
+    """Degrade, don't fail: with every TTS call failing the run ends in done, and the saved
+    memory has mom's narration with word timings (silent audio, estimated timings)."""
+    s = new_studio(studios)
+    tts = FlakyTTS(fail_first=None)
+    _with_tts(s, tts)
+    events = _drive_mom(s)
+    assert tts.failures == 2  # one call and one retry, then the silent voice
+
+    (reply,) = _voice_replies(s)  # a warning is not a reason to voice again
+    assert reply.startswith("Narrated"), reply
+    assert "warning: the speech service failed (RuntimeError); narrated silently with estimated word timings" in reply
+    assert FAKE_KEY not in reply and "HTTP 503" not in reply
+
+    memory = s.memory(events[-1][1].memory_id)  # type: ignore[attr-defined]
+    assert memory.timeline is not None and memory.screenplay is not None
+    assert memory.timeline.default_narrator == "mom"
+    track = (memory.timeline.narrations or {})["mom"]
+    assert track.lines and all(line.words for line in track.lines)
+    assert track.audio and s.repo.get_media(FAMILY, track.audio) is not None
+    assert all(line.words for shot in memory.screenplay.shots for line in shot.narration if line.text.strip())
+    for event in events:
+        assert FAKE_KEY not in event[1].model_dump_json()
+
+
+def test_a_media_store_failure_is_voiced_again(studios: list[Studio]) -> None:
+    """The one voice-pass failure left is the media store: the narrator voices once more."""
+    s = new_studio(studios)
+    put_media = s.repo.put_media
+    failed: list[str] = []
+
+    def flaky_put(family_id: str, data: bytes, content_type: str, *, kind: str) -> str:
+        if kind == "audio" and not failed:
+            failed.append(kind)
+            raise ConnectionError("media store unreachable")
+        return put_media(family_id, data, content_type, kind=kind)
+
+    s.repo.put_media = flaky_put  # type: ignore[method-assign]
+    events = _drive_mom(s)
+    assert failed == ["audio"]
+    first, second = _voice_replies(s)
+    assert first.startswith("Error: could not voice the narration (ConnectionError)"), first
+    assert second.startswith("Narrated"), second
+    memory = s.memory(events[-1][1].memory_id)  # type: ignore[attr-defined]
+    track = (memory.timeline.narrations or {})["mom"]  # type: ignore[union-attr]
+    assert track.audio and s.repo.get_media(FAMILY, track.audio) is not None
+
+
+def test_the_saved_scene_has_its_cue_on_the_spoken_word(
+    first_run: tuple[Studio, str, list[Event], dict[str, Any]],
+) -> None:
+    """The voice pass recompiled with the TTS word timings: the saved screenplay carries them,
+    and recompiling it gives the saved action, with mom's cued action on her spoken word."""
+    s, _, events, _ = first_run
+    memory = s.memory(events[-1][1].memory_id)  # type: ignore[attr-defined]
+    assert memory.screenplay is not None and memory.timeline is not None
+    lines = memory.screenplay.shots[0].narration
+    assert all(line.words for line in lines if line.text.strip())
+    lookup = wiring.scene_for(s.repo, FAMILY)
+    result = s.services.compiler(memory.screenplay, lookup(memory.screenplay))
+    assert result.ok and result.timeline is not None
+    assert result.timeline.tracks == memory.timeline.tracks
+    # The cued line's last word (no cueWord: the last word) is where the cued action starts.
+    (cued,) = [line for line in memory.timeline.narrations["mom"].lines if line.cue]  # type: ignore[index]
+    assert cued.words
+    shot = memory.screenplay.shots[0]
+    action = next(a for a in shot.actions if a.id == cued.cue)
+    walk = [t for t in memory.timeline.tracks if t.target == f"puppet:{action.who}" and t.channel == "root.position"]
+    assert walk and any(abs(k[0] - cued.words[-1].t) < 0.01 for k in walk[0].keys), (cued.words[-1].t, walk[0].keys[:4])

@@ -540,8 +540,9 @@ def screenplay_for_snippet(obj: dict) -> dict:
     if "do" in obj or "move" in obj:  # an action or camera cue from the worked example
         data = _sample()
         key = "actions" if "do" in obj else "camera"
-        if key == "actions" and obj not in _actions(data):  # an extra action: added to the worked example
-            _actions(data).append(obj)
+        if obj not in _shot(data)[key]:  # an extra action or camera cue: added to the worked example
+            _shot(data)[key].append(obj)
+            _shot(data)[key].sort(key=lambda item: item["t"])
         assert obj in _shot(data)[key], f"{obj} is not in the worked example"
         return data
     raise AssertionError(f"no rule to compile doc snippet {obj}")
@@ -588,6 +589,79 @@ def test_skill_sample_compiles_cleanly_and_its_timeline_validates(real, lookup):
 def test_doc_snippets_compile_cleanly(real, lookup, where, snippet):
     res = compile_text(json.dumps(screenplay_for_snippet(snippet)), real, lookup)
     assert res.ok and res.errors == [], (where, [e.message for e in res.errors])
+
+
+def _camera_snippets() -> list[tuple[str, dict]]:
+    return [(where, obj) for where, obj in doc_snippets() if "move" in obj]
+
+
+def test_the_docs_show_a_camera_move_beyond_the_worked_example():
+    """The skill's camera guide adds a move the worked example lacks; it is compiled below."""
+    assert any(obj not in _shot(_sample())["camera"] for _, obj in _camera_snippets())
+
+
+@pytest.mark.parametrize("where, snippet", _camera_snippets(), ids=[w for w, _ in _camera_snippets()])
+def test_doc_camera_moves_end_inside_their_shot(real, lookup, where, snippet):
+    """Every camera move the docs show ends by the shot's last action and word: added to the
+    worked example, it leaves the compiled duration unchanged."""
+    base = compile_text(json.dumps(_sample()), real, lookup)
+    res = compile_text(json.dumps(screenplay_for_snippet(snippet)), real, lookup)
+    assert res.ok, (where, [e.message for e in res.errors])
+    assert res.timeline.duration == pytest.approx(base.timeline.duration), where
+
+
+def test_a_late_camera_move_holds_the_page_as_the_skill_says(real, lookup):
+    """The skill: camera keys count toward the shot's end. The worked example's dolly_to (5.5 +
+    3 = 8.5) ends before Dad's last word (shot time 8.85); a pull_back at 9 with dur 3 holds the
+    page about 3 s longer."""
+    base = compile_text(json.dumps(_sample()), real, lookup)
+    shot = base.timeline.shots[0]
+    dad_last_word = max(w.t for line in base.timeline.narrations["dad"].lines for w in line.words)
+    assert dad_last_word - shot.action_start == pytest.approx(8.85)
+    dolly = next(c for c in _shot(_sample())["camera"] if c["move"] == "dolly_to")
+    assert dolly["t"] + dolly["dur"] == pytest.approx(8.5)
+    text = SKILL.read_text()
+    assert "before Dad's last word at 8.85" in text and "about 3 s longer" in text
+    late = _sample(lambda d: _shot(d)["camera"].append({"t": 9, "move": "pull_back", "dur": 3}))
+    res = compile_text(json.dumps(late), real, lookup)
+    assert res.ok
+    assert res.timeline.duration - base.timeline.duration == pytest.approx(3, abs=0.1)
+
+
+def test_the_worked_example_meets_the_quality_bar(real, lookup):
+    """What director.md and the directing skill ask of every memory, met by the worked example
+    on the real compiler: pageText on every shot (at most 30 words), one explanation per cast
+    member and prop, a pull_tab scrubbing the main beat (a cued action, by id) with targets
+    that exist, vocabulary camera moves that end inside the shot, an id on every cued action,
+    and no scene-review warning."""
+    from agent.tools import scene_review
+
+    sp = Screenplay.model_validate(SAMPLE)
+    res = compile_text(SKILL_SAMPLE.read_text(), real, lookup)
+    assert res.ok
+    tl = res.timeline
+    vocab = json.loads((REPO / "shared" / "vocabulary.json").read_text())
+    for shot in sp.shots:
+        assert shot.page_text and len(shot.page_text.split()) <= scene_review.MAX_PAGE_TEXT_WORDS
+        assert shot.camera and shot.camera[0].t == 0 and shot.camera[0].move == "wide"
+        assert all(c.move in vocab["camera"] for c in shot.camera)
+        ids = {a.id for a in shot.actions if a.id}
+        cued = [line.cue for line in shot.narration if line.cue]
+        cued += [line.cue for by_shot in (sp.narrations or {}).values() for line in by_shot.get(shot.id, []) if line.cue]
+        assert cued and set(cued) <= ids, (cued, ids)
+    assert sorted(e.target for e in sp.explanations) == sorted(
+        [f"puppet:{p}" for p in sp.cast] + [f"prop:{p}" for p in sp.props])
+    tabs = [i for i in sp.interactions or [] if i.kind == "pull_tab"]
+    assert tabs
+    beat = next(a for a in sp.shots[0].actions if a.id == "drop")
+    assert tabs[0].drives.type == "scrub" and tabs[0].drives.from_ == beat.t
+    assert set(tabs[0].drives.targets) <= {f"puppet:{p}" for p in sp.cast} | {f"prop:{p}" for p in sp.props}
+    # every camera move ends inside its shot (by the shot's end, in timeline time)
+    for shot, tshot in zip(sp.shots, tl.shots, strict=True):
+        for cue in shot.camera:
+            assert tshot.action_start + cue.t + (cue.dur if cue.dur is not None else 1.5) <= tshot.end
+    assert scene_review.review_scene(sp) == []
+    assert scene_review.review_timeline(sp, tl) == []
 
 
 def test_every_effect_compiles_on_the_real_compiler(real, lookup):

@@ -185,6 +185,22 @@ with no cue at t = 0 opens on `wide`. Style (not checked): start every shot with
 `pull_back` before the page turns, and keep moves at least 1.5 s apart. A person who is
 offstage is not an error, but the camera then looks at the wings: target people on stage.
 
+**Choose a move per beat**, and keep each one inside its shot:
+
+| Beat | Move |
+|---|---|
+| the shot opens: show the place | `wide` at t = 0 |
+| someone arrives or crosses the stage | `pan_to` the person who moves |
+| the main beat (a drop, a hand-off, a hug) | `dolly_to` or `close_up` on the person or prop at its heart, starting about 0.5 s before it so it lands as it happens |
+| the feeling after it | hold, or a slow `dolly_to` the person it belongs to |
+| the last shot closes | `pull_back` |
+
+For the worked example's drop at 3.25: `{ "t": 2.75, "move": "close_up", "target": "hymn_books", "dur": 0.5 }`.
+Camera keys count toward the shot's end, so a move whose `t` + `dur` runs past the shot's last
+action and last word keeps the page open on a still stage: end every move by then (the worked
+example's `dolly_to` at 5.5 with `dur` 3 ends at 8.5, before Dad's last word at 8.85; a
+`pull_back` at 9 with `dur` 3 would hold the page about 3 s longer).
+
 ### Transitions
 
 `Shot.transition` is `fold` (the set folds down and the next rises; default) or `none`.
@@ -297,8 +313,9 @@ The person (and, where noted, the other person) is busy from `t` until `t` + thi
   `t` (shot time), `text` (the teller's own words, lightly trimmed, never invented),
   `source` (`telling:<authorId>:s<n>`, sentence numbers 1-based).
 - **`cue`** ties a line to an action: it names an action **`id`** if one matches, otherwise
-  **the first action in the shot whose `do` equals it** (e.g. `"cue": "drop"`). Give cued
-  actions an `id` to be unambiguous.
+  **the first action in the shot whose `do` equals it** (e.g. `"cue": "drop"`). Give every
+  action a line may cue an `id` (the main beat, each hand-off and hug): cues by `id` stay right
+  when a second telling or a fix adds actions.
 - **`cueWord`** is the word in `text` the action should land on. Default: the line's last
   word. The compiler uses the TTS word timings to move the cued action so that it **starts on
   the cue word**, and moves every later action that has no cue of its own by the same amount.
@@ -327,16 +344,23 @@ shot's `narration`; every other teller goes in
   the shot's t = 0. The default teller never also appears in `narrations` (`duplicate_telling`).
 - For a second telling of an existing memory, load the existing screenplay, add
   `narrations.<newAuthorId>` and leave everything else as it was.
+- **The default-narrator exception**: when the new teller is the memory's default narrator (the
+  teller whose words are each shot's `narration`, named by its sources), the retelling rewrites
+  each shot's own `narration` lines, with sources `telling:<authorId>:s<n>` naming them, and
+  never adds `narrations.<authorId>` (`duplicate_telling`). Every other teller's lines stay as
+  they were.
 
 ## pageText
 
-One or two short storybook sentences per shot, third person, past tense, warm, no invented
-facts (only what the tellings and person records say). Not a copy of the narration.
+**Every shot has `pageText`**: one or two short storybook sentences, at most 30 words, third
+person, past tense, warm, no invented facts (only what the tellings and person records say).
+It tells the shot's main beat. Not a copy of the narration.
 
 ## interactions (pull tabs and sliders)
 
-A pull tab or slider printed on the page that the reader drags to make something move. Add one
-or two per memory, on the most physical moment.
+A pull tab or slider printed on the page that the reader drags to make something move. **Every
+memory has at least one `pull_tab`**, on the main beat of the shot list (the drop, the hand-off,
+the car pulling away); add a second for a prop with parts or states worth moving. One or two in all.
 
 ```
 Interaction { id, kind: "pull_tab"|"slider", label, shot?, page?: "stage"|"story", at: [u, v], drives }
@@ -351,7 +375,8 @@ Interaction { id, kind: "pull_tab"|"slider", label, shot?, page?: "stage"|"story
 - `drives` has exactly one `type`:
   - `scrub`: `{ "type": "scrub", "from": 3.25, "to": 3.55, "targets": ["prop:hymn_books", "puppet:mom"] }`.
     Dragging plays shot time `from`..`to` for those targets only (shot time; default targets:
-    all). Choose a range that covers one action, e.g. a drop and its 0.3 s fall. `from` is
+    all). Choose a range that covers the beat's action: `from` at its `t`, `to` when it ends
+    ("How long actions take"), e.g. a drop and its 0.3 s fall. `from` is
     before `to`, both 0 or more. A target is `puppet:<personId>` (in `cast`), `prop:<propId>`
     (in `props`), `set:<the shot's setId>.layer<n>` or `camera`. The range moves with the
     actions a cue moves.
@@ -359,12 +384,14 @@ Interaction { id, kind: "pull_tab"|"slider", label, shot?, page?: "stage"|"story
     Steps the prop through states it has (a suitcase with `closed` and `open` states).
   - `prop_part`: `{ "type": "prop_part", "prop": "green_sedan_1985", "part": "wheel_front", "channel": "rot", "range": [0, 6.28] }`.
     Drives one moving part (`channel` `rot` or `offset`) across `[min, max]`.
-- Only reference props in `props`, and parts and states that exist on the prop.
+- Only reference targets that exist: people in `cast`, props in `props`, the shot's own set, and
+  parts and states the prop has.
 
 ## explanations (click-to-explain)
 
-**Exactly one per cast member and one per prop.** `target` is `"puppet:<personId>"` (someone
-in `cast`) or `"prop:<propId>"` (a prop in `props`); nothing else (`explanation_unknown_target`).
+**Exactly one per cast member and one per prop**, every one of them, with no extras. `target`
+is `"puppet:<personId>"` (someone in `cast`) or `"prop:<propId>"` (a prop in `props`); nothing
+else (`explanation_unknown_target`).
 `text` is one or two sentences on why that person or thing matters in this
 story, from the tellings and person records only. No invented ages, names or facts.
 
