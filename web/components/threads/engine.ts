@@ -298,7 +298,8 @@ export class ThreadsEngine {
 
   private frame = (now: number) => {
     this.raf = 0;
-    const dt = Math.min(0.05, (now - this.last) / 1000);
+    // rAF's timestamp can predate the kick that scheduled it: never step backwards.
+    const dt = Math.max(0, Math.min(0.05, (now - this.last) / 1000));
     this.last = now;
     let moving = this.stepCamera(dt);
     if (this.stepFades(dt)) moving = true;
