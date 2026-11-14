@@ -729,6 +729,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
               key={k.moment.id}
               href={`/memories/${k.moment.id}`}
               prefetch={false}
+              data-moment={k.moment.id}
               onFocus={() => focusKnot(i)}
               onBlur={() => focusKnot(-1)}
               ref={(el) => {
@@ -807,7 +808,12 @@ export default function ThreadsView(props: ThreadsViewProps) {
         <ul>
           {model.strands.map((s, i) => (
             <li key={s.person.id}>
-              <button type="button" onClick={() => setLit(highlight === i ? -1 : i)} aria-pressed={highlight === i}>
+              <button
+                type="button"
+                data-person={s.person.id}
+                onClick={() => setLit(highlight === i ? -1 : i)}
+                aria-pressed={highlight === i}
+              >
                 Follow {s.person.name}&rsquo;s thread ({s.momentIds.length} moments)
               </button>
             </li>
