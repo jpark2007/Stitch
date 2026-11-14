@@ -1,5 +1,7 @@
 """review_scene: storybook extras the compiler does not require (pageText, explanations,
-pull tabs, narration sources). Every check asserts its exact warning text."""
+pull tabs, narration sources). review_timeline: the same scene checked against its compiled
+timeline (scrub ranges, explanation tracks, pageText windows, narration cues). Every check
+asserts its exact warning text."""
 
 from __future__ import annotations
 
@@ -10,8 +12,10 @@ from pathlib import Path
 import pytest
 
 import schemas
-from agent.tools.scene_review import review_scene
-from screenplay.schema import Screenplay
+from agent.fake_compiler import FakeCompiler
+from agent.tools.compile import SceneInputs
+from agent.tools.scene_review import review_scene, review_timeline
+from screenplay.schema import Screenplay, Timeline
 
 REPO = Path(__file__).resolve().parents[3]
 SAMPLES = REPO / "web" / "public" / "samples"
@@ -168,7 +172,7 @@ def test_scrub_from_not_before_to(frm, to):
     data["interactions"][0]["drives"]["to"] = to
     assert _review(data) == [
         f"interaction drop_books: scrub from {frm:g} is not before to {to:g}; "
-        "make from smaller than to (timeline seconds)"
+        "make from smaller than to (seconds from the shot start)"
     ]
 
 
@@ -299,6 +303,311 @@ def test_every_warning_is_one_line_in_where_problem_fix_form():
     del data["shots"][0]["narration"][0]["source"]
     warnings = _review(data, {"car": CAR, **SAMPLE_PROPS})
     assert len(warnings) >= 10
+    for w in warnings:
+        assert "\n" not in w
+        where, _, rest = w.partition(": ")
+        assert where and "; " in rest
+
+
+# ======================================================================= the timeline
+#
+# review_timeline reads the compiled timeline. Most cases start from the sample's compiled
+# timeline and break one thing by hand, because FakeCompiler never produces these problems.
+
+TIMELINE = json.loads((SAMPLES / "hymn_books.timeline.json").read_text())
+DURATION = TIMELINE["duration"]  # 10.65
+SHOT_LENGTH = round(TIMELINE["shots"][0]["end"] - TIMELINE["shots"][0]["actionStart"], 2)  # 9.45
+
+
+def _timeline() -> dict:
+    return copy.deepcopy(TIMELINE)
+
+
+def _review_tl(screenplay: dict, timeline: dict, props=None) -> list[str]:
+    return review_timeline(Screenplay.model_validate(screenplay), Timeline.model_validate(timeline), props=props)
+
+
+def _scrub(timeline: dict) -> dict:
+    return timeline["interactions"][0]["drives"]
+
+
+def _line(timeline: dict, author: str, n: int) -> dict:
+    return timeline["narrations"][author]["lines"][n - 1]
+
+
+def test_sample_timeline_has_no_warnings():
+    assert DURATION == 10.65 and SHOT_LENGTH == 9.45
+    assert _review_tl(_sample(), _timeline()) == []
+    assert _review_tl(_sample(), _timeline(), SAMPLE_PROPS) == []
+
+
+def test_fake_compiled_sample_has_no_timeline_warnings():
+    scene = SceneInputs(
+        sets={s["id"]: schemas.SetDef.model_validate(s) for s in MEMORY["sets"]},
+        props=dict(SAMPLE_PROPS),
+        people={p["id"]: schemas.Person.model_validate(p) for p in MEMORY["people"]},
+    )
+    screenplay = Screenplay.model_validate(_sample())
+    result = FakeCompiler()(screenplay, scene)
+    assert result.ok and result.timeline is not None
+    assert review_timeline(screenplay, result.timeline, props=scene.props) == []
+
+
+# ------------------------------------------------------------- interaction ranges
+
+
+def test_scrub_end_past_the_timeline():
+    tl = _timeline()
+    _scrub(tl)["to"] = 12.3
+    assert _review_tl(_sample(), tl) == [
+        f"interaction drop_books: scrub to 12.3s is outside the timeline (0 to 10.65s); "
+        f"keep from and to between 0 and {SHOT_LENGTH:g} (seconds from the start of shot s1)"
+    ]
+
+
+def test_scrub_both_ends_outside_the_timeline():
+    tl = _timeline()
+    _scrub(tl)["from"] = -1
+    _scrub(tl)["to"] = 20
+    assert _review_tl(_sample(), tl) == [
+        "interaction drop_books: scrub from -1s and to 20s are outside the timeline (0 to 10.65s); "
+        "keep from and to between 0 and 9.45 (seconds from the start of shot s1)"
+    ]
+
+
+def test_scrub_out_of_range_without_a_shot_gives_a_general_fix():
+    tl = _timeline()
+    del tl["interactions"][0]["shot"]
+    _scrub(tl)["from"] = 11
+    _scrub(tl)["to"] = 12
+    assert _review_tl(_sample(), tl) == [
+        "interaction drop_books: scrub from 11s and to 12s are outside the timeline (0 to 10.65s); "
+        "keep from and to inside the shot the tab belongs to (seconds from that shot's start)"
+    ]
+
+
+def test_scrub_ends_exactly_on_the_timeline_edges_are_fine():
+    tl = _timeline()
+    _scrub(tl)["from"] = 0
+    _scrub(tl)["to"] = DURATION
+    assert _review_tl(_sample(), tl) == []
+
+
+@pytest.mark.parametrize(("frm", "to"), [(4.45, 4.45), (4.75, 4.45)])
+def test_empty_scrub_range_in_the_timeline(frm, to):
+    tl = _timeline()
+    _scrub(tl)["from"] = frm
+    _scrub(tl)["to"] = to
+    assert _review_tl(_sample(), tl) == [
+        f"interaction drop_books: scrub from {frm:g}s to {to:g}s covers no time in the timeline; "
+        "make from smaller than to so pulling the tab plays something"
+    ]
+
+
+def test_scrub_with_one_end_only_checks_that_end():
+    tl = _timeline()
+    del _scrub(tl)["from"]
+    assert _review_tl(_sample(), tl) == []
+    _scrub(tl)["to"] = 99
+    assert len(_review_tl(_sample(), tl)) == 1
+
+
+def test_scrub_target_without_a_track():
+    tl = _timeline()
+    _scrub(tl)["targets"] = ["prop:hymn_books", "prop:umbrella"]
+    assert _review_tl(_sample(), tl) == [
+        'interaction drop_books: scrub target "prop:umbrella" has no track in the timeline, so pulling the tab '
+        'moves nothing; target a "puppet:<cast id>" or "prop:<prop id>" that is on stage, or leave targets out'
+    ]
+
+
+def test_non_scrub_interactions_have_no_timeline_checks():
+    tl = _timeline()
+    tl["interactions"][0]["drives"] = {"type": "prop_state", "prop": "hymn_books", "states": ["a", "b"]}
+    assert _review_tl(_sample(), tl) == []
+
+
+# ------------------------------------------------------------ explanation targets
+
+
+def test_explanation_for_a_puppet_with_no_track():
+    tl = _timeline()
+    tl["tracks"] = [t for t in tl["tracks"] if t["target"] != "puppet:dad"]
+    assert _review_tl(_sample(), tl) == [
+        'explanations: target "puppet:dad" has no track in the timeline, so there is nothing to click; '
+        "bring dad on stage in a shot (start or enter), or remove the explanation"
+    ]
+
+
+def test_explanation_for_a_prop_with_no_track():
+    tl = _timeline()
+    tl["tracks"] = [t for t in tl["tracks"] if t["target"] != "prop:hymn_books"]
+    _scrub(tl)["targets"] = ["puppet:mom"]
+    assert _review_tl(_sample(), tl) == [
+        'explanations: target "prop:hymn_books" has no track in the timeline, so there is nothing to click; '
+        "put hymn_books on stage (propStart, or someone holding it), or remove the explanation"
+    ]
+
+
+def test_explanations_fall_back_to_the_screenplay_and_skip_malformed_targets():
+    tl = _timeline()
+    del tl["explanations"]
+    data = _sample()
+    data["explanations"] += [
+        {"target": "puppet:grandpa", "text": "not on stage"},
+        {"target": "puppet:grandpa", "text": "said twice"},
+        {"target": "grandpa", "text": "no prefix: review_scene's warning"},
+    ]
+    assert _review_tl(data, tl) == [
+        'explanations: target "puppet:grandpa" has no track in the timeline, so there is nothing to click; '
+        "bring grandpa on stage in a shot (start or enter), or remove the explanation"
+    ]
+
+
+# ------------------------------------------------------------------ pageText window
+
+
+def test_page_text_shot_missing_from_the_timeline():
+    tl = _timeline()
+    tl["shots"][0]["id"] = "s9"
+    assert _review_tl(_sample(), tl) == [
+        "shot s1: no shot s1 in the timeline, so its pageText is never shown; "
+        "give every shot its own id and compile again"
+    ]
+
+
+def test_page_text_dropped_by_the_compiler():
+    tl = _timeline()
+    del tl["shots"][0]["pageText"]
+    assert _review_tl(_sample(), tl) == [
+        "shot s1: the timeline shot does not carry this pageText, so the page shows something else; "
+        "keep pageText on the shot and compile again"
+    ]
+
+
+def test_page_text_shot_after_the_end_of_the_timeline():
+    tl = _timeline()
+    tl["shots"][0].update(start=11, actionStart=12.2, end=14)
+    assert _review_tl(_sample(), tl) == [
+        "shot s1: pageText is never on the page while the shot plays "
+        "(the shot runs 11s to 14s, the timeline 0 to 10.65s); "
+        "give the shot action or narration that takes time, and keep shots in order"
+    ]
+
+
+def test_page_text_shot_with_no_length():
+    tl = _timeline()
+    tl["shots"][0].update(start=3, actionStart=3, end=3)
+    assert _review_tl(_sample(), tl) == [
+        "shot s1: pageText is never on the page while the shot plays "
+        "(the shot runs 3s to 3s, the timeline 0 to 10.65s); "
+        "give the shot action or narration that takes time, and keep shots in order"
+    ]
+
+
+def test_page_text_shot_overtaken_by_the_next_shot():
+    data = _sample()
+    second = copy.deepcopy(data["shots"][0])
+    second.update(id="s2", pageText="And then they walked home.", narration=[])
+    data["shots"].append(second)
+    data["narrations"]["mom"]["s2"] = []
+    tl = _timeline()
+    tl["shots"].append({**tl["shots"][0], "id": "s2", "pageText": "And then they walked home.", "end": 5})
+    assert _review_tl(data, tl) == [
+        "shot s1: pageText is never on the page while the shot plays "
+        "(the shot runs 0s to 10.65s, the timeline 0 to 10.65s, and shot s2 takes the page at 0s); "
+        "give the shot action or narration that takes time, and keep shots in order"
+    ]
+    # in order, the two pages share the timeline and both show
+    tl["shots"][0]["end"] = 5
+    tl["shots"][1].update(start=5, actionStart=6.2, end=DURATION)
+    assert _review_tl(data, tl) == []
+
+
+def test_shots_without_page_text_are_left_to_review_scene():
+    data = _sample()
+    del data["shots"][0]["pageText"]
+    tl = _timeline()
+    tl["shots"][0].update(start=11, actionStart=12.2, end=14)
+    assert _review_tl(data, tl) == []
+
+
+# --------------------------------------------------------------------- narration cues
+
+
+def test_cue_word_timing_past_the_end_of_the_timeline():
+    tl = _timeline()
+    line = _line(tl, "mom", 2)
+    for w in line["words"]:
+        if w["word"].startswith("everywhere"):
+            w["t"] = 12
+    assert _review_tl(_sample(), tl) == [
+        'narrations mom, shot s1, line 2: cue "drop" lands at 12s, after the timeline ends at 10.65s; '
+        "start the line earlier in its shot or shorten it, so it is spoken while the shot plays"
+    ]
+
+
+def test_cue_without_word_timings_uses_the_line_start():
+    tl = _timeline()
+    line = _line(tl, "dad", 3)
+    del line["words"]
+    line["t"] = 11
+    assert _review_tl(_sample(), tl) == [
+        'shot s1, narration line 3: cue "hand_back" lands at 11s, after the timeline ends at 10.65s; '
+        "start the line earlier in its shot or shorten it, so it is spoken while the shot plays"
+    ]
+
+
+def test_cue_uses_the_cue_word_not_the_line_start():
+    tl = _timeline()
+    line = _line(tl, "dad", 3)
+    line["t"] = -0.5  # the line starts early, but its cue word is spoken in time
+    assert _review_tl(_sample(), tl) == []
+
+
+def test_cue_defaults_to_the_last_word():
+    tl = _timeline()
+    line = _line(tl, "dad", 2)
+    del line["cueWord"]
+    line["words"][-1]["t"] = 10.9  # "book." is the last word
+    assert _review_tl(_sample(), tl) == [
+        'shot s1, narration line 2: cue "drop" lands at 10.9s, after the timeline ends at 10.65s; '
+        "start the line earlier in its shot or shorten it, so it is spoken while the shot plays"
+    ]
+
+
+def test_uncued_line_before_the_timeline_starts():
+    tl = _timeline()
+    _line(tl, "dad", 1)["t"] = -0.5
+    assert _review_tl(_sample(), tl) == [
+        "shot s1, narration line 1: starts at -0.5s, before the timeline starts; "
+        "start the line at 0 or later in its shot"
+    ]
+
+
+def test_narration_line_not_in_the_screenplay_is_named_by_teller_and_index():
+    tl = _timeline()
+    line = _line(tl, "dad", 1)
+    line["text"] = "Words the screenplay never had."
+    line["t"] = 11
+    assert _review_tl(_sample(), tl) == [
+        "narration dad, line 1: starts at 11s, after the timeline ends at 10.65s; "
+        "start the line earlier in its shot or shorten it, so it is spoken while the shot plays"
+    ]
+
+
+# --------------------------------------------------------------------------- format
+
+
+def test_every_timeline_warning_is_one_line_in_where_problem_fix_form():
+    tl = _timeline()
+    _scrub(tl).update({"from": -1, "to": -1, "targets": ["prop:ghost"]})
+    tl["tracks"] = [t for t in tl["tracks"] if t["target"] != "puppet:dad"]
+    tl["shots"][0].update(start=11, actionStart=12.2, end=14)
+    _line(tl, "dad", 1)["t"] = -3
+    _line(tl, "mom", 3)["words"][1]["t"] = 30
+    warnings = _review_tl(_sample(), tl)
+    assert len(warnings) == 7
     for w in warnings:
         assert "\n" not in w
         where, _, rest = w.partition(": ")
