@@ -119,3 +119,26 @@ def get_users(db: Database, user_ids: list[str]) -> list[schemas.User]:
         for doc in db[COLLECTION].find({"_id": {"$in": ids}}, {"passwordHash": 0})
     }
     return [found[uid] for uid in ids if uid in found]
+
+
+def delete_users(db: Database, *, emails: list[str], user_ids: list[str]) -> int:
+    """Delete the accounts whose email (normalized as stored) or id is listed. Returns the count.
+
+    Malformed emails and blank ids are ignored. With nothing left to match, nothing is
+    deleted and 0 is returned, so an empty filter can never wipe the collection.
+    """
+    normalized: list[str] = []
+    for email in emails:
+        try:
+            normalized.append(normalize_email(email))
+        except ValueError:
+            continue
+    ids = [uid for uid in user_ids if isinstance(uid, str) and uid.strip()]
+    clauses: list[dict[str, Any]] = []
+    if normalized:
+        clauses.append({"email": {"$in": list(dict.fromkeys(normalized))}})
+    if ids:
+        clauses.append({"_id": {"$in": list(dict.fromkeys(ids))}})
+    if not clauses:
+        return 0
+    return db[COLLECTION].delete_many({"$or": clauses}).deleted_count

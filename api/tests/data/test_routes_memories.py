@@ -415,6 +415,37 @@ def test_submit_start_run_failure_is_503_and_photos_deleted(env):
     assert _all_media(env.db) == []
 
 
+def test_submit_to_a_moment_without_a_scene_is_409_and_photos_deleted(env):
+    """The studio refuses (LookupError) a memory the route found: it has no scene to add to."""
+    env.fake.start_error = LookupError("memory 'm' not found, or it has no scene yet")
+    files = [("photos", ("a.png", PNG_1, "image/png")), ("photos", ("b.png", PNG_2, "image/png"))]
+    res = _submit(env.a, env.fam_a.id, {"text": "x", "year": "1962", "memoryId": env.memory_a.id}, files)
+    assert res.status_code == 409
+    assert res.json() == {"detail": "This moment has no scene yet, so another telling cannot be added to it"}
+    assert res.json()["detail"] == memories_routes.NO_SCENE
+    assert len(env.fake.started) == 1 and len(env.fake.started[0][4]) == 2
+    assert _all_media(env.db) == []
+
+
+def test_submit_lookup_error_without_memory_id_stays_404(env):
+    env.fake.start_error = LookupError("something the studio could not find")
+    res = _submit(env.a, env.fam_a.id, files=[("photos", ("a.png", PNG_1, "image/png"))])
+    assert res.status_code == 404
+    assert res.json() == {"detail": "Memory not found"}
+    assert len(env.fake.started) == 1
+    assert _all_media(env.db) == []
+
+
+def test_submit_unknown_memory_is_404_before_start_run(env):
+    env.fake.start_error = LookupError("must not be reached")
+    files = [("photos", ("a.png", PNG_1, "image/png"))]
+    res = _submit(env.a, env.fam_a.id, {"text": "x", "year": "1990", "memoryId": "no_such_memory"}, files)
+    assert res.status_code == 404
+    assert res.json() == {"detail": "Memory not found"}
+    assert env.fake.calls == 0
+    assert _all_media(env.db) == []
+
+
 def test_submit_without_agent_module_is_503(env, monkeypatch):
     monkeypatch.setitem(sys.modules, "agent.runs", None)  # import raises ImportError
     res = _submit(env.a, env.fam_a.id, files=[("photos", ("a.png", PNG_1, "image/png"))])
@@ -781,6 +812,16 @@ def test_real_submit_errors_delete_photos(env, real, exc, code, detail):
     photo_ids = real.started[0][4]
     assert all(media_db.get_media(env.db, env.fam_a.id, pid) is None for pid in photo_ids)
     assert len(_all_media(env.db)) == 0  # and both were deleted when it failed
+
+
+def test_real_memory_not_found_for_a_found_memory_is_409(env, real):
+    real.start_error = MemoryNotFound(f"memory {env.memory_a.id!r} not found, or it has no scene yet")
+    files = [("photos", ("a.png", PNG_1, "image/png"))]
+    res = _submit(env.a, env.fam_a.id, {"text": "x", "year": "1962", "memoryId": env.memory_a.id}, files)
+    assert res.status_code == 409
+    assert res.json() == {"detail": memories_routes.NO_SCENE}
+    assert len(real.started) == 1
+    assert _all_media(env.db) == []
 
 
 # ------------------------------------------------------------------------------ cross-family

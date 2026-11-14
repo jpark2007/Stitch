@@ -18,7 +18,7 @@ from db import props as props_db
 from db import users as users_db
 from screenplay.schema import VOCABULARY
 from seed import demo
-from seed.demo import DEMO_ACCOUNTS, DEMO_FAMILY_ID, DEMO_PASSWORD, seed_demo
+from seed.demo import DEMO_ACCOUNTS, DEMO_FAMILY_ID, DEMO_PASSWORD, DEMO_PERSON_IDS, seed_demo
 from seed.fake import install_fake_db
 
 REPO_DIR = Path(__file__).resolve().parents[3]
@@ -191,13 +191,39 @@ def test_sample_props_and_sets_are_in_the_demo_family(seeded):
     assert [p.id for p in props_db.list_props(mdb, DEMO_FAMILY_ID)] == ["hymn_books"]
 
 
+SAM_QUESTION = "Mom and Dad met on the church steps. What's the version of that day you grew up hearing?"
+ANA_QUESTION = "What do you remember about the day Lily was born?"
+
+
 def test_open_questions_for_mom_and_sam(seeded):
     mdb, _ = seeded
-    for pid in ("mom", "sam"):
-        questions = memories_db.open_questions(mdb, DEMO_FAMILY_ID, pid)
-        assert len(questions) == 1 and questions[0].status == "open"
-        assert questions[0].memory_id in set(demo.DEMO_MEMORY_IDS)
+    sam = memories_db.open_questions(mdb, DEMO_FAMILY_ID, "sam")
+    ana = memories_db.open_questions(mdb, DEMO_FAMILY_ID, "mom")
+    assert [(q.text, q.memory_id, q.status) for q in sam] == [(SAM_QUESTION, demo.HYMN_MEMORY_ID, "open")]
+    assert [(q.text, q.memory_id, q.status) for q in ana] == [(ANA_QUESTION, None, "open")]
     assert mdb.questions.count_documents({}) == 2
+
+
+def test_every_question_with_a_memory_points_at_a_scene(seeded):
+    """Regression: the real studio raises MemoryNotFound for a memory with no scene, so a
+    seeded question aimed at one gave a 404 (now 409) when answered on stage."""
+    mdb, _ = seeded
+    questions = [q for pid in DEMO_PERSON_IDS for q in memories_db.open_questions(mdb, DEMO_FAMILY_ID, pid)]
+    assert len(questions) == 2
+    targeted = [q for q in questions if q.memory_id is not None]
+    assert targeted  # the church-steps question adds to the hymn-book scene
+    for question in targeted:
+        memory = memories_db.get_memory(mdb, DEMO_FAMILY_ID, question.memory_id)
+        assert memory is not None, question.memory_id
+        assert memory.screenplay is not None and memory.timeline is not None, question.memory_id
+
+
+def test_seed_source_has_no_raw_collection_access():
+    """ARCHITECTURE section 7: only db/ talks to MongoDB. The seed calls db/ functions."""
+    source = Path(demo.__file__).read_text()
+    assert 'db["' not in source
+    assert "db['" not in source
+    assert ".delete_many(" not in source and ".find(" not in source
 
 
 def test_demo_photos_are_family_scoped_pngs(seeded):
@@ -277,6 +303,43 @@ def test_reset_rebuilds_without_touching_other_families(seeded):
     for pid in (pid for t in trip.tellings for pid in t.photo_ids):
         assert media_db.media_exists(mdb, DEMO_FAMILY_ID, pid)
     assert mdb[media_db.INLINE].count_documents({"metadata.familyId": DEMO_FAMILY_ID}) == 2
+
+
+def _non_demo_snapshot(mdb, other_family: str) -> dict[str, list]:
+    """Every document outside the demo: other users, the other family and all its data."""
+    by_id = {"sort": [("_id", 1)]}
+    return {
+        "users": list(mdb.users.find({"_id": {"$nin": list(demo.DEMO_USER_IDS)}}, **by_id)),
+        "families": list(mdb.families.find({"_id": {"$ne": DEMO_FAMILY_ID}}, **by_id)),
+        **{c: list(mdb[c].find({"familyId": other_family}, **by_id))
+           for c in ("people", "memories", "questions", "props", "sets")},
+        "media": list(mdb[media_db.INLINE].find({"metadata.familyId": {"$ne": DEMO_FAMILY_ID}}, **by_id)),
+    }
+
+
+def test_reset_twice_is_idempotent_and_leaves_other_data_alone(seeded):
+    mdb, _ = seeded
+    other_user, other_family = _other_family(mdb)
+    users_db.create_user(mdb, email="loner@example.com", password_hash="x", name="Loner")  # in no family
+    before = _non_demo_snapshot(mdb, other_family)
+    assert len(before["users"]) == 2 and all(before[c] for c in before)
+
+    def demo_ids() -> dict[str, list[str]]:  # questions get fresh ids on every build
+        return {c: sorted(d["_id"] for d in mdb[c].find({"familyId": DEMO_FAMILY_ID}, {"_id": 1}))
+                for c in ("people", "memories", "props", "sets")}
+
+    first = seed_demo(mdb, reset=True)
+    after_first, ids_first = counts(mdb), demo_ids()
+    second = seed_demo(mdb, reset=True)
+
+    assert first.created is True and second.created is True
+    assert counts(mdb) == after_first
+    assert demo_ids() == ids_first
+    assert mdb.questions.count_documents({"familyId": DEMO_FAMILY_ID}) == 2
+    assert mdb.users.count_documents({"_id": {"$in": list(demo.DEMO_USER_IDS)}}) == 3
+    assert mdb[media_db.INLINE].count_documents({"metadata.familyId": DEMO_FAMILY_ID}) == 2
+    assert _non_demo_snapshot(mdb, other_family) == before
+    assert users_db.get_user(mdb, other_user) is not None
 
 
 def test_interrupted_seed_is_cleaned_up_on_the_next_run(mdb):

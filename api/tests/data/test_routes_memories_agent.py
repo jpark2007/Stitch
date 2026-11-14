@@ -633,10 +633,11 @@ def test_submit_errors_from_the_real_seam_delete_the_photos(world: World, monkey
         assert w.media_ids() == before
 
         # A memory with no scene yet: the real start_run raises MemoryNotFound after the
-        # photos were stored; 404, and the photos are gone again.
+        # photos were stored; 409 (the route found the memory, so it is the scene that is
+        # missing), and the photos are gone again.
         res = await w.submit(photos=2, memoryId=NO_SCENE_MEMORY)
-        assert res.status_code == 404
-        assert res.json() == {"detail": "Memory not found"}
+        assert res.status_code == 409
+        assert res.json() == {"detail": memories_routes.NO_SCENE}
         assert w.media_ids() == before
 
         # A memory of another family: 404 too (the route's own family check).

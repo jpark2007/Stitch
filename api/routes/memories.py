@@ -15,7 +15,10 @@ that importing this module, and serving read routes, never imports the agent pac
   photo_ids: list[str]) -> str` returns the run id at once (the run continues on the
   agent's own worker), so it is called on the event loop (and awaited if it returns an
   awaitable). It raises ValueError when the person is not in the family (422) and
-  `MemoryNotFound(LookupError)` when `memory_id` is missing or has no scene yet (404).
+  `MemoryNotFound(LookupError)` when `memory_id` is missing or has no scene yet. The
+  route checks `memory_id` itself first (404 "Memory not found" for an unknown or
+  other-family memory, before start_run), so a LookupError for a memory it found means
+  the moment has no scene: 409 NO_SCENE. A LookupError with no `memory_id` stays 404.
   Anything else, including the plain RuntimeError `get_manager()` raises when no run
   manager is configured, is 503 START_FAILED. Stored photos are deleted on every failure.
 - `stream_run(family_id, run_id) -> AsyncIterator[(event name, model)]` is called and
@@ -80,6 +83,7 @@ HEARTBEAT_SECONDS: float = 15.0
 FIRST_EVENT_WAIT: float = 0.5
 
 NO_PERSON = "Add or claim your person in this family first"
+NO_SCENE = "This moment has no scene yet, so another telling cannot be added to it"
 START_FAILED = "Could not start the studio"
 STUDIO_UNAVAILABLE = "The studio is unavailable"
 RUN_NOT_FOUND = "Run not found"
@@ -269,6 +273,10 @@ async def submit_memory(
         await _delete_media(db, fid, photo_ids)
         if isinstance(exc, LookupError):
             log.info("start_run for family %s: %s", fid, exc)
+            if fields.memory_id is not None:
+                # Step 2 found this memory in the family, so the studio refused the moment
+                # itself: it can only add a telling to a memory that has a scene.
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=NO_SCENE) from None
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found") from None
         if isinstance(exc, ValueError):
             log.info("start_run for family %s refused the submit: %s", fid, exc)
