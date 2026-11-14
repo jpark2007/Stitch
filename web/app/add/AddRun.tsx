@@ -7,12 +7,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 
 import { ButtonLink } from "@/components/flow/Button";
 import { makeRunSource, RUN_OPTIONS } from "@/components/flow/client";
-import { RUN_GONE_MESSAGE, withRunGone } from "@/components/flow/addPage";
+import { forgetOpenRun, markRunWaiting, RUN_GONE_MESSAGE, withRunGone } from "@/components/flow/addPage";
 import { FlowPage } from "@/components/flow/FlowPage";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { MemoryRun, SCRIPT_FOCUS_QUIET, type MemoryRunTelling } from "@/components/flow/MemoryRun";
+import type { OpenRunProgress } from "@/components/flow/memoryRunState";
 import { hrefs } from "@/components/flow/session";
 import { isMockMode, type StitchApi } from "@/lib/api";
+
+import { sessionStore } from "./parts";
 
 function prefersReducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -33,7 +36,22 @@ export function AddRun(props: {
   // A run the server no longer knows (a stale ?run= link) gets its own way
   // forward instead of the feed, whose Retry could only meet the same 404.
   const [gone, setGone] = useState(false);
-  const markGone = useCallback(() => setGone(true), []);
+  const markGone = useCallback(() => {
+    forgetOpenRun(sessionStore(), runId);
+    setGone(true);
+  }, [runId]);
+
+  // This tab's record of its open runs follows the run: what it waits on the
+  // person for, and gone once it is over. Leaving mid-pause is fine: /add
+  // shows the way back while the record says it waits.
+  const onProgress = useCallback(
+    (progress: OpenRunProgress) => {
+      const store = sessionStore();
+      if (progress === "over") forgetOpenRun(store, runId);
+      else markRunWaiting(store, runId, progress === "working" ? null : progress);
+    },
+    [runId],
+  );
 
   // One source per run: a new object would reset the feed and reconnect.
   const source = useMemo(
@@ -107,6 +125,7 @@ export function AddRun(props: {
             watchHref={watchHref}
             addAnotherHref={hrefs.add({ familyId: fid })}
             onTellAgain={onTellAgain}
+            onProgress={onProgress}
           />
         )}
       </FlowPage>

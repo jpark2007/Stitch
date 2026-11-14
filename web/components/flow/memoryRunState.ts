@@ -63,6 +63,37 @@ export function addAnotherHrefFor(
 }
 
 /**
+ * What the tab's record of this open run should say now (see
+ * addPage.ts rememberOpenRun): "over" once it is done or ended with its own
+ * error (forget it), the card it waits on while paused ("followup", "props",
+ * "merge"), "working" while it runs on its own. Null changes nothing: still
+ * connecting, reconnecting, or a connection that gave up (the run itself may
+ * still be waiting; a later visit can find out).
+ */
+export type OpenRunProgress = "over" | "working" | "followup" | "props" | "merge";
+
+export function openRunProgress(
+  s: Pick<RunState, "phase" | "pending" | "errorFrom">,
+): OpenRunProgress | null {
+  switch (s.phase) {
+    case "done":
+      return "over";
+    case "error":
+      return s.errorFrom === "run" ? "over" : null;
+    case "waiting": {
+      const card = pendingCard(s);
+      if (card === "answer") return "followup";
+      return card ?? null;
+    }
+    case "running":
+    case "scene_ready":
+      return "working";
+    default:
+      return null;
+  }
+}
+
+/**
  * "Tell it again" shows only when the run ended with its own error: replaying
  * the run (all a reconnect can do) brings that error straight back, so the way
  * on is to send the story again. A connection that gave up keeps the feed's

@@ -742,6 +742,214 @@ export function withRunGone(
 }
 
 // ---------------------------------------------------------------------------
+// Open runs: the runs started in this tab that have not finished, kept in
+// sessionStorage next to their telling slips, so /add can bring the person
+// back to one that is waiting on them (a follow-up, a prop review, a merge)
+// after they left it. These helpers never throw.
+
+/** sessionStorage key: every open run of this tab, by run id. */
+export const OPEN_RUNS_KEY = "stitch.openRuns";
+
+/** What an open run is waiting on the person for; null while it works on its own. */
+export type RunWaitKind = "followup" | "props" | "merge";
+
+const WAIT_KINDS: readonly RunWaitKind[] = ["followup", "props", "merge"];
+
+/** The most open runs kept; the oldest are dropped first. */
+export const OPEN_RUNS_MAX = 20;
+
+/** A run started in this tab and not yet over. */
+export interface OpenRun {
+  familyId: string;
+  runId: string;
+  /** The moment's title for a second telling; null for a new memory (not named yet). */
+  title: string | null;
+  /** When it started, in ms since the epoch. */
+  startedAt: number;
+  waiting: RunWaitKind | null;
+}
+
+type OpenRunStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function readOpenRunMap(storage: Pick<Storage, "getItem"> | null): Record<string, unknown> {
+  if (!storage) return {};
+  let raw: string | null;
+  try {
+    raw = storage.getItem(OPEN_RUNS_KEY);
+  } catch {
+    return {};
+  }
+  if (typeof raw !== "string" || !raw) return {};
+  try {
+    const o: unknown = JSON.parse(raw);
+    return typeof o === "object" && o !== null && !Array.isArray(o) ? (o as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeOpenRunMap(storage: OpenRunStore, map: Record<string, unknown>): void {
+  if (Object.keys(map).length === 0) storage.removeItem(OPEN_RUNS_KEY);
+  else storage.setItem(OPEN_RUNS_KEY, JSON.stringify(map));
+}
+
+/** One stored entry, checked; null when it is not an open run. */
+function openRunOf(runId: string, v: unknown): OpenRun | null {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.familyId !== "string" || !o.familyId) return null;
+  if (typeof o.startedAt !== "number" || !Number.isFinite(o.startedAt)) return null;
+  const title = typeof o.title === "string" && o.title.trim() ? o.title.trim() : null;
+  const waiting = WAIT_KINDS.includes(o.waiting as RunWaitKind) ? (o.waiting as RunWaitKind) : null;
+  return { familyId: o.familyId, runId, title, startedAt: o.startedAt, waiting };
+}
+
+/** Keeps run `r.runId` as open (not waiting yet), replacing any record of it. */
+export function rememberOpenRun(
+  storage: OpenRunStore | null,
+  r: { familyId: string; runId: string; title: string | null; startedAt: number },
+): void {
+  if (!storage || !r.runId || !r.familyId) return;
+  try {
+    const map = readOpenRunMap(storage);
+    const title = typeof r.title === "string" && r.title.trim() ? r.title.trim() : null;
+    map[r.runId] = {
+      familyId: r.familyId,
+      title,
+      startedAt: Number.isFinite(r.startedAt) ? r.startedAt : 0,
+      waiting: null,
+    };
+    // Only the newest are kept: a tab that starts many runs never grows this without end.
+    const ids = Object.keys(map);
+    if (ids.length > OPEN_RUNS_MAX) {
+      const byAge = ids
+        .map((id) => ({ id, at: openRunOf(id, map[id])?.startedAt ?? -Infinity }))
+        .sort((a, b) => b.at - a.at);
+      for (const { id } of byAge.slice(OPEN_RUNS_MAX)) delete map[id];
+    }
+    writeOpenRunMap(storage, map);
+  } catch {
+    // Not kept: /add will not offer a way back to it.
+  }
+}
+
+/**
+ * Says what open run `runId` is waiting on (null: nothing, it is working). A
+ * run this tab does not remember is left alone: it was never started here,
+ * or it is already over.
+ */
+export function markRunWaiting(storage: OpenRunStore | null, runId: string, kind: RunWaitKind | null): void {
+  if (!storage || !runId) return;
+  try {
+    const map = readOpenRunMap(storage);
+    const run = openRunOf(runId, map[runId]);
+    if (!run) return;
+    const waiting = kind && WAIT_KINDS.includes(kind) ? kind : null;
+    if (run.waiting === waiting) return;
+    map[runId] = { familyId: run.familyId, title: run.title, startedAt: run.startedAt, waiting };
+    writeOpenRunMap(storage, map);
+  } catch {
+    // Blocked storage: nothing was kept either.
+  }
+}
+
+/** Drops open run `runId` (it finished, failed, or the server no longer knows it). */
+export function forgetOpenRun(storage: OpenRunStore | null, runId: string): void {
+  if (!storage || !runId) return;
+  try {
+    const map = readOpenRunMap(storage);
+    if (!(runId in map)) return;
+    delete map[runId];
+    writeOpenRunMap(storage, map);
+  } catch {
+    // Blocked storage: nothing was kept either.
+  }
+}
+
+/** Family `familyId`'s open runs, newest first. Unreadable entries are skipped. */
+export function openRunsFor(storage: Pick<Storage, "getItem"> | null, familyId: string): OpenRun[] {
+  if (!familyId) return [];
+  const map = readOpenRunMap(storage);
+  const out: OpenRun[] = [];
+  for (const [runId, v] of Object.entries(map)) {
+    const run = openRunOf(runId, v);
+    if (run && run.familyId === familyId) out.push(run);
+  }
+  return out.sort((a, b) => b.startedAt - a.startedAt);
+}
+
+/**
+ * The one open run /add offers to go back to: the newest that is waiting on
+ * the person, else the newest. Null for none.
+ */
+export function runToResume(runs: readonly OpenRun[]): OpenRun | null {
+  return runs.find((r) => r.waiting !== null) ?? runs[0] ?? null;
+}
+
+/** The first `n` words of `text`, with "…" when there were more; null when blank. */
+export function firstWords(text: string | null | undefined, n = 6): string | null {
+  if (typeof text !== "string") return null;
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return null;
+  const head = words.slice(0, n).join(" ");
+  return words.length > n ? `${head.replace(/[.,;:!?]+$/, "")}…` : head;
+}
+
+/**
+ * The calm note above /add's form about an open run: its title (a second
+ * telling's moment), else the first words of the story sent (`storyText`, from
+ * the telling slip), then whether it waits on the person.
+ */
+export function openRunNotice(run: OpenRun, storyText: string | null | undefined): string {
+  const name = run.title ?? firstWords(storyText);
+  const subject = name ? `Your memory ‘${name}’` : "Your memory";
+  return run.waiting ? `${subject} is waiting for your answer.` : `${subject} is still being made.`;
+}
+
+// ---------------------------------------------------------------------------
+// Which family holds a moment
+
+function isNotFound(e: unknown): boolean {
+  return statusOf(e) === 404;
+}
+
+/**
+ * The first family in `familyIds` (in order: the remembered one first) whose
+ * `getMemory` finds the moment, with what it returned. A 404 moves on to the
+ * next family; any other failure rejects. Null when no family has it.
+ */
+export async function findMomentFamily<T>(
+  familyIds: readonly string[],
+  getMemory: (familyId: string) => Promise<T>,
+): Promise<{ familyId: string; memory: T } | null> {
+  for (const familyId of familyIds) {
+    try {
+      const memory = await getMemory(familyId);
+      return { familyId, memory };
+    } catch (e) {
+      if (!isNotFound(e)) throw e;
+    }
+  }
+  return null;
+}
+
+/**
+ * The first of `others` (in order) with an open question for this person,
+ * from what GET /questions gave for each (null where it failed). Null when
+ * nobody elsewhere asked anything.
+ */
+export function familyAsking<F>(
+  others: readonly F[],
+  questions: readonly (readonly unknown[] | null | undefined)[],
+): F | null {
+  for (let i = 0; i < others.length; i++) {
+    const qs = questions[i];
+    if (Array.isArray(qs) && qs.length > 0) return others[i];
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Carrying a draft into a remounted form
 
 /** What the add page carries from one form into the next (photos travel apart). */

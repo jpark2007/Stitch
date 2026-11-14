@@ -68,23 +68,48 @@ function joiner(i: number, n: number): string {
 }
 
 /**
+ * The moment in play on /add (`?memoryId=`) and the family known to hold it.
+ * A switch link to that family keeps the moment; links to the others do not
+ * (a moment belongs to one family).
+ */
+export interface MomentHome {
+  memoryId: string;
+  familyId: string;
+}
+
+/** Another family where someone asked this person something. */
+export interface AskingFamily {
+  id: string;
+  name: string;
+}
+
+/**
  * One quiet line under the title for someone in two or more families: which
  * family the memory goes into and, unless `switchable` is false, a link to
- * each other family's plain form (no moment, no run: a moment belongs to one
- * family). Renders nothing for one family, so that page stays as it was.
- * `onSwitch` is told the family about to be opened, before the page changes,
- * so the form can hand what was typed on to it.
+ * each other family's plain form (no run; no moment, except in the family
+ * `moment` names as holding it). Renders nothing for one family, so that page
+ * stays as it was. `onSwitch` is told the family about to be opened, before
+ * the page changes, so the form can hand what was typed on to it. `asking`
+ * adds a second quiet line under it: someone in that family asked this person
+ * something, with a link to that family's form (where the question waits).
  */
 export function FamilyLine(props: {
   choice: FamilyChoice;
   switchable?: boolean;
   onSwitch?: (familyId: string) => void;
+  moment?: MomentHome | null;
+  asking?: AskingFamily | null;
 }) {
-  const { choice, switchable = true, onSwitch } = props;
+  const { choice, switchable = true, onSwitch, moment = null, asking = null } = props;
   const { current, others, show } = choice;
   if (!show || !current) return null;
   const links = switchable ? others : [];
-  return (
+  const holds = (familyId: string) => moment !== null && moment.familyId === familyId;
+  const hrefFor = (familyId: string) => hrefs.add({ familyId, memoryId: holds(familyId) ? moment?.memoryId : null });
+  // The draft is handed on only to a plain form: the family holding the moment
+  // opens its second telling, which keeps its own draft, so this one stays put.
+  const switchTo = (familyId: string) => (onSwitch && !holds(familyId) ? () => onSwitch(familyId) : undefined);
+  const line = (
     // Stacked on phones (a dot left dangling at the end of a wrapped line reads
     // as a stray mark); one line with a dot between from sm up.
     <div className="flex min-w-0 flex-col gap-y-1 text-[0.9375rem] leading-snug text-ink-soft sm:flex-row sm:flex-wrap sm:items-baseline sm:gap-x-2">
@@ -102,8 +127,8 @@ export function FamilyLine(props: {
               <Fragment key={f.id}>
                 {joiner(i, links.length)}
                 <Link
-                  href={hrefs.add({ familyId: f.id })}
-                  onClick={onSwitch ? () => onSwitch(f.id) : undefined}
+                  href={hrefFor(f.id)}
+                  onClick={switchTo(f.id)}
                   className={SWITCH_LINK}
                 >
                   {f.name}
@@ -115,17 +140,40 @@ export function FamilyLine(props: {
       ) : null}
     </div>
   );
+  if (!asking || !switchable) return line;
+  return (
+    <div className="flex min-w-0 flex-col gap-y-1">
+      {line}
+      <p className="min-w-0 text-[0.9375rem] leading-snug break-words text-ink-soft">
+        Someone in{" "}
+        <Link
+          href={hrefs.add({ familyId: asking.id })}
+          onClick={onSwitch ? () => onSwitch(asking.id) : undefined}
+          aria-label={`${asking.name}: someone there asked you something`}
+          className={SWITCH_LINK}
+        >
+          {asking.name}
+        </Link>{" "}
+        asked you something.
+      </p>
+    </div>
+  );
 }
 
 /**
  * A page lede with the family line above it when there is one to show; the
  * lede alone (unchanged) otherwise.
  */
-export function ledeWithFamily(choice: FamilyChoice, lede?: ReactNode, switchable = true): ReactNode {
+export function ledeWithFamily(
+  choice: FamilyChoice,
+  lede?: ReactNode,
+  switchable = true,
+  moment: MomentHome | null = null,
+): ReactNode {
   if (!choice.show || !choice.current) return lede;
   return (
     <>
-      <FamilyLine choice={choice} switchable={switchable} />
+      <FamilyLine choice={choice} switchable={switchable} moment={moment} />
       {lede == null || lede === false ? null : <p className="mt-3 text-pretty">{lede}</p>}
     </>
   );
@@ -138,14 +186,16 @@ export function ledeWithFamily(choice: FamilyChoice, lede?: ReactNode, switchabl
 export function FamilyLede(props: {
   choice: FamilyChoice;
   onSwitch?: (familyId: string) => void;
+  moment?: MomentHome | null;
+  asking?: AskingFamily | null;
   children?: ReactNode;
 }) {
-  const { choice, onSwitch, children } = props;
+  const { choice, onSwitch, moment = null, asking = null, children } = props;
   const lede = children == null || children === false ? null : <p className="text-pretty">{children}</p>;
   if (!choice.show || !choice.current) return lede;
   return (
     <>
-      <FamilyLine choice={choice} onSwitch={onSwitch} />
+      <FamilyLine choice={choice} onSwitch={onSwitch} moment={moment} asking={asking} />
       {lede ? <div className="mt-3">{lede}</div> : null}
     </>
   );

@@ -17,7 +17,16 @@ import { draftPauseKey } from "@/components/agent/answerDraft";
 import { errorRecovery } from "@/components/agent/feedView";
 
 import { Button, ButtonLink } from "./Button";
-import { addAnotherHrefFor, pendingCard, pendingKey, sceneHrefFor, tellAgainFor, watchHrefFor } from "./memoryRunState";
+import {
+  addAnotherHrefFor,
+  openRunProgress,
+  pendingCard,
+  pendingKey,
+  sceneHrefFor,
+  tellAgainFor,
+  watchHrefFor,
+  type OpenRunProgress,
+} from "./memoryRunState";
 import { hrefs } from "./session";
 import { TellingNote } from "./TellingNote";
 
@@ -80,11 +89,33 @@ export function MemoryRun(props: {
    * error (a reconnect would only replay that error).
    */
   onTellAgain?: () => void;
+  /**
+   * Told each time the run starts or stops waiting on the person, and once
+   * when it is over (see openRunProgress), so the page can keep its record of
+   * open runs current.
+   */
+  onProgress?: (progress: OpenRunProgress) => void;
 }) {
-  const { source, options, runKey, telling, mediaUrl, sceneHref, watchHref, onUploadPhoto, addAnotherHref, onTellAgain } =
-    props;
+  const {
+    source,
+    options,
+    runKey,
+    telling,
+    mediaUrl,
+    sceneHref,
+    watchHref,
+    onUploadPhoto,
+    addAnotherHref,
+    onTellAgain,
+    onProgress,
+  } = props;
   const runOptions = useMemo(() => (runKey ? { ...options, runKey } : options), [options, runKey]);
   const { state, answerQuestion, reviewProps, decideMerge, retry } = useAgentRun(source, runOptions);
+
+  const progress = openRunProgress(state);
+  useEffect(() => {
+    if (progress !== null) onProgress?.(progress);
+  }, [progress, onProgress]);
 
   // The card's key is read once per pending input (the reducer keeps the same
   // object for the whole pause), so nothing logged mid-pause can remount the
