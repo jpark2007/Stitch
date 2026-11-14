@@ -121,7 +121,7 @@ function fakeContext(canvas: FakeCanvas) {
 }
 
 class FakePath2D {
-  constructor(..._: unknown[]) {
+  constructor() {
     return new Proxy(this, { get: (t, k) => (k in t ? (t as Record<string | symbol, unknown>)[k] : noop) });
   }
 }
