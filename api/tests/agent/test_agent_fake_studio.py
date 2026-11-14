@@ -48,9 +48,6 @@ MOM_STORY = (
 )
 DAD_STORY = "She dropped every single hymn book. I handed them back, and she would not look at me."
 
-FRAMES_AVAILABLE = wiring.frames_available()
-
-
 class Harness:
     """One RunManager from agent.wiring over one seeded InMemoryRepo, with the fake brain."""
 
@@ -358,8 +355,7 @@ def test_checker_problem_sends_the_director_back_and_recompiles(harnesses: list[
     assert len(studio_compiles) == 2
     director_compiles = h.tool_calls("compile_screenplay", role="director")
     assert len(director_compiles) == 3  # 1 failed + 1 ok while staging, 1 after the fix
-    if FRAMES_AVAILABLE:
-        assert "frames" in names
+    assert "frames" in names
     memory = saved_memory(h, events)
     assert memory.screenplay is not None
     # The fix kept the narrator's lines.
