@@ -30,6 +30,13 @@ langchain (1.5):
 `answer_to_resume` turns the family's AnswerRequest into the resume payload for that same
 interrupt, so agent/runs.py only has to call these two.
 
+The middleware pauses on the model's raw tool arguments, before the tool's args schema
+is checked, so a pause can carry arguments the web cannot show (an empty question, a
+prop chip with a size outside the vocabulary). `interrupt_to_event` raises ValueError
+for those, with a short message written for the model; `reject_to_resume` builds the
+payload that refuses the whole pause with that message, so runs.py can hand the call
+back to the model to fix instead of ending the run.
+
 If one model turn gates several calls (say two `ask_teller` calls in parallel), the FIRST
 action request is the one shown to the family; the others are rejected with a note asking
 the model to ask again, one thing at a time.
@@ -44,7 +51,7 @@ from langchain_core.tools import tool
 from pydantic import ValidationError
 
 import schemas
-from screenplay.schema import Model
+from screenplay.schema import VOCABULARY, Model
 
 NO_ANSWER = "no answer given"
 
@@ -145,12 +152,50 @@ def _require_str(args: dict[str, Any], key: str, tool_name: str) -> str:
     return value
 
 
+_PROP_SIZES = ", ".join(VOCABULARY["sizes"])
+
+
+def _chip_problem(error: ValidationError) -> str:
+    """What is wrong with one prop chip, in a few words (never pydantic's own dump)."""
+    problems: list[str] = []
+    for item in error.errors():
+        loc = item.get("loc") or ()
+        field = str(loc[0]) if loc else "chip"
+        kind = item.get("type", "")
+        if field == "size" and kind in ("literal_error", "enum"):
+            problem = f"'size' {item.get('input')!r} is not a prop size; use one of: {_PROP_SIZES}"
+        elif kind == "missing":
+            problem = f"{field!r} is missing"
+        elif kind == "extra_forbidden":
+            problem = f"{field!r} is not a prop chip field"
+        else:
+            problem = f"{field!r} has the wrong type"
+        if problem not in problems:
+            problems.append(problem)
+    return "; ".join(problems) or "it is not a prop chip"
+
+
+def _prop_chips(raw: list[Any]) -> list[schemas.PropChip]:
+    chips: list[schemas.PropChip] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"confirm_props props[{index}] is not an object")
+        try:
+            chips.append(schemas.PropChip.model_validate(item))
+        except ValidationError as e:
+            chip_id = item.get("id")
+            which = f"prop {chip_id!r}" if isinstance(chip_id, str) and chip_id else f"props[{index}]"
+            raise ValueError(f"confirm_props {which}: {_chip_problem(e)}") from None
+    return chips
+
+
 def interrupt_to_event(value: Any) -> tuple[str, Model]:
     """Map one HITL interrupt (value or `Interrupt`) to a run event (name, payload model).
 
     ask_teller -> ("question", QuestionEvent); merge_people -> ("merge", MergeEvent);
     confirm_props -> ("props_found", PropsFoundEvent). Raises ValueError for any other
-    tool or malformed args.
+    tool or malformed args, with a short message the model can act on (for a malformed
+    prop chip: the chip id, the bad field and, for a size, the allowed sizes).
     """
     name, args, _, _ = _pending(value)
     if name == ASK_TELLER:
@@ -165,11 +210,7 @@ def interrupt_to_event(value: Any) -> tuple[str, Model]:
         raw = args.get("props")
         if not isinstance(raw, list):
             raise ValueError("confirm_props args need a 'props' list")
-        try:
-            props = [schemas.PropChip.model_validate(p) for p in raw]
-        except ValidationError as e:
-            raise ValueError(f"confirm_props has a malformed prop: {e}") from e
-        return "props_found", schemas.PropsFoundEvent(props=props)
+        return "props_found", schemas.PropsFoundEvent(props=_prop_chips(raw))
     raise ValueError(f"no run event for tool {name!r}")
 
 
@@ -225,6 +266,29 @@ def answer_to_resume(value: Any, answer: schemas.AnswerRequest) -> dict[str, Any
     return {"decisions": [decision, *rest]}
 
 
+def reject_to_resume(value: Any, message: str) -> Any:
+    """Build the resume payload that rejects every action of the pending interrupt.
+
+    `message` is the rejection reason the model reads (the middleware sends it back as
+    the tool's result, "User rejected the tool call for `<tool>` with reason: <message>").
+    Batched (HITLRequest): {"decisions": [{"type": "reject", "message": message}, ...]},
+    one per action request. Per-call (ToolApprovalRequest): the single reject decision.
+
+    Unlike `answer_to_resume` it does not read the actions' args, so it works on exactly
+    the pauses `interrupt_to_event` refuses. Raises ValueError only when `value` is not a
+    human-in-the-loop interrupt at all. Every gated tool allows "reject" (INTERRUPT_ON).
+    """
+    value = _unwrap(value)
+    decision = {"type": "reject", "message": message}
+    if isinstance(value, dict):
+        if value.get("type") == "tool_approval":
+            return decision
+        actions = value.get("action_requests")
+        if isinstance(actions, list) and actions:
+            return {"decisions": [dict(decision) for _ in actions]}
+    raise ValueError("not a human-in-the-loop interrupt: nothing to reject")
+
+
 __all__ = [
     "ASK_TELLER",
     "CONFIRM_PROPS",
@@ -235,4 +299,5 @@ __all__ = [
     "ask_teller",
     "interrupt_to_event",
     "merge_people",
+    "reject_to_resume",
 ]

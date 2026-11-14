@@ -23,6 +23,7 @@ from agent.tools.ask import (
     ask_teller,
     interrupt_to_event,
     merge_people,
+    reject_to_resume,
 )
 
 _thread_ids = itertools.count()
@@ -271,6 +272,87 @@ def test_mismatched_kind_raises() -> None:
 def test_malformed_or_unknown_interrupts_raise(value: Any) -> None:
     with pytest.raises(ValueError):
         interrupt_to_event(value)
+
+
+def test_a_malformed_prop_chip_gets_a_short_message_naming_the_chip_and_field() -> None:
+    bad = {"id": "hymn_book", "name": "hymn book", "size": "medium"}
+    value = {"action_requests": [{"name": "confirm_props", "args": {"props": [CHIPS[0], bad]}}], "review_configs": []}
+    with pytest.raises(ValueError) as caught:
+        interrupt_to_event(value)
+    message = str(caught.value)
+    assert "'hymn_book'" in message and "'size'" in message and "'medium'" in message
+    for size in schemas.VOCABULARY["sizes"]:
+        assert size in message
+    # Pydantic's own dump never reaches the model (or the family).
+    assert "validation error" not in message.lower()
+    assert "pydantic" not in message.lower() and "errors.pydantic.dev" not in message
+    assert caught.value.__cause__ is None
+    assert len(message) < 200
+
+
+@pytest.mark.parametrize(
+    ("chip", "expected"),
+    [
+        ({"name": "hat", "size": "hand"}, ["props[0]", "'id' is missing"]),
+        ({"id": "hat", "size": "hand", "colour": "red"}, ["prop 'hat'", "'name' is missing", "'colour' is not"]),
+        ({"id": "hat", "name": ["hat"], "size": "hand"}, ["prop 'hat'", "'name' has the wrong type"]),
+        ("hat", ["props[0] is not an object"]),
+    ],
+)
+def test_other_malformed_chips_get_short_messages(chip: Any, expected: list[str]) -> None:
+    value = {"type": "tool_approval", "tool_call_id": "c", "name": "confirm_props", "args": {"props": [chip]},
+             "description": ""}
+    with pytest.raises(ValueError) as caught:
+        interrupt_to_event(value)
+    message = str(caught.value)
+    for part in expected:
+        assert part in message
+    assert "validation error" not in message.lower()
+
+
+def test_reject_to_resume_batched_rejects_every_action() -> None:
+    value = {
+        "action_requests": [
+            {"name": "ask_teller", "args": {"question": "  "}},
+            {"name": "ask_teller", "args": {"question": "Who?"}},
+        ],
+        "review_configs": [],
+    }
+    assert reject_to_resume(value, "fix it") == {
+        "decisions": [{"type": "reject", "message": "fix it"}, {"type": "reject", "message": "fix it"}],
+    }
+
+
+def test_reject_to_resume_per_call_is_one_decision() -> None:
+    value = {"type": "tool_approval", "tool_call_id": "c", "name": "confirm_props", "args": {"props": "x"},
+             "description": ""}
+    assert reject_to_resume(value, "fix it") == {"type": "reject", "message": "fix it"}
+
+
+@pytest.mark.parametrize("value", [None, "ask", {"something": "else"}, {"action_requests": []}])
+def test_reject_to_resume_refuses_what_is_not_a_hitl_pause(value: Any) -> None:
+    with pytest.raises(ValueError):
+        reject_to_resume(value, "fix it")
+
+
+@pytest.mark.parametrize("mode", ["batched", "per_call"])
+def test_a_rejected_pause_reaches_the_model_and_the_tool_never_runs(mode: str) -> None:
+    received_props.clear()
+    bad = call("confirm_props", {"props": [{"id": "hymn_book", "name": "hymn book", "size": "medium"}]})
+    graph, model, config = build([bad, DONE], mode)
+    pending = start(graph, config)
+    with pytest.raises(ValueError) as caught:
+        interrupt_to_event(pending)
+    resume = reject_to_resume(pending, f"not shown to the family: {caught.value}")
+    if mode == "batched":
+        assert resume == {"decisions": [{"type": "reject", "message": f"not shown to the family: {caught.value}"}]}
+    graph.invoke(Command(resume=resume), config)
+
+    assert not graph.get_state(config).interrupts
+    assert received_props == []  # rejected: the tool body never ran
+    (msg,) = tool_messages(model)
+    assert msg.name == "confirm_props"
+    assert "not shown to the family" in msg.content and "hymn_book" in msg.content
 
 
 def test_interrupt_on_decisions() -> None:
