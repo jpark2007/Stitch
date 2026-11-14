@@ -97,8 +97,8 @@ describe("resolveBook", () => {
     assert.deepEqual(calls.remembered, []);
   });
 
-  it("?family= while signed out is signed-out", async () => {
-    const { deps } = harness({
+  it("?family= while signed out is signed-out, from the load alone", async () => {
+    const { deps, calls } = harness({
       me: async () => {
         throw apiError(401);
       },
@@ -107,6 +107,7 @@ describe("resolveBook", () => {
       },
     });
     assert.deepEqual(await s.resolveBook(scope({ family: "f1" }), deps), { kind: "signed-out" });
+    assert.equal(calls.me, 0);
   });
 
   it("signed in without ?family=: the remembered family when it is still theirs", async () => {

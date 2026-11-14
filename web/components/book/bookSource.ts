@@ -106,16 +106,24 @@ export async function resolveBook<T>(scope: BookScope, { api, session, load }: R
 
   if (scope.family) {
     const fid = scope.family;
-    // The link names the family: load from it straight away, and ask /me
-    // alongside only to know whether it is one of the user's (to remember).
-    const [me, book] = await Promise.allSettled([api.me(), load(fid)]);
-    if (book.status === "rejected") {
-      if (isAbort(book.reason)) throw book.reason;
-      return resolutionForError(book.reason);
+    // The link names the family: load from it straight away. Then ask /me,
+    // only to know whether it is one of the user's (to remember it, and its
+    // name); a signed-out visitor is told so by the load alone.
+    let data: T;
+    try {
+      data = await load(fid);
+    } catch (e) {
+      if (isAbort(e)) throw e;
+      return resolutionForError(e);
     }
-    const family = me.status === "fulfilled" ? (familiesOf(me.value).find((f) => f.id === fid) ?? null) : null;
+    let family: FamilySummary | null = null;
+    try {
+      family = familiesOf(await api.me()).find((f) => f.id === fid) ?? null;
+    } catch (e) {
+      if (isAbort(e)) throw e;
+    }
     if (family) session.rememberFamily(fid);
-    return { kind: "family", familyId: fid, family, data: book.value };
+    return { kind: "family", familyId: fid, family, data };
   }
 
   let families: FamilySummary[];
