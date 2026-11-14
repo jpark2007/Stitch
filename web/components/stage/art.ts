@@ -127,6 +127,7 @@ export const church: CutoutSpec = {
   aspect: 0.94,
   base: PALETTE.wall,
   seed: 23,
+  crease: true,
   paint(k: PaintKit) {
     const cx = k.aspect / 2;
     // Wings and their roof.

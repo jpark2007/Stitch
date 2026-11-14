@@ -34,6 +34,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import {
   BackSide,
   DoubleSide,
+  Float32BufferAttribute,
   FrontSide,
   MeshStandardMaterial,
   PlaneGeometry,
@@ -222,6 +223,31 @@ export interface SetPieceProps {
 
 const TAB_DEPTH = 0.06;
 
+/**
+ * Shared glue-tab geometry: a unit strip lying on the page, from the fold
+ * (z = 0) back to z = -1, shaded in vertex colours so it reads as folded card:
+ * a crease shadow along the fold, flat card behind it, a faint cut edge.
+ */
+let tabGeometry: BufferGeometry | null = null;
+function getTabGeometry() {
+  if (tabGeometry) return tabGeometry;
+  const g = new PlaneGeometry(1, 1, 1, 10);
+  g.rotateX(-Math.PI / 2);
+  g.translate(0, 0, -0.5);
+  const pos = g.getAttribute("position");
+  const col = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const v = -pos.getZ(i); // 0 at the fold, 1 at the far edge
+    const shade = 1 - 0.3 * Math.exp(-v / 0.1) - 0.07 * smoothstep((v - 0.85) / 0.15);
+    col[i * 3] = shade;
+    col[i * 3 + 1] = shade * 0.99;
+    col[i * 3 + 2] = shade * 0.97;
+  }
+  g.setAttribute("color", new Float32BufferAttribute(col, 3));
+  tabGeometry = g;
+  return g;
+}
+
 type Half = { key: string; plane: BufferGeometry; edge: BufferGeometry; sign: number };
 
 function halfPlane(aspect: number, side: -1 | 0 | 1) {
@@ -293,6 +319,7 @@ export function SetPiece({
     back.alphaToCoverage = true;
     const edge = createCardEdgeMaterial({ color: backColor, darken: 0.12 });
     const tab = createPaperMaterial({ color: backColor, kind: "card", grain: 0.6 });
+    tab.vertexColors = true;
     return { front, back, edge, tab };
   }, [cutout, w, height, backColor]);
   useEffect(() => () => Object.values(materials).forEach((m) => m.dispose()), [materials]);
@@ -340,9 +367,13 @@ export function SetPiece({
     <group position={[x, 0, z]} rotation-y={yaw}>
       {tabs.map((t) => (
         <group key={t.key} rotation-y={t.yaw}>
-          <mesh position={[t.x, 0.0011, -TAB_DEPTH / 2 - thickness * 0.5]} material={materials.tab} receiveShadow>
-            <boxGeometry args={[t.w, 0.002, TAB_DEPTH]} />
-          </mesh>
+          <mesh
+            geometry={getTabGeometry()}
+            material={materials.tab}
+            position={[t.x, 0.0012, -thickness * 0.5]}
+            scale={[t.w, 1, TAB_DEPTH]}
+            receiveShadow
+          />
         </group>
       ))}
       <group ref={hinge}>

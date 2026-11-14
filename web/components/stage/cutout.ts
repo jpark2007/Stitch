@@ -61,6 +61,8 @@ export interface CutoutSpec {
   resolution?: number;
   /** Edge roughness multiplier. Default 1. */
   deckle?: number;
+  /** Score a faint crease down the centre (for V-fold pieces). */
+  crease?: boolean;
   seed?: number;
 }
 
@@ -363,6 +365,17 @@ export function getCutout(spec: CutoutSpec): Cutout {
   col.ctx.fillRect(0, 0, W, H);
   toPixels(col.ctx);
   spec.paint(makeKit(col.ctx, "color", aspect, seed, H));
+  if (spec.crease) {
+    // A scored fold: a soft shadow line with a pale ridge beside it.
+    const cx = aspect / 2;
+    const px = 1 / H;
+    col.ctx.fillStyle = "rgba(70, 44, 26, 0.16)";
+    col.ctx.fillRect(cx - 2.5 * px, 0, 3 * px, 1);
+    col.ctx.fillStyle = "rgba(70, 44, 26, 0.12)";
+    col.ctx.fillRect(cx - 0.6 * px, 0, 1.2 * px, 1);
+    col.ctx.fillStyle = "rgba(255, 250, 240, 0.22)";
+    col.ctx.fillRect(cx + 0.6 * px, 0, 2 * px, 1);
+  }
   col.ctx.setTransform(1, 0, 0, 1, 0, 0);
   const grain = getPaperTextures("card").map.image as CanvasImageSource | undefined;
   if (grain) {
