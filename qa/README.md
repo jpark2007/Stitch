@@ -14,11 +14,12 @@ To run only HTTP transport coverage, use `uv run pytest ../qa/integration -q`;
 to run only Chromium coverage, use `uv run pytest ../qa/e2e -q`.
 The browser tests fail if Chromium is missing; they are not silently skipped.
 
-These three tests launch the actual `api/main.py` startup in a separate uvicorn process,
+Three transport/browser tests launch the actual `api/main.py` startup in a separate uvicorn process,
 using the current Python interpreter. A bound loopback socket is inherited by uvicorn
 to avoid a free-port race. Two tiny local pages provide allowed and disallowed browser
 origins on different ports. Startup, requests and stream reads have deadlines, and
 fixtures stop their processes, browser contexts and HTTP servers even on failure.
+A fourth test verifies the child's dotenv opt-out against synthetic files outside pytest's import guard.
 
 The API process receives an allowlisted environment, a generated disposable JWT secret,
 `STITCH_FAKE_DB=1`, `STITCH_AGENT=fake`, and `COOKIE_SECURE=0`. It does not load `.env`
