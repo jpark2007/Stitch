@@ -24,7 +24,7 @@ import {
   Vector2,
   type Texture,
 } from "three";
-import { BONES, PAGE_H, PAGE_W, SEG, turnTargets, turnTwist } from "./leafShape";
+import { BONES, PAGE_H, PAGE_W, SEG, tiltTargets, turnTargets, turnTwist } from "./leafShape";
 import { LeafSprings, twistTargets } from "./leafSprings";
 import type { BookRuntime } from "./runtime";
 import { FRONT_OFFSET } from "./stacking";
@@ -132,7 +132,7 @@ export class LeafBody {
   /** Skipped while hidden, so its pose may be stale. */
   private hidden = false;
   /** The command the pose was last computed for. */
-  private readonly last = { p: NaN, mode: "", dir: 0, rest: -1, twist: NaN };
+  private readonly last = { p: NaN, mode: "", dir: 0, tilt: false, rest: -1, twist: NaN };
   private front = false;
 
   constructor(
@@ -191,9 +191,19 @@ export class LeafBody {
     const reshown = this.hidden && leaf.mode === "rest";
     this.hidden = false;
 
-    turnTargets(leaf, rt.restR, rt.restL, target);
-    const twist = turnTwist(leaf);
-    twistTargets(twist, twTarget);
+    // A pop-up page under the pointer tilts rigidly about the hinge (p is the
+    // angle / PI), exactly as the controller tilts the stage standing on it:
+    // posed without springs, so sheet and stage never part.
+    const tilt = leaf.mode === "hover" && leaf.tilt;
+    let twist = 0;
+    if (tilt) {
+      tiltTargets(rt.restR, leaf.p * Math.PI, target);
+      twTarget.fill(0);
+    } else {
+      turnTargets(leaf, rt.restR, rt.restL, target);
+      twist = turnTwist(leaf);
+      twistTargets(twist, twTarget);
+    }
 
     // Settled leaves skip all work until their command changes (compared
     // field by field: a string key allocated every frame for every leaf).
@@ -201,6 +211,7 @@ export class LeafBody {
       leaf.p === this.last.p &&
       leaf.mode === this.last.mode &&
       leaf.dir === this.last.dir &&
+      tilt === this.last.tilt &&
       rt.restVersion === this.last.rest &&
       twist === this.last.twist;
     if (this.settled && same) return false;
@@ -208,10 +219,11 @@ export class LeafBody {
     last.p = leaf.p;
     last.mode = leaf.mode;
     last.dir = leaf.dir;
+    last.tilt = tilt;
     last.rest = rt.restVersion;
     last.twist = twist;
 
-    if (leaf.mode === "frozen" || !this.started || reshown) {
+    if (leaf.mode === "frozen" || !this.started || reshown || tilt) {
       springs.snap(target, twTarget, rt.restR, rt.restL);
       this.started = true;
     } else {
