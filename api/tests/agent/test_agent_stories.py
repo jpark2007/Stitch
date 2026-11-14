@@ -12,8 +12,9 @@ Each saved Memory must be a complete storybook scene: a timeline that validates,
 every shot, an explanation for every cast member and prop, a pull tab whose scrub targets have
 tracks, the teller's narration over every shot with a cue and TTS word timings on every line,
 camera moves from shared/vocabulary.json inside their shots (two or more distinct moves when
-the story has more than one shot) that the voiced narration has not left behind (it moves the
-action at most MAX_DRIFT seconds), and no scene_review / timeline review warnings.
+the story has more than one shot), voiced narration that moves no action more than MAX_DRIFT
+seconds from where it was written, and no scene_review / timeline review warnings. That the
+camera cues follow the actions the narration moves is test_agent_cue_camera.py's.
 
 Offline: no keys, no network. Every wait has a timeout.
 """
@@ -46,7 +47,8 @@ WAIT = 30.0
 CAMERA_MOVES = frozenset(VOCABULARY["camera"])
 EPS = 1e-3
 MAX_DRIFT = 1.0
-"""Seconds the voiced narration may move an action from its written time (camera cues stay put)."""
+"""Seconds the voiced narration may move an action from its written time (the shot still plays
+as blocked; the camera cues move with it, see test_agent_cue_camera.py)."""
 
 Event = tuple[str, BaseModel]
 
@@ -341,11 +343,11 @@ def check_scene(story: Story, memory: schemas.Memory, repo: InMemoryRepo) -> Non
         for cue in shot.camera:
             at = ts.action_start + cue.t
             assert ts.start - EPS <= at <= ts.end + EPS, f"{shot.id}: camera {cue.move} at {at} outside {ts.start}..{ts.end}"
-        # The compiler moves cued actions onto their spoken words but leaves camera cues where
-        # they were written, so the narration may move the action only a little.
+        # The compiler moves cued actions onto their spoken words (the compile tool carries the
+        # camera cues along); the shot still plays as blocked only if they move a little.
         retimed = retime_actions(shot, ts.action_start)
         drift = max(abs(new - a.t) for new, a in zip(retimed, shot.actions, strict=True))
-        assert drift <= MAX_DRIFT, f"{shot.id}: the narration moves the action {drift:.2f} s off its camera cues"
+        assert drift <= MAX_DRIFT, f"{shot.id}: the narration moves the action {drift:.2f} s from where it was written"
 
     # Nothing left for the scene review to ask for.
     props = {pid: p for pid in sp.props if (p := repo.get_prop(FAMILY, pid)) is not None}
@@ -428,11 +430,11 @@ def test_a_second_telling_narrates_every_shot_over_the_saved_action(real_compile
     check_tools(studio)
 
 
-def test_review_warns_when_a_cue_would_leave_the_camera_behind() -> None:
-    """A narration cue that moves its action far from where it was written leaves the camera
-    cues framing nothing (the compiler retimes actions, not camera cues): review_cue_drift says
-    where to start the line instead, and compile_screenplay passes it on with its other
-    warnings. The corpus drafts get no such warning (above)."""
+def test_review_warns_when_a_cue_moves_its_action_far_from_where_it_was_written() -> None:
+    """A narration cue that moves its action far from where it was written: the camera cues go
+    with it (agent.tools.cue_camera), but the shot no longer plays as blocked, so
+    review_cue_drift says where to start the line instead, and compile_screenplay passes it on
+    with its other warnings. The corpus drafts get no such warning (above)."""
     ctx = {"teller": "mom", "names": {"mom": "Ana"}, "cast": ["mom"], "setId": "garden",
            "props": [{"id": "watering_can", "name": "watering can", "size": "carried"}]}
     draft = STORY_BUILDERS["one_person"](ctx)
@@ -442,7 +444,7 @@ def test_review_warns_when_a_cue_would_leave_the_camera_behind() -> None:
     (warning,) = review_cue_drift(Screenplay.model_validate(draft))
     assert warning == (
         'shot s1, narration line 1: cue "down_the_row" moves its action 1.15s later than written '
-        "(t=2.1 to t=3.25), but the camera cues keep their times; "
+        "(t=2.1 to t=3.25); "
         "start the line at t=0.85 so its cue word falls at t=2.1"
     )
     compiled = compile_tool._Compiled(CompileResult(ok=True), Screenplay.model_validate(draft))
@@ -457,6 +459,8 @@ def test_review_warns_when_a_cue_would_leave_the_camera_behind() -> None:
     assert "moves its action 1.65s later than written (t=2.1 to t=3.75)" in warning
     assert warning.endswith("cue an earlier word (cueWord), or give the action a later t, so the cue word falls on it")
 
-    # Only the opening wide shot: no camera cue to leave behind.
+    # Only the opening wide shot: the drift is still worth a warning (busy collisions, a
+    # stretched shot), camera move or not.
     shot["camera"] = [{"t": 0, "move": "wide"}]
-    assert review_cue_drift(Screenplay.model_validate(draft)) == []
+    (warning,) = review_cue_drift(Screenplay.model_validate(draft))
+    assert "moves its action 1.65s later than written (t=2.1 to t=3.75)" in warning

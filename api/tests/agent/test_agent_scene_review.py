@@ -1,5 +1,6 @@
 """review_scene: storybook extras the compiler does not require (pageText, explanations,
-pull tabs, narration sources). review_timeline: the same scene checked against its compiled
+pull tabs, narration sources). review_cue_drift: cues that move their action far from where it
+was written. review_timeline: the same scene checked against its compiled
 timeline (scrub ranges, explanation tracks, pageText windows, narration cues). Every check
 asserts its exact warning text."""
 
@@ -14,7 +15,7 @@ import pytest
 import schemas
 from agent.fake_compiler import FakeCompiler
 from agent.tools.compile import SceneInputs, load_compiler
-from agent.tools.scene_review import review_scene, review_timeline
+from agent.tools.scene_review import review_cue_drift, review_scene, review_timeline
 from screenplay.schema import Screenplay, Timeline
 
 REPO = Path(__file__).resolve().parents[3]
@@ -625,3 +626,66 @@ def test_every_timeline_warning_is_one_line_in_where_problem_fix_form():
         assert "\n" not in w
         where, _, rest = w.partition(": ")
         assert where and "; " in rest
+
+
+# ---------------------------------------------------------------------------- cue drift
+
+
+def _drift(data: dict) -> list[str]:
+    return review_cue_drift(Screenplay.model_validate(data))
+
+
+def test_cue_drift_the_sample_has_none():
+    assert _drift(_sample()) == []
+
+
+def test_cue_drift_later_than_written():
+    data = _sample()
+    data["shots"][0]["narration"][1]["t"] = 4.0  # "dropped" (the 4th word) at 4.75, the drop written at 3.25
+    assert _drift(data) == [
+        'shot s1, narration line 2: cue "drop" moves its action 1.5s later than written (t=3.25 to t=4.75); '
+        "start the line at t=2.5 so its cue word falls at t=3.25"
+    ]
+
+
+def test_cue_drift_earlier_than_written():
+    data = _sample()
+    data["shots"][0]["narration"][1]["t"] = 1.0  # "dropped" at 1.75
+    assert _drift(data) == [
+        'shot s1, narration line 2: cue "drop" moves its action 1.5s earlier than written (t=3.25 to t=1.75); '
+        "start the line at t=2.5 so its cue word falls at t=3.25"
+    ]
+
+
+def test_cue_drift_too_early_to_start_the_line_sooner():
+    data = _sample()
+    line = data["shots"][0]["narration"][1]
+    # "dropped" is word 15, 3.5 s into the line: to fall at 3.25 the line would start at -0.25.
+    line.update(t=1.0, text="and then after a long and terrible and silent moment of utter silence she dropped them")
+    (warning,) = _drift(data)
+    assert warning == (
+        'shot s1, narration line 2: cue "drop" moves its action 1.25s later than written (t=3.25 to t=4.5); '
+        "cue an earlier word (cueWord), or give the action a later t, so the cue word falls on it"
+    )
+
+
+def test_cue_drift_within_a_second_is_fine():
+    data = _sample()
+    data["shots"][0]["narration"][1]["t"] = 3.5  # 1.0 s: at the limit, not past it
+    assert _drift(data) == []
+
+
+def test_cue_drift_is_warned_with_or_without_camera_moves():
+    """The camera moves with the action now (agent.tools.cue_camera); the warning is about the
+    shot no longer playing as blocked, so a shot with no camera move gets it too."""
+    data = _sample()
+    data["shots"][0]["narration"][1]["t"] = 4.0
+    data["shots"][0]["camera"] = []
+    (warning,) = _drift(data)
+    assert "camera" not in warning and warning.startswith('shot s1, narration line 2: cue "drop" moves its action')
+
+
+def test_cue_drift_skips_what_the_compiler_reports():
+    data = _sample()
+    data["shots"][0]["narration"][1]["cue"] = "fly"  # cue_unknown_action: a compile error, not a warning
+    assert _drift(data) == []

@@ -6,9 +6,9 @@ one click-to-explain text per cast member and prop, pull tabs that drive real pr
 states, and narration whose words are traceable to a telling.
 
 `review_cue_drift(screenplay)` warns when a default-telling cue moves its action more than
-CUE_DRIFT_SECONDS from where it was written in a shot with camera cues after t=0: the compiler
-moves cued actions onto their words but not the camera cues, which are then left framing a
-beat that has not happened yet.
+CUE_DRIFT_SECONDS from where it was written. The camera cues move with it (the compile tool
+carries them, agent.tools.cue_camera), but a large move still risks busy collisions with the
+other puppets' actions and stretches the shot past what the director planned.
 
 `review_timeline(screenplay, timeline)` checks the compiled timeline, i.e. what the stage will
 actually play: pull-tab scrub ranges that are empty or outside [0, duration], explanations
@@ -37,8 +37,8 @@ from screenplay.schema import Interaction, NarrationLine, Screenplay, Timeline, 
 MAX_PAGE_TEXT_WORDS = 30
 
 CUE_DRIFT_SECONDS = 1.0
-"""How far (seconds) a default-telling cue may move its action before review_scene warns:
-the camera cues stay where they were written."""
+"""How far (seconds) a default-telling cue may move its action before review_cue_drift warns:
+further than that and the shot no longer plays as it was blocked."""
 
 _SOURCE_FIX = 'set source to the telling sentence the words come from, like "telling:<authorId>:s2"'
 
@@ -224,15 +224,13 @@ def review_cue_drift(screenplay: Screenplay) -> list[str]:
     """Warnings for default-telling cues that move their action far from where it was written,
     one line each: '<where>: <problem>; <fix>'.
 
-    The compiler moves a cued action (and the uncued actions after it) onto the cue word, but
-    leaves the shot's camera cues at their written times, so a big move leaves the camera
-    framing a beat that has not happened yet. Only shots with a camera cue after t=0 can be
-    left behind. Bad cues are the compiler's errors, not warnings, so they are skipped here.
+    The compiler moves a cued action (and the uncued actions after it) onto the cue word, and
+    the compile tool moves the camera cues along with them, but a big move still risks busy
+    collisions with actions that did not move and stretches the shot. Bad cues are the
+    compiler's errors, not warnings, so they are skipped here.
     """
     out = []
     for shot in screenplay.shots:
-        if not any(cue.t > 0 for cue in shot.camera):
-            continue
         try:
             retimed = screenplay_narration.retime_actions(shot, 0.0)
         except screenplay_narration.NarrationError:
@@ -259,7 +257,7 @@ def review_cue_drift(screenplay: Screenplay) -> list[str]:
             out.append(
                 f'shot {shot.id}, narration line {i}: cue "{line.cue}" moves its action '
                 f"{_num(round(abs(drift), 2))}s {'later' if drift > 0 else 'earlier'} than written "
-                f"(t={_num(written)} to t={_num(round(moved, 2))}), but the camera cues keep their times; {fix}"
+                f"(t={_num(written)} to t={_num(round(moved, 2))}); {fix}"
             )
     return out
 

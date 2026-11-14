@@ -15,10 +15,16 @@ compile can never be voiced, rendered or saved after the draft stopped compiling
 
 After a successful compile the tool also runs `scene_review.review_scene` (pageText,
 explanations, pull tabs, narration sources), `scene_review.review_cue_drift` (narration cues
-that move their action far from the camera cues) and `scene_review.review_timeline` (scrub ranges,
+that move their action far from where it was written) and `scene_review.review_timeline` (scrub ranges,
 explanation targets, pageText windows and narration cues against the compiled timeline), and
 appends their warnings under the `ok:` summary, writing them to `/scene_review.txt`. Warnings
 never fail a compile and never use a round.
+
+The real compiler is called through `_RealCompilerAdapter`, which compiles
+`cue_camera.carry_camera_cues(screenplay)[0]`: camera cues move with the actions the narration's
+cue words move. The draft file keeps the written times. Each cue moved more than 0.05 s gets a
+line `note: shot <id> camera cue <n> (<move>) moves with its action from t=<a> to t=<b>` right
+under the `ok:` summary (before any warnings); notes need no fix.
 
 The compiler seam
 -----------------
@@ -59,6 +65,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, ValidationError
 
 import schemas
+from agent.tools.cue_camera import carry_camera_cues
 from agent.tools.scene_review import review_cue_drift, review_scene, review_timeline
 from screenplay.schema import CompileError, CompileResult, Screenplay
 
@@ -94,13 +101,19 @@ class Compiler(Protocol):
 
 
 class _RealCompilerAdapter:
-    """Calls `screenplay.compiler.compile(screenplay, sets=..., props=..., people=...)`."""
+    """Calls `screenplay.compiler.compile(carried, sets=..., props=..., people=...)`, where
+    `carried` is `cue_camera.carry_camera_cues(screenplay)[0]`: camera cues follow the actions
+    the narration's cue words move (the compiler itself leaves them at their written times)."""
 
     def __init__(self, fn: Callable[..., CompileResult]) -> None:
         self._fn = fn
 
     def __call__(self, screenplay: Screenplay, scene: SceneInputs) -> CompileResult:
-        result = self._fn(screenplay, sets=scene.sets, props=scene.props, people=scene.people)
+        # The real compiler moves cued actions onto their words but not the camera cues; the
+        # carried copy moves them too. The caller's screenplay (and /screenplay.json) keeps the
+        # written times, so a later recompile maps from them again and never shifts twice.
+        carried, _notes = carry_camera_cues(screenplay)
+        result = self._fn(carried, sets=scene.sets, props=scene.props, people=scene.people)
         if not isinstance(result, CompileResult):
             # Accept a dict or another model with the same shape; keep the contract type.
             data = result.model_dump(mode="json") if isinstance(result, BaseModel) else result
@@ -304,8 +317,22 @@ def _summary(result: CompileResult) -> str:
     return f"ok: {len(tl.shots)} shots, {round(tl.duration, 2):g}s, {len(tl.tracks)} tracks"
 
 
-def _success_text(result: CompileResult, warnings: list[str]) -> str:
+def _camera_notes(compiler: Compiler, compiled: _Compiled | None) -> list[str]:
+    """The `note:` lines for camera cues the real compiler adapter carried with their actions
+    (none for any other compiler: FakeCompiler does not retime anything)."""
+    if not isinstance(compiler, _RealCompilerAdapter) or compiled is None or compiled.screenplay is None:
+        return []
+    try:
+        return carry_camera_cues(compiled.screenplay)[1]
+    except Exception:  # noqa: BLE001 - notes are information; a crash here must not fail a good compile
+        log.exception("camera cue notes crashed")
+        return []
+
+
+def _success_text(result: CompileResult, warnings: list[str], notes: list[str] | None = None) -> str:
     text = _summary(result)
+    for note in notes or []:
+        text += "\n" + note
     if warnings:
         text += "\n" + WARNINGS_HEADER + "".join(f"\n- {w}" for w in warnings)
     return text
@@ -351,7 +378,9 @@ def make_compile_tool(
         /timeline.json and returns "ok: <shots> shots, <duration>s, <tracks> tracks", followed by
         any scene review warnings (missing pageText, explanations, pull tabs, narration sources,
         and timing problems in the compiled timeline; also in /scene_review.txt). Fix those in
-        the draft and compile again; they do not use a round. On failure writes /compile_errors.txt and returns the exact errors, one per line,
+        the draft and compile again; they do not use a round. A `note:` line says a camera cue
+        moved with the action its narration cue moved; it needs no fix. On failure writes
+        /compile_errors.txt and returns the exact errors, one per line,
         plus the round number; fix the draft and call again. After 3 failed rounds it tells you
         to stop.
         """
@@ -387,13 +416,14 @@ def make_compile_tool(
 
         if result.ok and result.timeline is not None:
             warnings = _review(compiled) if compiled is not None else []
+            notes = _camera_notes(compiler, compiled)
             updates = {
                 TIMELINE_PATH: create_file_data(result.timeline.model_dump_json(by_alias=True, indent=1)),
                 ERRORS_PATH: create_file_data(""),
                 LOG_PATH: create_file_data(json.dumps({"rounds": 0})),
                 REVIEW_PATH: create_file_data("".join(f"{w}\n" for w in warnings)),
             }
-            content = _success_text(result, warnings)
+            content = _success_text(result, warnings, notes)
         else:
             if result.ok:  # ok without a timeline is a broken compiler; treat as failure
                 result = CompileResult(

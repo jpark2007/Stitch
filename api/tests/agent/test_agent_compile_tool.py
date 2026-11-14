@@ -186,7 +186,9 @@ def test_load_compiler_uses_the_real_compile_when_present(monkeypatch):
     sp = Screenplay.model_validate(SAMPLE)
     assert compiler(sp, SCENE) is canned
     ((got_sp, sets, props, people),) = calls
-    assert got_sp is sp and sets is SCENE.sets and props is SCENE.props and people is SCENE.people
+    # A carried copy (agent.tools.cue_camera); the sample has no drift, so equal to the draft.
+    assert got_sp == sp and got_sp is not sp
+    assert sets is SCENE.sets and props is SCENE.props and people is SCENE.people
     # and through parse_and_compile the errors come back verbatim
     res = parse_and_compile(SAMPLE_TEXT, compiler, scene_for)
     assert res.errors[0].message == "shot s1, t=1: too far"
@@ -620,3 +622,70 @@ def test_blanked_timeline_reaches_the_studio_through_a_sub_agent():
     assert _timeline_survives(_file_data_reducer(studio, deleted))
     # What the tool does: the blank travels back and replaces the studio's timeline.
     assert not _timeline_survives(_file_data_reducer(studio, director))
+
+
+# ------------------------------------------------------- camera cues carried with their actions
+
+DRIFTING = copy.deepcopy(SAMPLE)
+DRIFTING["shots"][0]["narration"][1]["t"] = 3.3  # "dropped" 0.8 s late: the drop and all after it move 0.8 s
+DRIFTING["shots"][0]["narration"][2]["t"] = 7.15  # "handed" 0.8 s late too
+DOLLY_NOTE = "note: shot s1 camera cue 2 (dolly_to) moves with its action from t=5.5 to t=6.3"
+
+
+def test_real_adapter_compiles_the_carried_copy(monkeypatch):
+    import screenplay.compiler as real
+
+    seen: list[Screenplay] = []
+
+    def spy(screenplay, *, sets, props, people):
+        seen.append(screenplay)
+        return CompileResult(ok=False, errors=[CompileError(code="x", message="stop")])
+
+    monkeypatch.setattr(real, "compile", spy, raising=False)
+    sp = Screenplay.model_validate(DRIFTING)
+    load_compiler()(sp, SCENE)
+    (got,) = seen
+    assert [c.t for c in got.shots[0].camera] == [0, 6.3]
+    assert [c.t for c in sp.shots[0].camera] == [0, 5.5]  # the caller's draft is untouched
+
+
+def test_tool_success_notes_carried_camera_cues_before_warnings():
+    compiler = _real_compiler()
+    draft = copy.deepcopy(DRIFTING)
+    del draft["shots"][0]["pageText"]
+    graph = _graph(compiler)
+    state, events = _call(graph, "notes", 1, files={"/screenplay.json": create_file_data(json.dumps(draft))})
+    tl = Timeline.model_validate_json(_text(state, "/timeline.json"))
+    assert _last_tool_message(state).content.splitlines() == [
+        f"ok: 1 shots, {round(tl.duration, 2):g}s, {len(tl.tracks)} tracks",
+        DOLLY_NOTE,
+        "warnings (fix in /screenplay.json, then compile again; these do not use a compile round):",
+        f"- {NO_PAGE_TEXT_WARNING}",
+    ]
+    assert _text(state, "/scene_review.txt") == NO_PAGE_TEXT_WARNING + "\n"  # notes are not warnings
+    assert _text(state, "/screenplay.json") == json.dumps(draft)  # the draft keeps its written times
+    assert events == []
+
+
+def test_tool_gives_no_notes_on_the_fake_compiler():
+    graph = _graph(FakeCompiler())
+    state, _ = _call(graph, "fake_notes", 1, files={"/screenplay.json": create_file_data(json.dumps(DRIFTING))})
+    assert "note:" not in _last_tool_message(state).content
+
+
+def test_tool_camera_note_crash_does_not_fail_the_compile(monkeypatch):
+    compiler = _real_compiler()
+    calls = {"n": 0}
+    carry = compile_mod.carry_camera_cues
+
+    def flaky(screenplay):  # the adapter's carry works; the note pass crashes
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("note bug")
+        return carry(screenplay)
+
+    monkeypatch.setattr(compile_mod, "carry_camera_cues", flaky)
+    state, _ = _call(_graph(compiler), "note_crash", 1, files={"/screenplay.json": create_file_data(json.dumps(DRIFTING))})
+    assert _last_tool_message(state).content.startswith("ok: ")
+    assert "note:" not in _last_tool_message(state).content
+
