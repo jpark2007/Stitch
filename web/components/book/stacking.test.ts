@@ -12,10 +12,11 @@ import { describe, it } from "node:test";
 
 type Stacking = typeof import("./stacking");
 type Shape = typeof import("./leafShape");
-const stackingPath = "./stacking.ts";
-const shapePath = "./leafShape.ts";
-const s: Stacking = await import(stackingPath);
-const m: Shape = await import(shapePath);
+type Springs = typeof import("./leafSprings");
+const paths = ["./stacking.ts", "./leafShape.ts", "./leafSprings.ts"];
+const s: Stacking = await import(paths[0]);
+const m: Shape = await import(paths[1]);
+const sp: Springs = await import(paths[2]);
 
 interface Sheet {
   p: number;
@@ -24,11 +25,14 @@ interface Sheet {
   to: number;
   visible: boolean;
   front: boolean;
+  /** Where the sheet's free edge was posed (see runtime.ts). */
+  gapL: number;
+  gapR: number;
 }
 
 /** A spread-1 book of six sheets: two turned to the left, four on the right. */
 function book(): Sheet[] {
-  return [1, 1, 0, 0, 0, 0].map((p) => ({ p, mode: "rest", dir: 1, to: p, visible: false, front: false }));
+  return [1, 1, 0, 0, 0, 0].map((p) => ({ p, mode: "rest", dir: 1, to: p, visible: false, front: false, gapL: 2 - 2 * p, gapR: 2 * p }));
 }
 
 /** Lays the stacks out and returns the sheets. */
@@ -60,10 +64,14 @@ describe("stack layers", () => {
     assert.ok(lay(book(), true).every((l) => l.visible));
   });
 
-  /** Sheet `i` in motion. */
-  const moving = (i: number, mode: string, p: number, dir: 1 | -1, to = dir > 0 ? 1 : 0) => {
+  /** Sheet `i` in motion, posed where its command puts it (or at `posedAt`, as its springs trail). */
+  const moving = (i: number, mode: string, p: number, dir: 1 | -1, to = dir > 0 ? 1 : 0, posedAt = p) => {
     const sheets = book();
     Object.assign(sheets[i], { mode, p, dir, to });
+    const springs = new sp.LeafSprings(m.BONES, m.SEG, m.PAGE_H);
+    springs.snap(pose({ ...sheets[i], p: posedAt }, dir, right, left), new Float32Array(m.BONES));
+    sheets[i].gapL = springs.edgeGap(left, true);
+    sheets[i].gapR = springs.edgeGap(right, false);
     return lay(sheets);
   };
 
@@ -95,23 +103,37 @@ describe("stack layers", () => {
   ] as const) {
     it(`hides the stack top under a landing sheet on a ${name} turn (regression)`, () => {
       const to = dir > 0 ? 1 : 0;
-      const at = (along: number) => moving(i, "auto", dir > 0 ? along : 1 - along, dir);
-      for (const along of [1 - s.LANDING_REACH + 0.005, 0.9, 0.95, 0.99, 1]) {
+      const at = (along: number, posed = along) => moving(i, "auto", dir > 0 ? along : 1 - along, dir, to, dir > 0 ? posed : 1 - posed);
+      for (const along of [0.995, 0.999, 1]) {
         const sheets = at(along);
         assert.equal(sheets[stale].visible, false, `stale top hidden ${along} along`);
         assert.ok(sheets[i].visible && sheets[i].front, `landing sheet drawn in front ${along} along`);
         assert.ok(sheets[other].visible, `the other stack keeps its top ${along} along`);
         assert.equal(s.landingOn(sheets[i]), to);
       }
-      for (const along of [0.2, 0.5, 1 - s.LANDING_REACH - 0.01]) {
+      for (const along of [0.2, 0.5, 1 - s.LANDING_REACH - 0.01, 0.95]) {
         assert.ok(at(along)[stale].visible, `stale top still drawn ${along} along, the sheet well clear`);
       }
+    });
+
+    // Regression: a held page swept quickly across reaches the far edge in
+    // command a tenth of a second before its springs bring it down; hiding
+    // the stack top on the command alone blanked the page it was to cover.
+    it(`keeps the stack top while a ${name} sweep's page is still coming down (regression)`, () => {
+      const to = dir > 0 ? 1 : 0;
+      const p = to;
+      for (const posed of [0.5, 0.8, 0.95]) {
+        const sheets = moving(i, "drag", p, dir, to, dir > 0 ? posed : 1 - posed);
+        assert.ok(sheets[stale].visible, `posed ${posed} along: the page under it is drawn`);
+        assert.equal(s.landingOn(sheets[i]), -1);
+      }
+      assert.equal(moving(i, "drag", p, dir, to)[stale].visible, false, "and hidden once the page is down");
     });
   }
 
   it("lands a released sheet that springs back where it came from", () => {
-    // Forward drag let go early: the clock runs it back down onto the right.
-    const sheets = moving(2, "auto", 0.05, 1, 0);
+    // Forward drag let go early: the clock runs it back down onto the right, and it is all but down.
+    const sheets = moving(2, "auto", 0.005, 1, 0);
     assert.equal(s.landingOn(sheets[2]), 0);
     assert.equal(sheets[3].visible, false, "the right stack's top is covered");
     assert.ok(sheets[1].visible, "the left stack's top is untouched");

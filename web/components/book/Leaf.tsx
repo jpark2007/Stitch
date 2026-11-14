@@ -182,6 +182,7 @@ export class LeafBody {
     }
     if (!leaf.visible && this.started) {
       this.hidden = true;
+      leaf.gapL = leaf.gapR = Infinity;
       return false;
     }
     // A sheet back in view on a stack (the stack top again once the sheet
@@ -219,6 +220,9 @@ export class LeafBody {
 
     this.settled = springs.error(target, twTarget) < 2e-4;
     if (this.settled) springs.snap(target, twTarget);
+    // Where the sheet really is, for hiding the stack top it lands on.
+    leaf.gapL = springs.edgeGap(rt.restL, true);
+    leaf.gapR = springs.edgeGap(rt.restR, false);
 
     const { phi, tw } = springs;
     let prev = 0;

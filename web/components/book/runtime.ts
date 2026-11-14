@@ -35,6 +35,13 @@ export interface LeafState {
   dur: number;
   /** Drag springs are stiffer, so the sheet keeps up with the hand. */
   stiff: number;
+  /**
+   * How far (page widths) the free edge, as the leaf last posed it, is from
+   * where it lies on the left / right stack. Written by the leaf; Infinity
+   * until it poses (and while it is hidden).
+   */
+  gapL: number;
+  gapR: number;
 }
 
 export interface BookRuntime {
@@ -68,6 +75,8 @@ export function createLeafState(p: number): LeafState {
     t0: 0,
     dur: 1,
     stiff: 1,
+    gapL: Infinity,
+    gapR: Infinity,
   };
 }
 

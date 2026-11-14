@@ -9,16 +9,23 @@
  * with a small constant depth bias, so the page being turned always shows over
  * the stale one while content standing on it still shows over it.
  *
- * The bias only breaks exact ties. A landing sheet does worse than tie: as
- * the stack thickens under it, its gutter bones come to rest against the
- * stack (clamped to the very same rest shape), and the skinned surface
- * between them, still bending and twisting toward rest, dips a hair below the
- * stack top for a few frames, so the stale page showed through near the
- * gutter. So once a sheet coming down on a stack
- * is within `LANDING_REACH` of it, that stack's top is not drawn at all: the
+ * The bias only breaks exact ties. A landing sheet could do worse than tie:
+ * as the stack thickens under it, its gutter bones come to rest against the
+ * stack, and the skinned surface between them, still bending and twisting
+ * toward rest, dipped a hair below the stack top for a few frames, so the
+ * stale page showed through. The leaf's springs now keep it off the stack
+ * (leafSprings.ts), and as a second guard, once a sheet coming down on a
+ * stack has all but reached it, that stack's top is not drawn at all: the
  * landing sheet already covers it, bar a sliver under its trailing fore-edge
- * where the page block's blank top shows instead (as it does anyway in the
- * frames after the sheet lands while its edge settles).
+ * where the page block's top shows instead (as it does anyway in the frames
+ * after the sheet lands while its edge settles).
+ *
+ * "All but reached" asks two things. The command must be within
+ * `LANDING_REACH` of the stack, and so must the sheet as last posed: its free
+ * edge within `LANDING_GAP` of where it will lie. A held page follows the
+ * pointer, and the springs posing it trail the hand by a tenth of a second,
+ * so on a quick sweep the command arrives while the page still stands
+ * upright; hiding on the command alone blanked the page it was about to cover.
  *
  * Pure (no imports), so the rule is unit-tested in stacking.test.ts.
  */
@@ -32,6 +39,12 @@ export interface StackSheet {
   dir: number;
   /** Where an "auto" turn is headed (0 or 1). */
   to: number;
+  /**
+   * How far (page widths) the sheet's free edge, as last posed, is from
+   * where it lies on the left / right stack (`LeafSprings.edgeGap`).
+   */
+  gapL: number;
+  gapR: number;
 }
 
 export interface SheetLayer {
@@ -40,28 +53,31 @@ export interface SheetLayer {
   front: boolean;
 }
 
-/**
- * How near (in progress) a landing sheet comes to its stack before that
- * stack's top is hidden. Run through the leaf's real springs, a landing sheet
- * first dips below the stack top 0.13 out (clicked, queued, calm, released or
- * held turns, either way, 4 to 14 leaves, 20 to 240 fps; landing.test.ts);
- * this leaves a margin, while the landing sheet's fore-edge still falls short
- * of the stack's by little more than 1% of a page.
- */
+/** How near (in progress) a landing sheet's command must come to its stack. */
 export const LANDING_REACH = 0.2;
 
 /**
- * The stack (1 left, 0 right) a sheet is coming down on and is within
- * `LANDING_REACH` of, or -1. A clicked or released sheet lands where its clock
- * is headed; a held sheet lands on the far side from where it was picked up.
- * Peels and frozen poses never land, and a sheet lifting off is not landing.
+ * How near (page widths) a landing sheet's posed free edge must come to
+ * where it will lie. The strip of page block it can then leave uncovered is
+ * narrower than the page's outer margin (words and photos start 0.096 in),
+ * so nothing on the page under it goes missing early.
+ */
+export const LANDING_GAP = 0.04;
+
+/**
+ * The stack (1 left, 0 right) a sheet is coming down on and has all but
+ * reached (see above), or -1. A clicked or released sheet lands where its
+ * clock is headed; a held sheet lands on the far side from where it was
+ * picked up. Peels and frozen poses never land, and a sheet lifting off is
+ * not landing.
  */
 export function landingOn(s: StackSheet): -1 | 0 | 1 {
   let side: 0 | 1;
   if (s.mode === "auto") side = s.to >= 0.5 ? 1 : 0;
   else if (s.mode === "drag") side = s.dir > 0 ? 1 : 0;
   else return -1;
-  return Math.abs(s.p - side) <= LANDING_REACH ? side : -1;
+  if (Math.abs(s.p - side) > LANDING_REACH) return -1;
+  return (side ? s.gapL : s.gapR) <= LANDING_GAP ? side : -1;
 }
 
 /**
