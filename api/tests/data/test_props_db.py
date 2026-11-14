@@ -386,11 +386,15 @@ def test_keyword_score_tokens_stopwords_plurals():
     assert P._keyword_score("cherries", "cherry", None) == 1.0
     assert P._keyword_score("grandma's kitchen", "Grandmas kitchen", None) == 1.0
     assert P._keyword_score("trumpet", "Trumpet", "a trumpet") > 1.0
-    # -ies plurals of -ie words (cookie, movie) as well as -y words (cherry, lady).
+    # -ies plurals of -ie words (cookie, movie) as well as -y words (cherry, lady), short
+    # -y words included (fly, sky).
     for plural, singular in [("cookies", "cookie"), ("movies", "movie"), ("brownies", "brownie"),
-                             ("ladies", "lady"), ("pies", "pie"), ("keys", "key"),
-                             ("toys", "toy")]:
+                             ("ladies", "lady"), ("pies", "pie"), ("ties", "tie"),
+                             ("keys", "key"), ("toys", "toy"), ("flies", "fly"),
+                             ("skies", "sky"), ("spies", "spy"), ("cries", "cry")]:
         assert P._keyword_score(plural, singular, None) == 1.0, plural
+    assert P._keyword_score("skies", "ski", None) == 0
+    assert P._keyword_score("fly", "flies", None) == 1.0
     assert P._keyword_score("cookies", "Cookie tin", None) > 0
     assert P._keyword_score("cookie", "Cooking pot", None) == 0
     # Description-only matches count, but less than name matches.
@@ -569,6 +573,25 @@ def test_find_props_vector_path_never_hides_props_without_embedding(mdb):
     assert "embedding" not in mdb.props.find_one({"_id": case.id})
     found = P.find_props(fake, FAM_A, "trumpet case", vector=[1.0, 0.0])
     assert [p.id for p in found][:2] == [case.id, banjo.id]
+
+
+def test_find_props_name_overlap_beats_description_only_vector_hits(mdb):
+    # 'Trumpet case' has no embedding (seeded offline); five other props do, and each
+    # shares only the word 'old' with the query, through its description.
+    case = P.insert_prop(mdb, FAM_A, make_prop("Trumpet case", "black case"))
+    for name in ["Radio", "Clock", "Lamp", "Chair", "Banjo"]:
+        P.insert_prop(mdb, FAM_A, make_prop(name, f"an old {name.lower()}"), embedding=[1.0, 0.0])
+    fake = _FakeVectorDB(mdb)
+    q = "the old trumpet case"
+    assert P.find_props(mdb, FAM_A, q)[0] == case  # keyword path
+    for limit in (1, 3, 5):
+        found = P.find_props(fake, FAM_A, q, vector=[1.0, 0.0], limit=limit)
+        assert found[0] == case, limit
+        assert len(found) == limit
+    # Among equal keyword scores the vector rank decides.
+    near = P.insert_prop(mdb, FAM_A, make_prop("Horn", "an old horn"), embedding=[0.0, 1.0])
+    found = P.find_props(fake, FAM_A, q, vector=[0.0, 1.0], limit=3)
+    assert [p.id for p in found][:2] == [case.id, near.id]
 
 
 def test_find_props_exact_name_beats_nearer_vector_hit(mdb):

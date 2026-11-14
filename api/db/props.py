@@ -168,17 +168,16 @@ def _stem(token: str) -> str:
     """Very small plural stripper: books -> book, glasses -> glass, boxes -> box, keys -> key.
 
     Singular and plural map to the same stem, which need not be a word: '-ies' plurals
-    can come from '-y' (cherries, cherry) or from '-ie' (cookies, cookie), so all three
-    endings fold to '-i' (cherri, cooki). Tokens in other scripts pass through unchanged.
+    can come from '-y' (cherries, flies) or from '-ie' (cookies, cookie), so '-ies' and
+    '-ie' both fold to '-y' (cherry, fly, cooky) and '-y' words stay as they are, short
+    ones included (fly, sky). Tokens in other scripts pass through unchanged.
     """
+    if token.endswith("ies") and len(token) > 4 and token[-4] not in _VOWELS:
+        return token[:-3] + "y"  # cherries, flies, cookies -> cherry, fly, cooky
     if len(token) <= 3:
-        return token
-    if token.endswith("ies") and len(token) > 4:
-        return token[:-2]  # cherries, cookies -> cherri, cooki
-    if token.endswith("ie"):
-        return token[:-1]  # cookie -> cooki
-    if token.endswith("y") and token[-2] not in _VOWELS:
-        return token[:-1] + "i"  # cherry -> cherri (but key, toy stay)
+        return token  # fly, pie, tie, gas
+    if token.endswith("ie") and token[-3] not in _VOWELS:
+        return token[:-2] + "y"  # cookie, movie -> cooky, movy
     if token.endswith(("sses", "xes", "zes", "ches", "shes")):
         return token[:-2]
     if token.endswith("s") and not token.endswith(("ss", "us", "is")):
@@ -264,23 +263,30 @@ def _keyword_scored(text: str, candidates: list[M]) -> list[tuple[float, M]]:
 def _merge(keyword: list[tuple[float, M]], hits: list[M], text: str, limit: int) -> list[M]:
     """Rank the union of keyword matches and vector hits, so neither path hides the other.
 
-    Tiers, each deduplicated by id:
-      1. exact name matches (keyword score >= 1), best first;
-      2. vector hits that also share a word with the query, nearest first;
-      3. other keyword matches, best first. These include saved items with no stored
-         embedding (seeded offline, or whose description changed), which vector search
-         cannot see;
-      4. vector hits with no word in common, nearest first. These are the semantic-only
-         matches (a cornet for "trumpet"), kept last because a nearest neighbour is
-         returned even when nothing is related.
+    1. Everything that shares a word with the query, vector hit or not, ranked by
+       keyword score (exact name matches first, then name overlap above description-only
+       overlap), with the vector rank breaking ties. A vector hit gets no boost beyond
+       that, so a saved item with no stored embedding (seeded offline, or whose
+       description changed), which vector search cannot see, still outranks hits that
+       share only a description word like 'old'.
+    2. Then vector hits with no word in common, nearest first. These are the
+       semantic-only matches (a cornet for "trumpet"), kept last because a nearest
+       neighbour is returned even when nothing is related.
     """
-    exact = [m for score, m in keyword if score >= 1.0]
-    partial = [m for score, m in keyword if score < 1.0]
-    related = [h for h in hits if _keyword_score(text, h.name, h.description) > 0]
-    unrelated = [h for h in hits if _keyword_score(text, h.name, h.description) <= 0]
-    out: dict[str, M] = {}
-    for item in [*exact, *related, *partial, *unrelated]:
-        out.setdefault(item.id, item)
+    vrank = {h.id: i for i, h in enumerate(hits)}
+    scored: dict[str, tuple[float, int, M]] = {}  # id -> (score, input order, item)
+    for order, (score, item) in enumerate(keyword):
+        scored.setdefault(item.id, (score, order, item))
+    for hit in hits:
+        if hit.id not in scored:
+            score = _keyword_score(text, hit.name, hit.description)
+            if score > 0:
+                scored[hit.id] = (score, len(keyword) + vrank[hit.id], hit)
+    related = sorted(scored.values(),
+                     key=lambda t: (-t[0], vrank.get(t[2].id, len(hits)), t[1]))
+    out: dict[str, M] = {item.id: item for _, _, item in related}
+    for hit in hits:
+        out.setdefault(hit.id, hit)
     return list(out.values())[:limit]
 
 
