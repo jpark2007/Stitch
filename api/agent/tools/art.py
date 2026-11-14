@@ -7,8 +7,11 @@ tests with no keys:
 - ``ImageModel.generate(prompt, ...) -> PNG bytes``
 - ``BackgroundRemover.remove(png) -> RGBA PNG bytes``
 
-``ArtService`` combines them. When either is missing or fails, ``make_cutout``
-returns ``None`` and callers fall back to the placeholder path (``art: null``
+``ArtService`` combines them: ``make_cutout`` for props (generate, remove the
+background, crop to the shape), ``make_layer`` for set layers (full frame, no
+crop; the back layer keeps its background), ``cut_out`` for uploaded photos
+(EXIF orientation applied first). When a needed service is missing or fails
+they return ``None`` and callers fall back to the placeholder path (``art: null``
 with a ``color`` from ``placeholder_color``), so a story can always be staged.
 
 The look itself is defined in exactly one place:
@@ -38,7 +41,7 @@ from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
 from langchain_core.tools import BaseTool, StructuredTool
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 log = logging.getLogger(__name__)
 
@@ -81,28 +84,25 @@ SUBJECT_MAX_CHARS = 200
 ERA_MAX_CHARS = 40
 NOTES_MAX_CHARS = 300
 
+# These lines only say WHICH kind of image this is and point back at the rules in STYLE_PROMPT.
+# They deliberately say nothing about the look (background, composition, layer layout): that is
+# defined once, in style_prompt.txt, so editing that file changes the look without contradiction.
 _KIND_FRAMING: dict[str, str] = {
-    "prop": "Draw this as a single prop: one object, whole, centered, on a plain pure white background.",
+    "prop": "This image is a prop. Follow the prop rules above.",
     "part": (
-        "Draw only this one separate moving part of a prop (for example a lid, a door or a wheel), "
-        "whole, centered, on a plain pure white background, matching the prop it belongs to."
+        "This image is one separate moving part of a prop (for example a lid, a door or a wheel), "
+        "matching the prop it belongs to. Follow the moving-part rules above."
     ),
     "state": (
-        "Draw this prop in the state described, keeping the same shape, colors and proportions as "
-        "its normal state: one object, whole, centered, on a plain pure white background."
+        "This image is a prop in the state described, the same object as its normal state. "
+        "Follow the prop-state rules above."
     ),
 }
 
 _LAYER_FRAMING: dict[str, str] = {
-    "back": "Draw only the back layer of this set: a full-bleed backdrop that fills the whole frame edge to edge.",
-    "middle": (
-        "Draw only the middle layer of this set: the main scenery pieces standing on a ground line in "
-        "the lower third, with plain pure white everywhere else."
-    ),
-    "front": (
-        "Draw only the front layer of this set: low framing pieces along the bottom edge and the far "
-        "sides, the center left open, with plain pure white everywhere else."
-    ),
+    "back": "This image is the back layer of a set. Follow the set-layer rules above for the back layer.",
+    "middle": "This image is the middle layer of a set. Follow the set-layer rules above for the middle layer.",
+    "front": "This image is the front layer of a set. Follow the set-layer rules above for the front layer.",
 }
 
 _CONTROL_OR_SPACE = re.compile(r"[\s\x00-\x1f\x7f]+")
@@ -311,26 +311,88 @@ class ArtService:
     def enabled(self) -> bool:
         return self.image_model is not None and self.remover is not None
 
-    def make_cutout(self, prompt: str, *, reference_images: Sequence[bytes] = ()) -> Cutout | None:
-        """Generate art for ``prompt`` and cut it out. ``None`` means use a placeholder."""
+    def make_cutout(
+        self,
+        prompt: str,
+        *,
+        reference_images: Sequence[bytes] = (),
+        size: tuple[int, int] = (1024, 1024),
+    ) -> Cutout | None:
+        """Generate art for ``prompt`` and cut it out (props, parts, states).
+
+        ``None`` means use a placeholder.
+        """
         if self.image_model is None or self.remover is None:
             return None
         try:
-            image = self.image_model.generate(prompt, reference_images=tuple(reference_images))
+            image = self.image_model.generate(prompt, reference_images=tuple(reference_images), size=size)
             return analyze_cutout(self.remover.remove(image))
         except Exception as exc:  # noqa: BLE001 - any service failure falls back to a placeholder
             log.warning("art generation failed, using placeholder: %s: %s", type(exc).__name__, exc)
             return None
 
+    def make_layer(
+        self,
+        prompt: str,
+        *,
+        layer: LayerName,
+        reference_images: Sequence[bytes] = (),
+        size: tuple[int, int] = (2048, 1024),
+    ) -> Cutout | None:
+        """Generate one set layer, kept at the full frame so pieces stay where they sit in it.
+
+        A layer spans the whole stage width (CONTRACTS.md, Stage space), so the caller picks
+        ``size`` with width / height = 2 / layer height. The back layer is a full-bleed backdrop
+        and is never background-removed; middle and front layers have their white removed but are
+        not cropped. The returned ``Cutout`` covers the full frame: ``bbox`` is the whole image,
+        ``aspect`` is width / height and ``anchor`` is [0.5, 1.0]. Needs only the image model for
+        the back layer and both services otherwise. ``None`` means use a placeholder.
+        """
+        if layer not in ("back", "middle", "front"):
+            raise ValueError("layer must be 'back', 'middle' or 'front'")
+        if self.image_model is None or (layer != "back" and self.remover is None):
+            return None
+        try:
+            image = self.image_model.generate(prompt, reference_images=tuple(reference_images), size=size)
+            if layer == "back" or self.remover is None:
+                im = _load_rgba(image)
+                im.putalpha(255)
+            else:
+                im = _load_rgba(self.remover.remove(image))
+                if _opaque_mask(im).getbbox() is None:
+                    raise ValueError("layer has no opaque pixels")
+            w, h = im.size
+            return Cutout(png=_to_png(im), aspect=w / h, anchor=[0.5, 1.0], bbox=(0, 0, w, h))
+        except Exception as exc:  # noqa: BLE001 - any service failure falls back to a placeholder
+            log.warning("set layer generation failed, using placeholder: %s: %s", type(exc).__name__, exc)
+            return None
+
     def cut_out(self, image: bytes) -> Cutout | None:
-        """Remove the background of an existing image (an uploaded photo of a real object)."""
+        """Remove the background of an existing image (an uploaded photo of a real object).
+
+        Any format Pillow reads is accepted (phone photos are usually JPEG). The EXIF orientation
+        is applied first and the image is re-encoded as PNG before it reaches the remover, so a
+        photo taken sideways is cut out upright and the stored cutout (which has no EXIF) stays
+        upright.
+        """
         if self.remover is None:
             return None
         try:
-            return analyze_cutout(self.remover.remove(image))
+            return analyze_cutout(self.remover.remove(_upright_png(image)))
         except Exception as exc:  # noqa: BLE001
             log.warning("cut_out failed: %s: %s", type(exc).__name__, exc)
             return None
+
+
+def _upright_png(data: bytes) -> bytes:
+    """Decode any image, apply its EXIF orientation and return it as PNG (RGBA if it has alpha)."""
+    with Image.open(io.BytesIO(data)) as src:
+        src.load()
+        im = ImageOps.exif_transpose(src)
+    if im.mode not in ("RGB", "RGBA"):
+        has_alpha = im.mode in ("LA", "PA") or (im.mode == "P" and "transparency" in im.info)
+        im = im.convert("RGBA" if has_alpha else "RGB")
+    return _to_png(im)
 
 
 # --------------------------------------------------------------------------- #
@@ -411,7 +473,11 @@ def make_cut_out_tool(art: ArtService, put_media: PutMedia, get_media: GetMedia)
         """Remove the background from a stored image (for example a photo of a real object) and
         save the cutout. Returns JSON with the cutout's mediaId, its aspect (width / height) and
         its anchor (bottom-center, image fractions)."""
-        stored = get_media(media_id)
+        try:
+            stored = get_media(media_id)
+        except Exception as exc:  # noqa: BLE001 - e.g. a malformed id from the model
+            log.warning("cut_out could not read media %r: %s: %s", media_id, type(exc).__name__, exc)
+            stored = None
         if stored is None:
             return json.dumps({"error": f"no image with id {media_id!r}"})
         data, content_type = stored
@@ -422,7 +488,11 @@ def make_cut_out_tool(art: ArtService, put_media: PutMedia, get_media: GetMedia)
         cutout = art.cut_out(data)
         if cutout is None:
             return json.dumps({"error": "could not cut out this image; use a placeholder"})
-        new_id = put_media(cutout.png, "image/png")
+        try:
+            new_id = put_media(cutout.png, "image/png")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cut_out could not store the cutout: %s: %s", type(exc).__name__, exc)
+            return json.dumps({"error": "could not save the cutout; use a placeholder"})
         return json.dumps(
             {
                 "mediaId": new_id,

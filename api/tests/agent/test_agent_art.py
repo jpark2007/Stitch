@@ -408,6 +408,136 @@ def test_cut_out_tool_stores_cutout_and_returns_rig():
     assert result["anchor"][0] == pytest.approx(0.5, abs=0.01)
 
 
+def _jpeg_with_orientation(orientation: int) -> bytes:
+    """A 400x200 JPEG holding a 300x40 horizontal bar; with orientation 6 or 8 it displays as a
+    200x400 image with a 40x300 vertical bar."""
+    im = Image.new("RGB", (400, 200), (255, 255, 255))
+    ImageDraw.Draw(im).rectangle((50, 80, 349, 119), fill=(150, 60, 40))
+    exif = Image.Exif()
+    exif[0x0112] = orientation
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=95, exif=exif)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("orientation", [6, 8])
+def test_cut_out_applies_exif_orientation(orientation):
+    store = _MediaStore()
+    photo_id = store.put(_jpeg_with_orientation(orientation), "image/jpeg")
+    received: list[bytes] = []
+
+    class _RecordingRemover(FakeBackgroundRemover):
+        def remove(self, png):
+            received.append(png)
+            return super().remove(png)
+
+    tool = make_cut_out_tool(ArtService(None, _RecordingRemover()), store.put, store.get)
+    result = json.loads(tool.invoke({"media_id": photo_id}))
+
+    # The remover gets an upright PNG, not the raw JPEG.
+    assert received and received[0].startswith(b"\x89PNG")
+    assert _open(received[0]).size == (200, 400)
+    # Upright, the bar is 40 wide and 300 tall.
+    assert result["aspect"] == pytest.approx(40 / 300, rel=0.1)
+    stored = _open(store.items[result["mediaId"]][0])
+    assert stored.height > stored.width
+    assert result["anchor"][1] == 1.0
+    assert result["anchor"][0] == pytest.approx(0.5, abs=0.05)
+
+
+def test_cut_out_without_orientation_is_unchanged():
+    store = _MediaStore()
+    photo_id = store.put(_jpeg_with_orientation(1), "image/jpeg")
+    tool = make_cut_out_tool(ArtService(None, FakeBackgroundRemover()), store.put, store.get)
+    result = json.loads(tool.invoke({"media_id": photo_id}))
+    assert result["aspect"] == pytest.approx(300 / 40, rel=0.1)
+
+
+def test_cut_out_tool_media_store_exceptions_become_errors(caplog):
+    def bad_get(media_id):
+        raise ValueError("invalid ObjectId")
+
+    tool = make_cut_out_tool(ArtService(None, FakeBackgroundRemover()), lambda d, c: "x", bad_get)
+    with caplog.at_level(logging.WARNING, logger="agent.tools.art"):
+        assert "error" in json.loads(tool.invoke({"media_id": "zz"}))
+    assert "invalid ObjectId" in caplog.text
+
+    store = _MediaStore()
+    photo_id = store.put(FakeImageModel().generate("a lamp", size=(120, 80)), "image/png")
+
+    def bad_put(data, content_type):
+        raise RuntimeError("GridFS is down")
+
+    tool = make_cut_out_tool(ArtService(None, FakeBackgroundRemover()), bad_put, store.get)
+    assert "error" in json.loads(tool.invoke({"media_id": photo_id}))
+
+
+# --------------------------------------------------------------------------- #
+# Set layers
+# --------------------------------------------------------------------------- #
+
+
+def test_make_layer_back_is_full_bleed_and_not_removed():
+    model = FakeImageModel()
+    service = ArtService(model, _BlankRemover())  # a remover that would erase everything
+    prompt = build_art_prompt("church steps", kind="set_layer", layer="back")
+    layer = service.make_layer(prompt, layer="back", size=(400, 200))
+    assert isinstance(layer, Cutout)
+    im = _open(layer.png)
+    assert im.size == (400, 200)
+    assert im.getchannel("A").getextrema() == (255, 255)
+    assert layer.bbox == (0, 0, 400, 200)
+    assert layer.aspect == pytest.approx(2.0)
+    # Back layer needs only the image model.
+    assert ArtService(model, None).make_layer(prompt, layer="back", size=(400, 200)) is not None
+
+
+@pytest.mark.parametrize("which", ["middle", "front"])
+def test_make_layer_middle_front_keep_full_frame(which):
+    service = ArtService(FakeImageModel(), FakeBackgroundRemover())
+    prompt = build_art_prompt("church steps", kind="set_layer", layer=which)
+    layer = service.make_layer(prompt, layer=which, size=(400, 280))
+    assert layer is not None
+    im = _open(layer.png)
+    assert im.size == (400, 280)  # not cropped to the shape
+    assert layer.bbox == (0, 0, 400, 280)
+    alpha = im.getchannel("A")
+    assert alpha.getpixel((0, 0)) == 0  # white removed
+    assert alpha.getpixel((200, 140)) == 255
+    assert ArtService(FakeImageModel(), None).make_layer(prompt, layer=which) is None
+
+
+def test_make_layer_failures_return_none(caplog):
+    with caplog.at_level(logging.WARNING, logger="agent.tools.art"):
+        assert ArtService(_BrokenModel(), FakeBackgroundRemover()).make_layer("x", layer="back") is None
+        assert ArtService(FakeImageModel(), _BlankRemover()).make_layer("x", layer="front", size=(64, 32)) is None
+    assert "image API is down" in caplog.text
+    assert ArtService(None, FakeBackgroundRemover()).make_layer("x", layer="back") is None
+    with pytest.raises(ValueError):
+        ArtService(FakeImageModel(), FakeBackgroundRemover()).make_layer("x", layer="side")  # type: ignore[arg-type]
+
+
+def test_make_cutout_passes_size():
+    seen = []
+
+    class _SizeModel(FakeImageModel):
+        def generate(self, prompt, *, reference_images=(), size=(1024, 1024)):
+            seen.append(size)
+            return super().generate(prompt, reference_images=reference_images, size=size)
+
+    assert ArtService(_SizeModel(), FakeBackgroundRemover()).make_cutout("a cup", size=(64, 48)) is not None
+    assert seen == [(64, 48)]
+
+
+def test_build_art_prompt_framing_does_not_restate_the_look():
+    """The look lives only in style_prompt.txt; the per-kind framing must not repeat it."""
+    for kind, layer in [("prop", None), ("part", None), ("state", None),
+                        ("set_layer", "back"), ("set_layer", "middle"), ("set_layer", "front")]:
+        tail = build_art_prompt("a cup", kind=kind, layer=layer).split(STYLE_PROMPT, 1)[1]
+        for phrase in ("white", "background", "full-bleed", "edge to edge", "ground line", "centered"):
+            assert phrase not in tail
+
+
 def test_cut_out_tool_errors_are_returned_not_raised():
     store = _MediaStore()
     tool = make_cut_out_tool(ArtService(None, FakeBackgroundRemover()), store.put, store.get)
