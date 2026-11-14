@@ -124,6 +124,23 @@ class ClockedHarness(Harness):
     def run(self, run_id: str) -> runs._Run:
         return self.manager._runs[run_id]
 
+    def wait(self, run_id: str) -> schemas.RunStatus:
+        """Harness.wait, then until no worker drives the run: a run is 'waiting' as soon as
+        its question is out, while the step's stream may still be closing, and running time
+        counts until the worker lets go. A test that moves the clock "while the teller
+        thinks" waits for that first."""
+        status = super().wait(run_id)
+        deadline = time.monotonic() + WAIT
+        while time.monotonic() < deadline:
+            run = self.manager._runs.get(run_id)
+            if run is None:
+                return status
+            with run.cond:
+                if run.workers == 0:
+                    return run.status
+            time.sleep(0.005)
+        raise AssertionError(f"a worker still drives {run_id} after {WAIT}s")
+
 
 @pytest.fixture
 def harnesses() -> Iterator[list[Harness]]:
@@ -333,7 +350,8 @@ def test_the_limit_is_checked_before_a_queued_answer_resumes(harnesses: list[Har
         async for name, model in h.manager.stream_run(FAMILY, run_id):
             seen.append((name, model))
             if name == "question":
-                clock.advance(10 * LIMIT)  # waiting: not counted
+                # (No time passes here: the sibling is still working, so it would count, and
+                # the run would end on the sibling's next chunk instead of in _settle.)
                 answer(h, run_id)
                 assert h.manager.status(FAMILY, run_id) == "running"
                 h.before_get_state = lambda: clock.advance(LIMIT + 1)
@@ -539,11 +557,13 @@ def test_the_record_carries_the_time_used_and_the_limit() -> None:
         assert run.record()["elapsed_s"] == 0.0  # the open stretch is not in a record until persisted
         run.persist()
         assert run.record()["elapsed_s"] == 30.0 and run.record()["run_timeout_s"] == LIMIT
-        run.status = "waiting"
+        run.status = "waiting"  # the question is out; the step's stream is still closing
         clock.advance(5.0)
-        run.persist()  # the 5 s before this status change was noticed still counted
+        run.persist()  # a worker still drives it: those 5 s count
+        run.workers = 0
+        run.tick()  # the stream closed and the worker let go
         clock.advance(1000.0)
-        run.persist()  # waiting: nothing more
+        run.persist()  # waiting on the teller with no worker: nothing more
         assert run.elapsed_s == 35.0 and run.stretch_started is None
         assert not run.over_time()
 
@@ -571,3 +591,181 @@ def test_overlapping_workers_keep_the_clock_running() -> None:
             assert run.elapsed_s == pytest.approx(LIMIT + 1)
     finally:
         manager.shutdown(wait=True)
+
+
+# ------------------------------------------------------------------ (f) the limit with pauses and answers
+
+
+def test_a_sibling_still_working_while_a_question_is_up_counts(harnesses: list[Harness]) -> None:
+    # The interviewer's question is out, so the run is 'waiting', but the second sub-agent of
+    # the same step is still working: that is running time. Before the fix it was not
+    # counted, so a sibling could work past the limit (forever) while the question was up.
+    clock = FakeClock()
+    release = threading.Event()
+
+    def slow_sibling(messages: list[BaseMessage]) -> AIMessage:
+        assert release.wait(WAIT), "the sibling was never released"
+        clock.advance(LIMIT + 1)  # this model call takes longer than the whole limit
+        return say("It was 1962.")
+
+    studio_script = script(
+        tool_calls(
+            ("task", {"subagent_type": "interviewer", "description": "Ask about the church."}),
+            ("task", {"subagent_type": "second_interviewer", "description": "Work out the year."}),
+        ),
+        say("unreachable: the run ends first"),
+    )
+    h = ClockedHarness(
+        make_responder(studio_script, interviewer=script(ask("Which church?"), report), second=slow_sibling),
+        clock=clock, subagents=[INTERVIEWER, OTHER_INTERVIEWER], keep_runs=True,
+    )
+    harnesses.append(h)
+    run_id = h.start()
+
+    async def follow() -> list[tuple[str, BaseModel]]:
+        seen: list[tuple[str, BaseModel]] = []
+        async for name, model in h.manager.stream_run(FAMILY, run_id):
+            seen.append((name, model))
+            if name == "question":
+                assert h.manager.status(FAMILY, run_id) == "waiting"
+                release.set()  # nobody answers; the sibling goes on working
+        return seen
+
+    seen = asyncio.run(asyncio.wait_for(follow(), WAIT))
+    names = [n for n, _ in seen]
+    assert names.count("question") == 1 and names[-1] == "error" and "done" not in names
+    assert errors(seen) == [TIMEOUT_MESSAGE]
+    assert h.wait(run_id) == "error"
+    record = wait_stored_status(h, run_id, "error")
+    assert record["elapsed_s"] == pytest.approx(LIMIT + 1)
+    with pytest.raises(runs.RunNotWaiting):
+        answer(h, run_id)
+
+
+def test_a_run_that_runs_out_of_time_as_it_pauses_ends_instead_of_waiting(harnesses: list[Harness]) -> None:
+    # The question streams out, then the step's stream takes the rest of the limit to close.
+    # The run must not sit waiting for an answer it could never use.
+    clock = FakeClock()
+    h: ClockedHarness
+
+    def interviewer_asks(messages: list[BaseMessage]) -> AIMessage:
+        h.before_get_state = lambda: clock.advance(LIMIT + 1)
+        return tool_call("ask_teller", {"question": "Which church was it?"})
+
+    h = ClockedHarness(make_responder(NEW_MEMORY_STUDIO, interviewer=script(interviewer_asks, report)),
+                       clock=clock, keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "error"
+    events = collect(h.manager, run_id)
+    assert [n for n, _ in events] == ["plan", "subagent_start", "question", "error"]
+    assert errors(events) == [TIMEOUT_MESSAGE]
+    assert wait_stored_status(h, run_id, "error")["pending_interrupt_id"] is None
+    with pytest.raises(runs.RunNotWaiting):
+        answer(h, run_id)
+    assert h.streams == 1
+
+
+def test_an_answer_to_a_run_already_past_its_limit_ends_it_without_resuming(harnesses: list[Harness]) -> None:
+    # A waiting run whose record says it already used more than its limit (an older process,
+    # or one that died as the question went out): the answer must not resume the thread.
+    clock = FakeClock()
+    interviewer_calls: list[int] = []
+
+    def interviewer(messages: list[BaseMessage]) -> AIMessage:
+        interviewer_calls.append(tool_results(messages))
+        return script(ask("Which church was it?"), report)(messages)
+
+    h = ClockedHarness(make_responder(NEW_MEMORY_STUDIO, interviewer=interviewer), clock=clock, keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "waiting"
+    h.manager.shutdown(wait=True)
+    record = stored(h, run_id)
+    h.store.put(runs.run_namespace(FAMILY), run_id, {**record, "elapsed_s": LIMIT + 5})
+
+    manager = h.restart()
+    assert manager.status(FAMILY, run_id) == "waiting"
+    streams, calls = h.streams, len(interviewer_calls)
+    answer(h, run_id)  # accepted; the stream says why the run ended
+    assert h.wait(run_id) == "error"
+    events = collect(manager, run_id)
+    assert [n for n, _ in events] == ["plan", "subagent_start", "question", "error"]
+    assert errors(events) == [TIMEOUT_MESSAGE]
+    assert h.streams == streams  # the thread was never resumed
+    assert len(interviewer_calls) == calls  # the interviewer never saw the answer
+    assert wait_stored_status(h, run_id, "error")["elapsed_s"] == pytest.approx(LIMIT + 5)
+
+
+def test_an_answer_after_the_timeout_fired_is_refused(harnesses: list[Harness]) -> None:
+    clock = FakeClock()
+    interviewer = script(ask("Which church was it?"), advancing(clock, LIMIT + 1, report))
+    h = ClockedHarness(make_responder(NEW_MEMORY_STUDIO, interviewer=interviewer), clock=clock, keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "waiting"
+    answer(h, run_id)
+    assert h.wait(run_id) == "error"
+    before = dumped(h.manager.events(FAMILY, run_id))
+    assert errors(h.manager.events(FAMILY, run_id)) == [TIMEOUT_MESSAGE]
+
+    with pytest.raises(runs.RunNotWaiting):
+        answer(h, run_id, "Another answer, too late.")
+    manager = h.restart()
+    with pytest.raises(runs.RunNotWaiting):
+        answer(h, run_id, "And again after a restart.")
+    assert dumped(collect(manager, run_id)) == before
+
+
+def test_two_answers_racing_for_one_pause_resume_it_once(harnesses: list[Harness]) -> None:
+    h = ClockedHarness(make_responder(NEW_MEMORY_STUDIO, interviewer=script(ask("Which church?"), report)),
+                       clock=FakeClock(), keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "waiting"
+
+    racers = 8
+    barrier = threading.Barrier(racers)
+    accepted: list[str] = []
+    refused: list[BaseException] = []
+    lock = threading.Lock()
+
+    def race(i: int) -> None:
+        barrier.wait(WAIT)
+        try:
+            answer(h, run_id, f"Answer {i}")
+        except runs.RunNotWaiting as exc:
+            with lock:
+                refused.append(exc)
+        else:
+            with lock:
+                accepted.append(f"Answer {i}")
+
+    threads = [threading.Thread(target=race, args=(i,)) for i in range(racers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(WAIT)
+    assert len(accepted) == 1 and len(refused) == racers - 1
+    assert h.wait(run_id) == "done"
+    events = collect(h.manager, run_id)
+    names = [n for n, _ in events]
+    assert names.count("question") == 1 and names.count("done") == 1 and "error" not in names
+    end = next(m for n, m in events if n == "subagent_end")
+    assert accepted[0] in (end.summary or "")
+    assert h.streams == 2  # started once, resumed once
+
+
+def test_an_answer_for_a_finished_run_is_refused_and_changes_nothing(harnesses: list[Harness]) -> None:
+    h = ClockedHarness(make_responder(STRAIGHT_STUDIO), clock=FakeClock(), keep_runs=True)
+    harnesses.append(h)
+    run_id = h.start()
+    assert h.wait(run_id) == "done"
+    before, record = dumped(h.manager.events(FAMILY, run_id)), stored(h, run_id)
+    for kind in ("answer", "props", "merge"):
+        with pytest.raises(runs.RunNotWaiting):
+            h.manager.answer_run(FAMILY, run_id, "user_dad", schemas.AnswerRequest(kind=kind, text="x", props=[],
+                                                                                    approve=True))
+    assert dumped(h.manager.events(FAMILY, run_id)) == before
+    assert stored(h, run_id) == record
+    assert h.streams == 1
