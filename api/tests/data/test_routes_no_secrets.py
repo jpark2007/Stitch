@@ -10,7 +10,13 @@ The app's lifespan is never entered (TestClient without `with`); the db is set w
 `db.client.set_db(mdb)`, so no fake-db install or index setup runs.
 
 A coverage guard compares the routes exercised with the routes the app serves, so a new
-route fails here until it is driven too. Runs on mongomock with a fake agent seam.
+route fails here until it is driven too.
+
+The auth error paths are checked as well: a taken email, a wrong or unknown login, and the
+422s of a malformed signup or login, which go through `main.validation_error_handler` and
+must never echo the submitted password (FastAPI's default handler would, via `input`).
+
+Runs on mongomock with a fake agent seam.
 """
 
 from __future__ import annotations
@@ -22,7 +28,6 @@ import types
 import uuid
 from typing import Any
 
-import fastapi.exception_handlers
 import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -385,22 +390,6 @@ def test_secrets_check_catches_each_forbidden_string():
 
 # ------------------------------------------------------------------------------ error paths
 
-# FastAPI's default 422 handler echoes the offending request input back, so a malformed
-# signup or login body returns the submitted plaintext password. Routers cannot install
-# exception handlers; the fix is `main.validation_error_handler`, a RequestValidationError
-# handler that drops or redacts `input`. The marker below is keyed on whether main's app
-# overrides FastAPI's default handler, so these cases xfail (strictly) until the handler
-# lands and pass after, in either merge order, with no edit here.
-_REDACTS = (
-    main.create_app().exception_handlers.get(RequestValidationError)
-    is not fastapi.exception_handlers.request_validation_exception_handler
-)
-ECHOES_PASSWORD = pytest.mark.xfail(
-    not _REDACTS,
-    strict=True,
-    reason="FastAPI default 422 echoes request input incl. plaintext password; fixed by main.validation_error_handler",
-)
-
 
 @pytest.mark.parametrize(
     ("body", "path"),
@@ -419,19 +408,6 @@ ECHOES_PASSWORD = pytest.mark.xfail(
             "/auth/signup",
             id="signup-blank-name",
         ),
-        pytest.param(
-            {"email": "x@example.com", "password": SHORT_PASSWORD, "name": "X"},
-            "/auth/signup",
-            id="signup-short-password",
-            marks=ECHOES_PASSWORD,
-        ),
-        pytest.param({"password": PASSWORDS["bob"]}, "/auth/login", id="login-missing-email", marks=ECHOES_PASSWORD),
-        pytest.param(
-            {"email": "x@example.com", "password": PASSWORDS["bob"]},
-            "/auth/signup",
-            id="signup-missing-name",
-            marks=ECHOES_PASSWORD,
-        ),
     ],
 )
 def test_auth_error_responses_leak_no_secret(env, body, path):
@@ -449,30 +425,41 @@ def test_auth_error_responses_leak_no_secret(env, body, path):
     assert body["password"] not in res.text, res.text
 
 
+# FastAPI's default 422 handler echoes each error's `input`, which on a malformed signup or
+# login body is the plaintext password. main.validation_error_handler drops it; these cases
+# pin that down on the real app.
 @pytest.mark.parametrize(
-    "body",
+    ("path", "body"),
     [
-        pytest.param({"email": "x@example.com", "password": SHORT_PASSWORD, "name": "X"}, id="short-password"),
-        pytest.param({"password": PASSWORDS["bob"], "name": "X"}, id="missing-email"),
-        pytest.param({"email": "x@example.com", "password": PASSWORDS["bob"]}, id="missing-name"),
+        pytest.param(
+            "/auth/signup",
+            {"email": "x@example.com", "password": SHORT_PASSWORD, "name": "X"},
+            id="signup-short-password",
+        ),
+        pytest.param(
+            "/auth/signup",
+            {"email": "x@example.com", "password": PASSWORDS["bob"]},
+            id="signup-missing-name",
+        ),
+        pytest.param("/auth/login", {"password": PASSWORDS["bob"]}, id="login-missing-email"),
     ],
 )
-@ECHOES_PASSWORD
-def test_signup_422_does_not_echo_the_password(env, body):
-    """A malformed signup is a 422 whose body names neither the password nor any `input`."""
+def test_auth_422_does_not_echo_the_password(env, path, body):
+    """A malformed signup or login is a 422 naming neither the password, a hash, nor any `input`."""
     tc = env.driver.client()
 
-    res = tc.post("/auth/signup", json=body)
+    res = tc.post(path, json=body)
 
     assert res.status_code == 422, res.text
-    assert body["password"] not in res.text, res.text
-    assert '"input"' not in res.text, res.text
+    text = res.text
+    assert body["password"] not in text, text
+    assert "passwordHash" not in text and "password_hash" not in text, text
+    assert _secrets_in(res, {**PASSWORDS, "short": SHORT_PASSWORD}) == [], text
+    detail = res.json()["detail"]
+    assert isinstance(detail, list) and detail, detail
+    for item in detail:
+        assert "input" not in item, item
 
 
-def test_echo_marker_tracks_mains_validation_handler():
-    """The xfail flips by itself: it is on exactly while main keeps FastAPI's default handler."""
-    handler = main.create_app().exception_handlers.get(RequestValidationError)
-    is_default = handler is fastapi.exception_handlers.request_validation_exception_handler
-    assert _REDACTS is (not is_default)
-    if hasattr(main, "validation_error_handler"):
-        assert handler is main.validation_error_handler
+def test_main_installs_the_redacting_validation_handler():
+    assert main.create_app().exception_handlers[RequestValidationError] is main.validation_error_handler
