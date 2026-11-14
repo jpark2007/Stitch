@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import os
 import uuid
 
 import pytest
 from bson import ObjectId
+from PIL import Image
 
 from db import media
 from db.media import (
@@ -14,6 +16,7 @@ from db.media import (
     MediaFile,
     delete_media,
     get_media,
+    image_aspect,
     media_exists,
     media_ref,
     parse_media_ref,
@@ -167,7 +170,79 @@ def test_mongomock_is_detected(mdb):
     assert media._is_mock(mdb) is True
 
 
+# ------------------------------------------------------------------ image_aspect
+
+def _image(width: int, height: int, fmt: str = "PNG", orientation: int | None = None) -> bytes:
+    buf = io.BytesIO()
+    img = Image.new("RGB", (width, height), (90, 140, 200))
+    if orientation is None:
+        img.save(buf, format=fmt)
+    else:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        img.save(buf, format=fmt, exif=exif.tobytes())
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(("size", "expected"), [((800, 200), 4.0), ((300, 600), 0.5),
+                                                 ((640, 480), 1.3333), ((1, 3), 0.3333)])
+def test_image_aspect_of_a_png(mdb, size, expected):
+    media_id = put_media(mdb, FAMILY_A, _image(*size), content_type="image/png")
+    assert image_aspect(mdb, FAMILY_A, media_id) == expected
+    assert image_aspect(mdb, FAMILY_A, media_ref(media_id)) == expected
+
+
+@pytest.mark.parametrize(("orientation", "expected"), [(1, 2.0), (3, 2.0), (5, 0.5), (6, 0.5),
+                                                        (7, 0.5), (8, 0.5)])
+def test_image_aspect_applies_exif_orientation(mdb, orientation, expected):
+    # 400x200 pixels; orientations 5-8 are shown rotated a quarter turn (phone portraits).
+    data = _image(400, 200, fmt="JPEG", orientation=orientation)
+    media_id = put_media(mdb, FAMILY_A, data, content_type="image/jpeg")
+    assert image_aspect(mdb, FAMILY_A, media_id) == expected
+
+
+def test_image_aspect_is_none_for_other_family_unknown_and_bad_ids(mdb):
+    b_id = put_media(mdb, FAMILY_B, _image(800, 200), content_type="image/png")
+    assert image_aspect(mdb, FAMILY_A, b_id) is None
+    assert image_aspect(mdb, FAMILY_A, media_ref(b_id)) is None
+    assert image_aspect(mdb, FAMILY_B, b_id) == 4.0
+    assert image_aspect(mdb, FAMILY_A, str(ObjectId())) is None
+    for bad in ("", "nope", "media/", "media/a1"):
+        assert image_aspect(mdb, FAMILY_A, bad) is None
+
+
+@pytest.mark.parametrize("data", [b"not an image", PNG, b"\x89PNG\r\n\x1a\n", b"GIF89a"])
+def test_image_aspect_is_none_for_undecodable_bytes(mdb, data):
+    media_id = put_media(mdb, FAMILY_A, data, content_type="image/png")
+    assert image_aspect(mdb, FAMILY_A, media_id) is None
+
+
+def test_image_aspect_is_none_for_a_zero_dimension(mdb, monkeypatch):
+    media_id = put_media(mdb, FAMILY_A, _image(10, 10), content_type="image/png")
+
+    class Flat:
+        size = (10, 0)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def getexif(self):
+            return {}
+
+    monkeypatch.setattr(media.Image, "open", lambda _fp: Flat())
+    assert image_aspect(mdb, FAMILY_A, media_id) is None
+
+
 # ------------------------------------------------------------------ real GridFS
+
+def test_real_gridfs_image_aspect(real_db):
+    media_id = put_media(real_db, FAMILY_A, _image(300, 600), content_type="image/png")
+    assert image_aspect(real_db, FAMILY_A, media_id) == 0.5
+    assert image_aspect(real_db, FAMILY_B, media_id) is None
+
 
 def test_real_gridfs_round_trip_and_family_scope(real_db):
     assert media._is_mock(real_db) is False

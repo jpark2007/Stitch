@@ -18,6 +18,7 @@ Backends:
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, get_args
@@ -26,6 +27,7 @@ import gridfs
 from bson import ObjectId
 from bson.errors import InvalidId
 from gridfs.errors import NoFile
+from PIL import Image
 from pymongo.database import Database
 
 MediaKind = Literal["photo", "cutout", "audio", "frame", "other"]
@@ -37,6 +39,10 @@ FILES = f"{BUCKET}.files"
 CHUNKS = f"{BUCKET}.chunks"
 INLINE = f"{BUCKET}.inline"
 REF_PREFIX = "media/"
+
+# EXIF Orientation tag, and the values (5-8) whose upright image swaps width and height.
+_EXIF_ORIENTATION = 0x0112
+_ROTATED_ORIENTATIONS = frozenset({5, 6, 7, 8})
 
 
 @dataclass(frozen=True)
@@ -172,6 +178,33 @@ def get_media(db: Database, family_id: str, media_id: str) -> MediaFile | None:
     except NoFile:
         return None
     return _to_media_file(doc, data)
+
+
+def image_aspect(db: Database, family_id: str, media_id: str) -> float | None:
+    """Displayed width / height of a family's image, rounded to 4 decimals, or None.
+
+    Accepts a bare id or 'media/<id>'. EXIF orientation is applied, so a phone portrait
+    photo stored as landscape pixels with orientation 6 gives its upright ratio. None,
+    never an exception, when the media is missing or another family's, the bytes are not
+    a decodable image, or a dimension is zero.
+    """
+    found = get_media(db, family_id, media_id)
+    if found is None:
+        return None
+    try:
+        with Image.open(io.BytesIO(found.data)) as img:
+            width, height = img.size
+            try:
+                orientation = int(img.getexif().get(_EXIF_ORIENTATION) or 1)
+            except Exception:  # noqa: BLE001 - a broken EXIF block means "upright"
+                orientation = 1
+    except Exception:  # noqa: BLE001 - any undecodable upload means "unknown aspect"
+        return None
+    if orientation in _ROTATED_ORIENTATIONS:
+        width, height = height, width
+    if width <= 0 or height <= 0:
+        return None
+    return round(width / height, 4)
 
 
 def media_exists(db: Database, family_id: str, media_id: str) -> bool:
