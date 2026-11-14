@@ -8,6 +8,8 @@ import mongomock
 import pytest
 
 import schemas
+from db import client as db_client
+from db import families as families_db
 from db import films as films_db
 
 FAM_A = "fam_a"
@@ -123,3 +125,18 @@ def test_create_with_a_taken_id_is_a_value_error(mdb):
     _create(mdb, film_id="f1")
     with pytest.raises(ValueError):
         _create(mdb, FAM_B, film_id="f1")
+
+
+def test_purging_a_family_removes_its_films_and_no_others(mdb):
+    a = _create(mdb)
+    b = _create(mdb, FAM_B)
+    families_db.purge_family(mdb, FAM_A)
+    assert mdb[films_db.COLLECTION].count_documents({"familyId": FAM_A}) == 0
+    assert films_db.get_film(mdb, FAM_A, a.id, now=T0) is None
+    assert films_db.get_film(mdb, FAM_B, b.id, now=T0) == b
+
+
+def test_the_list_sort_has_an_index(mdb):
+    db_client.ensure_indexes(mdb)
+    keys = [[field for field, _ in ix["key"]] for ix in mdb[films_db.COLLECTION].index_information().values()]
+    assert ["familyId", "createdAt", "_id"] in keys

@@ -33,6 +33,7 @@ import auth
 import schemas
 from db import client as db_client
 from db import families as families_db
+from db import films as films_db
 from db import media as media_db
 from db import memories as memories_db
 from db import people as people_db
@@ -380,7 +381,9 @@ def _populate(db, family_id: str, user_id: str) -> None:
                         "_id": f"legacy_set_{family_id}", "familyId": family_id})
     db.props.update_one({"_id": f"legacy_{family_id}"}, {"$unset": {"id": ""}})
     db.sets.update_one({"_id": f"legacy_set_{family_id}"}, {"$unset": {"id": ""}})
-    media_db.put_media(db, family_id, b"inline bytes", content_type="image/png")
+    photo_id = media_db.put_media(db, family_id, b"inline bytes", content_type="image/png")
+    films_db.create_film(db, family_id, author_id=me.id, text="We went to the lake.", year=1998,
+                         photo_ids=[photo_id])
     file_id = ObjectId()
     db[media_db.FILES].insert_one({"_id": file_id, "length": 6, "chunkSize": 261120, "filename": "x.png",
                                    "metadata": {"familyId": family_id, "kind": "photo",
