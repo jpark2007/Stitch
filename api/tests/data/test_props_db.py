@@ -191,7 +191,12 @@ def test_replace_prop_and_set(mdb):
     out = P.replace_prop(mdb, FAM_A, new)
     assert out.color == "#ffcc00" and out.grip == [0.2, 0.5] and out.family_id == FAM_A
     assert P.get_prop(mdb, FAM_A, p.id) == out
-    # Same name and description: the stored vector survives a replace without one.
+    # Same description: the stored vector survives a replace without one.
+    assert mdb.props.find_one({"_id": p.id})["embedding"] == [1.0, 0.0]
+    # A rename alone keeps it too (the vector is computed from the description), as
+    # update_prop does.
+    new = P.replace_prop(mdb, FAM_A, new.model_copy(update={"name": "Horn"}))
+    assert new.name == "Horn"
     assert mdb.props.find_one({"_id": p.id})["embedding"] == [1.0, 0.0]
     # New description: the old vector is stale and dropped.
     P.replace_prop(mdb, FAM_A, new.model_copy(update={"description": "a silver cornet"}))
@@ -294,10 +299,17 @@ def test_library_loading_from_tmp_dir(tmp_path, mdb):
     assert P.library_props(lib)["car"].name == "Car"
 
 
-def test_invalid_library_file_raises_with_filename(tmp_path):
+@pytest.mark.parametrize("content", [
+    json.dumps({"id": "broken", "name": "Broken"}),  # fails Prop validation
+    "[1]",  # top level is not an object
+    '"chair"',
+    "null",
+    "{not json",
+])
+def test_invalid_library_file_raises_with_filename(tmp_path, content):
     lib = tmp_path / "bad"
     lib.mkdir()
-    (lib / "broken.json").write_text(json.dumps({"id": "broken", "name": "Broken"}))
+    (lib / "broken.json").write_text(content)
     with pytest.raises(ValueError, match="broken.json"):
         P.library_props(lib)
 
@@ -374,9 +386,25 @@ def test_keyword_score_tokens_stopwords_plurals():
     assert P._keyword_score("cherries", "cherry", None) == 1.0
     assert P._keyword_score("grandma's kitchen", "Grandmas kitchen", None) == 1.0
     assert P._keyword_score("trumpet", "Trumpet", "a trumpet") > 1.0
+    # -ies plurals of -ie words (cookie, movie) as well as -y words (cherry, lady).
+    for plural, singular in [("cookies", "cookie"), ("movies", "movie"), ("brownies", "brownie"),
+                             ("ladies", "lady"), ("pies", "pie"), ("keys", "key"),
+                             ("toys", "toy")]:
+        assert P._keyword_score(plural, singular, None) == 1.0, plural
+    assert P._keyword_score("cookies", "Cookie tin", None) > 0
+    assert P._keyword_score("cookie", "Cooking pot", None) == 0
     # Description-only matches count, but less than name matches.
     assert 0 < P._keyword_score("brass", "Trumpet", "a brass trumpet") < P._keyword_score(
         "trumpet", "Trumpet case", None)
+
+
+def test_keyword_score_non_latin_scripts():
+    assert P._keyword_score("할머니", "할머니 부엌", None) > 0
+    assert P._keyword_score("할머니 부엌", "할머니 부엌", None) == 1.0
+    assert P._keyword_score("부엌", "Kitchen", "할머니의 부엌") > 0  # description match
+    assert P._keyword_score("café", "Café table", None) > 0
+    assert P._keyword_score("ＴＲＵＭＰＥＴ", "trumpet", None) == 1.0  # NFKC full-width
+    assert P._keyword_score("snake_case", "snake case", None) == 1.0
 
 
 # -------------------------------------------------------------- find (fallback)
@@ -495,28 +523,63 @@ def test_vector_pipeline_has_family_prefilter():
     assert {"$project": {"embedding": 0}} in pipe
 
 
-def test_find_props_vector_path_uses_index_and_tops_up_with_library(mdb, library_dir):
+def test_find_props_vector_path_merges_with_keyword_and_library(mdb, library_dir):
     write_library_prop(library_dir, "lib_trumpet", "Trumpet", "a brass trumpet")
     write_library_prop(library_dir, "shadowed", "Trumpet stand")
     case = P.insert_prop(mdb, FAM_A, make_prop("Trumpet case", "velvet lined case"),
                          embedding=[1.0, 0.0])
-    other = P.insert_prop(mdb, FAM_A, make_prop("Banjo"), embedding=[0.0, 1.0])
-    P.insert_prop(mdb, FAM_A, make_prop("Our stand"), prop_id="shadowed")  # no embedding
+    banjo = P.insert_prop(mdb, FAM_A, make_prop("Banjo"), embedding=[0.0, 1.0])
+    stand = P.insert_prop(mdb, FAM_A, make_prop("Our trumpet stand"), prop_id="shadowed")  # no vec
     P.insert_prop(mdb, FAM_B, make_prop("Trumpet case B"), embedding=[1.0, 0.0])
     fake = _FakeVectorDB(mdb)
 
-    found = P.find_props(fake, FAM_A, "old trumpet case", vector=[0.9, 0.1], limit=3)
+    found = P.find_props(fake, FAM_A, "old trumpet case", vector=[0.9, 0.1], limit=5)
     assert len(fake.calls) == 1
     vs = fake.calls[0][0]["$vectorSearch"]
     assert vs["index"] == "props_vector" and vs["filter"] == {"familyId": {"$eq": FAM_A}}
-    assert vs["limit"] == 3 and vs["numCandidates"] == 60
-    # Vector hits (family only, nearest first), then the library top-up; the library
-    # prop shadowed by a family prop with the same id is never added.
-    assert [p.id for p in found] == [case.id, other.id, "lib_trumpet"]
+    assert vs["limit"] == 5 and vs["numCandidates"] == 100
+    # The related vector hit, then keyword matches best first (the library trumpet also
+    # matches in its description, then the family prop with no embedding), then the
+    # unrelated nearest neighbour. The library prop shadowed by the family's prop with
+    # the same id is never added, and family B never appears.
+    assert [p.id for p in found] == [case.id, "lib_trumpet", stand.id, banjo.id]
+    assert found[2] == stand and found[2].family_id == FAM_A
     assert all(p.family_id in (FAM_A, None) for p in found)
 
+    # An exact name match (here the library "Trumpet") outranks the nearest vector hit.
     assert [p.id for p in P.find_props(fake, FAM_A, "trumpet", vector=[0.9, 0.1], limit=1)] == [
-        case.id]
+        "lib_trumpet"]
+    assert [p.id for p in P.find_props(fake, FAM_A, "old trumpet case", vector=[0.9, 0.1],
+                                       limit=2)] == [case.id, "lib_trumpet"]
+
+
+def test_find_props_vector_path_never_hides_props_without_embedding(mdb):
+    # Seeded offline: no embedding. Another prop has one and is the nearest neighbour.
+    hymn = P.insert_prop(mdb, FAM_A, sample_prop(), prop_id="hymn_books")
+    banjo = P.insert_prop(mdb, FAM_A, make_prop("Banjo"), embedding=[0.0, 1.0])
+    fake = _FakeVectorDB(mdb)
+    found = P.find_props(fake, FAM_A, "hymn books", vector=[1.0, 0.0])
+    assert [p.id for p in found] == ["hymn_books", banjo.id]
+    assert found[0] == hymn
+
+    # A replace with a new description and no vector drops the stale embedding; the prop
+    # still matches by name, ahead of the unrelated neighbour.
+    case = P.insert_prop(mdb, FAM_A, make_prop("Trumpet case", "black case"), embedding=[1.0, 0.0])
+    P.replace_prop(mdb, FAM_A, case.model_copy(update={"description": "velvet lined case"}))
+    assert "embedding" not in mdb.props.find_one({"_id": case.id})
+    found = P.find_props(fake, FAM_A, "trumpet case", vector=[1.0, 0.0])
+    assert [p.id for p in found][:2] == [case.id, banjo.id]
+
+
+def test_find_props_exact_name_beats_nearer_vector_hit(mdb):
+    near = P.insert_prop(mdb, FAM_A, make_prop("Cornet", "a small brass horn"), embedding=[1.0, 0.0])
+    exact = P.insert_prop(mdb, FAM_A, make_prop("Trumpet"), embedding=[0.0, 1.0])
+    fake = _FakeVectorDB(mdb)
+    assert [p.id for p in P.find_props(fake, FAM_A, "trumpet", vector=[1.0, 0.0])] == [
+        exact.id, near.id]
+    # With no word in common, the vector order alone decides (semantic-only matches).
+    assert [p.id for p in P.find_props(fake, FAM_A, "bugle", vector=[1.0, 0.0])] == [
+        near.id, exact.id]
 
 
 def test_find_sets_vector_path(mdb):
@@ -526,6 +589,9 @@ def test_find_sets_vector_path(mdb):
     fake = _FakeVectorDB(mdb)
     assert P.find_sets(fake, FAM_A, "anything", vector=[0.1, 0.9]) == [near, far]
     assert fake.calls[0][0]["$vectorSearch"]["index"] == "sets_vector"
+    # A saved set with no embedding still matches by name on the vector path.
+    steps = P.insert_set(mdb, FAM_A, sample_set(), set_id="church_steps_1988")
+    assert P.find_sets(fake, FAM_A, "church steps", vector=[0.1, 0.9])[0] == steps
 
 
 @pytest.mark.parametrize("mode", ["fail", "empty"])

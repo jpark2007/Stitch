@@ -20,6 +20,7 @@ from __future__ import annotations
 import functools
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import TypeVar
 
@@ -51,6 +52,8 @@ def _load_library(directory: Path) -> dict[str, schemas.Prop]:
     for path in sorted(directory.glob("*.json")):
         try:
             raw = json.loads(path.read_text())
+            if not isinstance(raw, dict):
+                raise ValueError(f"expected a JSON object, got {type(raw).__name__}")
             raw.setdefault("id", path.stem)
             raw["familyId"] = None
             raw.pop("family_id", None)
@@ -118,8 +121,10 @@ def _replace(db: Database, coll: str, family_id: str, model: M,
     if current is None:
         return None
     if embedding is None and "embedding" in current:
-        # Keep the stored vector only while the text it was computed from is unchanged.
-        if current.get("name") == model.name and current.get("description") == model.description:
+        # The vector is computed from the description (ARCHITECTURE.md section 5), so it
+        # is kept while the description is unchanged (a rename keeps it, as in
+        # update_prop) and dropped once it would be stale.
+        if current.get("description") == model.description:
             embedding = current["embedding"]
     doc = _to_doc(model, family_id, model.id, embedding)
     result = db[coll].replace_one({"_id": model.id, "familyId": family_id}, doc)
@@ -156,12 +161,24 @@ _STOPWORDS = frozenset(
 )
 
 
+_VOWELS = frozenset("aeiou")
+
+
 def _stem(token: str) -> str:
-    """Very small plural stripper: books -> book, glasses -> glass, boxes -> box, keys -> key."""
+    """Very small plural stripper: books -> book, glasses -> glass, boxes -> box, keys -> key.
+
+    Singular and plural map to the same stem, which need not be a word: '-ies' plurals
+    can come from '-y' (cherries, cherry) or from '-ie' (cookies, cookie), so all three
+    endings fold to '-i' (cherri, cooki). Tokens in other scripts pass through unchanged.
+    """
     if len(token) <= 3:
         return token
     if token.endswith("ies") and len(token) > 4:
-        return token[:-3] + "y"
+        return token[:-2]  # cherries, cookies -> cherri, cooki
+    if token.endswith("ie"):
+        return token[:-1]  # cookie -> cooki
+    if token.endswith("y") and token[-2] not in _VOWELS:
+        return token[:-1] + "i"  # cherry -> cherri (but key, toy stay)
     if token.endswith(("sses", "xes", "zes", "ches", "shes")):
         return token[:-2]
     if token.endswith("s") and not token.endswith(("ss", "us", "is")):
@@ -169,11 +186,20 @@ def _stem(token: str) -> str:
     return token
 
 
+# Letters and digits in any script; underscores and punctuation separate words.
+_WORD = re.compile(r"[^\W_]+")
+
+
 def _tokens(text: str | None) -> list[str]:
+    """Word tokens in any script (Hangul, accented Latin, ...), stopwords dropped, stemmed.
+
+    Scripts written without spaces (Chinese, Japanese) come out as one token per run, so
+    they match on whole names only.
+    """
     if not text:
         return []
-    text = text.lower().replace("'", "").replace("’", "")
-    return [_stem(t) for t in re.findall(r"[a-z0-9]+", text) if t not in _STOPWORDS]
+    text = unicodedata.normalize("NFKC", text).casefold().replace("'", "").replace("\u2019", "")
+    return [_stem(t) for t in _WORD.findall(text) if t not in _STOPWORDS]
 
 
 def _keyword_score(query: str, name: str, description: str | None) -> float:
@@ -224,34 +250,49 @@ def _vector_search(db: Database, coll: str, index: str, cls: type[M], family_id:
     return [_from_doc(cls, doc) for doc in docs]
 
 
-def _keyword_rank(text: str, candidates: list[M], limit: int) -> list[M]:
+def _keyword_scored(text: str, candidates: list[M]) -> list[tuple[float, M]]:
+    """(score, item) for every candidate with score > 0, best first, ties in input order."""
     scored = []
     for order, item in enumerate(candidates):
         score = _keyword_score(text, item.name, item.description)
         if score > 0:
             scored.append((-score, order, item))
     scored.sort(key=lambda t: (t[0], t[1]))
-    return [item for _, _, item in scored[:limit]]
+    return [(-neg, item) for neg, _, item in scored]
+
+
+def _merge(keyword: list[tuple[float, M]], hits: list[M], text: str, limit: int) -> list[M]:
+    """Rank the union of keyword matches and vector hits, so neither path hides the other.
+
+    Tiers, each deduplicated by id:
+      1. exact name matches (keyword score >= 1), best first;
+      2. vector hits that also share a word with the query, nearest first;
+      3. other keyword matches, best first. These include saved items with no stored
+         embedding (seeded offline, or whose description changed), which vector search
+         cannot see;
+      4. vector hits with no word in common, nearest first. These are the semantic-only
+         matches (a cornet for "trumpet"), kept last because a nearest neighbour is
+         returned even when nothing is related.
+    """
+    exact = [m for score, m in keyword if score >= 1.0]
+    partial = [m for score, m in keyword if score < 1.0]
+    related = [h for h in hits if _keyword_score(text, h.name, h.description) > 0]
+    unrelated = [h for h in hits if _keyword_score(text, h.name, h.description) <= 0]
+    out: dict[str, M] = {}
+    for item in [*exact, *related, *partial, *unrelated]:
+        out.setdefault(item.id, item)
+    return list(out.values())[:limit]
 
 
 def _find(db: Database, coll: str, index: str, cls: type[M], family_id: str, text: str,
           vector: list[float] | None, limit: int, library: dict[str, M]) -> list[M]:
     if limit <= 0:
         return []
-    if vector is not None:
-        hits = _vector_search(db, coll, index, cls, family_id, vector, limit)
-        if hits:
-            # Top up with matching library items the family has not shadowed.
-            seen = {h.id for h in hits}
-            if library:
-                seen |= {str(d["_id"]) for d in db[coll].find({"familyId": family_id}, {"_id": 1})}
-            extra = _keyword_rank(text, [m for pid, m in library.items() if pid not in seen],
-                                  limit - len(hits))
-            return hits + extra
+    hits = _vector_search(db, coll, index, cls, family_id, vector, limit) if vector is not None else []
     family = _list(db, coll, cls, family_id)
     shadowed = {m.id for m in family}
     candidates = family + [m for pid, m in library.items() if pid not in shadowed]
-    return _keyword_rank(text, candidates, limit)
+    return _merge(_keyword_scored(text, candidates), hits, text, limit)
 
 
 # --------------------------------------------------------------------------- props
@@ -267,8 +308,8 @@ def replace_prop(db: Database, family_id: str, prop: schemas.Prop, *,
                  embedding: list[float] | None = None) -> schemas.Prop | None:
     """Full replace by prop.id within the family. None if the family has no such prop.
 
-    With embedding=None the stored vector is kept if name and description are unchanged,
-    and dropped otherwise (it would be stale).
+    With embedding=None the stored vector is kept if the description is unchanged (it is
+    computed from the description), and dropped otherwise (it would be stale).
     """
     return _replace(db, PROPS, family_id, prop, embedding)
 
@@ -302,10 +343,14 @@ def update_prop(db: Database, family_id: str, prop_id: str,
                 patch: schemas.PropPatch) -> schemas.Prop | None:
     """PATCH /families/{fid}/props/{id}: rename, and/or replace the art with a photo.
 
-    photo_id sets art={'body': photo_id}, source='photo', states={} and parts={} (parts
-    point at art keys that no longer exist), keeping size, anchor, grip, sockets, aspect
-    and color. Library props and other families' props return None. Checking that the
-    media id exists is the route's job.
+    name sets the name and keeps the stored embedding (it is computed from the
+    description, which a rename does not change).
+
+    photo_id sets art={'body': photo_id}, source='photo' and states={}, keeping size,
+    anchor, grip, sockets, aspect and color. It also sets parts={}: beyond the letter of
+    the spec, but every part points at an art key ('bellows', 'door') that the new art no
+    longer has, so keeping them would leave parts with no image. Library props and other
+    families' props return None. Checking that the media id exists is the route's job.
     """
     update: dict = {}
     if patch.name is not None:
@@ -324,10 +369,12 @@ def find_props(db: Database, family_id: str, text: str, *, vector: list[float] |
                limit: int = 5) -> list[schemas.Prop]:
     """Match a description like 'the old trumpet case' to saved and library props.
 
-    With a vector: Atlas Vector Search on `props_vector` pre-filtered by familyId, topped
-    up with keyword-matched library props. Without one, or when vector search is
-    unavailable or returns nothing: keyword match over the family's props plus the
-    library, best first, score > 0 only.
+    Always: keyword match over the family's props plus the library props it has not
+    shadowed, score > 0 only. With a vector, also Atlas Vector Search on `props_vector`
+    pre-filtered by familyId, and the two are merged (see _merge): exact name matches
+    first, so a saved prop with no embedding is never hidden by an unrelated nearest
+    neighbour. When vector search is unavailable (mongomock, plain MongoDB) or returns
+    nothing, this is the keyword match alone.
     """
     return _find(db, PROPS, PROPS_VECTOR_INDEX, schemas.Prop, family_id, text, vector, limit,
                  library_props())
