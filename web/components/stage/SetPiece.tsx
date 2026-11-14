@@ -13,8 +13,11 @@
  *         front / back / edge meshes
  *
  * How far each piece has risen comes from the nearest <PopUp>:
- *   open: number   scrubbed, e.g. by a page-turn angle. Pieces rise in a depth
- *                  stagger (back first), no springs, so any value is a pose.
+ *   open: OpenSource  scrubbed: a number, a function of stage time, or a ref
+ *                  the host writes (the book's page turn drives the set
+ *                  through a ref with no React re-renders). Pieces rise in a
+ *                  depth stagger (back first), no springs, so any value is a
+ *                  pose.
  *   open: boolean  played. Each flip schedules, per piece (back first when
  *                  opening, front first when closing), an accelerating ramp
  *                  that a critically damped hinge spring follows: it carries
@@ -105,14 +108,29 @@ function hingePath(flips: readonly Flip[], order: number, count: number, size: n
 
 const PopUpContext = createContext<PopUpValue>({ rise: () => 1 });
 
+/** The enclosing <PopUp>'s rise function (1 everywhere outside a PopUp). */
+export function usePopUp(): PopUpValue {
+  return useContext(PopUpContext);
+}
+
+/** Scrubbed open progress (0 flat .. 1 risen): a fixed value, a function of
+ *  stage time, or a ref the host updates every frame. */
+export type OpenSource = number | ((t: number) => number) | { readonly current: number };
+
+/** Read an OpenSource at stage time `t`, clamped to 0..1. */
+export function readOpen(src: OpenSource, t: number): number {
+  const v = typeof src === "number" ? src : typeof src === "function" ? src(t) : src.current;
+  return clamp(v, 0, 1);
+}
+
 interface Flip {
   at: number;
   open: boolean;
 }
 
 export interface PopUpProps {
-  /** Scrub (0..1) or play (boolean). Default true. */
-  open?: number | boolean;
+  /** Scrub (an OpenSource, 0..1) or play (boolean). Default true. */
+  open?: OpenSource | boolean;
   /** When `open` starts true: stage time at which the set begins to rise. */
   openAt?: number;
   /** Optional scheduled fold-down, in stage time (e.g. before a page turn). */
@@ -149,12 +167,12 @@ export function PopUp({ open = true, openAt = 0.4, closeAt = null, timing, child
   }, [open, now, get]);
 
   const value = useMemo<PopUpValue>(() => {
-    if (typeof open === "number") {
+    if (typeof open !== "boolean") {
       return {
-        rise(order, count) {
+        rise(order, count, time) {
           const s = Math.min(scrubStagger, 0.8 / Math.max(1, count - 1));
           const span = 1 - s * (count - 1);
-          return smootherstep((open - order * s) / span);
+          return smootherstep((readOpen(open, time) - order * s) / span);
         },
       };
     }

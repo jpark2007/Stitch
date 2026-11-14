@@ -24,7 +24,7 @@ import { useCardBoxMaterials, usePaperMaterial, useWoodMaterial } from "@/compon
 import { createCardEdgeMaterial } from "@/components/paper/materials";
 import { StageClock, StaticShadows } from "./clock";
 import { CameraRig, DEFAULT_STAGE_SIZE, stagePoses, type CameraPath, type CameraPose, type StageSize } from "./CameraRig";
-import { PopUp, type PopUpTiming } from "./SetPiece";
+import { PopUp, type OpenSource, type PopUpTiming } from "./SetPiece";
 
 export const STAGE_COLORS = {
   page: "#f4ecdd",
@@ -206,8 +206,9 @@ export function Table({ y = -0.102 }: { y?: number }) {
 /* ------------------------------------------------------------------------ */
 
 export interface StageSceneProps {
-  /** Scrub (0..1) or play (boolean) the pop-up. Default true. */
-  open?: number | boolean;
+  /** Scrub (0..1: a number, a function of stage time, or a ref) or play
+   *  (boolean) the pop-up. Default true. */
+  open?: OpenSource | boolean;
   /** When `open` starts true: stage time the set begins to rise. */
   openAt?: number;
   /** Optional scheduled fold-down, in stage time. */
