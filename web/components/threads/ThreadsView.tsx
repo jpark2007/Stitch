@@ -493,6 +493,16 @@ export default function ThreadsView(props: ThreadsViewProps) {
   );
 
   /* ---------------- input ---------------- */
+  const prefetched = useRef(new Set<number>());
+  const prefetchMoment = useCallback(
+    (i: number) => {
+      if (prefetched.current.has(i)) return;
+      prefetched.current.add(i);
+      router.prefetch(`/memories/${model.knots[i].moment.id}`);
+    },
+    [model, router],
+  );
+
   useEffect(() => {
     const canvas = canvasRef.current!;
     const local = (ev: { clientX: number; clientY: number }) => {
@@ -562,6 +572,8 @@ export default function ThreadsView(props: ThreadsViewProps) {
         const hk = hit?.kind === "knot" ? hit.i : -1;
         const hs = hit?.kind === "strand" ? hit.i : -1;
         if (hk !== e.hoverKnot || hs !== e.hoverStrand) {
+          // Warm the moment's page while the pointer rests on its knot.
+          if (hk >= 0 && hk !== e.hoverKnot) prefetchMoment(hk);
           e.hoverKnot = hk;
           e.hoverStrand = hs;
           canvas.style.cursor = hit ? "pointer" : "grab";
@@ -654,7 +666,7 @@ export default function ThreadsView(props: ThreadsViewProps) {
       canvas.removeEventListener("pointercancel", onUp);
       canvas.removeEventListener("pointerleave", onLeave);
     };
-  }, [hitTest, model, router, setLit]);
+  }, [hitTest, model, prefetchMoment, router, setLit]);
 
   /* ---------------- buttons & keys ---------------- */
   const zoomButton = useCallback((dir: 1 | -1) => {
