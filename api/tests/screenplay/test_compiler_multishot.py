@@ -310,3 +310,88 @@ def test_compiling_twice_is_byte_identical(data):
     before = sp.model_dump_json()
     again = compile_screenplay(sp, sets=SETS, props=PROPS, people=PEOPLE).model_dump_json(by_alias=True)
     assert again == first and sp.model_dump_json() == before
+
+
+# ------------------------------------------------------------ (g) worn signature items
+
+CAP = schemas.Prop(id="cap", name="cap", size="hand", art={"body": None}, grip=[0.5, 0.5])
+CARA = schemas.Person(id="cara", family_id="f", name="Cara",
+                      character={"color": "#993366", "build": "average", "item_prop_id": "cap"})
+
+
+def run_worn(data: dict) -> CompileResult:
+    return compile_screenplay(Screenplay.model_validate(data), sets=SETS, props={**PROPS, "cap": CAP},
+                              people={**PEOPLE, "cara": CARA})
+
+
+def worn(*shots: dict, cast=("ann", "ben", "cara"), props=("cup", "bag", "cap")) -> dict:
+    return {"memoryId": "m", "cast": list(cast), "props": list(props), "shots": list(shots)}
+
+
+def cap_keys(result) -> list[tuple]:
+    return [(tr.target, tr.channel, k[0], k[1]) for tr in result.timeline.tracks if tr.target == "prop:cap"
+            for k in tr.keys]
+
+
+def test_a_signature_item_is_worn_on_the_head_from_the_start():
+    res = run_worn(worn(
+        {"id": "s1", "set": "porch", "start": {"cara": {"at": "door", "facing": "right"}},
+         "actions": [{"t": 0, "who": "cara", "do": "walk_to", "to": "gate"}]},
+        {"id": "s2", "set": "kitchen", "start": {"cara": {"at": "stove"}},
+         "actions": [{"t": 0, "who": "cara", "do": "walk_to", "to": "table"}]},
+    ))
+    assert res.ok, messages(res)
+    # exactly the two attach keys at t=0: parented to the head, the cap goes wherever cara goes,
+    # through her walks and into the next set
+    assert cap_keys(res) == [
+        ("prop:cap", "parent", 0.0, "puppet:cara.head"),
+        ("prop:cap", "position", 0.0, [0.0, 0.0, 0.0]),
+    ]
+
+
+def test_a_signature_item_is_worn_by_someone_offstage_too():
+    res = run_worn(worn({"id": "s1", "set": "porch", "start": {"ann": {"at": "door"}}}))
+    assert res.ok, messages(res)
+    assert cap_keys(res)[:1] == [("prop:cap", "parent", 0.0, "puppet:cara.head")]
+    assert value(res, "puppet:cara", "root.position", 0.0) == OFFSTAGE_LEFT
+
+
+def test_people_without_an_item_get_no_item_keys():
+    data = worn({"id": "s1", "set": "porch", "start": {"ann": {"at": "door"}, "ben": {"at": "gate"}},
+                 "actions": [{"t": 0, "who": "ann", "do": "walk_to", "to": "mid"}]}, cast=("ann", "ben"))
+    res = run_worn(data)
+    assert res.ok, messages(res)
+    assert not any(tr.target.startswith("prop:") for tr in res.timeline.tracks)
+    # and the cap is not worn when the screenplay does not list it
+    unlisted = run_worn(worn({"id": "s1", "set": "porch", "start": {"cara": {"at": "door"}}}, props=("cup",)))
+    assert unlisted.ok, messages(unlisted)
+    assert not any(tr.target == "prop:cap" for tr in unlisted.timeline.tracks)
+
+
+def test_a_worn_item_set_down_in_the_start_block_is_keyed_there_instead():
+    res = run_worn(worn({"id": "s1", "set": "porch", "start": {"cara": {"at": "door"}},
+                         "propStart": {"cap": {"at": "mid"}}}))
+    assert res.ok, messages(res)
+    assert track(res, "prop:cap", "parent") == [(0.0, "ground")]
+
+
+def test_a_later_put_on_swaps_the_signature_items_parent():
+    # cara wears the cap through shot 1; shot 2 sets it down mid-porch, ben walks over, picks it
+    # up and puts it on
+    res = run_worn(worn(
+        {"id": "s1", "set": "porch",
+         "start": {"cara": {"at": "gate"}, "ann": {"at": "gate"}, "ben": {"at": "door", "facing": "right"}},
+         "actions": [{"t": 0, "who": "cara", "do": "pose", "pose": "wave"}]},
+        {"id": "s2", "set": "porch", "propStart": {"cap": {"at": "mid"}},
+         "actions": [{"t": 0, "who": "ben", "do": "pick_up", "what": "cap"},
+                     {"t": 4, "who": "ben", "do": "put_on", "what": "cap"}]},
+    ))
+    assert res.ok, messages(res)
+    s2 = res.timeline.shots[1]
+    parents = track(res, "prop:cap", "parent")
+    assert [p for _, p in parents] == ["puppet:cara.head", "ground", "puppet:ben.hand_r", "puppet:ben.head"]
+    assert parents[0][0] == 0.0 and parents[1][0] == s2.start
+    assert s2.action_start < parents[2][0] < parents[3][0] < s2.end
+    assert value(res, "prop:cap", "parent", s2.start - 0.01) == "puppet:cara.head"
+    assert value(res, "prop:cap", "parent", s2.end) == "puppet:ben.head"
+    assert value(res, "prop:cap", "position", s2.end) == [0.0, 0.0, 0.0]

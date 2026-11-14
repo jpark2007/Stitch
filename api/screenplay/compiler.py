@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 
 import schemas
 import screenplay as _pkg
-from screenplay import body, ik, layout, motion, verbs_core
+from screenplay import body, character, ik, layout, motion, verbs_core
 from screenplay import camera as camera_mod
 from screenplay import errors as E
 from screenplay import narration as N
@@ -68,7 +68,16 @@ from screenplay.schema import (
     Timeline,
     TimelineShot,
 )
-from screenplay.state import GROUND, HANDS, OFFSTAGE_LEFT, TIME_EPS, StateError, World, fmt_t
+from screenplay.state import (
+    GROUND,
+    HANDS,
+    HEAD,
+    OFFSTAGE_LEFT,
+    TIME_EPS,
+    StateError,
+    World,
+    fmt_t,
+)
 from screenplay.tracks import Key, TrackSet, round_value
 from screenplay.validate import validate
 
@@ -550,6 +559,14 @@ def compile(
         for reason in problems:
             errors.add(E.error("bad_start", reason, shot.id), si)
         tracks.extend(start_keys)
+        if si == 0:
+            # Signature items (state.py puts them on the head when the World is built): parent
+            # each to its wearer's head, so it goes wherever the puppet goes. One already keyed
+            # (the start block put it in a hand or set it down) is left alone.
+            for who, p in world.people.items():
+                item = p.holding.get(HEAD)
+                if item is not None and not tracks.has_track(f"prop:{item}", "parent"):
+                    tracks.extend(character.worn_item_keys(world, who, shot_start))
 
         try:
             retimed = N.retime_actions(shot, action_start, author=default)
