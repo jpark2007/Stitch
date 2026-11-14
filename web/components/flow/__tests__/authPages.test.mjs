@@ -17,7 +17,14 @@ registerHooks({
   },
 });
 
-const { authLede, isJoinPath } = await import("../authPages.ts");
+const {
+  SIGNUP_HANDOFF_KEY,
+  SIGNUP_READY_NOTICE,
+  afterSignupFailure,
+  authLede,
+  isJoinPath,
+  readSignupHandoff,
+} = await import("../authPages.ts");
 
 const LOGIN_JOIN = "Log in to join your family.";
 const SIGNUP_JOIN = "Make an account to join your family.";
@@ -109,5 +116,110 @@ describe("isJoinPath", () => {
     ]) {
       assert.equal(isJoinPath(next), false, String(next));
     }
+  });
+});
+
+// ---- sign up handoff -------------------------------------------------------
+
+/** A Map-backed stand-in for sessionStorage. */
+function memoryStorage(initial = {}) {
+  const map = new Map(Object.entries(initial));
+  return {
+    map,
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => void map.set(k, String(v)),
+    removeItem: (k) => void map.delete(k),
+  };
+}
+
+const boom = () => {
+  throw new Error("SecurityError: storage is blocked");
+};
+
+describe("readSignupHandoff", () => {
+  test("gives the stored email once, then null", () => {
+    const storage = memoryStorage({ [SIGNUP_HANDOFF_KEY]: "rosa@maos.family" });
+    assert.equal(readSignupHandoff(storage), "rosa@maos.family");
+    assert.equal(storage.map.has(SIGNUP_HANDOFF_KEY), false, "removed after reading");
+    assert.equal(readSignupHandoff(storage), null);
+  });
+
+  test("null for empty storage or a blank value", () => {
+    assert.equal(readSignupHandoff(memoryStorage()), null);
+    assert.equal(readSignupHandoff(memoryStorage({ [SIGNUP_HANDOFF_KEY]: "   " })), null);
+    assert.equal(readSignupHandoff(memoryStorage({ [SIGNUP_HANDOFF_KEY]: "" })), null);
+  });
+
+  test("null, without throwing, when storage is null", () => {
+    assert.equal(readSignupHandoff(null), null);
+  });
+
+  test("null, without throwing, when getItem throws", () => {
+    const storage = { ...memoryStorage({ [SIGNUP_HANDOFF_KEY]: "a@b.c" }), getItem: boom };
+    assert.equal(readSignupHandoff(storage), null);
+  });
+
+  test("null, without throwing, when removeItem throws (never given out twice)", () => {
+    const storage = { ...memoryStorage({ [SIGNUP_HANDOFF_KEY]: "a@b.c" }), removeItem: boom };
+    assert.equal(readSignupHandoff(storage), null);
+    assert.equal(readSignupHandoff(storage), null);
+  });
+
+  test("null when every method throws", () => {
+    assert.equal(readSignupHandoff({ getItem: boom, setItem: boom, removeItem: boom }), null);
+  });
+
+  test("ignores other keys", () => {
+    const storage = memoryStorage({ "stitch.familyId": "f1" });
+    assert.equal(readSignupHandoff(storage), null);
+    assert.equal(storage.map.get("stitch.familyId"), "f1");
+  });
+
+  test("with no storage given and none in this runtime, null", () => {
+    // node has no sessionStorage global unless --experimental-webstorage.
+    if (typeof globalThis.sessionStorage === "undefined") {
+      assert.equal(readSignupHandoff(), null);
+    }
+  });
+});
+
+describe("afterSignupFailure", () => {
+  test("sends to log in and leaves the email for it", () => {
+    const storage = memoryStorage();
+    assert.equal(afterSignupFailure("rosa@maos.family", null, storage), "/login");
+    assert.equal(readSignupHandoff(storage), "rosa@maos.family");
+  });
+
+  test("keeps a safe next and drops an unsafe one", () => {
+    const storage = memoryStorage();
+    assert.equal(afterSignupFailure("a@b.c", "/join/abc", storage), "/login?next=%2Fjoin%2Fabc");
+    assert.equal(afterSignupFailure("a@b.c", "//evil.example", storage), "/login");
+    assert.equal(afterSignupFailure("a@b.c", "/signup", storage), "/login");
+  });
+
+  test("the email never appears in the URL", () => {
+    const email = "rosa+family@maos.family";
+    for (const next of [null, "/", "/join/abc", "/families/new"]) {
+      const href = afterSignupFailure(email, next, memoryStorage());
+      assert.doesNotMatch(href, /rosa|maos|%40|@/, href);
+    }
+  });
+
+  test("trims the email; a blank one is not stored", () => {
+    const storage = memoryStorage();
+    afterSignupFailure("  a@b.c ", null, storage);
+    assert.equal(storage.map.get(SIGNUP_HANDOFF_KEY), "a@b.c");
+    const empty = memoryStorage();
+    afterSignupFailure("   ", null, empty);
+    assert.equal(empty.map.size, 0);
+  });
+
+  test("still returns the log in page when storage throws or is missing", () => {
+    assert.equal(afterSignupFailure("a@b.c", null, { getItem: boom, setItem: boom, removeItem: boom }), "/login");
+    assert.equal(afterSignupFailure("a@b.c", "/join/x", null), "/login?next=%2Fjoin%2Fx");
+  });
+
+  test("the notice is the one calm line", () => {
+    assert.equal(SIGNUP_READY_NOTICE, "Your account is ready. Log in to carry on.");
   });
 });
