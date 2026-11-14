@@ -93,12 +93,17 @@ export interface LeafTextures {
   front: Texture;
   /** Verso: faces up once the leaf has turned to the left. */
   back: Texture;
-  /** Shared deckled edge, so page edges are slightly irregular. */
-  alphaMap: Texture;
+  /**
+   * Deckled edge for each side, so the head, tail and fore-edge are slightly
+   * irregular. The gutter edge is a clean fold (the maps are shifted so it
+   * samples inside the deckle).
+   */
+  alphaFront: Texture;
+  alphaBack: Texture;
   normalMap: Texture;
 }
 
-function pageMaterial(map: Texture, t: LeafTextures) {
+function pageMaterial(map: Texture, alphaMap: Texture, t: LeafTextures) {
   const m = new MeshStandardMaterial({
     map,
     normalMap: t.normalMap,
@@ -106,7 +111,7 @@ function pageMaterial(map: Texture, t: LeafTextures) {
     // No roughness map: its soft fields read as stains under a spotlight.
     roughness: 0.94,
     metalness: 0,
-    alphaMap: t.alphaMap,
+    alphaMap,
     alphaTest: 0.5,
     alphaToCoverage: true,
     side: FrontSide,
@@ -141,7 +146,10 @@ export class LeafBody {
     textures: LeafTextures,
   ) {
     const geometry = buildLeafGeometry();
-    const materials = [pageMaterial(textures.front, textures), pageMaterial(textures.back, textures)];
+    const materials = [
+      pageMaterial(textures.front, textures.alphaFront, textures),
+      pageMaterial(textures.back, textures.alphaBack, textures),
+    ];
     for (let i = 0; i <= BONES; i++) {
       const b = new Bone();
       b.rotation.order = "ZXY";

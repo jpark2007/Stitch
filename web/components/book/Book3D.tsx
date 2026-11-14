@@ -59,6 +59,8 @@ import type { BookCover, BookSpread } from "./types";
 
 const LEAF_MASK: DeckledMaskOptions = { aspect: PAGE_W / PAGE_H, style: "deckled", amount: 0.7, seed: 11, resolution: 1024 };
 const KRAFT = "#b58c62";
+/** Fraction of the deckle mask skipped at the gutter edge. */
+const GUTTER_INSET = 0.035;
 const TABLE_BG = "#1a110b";
 
 export interface BookInitial {
@@ -521,17 +523,36 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
   );
   const [ctl] = useState(() => new BookController(spreads.length, start, invalidate, onView, setStages));
 
+  // The gutter edge of a page is a fold, not a deckle: shift each side's mask
+  // so the gutter samples inside it (front: u = 0 at the gutter, back: u = 1).
+  const leafMasks = useMemo(() => {
+    const { alphaMap } = getDeckledMask(LEAF_MASK);
+    const front = alphaMap.clone();
+    front.repeat.set(1 - GUTTER_INSET, 1);
+    front.offset.set(GUTTER_INSET, 0);
+    const back = alphaMap.clone();
+    back.repeat.set(1 - GUTTER_INSET, 1);
+    return { front, back };
+  }, []);
+  useEffect(
+    () => () => {
+      leafMasks.front.dispose();
+      leafMasks.back.dispose();
+    },
+    [leafMasks],
+  );
+
   const leafTextures = useMemo<LeafTextures[]>(() => {
     // Fine tiling: at coarser scales the grain's soft fields read as smudges.
     const grain = getPaperTextures("paper", [4.5, 5.85]);
-    const mask = getDeckledMask(LEAF_MASK);
     return textures.leaves.map((l) => ({
       front: l.front,
       back: l.back,
-      alphaMap: mask.alphaMap,
+      alphaFront: leafMasks.front,
+      alphaBack: leafMasks.back,
       normalMap: grain.normalMap,
     }));
-  }, [textures]);
+  }, [textures, leafMasks]);
 
   useEffect(() => {
     ctl.attach(camera, () => gl.domElement.getBoundingClientRect());
