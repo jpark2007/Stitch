@@ -101,6 +101,8 @@ describe("module surface", () => {
     assert.deepEqual(Object.keys(apiModule).sort(), [
       "API_BASE_URL",
       "ApiError",
+      "MAX_FILM_PHOTOS",
+      "MIN_FILM_PHOTOS",
       "NETWORK_ERROR_MESSAGE",
       "api",
       "apiErrorFromBody",
@@ -109,6 +111,7 @@ describe("module surface", () => {
       "isApiError",
       "isMockMode",
       "parseSse",
+      "withMockFilms",
     ]);
   });
 
@@ -119,11 +122,13 @@ describe("module surface", () => {
       "answerRun",
       "ask",
       "createFamily",
+      "createFilm",
       "createInvite",
       "createTradition",
       "deleteTradition",
       "getBook",
       "getFamily",
+      "getFilm",
       "getMemory",
       "getProps",
       "getQuestions",
@@ -132,6 +137,7 @@ describe("module surface", () => {
       "getTradition",
       "getTree",
       "joinInvite",
+      "listFilms",
       "listTraditions",
       "login",
       "logout",
@@ -187,6 +193,7 @@ const signup = { email: "a@b.c", password: "secret12", name: "Ana" };
 const login = { email: "a@b.c", password: "secret12" };
 const newPerson = { name: "Rosa", born: 1931, parentIds: [], spouseIds: [] };
 const answer = { kind: "answer", text: "It was blue." };
+const film = { text: "The lake.", year: 1998, photoIds: ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"] };
 const tradition = { title: "Sunday pancakes", category: "food", when: { kind: "weekly", label: "every Sunday" } };
 
 /** [method name, args, HTTP method, path, JSON body (undefined = none), response] */
@@ -233,6 +240,9 @@ const ROUTES = [
   ["updateTradition", [F, "t2", { title: "Saturday pancakes" }], "PATCH", `/families/${FE}/traditions/t2`,
     { title: "Saturday pancakes" }, { id: "t2" }],
   ["deleteTradition", [F, "t2"], "DELETE", `/families/${FE}/traditions/t2`, undefined, null],
+  ["listFilms", [F], "GET", `/families/${FE}/films`, undefined, { films: [] }],
+  ["getFilm", [F, "f 1"], "GET", `/families/${FE}/films/f%201`, undefined, { id: "f 1" }],
+  ["createFilm", [F, film], "POST", `/families/${FE}/films`, film, { id: "f2" }],
 ];
 
 describe("routes", () => {
