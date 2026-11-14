@@ -15,12 +15,34 @@ Time bases:
 The default telling (``Shot.narration``) drives the action: each cued line moves its action
 so the action starts on the cue word. Other tellings (``Screenplay.narrations``) share that
 action, so each of their cued lines is shifted instead, so its cue word lands on the action.
+
+Word timings: in the screenplay, ``NarrationLine.words[i].t`` is seconds from the start of
+that line (TTS timestamps relative to the line's audio clip). In the timeline every ``t`` is
+timeline time: the line's ``t`` and each word's ``t`` are absolute. Lines without ``words`` get
+one word per token every ``WORD_SECONDS``.
+
+Speaking rules checked here (each a ``NarrationError``):
+- a cue word must land at or after the shot's t=0, and no action may be pushed before it
+  (``cue_before_start``);
+- a non-default telling's line shifted onto its action must not start before the shot starts,
+  that is before its set starts rising at ``TimelineShot.start``, ``layout.RISE`` seconds
+  before t=0 (``cue_before_start``);
+- within one telling of a shot, a line must not start before the previous line's last word
+  has been said, ``WORD_SECONDS`` after its time (``lines_overlap``). ``build_shot_narration``
+  checks each other telling right after shifting it, then the default telling once.
+
+Scrub interactions (``convert_interactions``) are written in shot time against the actions as
+written. When the compiler passes each shot's original and retimed action times, a scrub's
+``from``/``to`` follow those actions onto their cue words (``retime_point``); a range that
+would run backwards afterwards is ``interaction_bad_range``.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 
+from screenplay.layout import RISE
 from screenplay.schema import (
     Caption,
     Interaction,
@@ -40,6 +62,16 @@ _DIGITS = 6
 def _r(x: float) -> float:
     """Round a time to microseconds, normalising -0.0 to 0.0."""
     return round(x, _DIGITS) + 0.0
+
+
+def _f2(x: float) -> str:
+    """A time for messages, to 2 dp (never "-0.00")."""
+    return f"{round(x, 2) + 0.0:.2f}"
+
+
+def _action_name(shot: Shot, idx: int) -> str:
+    a = shot.actions[idx]
+    return a.id or a.do
 
 
 class NarrationError(Exception):
@@ -219,10 +251,15 @@ def retime_actions(shot: Shot, action_start: float, *, author: str | None = None
     cued action's original ``t`` and that has not itself been placed by a cue yet moves by
     the same delta (deltas accumulate). An action that is cued later still lands exactly on
     its own word, so uncued actions after it keep their spacing from it.
+
+    Raises ``cue_before_start`` when a cue word, or an uncued action carried earlier by the
+    ripples, would land before the shot's t=0. An uncued action written with a negative ``t``
+    is returned as written unless a ripple moves it earlier still.
     """
     original = [a.t for a in shot.actions]
     current = list(original)
     pinned: dict[int, int] = {}  # action index -> line index that placed it
+    moved_by: dict[int, tuple[int, int]] = {}  # uncued action -> (line, cued action) of its last ripple
     for li, line in enumerate(shot.narration):
         if line.cue is None:
             continue
@@ -256,6 +293,24 @@ def retime_actions(shot: Shot, action_start: float, *, author: str | None = None
             for j, t0 in enumerate(original):
                 if j not in pinned and t0 > original[idx]:
                     current[j] = _r(current[j] + delta)
+                    moved_by[j] = (li, idx)
+    # Ripples can push an uncued action before t=0: when a later line cues an earlier action
+    # back after an even later action was already pinned, the uncued actions after both get
+    # both deltas. Only a ripple that moved an action earlier and below t=0 is a retiming
+    # error: an action written with a negative t (no contract forbids it here; validation
+    # owns that rule) passes through unchanged when no ripple moves it earlier.
+    for j, t_new in enumerate(current):
+        if j in moved_by and t_new < 0 and t_new < original[j]:
+            li, idx = moved_by[j]
+            raise NarrationError(
+                "cue_before_start",
+                f"action {j} ({_action_name(shot, j)}) would start at shot t={_f2(t_new)}, before the shot "
+                f"starts: it keeps its spacing after action {idx} ({_action_name(shot, idx)}), which this "
+                f"line moves to shot t={_f2(current[idx])}; give action {j} a later t or a cue of its own",
+                author=author,
+                shot=shot.id,
+                line_index=li,
+            )
     return [_r(t) for t in current]
 
 
@@ -283,6 +338,8 @@ def build_shot_narration(
     retimed: list[float],
     other: dict[str, list[NarrationLine]],
     default: str,
+    *,
+    check_default: bool = True,
 ) -> dict[str, list[NarrationLine]]:
     """One shot's narration in timeline time: ``author -> lines``, default teller first.
 
@@ -291,6 +348,12 @@ def build_shot_narration(
     (the actions moved to them in ``retime_actions``); each cued line of another telling is
     shifted so its cue word lands on the retimed action. ``other`` is author -> this shot's
     lines from ``Screenplay.narrations``.
+
+    ``lines_overlap`` is checked for each other teller right after its own cue checks, in
+    ``other`` order, and then for the default telling, so a default overlap never hides a
+    teller's own error. A caller that builds the tellings one teller per call (validation)
+    should pass ``check_default=False`` on those calls and check the default once, with
+    ``other={}``, so a default overlap is reported once per shot.
     """
     out: dict[str, list[NarrationLine]] = {
         default: [_timeline_line(line, action_start + line.t) for line in shot.narration]
@@ -323,19 +386,75 @@ def build_shot_narration(
                 words = line_words(line, start)
                 word_t = cue_word_time(line, words, author=author, shot=shot.id, line_index=li)
                 start = start + (action_start + retimed[idx] - word_t)
-                if _r(start) < _r(action_start):
+                if _r(start) < _r(action_start - RISE):
                     raise NarrationError(
                         "cue_before_start",
                         f'to land its cue word on the action, "{line.text}" would start at shot '
-                        f"t={_r(start - action_start):g}, before the shot starts; "
+                        f"t={_f2(start - action_start)}, before the shot starts; "
                         f"shorten the words before the cue word or move the action later",
                         author=author,
                         shot=shot.id,
                         line_index=li,
                     )
             built.append(_timeline_line(line, start))
+        _check_no_overlap(shot, action_start, author, built)
         out[author] = built
+    if check_default:
+        _check_no_overlap(shot, action_start, default, out[default])
     return out
+
+
+def _check_no_overlap(shot: Shot, action_start: float, author: str | None, lines: list[NarrationLine]) -> None:
+    """Raise ``lines_overlap`` when a line starts before the previous spoken line has been said.
+
+    ``lines`` are timeline lines (words filled in). A line is said by its last word's time
+    plus ``WORD_SECONDS``. Lines with no words are silent and skipped.
+    """
+    prev: tuple[int, float] | None = None  # (line index, timeline time it has been said by)
+    for i, line in enumerate(lines):
+        if not line.words:
+            continue
+        if prev is not None and line.t < prev[1] - 1e-6:
+            raise NarrationError(
+                "lines_overlap",
+                f"line {i} starts at shot t={_f2(line.t - action_start)}, before line {prev[0]} has been "
+                f"said (its last word ends at shot t={_f2(prev[1] - action_start)}); start line {i} "
+                f"later or shorten line {prev[0]}",
+                author=author,
+                shot=shot.id,
+                line_index=i,
+            )
+        prev = (i, _r(max(w.t for w in line.words) + WORD_SECONDS))
+
+
+def shot_tellings(screenplay: Screenplay, shot_id: str) -> dict[str, list[NarrationLine]]:
+    """``author -> lines`` of the other tellings (``Screenplay.narrations``) for one shot.
+
+    Authors keep their ``narrations`` order; an author with no lines for the shot is left out.
+    """
+    return {
+        author: by_shot[shot_id]
+        for author, by_shot in (screenplay.narrations or {}).items()
+        if by_shot.get(shot_id)
+    }
+
+
+def narrate_shot(
+    screenplay: Screenplay,
+    shot: Shot,
+    action_start: float,
+    default: str,
+) -> tuple[list[float], dict[str, list[NarrationLine]]]:
+    """Retime one shot's actions onto the default telling's cue words, then build every
+    telling's narration for the shot in timeline time.
+
+    Returns ``(retimed, lines_by_author)``: ``retimed[i]`` is the new shot-time ``t`` of
+    ``shot.actions[i]`` (``retime_actions``) and ``lines_by_author`` is as in
+    ``build_shot_narration`` (default teller first, then ``shot_tellings`` order).
+    """
+    retimed = retime_actions(shot, action_start, author=default)
+    built = build_shot_narration(shot, action_start, retimed, shot_tellings(screenplay, shot.id), default)
+    return retimed, built
 
 
 def last_word_time(lines_by_author: dict[str, list[NarrationLine]]) -> float | None:
@@ -371,16 +490,45 @@ def assemble(
 
 # ---------------------------------------------------------------------- interactions
 
+def retime_point(t: float, original: Sequence[float], retimed: Sequence[float]) -> float:
+    """Where shot time ``t`` lands once the shot's actions have been retimed.
+
+    ``original[i]`` / ``retimed[i]`` are action i's shot-time ``t`` before and after
+    ``retime_actions``. ``t`` follows the action i with the largest ``original[i] <= t`` (ties:
+    the largest i) and keeps its offset from it: ``retimed[i] + (t - original[i])``. Before the
+    first action, or with no actions, ``t`` is returned unchanged. Raises ``ValueError`` when
+    the two sequences differ in length.
+    """
+    if len(original) != len(retimed):
+        raise ValueError(f"retime_point needs one retimed t per action: {len(original)} != {len(retimed)}")
+    best: int | None = None
+    for i, t0 in enumerate(original):
+        if t0 <= t and (best is None or t0 >= original[best]):
+            best = i
+    if best is None:
+        return t
+    return _r(retimed[best] + (t - original[best]))
+
+
 def convert_interactions(
     interactions: list[Interaction],
     action_start_by_shot: dict[str, float],
     first_shot: str,
+    *,
+    retimed_by_shot: Mapping[str, tuple[Sequence[float], Sequence[float]]] | None = None,
 ) -> list[Interaction]:
     """Screenplay interactions -> timeline interactions.
 
     A ``scrub`` drive's ``from``/``to`` move from shot time to timeline time using the
     shot's ``action_start`` (``shot`` None means the first shot). Every other field is
     copied unchanged.
+
+    ``retimed_by_shot`` maps a shot id to ``(original, retimed)``: its actions' shot-time
+    ``t`` before and after ``retime_actions``. When the scrub's shot has an entry, ``from`` and
+    ``to`` first follow the actions onto their cue words (``retime_point``), so the tab still
+    scrubs the actions it was written for. If that turns the range around (``to`` before
+    ``from``), ``interaction_bad_range`` is raised. Without ``retimed_by_shot`` (or with no
+    entry for the shot) the shot times are used as written.
     """
     out: list[Interaction] = []
     for i, it in enumerate(interactions):
@@ -396,11 +544,27 @@ def convert_interactions(
                 line_index=i,
             )
         base = action_start_by_shot[shot_id]
+        t_from, t_to = it.drives.from_, it.drives.to
+        timing = retimed_by_shot.get(shot_id) if retimed_by_shot is not None else None
+        if timing is not None:
+            original, retimed = timing
+            if t_from is not None:
+                t_from = retime_point(t_from, original, retimed)
+            if t_to is not None:
+                t_to = retime_point(t_to, original, retimed)
+            if t_from is not None and t_to is not None and t_to < t_from:
+                raise NarrationError(
+                    "interaction_bad_range",
+                    f'interaction "{it.id}" would scrub from shot t={_f2(t_from)} back to t={_f2(t_to)} '
+                    f"once its actions move onto their cue words; widen the range or cue the actions in order",
+                    shot=shot_id,
+                    line_index=i,
+                )
         update: dict[str, float | None] = {}
-        if it.drives.from_ is not None:
-            update["from_"] = _r(base + it.drives.from_)
-        if it.drives.to is not None:
-            update["to"] = _r(base + it.drives.to)
+        if t_from is not None:
+            update["from_"] = _r(base + t_from)
+        if t_to is not None:
+            update["to"] = _r(base + t_to)
         drives = it.drives.model_copy(deep=True, update=update)
         out.append(it.model_copy(deep=True, update={"drives": drives}))
     return out

@@ -207,6 +207,8 @@ def follow_keys(
     lag: float = 0.5,
     gait: Literal["walk", "run"] = "walk",
     skip_bones: Iterable[str] = (),
+    *,
+    speed_scale: float = 1.0,
 ) -> tuple[list[Key], float, int]:
     """Walk behind a leader along its root.position keys (timeline time).
 
@@ -227,8 +229,15 @@ def follow_keys(
     So while the follower moves, the leader is always level with or ahead of it in the
     direction it walks. A leader that never moves after t0 is walked up to, from t0.
     With `dur`, motion is clipped at t0 + dur.
+
+    `speed_scale` (the follower's character factor, ``PuppetState.speed_scale``) scales its
+    natural gait speed: a slow walker takes ``1 / speed_scale`` as long to cover the same
+    ground, and is still only ever slowed further to wait for the leader. It must be
+    positive (ValueError otherwise, as in ``locomotion_keys``).
     Returns (keys, time the follower stops, facing after).
     """
+    if speed_scale <= 0:
+        raise ValueError(f"speed_scale must be positive, got {speed_scale}")
     skip = tuple(skip_bones)
     if dur is not None and dur <= 0:
         return [], t0, facing_now
@@ -237,7 +246,7 @@ def follow_keys(
     if not path:
         return [], t0, facing_now
     end_t = None if dur is None else t0 + dur
-    speed = SPEEDS[gait]
+    speed = SPEEDS[gait] * speed_scale  # the follower's own natural speed
 
     # leader moves: (set off, arrive, from, to, d)
     moves: list[tuple[float, float, Vec3, Vec3, int]] = []
@@ -264,7 +273,7 @@ def follow_keys(
             natural = math.hypot(goal[0] - start[0], goal[2] - start[2]) / speed
             if natural > _EPS and t0 + natural > end_t + _EPS:
                 goal = _lerp3(start, goal, (end_t - t0) / natural)
-        seg_keys, t_arr, facing = locomotion_keys(who, build, t0, start, goal, facing, gait, skip)
+        seg_keys, t_arr, facing = locomotion_keys(who, build, t0, start, goal, facing, gait, skip, speed_scale)
         return seg_keys, (t_arr if seg_keys else t0), facing
 
     # A move whose d is 0 (leader never moved in x yet) takes its direction from where the
@@ -303,7 +312,8 @@ def follow_keys(
         seg_end = seg_start + natural / scale
         if seg_end > cutoff + _EPS:
             goal = _lerp3(cur_p, goal, (cutoff - seg_start) / (seg_end - seg_start))
-        seg_keys, t_arr, facing = locomotion_keys(who, build, seg_start, cur_p, goal, facing, gait, skip, scale)
+        seg_keys, t_arr, facing = locomotion_keys(
+            who, build, seg_start, cur_p, goal, facing, gait, skip, scale * speed_scale)
         if seg_keys:
             keys.extend(seg_keys)
             cur_t, cur_p = t_arr, goal

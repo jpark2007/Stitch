@@ -595,3 +595,69 @@ def test_vehicle_helpers_deterministic():
     assert a == b
     p = motion.path_from_keys(a[0], "prop:car")
     assert motion.wheel_spin_keys("car", CAR["parts"], p, 0.1) == motion.wheel_spin_keys("car", CAR["parts"], p, 0.1)
+
+
+# ----------------------------------------------------------- follow: walking speed
+
+def test_follow_speed_scale_slows_the_walk_up_to_a_stationary_leader():
+    leader = [(0.0, (0.3, 0, 0.5))]
+    plain, t_plain, _ = follow_keys("dad", "tall", 1.0, (-1.0, 0, 0.5), 1, leader, None)
+    slow, t_slow, _ = follow_keys("dad", "tall", 1.0, (-1.0, 0, 0.5), 1, leader, None, speed_scale=0.6)
+    assert t_plain == pytest.approx(1.0 + 1.1 / 0.35)
+    assert (t_slow - 1.0) == pytest.approx((t_plain - 1.0) / 0.6, abs=1e-3)
+    # same spot, same stride count: only the timing stretches
+    assert follower_path(slow)[-1][1] == follower_path(plain)[-1][1] == pytest.approx((0.1, 0, 0.5))
+    assert len(slow) == len(plain)
+    assert slow == follow_keys("dad", "tall", 1.0, (-1.0, 0, 0.5), 1, leader, None, speed_scale=0.6)[0]
+
+
+def test_follow_speed_scale_with_dur_clips_a_slow_walker_short():
+    leader = [(0.0, (0.3, 0, 0.5))]
+    keys, t_end, _ = follow_keys("dad", "tall", 1.0, (-1.0, 0, 0.5), 1, leader, 2.0, speed_scale=0.6)
+    assert t_end == pytest.approx(3.0)
+    # in 2 s at 0.6 * 0.35 a slow walker covers 0.42 of the 1.1 to go
+    assert follower_path(keys)[-1][1][0] == pytest.approx(-1.0 + 2.0 * 0.35 * 0.6)
+
+
+@pytest.mark.parametrize("scale", [0.6, 1.0, 1.25, 3.0])
+def test_follow_speed_scale_never_arrives_before_leader_arrival_plus_lag(scale):
+    leader = leader_path(1.0, (-0.8, 0, 0.5), [(0.0, (-0.2, 0, 0.5)), (0.8, (0.6, 0, 0.5))])
+    keys, t_end, _ = follow_keys("dad", "tall", 1.0, (-1.3, 0, 0.5), 1, leader, None, speed_scale=scale)
+    fpath = follower_path(keys)
+    assert fpath[-1][1][0] == pytest.approx(0.6 - 0.2)
+    assert t_end >= leader[-1][0] + 0.5 - 1e-9
+    # every walk segment ends no earlier than the leader's matching arrival + lag
+    arrivals = [leader[2][0], leader[-1][0]]
+    seg_ends = [t for t, _ in fpath[1::2]]
+    assert len(seg_ends) == len(arrivals)
+    for end, arrive in zip(seg_ends, arrivals):
+        assert end >= arrive + 0.5 - 1e-9
+    assert_never_walks_into_leader(fpath, leader, 1.0, t_end)
+
+
+def test_follow_slow_walker_takes_its_own_time_behind_a_moving_leader():
+    # The leader hops 0.2 in 0.1 s, so the follower is never held back by it: its walk time
+    # is its own natural time, 1 / 0.6 as long for a slow walker.
+    leader = [(0.0, (0.2, 0, 0.5)), (2.0, (0.2, 0, 0.5)), (2.1, (0.4, 0, 0.5))]
+    _, t_plain, _ = follow_keys("kid", "small", 2.0, (-1.3, 0, 0.5), 1, leader, None)
+    keys, t_slow, _ = follow_keys("kid", "small", 2.0, (-1.3, 0, 0.5), 1, leader, None, speed_scale=0.6)
+    set_off = 2.0 + 0.5  # leader set off at 2.0, plus lag
+    assert t_plain == pytest.approx(set_off + 1.5 / 0.35)
+    assert (t_slow - set_off) == pytest.approx((t_plain - set_off) / 0.6, abs=1e-3)
+    assert follower_path(keys)[-1][1][0] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("scale", [0.0, -0.5])
+def test_follow_speed_scale_must_be_positive(scale):
+    with pytest.raises(ValueError, match="speed_scale must be positive"):
+        follow_keys("dad", "tall", 1.0, (-1.0, 0, 0.5), 1, [(0.0, (0.3, 0, 0.5))], None, speed_scale=scale)
+    with pytest.raises(ValueError, match="speed_scale must be positive"):
+        follow_keys("dad", "tall", 1.0, (-1.0, 0, 0.5), 1, [(0.0, (0.3, 0, 0.5)), (2.0, (0.6, 0, 0.5))], None,
+                    speed_scale=scale)
+
+
+def test_follow_speed_scale_is_keyword_only():
+    import inspect
+
+    param = inspect.signature(follow_keys).parameters["speed_scale"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY and param.default == 1.0

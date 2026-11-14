@@ -19,7 +19,10 @@ from screenplay.narration import (
     default_author,
     last_word_time,
     line_words,
+    narrate_shot,
     retime_actions,
+    retime_point,
+    shot_tellings,
     tokenize,
 )
 from screenplay.schema import (
@@ -350,7 +353,8 @@ def test_other_telling_errors_carry_author_shot_and_line(sp):
     e = _err(build_shot_narration, shot, ACTION_START, retimed, {"mom": bad}, "dad")
     assert (e.code, e.author, e.shot, e.line_index) == ("cue_conflict", "mom", "s1", 2)
 
-    # "everywhere" is the 6th word: landing it on drop at shot t=0.5 needs a start of -0.75.
+    # "everywhere" is the 6th word (1.25 s in): landing it on drop at shot t=0.0 needs a start of
+    # -1.25, before the set starts rising at -1.2.
     early = shot.model_copy(deep=True)
     early.narration[1].t = -0.75  # dad's "dropped" at shot t=0.0
     retimed_early = retime_actions(early, ACTION_START)
@@ -479,3 +483,429 @@ def test_convert_interactions_unknown_shot():
     )
     e = _err(convert_interactions, [scrub], {"s1": 1.2}, "s1")
     assert (e.code, e.shot, e.line_index) == ("interaction_unknown_shot", "s9", 0)
+
+
+# ---------------------------------------------------------------------- retime_point
+
+ORIG = [1.0, 2.0, 4.0]
+NEW = [1.5, 3.0, 4.25]
+
+
+def test_retime_point_before_the_first_action_is_unchanged():
+    assert retime_point(0.4, ORIG, NEW) == 0.4
+    assert retime_point(-2.0, ORIG, NEW) == -2.0
+
+
+def test_retime_point_exactly_on_an_action_lands_on_its_new_time():
+    assert [retime_point(t, ORIG, NEW) for t in ORIG] == NEW
+
+
+def test_retime_point_between_actions_follows_the_latest_earlier_action():
+    assert retime_point(1.25, ORIG, NEW) == 1.75  # after action 0 (+0.5)
+    assert retime_point(3.9, ORIG, NEW) == 4.9  # after action 1 (+1.0), not pulled back by action 2
+    assert retime_point(6.0, ORIG, NEW) == 6.25  # after the last action (+0.25)
+
+
+def test_retime_point_does_not_depend_on_action_order():
+    assert retime_point(3.0, [4.0, 1.0, 2.0], [4.25, 1.5, 3.0]) == 4.0  # follows the action written at 2.0
+
+
+def test_retime_point_ties_follow_the_last_action_at_that_time():
+    original = [1.0, 1.0, 3.0]
+    retimed = [1.25, 1.0, 3.0]  # retime_actions: the cued action moves, its same-time sibling does not
+    assert retime_point(1.0, original, retimed) == 1.0
+    assert retime_point(1.5, original, retimed) == 1.5
+    assert retime_point(1.5, original, [1.0, 2.0, 3.0]) == 2.5
+
+
+def test_retime_point_with_no_actions_is_unchanged():
+    assert retime_point(2.5, [], []) == 2.5
+    assert retime_point(2.5, (), ()) == 2.5
+
+
+def test_retime_point_rounds_float_noise():
+    assert retime_point(4.45, [3.25], [4.0]) == 5.2
+
+
+def test_retime_point_needs_one_retimed_t_per_action():
+    with pytest.raises(ValueError):
+        retime_point(1.0, [1.0, 2.0], [1.0])
+
+
+# ------------------------------------------------------- interactions after retiming
+
+def _scrub(id_: str, t_from: float | None, t_to: float | None, shot: str | None = None) -> Interaction:
+    drives: dict = {"type": "scrub"}
+    if t_from is not None:
+        drives["from"] = t_from
+    if t_to is not None:
+        drives["to"] = t_to
+    return Interaction.model_validate(
+        {"id": id_, "kind": "pull_tab", "label": "Pull", "shot": shot, "at": [0.5, 0.5], "drives": drives}
+    )
+
+
+@pytest.mark.parametrize("dt", [-0.5, 0.6, 1.0])
+def test_scrub_follows_a_drop_cued_later(sp, dt):
+    shot = _with_drop_line_at(sp, 2.5 + dt)
+    original = [a.t for a in shot.actions]
+    retimed = retime_actions(shot, ACTION_START)
+    assert retimed[1] == pytest.approx(3.25 + dt)
+    out = convert_interactions(
+        sp.interactions, {"s1": ACTION_START}, "s1", retimed_by_shot={"s1": (original, retimed)}
+    )
+    # Written as shot 3.25..3.55 around the drop at 3.25: both ends move by the drop's delta.
+    assert out[0].drives.from_ == pytest.approx(ACTION_START + 3.25 + dt)
+    assert out[0].drives.to == pytest.approx(ACTION_START + 3.55 + dt)
+    assert out[0].drives.to - out[0].drives.from_ == pytest.approx(0.3)
+    assert sp.interactions[0].drives.from_ == 3.25  # input untouched
+    # Without the retiming the tab would scrub the old window, off the drop.
+    old = convert_interactions(sp.interactions, {"s1": ACTION_START}, "s1")
+    assert old[0].drives.from_ == 4.45
+
+
+def test_scrub_output_without_retimed_by_shot_is_unchanged(sp, tl):
+    scrubs = [*sp.interactions, _scrub("b", 1.0, 2.0, shot="s2"), _scrub("c", None, 2.0), _scrub("d", 0.5, None)]
+    starts = {"s1": ACTION_START, "s2": 12.0}
+    plain = convert_interactions(scrubs, starts, "s1")
+    assert [i.model_dump_json() for i in plain] == [
+        i.model_dump_json() for i in convert_interactions(scrubs, starts, "s1", retimed_by_shot=None)
+    ]
+    assert [dump(i) for i in plain[:1]] == [dump(i) for i in tl.interactions]
+    assert [(i.drives.from_, i.drives.to) for i in plain] == [(4.45, 4.75), (13.0, 14.0), (None, 3.2), (1.7, None)]
+    # Identity retiming, or retiming for another shot only, changes nothing either.
+    shot = sp.shots[0]
+    same = [a.t for a in shot.actions]
+    for timing in ({"s1": (same, same)}, {"s2": ([0.0], [5.0])}):
+        got = convert_interactions(scrubs[:1], starts, "s1", retimed_by_shot=timing)
+        assert [i.model_dump_json() for i in got] == [i.model_dump_json() for i in plain[:1]]
+
+
+def test_scrub_retiming_maps_each_present_end_and_only_its_own_shot():
+    timing = {"s2": ([1.0, 2.0], [1.5, 3.0])}
+    out = convert_interactions(
+        [_scrub("a", 1.0, 2.0), _scrub("b", 1.2, 2.5, shot="s2"), _scrub("c", None, 2.5, shot="s2"),
+         _scrub("d", 0.5, None, shot="s2")],
+        {"s1": 1.0, "s2": 10.0},
+        "s1",
+        retimed_by_shot=timing,
+    )
+    assert [(i.drives.from_, i.drives.to) for i in out] == [(2.0, 3.0), (11.7, 13.5), (None, 13.5), (10.5, None)]
+
+
+def _crossed_cues_shot() -> Shot:
+    # b is cued first on "now" (shot 2.0, where it was written); a is then cued on "later"
+    # (shot 3.0). b is already pinned, so a now lands after b.
+    return Shot(
+        id="s1",
+        set="x",
+        actions=[Action(t=1.0, do="drop", who="a", what="p"), Action(t=2.0, do="pose", who="b", pose="x", id="b")],
+        narration=[line(2.0, "now", cue="b"), line(3.0, "later", cue="drop")],
+    )
+
+
+def test_scrub_range_turned_around_by_cues_is_an_error():
+    shot = _crossed_cues_shot()
+    original = [a.t for a in shot.actions]
+    retimed = retime_actions(shot, 0.0)
+    assert retimed == [3.0, 2.0]
+    ok = _scrub("fine", 0.5, 1.5)  # before a, then after a: 0.5 .. 3.5
+    bad = _scrub("pull", 1.5, 2.5)  # after a (-> 3.5) to after b (-> 2.5)
+    e = _err(
+        convert_interactions, [ok, bad], {"s1": 1.2}, "s1", retimed_by_shot={"s1": (original, retimed)}
+    )
+    assert (e.code, e.shot, e.line_index, e.author) == ("interaction_bad_range", "s1", 1, None)
+    assert e.reason == (
+        'interaction "pull" would scrub from shot t=3.50 back to t=2.50 once its actions move onto '
+        "their cue words; widen the range or cue the actions in order"
+    )
+    assert str(e) == f"shot s1, narration line 1: {e.reason}"
+    # Without the retiming the same range converts as written.
+    out = convert_interactions([ok, bad], {"s1": 1.2}, "s1")
+    assert (out[1].drives.from_, out[1].drives.to) == (2.7, 3.7)
+
+
+def test_scrub_range_collapsing_to_a_point_is_allowed():
+    out = convert_interactions(
+        [_scrub("a", 1.5, 2.5)], {"s1": 0.0}, "s1", retimed_by_shot={"s1": ([1.0, 2.0], [2.0, 2.0])}
+    )
+    assert (out[0].drives.from_, out[0].drives.to) == (2.5, 2.5)
+
+
+# ------------------------------------------------------------- shot_tellings / narrate_shot
+
+def test_cue_word_missing_exact_message(sp):
+    shot = sp.shots[0].model_copy(deep=True)
+    shot.narration[1].cue_word = "fell"
+    e = _err(retime_actions, shot, ACTION_START, author="dad")
+    assert (e.code, e.author, e.shot, e.line_index) == ("cue_word_missing", "dad", "s1", 1)
+    assert str(e) == e.message == (
+        "shot s1, dad's narration line 1: "
+        'cueWord "fell" is not a word of "…and then she dropped every single hymn book."; '
+        'its words are: "and", "then", "she", "dropped", "every", "single", "hymn", "book"'
+    )
+
+
+def test_shot_tellings(sp):
+    assert shot_tellings(sp, "s1") == {"mom": sp.narrations["mom"]["s1"]}
+    assert shot_tellings(sp, "s2") == {}
+    data = sp.model_dump(by_alias=True)
+    data["narrations"] = {
+        "gran": {"s1": [{"t": 0, "text": "Hello"}]},
+        "kid": {"s1": []},  # no lines for the shot: left out
+        "mom": data["narrations"]["mom"],
+        "uncle": {"s2": [{"t": 0, "text": "Elsewhere"}]},
+    }
+    assert list(shot_tellings(Screenplay.model_validate(data), "s1")) == ["gran", "mom"]
+    assert shot_tellings(sp.model_copy(update={"narrations": None}), "s1") == {}
+
+
+def test_shot_tellings_skips_authors_with_an_empty_list_for_the_shot(sp):
+    data = sp.model_dump(by_alias=True)
+    data["narrations"] = {"kid": {"s1": [], "s2": [{"t": 0, "text": "Later"}]}, "mom": data["narrations"]["mom"]}
+    sp2 = Screenplay.model_validate(data)
+    assert list(shot_tellings(sp2, "s1")) == ["mom"]
+    assert list(shot_tellings(sp2, "s2")) == ["kid"]
+    # So narrate_shot builds no empty telling for the kid in s1.
+    _, built = narrate_shot(sp2, sp2.shots[0], ACTION_START, default_author(sp2))
+    assert list(built) == ["dad", "mom"]
+
+
+def test_narrate_shot_reproduces_sample(sp, tl):
+    shot = sp.shots[0]
+    retimed, built = narrate_shot(sp, shot, tl.shots[0].action_start, default_author(sp))
+    assert retimed == [0, 3.25, 3.6, 5.5, 6.6, 7.7]
+    assert list(built) == ["dad", "mom"]
+    tracks, captions = assemble([built], "dad")
+    assert list(tracks) == list(tl.narrations)
+    for author, track in tracks.items():
+        want = tl.narrations[author]
+        assert track.author_id == want.author_id and track.audio == want.audio
+        for got_c, want_c in zip(track.captions, want.captions, strict=True):
+            assert got_c.text == want_c.text and abs(got_c.t - want_c.t) < 1e-3
+        for got_l, want_l in zip(track.lines, want.lines, strict=True):
+            assert (got_l.text, got_l.source, got_l.cue, got_l.cue_word) == (
+                want_l.text, want_l.source, want_l.cue, want_l.cue_word)
+            assert abs(got_l.t - want_l.t) < 1e-3
+            for gw, ww in zip(got_l.words, want_l.words, strict=True):
+                assert gw.word == ww.word and abs(gw.t - ww.t) < 1e-3
+    for got_c, want_c in zip(captions, tl.captions, strict=True):
+        assert got_c.text == want_c.text and abs(got_c.t - want_c.t) < 1e-3
+    inter = convert_interactions(sp.interactions, {"s1": tl.shots[0].action_start}, "s1")
+    for got_i, want_i in zip(inter, tl.interactions, strict=True):
+        assert abs(got_i.drives.from_ - want_i.drives.from_) < 1e-3
+        assert abs(got_i.drives.to - want_i.drives.to) < 1e-3
+        assert got_i.model_copy(update={"drives": None}) == want_i.model_copy(update={"drives": None})
+        assert got_i.drives.targets == want_i.drives.targets
+
+
+def test_narrate_shot_names_the_default_teller_in_errors(sp):
+    shot = sp.shots[0].model_copy(deep=True)
+    shot.narration[2].cue = "nope"
+    e = _err(narrate_shot, sp, shot, ACTION_START, "dad")
+    assert (e.code, e.author, e.line_index) == ("cue_unknown_action", "dad", 2)
+
+
+# ------------------------------------------- bug 1: a ripple pushes an action before t=0
+
+def test_ripple_pushing_an_uncued_action_before_the_shot_is_an_error():
+    # p (1.5) < q (2.0) < wave (2.2). Line 0 pins q at 0 (-2.0): wave ripples to 0.2.
+    # Line 1 then pins p at 0.25 (-1.25): q is pinned, but wave ripples again, to -1.05.
+    shot = Shot(
+        id="s1",
+        set="x",
+        actions=[
+            Action(t=1.5, do="pose", who="a", pose="x", id="p"),
+            Action(t=2.0, do="pose", who="a", pose="y", id="q"),
+            Action(t=2.2, do="wave", who="b"),
+        ],
+        narration=[line(0.0, "Now", cue="q"), line(0.25, "Then", cue="p")],
+    )
+    e = _err(retime_actions, shot, 0.0, author="dad")
+    assert (e.code, e.author, e.shot, e.line_index) == ("cue_before_start", "dad", "s1", 1)
+    assert e.reason == (
+        "action 2 (wave) would start at shot t=-1.05, before the shot starts: it keeps its spacing "
+        "after action 0 (p), which this line moves to shot t=0.25; give action 2 a later t or a cue of its own"
+    )
+    # The same cues in the other order, or with wave cued itself, are fine.
+    shot.narration.reverse()
+    assert retime_actions(shot, 0.0) == [0.25, 0.0, 0.2]
+    shot.narration.reverse()
+    shot.narration.append(line(0.5, "Bye", cue="wave"))
+    assert retime_actions(shot, 0.0) == [0.25, 0.0, 0.5]
+
+
+def test_authored_negative_t_passes_through_retiming():
+    # No contract forbids a negative Action.t here (validation owns that rule), so an uncued
+    # action written before t=0 and never rippled is returned as written: no KeyError and no
+    # retiming error (the ripple check names a line, and no line moved this action).
+    shot = Shot(id="s1", set="x", actions=[Action(t=-0.5, do="wave", who="a")], narration=[])
+    assert retime_actions(shot, 1.2) == [-0.5]
+    # Earlier than the cued action, so the ripple skips it and it keeps its written t.
+    shot = Shot(
+        id="s1",
+        set="x",
+        actions=[Action(t=0.5, do="pose", who="a", pose="x", id="p"), Action(t=-0.5, do="wave", who="b")],
+        narration=[line(0.0, "Now", cue="p")],
+    )
+    assert retime_actions(shot, 0.0) == [0.0, -0.5]
+    # A ripple that moves a negative-t action later is applied as usual.
+    shot = Shot(
+        id="s1",
+        set="x",
+        actions=[Action(t=-2.0, do="pose", who="a", pose="x", id="p"), Action(t=-0.5, do="wave", who="b")],
+        narration=[line(0.0, "Now", cue="p")],
+    )
+    assert retime_actions(shot, 0.0) == [0.0, 1.5]
+
+
+# ------------------------------------------------ bug 2: overlapping lines in one telling
+
+def test_default_telling_lines_overlap():
+    shot = Shot(id="s1", set="x", narration=[line(0.0, "one two three four"), line(0.5, "five six")])
+    e = _err(build_shot_narration, shot, ACTION_START, [], {}, "dad")
+    assert (e.code, e.author, e.shot, e.line_index) == ("lines_overlap", "dad", "s1", 1)
+    assert e.reason == (
+        "line 1 starts at shot t=0.50, before line 0 has been said (its last word ends at shot t=1.00); "
+        "start line 1 later or shorten line 0"
+    )
+    assert str(e).startswith("shot s1, dad's narration line 1: line 1 starts")
+    # narrate_shot reports it for a shot with no other tellings too.
+    sp = Screenplay.model_validate({"memoryId": "m", "cast": ["dad"], "shots": [shot.model_dump(by_alias=True)]})
+    e = _err(narrate_shot, sp, sp.shots[0], ACTION_START, "dad")
+    assert (e.code, e.author, e.line_index) == ("lines_overlap", "dad", 1)
+
+
+def _overlapping_default_shot() -> Shot:
+    return Shot(
+        id="s1",
+        set="x",
+        actions=[Action(t=0.3, do="drop", who="mom", what="b", id="drop")],
+        narration=[line(0.0, "one two three four"), line(0.3, "Dropped.", cue="drop")],
+    )
+
+
+def test_a_default_overlap_never_hides_a_tellers_own_errors():
+    shot = _overlapping_default_shot()
+    retimed = retime_actions(shot, 0.0)
+    kid = [line(0.0, "a b c d"), line(0.2, "e")]
+    e = _err(build_shot_narration, shot, 0.0, retimed, {"kid": kid}, "dad")
+    assert (e.code, e.author, e.line_index) == ("lines_overlap", "kid", 1)
+    early = [line(0.0, "a b c d e f g h", cue="drop", cue_word="h")]  # would start at -1.45
+    e = _err(build_shot_narration, shot, 0.0, retimed, {"kid": early}, "dad")
+    assert (e.code, e.author, e.line_index) == ("cue_before_start", "kid", 0)
+    # With clean tellers, the default overlap is reported.
+    e = _err(build_shot_narration, shot, 0.0, retimed, {"kid": [line(0.0, "Kid says")]}, "dad")
+    assert (e.code, e.author, e.line_index) == ("lines_overlap", "dad", 1)
+
+
+def test_check_default_false_reports_a_default_overlap_once_per_shot():
+    # One teller per call (as validation does): check_default=False on those calls and a
+    # single default-only call give each problem once.
+    shot = _overlapping_default_shot()
+    retimed = retime_actions(shot, 0.0)
+    for author in ("mom", "kid"):
+        built = build_shot_narration(shot, 0.0, retimed, {author: [line(0.0, "says")]}, "dad", check_default=False)
+        assert list(built) == ["dad", author]
+    e = _err(build_shot_narration, shot, 0.0, retimed, {}, "dad")
+    assert (e.code, e.author, e.line_index) == ("lines_overlap", "dad", 1)
+    # check_default=False still checks the other tellers.
+    kid = [line(0.0, "a b c d"), line(0.2, "e")]
+    e = _err(build_shot_narration, shot, 0.0, retimed, {"kid": kid}, "dad", check_default=False)
+    assert (e.code, e.author) == ("lines_overlap", "kid")
+
+
+def test_each_teller_is_checked_before_the_next():
+    shot = _rise_shot(0.5)
+    retimed = retime_actions(shot, ACTION_START)
+    other = {
+        "mom": [line(0.0, "a b c d"), line(0.2, "e")],  # overlaps
+        "kid": [line(0.0, "a b c d e f g h", cue="drop", cue_word="h")],  # before the shot starts
+    }
+    e = _err(build_shot_narration, shot, ACTION_START, retimed, other, "dad")
+    assert (e.code, e.author) == ("lines_overlap", "mom")
+    e = _err(build_shot_narration, shot, ACTION_START, retimed, dict(reversed(other.items())), "dad")
+    assert (e.code, e.author) == ("cue_before_start", "kid")
+
+
+def test_lines_may_follow_back_to_back():
+    # "four" is at 0.75 and is said by 1.0: a line may start exactly then.
+    shot = Shot(id="s1", set="x", narration=[line(0.0, "one two three four"), line(1.0, "five six")])
+    built = build_shot_narration(shot, ACTION_START, [], {}, "dad")
+    assert [ln.t for ln in built["dad"]] == [1.2, 2.2]
+    mom = [line(0.0, "one two three four"), line(1.0, "five six")]
+    assert [ln.t for ln in build_shot_narration(shot, ACTION_START, [], {"mom": mom}, "dad")["mom"]] == [1.2, 2.2]
+
+
+def test_overlap_uses_tts_word_times_and_skips_silent_lines():
+    given = [WordTiming(t=0.0, word="Well"), WordTiming(t=1.4, word="then")]
+    shot = Shot(id="s1", set="x", narration=[line(0.0, "Well then", words=given), line(0.5, "…"), line(1.5, "Go")])
+    e = _err(build_shot_narration, shot, 0.0, [], {}, "dad")
+    assert (e.code, e.line_index) == ("lines_overlap", 2)
+    assert e.reason == (
+        "line 2 starts at shot t=1.50, before line 0 has been said (its last word ends at shot t=1.65); "
+        "start line 2 later or shorten line 0"
+    )
+    shot.narration[2].t = 1.65
+    build_shot_narration(shot, 0.0, [], {}, "dad")
+
+
+def test_other_telling_overlaps_after_its_alignment_shift(sp):
+    shot = sp.shots[0]
+    retimed = retime_actions(shot, ACTION_START)
+    mom = [ln.model_copy(deep=True) for ln in sp.narrations["mom"]["s1"]]
+    # Aligned, line 1 starts at 2.0 ("everywhere" lands on the drop at 3.25). A 12-word
+    # line 0 is said until 3.0 and runs into it.
+    mom[0].text = "I was carrying far too many hymn books up those stone steps."
+    e = _err(build_shot_narration, shot, ACTION_START, retimed, {"mom": mom}, "dad")
+    assert (e.code, e.author, e.shot, e.line_index) == ("lines_overlap", "mom", "s1", 1)
+    assert e.reason == (
+        "line 1 starts at shot t=2.00, before line 0 has been said (its last word ends at shot t=3.00); "
+        "start line 1 later or shorten line 0"
+    )
+    assert str(e).startswith("shot s1, mom's narration line 1: ")
+
+
+def test_sample_lines_are_back_to_back_and_build(sp):
+    # dad's line 1 and mom's line 1 each start exactly when the line before has been said.
+    _, _, built = run_sample(sp)
+    for author in ("dad", "mom"):
+        first, second = built[author][0], built[author][1]
+        assert second.t == pytest.approx(first.words[-1].t + WORD_SECONDS)
+
+
+# ------------------------------------- bug 3: another telling may start during the set rise
+
+def _rise_shot(drop_at: float) -> Shot:
+    return Shot(
+        id="s1",
+        set="x",
+        actions=[Action(t=drop_at, do="drop", who="mom", what="b", id="drop")],
+        narration=[line(drop_at, "Down", cue="drop")],
+    )
+
+
+def test_other_telling_may_start_while_the_set_rises():
+    shot = _rise_shot(0.5)
+    mom = [line(0.0, "a b c d e f", cue="drop", cue_word="f")]  # "f" is 1.25 s in
+    built = build_shot_narration(shot, ACTION_START, retime_actions(shot, ACTION_START), {"mom": mom}, "dad")
+    assert built["mom"][0].t == pytest.approx(ACTION_START - 0.75)
+    assert built["mom"][0].words[-1].t == pytest.approx(ACTION_START + 0.5)
+    # Exactly when the set starts rising is still fine.
+    shot = _rise_shot(0.55)
+    mom = [line(0.0, "a b c d e f g h", cue="drop", cue_word="h")]  # "h" is 1.75 s in
+    built = build_shot_narration(shot, ACTION_START, retime_actions(shot, ACTION_START), {"mom": mom}, "dad")
+    assert built["mom"][0].t == pytest.approx(0.0)
+
+
+def test_other_telling_before_the_set_rises_is_an_error():
+    shot = _rise_shot(0.5)
+    mom = [line(0.0, "a b c d e f g h", cue="drop", cue_word="h")]
+    e = _err(build_shot_narration, shot, ACTION_START, retime_actions(shot, ACTION_START), {"mom": mom}, "dad")
+    assert (e.code, e.author, e.shot, e.line_index) == ("cue_before_start", "mom", "s1", 0)
+    # The shot starts (TimelineShot.start) when its set starts rising, RISE before t=0. The
+    # wording matches what validation reports (tests/screenplay/test_validate.py).
+    assert e.reason == (
+        'to land its cue word on the action, "a b c d e f g h" would start at shot t=-1.25, before the '
+        "shot starts; shorten the words before the cue word or move the action later"
+    )
