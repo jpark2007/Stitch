@@ -10,7 +10,7 @@
 import type { CutoutSpec, PaintKit } from "./cutout";
 
 export const PALETTE = {
-  sky: "#c9d6d0",
+  sky: "#c4d6da",
   skyDeep: "#b4c6c2",
   sun: "#e6b45c",
   cloud: "#f8f2e6",
