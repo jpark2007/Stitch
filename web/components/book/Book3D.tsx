@@ -447,18 +447,24 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
       transition={{ duration: 0.6, delay: view.opened ? 0.8 : 0, ease: [0.22, 1, 0.36, 1] }}
       style={{ pointerEvents: view.opened ? "auto" : "none" }}
     >
-      <ol className="flex items-start gap-1 rounded-full bg-[#140c07]/45 px-3 py-1.5">
+      <ol className="flex max-w-[calc(100vw-1rem)] items-start gap-1 rounded-full bg-[#140c07]/45 px-3 py-1.5">
         {spreads.map((s, i) => {
           const active = view.spread === i + 1;
+          const dated = Number.isFinite(s.year) && s.year > 0;
+          // A long book narrows its dots to fit the screen; past nine, only
+          // the open one, the first and the last keep their years.
+          const label = s.kind === "end" ? "end" : dated ? String(s.year) : "·";
+          const quiet = spreads.length > 9 && !active && i !== 0 && i !== spreads.length - 1;
           return (
             <li key={s.id}>
               <button
                 type="button"
                 onClick={() => onPick(i + 1)}
-                aria-label={s.kind === "end" ? s.title : `${s.title}, ${s.year}`}
+                aria-label={s.kind === "end" ? s.title : dated ? `${s.title}, ${s.year}` : s.title}
                 aria-current={active ? "page" : undefined}
                 title={s.title}
-                className="group flex w-14 flex-col items-center gap-1 py-1 outline-offset-2"
+                className="group flex flex-col items-center gap-1 py-1 outline-offset-2"
+                style={{ width: `min(3.5rem, calc((100vw - 3.5rem) / ${spreads.length} - 0.25rem))` }}
               >
                 <span
                   className="block rounded-full transition-all duration-300"
@@ -471,9 +477,12 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
                 />
                 <span
                   className="font-sans text-[0.68rem] font-bold tracking-[0.14em] transition-colors duration-300"
-                  style={{ color: active ? "rgb(243 230 207 / 0.92)" : "rgb(243 230 207 / 0.5)" }}
+                  style={{
+                    color: active ? "rgb(243 230 207 / 0.92)" : "rgb(243 230 207 / 0.5)",
+                    visibility: quiet ? "hidden" : undefined,
+                  }}
                 >
-                  {s.kind === "end" ? "end" : s.year}
+                  {label}
                 </span>
               </button>
             </li>
