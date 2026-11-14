@@ -87,7 +87,10 @@ export function AddRelativeForm(props: {
     const first = focusRequest.field;
     if (first && PICKER_FIELDS.includes(first)) {
       const group = form.querySelector<HTMLElement>(`[data-relative-field~="${first}"]`);
-      const box = group?.querySelector<HTMLInputElement>('input[type="checkbox"]:not(:disabled)');
+      // A picked box first (the problem is usually someone picked), else the first one.
+      const box =
+        group?.querySelector<HTMLInputElement>('input[type="checkbox"]:checked:not(:disabled)') ??
+        group?.querySelector<HTMLInputElement>('input[type="checkbox"]:not(:disabled)');
       if (box) {
         requestAnimationFrame(() => box.focus());
         return;
@@ -179,7 +182,8 @@ export function AddRelativeForm(props: {
         <div className="space-y-6">
           <TextField
             label="Their name"
-            hint="The name the family uses, like “Great-grandma Inés”."
+            // A non-breaking hyphen keeps the example in one piece on phones.
+            hint={"The name the family uses, like “Great\u2011grandma Inés”."}
             name="name"
             autoComplete="off"
             required
@@ -190,12 +194,7 @@ export function AddRelativeForm(props: {
 
           <YearsGroup>
             <YearInput
-              label={
-                <>
-                  Born
-                  <Optional />
-                </>
-              }
+              label="Born"
               name="born"
               // No max: reading the clock while rendering breaks prerendering.
               // validateYear checks "not in the future" on submit.
@@ -205,12 +204,7 @@ export function AddRelativeForm(props: {
               error={errors.born}
             />
             <YearInput
-              label={
-                <>
-                  Died
-                  <Optional />
-                </>
-              }
+              label="Died"
               name="died"
               min={RELATIVE_YEAR_MIN}
               value={draft.died}
@@ -235,20 +229,36 @@ export function AddRelativeForm(props: {
         </div>
 
         <div data-relative-field="childIds">
-          <PersonPicker
-            legend={
-              <>
+          {kids.length === 0 && people.length > 0 ? (
+            // The kit's empty line says nobody is in the family, which is not
+            // the case here: say why nobody can be picked.
+            <div className="min-w-0">
+              <p className={FIELD_LABEL_CLASS}>
                 Their children
                 <Optional />
-              </>
-            }
-            hint="Only people with fewer than two parents listed can be picked."
-            people={kids}
-            value={draft.childIds}
-            onChange={setChildren}
-            error={errors.childIds}
-            disabled={locked}
-          />
+              </p>
+              <p className="mt-2 text-sm text-ink-soft italic">
+                {childCandidates(people, []).length === 0
+                  ? "Everyone in the tree already has two parents listed, so there’s nobody to pick here."
+                  : "Everyone who could be their child is already picked above."}
+              </p>
+            </div>
+          ) : (
+            <PersonPicker
+              legend={
+                <>
+                  Their children
+                  <Optional />
+                </>
+              }
+              hint="Only people who don’t already have two parents are listed."
+              people={kids}
+              value={draft.childIds}
+              onChange={setChildren}
+              error={errors.childIds}
+              disabled={locked}
+            />
+          )}
         </div>
       </fieldset>
 
@@ -267,7 +277,10 @@ function YearsGroup(props: { children: ReactNode }) {
   const hintId = `${useId()}-hint`;
   return (
     <fieldset className="mx-0 min-w-0 border-0 p-0" aria-describedby={hintId}>
-      <legend className={`p-0 ${FIELD_LABEL_CLASS}`}>Their years</legend>
+      <legend className={`p-0 ${FIELD_LABEL_CLASS}`}>
+        Their years
+        <Optional />
+      </legend>
       <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
         Leave Died empty if they’re still with us.
       </p>

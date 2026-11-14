@@ -89,10 +89,16 @@ function toPickable(people: Person[]): PickablePerson[] {
   }));
 }
 
-/** Why a child could not be linked, in the family's words. */
+/** Why a child could not be linked, in the family's words (after the person was saved). */
 function linkFailure(err: unknown): string {
   if (isApiError(err)) {
-    if (err.status === 400) return relativeServerError(err.detail).message;
+    if (err.status === 400) {
+      const detail = err.detail.trim().toLowerCase();
+      // The tree changed since the page loaded: say what the server found.
+      if (detail === "a person cannot be their own ancestor") return "That would make someone their own ancestor.";
+      if (detail === "a person has at most 2 parents") return "They already have two parents.";
+      return relativeServerError(err.detail).message;
+    }
     const field = Object.values(err.fieldErrors).find((m) => typeof m === "string" && m.trim());
     return field ?? err.detail;
   }
@@ -264,7 +270,7 @@ function DoneCard(props: {
   const failure = failed.length
     ? `We couldn’t link ${joinNames(failed.map((f) => f.name))} as their child. ` +
       [...new Set(failed.map((f) => f.message))].join(" ") +
-      " Everything else was saved."
+      ` ${person.name} is saved all the same.`
     : null;
 
   // The add page reads `added` and preselects them.
@@ -300,14 +306,18 @@ function DoneCard(props: {
         themselves later from an invite link.
       </p>
 
-      <div className="flex flex-col gap-3 border-t border-dashed border-rule pt-6 sm:flex-row sm:flex-wrap sm:items-center">
-        <ButtonLink href={addHref}>{next ? "Continue" : "Add a memory"}</ButtonLink>
-        <Button variant="secondary" onClick={onAddAnother}>
-          Add another relative
-        </Button>
-        <ButtonLink variant="quiet" href={hrefs.settings(fid)} className="sm:-ml-1">
-          Back to family settings
-        </ButtonLink>
+      <div className="flex flex-col gap-4 border-t border-dashed border-rule pt-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <ButtonLink href={addHref}>{next ? "Continue" : "Add a memory"}</ButtonLink>
+          <Button variant="secondary" onClick={onAddAnother}>
+            Add another relative
+          </Button>
+        </div>
+        <div className="sm:-ml-3">
+          <ButtonLink variant="quiet" href={hrefs.settings(fid)} className="w-full sm:w-auto">
+            Back to family settings
+          </ButtonLink>
+        </div>
       </div>
     </PaperCard>
   );
