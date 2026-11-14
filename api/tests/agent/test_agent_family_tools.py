@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
+import threading
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -1048,3 +1051,144 @@ def test_two_linker_passes_through_deepagents_task_ask_once() -> None:
     assert replies == ["linked mom to m1; asked mom", "linked mom to m1; no one new to ask; already asked: mom"]
     assert [(q.person_id, q.memory_id) for q in repo.list_questions(FAM)] == [("mom", "m1")]
     assert _asked_pairs(final["files"]) == [("m1", "mom")]
+
+
+# ------------------------------------------- read-modify-write races on one saved memory
+
+
+_CALLER: contextvars.ContextVar[str] = contextvars.ContextVar("caller", default="")
+"""Which test thread a repo call comes from (tool node threads copy the context)."""
+
+
+class InterleavingRepo(InMemoryRepo):
+    """An InMemoryRepo that lets a second writer land between the first writer's read and
+    its write: the "link" caller's first read of the memory waits (up to RACE_WINDOW
+    seconds) for the "other" caller's save. With nothing serializing the two, the other
+    save lands in that window and the link's write then puts the stale copy back."""
+
+    RACE_WINDOW = 1.0
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.link_read = threading.Event()
+        self.other_saved = threading.Event()
+
+    def get_memory(self, family_id: str, memory_id: str) -> Memory | None:
+        memory = super().get_memory(family_id, memory_id)
+        if _CALLER.get() == "link" and not self.link_read.is_set():
+            self.link_read.set()
+            self.other_saved.wait(self.RACE_WINDOW)
+        return memory
+
+    def save_memory(self, family_id: str, memory: Memory) -> Memory:
+        saved = super().save_memory(family_id, memory)
+        if _CALLER.get() == "other":
+            self.other_saved.set()
+        return saved
+
+
+def _interleaving_repo() -> InterleavingRepo:
+    repo = InterleavingRepo()
+    load_sample_family(repo, FAM)
+    repo.add_person(FAM, schemas.Person(id="aunt", family_id=FAM, name="Aunt May",
+                                        character=schemas.CharacterSheet(color="#00aa00")))
+    return repo
+
+
+def _race(repo: InterleavingRepo, link: Callable[[], Any], other: Callable[[], Any]) -> None:
+    """Run `link` and, once it has read the memory, `other`, each in its own thread."""
+    failures: list[BaseException] = []
+
+    def as_caller(name: str, call: Callable[[], Any], after: threading.Event | None) -> None:
+        _CALLER.set(name)
+        try:
+            if after is not None:
+                assert after.wait(5.0), "the first writer never read the memory"
+            call()
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the test thread
+            failures.append(exc)
+
+    threads = [
+        threading.Thread(target=as_caller, args=("link", link, None)),
+        threading.Thread(target=as_caller, args=("other", other, repo.link_read)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10.0)
+    if failures:
+        raise failures[0]
+
+
+def _link_aunt(tools: list[BaseTool], files: dict[str, Any], memory_id: str) -> Callable[[], Any]:
+    return lambda: _call_tool(tools, files, "link_participants",
+                              {"memory_id": memory_id, "person_ids": ["aunt"], "question": "What do you remember?"},
+                              call_id="call_link")
+
+
+def test_a_save_and_a_link_on_one_memory_in_one_run_lose_nothing() -> None:
+    # The studio saves again (say, after the critic's notes) while the linker is linking the
+    # memory it saved first: same run, same tools. Before the fix the link put back the copy
+    # it read, undoing the new save (title, scene and version).
+    repo = _interleaving_repo()
+    run = dad_run()
+    tools = make_family_tools(repo, run)
+    _CALLER.set("")
+    content, _, files = _call_tool(tools, _scene_files(), "save_memory", SAVE_ARGS)
+    assert content == "saved memory_1 v1"
+
+    _race(repo, _link_aunt(tools, files, "memory_1"),
+          lambda: _call_tool(tools, files, "save_memory", {"title": "The hymn books", "participant_ids": ["mom"]},
+                             call_id="call_resave"))
+
+    saved = repo.get_memory(FAM, "memory_1")
+    assert saved is not None
+    assert (saved.version, saved.title) == (2, "The hymn books")  # the second save survived
+    assert "aunt" in saved.participant_ids  # and so did the link
+    assert [q.person_id for q in repo.list_questions(FAM)] == ["aunt"]
+
+
+def test_a_link_from_one_run_never_undoes_a_second_telling_from_another() -> None:
+    # Dad's linker links aunt to the memory while mom's second-telling run saves her
+    # narration onto it. Before the fix the link put back the copy without mom's telling.
+    repo = _interleaving_repo()
+    existing = _existing_memory_without_mom(repo)
+    dad_tools = make_family_tools(repo, dad_run())
+    mom_tools = make_family_tools(repo, mom_run(existing.id))
+
+    _race(repo, _link_aunt(dad_tools, {}, existing.id),
+          lambda: _call_tool(mom_tools, _files(*_moms_draft()), "save_memory", SAVE_ARGS, call_id="call_mom"))
+
+    saved = repo.get_memory(FAM, existing.id)
+    assert saved is not None and saved.version == 2
+    assert [t.author_id for t in saved.tellings] == ["dad", "mom"]
+    assert saved.timeline is not None and saved.timeline.narrations is not None and "mom" in saved.timeline.narrations
+    assert "aunt" in saved.participant_ids
+
+
+def test_two_runs_retelling_one_memory_at_once_keep_both_tellings() -> None:
+    # Mom and aunt answer their linker questions at the same moment: two second-telling
+    # runs save onto one memory. Each must land on top of the other, not over it.
+    repo = _interleaving_repo()
+    existing = _existing_memory_without_mom(repo)
+    mom_draft = _files(*_moms_draft())
+    aunt_sp, aunt_tl = _moms_draft()
+    assert aunt_sp.narrations is not None and aunt_tl.narrations is not None
+    aunt_sp.narrations = {"aunt": aunt_sp.narrations["mom"]}
+    aunt_tl.narrations = {**aunt_tl.narrations, "aunt": aunt_tl.narrations["mom"]}
+    aunt_run = RunInfo(run_id="run_3", family_id=FAM, user_id="user_aunt", author_id="aunt",
+                       fields=SubmitMemoryFields(text="I was two pews back.", year=1988, memory_id=existing.id))
+
+    # Aunt's save plays the "link" part here: its first read of the memory waits for mom's save.
+    _race(repo, lambda: _call_tool(make_family_tools(repo, aunt_run), _files(aunt_sp, aunt_tl), "save_memory", SAVE_ARGS,
+                             call_id="call_aunt"),
+          lambda: _call_tool(make_family_tools(repo, mom_run(existing.id)), mom_draft, "save_memory", SAVE_ARGS,
+                             call_id="call_mom"))
+
+    saved = repo.get_memory(FAM, existing.id)
+    assert saved is not None and saved.version == 3
+    assert sorted(t.author_id for t in saved.tellings) == ["aunt", "dad", "mom"]
+    assert saved.timeline is not None and saved.timeline.narrations is not None
+    assert {"aunt", "mom"} <= set(saved.timeline.narrations)
+    assert saved.screenplay is not None and saved.screenplay.narrations is not None
+    assert {"aunt", "mom"} <= set(saved.screenplay.narrations)

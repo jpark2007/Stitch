@@ -11,7 +11,7 @@ import os
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -526,7 +526,7 @@ def test_mongo_persistence_runs_and_resumes_a_studio() -> None:
 class FakeMongoClient:
     """Stands in for pymongo.MongoClient: no network; records close()."""
 
-    made: list[FakeMongoClient] = []
+    made: ClassVar[list[FakeMongoClient]] = []
 
     def __init__(self, uri: str, **kwargs: Any) -> None:
         self.uri, self.kwargs, self.closed = uri, kwargs, 0
