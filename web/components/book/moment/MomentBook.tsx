@@ -185,9 +185,41 @@ export function MomentBook({
   }));
   const openSpread = spreads[view.spread - 1] ?? null;
   const openRef = useRef<string | null>(openSpread?.id ?? null);
+  // The scene of the spread the book opens at is got ready (its art and
+  // puppets built in idle time) before the book is brought out; the
+  // contents card lies on the table meanwhile. A failure only means the
+  // scene builds as it mounts.
+  const [ready, setReady] = useState(() => {
+    const s = spreads[first];
+    return !(s?.stage && scenes[s.id]);
+  });
+  useEffect(() => {
+    if (ready) return;
+    const s = spreads[first];
+    let live = true;
+    preloadScene(scenes[s.id])
+      .catch((e: unknown) => console.warn(`[book] ${s.id}: the scene did not get ready ahead`, e))
+      .then(() => {
+        if (live) setReady(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [ready, spreads, scenes, first]);
+
   const controls = useRef<BookControls | null>(null);
+  // An entry chosen from the contents before the book was drawn: turned to once it is.
+  const pending = useRef<number | null>(null);
+  // The book is drawn and on the table (its controls arrive with its first frame).
+  const [drawn, setDrawn] = useState(false);
   const onControls = useCallback((c: BookControls | null) => {
     controls.current = c;
+    if (!c) return;
+    setDrawn(true);
+    if (pending.current !== null) {
+      c.goTo(pending.current);
+      pending.current = null;
+    }
   }, []);
 
   // Narration elements and mute while the page is shown (an Activity hides it on navigation).
@@ -264,8 +296,10 @@ export function MomentBook({
   }, [players, debug]);
 
   // The opening spread's scene was got ready before the book showed; the
-  // rest get ready in the background, nearest first, without holding anything up.
+  // rest get ready in the background, nearest first, once the book itself
+  // is drawn (they would only slow its pages down), holding nothing up.
   useEffect(() => {
+    if (!drawn) return;
     let live = true;
     const ids = spreads
       .map((s, i) => ({ id: s.id, d: Math.abs(i - first) }))
@@ -285,7 +319,7 @@ export function MomentBook({
     return () => {
       live = false;
     };
-  }, [spreads, scenes, first]);
+  }, [spreads, scenes, first, drawn]);
 
   const stageReady = useCallback((id: string) => {
     readyIds.current.add(id);
@@ -317,30 +351,37 @@ export function MomentBook({
     [players, scenes, freezeAt, stageReady, stageGone],
   );
 
-  const goTo = useCallback((n: number) => controls.current?.goTo(n), []);
-  const chrome = contents ? <ContentsCard spreads={spreads} view={view} onPick={goTo} /> : null;
+  const goTo = useCallback((n: number) => {
+    if (controls.current) controls.current.goTo(n);
+    else pending.current = n;
+  }, []);
   const actions = contents ? <ContentsTab spreads={spreads} view={view} onPick={goTo} /> : null;
 
   const openScene = openSpread ? scenes[openSpread.id] : undefined;
   return (
-    <>
-      <Book3D
-        spreads={spreads}
-        cover={cover}
-        initial={initial}
-        renderStage={hasScenes ? renderStage : undefined}
-        tellings={players}
-        onTelling={onTelling}
-        still={still}
-        debug={debug}
-        onView={onView}
-        onControls={onControls}
-        back={back}
-        actions={actions}
-      >
-        {chrome}
-        {note ? <BookNote opened={view.opened}>{note}</BookNote> : null}
-      </Book3D>
+    <div className="relative">
+      {ready ? (
+        <Book3D
+          spreads={spreads}
+          cover={cover}
+          initial={initial}
+          renderStage={hasScenes ? renderStage : undefined}
+          tellings={players}
+          onTelling={onTelling}
+          still={still}
+          debug={debug}
+          onView={onView}
+          onControls={onControls}
+          back={back}
+          actions={actions}
+        >
+          {note ? <BookNote opened={view.opened}>{note}</BookNote> : null}
+        </Book3D>
+      ) : (
+        <BookLoading />
+      )}
+      {/* On the table from the start: the titles can be read while the book is brought out. */}
+      {contents ? <ContentsCard spreads={spreads} view={view} onPick={goTo} /> : null}
       {openSpread && openScene && openSpread.stage ? (
         <MomentKeys
           key={openSpread.id}
@@ -351,7 +392,7 @@ export function MomentBook({
           onTelling={(id) => onTelling(openSpread.id, id)}
         />
       ) : null}
-    </>
+    </div>
   );
 }
 
@@ -589,23 +630,6 @@ export type BookShown =
   | { kind: "no-family" }
   | { kind: "not-found" }
   | { kind: "error"; detail: string };
-
-/**
- * Get the scene of the spread the book opens at ready before the book shows
- * (its art and puppets built in idle time); the rest follow in the
- * background (MomentBook). A failure only means it builds as it mounts.
- */
-export async function preloadOpening(shown: BookShown, initial: BookInitial): Promise<void> {
-  if (shown.kind !== "book") return;
-  const spread = shown.spreads[startSpread(initial, shown.spreads.length) - 1];
-  const scene = spread && shown.scenes[spread.id];
-  if (!scene) return;
-  try {
-    await preloadScene(scene);
-  } catch (e) {
-    console.warn(`[book] ${spread.id}: the scene did not get ready ahead`, e);
-  }
-}
 
 const TREE = { href: "/", label: "Family tree" } as const;
 const DEMO_TREE = { href: "/?demo=1", label: "Family tree" } as const;

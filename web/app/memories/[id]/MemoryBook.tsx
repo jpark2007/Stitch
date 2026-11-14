@@ -27,7 +27,7 @@
  */
 
 import { use, useCallback, useMemo } from "react";
-import { BookScreen, preloadOpening, readBookQuery, useBookLoad, type BookShown, type Search } from "@/components/book/moment/MomentBook";
+import { BookScreen, readBookQuery, useBookLoad, type BookShown, type Search } from "@/components/book/moment/MomentBook";
 import { loadMomentPage } from "./moment";
 
 export { BookLoading } from "@/components/book/moment/MomentBook";
@@ -38,15 +38,8 @@ export function MemoryBook({ params, searchParams }: { params: Promise<{ id: str
   const { id } = use(params);
   const q = use(searchParams);
   const query = useMemo(() => readBookQuery(q), [q]);
-  const { family, demo, initial } = query;
-  const run = useCallback(
-    async (signal: AbortSignal) => {
-      const shown = await loadMomentPage(id, { family, demo }, signal);
-      await preloadOpening(shown, initial);
-      return shown;
-    },
-    [id, family, demo, initial],
-  );
+  const { family, demo } = query;
+  const run = useCallback((signal: AbortSignal) => loadMomentPage(id, { family, demo }, signal), [id, family, demo]);
   const { value, retry } = useBookLoad(`${id}|${family ?? ""}|${demo ? 1 : 0}`, run, keepBook);
   return <BookScreen shown={value} query={query} retry={retry} contents={false} />;
 }

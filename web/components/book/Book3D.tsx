@@ -121,7 +121,7 @@ export interface Book3DProps {
   back?: { href: string; label: string };
   /** Quiet controls beside the mute button (a contents tab). */
   actions?: ReactNode;
-  /** Page chrome over the table, under the header (a contents card). */
+  /** Page chrome over the table, under the header (a contents card), shown once the book's art is drawn. */
   children?: ReactNode;
 }
 
@@ -309,7 +309,12 @@ export function Book3D({
             />
           </Canvas>
         </motion.div>
-      ) : null}
+      ) : (
+        // The pages are being printed: the same quiet line as the route's loading table.
+        <p role="status" className="absolute inset-0 grid place-items-center font-hand text-2xl text-[#f3e6cf]/60">
+          opening the book&hellip;
+        </p>
+      )}
 
       {/* Lens: a warm vignette. Depth of field is faked in the scene (fog and
           the lamp's falloff); a CSS backdrop blur here cost frames mid-turn. */}
@@ -336,7 +341,8 @@ export function Book3D({
           <MuteButton muted={muted} />
         </div>
       </header>
-      {children}
+      {/* Page chrome lies on the table with the book, not before it. */}
+      {art ? children : null}
 
       <NavDots spreads={spreads} view={view} onPick={(i) => controls.current?.goTo(i)} />
 

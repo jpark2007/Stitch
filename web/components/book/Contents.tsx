@@ -115,10 +115,10 @@ export function ContentsCard({ spreads, view, onPick }: ContentsProps) {
       <motion.div
         onWheel={keepWheel}
         className="max-h-[inherit] w-full touch-pan-y overflow-y-auto overscroll-contain rounded-[3px] bg-[#f7f0e1] px-3 pb-3 pt-2.5 text-ink shadow-[0_1px_1px_rgb(0_0_0/0.25),0_14px_32px_-10px_rgb(0_0_0/0.75)]"
-        // Laid on the table as the book appears (its art fades in over ~1 s).
+        // Laid on the table a beat after the book appears (Book3D shows it once its art is drawn).
         initial={{ opacity: 0, y: 6 }}
         animate={{ opacity: shown ? SHOWN : 0, y: shown ? 0 : 6 }}
-        transition={{ duration: shown ? 0.8 : 0.45, delay: shown ? 0.6 : 0, ease: EASE }}
+        transition={{ duration: shown ? 0.8 : 0.45, delay: shown ? 0.3 : 0, ease: EASE }}
         style={{ pointerEvents: shown ? "auto" : "none" }}
       >
         <p className="mb-1.5 px-1.5 font-sans text-[0.66rem] font-bold uppercase tracking-[0.2em] text-ink-faint">Contents</p>
