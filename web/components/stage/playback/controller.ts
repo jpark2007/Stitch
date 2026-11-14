@@ -507,7 +507,9 @@ export class PlaybackController {
   private advance(nowMs?: number): void {
     if (!this.playing) return;
     const wall = nowMs ?? this.now();
-    this.t = this.anchorT + ((wall - this.anchorWall) / 1000) * this.rate;
+    // A rAF timestamp can predate a play() made later in the same frame; never run backwards.
+    const elapsed = wall > this.anchorWall ? wall - this.anchorWall : 0;
+    this.t = this.anchorT + (elapsed / 1000) * this.rate;
   }
 
   private sampleNow(): boolean {
