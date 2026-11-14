@@ -44,6 +44,8 @@ import type { BookPullTab } from "../types";
 /** World units per page pixel. */
 const PX = PAGE_W / PAGE_PX_W;
 const CARD_T = 0.0022;
+/** How far (of the travel) the tab eases out under a hovering pointer. */
+const HOVER_OUT = 0.07;
 /** Length of the folded-back grip, world units. */
 const FOLD = 0.024;
 
@@ -141,7 +143,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
   const flapPivot = useRef<Group>(null);
 
   /** Lever state: how far out (0..1 of travel), held or springing back. */
-  const st = useRef({ value: 0, vel: 0, held: false, nudgeT0: -1, nudged: false, lastY: Number.NaN });
+  const st = useRef({ value: 0, vel: 0, held: false, hover: false, nudgeT0: -1, nudged: false, lastY: Number.NaN });
 
   // The scene ending invites a pull: one small nudge out of the slit.
   useEffect(
@@ -177,14 +179,16 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
       g.position.y = y + 0.0004;
     }
     let moving = false;
-    if (!s.held && (s.value !== 0 || s.vel !== 0)) {
+    // Under the pointer, the tab eases out a touch, as if lifted by a fingernail.
+    const rest = s.hover ? HOVER_OUT : 0;
+    if (!s.held && (s.value !== rest || s.vel !== 0)) {
       // A paper spring: quick, one soft overshoot.
       const k = 260;
       const c = 2 * Math.sqrt(k) * 0.62;
-      s.vel += (-k * s.value - c * s.vel) * dt;
+      s.vel += (-k * (s.value - rest) - c * s.vel) * dt;
       s.value += s.vel * dt;
-      if (Math.abs(s.value) < 1e-4 && Math.abs(s.vel) < 1e-3) {
-        s.value = 0;
+      if (Math.abs(s.value - rest) < 1e-4 && Math.abs(s.vel) < 1e-3) {
+        s.value = rest;
         s.vel = 0;
       }
       moving = true;
@@ -306,9 +310,13 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     onPointerDown: onDown,
     onPointerOver: (e: ThreeEvent<PointerEvent>) => {
       e.stopPropagation();
+      st.current.hover = e.pointerType === "mouse";
+      invalidate();
       if (!st.current.held) document.body.style.cursor = "grab";
     },
     onPointerOut: () => {
+      st.current.hover = false;
+      invalidate();
       if (!st.current.held) document.body.style.cursor = "";
     },
     onPointerMove: (e: ThreeEvent<PointerEvent>) => e.stopPropagation(),

@@ -201,12 +201,14 @@ function PlayingBook({
     };
   }, [controller, debug]);
 
-  // Only a new teller re-renders the book (to reprint the labels).
-  const playing = useSyncExternalStore(
-    controller.subscribe,
-    () => controller.getStatus().narrator,
-    () => controller.getStatus().narrator,
-  );
+  // The telling being told, or none once it has ended (every label then
+  // offers its telling, the last one included: choose it to hear it again).
+  // Only this changing re-renders the book, to reprint the labels.
+  const telling = useCallback(() => {
+    const s = controller.getStatus();
+    return s.ended ? null : s.narrator;
+  }, [controller]);
+  const playing = useSyncExternalStore(controller.subscribe, telling, telling);
   const tellings = useMemo(() => (playing ? { [spread.id]: playing } : {}), [spread.id, playing]);
 
   const onTelling = useCallback(
