@@ -4,7 +4,7 @@
  * photos from photoArt.ts, the cover and binding from coverArt.ts.
  */
 
-import { ACCENT, canvas, drawStitchLine, INK, INK_FAINT, INK_SOFT, paper, setSpacing, wrap, type Ctx, type PageFonts } from "./paperArt";
+import { ACCENT, canvas, drawGutterStitches, drawStitchLine, INK, INK_FAINT, INK_SOFT, paper, setSpacing, wrap, type Ctx, type PageFonts } from "./paperArt";
 import { drawPhoto } from "./photoArt";
 import type { BookCover, BookSpread } from "./types";
 
@@ -31,6 +31,7 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
   const H = PAGE_PX_H;
   const { c, ctx } = canvas(W, H);
   paper(ctx, W, H, { seed, gutter: "right" });
+  drawGutterStitches(ctx, W, H, "right");
   const left = 96;
   const right = W - 134;
   const width = right - left;
@@ -64,14 +65,26 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
   drawStitchLine(ctx, left + 2, y, left + 190, y, ACCENT, 3.2, 16, 11);
   y += 58;
 
-  // Storybook text.
+  // Storybook text, opening on a two-line drop cap like a printed storybook.
+  const text = spread.text.trim();
+  const lead = 46;
+  const first = text.charAt(0);
+  const capSize = Math.round(lead * 2.3);
+  ctx.font = `600 ${capSize}px ${fonts.display}`;
+  const capM = ctx.measureText(first);
+  // Tight to the glyph's ink, so a slim "I" still sits close to its word.
+  // A one-letter first word ("A day…") keeps a word space after the cap.
+  const capW = Math.max(capM.actualBoundingBoxRight, 18) + (/^\s/.test(text.slice(1)) ? 20 : 4);
+  ctx.fillStyle = ACCENT;
+  // The cap's baseline sits on the second line's baseline.
+  ctx.fillText(first, left - 2, y + lead);
   ctx.fillStyle = INK_SOFT;
   ctx.font = `400 31px ${fonts.display}`;
-  const body = wrap(ctx, spread.text, width);
-  for (const line of body) {
-    ctx.fillText(line, left, y);
-    y += 46;
-  }
+  const body = wrap(ctx, text.slice(1), (i) => (i < 2 ? width - capW : width));
+  body.forEach((line, i) => {
+    ctx.fillText(line, left + (i < 2 ? capW : 0), y);
+    y += lead;
+  });
 
   if (spread.tellers?.length) {
     y += 14;
@@ -110,6 +123,7 @@ export function drawStagePage(spread: BookSpread, page: number, fonts: PageFonts
   const H = PAGE_PX_H;
   const { c, ctx } = canvas(W, H);
   paper(ctx, W, H, { seed, gutter: "left" });
+  drawGutterStitches(ctx, W, H, "left");
 
   const x0 = 134;
   const x1 = W - 96;
@@ -173,6 +187,7 @@ export function drawTitlePage(cover: BookCover, fonts: PageFonts, seed: number) 
   const H = PAGE_PX_H;
   const { c, ctx } = canvas(W, H);
   paper(ctx, W, H, { seed, gutter: "left" });
+  drawGutterStitches(ctx, W, H, "left");
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   const cx = W / 2 + 18;

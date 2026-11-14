@@ -74,13 +74,15 @@ export function setSpacing(ctx: Ctx, px: number) {
   (ctx as Ctx & { letterSpacing?: string }).letterSpacing = `${px}px`;
 }
 
-export function wrap(ctx: Ctx, text: string, maxW: number): string[] {
-  const words = text.split(/\s+/);
+/** Greedy word wrap. `maxW` may vary by line (e.g. lines beside a drop cap). */
+export function wrap(ctx: Ctx, text: string, maxW: number | ((line: number) => number)): string[] {
+  const widthFor = typeof maxW === "number" ? () => maxW : maxW;
+  const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let line = "";
   for (const w of words) {
     const t = line ? `${line} ${w}` : w;
-    if (ctx.measureText(t).width > maxW && line) {
+    if (ctx.measureText(t).width > widthFor(lines.length) && line) {
       lines.push(line);
       line = w;
     } else line = t;
@@ -236,6 +238,46 @@ export function drawStitchLine(ctx: Ctx, x0: number, y0: number, x1: number, y1:
     ctx.moveTo(x0 + ux * d - uy, y0 + uy * d - ux * 0.6);
     ctx.lineTo(x0 + ux * e - uy, y0 + uy * e - ux * 0.6);
     ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/**
+ * The sewn signature, seen down the fold: a few long stitches of linen thread
+ * between needle holes, right at the gutter edge of a page `w` × `h`.
+ */
+export function drawGutterStitches(ctx: Ctx, w: number, h: number, gutter: "left" | "right") {
+  // Just inside the deckled edge, which would eat a thread on the very edge.
+  const x = gutter === "left" ? 20 : w - 20;
+  const stations = 5;
+  const margin = h * 0.08;
+  const step = (h - 2 * margin) / (stations - 1);
+  ctx.save();
+  ctx.lineCap = "round";
+  for (let i = 0; i < stations - 1; i++) {
+    // Thread shows on alternate runs between stations, as in a pamphlet stitch.
+    if (i % 2 === 1) continue;
+    const y0 = margin + i * step + 7;
+    const y1 = margin + (i + 1) * step - 7;
+    ctx.strokeStyle = "rgba(92,60,30,0.16)";
+    ctx.lineWidth = 3.4;
+    ctx.beginPath();
+    ctx.moveTo(x + 0.8, y0 + 1.2);
+    ctx.lineTo(x + 0.8, y1 + 1.2);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(201,176,140,0.95)";
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y1);
+    ctx.stroke();
+  }
+  // Needle holes at every station.
+  ctx.fillStyle = "rgba(70,45,25,0.32)";
+  for (let i = 0; i < stations; i++) {
+    ctx.beginPath();
+    ctx.arc(x, margin + i * step, 2.1, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.restore();
 }
