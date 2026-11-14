@@ -1,9 +1,10 @@
 """seed/README.md stays in step with the demo data it describes.
 
 The README is the teammate-facing guide to the offline demo. These checks read the seed
-data at test time (seed.demo: the moments, accounts and password; the screenplays' sets;
-the effects in the compiled timelines) and fail when the README stops naming one of them,
-so adding a moment, set, account or effect without documenting it is caught. Offline and
+data at test time (seed.demo: the moments, accounts and password, and the CLI's exit-code
+constants; the screenplays' sets and props; the effects in the compiled timelines) and fail
+when the README stops naming one of them, so adding a moment, set, prop, account, effect or
+exit code without documenting it is caught. Offline and
 fast: nothing here touches a database or the network.
 """
 
@@ -41,6 +42,31 @@ def used_set_ids(scenes: dict[str, demo.DemoScene]) -> list[str]:
 
 def missing_set_ids(text: str, scenes: dict[str, demo.DemoScene]) -> list[str]:
     return [s for s in used_set_ids(scenes) if not _named(text, s)]
+
+
+def used_prop_ids(scenes: dict[str, demo.DemoScene]) -> list[str]:
+    """Every prop a seeded memory uses (the memory's prop ids), in moment order."""
+    return list(dict.fromkeys(pid for scene in scenes.values() for pid in scene.prop_ids))
+
+
+def missing_prop_ids(text: str, scenes: dict[str, demo.DemoScene]) -> list[str]:
+    return [p for p in used_prop_ids(scenes) if not _named(text, p)]
+
+
+def exit_codes() -> dict[str, int]:
+    """seed.demo's CLI exit-code constants (EXIT_OK, EXIT_BAD_DATA, ...)."""
+    return {name: value for name, value in vars(demo).items() if name.startswith("EXIT_") and isinstance(value, int)}
+
+
+def missing_exit_codes(text: str) -> list[str]:
+    """Each constant must be on a README line (the exit-code table's row) that also gives its
+    number, as a whole word, so `EXIT_NO_DATABASE` next to 3 passes and next to 13 does not."""
+    missing = []
+    for name, value in exit_codes().items():
+        lines = [line for line in text.splitlines() if f"`{name}`" in line]
+        if not any(re.search(rf"(?<![\w.]){value}(?![\w.])", line.replace(f"`{name}`", "")) for line in lines):
+            missing.append(name)
+    return missing
 
 
 def compiled_effect_kinds(scenes: dict[str, demo.DemoScene]) -> list[str]:
@@ -84,6 +110,17 @@ def test_every_compiled_effect_is_in_the_readme(readme: str, scenes: dict[str, d
     assert missing_effects(readme, scenes) == []
 
 
+def test_every_prop_a_seeded_memory_uses_is_in_the_readme(readme: str, scenes: dict[str, demo.DemoScene]) -> None:
+    assert used_prop_ids(scenes)
+    assert missing_prop_ids(readme, scenes) == []
+
+
+def test_every_exit_code_is_in_the_readme_with_its_number(readme: str) -> None:
+    codes = exit_codes()
+    assert {"EXIT_OK", "EXIT_BAD_DATA", "EXIT_NO_DATABASE"} <= set(codes), codes
+    assert missing_exit_codes(readme) == []
+
+
 def test_the_scene_table_has_one_row_per_moment_in_year_order(readme: str) -> None:
     rows = [line for line in readme.splitlines() if line.startswith("| `")]
     first_cells = [row.split("|")[1].strip().strip("`") for row in rows]
@@ -113,7 +150,8 @@ def test_every_seed_module_the_readme_runs_is_importable(readme: str) -> None:
 
 
 def test_the_checks_fail_when_the_readme_drops_something(scenes: dict[str, demo.DemoScene]) -> None:
-    """Each checker reports a removed id, set, email or effect (guards against a vacuous pass)."""
+    """Each checker reports a removed id, set, prop, email, effect or exit code (guards against a
+    vacuous pass)."""
     text = README_PATH.read_text()
     memory_id = demo.DEMO_MEMORY_IDS[-1]
     assert missing_memory_ids(text.replace(f"`{memory_id}`", "")) == [memory_id]
@@ -123,3 +161,10 @@ def test_the_checks_fail_when_the_readme_drops_something(scenes: dict[str, demo.
     assert missing_accounts(text.replace(email, "")) == [email]
     kind = compiled_effect_kinds(scenes)[0]
     assert kind in missing_effects(text.replace(f"`{kind}`", ""), scenes)
+    prop_id = "folding_chair_sam"
+    assert prop_id in used_prop_ids(scenes)
+    assert missing_prop_ids(text.replace(f"`{prop_id}`", ""), scenes) == [prop_id]
+    # An exit code documented with the wrong number, or not at all, is caught.
+    row = next(line for line in text.splitlines() if "`EXIT_NO_DATABASE`" in line)
+    assert missing_exit_codes(text.replace(row, row.replace("| 3 |", "| 13 |"))) == ["EXIT_NO_DATABASE"]
+    assert missing_exit_codes(text.replace("`EXIT_BAD_DATA`", "")) == ["EXIT_BAD_DATA"]

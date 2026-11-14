@@ -11,6 +11,7 @@ explanations for every puppet and prop, and a good spread of the vocabulary acro
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterator
 
 import mongomock
@@ -472,6 +473,120 @@ def test_rosa_cheers_at_the_graduation_from_her_front_row_seat(memories):
         assert _seated(tl, grandma, s1.end - 0.01), f"{grandma} ends the shot in her folding chair"
         hat = "rosa_hat" if grandma == "grandma_rosa" else "carmen_hat"
         assert _at(_track(tl, f"prop:{hat}", "parent"), s1.action_start + 3.0) == f"puppet:{grandma}.head"
+
+
+def test_the_family_watches_lily_from_their_seats(memories, scene):
+    """Mom, Dad and Sam are in the graduation's cast, and Sam is asked what he saw "from your
+    seat that day" (seed.demo.DEMO_QUESTIONS): in the hall (s1) each of them starts in a
+    folding chair's seat socket or sits on one during the shot, is seated at the start and the
+    end of the shot, and has an explanation, as does their chair."""
+    sp, tl = memories["demo_lily_graduation"].screenplay, memories["demo_lily_graduation"].timeline
+    hall = sp.shots[0]
+    assert hall.id == "s1" and hall.set == "school_hall_2015"
+    s1 = _shot(tl, "s1")
+    explained = {e.target: e.text for e in sp.explanations or []}
+    for pid in ("mom", "dad", "sam"):
+        start = hall.start.get(pid)
+        in_seat = start is not None and start.in_ is not None and start.in_.endswith(".seat")
+        sits = [a for a in hall.actions if a.who == pid and a.do == "sit_on"]
+        assert in_seat or sits, f"{pid} should be seated in the hall"
+        chairs = {start.in_.split(".", 1)[0]} if in_seat else {a.what for a in sits}
+        for chair in chairs:
+            assert chair in sp.props and "seat" in scene["props"][chair].sockets, (pid, chair)
+            assert chair in hall.prop_start, f"{chair} stands in the hall"
+            if in_seat:
+                assert hall.prop_start[chair].at == start.at, f"{pid} sits where {chair} stands"
+            assert f"prop:{chair}" in explained, f"say why {chair} matters"
+        assert f"puppet:{pid}" in explained, f"say why {pid} matters"
+        assert _seated(tl, pid, s1.action_start), f"{pid} watches from a seat"
+        assert _seated(tl, pid, s1.end - 0.01), f"{pid} ends the shot in a seat"
+        # one small reaction each to Lily's bow, so the audience is alive but not crowding
+        reactions = [a for a in hall.actions if a.who == pid and a.do != "sit_on"]
+        assert len(reactions) == 1, (pid, [a.do for a in reactions])
+
+
+def _lab(color: str) -> tuple[float, float, float]:
+    """sRGB hex -> CIELAB (D65), the textbook conversion."""
+    rgb = [int(color.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    r, g, b = (c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb)
+    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+    def f(t: float) -> float:
+        return t ** (1 / 3) if t > 216 / 24389 else (24389 / 27 * t + 16) / 116
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
+
+
+# CIE76 colour difference (Euclidean distance in CIELAB). About 2.3 is the smallest difference
+# people notice side by side; at 10 two flat colours read as different at a glance. A puppet is a
+# flat card in its character colour (placeholder art) standing in front of, or partly behind, the
+# set's flat colour layers, so anything closer than this makes them vanish into the set.
+MIN_DELTA_E = 10.0
+
+# Clashes the seed cannot fix on its own. church_steps_1988 is the web sample's set
+# (web/public/samples/hymn_books.memory.json), and tests/data/test_seed.py pins the seeded copy
+# to the sample exactly, so its front band stays Joseph's #7d9a5b until the sample itself changes
+# (reported to the orchestrator as a contract request). Only a clash whose layer colour is the
+# sample's own may be listed here, and nothing else may join it.
+PINNED_BY_WEB_SAMPLE = {("grandpa_joseph", "church_steps_1988", 2)}
+
+
+def _vanishing() -> list[tuple[str, str, str, str, int, str, str, float]]:
+    """Every (memory, shot, person, set, layer index, person colour, layer colour, delta E) where
+    a person on stage in a shot is too close in colour to a layer of that shot's set."""
+    people = {p.id: p.character.color for p in demo.demo_people()}
+    sets = {s.id: s for s in demo.load_sets()}
+    found = []
+    for memory_id in MEMORY_IDS:
+        sp = demo.load_screenplay(memory_id)
+        for shot in sp.shots:
+            on_stage = set(shot.start) | {a.who for a in shot.actions if a.who}
+            for pid in sorted(on_stage):
+                color = people[pid]
+                for i, layer in enumerate(sets[shot.set].layers):
+                    assert layer.color is not None
+                    delta = math.dist(_lab(color), _lab(layer.color))
+                    if color.lower() == layer.color.lower() or delta < MIN_DELTA_E:
+                        found.append((memory_id, shot.id, pid, shot.set, i, color, layer.color, delta))
+    return found
+
+
+def _pinned_by_web_sample(set_id: str, layer: int, layer_color: str) -> bool:
+    sample = {s.id: s for s in demo.load_sample().sets}
+    if set_id not in sample or layer >= len(sample[set_id].layers):
+        return False
+    return (sample[set_id].layers[layer].color or "").lower() == layer_color.lower()
+
+
+def test_nobody_vanishes_into_the_set_they_stand_on():
+    problems, pinned = [], set()
+    for memory_id, shot_id, pid, set_id, i, color, layer_color, delta in _vanishing():
+        key = (pid, set_id, i)
+        if key in PINNED_BY_WEB_SAMPLE and _pinned_by_web_sample(set_id, i, layer_color):
+            pinned.add(key)
+            continue
+        problems.append(
+            f"{memory_id} {shot_id}: {pid} ({color}) on {set_id} layer {i} ({layer_color}), delta E {delta:.1f}"
+        )
+    assert not problems, "\n".join(problems)
+    assert pinned <= PINNED_BY_WEB_SAMPLE
+
+
+def test_the_colour_check_catches_a_match():
+    """Guards against a vacuous pass: Joseph's own colour as a layer is caught, and while the web
+    sample pins church_steps_1988's front band to his green, the check really does find him there."""
+    joseph = next(p.character.color for p in demo.demo_people() if p.id == "grandpa_joseph")
+    assert joseph.lower() == "#7d9a5b"
+    assert math.dist(_lab(joseph), _lab(joseph.upper())) == 0.0 < MIN_DELTA_E
+    church = next(s for s in demo.load_sets() if s.id == "church_steps_1988")
+    found = {(pid, set_id, i) for _, _, pid, set_id, i, *_ in _vanishing()}
+    if church.layers[2].color and church.layers[2].color.lower() == joseph.lower():
+        assert ("grandpa_joseph", "church_steps_1988", 2) in found
+    else:
+        assert not any(set_id == "church_steps_1988" and pid == "grandpa_joseph" for pid, set_id, _ in found)
 
 
 def test_rosa_and_joseph_come_out_into_the_sun(memories):

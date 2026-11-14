@@ -103,6 +103,42 @@ on code changes under `api/`). `--help` lists them.
 `STITCH_FAKE_DB=1 uv run uvicorn main:app --port 8000` (see
 [Run the API without MongoDB](#run-the-api-without-mongodb)).
 
+## Presenter run sheet
+
+A three-minute stage demo on `uv run python -m seed.serve` plus the web app. Each step says
+how it was checked:
+
+- **[HTTP]**: run against `seed.serve` on a fresh start, with the same requests the web app
+  makes (sign-in, `GET` routes, the multipart submit and the run's event stream) or with
+  `seed.smoke`. What it prints is quoted.
+- **[read from web code]**: taken from the web app's code on `origin/main` (14 November),
+  not clicked through in a browser.
+
+**Before going on stage** (two terminals, from the repo root):
+
+1. `cd api && uv sync && uv run python -m seed.serve`; wait for
+   `Application startup complete`. **[HTTP]** `/health` answers `{"status":"ok"}`.
+2. `cd web && npm install && npm run dev`, then open **http://localhost:3000** (not
+   `127.0.0.1`). **[read from web code]**
+3. Rehearse the "hear Mom's version" step once with `seed.smoke` (below), then stop
+   `seed.serve` with Ctrl+C and start it again: answering Ana's question closes it, and a
+   restart brings back the seeded state. **[HTTP]**
+
+**On stage:**
+
+| At | Do | What it shows | Checked |
+|---|---|---|---|
+| 0:00 | Sign in at `/login` as `david@demo.stitch`, password `stitch-demo`. | David Mao, admin of The Maos, playing `dad`. | **[HTTP]** `POST /auth/login` answers 200 with `"families":[{"id":"demo_family","name":"The Maos","role":"admin","personId":"dad"}]`. The page: **[read from web code]**. |
+| 0:20 | Open **Family threads** (`/threads`, linked from the home page). | The Maos: 8 people in three generations and their 7 moments, 1958 to 2019, as threads along time. | **[HTTP]** `GET /families/demo_family/threads` answers 200 with `people` and `moments`; `GET .../tree` has 8 people. The page loads both for the signed-in family: **[read from web code]**. The home page (`/`) still draws the web app's built-in demo tree, not the seeded family: **[read from web code]**. |
+| 0:40 | Open **David's book**, then **Sam's first bike** (1997). Pull **"Pull to push Sam off down the street"**, then switch the teller from David to Sam: "I noticed." | The red bike, Dad running behind; two tellings over the same action. | **[HTTP]** `GET /families/demo_family/people/dad/book` lists five moments (`demo_green_sedan_trip`, `sample_hymn_books`, `demo_sams_first_bike`, `demo_lily_graduation`, `demo_sam_wedding_2019`), each with its screenplay and timeline; the bike's timeline has the tabs "Pull to push Sam off down the street", "Pull to ring the bell" and "Pull to spin the back wheel", and narrations `dad` and `sam`. **Playing it in the web app is not wired yet** **[read from web code]**: on `origin/main`, `/people/[id]` is a placeholder and `/memories/[id]` opens only the built-in book at `/memories/demo`. Until the book loads real moments, show `/memories/demo` here. |
+| 1:20 | **Hear Mom's version.** Sign out (**Settings**, `/families/demo_family/settings`, has **Sign out** at the bottom) and sign in as `ana@demo.stitch`. Open `/add`: under **"Someone asked you"** is "Sam says you hugged him so hard at the wedding that his flower fell off. How do you remember that day?". Press **"Answer this"**, write two sentences, submit. | The live feed: plan, interviewer, narrator, then done. A second telling has no follow-up question and no prop review. | **[HTTP]** `POST /auth/logout` answers 204 and a later `GET /me` with the same cookie jar answers 401; Ana then signs in (200). Ana's `GET /families/demo_family/questions` lists it (id `5eed00020000000000000003`, `memoryId` `demo_sam_wedding_2019`). `uv run python -m seed.smoke --base-url http://localhost:8000 --email ana@demo.stitch --memory-id demo_sam_wedding_2019` printed `PASS done: memory demo_sam_wedding_2019 in 5.6s, 10 events, every one valid`, `mom's telling is on it, narrated in 2 line(s); version 1 -> 2`, and afterwards the question was closed. The Sign out button, the buttons and the feed: **[read from web code]**. |
+| 2:00 | Play **Sam's wedding** and switch to Mom's track. | The same action, in Ana's words. | **[HTTP]** `GET /families/demo_family/memories/demo_sam_wedding_2019` has `timeline.narrations` `sam`, `dad`, `mom`; Mom's lines have cues and word timings in timeline time (no audio: scripted runs make no speech). Playback in the web app: not wired yet, as above **[read from web code]**. |
+| 2:20 | **Add a new memory.** Sign out the same way and sign in as `sam@demo.stitch`, open `/add`, write a few sentences that mention "Grandpa Joe", pick a year, attach a photo, submit. Answer the follow-up, say whether Grandpa Joe is Joseph, keep the hymn books. | The feed: plan; "Who else was there that day?"; "Is Grandpa Joe the Joseph in your family tree?"; the prop review with the family's hymn books; the director; done. The new memory, with the hand-written hymn-book scene recast with Sam, is in Sam's book. | **[HTTP]** `uv run python -m seed.smoke --base-url http://localhost:8000 --email sam@demo.stitch` printed `PASS question`, `PASS merge`, `PASS props_found: ... 1 kept`, `PASS done: ... 16 events, every one valid` and `PASS book: sam's book lists it`. The form and feed: **[read from web code]**. |
+
+The same steps with Sam on Lily's graduation (`--email sam@demo.stitch --memory-id
+demo_lily_graduation`) also passed **[HTTP]**: Sam's track joins Ana's and Lily's, and in
+the hall Sam is the one in the second row who points at Lily after the bow.
+
 ## The demo family
 
 The stage demo starts with a full tree and books. `seed/demo.py` creates the demo family,
@@ -137,7 +173,7 @@ stage has a click-to-explain note. "Tab" is a pull tab and what it drives
 | `demo_green_sedan_trip` | 1972 | The road trip in the green sedan | David (`dad`, with two photos), Rosa (`grandma_rosa`) | `mao_driveway_1972`, then `coast_road_1972` | The green sedan: Joseph, Rosa and David get in at its `driver`, `passenger` and `back_seat` sockets, exhaust `smoke`, and Joseph drives off (`drive_to`). Fold to the coast road, everyone still seated: the car pulls up with more `smoke`, all three get out, Joseph kneels at the flat tire, David sits on the fruit crate and Rosa hands him the peaches. Tabs: spin the front wheel (prop part `wheel_front`), drive to the peach stand (scrub). |
 | `sample_hymn_books` | 1988 | How I met your mother | David (`dad`), Ana (`mom`) | `church_steps_1988` | The reference sample (a copy of `web/public/samples/hymn_books.screenplay.json`), one shot: David enters, Ana drops the hymn books, David picks them up and hands them back, Ana bows her head. Tab: drop the books (scrub). |
 | `demo_sams_first_bike` | 1997 | Sam's first bike | David (`dad`), Sam (`sam`) | `maple_street_1997`, then `maple_corner_1997` | The red bike: Sam gets on at its `driver` socket and rides (`drive_to`) while Dad runs behind; the camera uses every move (`wide`, `close_up`, `dolly_to`, `pan_to`, `pull_back`). Fold to the corner, Sam still on the bike: Dad lets go, the bell rings (`set_state`), Dad follows, Sam gets off and waves, Dad hugs him. Tabs: push Sam off (scrub), ring the bell (prop state), spin the back wheel (prop part `wheel_back`). |
-| `demo_lily_graduation` | 2015 | Lily's graduation | Ana (`mom`), Lily (`lily`) | `school_hall_2015`, then `school_lawn_2015` | Six puppets. The grandmothers start seated on their folding chairs and put on matching hats (`put_on`); Lily trips on the stage steps into a bow; Rosa stands up to cheer and sits back down; Lily picks up her diploma at the lectern. Fold to the lawn: Lily hands Mom the diploma, a hug, `confetti`, Sam points (the Thanksgiving joke), Dad waves. Tabs: make Lily bow, make Rosa cheer, hand Mom the diploma (all scrub). Sam, David and Rosa have open questions. |
+| `demo_lily_graduation` | 2015 | Lily's graduation | Ana (`mom`), Lily (`lily`) | `school_hall_2015`, then `school_lawn_2015` | Six puppets, and the whole family in the audience: the grandmothers start seated in the front row and put on matching hats (`put_on`); Ana, Sam and David sit in the second row behind them (a row of marks at depth 0.38, each on their own folding chair). Lily trips on the stage steps into a bow; Sam points at her (he saw it first), Rosa stands up to cheer and sits back down, Ana leans toward the stage; Lily picks up her diploma at the lectern while David stands up for a photo and sits again. Fold to the lawn: Lily hands Mom the diploma, a hug, `confetti`, Sam points (the Thanksgiving joke), Dad waves. Tabs: make Lily bow, make Rosa cheer, hand Mom the diploma (all scrub). Sam, David and Rosa have open questions; Sam's asks what he saw "from your seat". |
 | `demo_sam_wedding_2019` | 2019 | Sam's wedding in the orchard | Sam (`sam`), David (`dad`) | `wedding_garden_2019`, then `reception_tent_2019` | Ana and David start on the garden bench (its `left` and `right` sockets) and Ana leans toward David; Sam slumps, Lily walks up the aisle and hands him the ring box, which he opens (`set_state`). Fold to the reception tent at dusk (`time_of_day` dusk): Mom hugs Sam, his boutonniere drops, `confetti`, Dad waves, Lily picks the flower up and hands it back. Tabs: open the ring box (prop state), Mom's hug (scrub). Ana's open question here is "hear Mom's version" (below). |
 
 **Vocabulary the demo exercises.** Across the seven scenes: the actions `walk_to`,
@@ -146,10 +182,28 @@ stage has a click-to-explain note. "Tab" is a pull tab and what it drives
 `get_out`, `drive_to`, `pick_up`, `hold`, `hand_to`, `drop`, `place_on`, `put_on` and
 `set_state`; all five effects, `confetti`, `steam`, `rain`, `smoke` and `time_of_day`
 (dawn, day, dusk); all five camera moves; the `fold` transition between every pair of
-shots; starting a shot seated (`start.in` on a chair, bench, bike or car socket); and pull tabs
-of all three drive types (`scrub`, `prop_state`, `prop_part`). Not exercised: the actions
-`exit`, `open`, `close` and `ride_to`, the `none` transition, and sliders. The vocabulary
-itself is `shared/vocabulary.json`.
+shots; starting a shot seated (`start.in` on a chair, bench, bike or car socket: seven
+people start seated somewhere, five of them in the graduation hall); marks with a depth
+(`[u, h, d]`: the graduation's second row of chairs stands at `d` 0.38, behind the front row
+on the acting plane); marks with a height (the hall's stage at `h` 0.25, the church's top
+step); the built-in `offstage_left` and `offstage_right` marks (entrances, and props parked
+off stage until their shot); and pull tabs of all three drive types (`scrub`, `prop_state`,
+`prop_part`). Not exercised: the actions `exit`, `open`, `close` and `ride_to`, the `none`
+transition, and sliders. The vocabulary itself is `shared/vocabulary.json`.
+
+#### The props, by moment
+
+Every prop a seeded moment uses (`seed/demo_family/props.json`; placeholder art, a `color`):
+
+| Moment | Props |
+|---|---|
+| Rosa and Joseph's wedding | `black_umbrella` (states `closed`, `open`) |
+| Sunday tamales at Carmen's | `tamale_pot` (part `lid`), `lumpy_tamale`, `kitchen_table` (socket `top`), `kitchen_chair` and `kitchen_stool` (socket `seat`), `luis_straw_hat` (Luis's signature item) |
+| The road trip in the green sedan | `green_sedan` (sockets `driver`, `passenger`, `back_seat`; parts `wheel_front`, `wheel_back`), `peaches`, `fruit_crate` (sockets `seat`, `top`), `road_map` |
+| How I met your mother | `hymn_books` |
+| Sam's first bike | `red_bike` (socket `driver`; parts `wheel_front`, `wheel_back`; states `quiet`, `ringing`), `sam_cap` (Sam's signature item) |
+| Lily's graduation | `diploma`, `lectern` (socket `top`), `rosa_hat`, `carmen_hat`, and five folding chairs with a `seat`: `folding_chair_rosa` and `folding_chair_carmen` in the front row, `folding_chair_mom`, `folding_chair_sam` and `folding_chair_dad` in the second |
+| Sam's wedding in the orchard | `ring_box` (states `closed`, `open`), `garden_bench` (sockets `left`, `right`), `boutonniere` |
 
 ### Demo accounts and their questions
 
@@ -227,11 +281,36 @@ After an edit, recompile and check everything with
 
 ```sh
 cd api
-uv run pytest tests/data/test_seed_scenes.py tests/data/test_seed.py tests/data/test_seed_readme.py
+uv run pytest tests/data/test_seed_scenes.py tests/data/test_seed_staging.py tests/data/test_seed.py tests/data/test_seed_readme.py
 ```
 
-`test_seed_readme.py` checks that this README still names every moment, set, demo account
-and compiled effect, so update [The scenes](#the-scenes) when you add or change one.
+`test_seed_readme.py` checks that this README still names every moment, set, prop, demo
+account, compiled effect and seed exit code, so update [The scenes](#the-scenes) and
+[The props, by moment](#the-props-by-moment) when you add or change one.
+`test_seed_staging.py` samples every compiled shot and checks the blocking: everyone on
+stage, nobody standing on anyone, nothing floating, people facing whoever they hand
+things to, no frozen stretches, no popping, no prop on stage before its shot, no two props
+drawn into each other (its module docstring lists the rules).
+
+Two rules the tests enforce that are easy to trip over:
+
+- **A prop that first appears in a later shot is parked off stage in the earlier ones.**
+  The compiler keys a prop from the first shot that names it, and the stage holds a track's
+  first key before it, so a fruit crate placed only in the road trip's second shot would
+  stand in the 1972 driveway for the whole first shot. Give it
+  `"propStart": {"fruit_crate": {"at": "offstage_right"}}` in every earlier shot (the road
+  trip does this for `fruit_crate` and `peaches`). A prop a shot does not name is moved off
+  stage by the compiler after its last shot, so only the earlier shots need this.
+- **Nobody may vanish into the set.** Puppets and set layers are flat placeholder colours,
+  so a character colour (`seed.demo.demo_people`) must differ from every layer colour of
+  every set that person is on stage in, by a CIELAB distance (delta E) of at least 10.
+  One known clash remains: `church_steps_1988`'s front band is `#7d9a5b`, Joseph's own
+  green, so in the wedding's first shot his legs merge into the band. The seed cannot change
+  it alone: the set is the web sample's (`web/public/samples/hymn_books.memory.json`), and
+  `tests/data/test_seed.py` requires the seeded copy to equal the sample's exactly. The scene
+  test lists this one clash as pinned by the web sample and accepts nothing else; when the
+  sample's front band changes (a stone grey such as `#8f8a80` clears the threshold),
+  `sets.json` must follow it and the pinned entry can go.
 
 `seed_demo` compiles every screenplay with the real compiler
 (`screenplay.compiler.compile`) against these props and sets and the demo people
@@ -277,8 +356,39 @@ uv run --env-file .env python -m seed.demo --reset   # deletes the demo data and
 
 Seeding is idempotent. `--reset` deletes only demo data: the three demo users (by email),
 the `demo_family` family, and its people, memories, questions, props, sets and media. Other
-families are never touched. The family document is written last, so a run that was cut
-short is cleaned up and rebuilt by the next one.
+families are never touched. The family document is written last, with every member in the
+same insert, so a run that was cut short is cleaned up and rebuilt by the next one; a
+database where the family exists but a demo account is missing is rebuilt too
+(`seed.demo.demo_is_complete`).
+
+The CLI's exit codes (constants in `seed.demo`):
+
+| Exit code | Constant | Meaning |
+|---|---|---|
+| 0 | `EXIT_OK` | Seeded, or already present (nothing written). |
+| 1 | `EXIT_BAD_DATA` | A file in `seed/demo_family/` is malformed or does not compile (`DemoDataError` or `DemoCompileError`); nothing was deleted or written. |
+| 2 | (argparse) | Bad command-line arguments, for example `--bogus`. |
+| 3 | `EXIT_NO_DATABASE` | MongoDB is unreachable or refused the writes. |
+
+Errors are one readable message on stderr, never a traceback. For example, with nothing
+listening on the URI:
+
+```text
+$ MONGODB_URI='mongodb://localhost:1/?serverSelectionTimeoutMS=500' uv run python -m seed.demo; echo $?
+Demo seed failed: MongoDB error on database 'stitch' (ServerSelectionTimeoutError: ...). Check MONGODB_URI and MONGODB_DB, or run the API with STITCH_FAKE_DB=1 to use the in-memory demo database instead.
+3
+```
+
+**A reseed is deterministic.** Every seed and every `--reset` writes the same ids:
+the people, memories, props and sets use the ids in the files and in `seed/demo.py`, the
+two road-trip photos are `seed.demo.DEMO_PHOTO_IDS` (`5eed00010000000000000001` and
+`5eed00010000000000000002`), and the seven questions are `seed.demo.DEMO_QUESTION_IDS`
+(`5eed00020000000000000001` to `5eed00020000000000000007`, in `DEMO_QUESTIONS` order, with
+creation times a second apart; `GET /families/demo_family/questions` lists a person's open
+ones newest first, so Ana sees the general prompt before the wedding question). Two seeded databases hold the same documents apart from
+timestamps and salted password hashes (`tests/data/test_seed_robustness.py`), so every
+teammate's `STITCH_FAKE_DB` demo matches the rehearsed one and a media URL such as
+`/families/demo_family/media/5eed00010000000000000001` works on every machine.
 
 From code: `seed.demo.seed_demo(db, reset=False) -> DemoSeed`.
 
@@ -357,7 +467,10 @@ year and attach photos, and submit. The live feed then shows, one step every
 1. a plan (Read the telling, Ask one follow-up, Find the props, Stage the scene, Narrate)
    and the interviewer sub-agent;
 2. the follow-up question **"Who else was there that day?"**. The run waits for the
-   answer, which is added to the telling as a new paragraph;
+   answer, which is added to the telling as a new paragraph; then, only when the telling
+   calls someone by a family title and a name that is nearly someone in the tree ("Grandpa
+   Joe" for Joseph), the pause **"Is Grandpa Joe the Joseph in your family tree?"**, which
+   waits for yes or no (yes adds Joseph to the memory; details in `seed/fake_runs.py`);
 3. the prop master, and a prop review with one chip, the family's **hymn books**. The run
    waits for the review: keep it, rename it, replace its photo, or remove it (removed props
    are left out of the memory and the scene);
@@ -607,6 +720,10 @@ MongoDB, Docker and Atlas were not available where this demo was built and check
 - The real-MongoDB tests (`tests/data/test_real_mongo.py`) skip unless `MONGODB_URI_TEST`
   points at a disposable database.
 - Nothing here was run in Docker.
-- The second-telling path above was checked over HTTP (`seed.smoke` and curl against
-  `seed.serve`); the web click path is read from the web app's code, not clicked through
-  in a browser.
+- No browser click-through: the second-telling path and the
+  [Presenter run sheet](#presenter-run-sheet) were checked over HTTP (`seed.smoke` and
+  plain requests against `seed.serve`); every web step is read from the web app's code and
+  marked as such. On `origin/main` the web book does not play the seeded scenes yet.
+- The seeded scenes were judged from their compiled timelines (the staging and scene
+  tests), not watched on the stage: the second row's depth, the new colours and the
+  audience's reactions have not been looked at in a rendered frame.
