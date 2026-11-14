@@ -42,6 +42,11 @@ export interface ThreadsViewProps {
   onSwitchFamily?: (id: string) => void;
   /** One quiet line under the title: where the data comes from, moments without a year. */
   note?: ReactNode;
+  /**
+   * Where "add a memory" goes, shown quietly in the crumb line. Only for a real
+   * family the viewer belongs to; left out for the demo family.
+   */
+  addHref?: string;
   /** Raw query params: ?zoom=decade|year|<multiple>, ?focus=<year>, ?highlight=<personId>. */
   zoom?: string;
   focus?: string;
@@ -298,6 +303,20 @@ export default function ThreadsView(props: ThreadsViewProps) {
               /
             </span>
             <span className="text-ink-soft">Threads</span>
+            {props.addHref ? (
+              <>
+                <span aria-hidden className="mx-2 opacity-60">
+                  &middot;
+                </span>
+                <Link
+                  href={props.addHref}
+                  className="rounded-sm text-accent-deep no-underline transition-colors hover:text-accent focus-visible:outline-1 focus-visible:outline-offset-4 focus-visible:outline-accent"
+                >
+                  <span aria-hidden className="mr-1 opacity-70">+</span>
+                  Add a memory
+                </Link>
+              </>
+            ) : null}
           </p>
           {families && families.length > 1 && onSwitchFamily ? (
             <MenuDisclosure
