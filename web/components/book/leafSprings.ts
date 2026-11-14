@@ -34,6 +34,8 @@ const LIFT_REACH = 1.5;
  * at each joint still dipped into it between.
  */
 const TWIST_CLEARANCE = 0.002;
+/** A target this close (radians) to a stack's rest elevation lies on it. */
+const ON_STACK = 1e-6;
 
 /** Per-bone twist targets for a total `twist`, building toward the free edge. */
 export function twistTargets(twist: number, out: Float32Array): Float32Array {
@@ -54,6 +56,10 @@ export class LeafSprings {
   private readonly seg: number;
   /** The sheet's extent along the twist axis (head edge to tail). */
   private readonly height: number;
+  /** Each bone's stack limits when last posed (NaN unknown), and which it lay on. */
+  private readonly lastLo: Float32Array;
+  private readonly lastHi: Float32Array;
+  private readonly lying: Uint8Array;
 
   constructor(bones: number, seg: number, height: number) {
     this.seg = seg;
@@ -62,14 +68,21 @@ export class LeafSprings {
     this.vel = new Float32Array(bones);
     this.tw = new Float32Array(bones);
     this.twv = new Float32Array(bones);
+    this.lastLo = new Float32Array(bones).fill(NaN);
+    this.lastHi = new Float32Array(bones).fill(NaN);
+    this.lying = new Uint8Array(bones);
   }
 
-  /** Jump straight to the targets, still. */
-  snap(target: Float32Array, twTarget: Float32Array) {
+  /**
+   * Jump straight to the targets, still. Given the rest shapes, bones that
+   * land on a stack are known to lie on it (see `step`).
+   */
+  snap(target: Float32Array, twTarget: Float32Array, restR?: Float32Array, restL?: Float32Array) {
     this.phi.set(target);
     this.tw.set(twTarget);
     this.vel.fill(0);
     this.twv.fill(0);
+    this.noteLimits(restR, restL);
   }
 
   /**
@@ -80,8 +93,10 @@ export class LeafSprings {
    * twist is held so it cannot press the tail in either (`holdTwist`).
    */
   step(target: Float32Array, twTarget: Float32Array, stiff: number, dt: number, restR: Float32Array, restL: Float32Array) {
-    const { phi, vel, tw, twv } = this;
+    const { phi, vel, tw, twv, lastLo, lastHi, lying } = this;
     const n = phi.length;
+    // Which bones lay on a stack (1 right, 2 left) when last posed.
+    for (let i = 0; i < n; i++) lying[i] = phi[i] <= lastLo[i] + ON_STACK ? 1 : phi[i] >= lastHi[i] - ON_STACK ? 2 : 0;
     const t = Math.min(dt, MAX_FRAME);
     const steps = Math.max(1, Math.ceil(t / MAX_STEP));
     const h = t / steps;
@@ -98,20 +113,31 @@ export class LeafSprings {
     // A bone the stack stops comes to rest on it. Keeping its speed away from
     // the stack (the spring chasing a stack that rose into it) bounced the
     // stack's top sheet up off its block as a page landed, and the landing
-    // page, lying on the block, showed the stale one through it.
+    // page, lying on the block, showed the stale one through it. Likewise a
+    // bone lying on a stack and meant to stay there rides it as it sinks,
+    // rather than springing down after it a hair above.
     for (let i = 0; i < n; i++) {
       const lo = restR[i];
       const hi = Math.PI - restL[i];
-      if (phi[i] < lo) {
+      if (phi[i] < lo || (lying[i] === 1 && target[i] <= lo + ON_STACK)) {
         phi[i] = lo;
         vel[i] = 0;
-      } else if (phi[i] > hi) {
+      } else if (phi[i] > hi || (lying[i] === 2 && target[i] >= hi - ON_STACK)) {
         phi[i] = hi;
         vel[i] = 0;
       }
     }
     this.liftOff(restR, restL);
     this.holdTwist(restR, restL);
+    this.noteLimits(restR, restL);
+  }
+
+  private noteLimits(restR?: Float32Array, restL?: Float32Array) {
+    const { lastLo, lastHi } = this;
+    for (let i = 0; i < lastLo.length; i++) {
+      lastLo[i] = restR ? restR[i] : NaN;
+      lastHi[i] = restL ? Math.PI - restL[i] : NaN;
+    }
   }
 
   /**

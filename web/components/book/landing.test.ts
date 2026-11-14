@@ -36,8 +36,13 @@ const X_SEGS = BONES * 2;
 const ROWS = [0, PAGE_H / 2, PAGE_H];
 /** Below this, the landing sheet is under the stack top (an exact tie is 0). */
 const DIP = -1e-7;
-/** Float32 rounding of a sheet's bone angles: well inside what the front bias resolves. */
-const TIE = 2e-6;
+/**
+ * How far below a stack top a landing sheet may sit and still be drawn over
+ * it: the reach of the front bias (stacking.ts) with Book3D's camera planes,
+ * nearer than the camera ever frames the spread (about 4 away). Float32
+ * rounding of the bone angles leaves a sheet lying on a stack a few 1e-7 off.
+ */
+const TIE = s.frontBiasReach(2.5, 0.4, 40);
 /**
  * How far off the stack a landing sheet's free edge may be while the stack
  * top under it is hidden: the page's outer margin (pageArt.ts: words and
@@ -45,8 +50,8 @@ const TIE = 2e-6;
  * never stands in for anything printed.
  */
 const EDGE_HIDDEN = 0.096;
-/** Frame lengths: fast and slow screens. */
-const FRAMES = [1 / 144, 1 / 60, 1 / 30];
+/** Frame lengths: fast and slow screens, and a stall the springs cap (MAX_FRAME). */
+const FRAMES = [1 / 144, 1 / 60, 1 / 30, sp.MAX_FRAME];
 
 interface Turn {
   mode: "auto" | "drag";
@@ -193,7 +198,7 @@ function simulate(turn: Turn, leaves: number, frame: number) {
     sh.gapR = moving ? springs[i].edgeGap(restR, false) : Infinity;
   };
   shapeStacks();
-  sheets.forEach((_, i) => (aim(i), springs[i].snap(target, twTarget), pose(i)));
+  sheets.forEach((_, i) => (aim(i), springs[i].snap(target, twTarget, restR, restL), pose(i)));
 
   const frames: { along: number; gap: number; staleDrawn: boolean; edge: number; posed: number; landing: boolean }[] = [];
   const end = turn.dur + 0.8;
@@ -299,7 +304,7 @@ describe("landing sheet versus the stack top under it", () => {
 
     it(`never shows the stale page through a ${name} (regression)`, () => {
       for (const f of runs(turn)) {
-        if (f.gap >= DIP) continue;
+        if (f.gap >= -TIE) continue;
         assert.equal(f.staleDrawn, false, `${f.at}: dips ${f.gap.toExponential(1)} below the drawn stack top ${f.along.toFixed(3)} along`);
       }
     });
@@ -337,19 +342,16 @@ describe("leaf springs against a stack", () => {
   // sheet in a frame or two. Clamped up onto it, the top sheet kept the
   // spring's speed away from it and bounced up off its block, and the landing
   // page, lying on the block, showed the stale one through it.
-  it("rides a stack that thickens under it, without bouncing off (regression)", () => {
+  it("rides a stack that thickens under it, without bouncing off or lagging (regression)", () => {
     const thin = onLeft(0.02);
     const thick = onLeft(0.045);
     const springs = new sp.LeafSprings(BONES, SEG, PAGE_H);
-    springs.snap(thin.target, still);
-    // Where the thicker stack lies lower (out along the bow) the sheet springs
-    // down after it, a few 1e-4 rad behind; it bounced up 0.03 rad.
+    springs.snap(thin.target, still, thin.right, thin.left);
+    // It bounced up 0.03 rad, and out along the bow, where the thicker stack
+    // lies lower, it sprang down after it a few 1e-4 rad behind.
     for (let f = 0; f < 12; f++) {
       springs.step(thick.target, still, 1, 1 / 60, thick.right, thick.left);
-      springs.phi.forEach((v, i) => {
-        const lift = thick.target[i] - v;
-        assert.ok(lift < 3e-4, `frame ${f}, bone ${i} lifted ${lift.toExponential(1)} off the stack`);
-      });
+      springs.phi.forEach((v, i) => assert.ok(Math.abs(v - thick.target[i]) < 1e-6, `frame ${f}, bone ${i} off the stack by ${(thick.target[i] - v).toExponential(1)}`));
     }
   });
 

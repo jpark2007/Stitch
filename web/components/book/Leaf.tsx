@@ -212,14 +212,14 @@ export class LeafBody {
     last.twist = twist;
 
     if (leaf.mode === "frozen" || !this.started || reshown) {
-      springs.snap(target, twTarget);
+      springs.snap(target, twTarget, rt.restR, rt.restL);
       this.started = true;
     } else {
       springs.step(target, twTarget, leaf.stiff, delta, rt.restR, rt.restL);
     }
 
     this.settled = springs.error(target, twTarget) < 2e-4;
-    if (this.settled) springs.snap(target, twTarget);
+    if (this.settled) springs.snap(target, twTarget, rt.restR, rt.restL);
     // Where a moving sheet really is, for hiding the stack top it lands on
     // (stacking.ts); a resting one lands on nothing.
     const moving = leaf.mode !== "rest";
