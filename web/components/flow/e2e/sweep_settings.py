@@ -12,6 +12,9 @@ It walks every state of /families/<fid>/settings and /families/<fid>/people/new:
   in every loading frame as on the loaded page;
 - a family that is not yours or does not exist (the not-found card);
 - a member's view (read only, no admin controls) and an admin's view (the members list);
+- quiet controls pulled flush with -ml-3 (the 'More' links, Sign out and the member rows'
+  actions on a phone, '+ Answering a question?' on /add): the text's left edge within 2px of
+  the parent's content edge, or of the member's name in a grid row, at both widths;
 - promote, then demote, a member; the last admin cannot step down; removing a member with
   its confirm (focus after each action);
 - making, copying (clipboard permission granted) and turning off an invite link;
@@ -128,6 +131,59 @@ COLUMN_JS = """() => {
   const col = mains.length ? mains[0].querySelector(':scope > nav + div') : null;
   return col ? Math.round(col.getBoundingClientRect().width * 10) / 10 : -1;
 }"""
+
+# Quiet controls pulled flush with a -ml-3 (on the control or on its wrapper) must line their
+# text up with what they sit under: the parent's content edge, or, in a grid row, the text of
+# the sibling before them (a member's name). Only pulls in effect at this width count
+# (`sm:ml-0` cancels one from 640px up). The text's left is a Range over its first visible
+# text node (not .sr-only, not visibility:hidden), first line box. Returns one entry per
+# control that starts a line inside a pulled element.
+FLUSH_JS = """() => {
+  const shown = el => el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  const round = n => Math.round(n * 10) / 10;
+  const textLeft = root => {
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: n =>
+      n.textContent.trim() && shown(n.parentElement) && !n.parentElement.closest('.sr-only')
+        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP });
+    const node = walk.nextNode();
+    if (!node) return null;
+    const text = node.textContent;
+    const range = document.createRange();
+    range.setStart(node, text.length - text.trimStart().length);
+    range.setEnd(node, text.trimEnd().length);
+    const rects = range.getClientRects();
+    return { left: rects.length ? rects[0].left : range.getBoundingClientRect().left, text: text.trim() };
+  };
+  const contentLeft = el => {
+    const s = getComputedStyle(el);
+    return el.getBoundingClientRect().left + parseFloat(s.borderLeftWidth) + parseFloat(s.paddingLeft);
+  };
+  const label = el => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60);
+  const out = [];
+  const pulled = [...document.querySelectorAll('main [class*="-ml-3"]')]
+    .filter(el => shown(el) && parseFloat(getComputedStyle(el).marginLeft) < -0.5);
+  for (const el of pulled) {
+    const parent = el.parentElement;
+    let ref = null, refWhat = '';
+    if (parent && getComputedStyle(parent).display.includes('grid')) {
+      let sib = el.previousElementSibling;
+      while (sib && !(shown(sib) && textLeft(sib))) sib = sib.previousElementSibling;
+      if (sib) { ref = textLeft(sib).left; refWhat = `text of '${label(sib)}'`; }
+    }
+    if (ref === null && parent) { ref = contentLeft(parent); refWhat = `content edge of <${parent.localName}>`; }
+    const controls = el.matches('button, a') ? [el]
+      : [...el.querySelectorAll('button, a')].filter(c => shown(c) && Math.abs(c.getBoundingClientRect().left - contentLeft(el)) <= 1);
+    for (const c of controls) {
+      const t = textLeft(c);
+      if (!t || ref === null) continue;
+      out.push({ control: label(c), tag: c.localName, textLeft: round(t.left), ref: round(ref), refWhat,
+                 delta: round(t.left - ref), boxLeft: round(c.getBoundingClientRect().left),
+                 boxWidth: round(c.getBoundingClientRect().width) });
+    }
+  }
+  return out;
+}"""
+FLUSH_TOLERANCE_PX = 2.0
 
 FOCUS_JS = """() => {
   const a = document.activeElement;
@@ -574,6 +630,8 @@ class SettingsSweep:
             self.step("member", "a member's view: read only, no admin controls", self.s_member_view, needs=need)
             self.step("admin", "an admin's view: the members list, roles, the invite card", self.s_admin_view,
                       needs=need)
+            self.step("flush", "quiet controls pulled flush with -ml-3 line their text up (settings, /add)",
+                      self.s_flush, needs=need)
             self.step("roles", "promote, then demote, a member (confirm, announcement, focus)", self.s_roles,
                       needs=need)
             self.step("last-admin", "the last admin cannot step down; with two admins they can (cancel)",
@@ -854,6 +912,47 @@ class SettingsSweep:
             "button", name=f"Remove {self.member_name}", exact=True)).to_be_visible()
         self.snap(page, "admin-view")
         return f"rows: {' | '.join(texts)}"
+
+    def flush_check(self, page: Any, where: str) -> tuple[list[str], list[str], dict[str, int]]:
+        """FLUSH_JS at desktop and phone width: (lines, failures, controls measured per width)."""
+        lines: list[str] = []
+        bad: list[str] = []
+        counts: dict[str, int] = {}
+        try:
+            for view, size in (("desktop", DESKTOP), ("phone", PHONE)):
+                page.set_viewport_size(size)
+                page.wait_for_timeout(250)
+                found = page.evaluate(FLUSH_JS)
+                counts[view] = len(found)
+                for f in found:
+                    line = (f"{where} {view}: '{f['control']}' ({f['tag']}) text left {f['textLeft']}px vs "
+                            f"{f['refWhat']} {f['ref']}px (delta {f['delta']}px)")
+                    lines.append(line)
+                    if abs(float(f["delta"])) > FLUSH_TOLERANCE_PX:
+                        bad.append(line)
+        finally:
+            page.set_viewport_size(DESKTOP)
+            page.wait_for_timeout(100)
+        return lines, bad, counts
+
+    def s_flush(self) -> str:
+        """Finding 5: a flush quiet control whose text starts off the fields' edge (the busy layer)."""
+        ctx, page = self.open_settings("admin", "flush")
+        lines, bad, counts = self.flush_check(page, "settings")
+        for view, n in counts.items():
+            if n == 0:
+                bad.append(f"settings {view}: no quiet control pulled flush with -ml-3 found (the 'More' links are)")
+        self.goto(page, f"/add?family={quote(self.fid, safe='')}")
+        self.expect(self.vis(page.get_by_label("Your story"))).to_be_visible()
+        add_lines, add_bad, add_counts = self.flush_check(page, "/add")
+        lines += add_lines
+        bad += add_bad
+        print("  " + "\n  ".join(lines), flush=True)
+        if bad:
+            raise AssertionError(f"text more than {FLUSH_TOLERANCE_PX:g}px off: " + "; ".join(bad))
+        return (f"settings: {counts.get('desktop', 0)} at desktop, {counts.get('phone', 0)} at phone; "
+                f"/add: {add_counts.get('desktop', 0)} at desktop, {add_counts.get('phone', 0)} at phone; "
+                f"all within {FLUSH_TOLERANCE_PX:g}px: " + "; ".join(lines))
 
     def open_role_confirm(self, page: Any, button_name: str, question: str) -> Any:
         page.get_by_role("button", name=button_name, exact=True).click()
