@@ -148,9 +148,9 @@ const IDLE_MS = 2600;
 const FPS_READOUT = "stage-fps";
 
 /**
- * The shot's storybook line under the title while the set rises, before the
- * teller's first caption; it fades as the narration takes over (and comes
- * back when a new telling replays the scene).
+ * The shot's storybook line, in the caption band while the set rises and
+ * before the teller's first caption; it fades as the narration takes over
+ * (and comes back when a new telling replays the scene).
  */
 function ShotLine({ controller, scene }: { controller: PlaybackController; scene: SceneData }) {
   const status = useSyncExternalStore(controller.subscribe, controller.getStatus, controller.getStatus);
@@ -164,8 +164,7 @@ function ShotLine({ controller, scene }: { controller: PlaybackController; scene
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, transition: { duration: 0.45 } }}
           transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-          // Phones put the teller tabs under the title: no room for it there.
-          className="mt-1.5 hidden max-w-[min(30rem,80vw)] font-serif md:block text-[0.98rem] italic leading-snug text-[#f4ecdd]/80 [text-shadow:0_1px_10px_rgb(20_10_4/0.7)]"
+          className="mx-auto max-w-[min(34rem,calc(100vw-48px))] text-balance text-center font-serif text-[clamp(1rem,1.5vw,1.2rem)] italic leading-snug text-[#f4ecdd]/75"
         >
           {text}
         </motion.p>
@@ -330,7 +329,6 @@ function Player({
           <h1 className="font-display text-[clamp(1.35rem,2.1vw,1.9rem)] leading-tight text-[#f7f0e1] [text-shadow:0_2px_12px_rgb(20_10_4/0.6)]">
             {scene.title}
           </h1>
-          {captions && <ShotLine controller={controller} scene={scene} />}
         </header>
       )}
 
@@ -353,7 +351,9 @@ function Player({
       {band && (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-[var(--band)] flex-col items-center justify-end pb-[clamp(10px,2vh,18px)]">
           {captions && (
-            <div className="flex w-full flex-1 flex-col justify-center">
+            // The shot's line and the captions share one slot (one shows at a time).
+            <div className="grid w-full flex-1 items-center [&>*]:[grid-area:1/1]">
+              <ShotLine controller={controller} scene={scene} />
               <CaptionStrip controller={controller} tellers={tellers} className="w-full" />
             </div>
           )}
