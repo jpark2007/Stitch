@@ -46,6 +46,14 @@ interface Picked {
   note: string | null;
 }
 
+/** What was typed before a pick changed the form, carried into the new one. */
+interface Carried {
+  text: string;
+  year: string;
+}
+
+const NOTHING_CARRIED: Carried = { text: "", year: "" };
+
 const LOAD_ERROR = "We couldn't open the page for adding a memory. Check your connection and try again.";
 const PICK_ERROR = "That question didn't open. Check your connection and try again.";
 const MISSING_MOMENT = "We couldn't find that moment any more, so this will start a new memory.";
@@ -167,34 +175,73 @@ function AddFormReady(props: {
   const { people, questions, base } = data;
 
   const [picked, setPicked] = useState<Picked | null>(null);
+  // For a second telling from ?memoryId=: the person let go of the question
+  // that came with the moment, and is telling it without one.
+  const [baseQuestionDropped, setBaseQuestionDropped] = useState(false);
   const [pickingId, setPickingId] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
+  // The story and year typed so far, handed to the form a pick remounts.
+  const [carried, setCarried] = useState<Carried>(NOTHING_CARRIED);
+  const formWrapRef = useRef<HTMLDivElement>(null);
   // Moments fetched for picked questions, so picking one twice asks once.
   const moments = useRef(new Map<string, Moment | null>());
   // Only the latest pick may land.
   const pickToken = useRef(0);
 
+  const baseQuestion = base.kind === "second" ? base.question : null;
+  // The question note shown pressed: the one picked here, else the one that
+  // came with the ?memoryId= moment (unless it was let go).
+  const currentId = picked
+    ? picked.question.id
+    : baseQuestion && !baseQuestionDropped
+      ? baseQuestion.id
+      : null;
+
+  /** Reads what is in the form now, so a remount does not lose it. */
+  const carryTyped = useCallback(() => {
+    const root = formWrapRef.current;
+    setCarried({
+      text: root?.querySelector<HTMLTextAreaElement>('textarea[name="text"]')?.value ?? "",
+      year: root?.querySelector<HTMLInputElement>('input[name="year"]')?.value ?? "",
+    });
+  }, []);
+
   const onPick = useCallback(
     (q: Question) => {
       const token = ++pickToken.current;
       setPickError(null);
-      if (picked?.question.id === q.id) {
-        // Pressing the picked note again lets it go.
-        setPicked(null);
+      if (pickingId === q.id) {
+        // Pressed again while its moment is still opening: never mind.
         setPickingId(null);
+        return;
+      }
+      setPickingId(null);
+      if (currentId === q.id) {
+        // Pressing the pressed note lets it go: the form keeps the story and
+        // drops the question (a ?memoryId= moment stays the moment told).
+        carryTyped();
+        setPicked(null);
+        setBaseQuestionDropped(true);
+        return;
+      }
+      if (baseQuestion?.id === q.id) {
+        // Back to the question the ?memoryId= moment came with.
+        carryTyped();
+        setPicked(null);
+        setBaseQuestionDropped(false);
         return;
       }
       const mid = q.memoryId ?? null;
       if (!mid) {
+        carryTyped();
         setPicked({ question: q, moment: null, note: null });
-        setPickingId(null);
         return;
       }
       const known =
         base.kind === "second" && base.memoryId === mid ? base.moment : moments.current.get(mid);
       if (known !== undefined) {
+        carryTyped();
         setPicked({ question: q, moment: known, note: known ? null : MISSING_QUESTION_MOMENT });
-        setPickingId(null);
         return;
       }
       setPickingId(q.id);
@@ -203,6 +250,7 @@ function AddFormReady(props: {
           const moment = momentFromMemory(m);
           moments.current.set(mid, moment);
           if (token !== pickToken.current) return;
+          carryTyped();
           setPicked({ question: q, moment, note: null });
           setPickingId(null);
         },
@@ -211,6 +259,7 @@ function AddFormReady(props: {
           setPickingId(null);
           if (isApiError(e) && e.status === 404) {
             moments.current.set(mid, null);
+            carryTyped();
             setPicked({ question: q, moment: null, note: MISSING_QUESTION_MOMENT });
           } else {
             setPickError(messageOf(e, PICK_ERROR));
@@ -218,34 +267,41 @@ function AddFormReady(props: {
         },
       );
     },
-    [api, fid, base, picked],
+    [api, fid, base, baseQuestion, currentId, pickingId, carryTyped],
   );
 
   // What the form starts from: the picked question, else the moment from
-  // ?memoryId=, else a blank memory.
+  // ?memoryId=, else a blank memory. The key changes only when that does.
   let initial: Partial<MemoryDraft> | undefined;
   let secondTellingOf: { title: string; year: number } | null = null;
   let formKey: string;
-  let pickedId: string | null = null;
   let note: string | null = null;
   if (picked) {
     const q = picked.moment ? picked.question : { ...picked.question, memoryId: null };
     initial = draftFromQuestion(q, picked.moment);
     if (picked.moment) secondTellingOf = { title: picked.moment.title, year: picked.moment.year };
     formKey = `q:${picked.question.id}`;
-    pickedId = picked.question.id;
     note = picked.note;
   } else if (base.kind === "second") {
+    const question = baseQuestionDropped ? null : base.question;
     initial = draftFromQuestion(
-      { text: base.question?.text ?? "", memoryId: base.memoryId },
+      { text: question?.text ?? "", memoryId: base.memoryId },
       { year: base.moment.year, participantIds: base.moment.participantIds },
     );
     secondTellingOf = { title: base.moment.title, year: base.moment.year };
-    formKey = `m:${base.memoryId}`;
-    pickedId = base.question?.id ?? null;
+    formKey = `m:${base.memoryId}:${question?.id ?? ""}`;
   } else {
     formKey = "new";
     note = base.note;
+  }
+  // Whatever was typed before the pick goes on into the new form. A second
+  // telling keeps the moment's year.
+  if (carried.text || (carried.year && !secondTellingOf && !initial?.year)) {
+    initial = {
+      ...initial,
+      ...(carried.text ? { text: carried.text } : {}),
+      ...(carried.year && !secondTellingOf && !initial?.year ? { year: carried.year } : {}),
+    };
   }
 
   const second = secondTellingOf !== null;
@@ -293,7 +349,7 @@ function AddFormReady(props: {
           <div className="flex flex-col gap-3">
             <QuestionPrompts
               questions={questions}
-              pickedId={pickingId ?? pickedId}
+              pickedId={pickingId ?? currentId}
               onPick={onPick}
             />
             {pickingId ? (
@@ -305,7 +361,7 @@ function AddFormReady(props: {
           </div>
         ) : null}
 
-        <div className="flex flex-col gap-4">
+        <div ref={formWrapRef} className="flex flex-col gap-4">
           {note ? <Notice>{note}</Notice> : null}
           <AddMemoryForm
             key={formKey}

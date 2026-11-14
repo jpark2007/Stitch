@@ -304,6 +304,52 @@ describe("withRunGone", () => {
     ]);
   });
 
+  test("a 404 tells onGone first, and only a 404 does", async () => {
+    const calls = [];
+    const gone = withRunGone(
+      {
+        async *stream() {
+          throw Object.assign(new Error("Not found"), { status: 404 });
+        },
+        answer: async () => {},
+      },
+      "gone",
+      () => calls.push("gone"),
+    );
+    const seen = [];
+    for await (const m of gone.stream(signal)) {
+      calls.push("event");
+      seen.push(m);
+    }
+    assert.deepEqual(calls, ["gone", "event"]);
+    assert.deepEqual(seen, [{ event: "error", data: { message: "gone" } }]);
+
+    let told = 0;
+    const fine = withRunGone(
+      {
+        async *stream() {
+          yield { event: "done", data: { memoryId: "m1" } };
+        },
+        answer: async () => {},
+      },
+      undefined,
+      () => told++,
+    );
+    await collect(fine.stream(signal));
+    const dropped = withRunGone(
+      {
+        async *stream() {
+          throw Object.assign(new Error("dropped"), { status: 0 });
+        },
+        answer: async () => {},
+      },
+      undefined,
+      () => told++,
+    );
+    await assert.rejects(collect(dropped.stream(signal)));
+    assert.equal(told, 0);
+  });
+
   test("other failures still throw so the hook reconnects", async () => {
     for (const err of [Object.assign(new Error("dropped"), { status: 0 }), new Error("plain"), "string"]) {
       const src = withRunGone({

@@ -155,14 +155,22 @@ function statusOf(e: unknown): number | null {
  * this family) ends the run with an `error` event saying so, instead of
  * throwing. Without this, a stale `?run=` link would retry for half a minute
  * before showing anything. Other failures still throw, so the hook reconnects.
+ *
+ * `onGone`, when given, is told first, so the page can replace the feed (whose
+ * Retry could only meet the same 404) with its own way forward.
  */
-export function withRunGone(source: RunSource, message: string = RUN_GONE_MESSAGE): RunSource {
+export function withRunGone(
+  source: RunSource,
+  message: string = RUN_GONE_MESSAGE,
+  onGone?: () => void,
+): RunSource {
   return {
     async *stream(signal: AbortSignal): AsyncGenerator<RunEventMessage> {
       try {
         yield* source.stream(signal);
       } catch (e) {
         if (statusOf(e) !== 404) throw e;
+        onGone?.();
         yield { event: "error", data: { message } };
       }
     },
