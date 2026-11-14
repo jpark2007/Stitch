@@ -14,8 +14,9 @@
 
 export interface LayoutPerson {
   id: string;
-  parentIds: string[];
-  spouseIds: string[];
+  /** Missing means none (matches the optional arrays on the contract Person). */
+  parentIds?: readonly string[];
+  spouseIds?: readonly string[];
 }
 
 export interface LayoutOptions {
