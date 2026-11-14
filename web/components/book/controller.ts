@@ -391,7 +391,8 @@ export class BookController {
         const dir = this.queue.shift()!;
         const dur = this.queue.length > 0 || inFlight.length > 0 ? FAST_TURN_DUR : TURN_DUR;
         this.clearHover();
-        if (!this.startTurn(dir, dur)) this.queue.length = 0;
+        // A turn past either end is simply dropped; the rest of the queue stays.
+        this.startTurn(dir, dur);
       }
       moving = true;
     }
@@ -434,9 +435,13 @@ export class BookController {
       if (leaf.mode === "rest" && leaf.p >= 1) leftTop = i;
       if (leaf.mode === "rest" && leaf.p <= 0 && rightTop < 0) rightTop = i;
     });
+    // The first frames draw every sheet once (under the fade-in), so each
+    // page's texture is on the GPU before it is first turned to.
+    const warm = rt.frames <= 2;
     rt.leaves.forEach((leaf, i) => {
-      leaf.visible = leaf.mode !== "rest" || i === leftTop || i === rightTop;
+      leaf.visible = warm || leaf.mode !== "rest" || i === leftTop || i === rightTop;
     });
+    if (warm) moving = true;
 
     // Cover, spine, the book's place on the table.
     this.bookX = (-BOARD_W / 2) * (1 - o);
