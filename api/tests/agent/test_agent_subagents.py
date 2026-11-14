@@ -43,8 +43,10 @@ FIXED_TOOLS = [
     "merge_people",
 ]
 
-# deepagents built-ins every agent has (filesystem, planning, delegation).
-BUILTINS = {"write_file", "read_file", "edit_file", "ls", "glob", "grep", "write_todos", "task"}
+# deepagents built-ins: every agent has the filesystem tools; only the studio plans and delegates.
+# (test_agent_prompt_audit checks these against the tools the real graph binds.)
+FS_BUILTINS = {"write_file", "read_file", "edit_file", "delete", "ls", "glob", "grep"}
+BUILTINS = FS_BUILTINS | {"write_todos", "task"}
 
 SKILL_FOLDERS = {"popup-style", "storyboarding", "directing"}
 
@@ -198,8 +200,11 @@ def test_load_prompt_rejects_unknown_names(bad):
 
 @pytest.mark.parametrize("name", ORDER)
 def test_prompt_mentions_only_its_own_tools(name):
-    mentioned = _mentioned(load_prompt(name), FIXED_TOOLS)
-    assert mentioned <= set(SUBAGENT_TOOLS[name]) | BUILTINS, f"{name}.md mentions {mentioned - set(SUBAGENT_TOOLS[name])}"
+    text = load_prompt(name)
+    # "task" is also a plain word ("your task"), so built-ins count only when backticked.
+    mentioned = _mentioned(text, FIXED_TOOLS) | {b for b in BUILTINS if f"`{b}`" in text}
+    allowed = set(SUBAGENT_TOOLS[name]) | FS_BUILTINS
+    assert mentioned <= allowed, f"{name}.md mentions {mentioned - allowed}"
 
 
 @pytest.mark.parametrize("name", ORDER)
@@ -210,9 +215,10 @@ def test_prompt_mentions_the_tools_it_has(name):
 
 def test_studio_prompt():
     text = STUDIO_PROMPT
-    # The studio calls compile_screenplay and save_memory itself and must order the voice
-    # pass; every other tool belongs to a sub-agent and is reached through `task`.
-    assert _mentioned(text, FIXED_TOOLS) <= {"compile_screenplay", "save_memory", "synthesize_narration"}
+    # The studio calls compile_screenplay and save_memory itself, must order the voice pass,
+    # and may ask the teller one question itself; every other tool belongs to a sub-agent
+    # and is reached through `task`.
+    assert _mentioned(text, FIXED_TOOLS) <= {"compile_screenplay", "save_memory", "synthesize_narration", "ask_teller"}
     assert {"write_todos", "task", "save_memory"} <= _mentioned(text, BUILTINS | set(FIXED_TOOLS))
     assert text.index("write_todos") < text.index("**interviewer**")
     order = ["**interviewer**", "**storyboarder**", "**prop_master**", "**set_designer**", "**director**",
@@ -228,6 +234,9 @@ def test_studio_prompt():
         assert draft in text
     assert "/memories/people/<personId>.md" in text
     assert "/memories/style.md" in text
+    assert "one question at a time" in lowered
+    assert "at most 3 compile rounds" in lowered
+    assert "no new props, sets or shots" in lowered
 
 
 def _section(text: str, heading: str) -> str:
@@ -321,6 +330,13 @@ def test_director_prompt():
     assert "keep every narration line" in lowered
 
 
+def test_storyboarder_writes_the_skills_table():
+    """The prompt and the storyboarding skill describe one /shotlist.md format."""
+    header = "| shot id | set/place | who | what happens | source |"
+    assert header in load_prompt("storyboarder")
+    assert header in (PROMPTS_DIR.parent / "skills" / "storyboarding" / "SKILL.md").read_text()
+
+
 def test_narrator_prompt():
     text = load_prompt("narrator")
     lowered = text.lower()
@@ -354,6 +370,9 @@ def test_linker_prompt():
     assert "once per person you ask" in lowered
     assert "`question` set to that person's question" in text
     assert text.index("write one question") < text.index("Call `link_participants`")
+    # link_participants does not know who has died; the linker checks Person.died itself.
+    assert "get_person" in SUBAGENT_TOOLS["linker"]
+    assert text.index("`get_person`") < text.index("`died`")
 
 
 @pytest.mark.parametrize("name", ["studio", *ORDER])

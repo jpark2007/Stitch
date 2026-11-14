@@ -55,7 +55,8 @@ SUBAGENT_TOOLS: dict[str, list[str]] = {
     "director": ["get_person", "compile_screenplay"],
     "narrator": ["get_person", "synthesize_narration"],
     "checker": ["render_frames", "inspect_frames"],
-    "linker": ["link_participants", "find_memories"],
+    # get_person: the linker skips participants who have died (Person.died).
+    "linker": ["get_person", "find_memories", "link_participants"],
 }
 
 # Tools a sub-agent cannot work without: building it without them is an error, not a warning.
@@ -100,19 +101,21 @@ SUBAGENT_DESCRIPTIONS: dict[str, str] = {
     ),
     "director": (
         "Writes /screenplay.json (actions, camera, pageText, explanations, pull tabs), compiles it and "
-        "fixes the named errors, at most 3 rounds. Also fixes checker critiques."
+        "fixes the named errors, at most 3 rounds. Also fixes checker critiques, and in second-telling "
+        "mode fixes only the narrations."
     ),
     "narrator": (
-        "Writes the teller's narration in their own words with sources and cues into /screenplay.json, "
-        "then synthesizes speech with word timings. Handles second tellings."
+        "Write pass: writes the teller's narration in their own words, with sources and cues, into "
+        "/screenplay.json (narrations[<authorId>] for a second telling). Voice pass, after the last "
+        "compile: synthesizes speech with word timings into /timeline.json."
     ),
     "checker": (
         "Renders the compiled scene at key moments, critiques the frames and the narration into "
         "/critique.md, and returns pass or the exact fixes."
     ),
     "linker": (
-        "Adds a saved moment to every participant's book and writes one question per other "
-        "participant asking for their version."
+        "Adds a saved moment to every participant's book and asks each living participant who has not "
+        "told it yet for their version, one question per person."
     ),
 }
 

@@ -14,9 +14,9 @@ A story can be staged when it has all three:
 
 ## Steps
 
-1. Look up the teller and the people the story mentions with `get_person`, and check `find_memories` for earlier moments that already name the place or the people.
-2. **Before treating a name as an existing person**, call `merge_people` whenever the match is not certain ("Uncle Joe" in the story, "Joseph" in the tree). It pauses for the family's approval. Use the person id only if they approve; otherwise treat the name as a new person.
-3. Run the stageable test. If something is missing, call `ask_teller` with one short, warm question that asks for exactly that ("Where were you when the books fell?"). Ask **at most two** questions in total. Never ask for something the story already says.
+1. Look up the teller and the people the story mentions with `get_person`, and call `find_memories` with a `query` (a place or a name) or a `person_id` for earlier moments that already name the place or the people.
+2. **Before treating a name as an existing person**, call `merge_people` whenever the match is not certain ("Uncle Joe" in the story, "Joseph" in the tree). Call `merge_people` with `name` (the name as the story says it), `person_id` and `candidate_name` (the possible match in the tree), and `question` ("Is Uncle Joe the Joseph in your tree?"). It pauses for the family's approval. The result starts with "approved:" (use that person id) or "rejected:" (treat the name as a new person). One `merge_people` call per name, one at a time.
+3. Run the stageable test. If something is missing, call `ask_teller` with one short, warm `question` that asks for exactly that ("Where were you when the books fell?"). **One question at a time**: one `ask_teller` call per turn, never two together, and read the answer before deciding whether to ask again. Ask **at most two** questions in total. Never ask for something the story already says.
 4. Write `/open_questions.md`: each question you asked and the answer, plus anything still unknown after two questions.
 
 ## What you return

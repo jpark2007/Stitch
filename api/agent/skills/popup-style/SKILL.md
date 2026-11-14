@@ -29,7 +29,8 @@ tools (`generate_prop`, `generate_set_layer`) add it to every image request them
   Never write "she smiled" or "his eyes" into anything that becomes a picture or an action.
 - Each person has a **fixed body color** (`character.color`, also their thread color) and
   **one signature item** worn on the head socket (dad's blue flat cap, mom's red scarf).
-  Never recolor a person or swap their item to suit a scene. Read them with `get_person`.
+  Never recolor a person or swap their item to suit a scene. Both come from the person's
+  record, never from you.
 - Height comes from `character.build`: `small`, `short`, `average`, `tall`. A puppet of
   build `average` is 0.5 stage units tall.
 - Puppets are never generated as images. Do not ask for pictures of people.
@@ -63,30 +64,33 @@ details from the telling or the photos. No style words, no background, no people
 - Bad: `a cute cut-paper illustration of books on a table, warm lighting` (style words and a background)
 - Bad: `mom holding her hymn books` (a person in the picture)
 
-Use details only from the tellings and photos (`describe_photo`). If a photo shows the object,
-pass that photo as reference. Never invent a brand, inscription or color nobody mentioned;
-leave it out instead.
+Use details only from the tellings and photos (`describe_photo`). If one of this story's
+photos shows the object, pass its id to `generate_prop` as `reference_photo_id`. Never invent a brand,
+inscription or color nobody mentioned; leave it out instead.
 
-For moving parts, describe the body without the part, then the part on its own
-(`car body without wheels`, then `one car wheel, side view`). For an open/closed prop,
-describe each state as its own image (`brown leather suitcase, closed` / `..., open`).
+For moving parts (`parts`), describe the body without the part, then the part on its own
+(`car body without wheels`, then `one car wheel, side view`). For a prop that changes
+(`states`), describe each state as its own picture (`brown leather suitcase, open`); the state
+the body already shows gets an empty description and needs no new picture.
 
-### Naming a grip
+### Choosing a grip
 
-The grip is where a hand holds the prop. Name it in a few words: **which part, and where on the
-outline**. Code snaps the point to the nearest edge of the cut-out shape.
+The grip is where a hand holds the prop: pass `grip` as a point `[u, v]` on the picture, in
+fractions of its width and height, `[0, 0]` the top-left corner and `[1, 1]` the bottom-right.
+Think of which part the hand takes and where it sits on the outline; code snaps the point to
+the nearest edge of the cut-out shape, so a rough point is fine.
 
-- `the handle, on top` (suitcase, bucket)
-- `the spine, left side` (book)
-- `the neck, upper left` (guitar)
-- `the rim, top edge` (cup, bowl)
-- `null` for props nobody holds (furniture, vehicles, buildings)
+- the handle, on top (suitcase, bucket): `[0.5, 0.0]`
+- the spine, left side (book): `[0.0, 0.5]`
+- the neck, upper left (guitar): `[0.15, 0.1]`
+- the rim, top edge (cup, bowl): `[0.5, 0.0]`
+- leave `grip` out for props nobody holds (furniture, vehicles, buildings)
 
 ### Placeholders
 
-If art is missing or generation fails, the prop still works: its art is `null` and it is drawn
-as a paper card in its `color`. Always give every prop a `color` (hex) that matches its main
-color in the description, from the warm palette below where the story allows.
+If art is missing or generation fails, the prop or layer still works: its art is `null` and it
+is drawn as a paper card in a warm color the code picks. You never pass a color; carry on with
+the scene.
 
 ## Sets (scenery)
 
@@ -94,10 +98,12 @@ A set is the scenery for one shot: three paper layers standing at depths, rising
 
 | Layer | `depth` | Stage z | What goes on it | Typical height |
 |---|---|---|---|---|
-| Back | 0 | 0 | The place itself: building front, sky, wall of a room, distant hills | 0.8 to 1.2, tallest |
-| Middle | 1 | 0.35 | Things just behind the puppets: steps, fence, counter, trees | 0.3 to 0.5 |
-| Front | 2 | 0.7 | Low framing in front of the puppets: grass, curb, flowerbed, table edge | 0.1 to 0.2, never hides puppets |
+| Back | 0 | 0 | The place itself: building front, sky, wall of a room, distant hills | 1.0, tallest |
+| Middle | 1 | 0.35 | Things just behind the puppets: steps, fence, counter, trees | 0.45 |
+| Front | 2 | 0.7 | Low framing in front of the puppets: grass, curb, flowerbed, table edge | 0.18, never hides puppets |
 
+- `generate_set_layer` takes the `layer` name (`back`, `middle` or `front`) and sets its depth
+  and height itself; you only describe it.
 - Puppets act at z = 0.5, between the middle and front layers. Keep the front layer low and
   open in the middle so it never covers the action.
 - Describe each layer as one plain sentence of facts, like a prop: the place, the era, the
@@ -111,5 +117,5 @@ A set is the scenery for one shot: three paper layers standing at depths, rising
 ## Palette
 
 Warm and papery: cream, ochre, terracotta, brick red, sage and olive green, dusty blue, warm
-browns. Avoid neon, pure black and pure white. Placeholder colors for layers and props should
-come from this range, for example back `#b5654a`, middle `#cfc6b4`, front `#7d9a5b`.
+browns. Avoid neon, pure black and pure white. When the story leaves a color open, leave it out
+of the description rather than choosing one outside this range.
