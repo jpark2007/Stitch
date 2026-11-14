@@ -90,6 +90,12 @@ export interface RunState {
   errorFrom: "run" | "connection" | null;
   /** Last sequence number handed to a log entry */
   seq: number;
+  /**
+   * The stream dropped and the page is about to connect again (see
+   * followRun). Cleared by the next run event, a reset, or giving up. Optional
+   * so states built before it existed still type-check; absent means false.
+   */
+  reconnecting?: boolean;
 }
 
 export const initialRunState: RunState = {
@@ -105,6 +111,7 @@ export const initialRunState: RunState = {
   error: null,
   errorFrom: null,
   seq: 0,
+  reconnecting: false,
 };
 
 export type RunAction =
@@ -112,6 +119,8 @@ export type RunAction =
   /** `summary` null: the pause was already answered elsewhere (logged as a neutral line). */
   | { type: "answered"; kind: PendingInput["kind"]; summary: string | null }
   | { type: "connection_error"; message: string }
+  /** The stream dropped; a reconnect is on its way. */
+  | { type: "reconnecting" }
   | { type: "reset" };
 
 // Distributes over the FeedEntry union so each variant keeps its own fields.
@@ -315,6 +324,21 @@ function applyEvent(state: RunState, message: RunEventMessage): RunState {
   }
 }
 
+function foldEvent(state: RunState, message: RunEventMessage): RunState {
+  if (message.event === "subagent_end") {
+    // Decided on the steps as they are after this one ends. A known
+    // step's end logs nothing, so the quiet line still reads in order.
+    const next = applyEvent(state, message);
+    if (!pauseOutlived(next)) return next;
+    return { ...closePause(next, null), phase: next.phase === "waiting" ? "running" : next.phase };
+  }
+  // A pause this event shows was answered closes first (with a quiet
+  // line), so the log reads in order: the answer, then what came next.
+  // Its phase becomes running here; wake() and the event take it on.
+  const s = clearsPause(state, message) ? { ...closePause(state, null), phase: "running" as const } : state;
+  return applyEvent(s, message);
+}
+
 export function runReducer(state: RunState, action: RunAction): RunState {
   if (action.type === "reset") return initialRunState;
   // A finished run is final: late events and the stream closing change nothing.
@@ -322,20 +346,15 @@ export function runReducer(state: RunState, action: RunAction): RunState {
 
   switch (action.type) {
     case "event": {
-      const message = action.message;
-      if (message.event === "subagent_end") {
-        // Decided on the steps as they are after this one ends. A known
-        // step's end logs nothing, so the quiet line still reads in order.
-        const next = applyEvent(state, message);
-        if (!pauseOutlived(next)) return next;
-        return { ...closePause(next, null), phase: next.phase === "waiting" ? "running" : next.phase };
-      }
-      // A pause this event shows was answered closes first (with a quiet
-      // line), so the log reads in order: the answer, then what came next.
-      // Its phase becomes running here; wake() and the event take it on.
-      const s = clearsPause(state, message) ? { ...closePause(state, null), phase: "running" as const } : state;
-      return applyEvent(s, message);
+      // Any event means the stream is back.
+      const s = state.reconnecting ? { ...state, reconnecting: false } : state;
+      return foldEvent(s, action.message);
     }
+
+    case "reconnecting":
+      // A failed run stays failed; only retry() starts it again.
+      if (state.phase === "error" || state.reconnecting) return state;
+      return { ...state, reconnecting: true };
 
     case "answered": {
       if (!state.pending || state.pending.kind !== action.kind) {
@@ -346,7 +365,7 @@ export function runReducer(state: RunState, action: RunAction): RunState {
 
     case "connection_error":
       return withEntry(
-        { ...state, phase: "error", error: action.message, errorFrom: "connection" },
+        { ...state, phase: "error", error: action.message, errorFrom: "connection", reconnecting: false },
         { kind: "error", message: action.message },
       );
 

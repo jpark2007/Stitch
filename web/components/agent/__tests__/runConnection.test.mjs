@@ -7,6 +7,8 @@ import {
   DEFAULT_MAX_RETRIES,
   HEALTHY_CONNECTION_MS,
   answerBody,
+  answerErrorMessage,
+  answerFailure,
   answerSummary,
   connectionErrorMessage,
   connectionMadeProgress,
@@ -268,20 +270,26 @@ test("sendAnswer posts, then dispatches answered with the summary", async () => 
   assert.equal(book.answers.length, 1);
 });
 
-test("sendAnswer rethrows a failed post and dispatches nothing", async () => {
+test("sendAnswer rejects a failed post with a calm message and dispatches nothing", async () => {
   const actions = [];
   const book = newRunBook();
+  const thrown = new TypeError("Failed to fetch");
   await assert.rejects(
     sendAnswer({
       answer: async () => {
-        throw new Error("That didn't reach the studio.");
+        throw thrown;
       },
       body: answerBody("answer", "Grandpa"),
       pendingKind: "answer",
       currentBook: () => book,
       dispatch: (a) => actions.push(a),
     }),
-    { message: "That didn't reach the studio." },
+    (err) => {
+      assert.equal(err.message, answerErrorMessage(thrown, "answer"));
+      assert.doesNotMatch(err.message, /fetch/i, "never the browser's wording");
+      assert.equal(err.cause, thrown);
+      return true;
+    },
   );
   assert.deepEqual(actions, []);
   assert.deepEqual(book.answers, []);
@@ -353,25 +361,61 @@ test("sendAnswer: a 409 means already answered: it resolves and closes the pause
   assert.equal(again, true);
 });
 
-test("sendAnswer: other failures still reject with their message", async () => {
-  for (const status of [503, 500, 0, 422, undefined]) {
+test("sendAnswer: other failures reject with answerErrorMessage, keeping the status", async () => {
+  for (const status of [503, 500, 0, 422, 403, undefined]) {
     const actions = [];
     const book = newRunBook();
+    const thrown = httpError(status, "The studio is busy. Try again.");
     await assert.rejects(
       sendAnswer({
         answer: async () => {
-          throw httpError(status, "The studio is busy. Try again.");
+          throw thrown;
         },
         body: answerBody("merge", true),
         pendingKind: "merge",
         currentBook: () => book,
         dispatch: (a) => actions.push(a),
       }),
-      { message: "The studio is busy. Try again." },
+      (err) => {
+        assert.equal(err.message, answerErrorMessage(thrown, "merge"), String(status));
+        assert.equal(err.status, typeof status === "number" ? status : undefined);
+        return true;
+      },
     );
     assert.deepEqual(actions, [], String(status));
     assert.deepEqual(book.answers, []);
   }
+});
+
+test("answerErrorMessage: calm and specific per status, never the server's 5xx wording", () => {
+  const e = (status, message = "Traceback: KeyError run_x") => httpError(status, message);
+  const offline = answerErrorMessage(e(0), "answer");
+  assert.match(offline, /didn’t reach the studio/);
+  assert.match(offline, /answer is still here/);
+  assert.match(answerErrorMessage(new TypeError("Failed to fetch"), "props"), /changes are still here/);
+  assert.equal(answerErrorMessage(null, "merge"), answerErrorMessage(e(0), "merge"));
+  for (const status of [500, 502, 503]) {
+    const m = answerErrorMessage(e(status), "answer");
+    assert.doesNotMatch(m, /Traceback|KeyError/, String(status));
+    assert.match(m, /couldn’t take your answer just now/);
+  }
+  assert.match(answerErrorMessage(e(500), "props"), /your changes/);
+  assert.match(answerErrorMessage(e(500), "merge"), /your choice/);
+  assert.match(answerErrorMessage(e(403, "Only the person who started this run can answer"), "answer"), /^Only the person who started this memory/);
+  assert.match(answerErrorMessage(e(401), "answer"), /signed out/);
+  assert.match(answerErrorMessage(e(404), "props"), /isn’t there any more, so your changes/);
+  // Other 4xx: the API client's sentence is already user-safe.
+  assert.equal(answerErrorMessage(e(422, "An answer needs text"), "answer"), "An answer needs text");
+  assert.equal(answerErrorMessage(e(429, ""), "answer"), "That didn’t go through. Try sending your answer again.");
+});
+
+test("answerFailure keeps the cause and the status", () => {
+  const cause = httpError(503, "x");
+  const err = answerFailure(cause, "props");
+  assert.ok(err instanceof Error);
+  assert.equal(err.cause, cause);
+  assert.equal(err.status, 503);
+  assert.equal("status" in answerFailure(new Error("x"), "props"), false);
 });
 
 test("isNotWaiting duck-types status 409 only", () => {
@@ -552,7 +596,7 @@ test("a drop reconnects, resets once, and refolds the replayed log without dupli
   assert.equal(r.calls.length, 2);
   assert.deepEqual(r.sleeps, [1000]);
   assert.deepEqual(types(r.actions), [
-    "plan", "subagent_start",
+    "plan", "subagent_start", "reconnecting",
     "reset", "plan", "subagent_start", "subagent_end", "done",
   ]);
   const once = [PLAN, START, END, DONE].reduce(
@@ -573,7 +617,7 @@ test("a stream that closes before done counts as a drop", async () => {
 test("a reconnect that delivers nothing does not reset the feed", async () => {
   const r = await follow([[PLAN, START, "throw"], ["throw"], [PLAN, START, DONE]]);
   assert.deepEqual(types(r.actions), [
-    "plan", "subagent_start",
+    "plan", "subagent_start", "reconnecting", "reconnecting",
     "reset", "plan", "subagent_start", "done",
   ]);
   // The first drop follows progress (attempt 1); the empty reconnect is the second failure in a row.
@@ -582,15 +626,22 @@ test("a reconnect that delivers nothing does not reset the feed", async () => {
 
 test("without replay a reconnect resumes: no reset, new events append", async () => {
   const r = await follow([[PLAN, START, "throw"], [END, DONE]], { replay: false });
-  assert.deepEqual(types(r.actions), ["plan", "subagent_start", "subagent_end", "done"]);
+  assert.deepEqual(types(r.actions), ["plan", "subagent_start", "reconnecting", "subagent_end", "done"]);
   assert.equal(r.state.steps[0].status, "done");
+  assert.equal(r.state.reconnecting, false, "the next event clears the notice");
 });
 
 test("after the last retry it dispatches one connection_error and stops", async () => {
   const r = await follow([["throw"]], { maxRetries: 3 });
   assert.equal(r.calls.length, 4, "the first try plus three retries");
   assert.deepEqual(r.sleeps, [1000, 2000, 4000]);
-  assert.deepEqual(r.actions, [{ type: "connection_error", message: connectionErrorMessage(4) }]);
+  assert.deepEqual(r.actions, [
+    { type: "reconnecting" },
+    { type: "reconnecting" },
+    { type: "reconnecting" },
+    { type: "connection_error", message: connectionErrorMessage(4) },
+  ]);
+  assert.equal(r.state.reconnecting, false, "giving up clears the notice");
   assert.equal(r.state.phase, "error");
   assert.equal(r.state.error, "We lost touch with the studio. Try again in a moment.");
 });
@@ -599,7 +650,7 @@ test("the default policy gives up after five retries with the default delays", a
   const r = await follow([["throw"]]);
   assert.equal(r.calls.length, 6);
   assert.deepEqual(r.sleeps, [1000, 2000, 4000, 8000, 8000]);
-  assert.deepEqual(types(r.actions), ["connection_error"]);
+  assert.deepEqual(types(r.actions), [...Array(5).fill("reconnecting"), "connection_error"]);
 });
 
 test("a custom retry delay is used", async () => {
@@ -695,7 +746,7 @@ test("replay re-applies a recorded answer exactly once, after the question", asy
   });
   assert.equal(calls.length, 2);
   assert.deepEqual(types(actions), [
-    "plan", "question", "answered",
+    "plan", "question", "answered", "reconnecting",
     "reset", "plan", "question", "answered", "subagent_start", "done",
   ]);
   assert.equal(state.phase, "done");
@@ -740,7 +791,8 @@ test("aborting during the backoff wait never reconnects or reports an error", as
   });
   assert.equal(r.calls.length, 1);
   assert.deepEqual(r.sleeps, [1000]);
-  assert.deepEqual(r.actions, []);
+  // Only the notice that a reconnect was coming; no error, no second connection.
+  assert.deepEqual(r.actions, [{ type: "reconnecting" }]);
 });
 
 test("an already-aborted signal never connects", async () => {

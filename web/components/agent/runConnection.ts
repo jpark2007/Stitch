@@ -282,6 +282,59 @@ export function isNotWaiting(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { status?: unknown }).status === 409;
 }
 
+/** What the family is sending, in the words of a failed-send message. */
+const ANSWER_THING: Record<AnswerKind, string> = {
+  answer: "answer",
+  props: "changes",
+  merge: "choice",
+};
+
+function statusOf(error: unknown): number | null {
+  if (typeof error !== "object" || error === null) return null;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" && Number.isFinite(status) ? status : null;
+}
+
+/**
+ * The sentence a pause card shows when its answer did not go through. Every
+ * card keeps what the family entered, so each message says so where it helps.
+ *
+ * - No status, or status 0 (offline, a dropped request, a thrown fetch): the
+ *   answer never reached the studio.
+ * - 5xx: the studio failed. The server's own wording is never shown, since it
+ *   can carry internals.
+ * - 401: the sign-in ran out. 403: the server only takes answers from the
+ *   person who started the run. 404: the run is gone.
+ * - Any other 4xx: the API client's message, which is already a fixed,
+ *   user-safe sentence (or the generic one when it has none).
+ */
+export function answerErrorMessage(error: unknown, kind: AnswerKind): string {
+  const thing = ANSWER_THING[kind] ?? "answer";
+  const status = statusOf(error);
+  if (status === null || status === 0) {
+    return `That didn’t reach the studio. Your ${thing} ${thing === "changes" ? "are" : "is"} still here: check your connection and send again.`;
+  }
+  if (status >= 500) {
+    return `The studio couldn’t take your ${thing} just now. Nothing is lost: try again in a moment.`;
+  }
+  if (status === 401) return "You’ve been signed out. Sign in again in another tab, then send this again.";
+  if (status === 403) return "Only the person who started this memory can answer the studio here.";
+  if (status === 404) return `This run isn’t there any more, so your ${thing} couldn’t be saved.`;
+  const message = error instanceof Error ? error.message.trim() : "";
+  return message || `That didn’t go through. Try sending your ${thing} again.`;
+}
+
+/**
+ * An Error carrying answerErrorMessage's sentence, with the original status
+ * (if any) kept on `status` and the original error on `cause`.
+ */
+export function answerFailure(error: unknown, kind: AnswerKind): Error & { status?: number } {
+  const out: Error & { status?: number } = new Error(answerErrorMessage(error, kind), { cause: error });
+  const status = statusOf(error);
+  if (status !== null) out.status = status;
+  return out;
+}
+
 /**
  * Posts one answer for the run. Does nothing (resolves false) unless the run
  * is paused on this kind of input. A successful post records the answer and
@@ -292,8 +345,8 @@ export function isNotWaiting(error: unknown): boolean {
  * before a reload, or in another tab): the pause is closed with a neutral
  * `answered` (summary null), recorded so a replay closes it again, and the
  * call resolves so the card simply goes away. The server's wording is never
- * logged. Any other failure rejects with the source's error and dispatches
- * nothing.
+ * logged. Any other failure rejects with answerFailure (a calm, specific
+ * sentence for the card) and dispatches nothing.
  */
 export async function sendAnswer(o: {
   answer: (body: AnswerRequest) => Promise<void>;
@@ -311,7 +364,7 @@ export async function sendAnswer(o: {
     await o.answer(o.body);
     summary = answerSummary(o.body);
   } catch (error) {
-    if (!isNotWaiting(error)) throw error;
+    if (!isNotWaiting(error)) throw answerFailure(error, o.body.kind);
     summary = null;
   }
   const book = o.currentBook();
@@ -425,6 +478,8 @@ export async function followRun(o: FollowRunOptions): Promise<void> {
       return;
     }
     failures = step.failures;
+    // The feed says so quietly until the next event arrives.
+    dispatch({ type: "reconnecting" });
     await sleep(step.delayMs, signal);
   }
 }
