@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, wait
 
 import pytest
 from pymongo.errors import OperationFailure
@@ -14,6 +16,7 @@ mongomock = pytest.importorskip("mongomock")
 
 import schemas
 from db import people as P
+from db.client import ensure_indexes
 
 FAM = "fam_a"
 OTHER = "fam_b"
@@ -532,6 +535,224 @@ def test_claim_race_same_user_two_people_rolls_back(mdb, monkeypatch):
         P.claim_person(mdb, FAM, "dad", "u1")
     assert P.get_person(mdb, FAM, "dad").user_id is None
     assert P.get_person_for_user(mdb, FAM, "u1").id == "uncle"
+
+
+# ------------------------------------------------- one person per user per family (races)
+
+
+def _linked(db, user_id="u1", family=FAM):
+    return list(db.people.find({"familyId": family, "userId": user_id}))
+
+
+def _run_after_create_precheck(monkeypatch, action):
+    """Run action() once, inside create_person, after its AlreadyClaimed pre-check.
+
+    _family_character_usage runs between that check and the insert, so this is the
+    window where a racing request can land.
+    """
+    real_usage = P._family_character_usage
+    state = {"done": False}
+
+    def usage(db, family_id):
+        if not state["done"]:
+            state["done"] = True
+            action()
+        return real_usage(db, family_id)
+
+    monkeypatch.setattr(P, "_family_character_usage", usage)
+
+
+def _run_before_claim_write(monkeypatch, action):
+    """Run action() once, inside claim_person, after its pre-check and before its write."""
+    real_fau = mongomock.Collection.find_one_and_update
+    state = {"done": False}
+
+    def racing_fau(self, *a, **kw):
+        if not state["done"]:
+            state["done"] = True
+            action()
+        return real_fau(self, *a, **kw)
+
+    monkeypatch.setattr(mongomock.Collection, "find_one_and_update", racing_fau)
+
+
+def test_concurrent_creates_for_one_user_link_exactly_one_person(mdb, monkeypatch):
+    """Two threads pass the pre-check together; the unique index lets one insert land."""
+    ensure_indexes(mdb)
+    real_usage = P._family_character_usage
+    barrier = threading.Barrier(2)
+
+    def usage(db, family_id):
+        barrier.wait(timeout=5)  # both creates are past their pre-check here
+        return real_usage(db, family_id)
+
+    monkeypatch.setattr(P, "_family_character_usage", usage)
+
+    def create(name):
+        return P.create_person(mdb, FAM, new(name), added_by="u1", user_id="u1")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(create, "Ben"), pool.submit(create, "Ben too")]
+        wait(futures, timeout=10)
+
+    errors = [f.exception() for f in futures]
+    winners = [f.result() for f, e in zip(futures, errors) if e is None]
+    losers = [e for e in errors if e is not None]
+    assert len(winners) == 1, errors
+    assert len(losers) == 1 and isinstance(losers[0], P.AlreadyClaimed), losers
+    assert mdb.people.count_documents({"familyId": FAM, "userId": "u1"}) == 1
+    assert mdb.people.count_documents({"familyId": FAM}) == 1
+    assert _linked(mdb)[0]["_id"] == winners[0].id
+
+
+def test_concurrent_creates_without_the_index_never_link_two(mdb, monkeypatch):
+    """No unique index (old server, fresh test db): the post-insert check still holds."""
+    real_usage = P._family_character_usage
+    barrier = threading.Barrier(2)
+
+    def usage(db, family_id):
+        barrier.wait(timeout=5)
+        return real_usage(db, family_id)
+
+    monkeypatch.setattr(P, "_family_character_usage", usage)
+
+    def create(name):
+        return P.create_person(mdb, FAM, new(name), added_by="u1", user_id="u1")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(create, "Ben"), pool.submit(create, "Ben too")]
+        wait(futures, timeout=10)
+
+    errors = [f.exception() for f in futures]
+    # Both may yield to each other; never may both win, and no loser's doc may remain.
+    assert all(e is None or isinstance(e, P.AlreadyClaimed) for e in errors), errors
+    wins = sum(e is None for e in errors)
+    assert wins <= 1
+    assert len(_linked(mdb)) == wins
+    assert mdb.people.count_documents({"familyId": FAM}) == wins
+
+
+@pytest.mark.parametrize("indexed", [True, False], ids=["unique-index", "post-insert-check"])
+def test_create_racing_create_loser_leaves_nothing(mdb, monkeypatch, indexed):
+    """A second create for the same user lands mid-create: the first yields and cleans up."""
+    if indexed:
+        ensure_indexes(mdb)
+    add(mdb, "Ada", pid="ada")
+    _run_after_create_precheck(
+        monkeypatch,
+        lambda: P.create_person(mdb, FAM, new("Ben fast"), added_by="u1", user_id="u1", person_id="fast"),
+    )
+    with pytest.raises(P.AlreadyClaimed):
+        P.create_person(
+            mdb, FAM, new("Ben slow", spouses=["ada"]), added_by="u1", user_id="u1", person_id="slow"
+        )
+    assert [d["_id"] for d in _linked(mdb)] == ["fast"]
+    assert mdb.people.find_one({"_id": "slow"}) is None
+    # The spouse back-link never ran for the losing doc.
+    assert P.get_person(mdb, FAM, "ada").spouse_ids == []
+
+
+@pytest.mark.parametrize("indexed", [True, False], ids=["unique-index", "post-insert-check"])
+def test_claim_lands_while_create_is_in_flight(mdb, monkeypatch, indexed):
+    """claim vs add, claim wins: the create passed its pre-check, then the claim landed."""
+    if indexed:
+        ensure_indexes(mdb)
+    add(mdb, "Rosa", pid="rosa")
+    claimed: list = []
+    _run_after_create_precheck(
+        monkeypatch, lambda: claimed.append(P.claim_person(mdb, FAM, "rosa", "u1"))
+    )
+    with pytest.raises(P.AlreadyClaimed):
+        P.create_person(mdb, FAM, new("Ben"), added_by="u1", user_id="u1", person_id="ben")
+    assert claimed[0].id == "rosa" and claimed[0].user_id == "u1"
+    assert [d["_id"] for d in _linked(mdb)] == ["rosa"]
+    assert mdb.people.find_one({"_id": "ben"}) is None
+
+
+@pytest.mark.parametrize("indexed", [True, False], ids=["unique-index", "recount"])
+def test_create_lands_while_claim_is_in_flight(mdb, monkeypatch, indexed):
+    """claim vs add, add wins: the claim passed its pre-check, then the create landed."""
+    if indexed:
+        ensure_indexes(mdb)
+    add(mdb, "Rosa", pid="rosa")
+    created: list = []
+    _run_before_claim_write(
+        monkeypatch,
+        lambda: created.append(
+            P.create_person(mdb, FAM, new("Ben"), added_by="u1", user_id="u1", person_id="ben")
+        ),
+    )
+    with pytest.raises(P.AlreadyClaimed):
+        P.claim_person(mdb, FAM, "rosa", "u1")
+    assert created[0].id == "ben"
+    assert [d["_id"] for d in _linked(mdb)] == ["ben"]
+    assert P.get_person(mdb, FAM, "rosa").user_id is None
+
+
+def test_claim_maps_duplicate_key_to_already_claimed(mdb, monkeypatch):
+    """With the index, a same-user claim race fails at the write, not at the recount."""
+    ensure_indexes(mdb)
+    add(mdb, "Dad", pid="dad")
+    add(mdb, "Uncle", pid="uncle")
+    _run_before_claim_write(
+        monkeypatch, lambda: mdb.people.update_one({"_id": "uncle"}, {"$set": {"userId": "u1"}})
+    )
+    with pytest.raises(P.AlreadyClaimed):
+        P.claim_person(mdb, FAM, "dad", "u1")
+    assert [d["_id"] for d in _linked(mdb)] == ["uncle"]
+    assert P.get_person(mdb, FAM, "dad").user_id is None
+
+
+def test_unclaimed_people_never_collide_and_duplicate_ids_stay_value_errors(mdb):
+    ensure_indexes(mdb)
+    for i in range(5):
+        add(mdb, f"Relative {i}")
+    assert mdb.people.count_documents({"familyId": FAM, "userId": None}) == 5
+    add(mdb, "Wen", family=OTHER)
+
+    add(mdb, "Dad", pid="dad")
+    with pytest.raises(ValueError) as caught:
+        add(mdb, "Other Dad", pid="dad")
+    assert not isinstance(caught.value, P.AlreadyClaimed)
+    # A user with no person yet, reusing a taken id: still the id error.
+    with pytest.raises(ValueError) as caught:
+        P.create_person(mdb, FAM, new("Ben"), added_by="u1", user_id="u1", person_id="dad")
+    assert not isinstance(caught.value, P.AlreadyClaimed)
+    assert _linked(mdb) == []
+
+
+def test_duplicate_id_at_insert_is_value_error_not_already_claimed(mdb, monkeypatch):
+    """The id is taken between the id pre-check and the insert, by an unclaimed person."""
+    ensure_indexes(mdb)
+    _run_after_create_precheck(monkeypatch, lambda: add(mdb, "Other", pid="dup"))
+    with pytest.raises(ValueError) as caught:
+        P.create_person(mdb, FAM, new("Ben"), added_by="u1", user_id="u1", person_id="dup")
+    assert not isinstance(caught.value, P.AlreadyClaimed)
+    assert _linked(mdb) == []
+
+
+def test_user_index_clash_whose_winner_is_gone_is_still_already_claimed(mdb, monkeypatch):
+    """The insert hit the user index but the other person was unclaimed before we looked."""
+    from pymongo.errors import DuplicateKeyError
+
+    def clash(self, *_a, **_kw):
+        raise DuplicateKeyError("E11000 duplicate key error", 11000)
+
+    monkeypatch.setattr(mongomock.Collection, "insert_one", clash)
+    with pytest.raises(P.AlreadyClaimed):
+        P.create_person(mdb, FAM, new("Ben"), added_by="u1", user_id="u1")
+    with pytest.raises(ValueError) as caught:  # no user involved: an id clash
+        P.create_person(mdb, FAM, new("Rosa"), added_by="u1")
+    assert not isinstance(caught.value, P.AlreadyClaimed)
+
+
+def test_same_user_in_two_families_with_the_index(mdb):
+    ensure_indexes(mdb)
+    P.create_person(mdb, FAM, new("Ben"), added_by="u1", user_id="u1")
+    P.create_person(mdb, OTHER, new("Ben"), added_by="u1", user_id="u1")
+    with pytest.raises(P.AlreadyClaimed):
+        P.create_person(mdb, FAM, new("Ben again"), added_by="u1", user_id="u1")
+    assert mdb.people.count_documents({"userId": "u1"}) == 2
 
 
 # -------------------------------------------------------------------------- tree

@@ -11,8 +11,9 @@ import os
 from typing import Any
 
 from pymongo import ASCENDING, MongoClient
+from pymongo.collection import Collection
 from pymongo.database import Database
-from pymongo.errors import OperationFailure
+from pymongo.errors import DuplicateKeyError, OperationFailure
 from pymongo.operations import SearchIndexModel
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,15 @@ INDEXES: dict[str, list[tuple[str, list[tuple[str, int]], dict[str, Any]]]] = {
     ],
     "people": [
         ("people_familyId_userId", [("familyId", ASCENDING), ("userId", ASCENDING)], {}),
+        (
+            # At most one person per user per family. Partial, so unclaimed people
+            # (userId null) never collide. The key order differs from
+            # people_familyId_userId on purpose: a database that already has that
+            # non-unique index gets this one alongside it instead of a spec conflict.
+            "people_userId_familyId_unique",
+            [("userId", ASCENDING), ("familyId", ASCENDING)],
+            {"unique": True, "partialFilterExpression": {"userId": {"$type": "string"}}},
+        ),
         ("people_familyId_parentIds", [("familyId", ASCENDING), ("parentIds", ASCENDING)], {}),
     ],
     "memories": [
@@ -128,7 +138,67 @@ def ensure_indexes(db: Database) -> None:
         for name, keys, options in specs:
             if name in existing and _same_spec(existing[name], keys, options):
                 continue
-            db[collection].create_index(keys, name=name, **options)
+            _create_index(db[collection], name, keys, options)
+
+
+def _create_index(
+    coll: Collection, name: str, keys: list[tuple[str, int]], options: dict[str, Any]
+) -> None:
+    """create_index, working around mongomock's check of a new partial unique index.
+
+    mongomock validates existing documents against a new unique index without applying
+    its partialFilterExpression, so two unclaimed people (userId null) in one family
+    would wrongly fail people_userId_familyId_unique. Only on mongomock, and only when
+    the documents the filter selects really are unique, is the index registered anyway;
+    mongomock does apply the filter on every later write. Real servers are untouched.
+
+    Registering it goes through mongomock's internal store (tested against mongomock
+    4.3). If a mongomock upgrade removes or changes that hook, the index is skipped with
+    a warning instead of crashing startup: db/people.py's post-insert check still keeps
+    one person per user per family, and tests/data/test_client.py fails loudly on the
+    missing index. This path only runs on mongomock with data already present; fake-DB
+    mode creates its indexes on an empty database and never reaches it.
+    """
+    try:
+        coll.create_index(keys, name=name, **options)
+    except DuplicateKeyError:
+        partial = options.get("partialFilterExpression")
+        if not (_is_mongomock(coll) and options.get("unique") and partial is not None):
+            raise
+        if _has_duplicates(coll, keys, partial):
+            raise
+        _register_mongomock_index(coll, name, keys, partial)
+
+
+def _register_mongomock_index(
+    coll: Collection, name: str, keys: list[tuple[str, int]], partial: dict[str, Any]
+) -> None:
+    """Add a partial unique index to mongomock's index store without its creation check."""
+    index: dict[str, Any] = {"key": list(keys), "unique": True, "partialFilterExpression": partial}
+    register = getattr(getattr(coll, "_store", None), "create_index", None)
+    if not callable(register):
+        log.warning("mongomock has no index-store hook; index %s skipped", name)
+        return
+    try:
+        register(name, index)
+    except Exception:  # noqa: BLE001  # an internal API changed shape: degrade, never crash
+        log.warning("mongomock index-store hook failed; index %s skipped", name, exc_info=True)
+
+
+def _is_mongomock(coll: Collection) -> bool:
+    return type(coll).__module__.split(".")[0] == "mongomock"
+
+
+def _has_duplicates(coll: Collection, keys: list[tuple[str, int]], partial: dict[str, Any]) -> bool:
+    """True if two documents selected by ``partial`` share the same values for ``keys``."""
+    fields = [k for k, _ in keys]
+    seen: set[str] = set()
+    for doc in coll.find(partial, {f: 1 for f in fields}):
+        value = repr([doc.get(f) for f in fields])
+        if value in seen:
+            return True
+        seen.add(value)
+    return False
 
 
 def _vector_definition() -> dict[str, Any]:
