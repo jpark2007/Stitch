@@ -6,6 +6,10 @@ The director writes a draft screenplay to `/screenplay.json` in its scratch file
 event, and returns the same lines so the director can fix the draft and try again. After
 `MAX_COMPILE_ROUNDS` consecutive failures the tool tells the director to stop and report.
 
+After a successful compile the tool also runs `scene_review.review_scene` (pageText,
+explanations, pull tabs, narration sources) and appends its warnings under the `ok:` summary,
+writing them to `/scene_review.txt`. Warnings never fail a compile and never use a round.
+
 The compiler seam
 -----------------
 The real compiler (`api/screenplay/compiler.py`, built by the compiler stream) is expected to
@@ -45,6 +49,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, ValidationError
 
 import schemas
+from agent.tools.scene_review import review_scene
 from screenplay.schema import CompileError, CompileResult, Screenplay
 
 log = logging.getLogger(__name__)
@@ -55,6 +60,11 @@ SCREENPLAY_PATH = "/screenplay.json"
 TIMELINE_PATH = "/timeline.json"
 ERRORS_PATH = "/compile_errors.txt"
 LOG_PATH = "/compile_log.json"
+REVIEW_PATH = "/scene_review.txt"
+
+WARNINGS_HEADER = (
+    f"warnings (fix in {SCREENPLAY_PATH}, then compile again; these do not use a compile round):"
+)
 
 
 @dataclass
@@ -162,6 +172,45 @@ def _validation_errors(exc: ValidationError) -> list[CompileError]:
     return out
 
 
+@dataclass
+class _Compiled:
+    """parse_and_compile's result plus what it parsed and gathered on the way (None if it stopped early)."""
+
+    result: CompileResult
+    screenplay: Screenplay | None = None
+    scene: SceneInputs | None = None
+
+
+def _parse_and_compile(
+    text: str,
+    compiler: Compiler,
+    scene_for: Callable[[Screenplay], SceneInputs],
+) -> _Compiled:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return _Compiled(
+            CompileResult(
+                ok=False,
+                errors=[
+                    CompileError(
+                        code="invalid_json",
+                        message=f"invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}",
+                    )
+                ],
+            )
+        )
+    try:
+        screenplay = Screenplay.model_validate(data)
+    except ValidationError as exc:
+        return _Compiled(CompileResult(ok=False, errors=_validation_errors(exc)))
+    try:
+        scene = scene_for(screenplay)
+    except KeyError as exc:
+        return _Compiled(CompileResult(ok=False, errors=[_key_error_to_compile_error(exc, screenplay)]), screenplay)
+    return _Compiled(compiler(screenplay, scene), screenplay, scene)
+
+
 def parse_and_compile(
     text: str,
     compiler: Compiler,
@@ -171,27 +220,19 @@ def parse_and_compile(
 
     Never raises for a bad draft: every problem comes back as CompileError entries.
     """
+    return _parse_and_compile(text, compiler, scene_for).result
+
+
+def _review(compiled: _Compiled) -> list[str]:
+    """Scene review warnings for a successful compile; a review bug never breaks the tool."""
+    if compiled.screenplay is None:
+        return []
+    props = compiled.scene.props if compiled.scene is not None else None
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        return CompileResult(
-            ok=False,
-            errors=[
-                CompileError(
-                    code="invalid_json",
-                    message=f"invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}",
-                )
-            ],
-        )
-    try:
-        screenplay = Screenplay.model_validate(data)
-    except ValidationError as exc:
-        return CompileResult(ok=False, errors=_validation_errors(exc))
-    try:
-        scene = scene_for(screenplay)
-    except KeyError as exc:
-        return CompileResult(ok=False, errors=[_key_error_to_compile_error(exc, screenplay)])
-    return compiler(screenplay, scene)
+        return review_scene(compiled.screenplay, props=props)
+    except Exception:  # noqa: BLE001 - warnings are advice; a crash here must not fail a good compile
+        log.exception("scene review crashed")
+        return []
 
 
 # ----------------------------------------------------------------------------- events
@@ -237,6 +278,13 @@ def _summary(result: CompileResult) -> str:
     return f"ok: {len(tl.shots)} shots, {round(tl.duration, 2):g}s, {len(tl.tracks)} tracks"
 
 
+def _success_text(result: CompileResult, warnings: list[str]) -> str:
+    text = _summary(result)
+    if warnings:
+        text += "\n" + WARNINGS_HEADER + "".join(f"\n- {w}" for w in warnings)
+    return text
+
+
 def _failure_text(errors: list[CompileError], rounds: int) -> str:
     lines = [e.message for e in errors] or ["compile failed with no error detail"]
     text = "\n".join(lines) + f"\nround {rounds} of {MAX_COMPILE_ROUNDS}"
@@ -265,13 +313,17 @@ def make_compile_tool(
         """Compile the draft screenplay in your files into a timeline.
 
         Reads the screenplay JSON at `path` (default /screenplay.json). On success writes
-        /timeline.json and returns "ok: <shots> shots, <duration>s, <tracks> tracks". On failure
-        writes /compile_errors.txt and returns the exact errors, one per line, plus the round
-        number; fix the draft and call again. After 3 failed rounds it tells you to stop.
+        /timeline.json and returns "ok: <shots> shots, <duration>s, <tracks> tracks", followed by
+        any scene review warnings (missing pageText, explanations, pull tabs, narration sources;
+        also in /scene_review.txt). Fix those in the draft and compile again; they do not use a
+        round. On failure writes /compile_errors.txt and returns the exact errors, one per line,
+        plus the round number; fix the draft and call again. After 3 failed rounds it tells you
+        to stop.
         """
         files: dict[str, Any] = state.get("files") or {}
         rounds = _rounds(files)
         text = _read_file(files, path)
+        compiled: _Compiled | None = None
         if text is None:
             result = CompileResult(
                 ok=False,
@@ -279,7 +331,8 @@ def make_compile_tool(
             )
         else:
             try:
-                result = parse_and_compile(text, compiler, scene_for)
+                compiled = _parse_and_compile(text, compiler, scene_for)
+                result = compiled.result
             except Exception as exc:  # noqa: BLE001 - a compiler crash is still feedback, not a run failure
                 log.exception("compiler crashed")
                 result = CompileResult(
@@ -288,12 +341,14 @@ def make_compile_tool(
                 )
 
         if result.ok and result.timeline is not None:
+            warnings = _review(compiled) if compiled is not None else []
             updates = {
                 TIMELINE_PATH: create_file_data(result.timeline.model_dump_json(by_alias=True, indent=1)),
                 ERRORS_PATH: create_file_data(""),
                 LOG_PATH: create_file_data(json.dumps({"rounds": 0})),
+                REVIEW_PATH: create_file_data("".join(f"{w}\n" for w in warnings)),
             }
-            content = _summary(result)
+            content = _success_text(result, warnings)
         else:
             if result.ok:  # ok without a timeline is a broken compiler; treat as failure
                 result = CompileResult(
