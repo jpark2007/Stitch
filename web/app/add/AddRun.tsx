@@ -24,8 +24,10 @@ export function AddRun(props: {
   run: { runId: string; telling: MemoryRunTelling | null; fresh: boolean };
   /** One quiet line naming the family, for someone in more than one. */
   lede?: ReactNode;
+  /** After the run's own error: bring the form back with what was sent. */
+  onTellAgain?: () => void;
 }) {
-  const { api, fid, run, lede } = props;
+  const { api, fid, run, lede, onTellAgain } = props;
   const { runId, telling, fresh } = run;
 
   // A run the server no longer knows (a stale ?run= link) gets its own way
@@ -90,6 +92,7 @@ export function AddRun(props: {
             onUploadPhoto={onUploadPhoto}
             sceneHref={hrefs.memory}
             addAnotherHref={hrefs.add({ familyId: fid })}
+            onTellAgain={onTellAgain}
           />
         )}
       </FlowPage>

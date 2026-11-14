@@ -17,11 +17,16 @@ import { FormError } from "@/components/flow/FormError";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { QuestionPrompts } from "@/components/flow/QuestionPrompts";
 import {
+  draftFromSent,
   momentFromMemory,
   questionForMemory,
+  restoreNotice,
+  saveSentDraft,
   saveTelling,
+  sentDraftFromSubmit,
   tellingFromSubmit,
   type FamilyChoice,
+  type SentDraft,
 } from "@/components/flow/addPage";
 import { draftFromQuestion, questionAreaFor, type MemoryDraft } from "@/components/flow/memoryForm";
 import type { MemoryRunTelling } from "@/components/flow/MemoryRun";
@@ -73,6 +78,20 @@ function messageOf(e: unknown, fallback: string): string {
   return isApiError(e) && e.status !== 0 && e.detail ? e.detail : fallback;
 }
 
+/** A run that started: its id, the slip of what was sent and the photo files that went with it. */
+export type StartedRun = { runId: string; telling: MemoryRunTelling; photos: File[] };
+
+/**
+ * What a failed run was sent, to fill the form in again ("Tell it again").
+ * `photos` are the files themselves when this page still has them (null after
+ * a reload); `runId` names the failed run.
+ */
+export interface Restore {
+  runId: string;
+  draft: SentDraft;
+  photos: File[] | null;
+}
+
 export function AddForm(props: {
   api: StitchApi;
   fid: string;
@@ -80,7 +99,9 @@ export function AddForm(props: {
   memoryId: string | null;
   /** Which family this goes into; named on the page only for someone in two or more. */
   choice: FamilyChoice;
-  onStarted: (run: { runId: string; telling: MemoryRunTelling }) => void;
+  onStarted: (run: StartedRun) => void;
+  /** Fill the form in with what a failed run was sent. */
+  restore?: Restore;
 }) {
   const [attempt, setAttempt] = useState(0);
   return <AddFormLoader key={attempt} {...props} onRetry={() => setAttempt((n) => n + 1)} />;
@@ -92,10 +113,11 @@ function AddFormLoader(props: {
   selfPersonId: string;
   memoryId: string | null;
   choice: FamilyChoice;
-  onStarted: (run: { runId: string; telling: MemoryRunTelling }) => void;
+  onStarted: (run: StartedRun) => void;
+  restore?: Restore;
   onRetry: () => void;
 }) {
-  const { api, fid, selfPersonId, memoryId, choice, onStarted, onRetry } = props;
+  const { api, fid, selfPersonId, memoryId, choice, onStarted, restore, onRetry } = props;
   const router = useRouter();
   const [status, setStatus] = useState<Status>({ kind: "loading" });
 
@@ -176,6 +198,7 @@ function AddFormLoader(props: {
       data={status.data}
       choice={choice}
       onStarted={onStarted}
+      restore={restore}
     />
   );
 }
@@ -188,9 +211,10 @@ function AddFormReady(props: {
   selfPersonId: string;
   data: Loaded;
   choice: FamilyChoice;
-  onStarted: (run: { runId: string; telling: MemoryRunTelling }) => void;
+  onStarted: (run: StartedRun) => void;
+  restore?: Restore;
 }) {
-  const { api, fid, selfPersonId, data, choice, onStarted } = props;
+  const { api, fid, selfPersonId, data, choice, onStarted, restore } = props;
   const { people, questions, base } = data;
 
   // Only a new memory picks questions: a second telling shows none to pick.
@@ -278,6 +302,8 @@ function AddFormReady(props: {
   let secondTellingOf: { title: string; year: number } | null = null;
   let formKey: string;
   let note: string | null = null;
+  // A restored question was typed, not picked: it stays in the typed field.
+  let typedQuestion = false;
   if (picked) {
     const q = picked.moment ? picked.question : { ...picked.question, memoryId: null };
     initial = draftFromQuestion(q, picked.moment);
@@ -291,9 +317,22 @@ function AddFormReady(props: {
     );
     secondTellingOf = { title: base.moment.title, year: base.moment.year };
     formKey = `m:${base.memoryId}:${base.question?.id ?? ""}`;
+    if (restore) {
+      // The story and question come back; the moment keeps its year and people.
+      const sent = draftFromSent(restore.draft);
+      initial = { ...initial, text: sent.text, question: sent.question || initial.question };
+      formKey += `:r:${restore.runId}`;
+    }
   } else {
     formKey = "new";
     note = base.note;
+    if (restore) {
+      // A new memory: everything sent comes back. A moment that has gone
+      // since (base.note says so) starts a new memory instead.
+      initial = { ...draftFromSent(restore.draft), memoryId: null };
+      formKey += `:r:${restore.runId}`;
+      typedQuestion = true;
+    }
   }
   // Whatever was typed before the pick goes on into the new form. A second
   // telling keeps the moment's year.
@@ -312,7 +351,7 @@ function AddFormReady(props: {
   const area = questionAreaFor({
     mode: base.kind === "second" && !picked ? "second" : "new",
     openQuestions: questions.length,
-    prefilledQuestion: (initial?.question ?? "").trim() !== "",
+    prefilledQuestion: !typedQuestion && (initial?.question ?? "").trim() !== "",
   });
   const askedQuestion = base.kind === "second" && !picked ? (base.question?.text ?? null) : null;
 
@@ -322,7 +361,9 @@ function AddFormReady(props: {
       const res = await api.submitMemory(fid, fields, photos);
       const telling = tellingFromSubmit(fields, photos.length, secondTitle);
       saveTelling(sessionStore(), res.runId, telling);
-      onStarted({ runId: res.runId, telling });
+      // Kept so a run that fails can bring the form back filled in.
+      saveSentDraft(sessionStore(), res.runId, sentDraftFromSubmit(fields, photos.length));
+      onStarted({ runId: res.runId, telling, photos });
     },
     [api, fid, secondTitle, onStarted],
   );
@@ -372,12 +413,16 @@ function AddFormReady(props: {
         ) : null}
 
         <div ref={formWrapRef} className="flex flex-col gap-4">
+          {restore ? (
+            <Notice>{restoreNotice(restore.draft.photoCount, restore.photos?.length ?? null)}</Notice>
+          ) : null}
           {note ? <Notice>{note}</Notice> : null}
           <AddMemoryForm
             key={formKey}
             people={people}
             selfPersonId={selfPersonId}
             initial={initial}
+            initialPhotos={restore?.photos ?? undefined}
             secondTellingOf={secondTellingOf}
             askedQuestion={askedQuestion}
             questionArea={area}

@@ -54,6 +54,8 @@ export function AddMemoryForm(props: {
   people: Array<{ id: string; name: string; born?: number | null; color?: string | null }>;
   selfPersonId: string;
   initial?: Partial<MemoryDraft>;
+  /** Photos the form starts with (a failed run's, brought back to tell it again). */
+  initialPhotos?: File[];
   secondTellingOf?: { title: string; year: number } | null;
   /** The question a second telling answers, shown read-only in its banner. */
   askedQuestion?: string | null;
@@ -67,6 +69,7 @@ export function AddMemoryForm(props: {
     people,
     selfPersonId,
     initial,
+    initialPhotos,
     secondTellingOf = null,
     askedQuestion = null,
     questionArea,
@@ -76,7 +79,7 @@ export function AddMemoryForm(props: {
   } = props;
 
   const [draft, setDraft] = useState<MemoryDraft>(() => emptyDraft(selfPersonId, initial));
-  const [photos, setPhotos] = useState<File[]>([]);
+  const [photos, setPhotos] = useState<File[]>(() => initialPhotos ?? []);
   const [errors, setErrors] = useState<FieldErrors<MemoryField>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
