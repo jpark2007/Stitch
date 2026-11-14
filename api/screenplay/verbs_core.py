@@ -409,16 +409,32 @@ def apply_hold(world: World, tracks: TrackSet, action: Action, t: float, action_
     return t + B.POSE_SECONDS
 
 
+def _standing_surface_y(world: World, who: str) -> float:
+    """Height of the surface under ``who``'s feet, where a prop they drop lands.
+
+    Standing or kneeling, it is ``pos[1]``: the mark's height (kneeling lowers only the root
+    track, not ``pos``). Seated, ``pos`` may be the hip root (get_in), so it is the ground the
+    seat stands on instead: the seat prop's world anchor, which is where it meets the ground,
+    or where it rests when it stands on another prop.
+    """
+    p = world.people[who]
+    if p.seat is not None:
+        anchor = world.props[p.seat[0]].world_pos
+        if anchor is not None:
+            return anchor[1]
+    return p.pos[1]
+
+
 def apply_drop(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
-    """Let go: the prop falls to the dropper's standing surface, DROP_OFFSET in front of the feet."""
+    """Let go: the prop falls to the dropper's standing surface (under the seat when seated),
+    DROP_OFFSET in front of the feet."""
     who = _who(world, action)
     what = _what(world, action)
     arm = arm_of_hand(world.hold(who, what))  # validation: who must hold it in a hand
-    p = world.people[who]
     z = puppet_root(world, tracks, who, t)[2]
     keys, landing = B.drop_keys(
         body_at(world, tracks, who, t), t, arm_at(tracks, who, arm, t),
-        B.PropGeom.from_prop(world.catalog[what]), surface_y=p.pos[1], z=z, arm=arm,
+        B.PropGeom.from_prop(world.catalog[what]), surface_y=_standing_surface_y(world, who), z=z, arm=arm,
     )
     world.drop(who, what, landing)
     tracks.extend(keys)
