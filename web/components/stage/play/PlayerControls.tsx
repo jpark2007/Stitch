@@ -7,7 +7,10 @@
  *                     one replays the same scene with that person's voice and
  *                     captions (DESIGN.md "Moments and tellings")
  *   <PlayerControls>  play / pause, restart, a stitched-thread scrubber with
- *                     the time, and mute when there is narration audio
+ *                     the time, and mute when there is narration audio. It
+ *                     fills the width its host gives it (the thread takes
+ *                     what the buttons leave), so a host sets the gutter and
+ *                     a max width; phones show only the elapsed time.
  *
  * The scrubber and the clock follow the player through controller.onFrame
  * and write straight to the DOM, so playback never re-renders React; the
@@ -161,7 +164,7 @@ function Icon({ name }: { name: "play" | "pause" | "restart" | "sound" | "muted"
 }
 
 const roundBtn =
-  "grid place-items-center rounded-full text-ink transition-transform duration-200 [transition-timing-function:var(--ease-paper)] hover:-translate-y-px active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f3d488]";
+  "grid shrink-0 place-items-center rounded-full text-ink transition-transform duration-200 [transition-timing-function:var(--ease-paper)] hover:-translate-y-px active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f3d488]";
 
 export function PlayerControls({ controller, className = "", muted = false, onMutedChange }: PlayerControlsProps) {
   const status = usePlayerStatus(controller);
@@ -175,14 +178,13 @@ export function PlayerControls({ controller, className = "", muted = false, onMu
 
   // Follow the player without re-rendering: write the scrubber and clock directly.
   useEffect(() => {
-    const total = fmt(duration);
     let lastText = "";
     let lastAria = "";
     const draw = () => {
       const k = duration > 0 ? Math.min(1, Math.max(0, controller.time / duration)) : 0;
       if (fill.current) fill.current.style.transform = `scaleX(${k})`;
       if (knob.current) knob.current.style.left = `${k * 100}%`;
-      const text = `${fmt(controller.time)} / ${total}`;
+      const text = fmt(controller.time);
       if (clock.current && text !== lastText) {
         clock.current.textContent = text;
         lastText = text;
@@ -206,7 +208,7 @@ export function PlayerControls({ controller, className = "", muted = false, onMu
 
   return (
     <div
-      className={`flex items-center gap-3 rounded-full bg-[#f7f0e1]/95 py-2 pl-2 pr-5 shadow-[0_8px_24px_-6px_rgba(20,10,4,0.55),0_1px_0_rgba(255,255,255,0.6)_inset] ${className}`}
+      className={`flex min-w-0 items-center gap-2 rounded-full bg-[#f7f0e1]/95 py-2 pl-2 pr-3.5 sm:gap-3 sm:pr-5 shadow-[0_8px_24px_-6px_rgba(20,10,4,0.55),0_1px_0_rgba(255,255,255,0.6)_inset] ${className}`}
     >
       <button
         type="button"
@@ -237,7 +239,7 @@ export function PlayerControls({ controller, className = "", muted = false, onMu
         // Current at every render; between renders the frame listener above keeps it.
         aria-valuenow={Number(controller.time.toFixed(1))}
         aria-valuetext={fmt(controller.time)}
-        className="relative h-8 w-[min(42vw,420px)] cursor-pointer touch-none select-none"
+        className="relative h-8 min-w-0 flex-1 cursor-pointer touch-none select-none"
         onPointerDown={(e) => {
           if (e.button !== 0) return;
           e.currentTarget.setPointerCapture(e.pointerId);
@@ -280,7 +282,11 @@ export function PlayerControls({ controller, className = "", muted = false, onMu
           style={{ left: "0%" }}
         />
       </div>
-      <span ref={clock} className="w-[88px] text-right font-sans text-xs tabular-nums text-ink-soft" />
+      {/* Elapsed always; the total from sm up (phones keep the room for the thread). */}
+      <span className="shrink-0 text-right font-sans text-xs tabular-nums text-ink-soft">
+        <span ref={clock} className="inline-block min-w-[3.4em]" />
+        <span className="hidden sm:inline"> / {fmt(duration)}</span>
+      </span>
       {hasAudio && (
         <button
           type="button"

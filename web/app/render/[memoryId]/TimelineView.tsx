@@ -279,37 +279,46 @@ function Player({
     window.history.replaceState(null, "", url);
   }, []);
 
+  // The caption band: a real strip under the picture, never over it. The
+  // canvas stops at its top edge, so the camera tracks' framing (fov, aim)
+  // plays exactly, in the room left above. Fixed height, so captions and
+  // controls coming and going never resize the canvas mid-shot.
+  const band = captions || ui;
+
   return (
     <motion.div
-      className="absolute inset-0"
+      className={`absolute inset-0 ${band ? "[--band:212px] sm:[--band:clamp(168px,21vh,196px)]" : "[--band:0px]"}`}
       initial={{ opacity: time === null ? 0 : 1 }}
       // Fades in once drawn; a frozen frame (?t, the checker) shows at once.
       animate={{ opacity: ready || time !== null ? 1 : 0 }}
       transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
     >
-      {/* Stepped back a little and lifted, so the shot sits between the
-          title and the caption strip instead of running under either. */}
-      <TimelineStage
-        className="absolute inset-0"
-        controller={controller}
-        scene={scene}
-        onReady={onStageReady}
-        lift={captions ? 0.02 : 0}
-        zoom={captions ? 0.92 : 1}
-        overlay={overlay}
-      />
-      {/* Soft lens vignette: the lamp's pool, falling off into the room, and
-          a faint shade at the head of the frame where the title sits when a
-          close shot fills the screen. */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background: ui
-            ? "radial-gradient(120% 95% at 50% 42%, transparent 56%, rgb(20 12 6 / 0.55)), linear-gradient(180deg, rgb(20 12 6 / 0.34) 0%, transparent 15%)"
-            : "radial-gradient(120% 95% at 50% 42%, transparent 56%, rgb(20 12 6 / 0.55))",
-        }}
-      />
+      <div className="absolute inset-x-0 top-0 bottom-[var(--band)]">
+        <TimelineStage
+          className="absolute inset-0"
+          controller={controller}
+          scene={scene}
+          onReady={onStageReady}
+          overlay={overlay}
+        />
+        {/* Soft lens vignette: the lamp's pool, falling off into the room, and
+            a faint shade at the head of the frame where the title sits when a
+            close shot fills the screen. Over the band, the picture's lower
+            edge settles into the room rather than ending on a cut. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background: [
+              "radial-gradient(120% 95% at 50% 42%, transparent 56%, rgb(20 12 6 / 0.55))",
+              ui ? "linear-gradient(180deg, rgb(20 12 6 / 0.34) 0%, transparent 15%)" : null,
+              band ? "linear-gradient(0deg, rgb(36 24 15 / 0.9) 0, rgb(36 24 15 / 0) 22px)" : null,
+            ]
+              .filter(Boolean)
+              .join(", "),
+          }}
+        />
+      </div>
 
       {ui && (
         <header
@@ -335,19 +344,41 @@ function Player({
         />
       )}
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center gap-4 pb-[clamp(14px,3.4vh,34px)]">
-        {ui && <SoundHint controller={controller} className="pointer-events-auto" />}
-        {captions && <CaptionStrip controller={controller} tellers={tellers} className="w-full" />}
-        {ui && (
-          <div
-            className={`pointer-events-auto transition-all duration-500 [transition-timing-function:var(--ease-paper)] ${
-              idle ? "translate-y-3 opacity-0" : "translate-y-0 opacity-100"
-            }`}
-          >
-            <PlayerControls controller={controller} muted={muted} onMutedChange={setMuted} />
-          </div>
-        )}
-      </div>
+      {ui && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--band)+14px)] flex justify-center">
+          <SoundHint controller={controller} className="pointer-events-auto" />
+        </div>
+      )}
+
+      {band && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-[var(--band)] flex-col items-center justify-end pb-[clamp(10px,2vh,18px)]">
+          {captions && (
+            <div className="flex w-full flex-1 flex-col justify-center">
+              <CaptionStrip controller={controller} tellers={tellers} className="w-full" />
+            </div>
+          )}
+          {ui && (
+            // Collapses while the scene plays untouched, so the caption
+            // settles into the middle of the band instead of over an empty slot.
+            <div
+              className={`grid w-full transition-[grid-template-rows,opacity] duration-500 [transition-timing-function:var(--ease-paper)] ${
+                idle ? "grid-rows-[0fr] opacity-0" : "grid-rows-[1fr] opacity-100"
+              }`}
+            >
+              <div className="min-h-0">
+                <div className="flex justify-center px-4 pt-2.5">
+                  <PlayerControls
+                    controller={controller}
+                    muted={muted}
+                    onMutedChange={setMuted}
+                    className={`w-full max-w-[640px] ${idle ? "pointer-events-none" : "pointer-events-auto"}`}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {fps && (
         <span
           id={FPS_READOUT}

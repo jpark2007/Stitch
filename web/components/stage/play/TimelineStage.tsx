@@ -4,8 +4,10 @@
  * <TimelineStage>: a standalone Canvas that plays a timeline on the open
  * book on the table (the <Stage> look: warm lamp, paper, soft shadows), with
  * the camera from the timeline's camera tracks and the drag-orbit that eases
- * back. For the render route; the book mounts <TimelineScene> in its own
- * Canvas instead.
+ * back. The picture is exactly the camera tracks' (position, lookAt, fov):
+ * a host that lays chrome around it sizes this element to leave the room,
+ * never the lens. For the render route; the book mounts <TimelineScene> in
+ * its own Canvas instead.
  *
  * Memoised: it renders once per controller and scene, so caption and
  * control updates around it never touch the 3D tree.
@@ -24,10 +26,6 @@ export interface TimelineStageProps {
   className?: string;
   /** Allow the small drag-orbit. Default true. */
   orbit?: boolean;
-  /** Lens-shift the picture up by this share of the screen, leaving room for captions. Default 0. */
-  lift?: number;
-  /** Lens zoom; below 1 steps the picture back a little, leaving room for the title. Default 1. */
-  zoom?: number;
   /** Soft depth of field focused on the camera target. Default false. */
   dof?: boolean;
   /** Called once the scene is fully drawn (all art in, shadows settled). Keep it stable. */
@@ -41,8 +39,6 @@ export const TimelineStage = memo(function TimelineStage({
   scene,
   className,
   orbit = true,
-  lift = 0,
-  zoom = 1,
   dof = false,
   onReady,
   overlay,
@@ -56,8 +52,6 @@ export const TimelineStage = memo(function TimelineStage({
         scene={scene}
         camera
         orbit={orbit}
-        lift={lift}
-        zoom={zoom}
         onReady={onReady}
         grade={grade}
       />

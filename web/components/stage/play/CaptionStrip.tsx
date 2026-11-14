@@ -2,7 +2,7 @@
 
 /**
  * <CaptionStrip>: the current teller's caption, handwritten on a torn strip
- * of paper taped over the scene, like a note tucked into a storybook.
+ * of paper taped under the scene, like a note tucked into a storybook.
  *
  * It follows the player's discrete status (caption index, word index,
  * narrator), so it re-renders a few times a second at most, never per frame.
@@ -12,8 +12,9 @@
  * end of its shot (CONTRACTS.md Clarifications 6); switching teller swaps
  * the words over the same scene.
  *
- * DOM only: mount it over the canvas (the render route) or anywhere a host
- * wants the words (the book can print them on its story page instead).
+ * DOM only: mount it in a band under the canvas (the render route) or
+ * anywhere a host wants the words (the book can print them on its story
+ * page instead). Laid over the picture it would hide the actors.
  */
 
 import { AnimatePresence, motion } from "framer-motion";
@@ -85,7 +86,7 @@ export function CaptionStrip({ controller, tellers = [], className = "" }: Capti
         {caption && (
           <motion.figure
             key={key}
-            className="relative mx-4 max-w-[min(760px,92vw)] px-10 pb-5 pt-4 sm:px-14"
+            className="relative mx-4 max-w-[min(860px,calc(100vw-32px))] px-8 pb-4 pt-3.5 sm:px-12"
             initial={{ opacity: 0, y: 10, rotate: -1.6 }}
             animate={{ opacity: 1, y: 0, rotate: index % 2 ? 0.5 : -0.7 }}
             exit={{ opacity: 0, y: -6, rotate: index % 2 ? 1 : -1.2, transition: { duration: 0.2, ease: [0.4, 0, 1, 1] } }}
@@ -131,7 +132,7 @@ export function CaptionStrip({ controller, tellers = [], className = "" }: Capti
                 {teller.name}&rsquo;s telling
               </figcaption>
             )}
-            <blockquote className="relative text-balance text-center font-hand text-[clamp(1.45rem,2.3vw,2.05rem)] leading-[1.15] text-ink">
+            <blockquote className="relative text-balance text-center font-hand text-[clamp(1.3rem,1.95vw,1.8rem)] leading-[1.12] text-ink">
               {tokens.map((t, i) => (
                 <span
                   key={i}
