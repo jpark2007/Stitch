@@ -321,9 +321,21 @@ export function buildModel(people: ThreadPerson[], moments: ThreadMoment[], now:
       .map((id) => byId.get(id))
       .filter((p): p is ThreadPerson => !!p)
       .sort((a, b) => laneOf.get(a.id)! - laneOf.get(b.id)!);
-    const y = ps.reduce((acc, p) => acc + laneOf.get(p.id)!, 0) / ps.length;
-    // Moments in the same year are nudged apart a little so knots never sit
-    // on top of each other.
+    const lanes = ps.map((p) => laneOf.get(p.id)!);
+    let y = lanes.reduce((acc, l) => acc + l, 0) / lanes.length;
+    // A knot sitting on the resting lane of someone alive but not in the
+    // moment would look as if their thread ran through it: move it half a
+    // lane off, staying within the participants' span.
+    const ids = new Set(ps.map((p) => p.id));
+    const clash = ordered.find((p) => !ids.has(p.id) && p.born <= m.year && Math.abs(laneOf.get(p.id)! - y) < 0.3);
+    if (clash) {
+      const l = laneOf.get(clash.id)!;
+      const lo = Math.min(...lanes);
+      const hi = Math.max(...lanes);
+      const options = [l - 0.5, l + 0.5].filter((v) => v >= lo && v <= hi);
+      options.sort((a, b) => Math.abs(a - y) - Math.abs(b - y));
+      if (options.length) y = options[0];
+    }
     return { moment: m, t: m.year + 0.5, y, people: ps };
   });
   // Spread same-year knots within their year.
