@@ -10,15 +10,16 @@ target values, so a gesture never snaps from whatever came before. Step channels
 (``parent``, ``root.facing``, ``state``) get a single key where they change. At every ``parent``
 key there is a ``position`` key at the same time.
 
-Arm choice (``arm_r`` / ``arm_l``) is always a parameter; the compiler picks it. Reaches assume
-an upright torso, like the IK solver.
+Arm choice (``arm_r`` / ``arm_l``) is always a parameter; the compiler picks it. Reaches start
+from the Body's torso (``Body.torso``, 0 for upright), like the IK solver: the shoulder moves
+with the torso and arm rotations are relative to it.
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import schemas
 from screenplay.ik import (
@@ -305,16 +306,17 @@ def point_keys(
     """Point at a world point: turn first if it is behind, aim the point pose at it, then return.
 
     The upper arm aims along the shoulder-to-target direction; the lower arm keeps the point
-    pose's slight bend.
+    pose's slight bend. The shoulder is where the body's torso puts it, and the upper rotation
+    is relative to the torso (CONTRACTS.md Clarification 2).
     """
     facing = _facing_toward(body, target[0])
-    turned = Body(body.id, body.ground, facing, body.build)
-    sh = shoulder_world(arm, turned.ground, facing, turned.build)
+    turned = replace(body, facing=facing)
+    sh = shoulder_world(arm, turned.ground, facing, turned.build, torso=turned.torso)
     vx, vy = facing * (target[0] - sh[0]), target[1] - sh[1]
     values = _for_arm(_pose_values("point"), arm)
     upper, _lower = arm_bones(arm)
     if vx != 0 or vy != 0:
-        values[upper] = math.atan2(vx, -vy)
+        values[upper] = math.atan2(vx, -vy) - turned.torso
     return _face_keys(body, t, facing) + _gesture_keys(body.id, t, current, values, dur)
 
 

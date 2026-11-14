@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import replace
 
 from screenplay import body as B
 from screenplay import ik, motion
@@ -201,7 +202,7 @@ def apply_pose(world: World, tracks: TrackSet, action: Action, t: float, action_
     z = root_now[2]
     standing = (p.pos[0], p.pos[1])
     if pose in SEATED_POSES:
-        upright = ik.Body(who, standing, p.facing, p.build)
+        upright = replace(body_at(world, tracks, who, t), ground=standing)
         gen = (B.sit_keys(upright, t, current, None, z=z) if pose == "sit"
                else B.kneel_keys(upright, t, current, z=z))
         # Start from where the root really is (it may already be lowered by another floor pose).
@@ -259,8 +260,9 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
     t_reach = t
     ground = (here[0], here[1])
     current = arm_at(tracks, who, arm, t)
+    torso = bone_at(tracks, who, "torso", t)
     walk_to: Vec3 | None = None
-    if not ik.can_reach(arm, grip, ground, facing, p.build):
+    if not ik.can_reach(arm, grip, ground, facing, p.build, torso=torso):
         reach = ik.arm_reach(p.build, arm)
         if d != 0 and abs(grip[0] - here[0]) > AUTO_WALK_REACH * reach:
             _not_seated(world, who)
@@ -268,10 +270,15 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
             keys, t_reach, facing = _travel_keys(world, tracks, who, t, walk_to, "walk")
             ground = (walk_to[0], walk_to[1])
             current = (0.0, 0.0)  # the walk cycle ends with the free arm at rest
+            # Standing up from the floor first straightens the torso; a plain walk keeps it.
+            stood = B.last_values(keys).get((f"puppet:{who}", "torso.rot"))
+            if stood is not None:
+                torso = float(stood)  # type: ignore[arg-type]
     if walk_to is None and facing != p.facing:
         keys += [(f"puppet:{who}", "root.facing", t, facing)]
-    body_now = ik.Body(who, ground, facing, p.build)
-    if ik.can_reach(arm, grip, ground, facing, p.build) or grip[1] >= ik.shoulder_world(arm, ground, facing, p.build)[1]:
+    body_now = ik.Body(who, ground, facing, p.build, torso)
+    shoulder_y = ik.shoulder_world(arm, ground, facing, p.build, torso=torso)[1]
+    if ik.can_reach(arm, grip, ground, facing, p.build, torso=torso) or grip[1] >= shoulder_y:
         keys += B.pick_up_keys(body_now, t_reach, current, geom, anchor, arm)
         end = t_reach + 2 * B.REACH_SECONDS
     else:  # too low for a standing arm: bend down (kneeling if needed) to the grip
@@ -300,26 +307,16 @@ def _kneeling_ground(body: ik.Body) -> tuple[float, float]:
 
 def _bent_shoulder(arm: str, ground: tuple[float, float], facing: int, build: str, bend: float) -> tuple[float, float]:
     """World position of an arm's shoulder pivot with the torso rotated by ``bend``."""
-    s = ik.scale(build)
-    (px, py), _ = ik.bone_frame(ik.arm_bones(arm)[0], {"torso": bend})
-    return (ground[0] + facing * px * s, ground[1] + (py + ik.RIG["hipHeight"]) * s)
+    return ik.shoulder_world(arm, ground, facing, build, torso=bend)
 
 
 def _solve_bent_arm(
     arm: str, target: tuple[float, float], ground: tuple[float, float], facing: int, build: str, bend: float
 ) -> tuple[float, tuple[float, float] | None]:
-    """Two-bone IK (ik.solve_arm's formula) from a bent torso. The upper arm's rotation is
-    relative to the torso, so the bend is taken off it. Returns (shoulder-to-target distance in
-    rig units, (upper, lower) or None when out of reach)."""
-    s = ik.scale(build)
-    sh = _bent_shoulder(arm, ground, facing, build, bend)
-    vx, vy = facing * (target[0] - sh[0]) / s + 0.0, (target[1] - sh[1]) / s
-    length = ik.RIG["bones"][ik.arm_bones(arm)[0]]["length"]
-    dist = math.hypot(vx, vy)
-    if dist > 2 * length + ik.REACH_EPS:
-        return dist, None
-    a = math.acos(min(1.0, dist / (2 * length)))
-    return dist, (math.atan2(vx, -vy) - a - bend, 2 * a)
+    """Two-bone IK from a torso at ``bend`` (ik.arm_solution: the upper arm's rotation is
+    relative to the torso). Returns (shoulder-to-target distance in rig units, (upper, lower)
+    or None when out of reach)."""
+    return ik.arm_solution(arm, target, ground, facing, build, torso=bend)
 
 
 def _crouch_solution(
@@ -395,7 +392,7 @@ def _crouch_pick_up_keys(
     if kneel:  # down over POSE_SECONDS, held kneeling while reaching, then up again
         legs = {b: now(b) for b in POSES["kneel"] if b.startswith("leg_")}
         keys += B.kneel_keys(body, t, legs, z=z)
-        low = ik.Body(who, _kneeling_ground(body), body.facing, body.build)
+        low = replace(body, ground=_kneeling_ground(body))
         kneeling = {b: float(v) for b, v in POSES["kneel"].items() if b.startswith("leg_")}
         keys += B.stand_keys(low, t_grab, kneeling, body.ground, z=z)
     keys += [(f"prop:{what}", "parent", t_grab, f"{target}.{ik.arm_socket(arm)}"),
@@ -466,8 +463,8 @@ def apply_hand_to(world: World, tracks: TrackSet, action: Action, t: float, acti
     for body, facing in ((g, g_facing), (k, k_facing)):
         if facing != body.facing:
             keys.append((f"puppet:{body.id}", "root.facing", t, facing))
-    g = ik.Body(who, g.ground, g_facing, g.build)
-    k = ik.Body(to, k.ground, k_facing, k.build)
+    g = replace(g, facing=g_facing)  # replace keeps each torso: a leaning puppet reaches from it
+    k = replace(k, facing=k_facing)
     keys += B.hand_to_keys(
         g, arm_at(tracks, who, giver_arm, t), k, arm_at(tracks, to, taker_arm, t), what, t, giver_arm, taker_arm
     )

@@ -7,6 +7,10 @@ Pure functions over shared/rig/puppet.json. Conventions (shared/CONTRACTS.md, "T
 - ``ground`` is ``root.position`` (x, y): the point on the ground under the hips, with any
   ``rootOffset`` (sit, kneel) already baked in. The hip is ``ground + hipHeight * scale``.
 - ``facing`` is 1 (faces +x) or -1 (mirrored). Rotations are always in the unmirrored local frame.
+- ``torso`` is the torso bone's rotation. The arms hang from the torso, so the shoulder moves with
+  it and an arm's upper rotation is relative to it (CONTRACTS.md Clarification 2: the
+  shoulder-to-target vector is solved in the torso's frame). With ``torso=0`` every result is
+  bit-identical to the upright solver.
 
 The arithmetic matches api/tests/gen_hymn_books_sample.py exactly, so the compiler reproduces
 the reference timeline.
@@ -38,6 +42,7 @@ class Body:
     ground: Vec2
     facing: int
     build: str
+    torso: float = 0.0  # last, so positional Body(id, ground, facing, build) still works
 
 
 class OutOfReach(Exception):
@@ -113,11 +118,11 @@ def arm_bones(arm: str) -> tuple[str, str]:
     return chain["upper"], chain["lower"]
 
 
-def shoulder_world(arm: str, ground: Vec2, facing: int, build: str) -> Vec2:
-    """World position of an arm's shoulder pivot (torso upright)."""
+def shoulder_world(arm: str, ground: Vec2, facing: int, build: str, *, torso: float = 0.0) -> Vec2:
+    """World position of an arm's shoulder pivot, after the torso's rotation (upright at 0)."""
     s = scale(build)
-    p = RIG["bones"][_arm(arm)["upper"]]["pivot"]
-    return (ground[0] + facing * p[0] * s, ground[1] + (p[1] + RIG["hipHeight"]) * s)
+    (px, py), _ = bone_frame(_arm(arm)["upper"], {"torso": torso})
+    return (ground[0] + facing * px * s, ground[1] + (py + RIG["hipHeight"]) * s)
 
 
 def _bone_length(arm: str) -> float:
@@ -129,59 +134,81 @@ def arm_reach(build: str, arm: str = "arm_r") -> float:
     return 2 * _bone_length(arm) * scale(build)
 
 
+def _arm_vector(arm: str, target: Vec2, ground: Vec2, facing: int, build: str, torso: float) -> Vec2:
+    """Shoulder-to-target in rig units, mirrored for ``facing`` (not yet rotated by -torso)."""
+    s = scale(build)
+    sh = shoulder_world(arm, ground, facing, build, torso=torso)
+    # A mirrored zero is -0.0; atan2(-0.0, -y) is -pi, not pi. Normalize so a target straight
+    # above the shoulder gives the same rotation for either facing (no 2*pi jump between keys).
+    return facing * (target[0] - sh[0]) / s + 0.0, (target[1] - sh[1]) / s
+
+
+def arm_solution(
+    arm: str, target: Vec2, ground: Vec2, facing: int, build: str, *, torso: float = 0.0
+) -> tuple[float, tuple[float, float] | None]:
+    """The two-bone solve without raising: (shoulder-to-target distance in rig units,
+    (upper, lower), or None when the target is out of reach). ``solve_arm`` documents the
+    formula; this is the one place it is computed."""
+    vx, vy = _arm_vector(arm, target, ground, facing, build, torso)
+    length = _bone_length(arm)
+    d = math.hypot(vx, vy)
+    if d > 2 * length + REACH_EPS:
+        return d, None
+    a = math.acos(min(1.0, d / (2 * length)))
+    # Rotating v by -torso before atan2 is the same as taking torso off the angle afterwards.
+    return d, (math.atan2(vx, -vy) - a - torso, 2 * a)
+
+
 def solve_arm(
-    arm: str, target: Vec2, ground: Vec2, facing: int, build: str, *, clamp: bool = False
+    arm: str, target: Vec2, ground: Vec2, facing: int, build: str, *, clamp: bool = False, torso: float = 0.0
 ) -> tuple[float, float]:
     """Two-bone IK: (upper, lower) rotations that put the arm's hand socket on ``target``.
 
     Contract formula: v = shoulder-to-target in local rig units, theta = atan2(v.x, -v.y),
-    a = acos(|v| / 2L), upper = theta - a, lower = 2a. Rotations are in the puppet's local,
-    unmirrored frame (``facing`` flips v.x).
+    a = acos(|v| / 2L), upper = theta - a - torso, lower = 2a. Rotations are in the puppet's
+    local, unmirrored frame (``facing`` flips v.x). The shoulder is where ``torso`` puts it,
+    and the upper rotation is relative to the torso (CONTRACTS.md Clarification 2), so
+    ``socket_world(hand, {"torso": torso, upper: u, lower: l}, ...)`` lands on the target.
 
     When |v| > 2L it raises OutOfReach, or with ``clamp=True`` returns the arm at full
-    extension aimed at the target, ``(theta, 0.0)``. The result is always finite.
+    extension aimed at the target, ``(theta - torso, 0.0)``. The result is always finite.
     """
     if facing not in (1, -1):
         raise ValueError(f"facing must be 1 or -1, got {facing!r}")
-    if not all(math.isfinite(v) for v in (*target, *ground)):
-        raise ValueError(f"IK target and ground must be finite, got target={target!r} ground={ground!r}")
+    if not all(math.isfinite(v) for v in (*target, *ground, torso)):
+        raise ValueError(
+            f"IK target, ground and torso must be finite, got target={target!r} ground={ground!r} torso={torso!r}"
+        )
+    d, angles = arm_solution(arm, target, ground, facing, build, torso=torso)
+    if angles is not None:
+        return angles
+    if clamp:
+        vx, vy = _arm_vector(arm, target, ground, facing, build, torso)
+        return math.atan2(vx, -vy) - torso, 0.0
     s = scale(build)
-    sh = shoulder_world(arm, ground, facing, build)
-    vx, vy = facing * (target[0] - sh[0]) / s, (target[1] - sh[1]) / s
-    # A mirrored zero is -0.0; atan2(-0.0, -y) is -pi, not pi. Normalize so a target straight
-    # above the shoulder gives the same rotation for either facing (no 2*pi jump between keys).
-    vx += 0.0
-    length = _bone_length(arm)
-    d = math.hypot(vx, vy)
-    theta = math.atan2(vx, -vy)
-    if d > 2 * length + REACH_EPS:
-        if clamp:
-            return theta, 0.0
-        raise OutOfReach(arm, d * s, 2 * length * s)
-    a = math.acos(min(1.0, d / (2 * length)))
-    return theta - a, 2 * a
+    raise OutOfReach(arm, d * s, 2 * _bone_length(arm) * s)
 
 
-def can_reach(arm: str, target: Vec2, ground: Vec2, facing: int, build: str) -> bool:
+def can_reach(arm: str, target: Vec2, ground: Vec2, facing: int, build: str, *, torso: float = 0.0) -> bool:
     """True when ``solve_arm`` would succeed for this target."""
     try:
-        solve_arm(arm, target, ground, facing, build)
+        solve_arm(arm, target, ground, facing, build, torso=torso)
     except OutOfReach:
         return False
     return True
 
 
 def solve_body_arm(body: Body, arm: str, target: Vec2, *, clamp: bool = False) -> tuple[float, float]:
-    """``solve_arm`` for a Body; an OutOfReach names the puppet."""
+    """``solve_arm`` for a Body, from its torso; an OutOfReach names the puppet."""
     try:
-        return solve_arm(arm, target, body.ground, body.facing, body.build, clamp=clamp)
+        return solve_arm(arm, target, body.ground, body.facing, body.build, clamp=clamp, torso=body.torso)
     except OutOfReach as e:
         raise e.with_who(body.id) from None
 
 
 def body_socket(body: Body, socket: str, rots: Mapping[str, float]) -> Vec2:
-    """``socket_world`` for a Body."""
-    return socket_world(socket, rots, body.ground, body.facing, body.build)
+    """``socket_world`` for a Body. The body's torso applies unless ``rots`` names one."""
+    return socket_world(socket, {"torso": body.torso, **rots}, body.ground, body.facing, body.build)
 
 
 def handover_point(giver: Body, taker: Body, giver_arm: str = "arm_r", taker_arm: str = "arm_r") -> Vec2:
@@ -189,10 +216,11 @@ def handover_point(giver: Body, taker: Body, giver_arm: str = "arm_r", taker_arm
 
     The point lies on the line from the giver's shoulder to the taker's, 0.83 of the giver's
     reach out from the giver: shoulder_g + (shoulder_t - shoulder_g) * (0.83 * reach_g / gap).
-    Raises OutOfReach (naming the puppet) if either hand cannot get there.
+    Each shoulder is where that body's torso puts it. Raises OutOfReach (naming the puppet) if
+    either hand cannot get there.
     """
-    sg = shoulder_world(giver_arm, giver.ground, giver.facing, giver.build)
-    st = shoulder_world(taker_arm, taker.ground, taker.facing, taker.build)
+    sg = shoulder_world(giver_arm, giver.ground, giver.facing, giver.build, torso=giver.torso)
+    st = shoulder_world(taker_arm, taker.ground, taker.facing, taker.build, torso=taker.torso)
     gap = math.hypot(st[0] - sg[0], st[1] - sg[1])
     if gap == 0.0:
         meet = sg

@@ -263,6 +263,12 @@ def test_geometry_helpers(scene):
     assert len(bones_at(tracks, "mom", 2.0, all_bones=True)) == len(ik.RIG["bones"])
     b = body_at(world, tracks, "mom", 0)
     assert (b.id, b.facing, b.build) == ("mom", -1, "average") and b.ground == pytest.approx((0.2, 0.3))
+    assert b.torso == 0.0
+    tracks.add("puppet:mom", "torso.rot", 1.0, 0.0)
+    tracks.add("puppet:mom", "torso.rot", 1.4, -0.25)
+    assert body_at(world, tracks, "mom", 0).torso == 0.0
+    assert body_at(world, tracks, "mom", 1.2).torso == pytest.approx(-0.125)
+    assert body_at(world, tracks, "mom", 3.0).torso == -0.25
     assert arm_of_hand("hand_l") == "arm_l"
     assert held_arms(world, "mom") == ["arm_r"] and held_arm_bones(world, "mom") == {"arm_r.upper", "arm_r.lower"}
     assert gesture_arm(world, "mom") == "arm_l"

@@ -70,10 +70,10 @@ def arm_at(tracks: TrackSet, who: str, arm: str, t: float) -> tuple[float, float
 
 
 def body_at(world: World, tracks: TrackSet, who: str, t: float) -> ik.Body:
-    """``ik.Body`` at ``t``: root from the tracks, facing and build from the world."""
+    """``ik.Body`` at ``t``: root and torso from the tracks, facing and build from the world."""
     x, y, _ = puppet_root(world, tracks, who, t)
     p = world.people[who]
-    return ik.Body(who, (x, y), p.facing, p.build)
+    return ik.Body(who, (x, y), p.facing, p.build, bone_at(tracks, who, "torso", t))
 
 
 def arm_of_hand(hand: str) -> str:
