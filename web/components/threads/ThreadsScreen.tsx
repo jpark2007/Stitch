@@ -12,6 +12,7 @@ import { useMemo } from "react";
 import { Button, ButtonLink } from "@/components/flow/Button";
 import { hrefs } from "@/components/flow/session";
 import { demoFamily, demoMoments, demoPeople } from "@/components/tree/demoFamily";
+import type { FamilySummary } from "@/lib/types";
 import type { LooseMoment } from "./data";
 import { MenuDisclosure } from "./MenuDisclosure";
 import type { ThreadMoment, ThreadPerson } from "./model";
@@ -84,7 +85,7 @@ export default function ThreadsScreen(props: ThreadsScreenProps) {
 
     case "signed-out":
       return (
-        <ThreadsSheet kicker="Threads" title="Your family, stitched along time" label="Sign in to see your threads">
+        <ThreadsSheet title="Your family, stitched along time" label="Sign in to see your threads">
           <p>
             Sign in to see everyone&rsquo;s thread: a line for each person, knotted wherever they shared a moment.
           </p>
@@ -97,7 +98,7 @@ export default function ThreadsScreen(props: ThreadsScreenProps) {
 
     case "no-family":
       return (
-        <ThreadsSheet kicker="Threads" title="No family here yet">
+        <ThreadsSheet title="No family here yet">
           <p>Start your family, or join one with an invite link, and their threads will gather here.</p>
           <div className="mt-6">
             <ButtonLink href={hrefs.newFamily()}>Start a family</ButtonLink>
@@ -108,12 +109,16 @@ export default function ThreadsScreen(props: ThreadsScreenProps) {
 
     case "error":
       return (
-        <ThreadsSheet kicker="Threads" title="The threads got tangled">
+        <ThreadsSheet title="The threads got tangled">
           <p role="alert">{source.message}</p>
           <div className="mt-6">
             <Button onClick={retry}>Try again</Button>
           </div>
-          <DemoLink onClick={exploreDemo} />
+          {source.families && source.families.length > 1 ? (
+            <OtherFamilies families={source.families} currentId={source.familyId} onSwitch={switchFamily} />
+          ) : (
+            <DemoLink onClick={exploreDemo} />
+          )}
         </ThreadsSheet>
       );
 
@@ -151,7 +156,11 @@ function FamilyThreads(props: {
         <p>Once someone is in the family tree, their thread starts here. Add a relative or a first memory to begin.</p>
         <div className="mt-6 flex flex-wrap gap-3">
           <ButtonLink href={hrefs.add({ familyId: fid })}>Add a memory</ButtonLink>
+          <ButtonLink variant="secondary" href={`/families/${encodeURIComponent(fid)}/people/new`}>
+            Add a relative
+          </ButtonLink>
         </div>
+        {families.length > 1 ? <OtherFamilies families={families} currentId={fid} onSwitch={onSwitch} /> : null}
       </ThreadsSheet>
     );
   }
@@ -184,6 +193,29 @@ function FamilyThreads(props: {
       note={note}
       {...seed}
     />
+  );
+}
+
+/** On a sheet about one family: a quiet way into the user's others. */
+function OtherFamilies(props: { families: FamilySummary[]; currentId?: string; onSwitch: (fid: string) => void }) {
+  const others = props.families.filter((f) => f.id !== props.currentId);
+  return (
+    <div className="mt-6 border-t border-dashed border-rule pt-4">
+      <p className="text-[0.95rem] text-ink-faint">Your other families</p>
+      <ul className="mt-1 list-none p-0">
+        {others.map((f) => (
+          <li key={f.id}>
+            <button
+              type="button"
+              onClick={() => props.onSwitch(f.id)}
+              className="min-h-10 cursor-pointer break-words text-left font-display text-[1.05rem] text-ink underline decoration-rule decoration-1 underline-offset-[0.25em] hover:decoration-accent"
+            >
+              {f.name}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

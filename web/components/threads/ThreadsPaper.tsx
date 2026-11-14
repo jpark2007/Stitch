@@ -5,6 +5,7 @@
  * wrong). No hooks, so the skeleton can also be the server's fallback.
  */
 
+import Link from "next/link";
 import type { ReactNode } from "react";
 
 /** Gentle waves for the stand-in threads, in a 1000 x 100 box. */
@@ -72,12 +73,22 @@ export function ThreadsSheet(props: { kicker?: ReactNode; title: ReactNode; chil
   return (
     <main className="fixed inset-0 overflow-y-auto">
       <PaperThreads />
-      <div className="relative flex min-h-full items-center justify-center px-4 py-16">
+      {/* The same way back as on the timeline. */}
+      <p className="kicker absolute left-[var(--gutter)] top-6 sm:top-8">
+        <Link href="/" className="text-ink-faint no-underline transition-colors hover:text-ink-soft">
+          Family tree
+        </Link>
+        <span aria-hidden className="mx-2 opacity-60">
+          /
+        </span>
+        <span className="text-ink-soft">Threads</span>
+      </p>
+      <div className="relative flex min-h-full items-center justify-center px-4 py-20">
         <section
           aria-label={props.label}
-          className="threads-sheet relative w-full max-w-md rounded-paper border border-rule bg-paper-light p-6 text-ink shadow-lift sm:p-8"
+          className="relative w-full max-w-md rounded-paper border border-rule bg-paper-light p-6 text-ink shadow-lift sm:p-8"
         >
-          {props.kicker ? <p className="kicker">{props.kicker}</p> : null}
+          {props.kicker ? <p className="kicker break-words">{props.kicker}</p> : null}
           <h1 className="mt-2 text-[1.7rem] leading-tight sm:text-[2rem]" style={{ fontVariationSettings: '"SOFT" 100, "WONK" 1' }}>
             {props.title}
           </h1>

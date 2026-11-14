@@ -26,7 +26,13 @@ export type ThreadsSource =
   | { kind: "loading" }
   | { kind: "signed-out" }
   | { kind: "no-family" }
-  | { kind: "error"; message: string }
+  | {
+      kind: "error";
+      message: string;
+      /** When one family failed to load: the user's families, to try another. */
+      families?: FamilySummary[];
+      familyId?: string;
+    }
   | { kind: "demo"; why: DemoReason }
   | {
       kind: "family";
@@ -36,7 +42,7 @@ export type ThreadsSource =
       data: ThreadsData;
     };
 
-const FRIENDLY_ERROR = "Something went wrong while gathering your family's threads. Please try again.";
+const FRIENDLY_ERROR = "Something went wrong while gathering your family’s threads. Please try again.";
 
 function message(e: unknown): string {
   return isApiError(e) && e.status >= 400 && e.status < 500 && e.status !== 401 ? e.detail : FRIENDLY_ERROR;
@@ -123,7 +129,7 @@ export function useThreadsSource(opts: { family?: string; demo?: boolean }) {
       const e = threads.reason;
       if (signedOut(e)) settle({ kind: "signed-out" });
       else if (offline(e)) settle({ kind: "demo", why: "offline" });
-      else settle({ kind: "error", message: message(e) });
+      else settle({ kind: "error", message: message(e), families: me.families, familyId: family.id });
       return;
     }
     if (tree.status === "rejected" && signedOut(tree.reason)) {
