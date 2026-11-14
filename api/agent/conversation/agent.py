@@ -41,7 +41,7 @@ def conversation_tools(service: ConversationService, *, worker_managed: bool = F
         return service.answer_run_question(kind, text, approve)
 
     tools = [get_open_questions, select_question, save_story_draft, submit_story]
-    return tools[:2] if worker_managed else tools + [relay_run_question, answer_run_question]
+    return tools[:1] if worker_managed else tools + [relay_run_question, answer_run_question]
 
 
 class _Budget(BaseCallbackHandler):

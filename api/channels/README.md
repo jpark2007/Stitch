@@ -2,7 +2,7 @@
 
 This package authenticates text and photo messages and stores durable receipts.
 An opt-in manual worker connects them to the conversation/studio and signed replies.
-It does not enroll or verify contacts, schedule prompts, or make calls. The
+Its manual prompt scheduler is separately opt-in; it makes no calls. The
 companion terminal bridge can exercise the transport without
 Photon credentials. No `.env` is loaded by this package and imports start no work.
 
@@ -166,9 +166,9 @@ and `relayBuffer` are persisted together; the buffer is acknowledged only after
 outbox persistence, preventing silent loss of questions or book links. Database
 failures may leave queued but unsent replies; do not blindly clear reservations.
 
-This slice supports one draft/run per contact. Reset, durable production graph
-history, recovery tooling, distributed studio restart, enrollment, proactive prompts
-and voice remain deferred. Real Mongo crash behavior and live-provider delivery
+Each contact has one active draft/run. Typed NEW provides the guarded lifecycle
+below. Durable production graph history, recovery tooling and distributed studio
+restart remain deferred. Real Mongo crash behavior and live-provider delivery
 are not established by the mongomock checks.
 
 ## Offline story demo
@@ -262,3 +262,79 @@ provider accounts or live provider decoding. Synthetic CAF has also been decoded
 locally using real macOS afconvert; real ffmpeg/Linux and phone delivery still need
 qualification. Run `uv run pytest tests/channels/test_voice.py
 tests/channels/test_transcription.py tests/channels/test_audio.py -q` from `api/`.
+
+## Manual prompt scheduling and next stories
+
+`STITCH_CHANNELS_SCHEDULER=1` additionally enables proactive prompt planning during
+the existing manual tick. `STITCH_CHANNELS_WORKER=1` is still required by the route;
+both features default off. No timer, cron, API background loop or live call is
+started. Tick's existing `{processed,sent,blocked,scheduler:"manual"}` response is
+unchanged. Incoming work has priority within the five-contact tick limit.
+
+The scheduler uses the enrollment contract's top-level `timezone`, `cadenceDays`
+(integer 1–30), and `quietHours:{start,end}` (distinct `HH:MM`). Missing/malformed
+preferences skip safely. Quiet intervals include their start and exclude their
+end, may cross midnight, and use the actual IANA-zone local clock. Both occurrences
+of a repeated DST hour are quiet when that local time is quiet; nonexistent times
+are never fabricated. Cadence counts local calendar dates since the later of the
+last prompt ACK or observed inbound activity, initially the opt-in date. Therefore
+a day across a DST change can be 23 or 25 elapsed hours. Ordinary user replies are
+not delayed by quiet hours or prompt cadence.
+
+Only active contacts with actual verification/opt-in timestamps and bridge-proven
+`spaceKind:"direct"` qualify. The destination must exactly match the verified
+`contact.spaceId`, handle, provider, person and principal. An enrollment proof can
+initialize that routing snapshot; no guessed phone/space IDs are used. The bridge
+still fails closed on an unregistered space after restart, until an actual incoming
+SDK event registers it. That transport failure blocks for reconciliation; the API
+does not guess how to recover a provider destination.
+
+This direct-space gate also applies to **all iMessage worker processing/replies**,
+including STT and model use. Same-handle messages in groups or different spaces,
+and legacy contacts without direct proof, may receive transport receipts but are
+blocked before their content is processed or replies sent. Terminal demo behavior
+is unchanged. Consent and proof are rechecked before every outbound action.
+
+Prompts prefer this person's current public `get_open_questions()` results, keeping
+the selected question's second-telling target bound server-side after delivery ACK.
+Otherwise they use forty fixed neutral questions in a global `questionBank`.
+That collection contains no family data and is intentionally shared; all personal
+question and notification reads remain family-scoped. Previously attempted question
+keys are never reasked for the same family/contact, including cancelled attempts.
+A draft, active studio, incoming receipt queue, unanswered chain, or exhausted
+32-call lifetime interview budget prevents another proactive prompt. Notification
+history inspection is capped at 1000; reaching the cap stops further scheduling.
+
+Family-scoped `notifications` reserve a stable question/contact identity before
+outbox creation. A partial unique index allows at most one active chain. States
+are reserved→sending→sent→answered; `sentAt` is recorded only after sender ACK.
+The outbox uses a deterministic notification-derived message ID. A lost ACK or
+database failure blocks further work without a blind resend. A known-unsent prompt
+is cancelled if quiet hours, settings or incoming work changes before sending;
+cancellation never delays a user's ordinary reply. A story reply marks the chain
+answered only after its words are durably saved. HELP/CALL/YEAR are not story answers.
+
+`ensure_channel_indexes(db)` now also creates question-bank and notification
+indexes. API-owner family purge must include `notifications` and `conversations`;
+do not purge the global neutral bank by family. Bounded scan cursors contain only
+opaque IDs, never family question text.
+
+Typed `NEW` starts a fresh draft only after an actual persisted studio `done` or
+`error` event, a drained outbox/relay buffer, no pending question or uncertain
+answer/submission, and the current contact's worker reservation. It never clears
+uncertain state. The last ten run summaries are archived; model-call usage remains
+lifetime-scoped and the conversation thread generation advances. A due scheduler
+can perform the same guarded reset before a new prompt, but cannot interrupt a
+draft or active run. Once selected, a draft's question cannot be replaced with a
+different question; NEW clears the old binding only through those gates.
+
+Typed `HELP` lists YEAR, SUBMIT, KEEP, YES/NO, NEW and STOP without changing a draft,
+calling a model or answering a prompt. Typed `CALL` honestly reports that live calls
+are not configured. HELP/CALL/NEW form separate inbox batches and remain subject to
+the trusted-contact/direct-space boundary. Voice-transcribed command words remain
+story words, never authorization to reset, submit, approve or place a call.
+
+Tests in `tests/channels/test_scheduler.py` cover due/quiet/DST/cadence behavior,
+global-bank/family-notification isolation, second-telling selection, concurrency,
+lost ACK, STOP, direct-space proof and the bounded next-story lifecycle. They use
+mongomock and fake senders/studios, never actual outreach or live model services.
