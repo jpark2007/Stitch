@@ -1,1 +1,117 @@
-"""Account routes: sign up, log in, log out, current user."""
+"""Account routes: sign up, log in, log out, current user (ARCHITECTURE.md sections 4 and 6).
+
+Responses are built only from schemas.User, which has no password field. The stored
+password hash is read through users_db.get_login() and never leaves login().
+"""
+
+from __future__ import annotations
+
+import secrets
+import threading
+
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from pymongo.database import Database
+
+import auth
+import schemas
+from db import families as families_db
+from db import users as users_db
+from db.client import get_db
+
+router = APIRouter(tags=["auth"])
+
+INVALID_LOGIN = "Invalid email or password"
+HTTP_422 = 422  # starlette renamed the constant; the number is the contract
+
+_dummy_hash: str | None = None
+_dummy_lock = threading.Lock()
+
+
+def _dummy_password_hash() -> str:
+    """An argon2 hash of a random value, computed once on first use.
+
+    Login verifies against it when the email is unknown, so a miss costs the same
+    argon2 work as a wrong password and response timing does not reveal accounts.
+    """
+    global _dummy_hash
+    if _dummy_hash is None:
+        with _dummy_lock:
+            if _dummy_hash is None:
+                _dummy_hash = auth.hash_password(secrets.token_urlsafe(32))
+    return _dummy_hash
+
+
+def _me(db: Database, user: schemas.User) -> schemas.MeResponse:
+    return schemas.MeResponse(user=user, families=families_db.list_family_summaries(db, user.id))
+
+
+@router.post(
+    "/auth/signup",
+    status_code=status.HTTP_201_CREATED,
+    response_model=schemas.MeResponse,
+)
+def signup(
+    body: schemas.SignupRequest,
+    response: Response,
+    db: Database = Depends(get_db),
+) -> schemas.MeResponse:
+    """Create an account and start a session. A new account belongs to no families yet."""
+    try:
+        email = users_db.normalize_email(body.email)
+    except ValueError:
+        raise HTTPException(HTTP_422, detail="Enter a valid email") from None
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(HTTP_422, detail="Enter your name")
+    try:
+        user = users_db.create_user(
+            db,
+            email=email,
+            password_hash=auth.hash_password(body.password),
+            name=name,
+        )
+    except users_db.EmailTaken:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, detail="An account with this email already exists"
+        ) from None
+    auth.set_session_cookie(response, user.id)
+    return schemas.MeResponse(user=user, families=[])
+
+
+@router.post("/auth/login", response_model=schemas.MeResponse)
+def login(
+    body: schemas.LoginRequest,
+    response: Response,
+    db: Database = Depends(get_db),
+) -> schemas.MeResponse:
+    """Start a session. Unknown email, malformed email and wrong password all get the same 401."""
+    found = users_db.get_login(db, body.email)  # None for a malformed or unknown email
+    if found is None:
+        auth.verify_password(_dummy_password_hash(), body.password)
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=INVALID_LOGIN)
+    user, password_hash = found
+    if not auth.verify_password(password_hash, body.password):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=INVALID_LOGIN)
+    auth.set_session_cookie(response, user.id)
+    return _me(db, user)
+
+
+@router.post(
+    "/auth/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def logout() -> Response:
+    """End the session. Needs no session, and always clears the cookie."""
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    auth.clear_session_cookie(response)
+    return response
+
+
+@router.get("/me", response_model=schemas.MeResponse)
+def me(
+    user: schemas.User = Depends(auth.current_user),
+    db: Database = Depends(get_db),
+) -> schemas.MeResponse:
+    """The signed-in user and the families they belong to. 401 when signed out."""
+    return _me(db, user)
