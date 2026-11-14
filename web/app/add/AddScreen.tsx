@@ -11,9 +11,21 @@
 // first finds which family holds the moment (the remembered one first) and
 // opens its second telling there.
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { loadMomentPage } from "@/app/memories/[id]/moment";
 import { ButtonLink } from "@/components/flow/Button";
+import { CraftingBook, EMPTY_PAGE, type CraftInput, type DraftPage } from "@/components/flow/CraftingBook";
+import {
+  bookOf,
+  castKey,
+  castOf,
+  createWatch,
+  pageTitle,
+  pageYear,
+  readCast,
+  type CastMember,
+} from "@/components/flow/crafting";
 import { FlowPage } from "@/components/flow/FlowPage";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { SessionGate, type SessionValue } from "@/components/flow/SessionGate";
@@ -30,9 +42,10 @@ import {
 } from "@/components/flow/addPage";
 import type { MemoryRunTelling } from "@/components/flow/MemoryRun";
 import { hrefs, recallFamily, rememberFamily } from "@/components/flow/session";
-import { isApiError } from "@/lib/api";
+import { isApiError, isMockMode } from "@/lib/api";
 
-import { AddForm, AddLoadFailed, LOAD_ERROR, messageOf, type StartedRun } from "./AddForm";
+import { AddDesk, useWideDesk } from "./AddDesk";
+import { AddForm, AddLoadFailed, LOAD_ERROR, messageOf, type FormPreview, type StartedRun } from "./AddForm";
 import { AddRun } from "./AddRun";
 import {
   ADD_BACK,
@@ -52,6 +65,16 @@ const TITLE = "Add a memory";
  */
 export function AddLoading(props: { kind?: "new" | "second" | "run" }) {
   const { kind = "new" } = props;
+  return (
+    <AddDesk mode={kind === "run" ? "run" : "write"} book={null}>
+      <AddLoadingPage kind={kind} />
+    </AddDesk>
+  );
+}
+
+/** AddLoading's page alone, for a screen already on its desk. */
+function AddLoadingPage(props: { kind: "new" | "second" | "run" }) {
+  const { kind } = props;
   const title = kind === "second" ? "Add your telling" : kind === "run" ? "Your memory" : TITLE;
   // No lede: the form has none either (the story's placeholder invites).
   return (
@@ -59,6 +82,48 @@ export function AddLoading(props: { kind?: "new" | "second" | "run" }) {
       <LoadingSheet label="Opening your family’s pages…" />
     </FlowPage>
   );
+}
+
+/** The story page of the teller's book, from the form as it is now. */
+function pageFromForm(p: FormPreview): DraftPage {
+  const cast = castOf(p.people, p.selfPersonId, p.draft.participantIds);
+  return {
+    title: pageTitle({ question: p.draft.question, secondTellingOf: p.secondTellingOf }),
+    year: pageYear(p.draft.year),
+    text: p.draft.text,
+    cast,
+    participantIds: p.draft.participantIds.filter((id) => id !== p.selfPersonId),
+    photos: p.photos,
+  };
+}
+
+/** The story page of a run reattached after a reload: what was sent, and the cast kept for it. */
+function pageFromTelling(telling: MemoryRunTelling | null, cast: CastMember[]): DraftPage {
+  if (!telling) return { ...EMPTY_PAGE, title: "Your memory", cast };
+  return {
+    title: pageTitle({ question: telling.question, secondTellingOf: telling.secondTellingOf }),
+    year: pageYear(telling.year),
+    text: telling.text,
+    cast,
+    participantIds: cast.slice(1).map((c) => c.id),
+    photos: [],
+  };
+}
+
+function readStoredCast(runId: string): CastMember[] {
+  try {
+    return readCast(sessionStore()?.getItem(castKey(runId)) ?? null);
+  } catch {
+    return [];
+  }
+}
+
+function storeCast(runId: string, cast: CastMember[]): void {
+  try {
+    sessionStore()?.setItem(castKey(runId), JSON.stringify(cast));
+  } catch {
+    // Not kept: a reload stands the run up without its puppets.
+  }
 }
 
 export function AddScreen() {
@@ -182,14 +247,30 @@ function AddFlow(props: {
   // put them back. Files cannot go in storage: after a reload they are gone.
   const photosRef = useRef(new Map<string, File[]>());
 
+  // The teller's book beside the page: its story page follows the form as it
+  // is typed, then shows what was sent while the run makes the pop-up. Both
+  // are small values the book reads itself, so the page does not re-render
+  // for a keystroke or a run event.
+  const [pageWatch] = useState(() => createWatch<DraftPage>(EMPTY_PAGE));
+  const onPreview = useCallback((p: FormPreview) => pageWatch.set(pageFromForm(p)), [pageWatch]);
+  const shownRunId = run?.runId ?? null;
+  const craftWatch = useMemo(() => (shownRunId ? createWatch<CraftInput | null>(null) : null), [shownRunId]);
+  const reattached = run !== null && !run.fresh;
+  const reattachedTelling = run?.telling ?? null;
+  useEffect(() => {
+    // A run come back to after a reload: the page is what was sent, with the cast kept for it.
+    if (shownRunId && reattached) pageWatch.set(pageFromTelling(reattachedTelling, readStoredCast(shownRunId)));
+  }, [shownRunId, reattached, reattachedTelling, pageWatch]);
+
   const onStarted = useCallback(
     (started: StartedRun) => {
       if (!fid) return;
       photosRef.current.set(started.runId, started.photos);
+      storeCast(started.runId, pageWatch.get().cast);
       setRun({ runId: started.runId, telling: started.telling, fresh: true });
       router.replace(runHref({ familyId: fid, runId: started.runId }), { scroll: false });
     },
-    [fid, router],
+    [fid, router, pageWatch],
   );
 
   // After the run's own error: back to the form, filled in with what it was
@@ -217,10 +298,48 @@ function AddFlow(props: {
     [fid, router],
   );
 
+  // The book: whose it is, and the run making its new page.
+  const wide = useWideDesk();
+  const selfPersonId = family?.personId ?? null;
+  const owner = useMemo(
+    () => ({
+      title: bookOf(me.user.name),
+      href: selfPersonId && fid ? hrefs.person(selfPersonId, fid) : hrefs.home(),
+    }),
+    [me.user.name, selfPersonId, fid],
+  );
+  const second = Boolean(run?.telling?.secondTellingOf);
+  const fresh = run?.fresh ?? false;
+  const runBook = useMemo(
+    () =>
+      craftWatch && fid
+        ? {
+            watch: craftWatch,
+            fresh,
+            familyId: fid,
+            second,
+            momentHref: (id: string) => hrefs.memory(id, fid),
+            // The stage plays saved moments from the real API only.
+            loadMoment: isMockMode()
+              ? null
+              : (id: string, signal: AbortSignal) => loadMomentPage(id, { family: fid, demo: false }, signal),
+          }
+        : null,
+    [craftWatch, fid, fresh, second],
+  );
+  const book = <CraftingBook owner={owner} page={pageWatch} run={runBook} placement="side" />;
+  const preview = runBook ? <CraftingBook owner={owner} page={pageWatch} run={runBook} placement="preview" /> : null;
+
+  // Every screen of the flow lies on the same desk, so the book beside it
+  // stays put (and keeps its one canvas) as the form turns into the run.
+  let content: ReactNode;
+  // ?retry=<run>: the form again with what that run was sent. Without the
+  // saved draft (another tab, blocked storage) it is the plain form.
+  const draft = retryId ? loadSentDraft(sessionStore(), retryId) : null;
   if (!family || !fid) {
     // SessionGate's requireFamily sends people without a family away; this
     // is only reached if that changes under us.
-    return (
+    content = (
       <FlowPage title={TITLE} width="wide">
         <PaperCard className="flex flex-col items-start gap-4">
           <p className="text-[1.0625rem] leading-relaxed text-ink">
@@ -230,10 +349,8 @@ function AddFlow(props: {
         </PaperCard>
       </FlowPage>
     );
-  }
-
-  if (run) {
-    return (
+  } else if (run) {
+    content = (
       <AddRun
         key={run.runId}
         api={api}
@@ -241,23 +358,22 @@ function AddFlow(props: {
         run={run}
         lede={choice.show ? <FamilyLine choice={choice} switchable={false} /> : undefined}
         onTellAgain={() => onTellAgain(run.runId)}
+        craft={craftWatch}
+        book={wide ? null : preview}
       />
     );
-  }
-
-  if (lookFor && !looked) return <AddLoading kind="second" />;
-  if (looked?.kind === "error") {
-    return (
+  } else if (lookFor && !looked) {
+    content = <AddLoadingPage kind="second" />;
+  } else if (looked?.kind === "error") {
+    content = (
       <AddLoadFailed
         choice={choice}
         message={looked.message}
         onRetry={() => setLookupTry((n) => n + 1)}
       />
     );
-  }
-
-  if (!family.personId) {
-    return (
+  } else if (!family.personId) {
+    content = (
       <FlowPage
         title={TITLE}
         lede={choice.show ? <FamilyLine choice={choice} /> : undefined}
@@ -278,13 +394,8 @@ function AddFlow(props: {
         </PaperCard>
       </FlowPage>
     );
-  }
-
-  // ?retry=<run>: the form again with what that run was sent. Without the
-  // saved draft (another tab, blocked storage) it is the plain form.
-  const draft = retryId ? loadSentDraft(sessionStore(), retryId) : null;
-  if (retryId && draft) {
-    return (
+  } else if (retryId && draft) {
+    content = (
       <AddForm
         key={`${fid}:retry:${retryId}`}
         api={api}
@@ -293,25 +404,33 @@ function AddFlow(props: {
         memoryId={memoryId ?? draft.memoryId}
         choice={choice}
         onStarted={onStarted}
+        onPreview={onPreview}
         restore={{ runId: retryId, draft, photos: backPhotos?.runId === retryId ? backPhotos.photos : null }}
         added={added}
+        momentHome={momentHome}
+      />
+    );
+  } else {
+    content = (
+      <AddForm
+        key={`${fid}:${memoryId ?? ""}`}
+        api={api}
+        fid={fid}
+        selfPersonId={family.personId}
+        memoryId={memoryId}
+        choice={choice}
+        onStarted={onStarted}
+        onPreview={onPreview}
+        added={added}
+        questionId={questionId}
         momentHome={momentHome}
       />
     );
   }
 
   return (
-    <AddForm
-      key={`${fid}:${memoryId ?? ""}`}
-      api={api}
-      fid={fid}
-      selfPersonId={family.personId}
-      memoryId={memoryId}
-      choice={choice}
-      onStarted={onStarted}
-      added={added}
-      questionId={questionId}
-      momentHome={momentHome}
-    />
+    <AddDesk mode={run ? "run" : "write"} book={family && fid ? book : null}>
+      {content}
+    </AddDesk>
   );
 }
