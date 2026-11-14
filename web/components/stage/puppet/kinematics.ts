@@ -166,6 +166,10 @@ export function stageToHip(
   return out;
 }
 
+// Module-level defaults, so per-frame callers allocate nothing.
+const FEET: readonly string[] = ["leg_l.lower", "leg_r.lower"];
+const footScratch = { x: 0, y: 0 };
+
 /**
  * How far below the hip the lower of the two feet is, in rig units, for the
  * leg chains ending in `feet` (default the two lower-leg bones). In the
@@ -176,8 +180,8 @@ export function stageToHip(
 export function lowestFoot(
   rig: RigDef,
   frames: Record<string, BoneFrame>,
-  feet: readonly string[] = ["leg_l.lower", "leg_r.lower"],
-  scratch = { x: 0, y: 0 },
+  feet: readonly string[] = FEET,
+  scratch: { x: number; y: number } = footScratch,
 ): number {
   let drop = 0;
   for (const f of feet) {

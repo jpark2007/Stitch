@@ -31,8 +31,21 @@ function toneOf(bone: string): BodyTone {
 const ITEM_GAP = 0.0042;
 /** Halos sit just behind their piece, in the gap above the piece below. */
 const HALO_BEHIND = 0.0022;
-/** The halo drops slightly, as if lit from above. */
-const HALO_DROP = 0.0035;
+/**
+ * Where each piece's soft shadow falls on the piece behind it, in rig units,
+ * in the world's directions (down and to the right, from a key light at the
+ * reader's upper left). Held there whatever the bone's angle or facing.
+ */
+const HALO_X = 0.0032;
+const HALO_Y = -0.0045;
+
+interface Halo {
+  mesh: Mesh;
+  /** Index into BONES of the bone the halo rides on. */
+  bone: number;
+  /** Offset strength (thin pieces stacked close cast shorter shadows). */
+  k: number;
+}
 
 export class PuppetObject {
   readonly root = new Group();
@@ -45,6 +58,10 @@ export class PuppetObject {
   private itemMeshes: { mesh: Mesh; piece: ItemPieceKit }[] = [];
   private itemKind: ItemKind | null = null;
   private readonly boneList: Group[] = [];
+  private readonly parentIndex: number[] = [];
+  private readonly absAngle = new Float64Array(BONES.length);
+  private readonly halos: Halo[] = [];
+  private itemHalos: Halo[] = [];
 
   constructor(name = "puppet") {
     this.root.name = name;
@@ -63,6 +80,8 @@ export class PuppetObject {
       (def.parent === RIG.root ? this.body : this.bones[def.parent]).add(g);
       this.bones[n] = g;
       this.boneList.push(g);
+      this.parentIndex.push(BONES.indexOf(def.parent));
+      const bi = this.boneList.length - 1;
 
       const z = layerOf(n) * LAYER_GAP;
       const pk = kit[n];
@@ -77,8 +96,9 @@ export class PuppetObject {
 
       const halo = new Mesh(pk.halo, pk.haloMaterial);
       halo.name = `${n}:halo`;
-      halo.position.set(0, -HALO_DROP, z - HALO_BEHIND);
+      halo.position.z = z - HALO_BEHIND;
       g.add(halo);
+      this.halos.push({ mesh: halo, bone: bi, k: 1 });
 
       if (n === "leg_l.lower" || n === "leg_r.lower") {
         // A paper shoe glued over the foot.
@@ -89,8 +109,9 @@ export class PuppetObject {
         s.castShadow = true;
         s.receiveShadow = true;
         const sh = new Mesh(shoe.piece.halo, shoe.piece.haloMaterial);
-        sh.position.set(0, -HALO_DROP * 0.5, z + THICKNESS + 0.0008);
+        sh.position.z = z + THICKNESS + 0.0008;
         g.add(sh, s);
+        this.halos.push({ mesh: sh, bone: bi, k: 0.5 });
         this.shadowCasters.push(s);
       }
 
@@ -131,7 +152,9 @@ export class PuppetObject {
     this.itemKind = kind;
     this.itemGroup.clear();
     this.itemMeshes = [];
+    this.itemHalos = [];
     if (!kind) return;
+    const head = BONES.indexOf(RIG.sockets.head.bone);
     for (const piece of getItemKit(kind)) {
       const z = piece.layer * ITEM_GAP;
       const mesh = new Mesh(piece.geometry);
@@ -139,8 +162,9 @@ export class PuppetObject {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       const halo = new Mesh(piece.halo, piece.haloMaterial);
-      halo.position.set(0, -HALO_DROP * 0.6, z - HALO_BEHIND * 0.6);
+      halo.position.z = z - HALO_BEHIND * 0.6;
       this.itemGroup.add(halo, mesh);
+      this.itemHalos.push({ mesh: halo, bone: head, k: 0.6 });
       this.itemMeshes.push({ mesh, piece });
     }
   }
@@ -160,7 +184,24 @@ export class PuppetObject {
     this.root.scale.set(facing < 0 ? -scale : scale, scale, scale);
     for (let i = 0; i < BONES.length; i++) {
       const v = rot[BONES[i]];
-      this.boneList[i].rotation.z = typeof v === "number" && Number.isFinite(v) ? v : 0;
+      const r = typeof v === "number" && Number.isFinite(v) ? v : 0;
+      this.boneList[i].rotation.z = r;
+      const p = this.parentIndex[i];
+      this.absAngle[i] = (p >= 0 ? this.absAngle[p] : 0) + r;
+    }
+    // Keep every soft shadow falling the same way in the world.
+    const hx = facing < 0 ? -HALO_X : HALO_X;
+    this.placeHalos(this.halos, hx);
+    this.placeHalos(this.itemHalos, hx);
+  }
+
+  private placeHalos(list: Halo[], hx: number): void {
+    for (const h of list) {
+      const a = this.absAngle[h.bone];
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      h.mesh.position.x = (hx * c + HALO_Y * s) * h.k;
+      h.mesh.position.y = (-hx * s + HALO_Y * c) * h.k;
     }
   }
 }
