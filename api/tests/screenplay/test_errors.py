@@ -68,8 +68,8 @@ def test_from_state_error_uses_the_written_t_and_fills_fields():
 
 
 def test_from_state_error_without_action():
-    err = from_state_error(StateError("unknown_mark", "nowhere is not a mark in shot s1"), "s1", None)
-    assert err.message == "shot s1: nowhere is not a mark in shot s1"
+    err = from_state_error(StateError("unknown_mark", "nowhere is not a mark in this shot; the marks are a, b"), "s1", None)
+    assert err.message == "shot s1: nowhere is not a mark in this shot; the marks are a, b"
     assert (err.code, err.shot, err.t, err.who, err.do) == ("unknown_mark", "s1", None, None, None)
 
 
@@ -141,7 +141,7 @@ def test_hint_offstage_names_the_person_who_is_offstage():
 
 
 def test_hint_not_on_stage():
-    err = _state("not_on_stage", "hymn_books is not on stage", t=5.5, who="dad", do="pick_up", what="hymn_books")
+    err = _state("not_on_stage", "hymn_books is not on stage; place it with propStart", t=5.5, who="dad", do="pick_up", what="hymn_books")
     assert hint_for(err) == "place hymn_books with propStart in shot s1, or have someone carry it in"
 
 
@@ -152,7 +152,7 @@ def test_hint_unknown_mark_from_validate_and_from_state():
         shot="s2", t=1.0, who="dad", do="walk_to",
     )
     assert hint_for(err) == "use a mark the message lists, or add it to shot s2's marks as [u, h]"
-    assert hint_for(error("unknown_mark", "nowhere is not a mark in shot s3", "s3")) == (
+    assert hint_for(error("unknown_mark", "nowhere is not a mark in this shot; the marks are a, b", "s3")) == (
         "use a mark the message lists, or add it to shot s3's marks as [u, h]"
     )
 
@@ -235,8 +235,16 @@ def test_hint_hands_full_names_whose_hands():
 
 
 def test_hint_seated():
-    err = _state("seated", "dad is seated in pew.seat", t=4, who="dad", do="walk_to", to="door")
+    err = _state("seated", "dad is seated in pew.seat; use stand_up first", t=4, who="dad", do="walk_to", to="door")
     assert hint_for(err) == "add a stand_up (or get_out, in a vehicle) for dad before this walk_to"
+    # the reason names its fix (state.World.seat_reason), so a vehicle seat gets get_out alone
+    err = _state("seated", "mom is seated in sedan.driver; use get_out first", t=4, who="dad", do="hug", target="mom")
+    assert hint_for(err) == "add a get_out for mom before this hug"
+    err = _state("already_seated", "dad is seated in sedan.driver; use get_out first",
+                 t=4, who="dad", do="sit_on", what="pew")
+    assert hint_for(err) == "add a get_out for dad first"
+    err = _state("already_seated", "dad is seated in pew.seat; use stand_up first", t=4, who="dad", do="sit_on", what="pew")
+    assert hint_for(err) == "add a stand_up (or get_out, in a vehicle) for dad first"
 
 
 def test_hint_busy_gives_the_time_the_actor_is_free():
@@ -261,6 +269,11 @@ def test_hint_missing_param_quotes_the_parameter():
     assert hint_for(_state("missing_param", "dad cannot turn_to: no target given", t=1, who="dad", do="turn_to")) == (
         'add "target" to this turn_to'
     )
+    # the verb modules and effects now use validate's wording too (state.missing_param_reason)
+    err = _state("missing_param", 'turn_to requires who, target; "target" is missing', t=1, who="dad", do="turn_to")
+    assert hint_for(err) == 'add "target" to this turn_to'
+    err = _state("missing_param", 'time_of_day requires value; "value" is missing', t=1, do="time_of_day")
+    assert hint_for(err) == 'add "value" to this time_of_day'
     # screenplay level: no action, so the generic words fill in
     top = error("missing_param", 'interaction "f" drives prop_state, which requires prop; "prop" is missing')
     assert hint_for(top) == 'add "prop" to this action'
@@ -305,6 +318,8 @@ def test_every_hint_formats_with_and_without_fields():
         "unknown_target": ['smoke at "x": x is not a person, prop or mark'],
         "not_holding": ["mom is holding it", "it is not on stage"],
         "prop_conflict": ["dad starts holding cup, and propStart also places it"],
+        "seated": ["mom is seated in sedan.driver; use get_out first"],
+        "already_seated": ["mom is seated in sedan.driver; use get_out first"],
     }
     for code, reasons in samples.items():
         for reason in reasons:
