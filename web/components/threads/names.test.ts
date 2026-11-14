@@ -211,6 +211,22 @@ test("a name that can stay is not pushed out by a higher-ranked one that has to 
   );
 });
 
+test("a name panned into one riding the margin queues up behind it, whatever their ranks", () => {
+  const placed = placeNames(
+    [
+      // Riding the left margin (moved past it by the pan), lower priority.
+      { strand: 0, width: 42, rank: 1, spots: [{ x: NAME_GUTTER, y: 100 }], held: NAME_GUTTER - 1, fit: levelFit(100, 1e9, 42) },
+      // Moving with the pan, now into the rider's clear space.
+      { strand: 1, width: 28, rank: 9, spots: [{ x: 200, y: 110 }], held: 69, fit: levelFit(110, 1e9, 28) },
+    ],
+    { width: 390, size: SIZE },
+  );
+  const rider = placed.find((p) => p.strand === 0)!;
+  const other = placed.find((p) => p.strand === 1)!;
+  assert.equal(rider.x, NAME_GUTTER);
+  assert.ok(other.x >= 70 && other.x < 71, `queued at ${other.x}`);
+});
+
 function assertNoOverlap(names: NameBox[]) {
   for (let i = 0; i < names.length; i++)
     for (let j = i + 1; j < names.length; j++) assert.ok(!overlap(names[i], names[j]), `names ${i} and ${j} overlap`);

@@ -183,15 +183,22 @@ export function placeNames(requests: NameRequest[], o: NameLayoutOptions): Place
   };
   // The followed name first. Then every name that can stay where it was
   // does, before any that must move, so a name that has to find a new spot
-  // never pushes out one that need not. Then the rest, by priority.
+  // never pushes out one that need not: those riding a margin first (the
+  // margin is a wall; a name panned into one queues up behind it rather
+  // than knocking it off), then the others. Then the rest, by priority.
   let i0 = 0;
   if (order.length && order[0].pinned) {
     if (!stay(order[0])) move(order[0]);
     i0 = 1;
   }
   const kept = new Uint8Array(order.length);
-  for (let i = i0; i < order.length; i++) kept[i] = stay(order[i]) ? 1 : 0;
-  for (let i = i0; i < order.length; i++) if (!kept[i]) move(order[i]);
+  const riding = (r: NameRequest) => {
+    const h = r.held ?? NaN;
+    return h < NAME_GUTTER || h + r.width > W - NAME_GUTTER;
+  };
+  for (let i = i0; i < order.length; i++) if (riding(order[i])) kept[i] = stay(order[i]) ? 1 : 2;
+  for (let i = i0; i < order.length; i++) if (!kept[i]) kept[i] = stay(order[i]) ? 1 : 2;
+  for (let i = i0; i < order.length; i++) if (kept[i] !== 1) move(order[i]);
   if (shown) {
     shown.fill(0);
     for (const p of placed) shown[p.strand] = 1;
