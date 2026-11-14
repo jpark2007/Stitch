@@ -1,6 +1,9 @@
 /**
- * The shared music AudioContext's lifecycle as a pure step (hubState.test.ts);
- * hub.ts carries the effects out. Free of runtime imports.
+ * The shared music AudioContext's lifecycle as a pure step, and the hub that
+ * carries its effects out over injected dependencies (createMusicHub), so the
+ * tests drive the real thing with a fake context (hubState.test.ts). hub.ts
+ * wires it to the window, the book's mute and a real AudioContext. Free of
+ * runtime imports.
  *
  *   - Made only inside a reader's gesture (pointerdown, keydown, or the click
  *     that unmutes), only while an engine is waiting for it, never while muted
@@ -141,3 +144,112 @@ export function createHubDispatcher(apply: (fx: HubEffect) => void, initial: Hub
     },
   };
 }
+
+/** The little of an AudioContext the hub touches. */
+export interface HubContext {
+  readonly state: string;
+  resume(): Promise<void>;
+  suspend(): Promise<void>;
+}
+
+export interface HubDeps<C extends HubContext> {
+  isMuted(): boolean;
+  subscribeMuted(cb: (muted: boolean) => void): () => void;
+  /** Unlock the book's own paper sounds on the same gesture. */
+  unlockAudio(): void;
+  /** Construct the context; null where there is no WebAudio. */
+  makeContext(): C | null;
+  /** Add or remove the window's pointerdown/keydown listeners. */
+  listen(on: boolean, onGesture: () => void): void;
+}
+
+export interface MusicHub<C extends HubContext> {
+  context(): C | null;
+  /**
+   * Call `cb` with the context as soon as it exists: now, if it does, else
+   * inside the reader's next pointer or key press (or unmute click).
+   * Returns the detach; the listeners go away with the last engine.
+   */
+  attach(cb: (c: C) => void): () => void;
+  /** This engine wants the context running. */
+  wake(owner: object): void;
+  /** It does not; suspended once no engine does. */
+  sleep(owner: object): void;
+  /** Some engine holds the context awake. */
+  awake(): boolean;
+  /** The hub's own view (hubStep's state), for the lab and the tests. */
+  state(): HubState;
+}
+
+export function createMusicHub<C extends HubContext>(deps: HubDeps<C>): MusicHub<C> {
+  let ctx: C | null = null;
+  const clients = new Set<(c: C) => void>();
+  const awake = new Set<object>();
+  let unsubscribeMute: (() => void) | null = null;
+
+  // Not re-entrant: an engine woken inside "create" is stepped after the
+  // gesture's own effects, so its "resume" comes last and wins.
+  const hub = createHubDispatcher(apply);
+  const onGesture = () => hub.dispatch({ type: "gesture" });
+
+  function apply(fx: HubEffect) {
+    switch (fx) {
+      case "create":
+        if (ctx) return;
+        ctx = deps.makeContext();
+        if (ctx) for (const cb of [...clients]) cb(ctx);
+        break;
+      // Always ask, even when the state already looks right: a suspend() or
+      // resume() still in flight would otherwise win, and they settle in order.
+      case "resume":
+        if (ctx && ctx.state !== "closed") void ctx.resume().catch(() => {});
+        break;
+      case "suspend":
+        if (ctx && ctx.state !== "closed") void ctx.suspend().catch(() => {});
+        break;
+      case "unlockBook":
+        deps.unlockAudio();
+        break;
+      case "listen":
+        deps.listen(true, onGesture);
+        if (deps.isMuted() !== hub.state.muted) hub.dispatch({ type: "mute", on: deps.isMuted() });
+        unsubscribeMute = deps.subscribeMuted((m) => hub.dispatch({ type: "mute", on: m }));
+        break;
+      case "unlisten":
+        deps.listen(false, onGesture);
+        unsubscribeMute?.();
+        unsubscribeMute = null;
+        break;
+    }
+  }
+
+  return {
+    context: () => ctx,
+    attach(cb) {
+      let attached = true;
+      if (ctx) cb(ctx);
+      else clients.add(cb);
+      hub.dispatch({ type: "attach" });
+      return () => {
+        if (!attached) return;
+        attached = false;
+        clients.delete(cb);
+        hub.dispatch({ type: "detach" });
+      };
+    },
+    wake(owner) {
+      const had = awake.size > 0;
+      awake.add(owner);
+      if (!had) hub.dispatch({ type: "awake", on: true });
+      // Another engine already holds it awake: still ask, in case it is interrupted.
+      else if (ctx && ctx.state !== "running" && ctx.state !== "closed") void ctx.resume().catch(() => {});
+    },
+    sleep(owner) {
+      if (!awake.delete(owner)) return;
+      if (awake.size === 0) hub.dispatch({ type: "awake", on: false });
+    },
+    awake: () => awake.size > 0,
+    state: () => hub.state,
+  };
+}
+

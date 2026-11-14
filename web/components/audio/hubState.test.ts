@@ -175,3 +175,120 @@ describe("hub dispatcher", () => {
   });
 });
 
+describe("music hub (fake context, state settling asynchronously)", () => {
+  /** A context whose state changes only when its promise settles, like WebKit's. */
+  class FakeContext {
+    state = "running";
+    calls: string[];
+    settleMs: number;
+    constructor(calls: string[], settleMs: number) {
+      this.calls = calls;
+      this.settleMs = settleMs;
+      calls.push("new");
+    }
+    settle(to: string) {
+      this.calls.push(to === "running" ? "resume" : "suspend");
+      return new Promise<void>((r) =>
+        setTimeout(() => {
+          this.state = to;
+          r();
+        }, this.settleMs),
+      );
+    }
+    resume() {
+      return this.settle("running");
+    }
+    suspend() {
+      return this.settle("suspended");
+    }
+  }
+
+  function setup(opts: { muted?: boolean; settleMs?: number } = {}) {
+    const calls: string[] = [];
+    let muted = opts.muted ?? false;
+    const muteSubs = new Set<(m: boolean) => void>();
+    let gesture: (() => void) | null = null;
+    const hub = h.createMusicHub<FakeContext>({
+      isMuted: () => muted,
+      subscribeMuted(cb) {
+        muteSubs.add(cb);
+        return () => muteSubs.delete(cb);
+      },
+      unlockAudio: () => calls.push("unlockBook"),
+      makeContext: () => new FakeContext(calls, opts.settleMs ?? 20),
+      listen(on, g) {
+        gesture = on ? g : null;
+      },
+    });
+    return {
+      hub,
+      calls,
+      tap: () => gesture?.(),
+      listening: () => gesture !== null,
+      setMuted(m: boolean) {
+        muted = m;
+        for (const cb of [...muteSubs]) cb(m);
+      },
+      settled: () => new Promise((r) => setTimeout(r, 4 * (opts.settleMs ?? 20))),
+    };
+  }
+
+  it("an engine that already has an era, waking inside create: one tap leaves it running", async () => {
+    const t = setup();
+    const owner = {};
+    // engine.ts's attach callback: build the graph, and wake (era known, book open).
+    t.hub.attach(() => t.hub.wake(owner));
+    t.tap();
+    await t.settled();
+    assert.deepEqual(t.calls, ["unlockBook", "new", "suspend", "resume"]);
+    assert.equal(t.hub.context()?.state, "running");
+    assert.equal(t.hub.state().status, "running");
+    assert.equal(t.hub.awake(), true);
+  });
+
+  it("the same with a context that settles at once (microtasks)", async () => {
+    const t = setup({ settleMs: 0 });
+    const owner = {};
+    t.hub.attach(() => t.hub.wake(owner));
+    t.tap();
+    await t.settled();
+    assert.equal(t.hub.context()?.state, "running");
+  });
+
+  it("nothing to play at the tap: made, then asleep until an engine wakes", async () => {
+    const t = setup();
+    const owner = {};
+    t.hub.attach(() => {});
+    t.tap();
+    await t.settled();
+    assert.equal(t.hub.context()?.state, "suspended");
+    t.hub.wake(owner);
+    await t.settled();
+    assert.equal(t.hub.context()?.state, "running");
+    t.hub.sleep(owner);
+    await t.settled();
+    assert.equal(t.hub.context()?.state, "suspended");
+  });
+
+  it("muted: a tap makes nothing; the unmute click makes it", async () => {
+    const t = setup({ muted: true });
+    const owner = {};
+    t.hub.attach(() => t.hub.wake(owner));
+    t.tap();
+    assert.equal(t.hub.context(), null);
+    t.setMuted(false);
+    await t.settled();
+    assert.equal(t.hub.context()?.state, "running");
+  });
+
+  it("listens only while an engine is attached", () => {
+    const t = setup();
+    const detach = t.hub.attach(() => {});
+    assert.equal(t.listening(), true);
+    detach();
+    detach();
+    assert.equal(t.listening(), false);
+    assert.equal(t.hub.state().engines, 0);
+  });
+});
+
