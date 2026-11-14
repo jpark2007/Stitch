@@ -222,12 +222,87 @@ def _ancestor_ids(docs: list[dict[str, Any]], person_id: str) -> set[str]:
 
 
 def _lineage_docs(db: Database, family_id: str) -> list[dict[str, Any]]:
-    return list(db[COLLECTION].find({"familyId": family_id}, {"_id": 1, "parentIds": 1}))
+    return list(
+        db[COLLECTION].find({"familyId": family_id}, {"_id": 1, "name": 1, "parentIds": 1, "spouseIds": 1})
+    )
+
+
+SPOUSE_IN_LINEAGE = "a person cannot be married to their own ancestor or descendant"
 
 
 def _reject_spouse_in_lineage(spouse_ids: list[str], lineage: set[str]) -> None:
     if lineage & set(spouse_ids):
-        raise InvalidRelation("a person cannot be married to their own ancestor or descendant")
+        raise InvalidRelation(SPOUSE_IN_LINEAGE)
+
+
+def _walk(edges: dict[str, list[str]], start: str) -> set[str]:
+    """Everyone reachable from start along edges, start itself excluded (pure)."""
+    seen: set[str] = set()
+    queue = deque([start])
+    while queue:
+        for nxt in edges.get(queue.popleft(), []):
+            if nxt not in seen:
+                seen.add(nxt)
+                queue.append(nxt)
+    seen.discard(start)
+    return seen
+
+
+def _reject_lineage_marriages_after_reparent(
+    after_docs: list[dict[str, Any]],
+    person_id: str,
+    old_spouses: list[str],
+    spouses_after: list[str],
+    below: set[str],
+    old_ancestors: set[str],
+) -> None:
+    """A parents patch on person_id gives person_id and every descendant new ancestors.
+
+    Reject the patch when any of them would end up married to an ancestor or a
+    descendant. Spouse links are read from both sides, so a one-sided legacy link
+    (only the ancestor lists the descendant) is caught too. The links are taken as
+    they will be after the patch: a spouse the same patch removes from person_id is
+    unlinked from both sides (so "W is my parent, not my spouse" is one valid patch),
+    and an added spouse links back. ``after_docs`` are the family's docs with
+    person_id's parentIds already replaced; no extra reads.
+    """
+    parents: dict[str, list[str]] = {}
+    children: dict[str, list[str]] = {}
+    spouses: dict[str, set[str]] = {}
+    names: dict[str, str] = {}
+    for doc in after_docs:
+        parents[doc["_id"]] = list(doc.get("parentIds") or [])
+        for parent in parents[doc["_id"]]:
+            children.setdefault(parent, []).append(doc["_id"])
+        spouses[doc["_id"]] = set(doc.get("spouseIds") or [])
+        names[doc["_id"]] = doc.get("name") or doc["_id"]
+    # Mirror the symmetric spouse update that update_person applies after the checks.
+    for removed in set(old_spouses) - set(spouses_after):
+        spouses.get(removed, set()).discard(person_id)
+    for added in set(spouses_after) - set(old_spouses):
+        spouses.setdefault(added, set()).add(person_id)
+    spouses[person_id] = set(spouses_after)
+
+    def reject(one: str, other: str) -> None:
+        # Name the pair: the bad link may sit anywhere in the branch, and the person
+        # editing needs to know which marriage to fix.
+        first, second = sorted((names.get(one, one), names.get(other, other)))
+        raise InvalidRelation(f"{SPOUSE_IN_LINEAGE} ({first} and {second})")
+
+    affected = {person_id} | below
+    for member in sorted(affected):
+        lineage = _walk(parents, member) | _walk(children, member)
+        clash = spouses.get(member, set()) & lineage
+        if clash:
+            reject(member, min(clash))
+
+    # Reverse direction: a new ancestor whose own spouse list names someone in the
+    # affected branch, even when that person's list does not name them back.
+    new_ancestors = _walk(parents, person_id) - old_ancestors
+    for ancestor in sorted(new_ancestors):
+        clash = spouses.get(ancestor, set()) & affected
+        if clash:
+            reject(ancestor, min(clash))
 
 
 def _year_docs(db: Database, query: dict[str, Any]) -> list[dict[str, Any]]:
@@ -406,8 +481,10 @@ def update_person(
     """Apply only the fields set on the patch. None if the person is not in this family.
 
     Raises InvalidRelation for bad relations, including making someone their own ancestor
-    or married to one, and for impossible years (died before born, born before a parent,
-    born after a child). Unknown years are never rejected.
+    or married to one. A parents change is checked for this person and every descendant,
+    since all of them gain the new ancestors; that error names the two people involved.
+    Also raised for impossible years (died before born, born before a parent, born after
+    a child). Unknown years are never rejected.
     Spouse links stay symmetric: added spouses link back, removed spouses unlink.
     """
     people = db[COLLECTION]
@@ -451,6 +528,18 @@ def update_person(
             for doc in family_docs
         ]
         _reject_spouse_in_lineage(spouses_after, below | _ancestor_ids(after_docs, person_id))
+        if new_parents is not None:
+            # New parents give new ancestors to this person and to everyone below, so
+            # a descendant married to one of them (Z wed to W, then W becomes Z's
+            # grandparent) must be rejected as well.
+            _reject_lineage_marriages_after_reparent(
+                after_docs,
+                person_id,
+                list(current.get("spouseIds") or []),
+                spouses_after,
+                below,
+                _ancestor_ids(family_docs, person_id),
+            )
         if new_parents is not None:
             updates["parentIds"] = new_parents
         if new_spouses is not None:
