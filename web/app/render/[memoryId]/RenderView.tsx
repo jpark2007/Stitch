@@ -19,6 +19,8 @@ export interface RenderViewProps {
   open: number | null;
   /** Effect override: a kind, "none", or null for the scene's default. */
   effect: string | null;
+  /** Stage time at which the set folds back down, or null. */
+  closeAt: number | null;
 }
 
 /** Marks the document once a few frames have actually been drawn. */
@@ -31,7 +33,7 @@ function ReadyProbe() {
   return null;
 }
 
-export function RenderView({ memoryId, time, open, effect }: RenderViewProps) {
+export function RenderView({ memoryId, time, open, effect, closeAt }: RenderViewProps) {
   const demo = memoryId === "demo";
   const [ready, setReady] = useState(false);
 
@@ -65,6 +67,7 @@ export function RenderView({ memoryId, time, open, effect }: RenderViewProps) {
         time={frozen}
         open={open ?? true}
         openAt={DEMO_OPEN_AT}
+        closeAt={closeAt}
         camera={demo ? demoCamera : stagePoses().wide}
         overlay={<ReadyProbe />}
       >
