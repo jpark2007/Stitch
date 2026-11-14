@@ -786,12 +786,15 @@ class SlowStore(InMemoryStore):
         self.writes: list[tuple[str, int]] = []
         # Called with the record as each run-record write starts (on the writing thread).
         self.on_put: Callable[[dict[str, Any]], None] | None = None
+        # The thread of every run-record write, in order.
+        self.put_threads: list[threading.Thread] = []
 
     def put(self, namespace: tuple[str, ...], key: str, value: dict[str, Any], *args: Any, **kwargs: Any) -> None:
         if namespace[:1] != (runs.RUNS_NAMESPACE,):
             return super().put(namespace, key, value, *args, **kwargs)
         with self.lock:
             self.in_flight += 1
+            self.put_threads.append(threading.current_thread())
         try:
             if self.on_put is not None:
                 self.on_put(value)
@@ -811,12 +814,15 @@ class SlowRepo:
     def __init__(self, inner: InMemoryRepo, delay: float = SLOW) -> None:
         self.inner = inner
         self.delay = delay
+        self.read_threads: list[threading.Thread] = []  # the thread of every slow read
 
     def get_person(self, *args: Any, **kwargs: Any) -> Any:
+        self.read_threads.append(threading.current_thread())
         time.sleep(self.delay)
         return self.inner.get_person(*args, **kwargs)
 
     def get_memory(self, *args: Any, **kwargs: Any) -> Any:
+        self.read_threads.append(threading.current_thread())
         time.sleep(self.delay)
         return self.inner.get_memory(*args, **kwargs)
 
@@ -824,11 +830,13 @@ class SlowRepo:
         return getattr(self.inner, name)
 
 
-def slow_harness(responder: Responder, *, store: InMemoryStore | None = None, **kwargs: Any) -> Harness:
+def slow_harness(responder: Responder, *, store: InMemoryStore | None = None, delay: float = SLOW,
+                 **kwargs: Any) -> Harness:
     """A Harness whose manager writes run records to a slow store and reads a slow repo."""
-    h = Harness(responder, keep_runs=True, store=store if store is not None else SlowStore(), **kwargs)
+    h = Harness(responder, keep_runs=True, store=store if store is not None else SlowStore(delay), **kwargs)
     h.manager.shutdown(wait=True)
-    h.manager = runs.RunManager(repo=SlowRepo(h.repo), build_graph=h.build, store=h.store)  # type: ignore[arg-type]
+    h.manager = runs.RunManager(repo=SlowRepo(h.repo, delay), build_graph=h.build,  # type: ignore[arg-type]
+                                store=h.store)
     return h
 
 
@@ -838,11 +846,27 @@ FORM = schemas.SubmitMemoryFields(text="Dad passed the hymn books down the pew."
 def test_the_event_loop_never_waits_on_the_store_or_the_repo(harnesses: list[Harness]) -> None:
     # Regression: start_run read the repo and wrote the first record on the loop, and every
     # record write happened with run.cond held, so stream_run stalled the loop behind it.
-    h = slow_harness(make_responder(STRAIGHT_STUDIO))
+    # The structural checks (which thread did each slow call, and whether it held the run's
+    # lock) are exact; the gap check backs them up with a margin that scheduler jitter on a
+    # busy machine does not reach (a stall is at least `delay`).
+    delay = 0.5
+    h = slow_harness(make_responder(STRAIGHT_STUDIO), delay=delay)
     harnesses.append(h)
     runs.configure(h.manager)
+    store, repo = h.store, h.manager._repo
+    assert isinstance(store, SlowStore) and isinstance(repo, SlowRepo)
+    held_lock_while_writing: list[str] = []
+
+    def check_lock(record: dict[str, Any]) -> None:
+        run = h.manager._runs.get(record["run_id"])
+        if run is not None and run.cond._is_owned():  # type: ignore[attr-defined]
+            held_lock_while_writing.append(record["status"])
+
+    store.on_put = check_lock
+    loop_threads: list[threading.Thread] = []
 
     async def main() -> tuple[list[float], list[tuple[str, BaseModel]]]:
+        loop_threads.append(threading.current_thread())
         gaps: list[float] = []
         stop = asyncio.Event()
 
@@ -869,8 +893,12 @@ def test_the_event_loop_never_waits_on_the_store_or_the_repo(harnesses: list[Har
     finally:
         runs.configure(None)
     assert [n for n, _ in events] == ["plan", "scene_ready", "done"]
-    assert len(h.store.writes) >= 4  # the start, three events: each write took SLOW seconds
-    assert max(gaps) < 0.1, f"the event loop stalled for {max(gaps):.3f}s"
+    assert len(store.writes) >= 4  # the start, three events: each write took `delay` seconds
+    assert repo.read_threads, "the slow repo was never read"
+    assert loop_threads[0] not in store.put_threads, "a run record was written on the event loop"
+    assert loop_threads[0] not in repo.read_threads, "the repo was read on the event loop"
+    assert held_lock_while_writing == [], "a run record was written with the run's lock held"
+    assert max(gaps) < 0.8 * delay, f"the event loop stalled for {max(gaps):.3f}s"
 
 
 def test_no_event_reaches_a_subscriber_before_a_record_holding_it_is_stored(harnesses: list[Harness]) -> None:
