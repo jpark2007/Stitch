@@ -51,6 +51,15 @@ export interface BookSpread {
   title: string;
   year: number;
   /**
+   * Optional words printed where the year goes, for a moment better dated by
+   * an occasion than a year: "Every Christmas Eve", "Summers at the lake".
+   * When set, the story page prints it in the year's hand on the year's line,
+   * and the contents and the navigation dots show it in place of the year;
+   * `year` is still what the book is ordered by. Unset or blank: the year,
+   * exactly as before.
+   */
+  dateLine?: string;
+  /**
    * Short storybook text printed on the page. Empty: the playing telling's
    * own words (BookTeller.text) are printed instead.
    */
@@ -74,6 +83,16 @@ export interface BookSpread {
    * under "The end". Default a moment.
    */
   kind?: "moment" | "end";
+}
+
+/**
+ * How a spread is dated in the contents and the navigation dots: its
+ * `dateLine` when set, else its year, else "" for an undated moment.
+ */
+export function spreadDate(spread: Pick<BookSpread, "year" | "dateLine">): string {
+  const line = spread.dateLine?.trim();
+  if (line) return line;
+  return Number.isFinite(spread.year) && spread.year > 0 ? String(spread.year) : "";
 }
 
 /** What is printed on the cover and the title page. */
