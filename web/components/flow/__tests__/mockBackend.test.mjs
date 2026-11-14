@@ -6,6 +6,8 @@ import { buildDemoSeed } from "../mock/demoSeed.ts";
 import {
   createMockBackend,
   FOLLOW_UP_QUESTION,
+  mergeCandidateFor,
+  mergeQuestion,
   KEPT_RUNS,
   MAX_MEDIA_BYTES,
   MAX_STORED_RUNS,
@@ -920,30 +922,90 @@ test("addNarration and splitSentences", () => {
   assert.equal(bare.timeline, null);
 });
 
-test("a story about an uncle pauses for a merge", async () => {
+test("a story about Grandpa Lucho asks, as the scripted studio, whether he is the Luis in the tree", async () => {
   const b = makeBackend();
   await login(b, "david@example.com");
-  const sub = await submit(b, "sample_family", { text: `My Uncle came over. ${LONG_TEXT}`, year: 1975 });
-  const { events } = await openStream(b, "sample_family", sub.body.runId);
+  const sub = await submit(b, "sample_family", { text: `Grandpa Lucho sang the loudest. ${LONG_TEXT}`, year: 1975 });
+  const runId = sub.body.runId;
+  const { events } = await openStream(b, "sample_family", runId);
+  // As api/seed/fake_runs.py: the interviewer, the follow-up, then the merge.
+  const asked = await readUntil(events, "question");
+  assert.deepEqual(asked.map((e) => e.event), ["plan", "subagent_start", "subagent_end", "question"]);
+  assert.deepEqual(asked[1].data, { name: "interviewer", task: "Read the telling and find what is missing" });
+  assert.deepEqual(asked[2].data, { name: "interviewer", summary: "One follow-up: who else was there." });
+  assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "Everyone." })).status, 204);
   const seen = await readUntil(events, "merge");
-  assert.ok(!seen.some((e) => e.event === "question"));
-  const interviewerEnd = seen.findIndex((e) => e.event === "subagent_end" && e.data.name === "interviewer");
-  assert.ok(interviewerEnd >= 0 && interviewerEnd < seen.length - 1, "merge comes after the interviewer");
-  assert.equal(seen.at(-1).data.personId, "luis");
-  assert.equal(seen.at(-1).data.candidateName, "Uncle Luis");
-  assert.equal((await answer(b, "sample_family", sub.body.runId, { kind: "props", props: [] })).status, 409);
-  assert.equal((await answer(b, "sample_family", sub.body.runId, { kind: "merge" })).status, 422);
-  assert.equal((await answer(b, "sample_family", sub.body.runId, { kind: "merge", approve: true })).status, 204);
+  assert.deepEqual(seen.at(-1).data, {
+    text: "Is Grandpa Lucho the Luis in your family tree?",
+    personId: "luis",
+    candidateName: "Luis",
+  });
+  assert.equal(seen.at(-1).data.text, mergeQuestion("Grandpa Lucho", "Luis"));
+  assert.equal((await answer(b, "sample_family", runId, { kind: "props", props: [] })).status, 409);
+  assert.equal((await answer(b, "sample_family", runId, { kind: "merge" })).status, 422);
+  assert.equal((await answer(b, "sample_family", runId, { kind: "merge", approve: true })).status, 204);
   await readUntil(events, "props_found");
-  assert.equal((await answer(b, "sample_family", sub.body.runId, { kind: "props", props: [] })).status, 204);
+  assert.equal((await answer(b, "sample_family", runId, { kind: "props", props: [] })).status, 204);
   const rest = [];
   for await (const msg of events) rest.push(msg);
+  // The end of the script, in the API's order: the plan completes, then scene_ready, then done.
+  assert.deepEqual(rest.slice(-3).map((e) => e.event), ["plan", "scene_ready", "done"]);
+  assert.ok(rest.at(-3).data.todos.every((t) => t.status === "completed"));
   const ready = rest.find((e) => e.event === "scene_ready").data;
   const memory = (await call(b, "GET", `/families/sample_family/memories/${ready.memoryId}`)).body.memory;
   assert.ok(memory.participantIds.includes("luis"), "an approved merge adds the person");
   assert.equal(memory.title, "A new memory");
-  // The linker asks Luis for his side.
-  assert.ok(memory.participantIds.length >= 2);
+});
+
+test("the merge is checked on the telling with the follow-up answer in it", async () => {
+  const b = makeBackend();
+  await login(b, "david@example.com");
+  const sub = await submit(b, "sample_family", { text: LONG_TEXT, year: 1975 });
+  const runId = sub.body.runId;
+  const { events } = await openStream(b, "sample_family", runId);
+  await readUntil(events, "question");
+  assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "Grandpa Lucho drove." })).status, 204);
+  const seen = await readUntil(events, "merge");
+  assert.equal(seen.at(-1).data.text, "Is Grandpa Lucho the Luis in your family tree?");
+});
+
+test("no merge for a lowercase title, a name that is someone's own, or a rejected one", async () => {
+  for (const text of ["Grandma and Grandpa were there.", "Grandma Rosa sang.", "my uncle Lucho came."]) {
+    const b = makeBackend();
+    await login(b, "david@example.com");
+    const sub = await submit(b, "sample_family", { text: `${text} ${LONG_TEXT}`, year: 1975 });
+    const all = await runToEnd(b, "sample_family", sub.body.runId);
+    assert.ok(!all.some((e) => e.event === "merge"), `no merge for "${text}"`);
+    assert.equal(all.filter((e) => e.event === "question").length, 1, "the follow-up is always asked");
+  }
+});
+
+test("mergeCandidateFor follows fake_runs.merge_candidate", () => {
+  const people = [
+    { id: "grandpa_joseph", name: "Joseph Mao", parentIds: [] },
+    { id: "grandma_rosa", name: "Rosa Mao", parentIds: [] },
+    { id: "dad", name: "David Mao", parentIds: ["grandpa_joseph", "grandma_rosa"] },
+    { id: "lily", name: "Lily Mao", parentIds: ["dad"] },
+    { id: "luis", name: "Luis Diaz", parentIds: [] },
+  ];
+  const found = mergeCandidateFor(people, "dad", [], "Grandpa Joe was there.");
+  assert.deepEqual(found && [found.said, found.person.id], ["Grandpa Joe", "grandpa_joseph"]);
+  // The teller and the people already named are never asked about.
+  assert.equal(mergeCandidateFor(people, "grandpa_joseph", [], "Grandpa Joe was there."), null);
+  assert.equal(mergeCandidateFor(people, "dad", ["grandpa_joseph"], "Grandpa Joe was there."), null);
+  // A grandparent title needs someone with a child: Lily is nobody's grandma.
+  assert.equal(mergeCandidateFor(people, "dad", [], "Grandma Lil came."), null);
+  // A gendered title never maps to a record that says the other gender.
+  assert.equal(mergeCandidateFor(people, "dad", [], "Grandma Jo came."), null);
+  // Luis has no child here, so "Grandpa Lu" is nobody; "Uncle Lu" is him.
+  assert.equal(mergeCandidateFor(people, "dad", [], "Grandpa Lu came."), null);
+  assert.equal(mergeCandidateFor(people, "dad", [], "Uncle Lu came.")?.person.id, "luis");
+  // Lowercase is not a name; someone's own first name is that person, nothing to ask.
+  assert.equal(mergeCandidateFor(people, "dad", [], "grandpa Joe and Grandpa joe."), null);
+  assert.equal(mergeCandidateFor(people, "dad", [], "Grandma Rosa sang."), null);
+  // Only a unique match asks.
+  const twins = [...people, { id: "josie", name: "Josie Mao", parentIds: [] }];
+  assert.equal(mergeCandidateFor(twins, "dad", [], "Cousin Jo came."), null);
 });
 
 test("reconnecting replays the whole log; aborting closes the stream cleanly", async () => {
@@ -1122,7 +1184,7 @@ test("a run cut off between steps resumes from where it stopped, and the old pag
   assert.deepEqual(all.slice(0, early.length), early, "the steps already done replay as they were");
   assertOneLog(all);
   const names = all.map((e) => e.event);
-  assert.ok(!names.includes("question"), "a long telling has no follow-up");
+  assert.equal(names.filter((n) => n === "question").length, 1, "the follow-up is asked once");
   assert.equal(names.filter((n) => n === "props_found").length, 1);
   assert.equal(names.filter((n) => n === "scene_ready").length, 1);
   assert.equal(names.at(-1), "done");
@@ -1148,7 +1210,8 @@ test("a tab that took a run over and then closed hands it back to the tab still 
   const b = makeBackend({ storage, stepDelayMs: 15 });
   const abort = new AbortController();
   const second = await openStream(b, "sample_family", runId, abort.signal);
-  await readUntil(second.events, "subagent_end");
+  await readUntil(second.events, "question");
+  assert.equal((await answer(b, "sample_family", runId, { kind: "answer", text: "Everyone." })).status, 204);
   await readUntil(second.events, "plan");
 
   // Then it closes: pagehide lets go of the run, and the closed tab's
@@ -1197,6 +1260,8 @@ test("a follower takes over a driver that went quiet without letting go, but not
   a.checkRuns();
   assert.notEqual(storedRunList(storage).find((r) => r.id === runId).owner, owner, "a quiet driver is taken over");
 
+  seen.push(...(await readUntil(first.events, "question")));
+  assert.equal((await answer(a, "sample_family", runId, { kind: "answer", text: "Everyone." })).status, 204);
   seen.push(...(await readUntil(first.events, "props_found")));
   assert.equal((await answer(a, "sample_family", runId, { kind: "props", props: [] })).status, 204);
   const all = [...seen, ...(await drain(first.events))];
