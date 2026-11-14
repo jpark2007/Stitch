@@ -15,30 +15,61 @@ the state model can never disagree on what is allowed, and world errors win over
 
 from __future__ import annotations
 
-from screenplay import ik
+from dataclasses import replace
+
+from screenplay import ik, motion
 from screenplay.body import (
     PUT_ON_SETTLE_SECONDS,
     REACH_SECONDS,
     REST_ARM,
     PropGeom,
     grip_from_anchor,
+    last_values,
     place_on_keys,
     put_on_keys,
     state_keys,
 )
 from screenplay.ik import Body, arm_bones, solve_body_arm
-from screenplay.locate import Locate, arm_at, arm_of_hand, body_at, gesture_arm, puppet_root, puppet_target
+from screenplay.locate import (
+    Locate,
+    arm_at,
+    arm_of_hand,
+    body_at,
+    gesture_arm,
+    held_arm_bones,
+    puppet_root,
+    puppet_target,
+)
 from screenplay.schema import Action
 from screenplay.state import CLOSED, GROUND, OPEN, SEATED_POSES, StateError, World, parse_parent
 from screenplay.tracks import TrackSet
-from screenplay.verb_helpers import Handler, Key, Vec3, crouch_reach_keys, require_param
+from screenplay.verb_helpers import (
+    CROUCH_MAX_BEND,
+    Handler,
+    Key,
+    Vec3,
+    bone_after,
+    crouch_reach_keys,
+    crouch_solution,
+    require_param,
+)
+from screenplay.verbs_core import CROUCH_DEEP_BEND, STAGE_EDGE  # verbs_core imports nothing from here: no cycle
 
 # The activity a second puppet is busy with while someone else dresses them (put_on target).
 DRESSED_ACTIVITY = "being dressed"
 
+# place_on turns to face a destination whose grip lies behind the puppet's root by more than this
+# (stage units); within it the grip is under the puppet and it keeps its facing.
+PLACE_FACE_DEAD_ZONE = 0.02
+# A standing puppet whose crouch cannot reach a grip too close to it (under its own feet) steps
+# back, away from the grip, by the smallest multiple of PLACE_STEP that lets it reach, at most
+# PLACE_STEP_BACK_MAX (stage units).
+PLACE_STEP = 0.005
+PLACE_STEP_BACK_MAX = 0.15
+
 __all__ = [
-    "DRESSED_ACTIVITY", "HANDLERS", "Handler", "Locate", "apply_close", "apply_open", "apply_place_on",
-    "apply_put_on", "apply_set_state",
+    "DRESSED_ACTIVITY", "HANDLERS", "Handler", "Locate", "PLACE_FACE_DEAD_ZONE", "PLACE_STEP",
+    "PLACE_STEP_BACK_MAX", "apply_close", "apply_open", "apply_place_on", "apply_put_on", "apply_set_state",
 ]
 
 
@@ -147,14 +178,23 @@ def _surface_off_ground(world: World, on: str) -> StateError:
 def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Set a held prop down on a prop's socket (``on`` = prop id) or on a mark (``on`` = mark).
 
-    A destination the standing arm reaches (or one at or above the shoulder) is a plain arm
-    reach (body.place_on_keys). One too low for a standing arm (a mark on the floor, a low
-    surface) is reached the way pick_up reaches a prop on the floor: bend forward, kneeling
-    first if a bend alone is not enough, let go, and come back up (``_crouch_place_on_keys``).
-    A puppet already sitting or kneeling only bends, and stays down.
+    1. A grip behind the puppet's root by more than PLACE_FACE_DEAD_ZONE turns it to face the
+       grip first (one root.facing key at t, as pick_up turns), standing, kneeling or seated. A
+       turn takes no time.
+    2. A destination the standing arm reaches (or one at or above the shoulder) is a plain arm
+       reach (body.place_on_keys). One too low for a standing arm (a mark on the floor, a low
+       surface) is reached the way pick_up reaches a prop on the floor: bend forward, kneeling
+       first if a bend alone is not enough, let go, and come back up (``_crouch_place_on_keys``).
+       A puppet already sitting or kneeling only bends, and stays down.
+    3. A standing puppet whose crouch cannot reach the grip because it is too close (under its
+       own feet, under the hips) steps back, away from it, by the smallest distance that lets
+       the crouch reach, at most PLACE_STEP_BACK_MAX (``_place_low``), and turns back to it.
+       Failing that it bends as deep as pick_up lets a stepped-to puppet bend (CROUCH_DEEP_BEND:
+       arm_l's shoulder sits behind the hip), in place, then stepping back. A puppet sitting or
+       kneeling never steps and never folds past CROUCH_MAX_BEND.
 
-    No auto-walk: OutOfReach (with the closest miss) when the grip is beyond the arm even
-    crouching.
+    No auto-walk toward the grip: OutOfReach (the miss of the plain crouch where it stands)
+    when nothing reaches. Atomic: nothing is emitted and the world is untouched on failure.
     """
     who, what, on = action.who, action.what, action.on
     hand = world.hold(who, what)  # in who's hand, who on stage
@@ -182,22 +222,135 @@ def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, act
     me = body_at(world, tracks, who, t)
     geom = _geom(world, what)
     grip = grip_from_anchor(geom, dest)
+    turn: list[Key] = []
+    if (grip[0] - me.ground[0]) * me.facing < -PLACE_FACE_DEAD_ZONE:  # behind it: face the grip
+        turn, facing = motion.turn_keys(who, t, me.ground[0], grip[0], me.facing)
+        me = replace(me, facing=facing)
     current = arm_at(tracks, who, arm, t)
     shoulder_y = ik.shoulder_world(arm, me.ground, me.facing, me.build)[1]
+    spot: Vec3 | None = None
     if ik.can_reach(arm, grip, me.ground, me.facing, me.build) or grip[1] >= shoulder_y:
-        keys = place_on_keys(me, t, current, geom, dest, parent, arm)
+        keys = turn + place_on_keys(me, t, current, geom, dest, parent, arm)
         end = t + 2 * REACH_SECONDS
     else:  # too low for a standing arm: bend down (kneeling if needed) to the grip
-        p = world.people[who]
-        on_floor = p.seat is not None or p.pose in SEATED_POSES
-        z = puppet_root(world, tracks, who, t)[2]
-        keys, end = _crouch_place_on_keys(
-            tracks, me, t, current, what, grip, arm, parent, pos, z, can_kneel=not on_floor
-        )
+        keys, end, spot = _place_low(world, tracks, me, t, current, what, grip, arm, parent, pos, turn)
 
+    if spot is not None:
+        world.move(who, spot, me.facing)
+    else:
+        world.set_facing(who, me.facing)
     world.place_on(who, what, parent, pos)
     tracks.extend(keys)
     return end
+
+
+def _step_backs(world: World, who: str, body: Body, arm: str, grip: tuple[float, float]) -> list[float]:
+    """The root x a standing ``who`` may step back to for a grip too close to reach (smallest
+    step first), on stage; none when it is sitting or kneeling, or the grip is beyond a full
+    arm's reach of its root (too far: stepping back only takes it further away)."""
+    p = world.people[who]
+    if p.seat is not None or p.pose in SEATED_POSES:
+        return []
+    if abs(grip[0] - body.ground[0]) > ik.arm_reach(body.build, arm):
+        return []
+    n = int(round(PLACE_STEP_BACK_MAX / PLACE_STEP))
+    xs = [round(body.ground[0] - body.facing * i * PLACE_STEP, 6) for i in range(1, n + 1)]
+    return [x for x in xs if abs(x) <= STAGE_EDGE]
+
+
+def _place_low(
+    world: World,
+    tracks: TrackSet,
+    me: Body,
+    t: float,
+    current: tuple[float, float],
+    what: str,
+    grip: tuple[float, float],
+    arm: str,
+    parent: str,
+    pos: Vec3,
+    turn: list[Key],
+) -> tuple[list[Key], float, Vec3 | None]:
+    """place_on of a grip too low for a standing arm (steps 2 and 3 of apply_place_on), facing
+    the way ``me`` faces; ``turn`` is the turn keys at t (none, or one root.facing key). Returns
+    (keys, end, where it stepped back to or None). Raises ik.OutOfReach, the plain crouch's
+    miss where it stands, when no crouch reaches.
+
+    Tried in order, first reach wins: a crouch where it stands down to CROUCH_MAX_BEND (always
+    first, so every place_on that reached before reaches the same way); then, standing only,
+    every step back (_step_backs, smallest first) at CROUCH_MAX_BEND; then both again down to
+    CROUCH_DEEP_BEND."""
+    who = me.id
+    p = world.people[who]
+    on_floor = p.seat is not None or p.pose in SEATED_POSES
+    z = puppet_root(world, tracks, who, t)[2]
+    try:
+        keys, end = _crouch_place_on_keys(tracks, me, t, current, what, grip, arm, parent, pos, z,
+                                          can_kneel=not on_floor)
+        return turn + keys, end, None
+    except ik.OutOfReach as missed:
+        if on_floor:
+            raise
+        first_miss = missed
+
+    backs = _step_backs(world, who, me, arm, grip)
+    # None stands for "where it stands"; a step back keeps the height of the surface it stands on.
+    tries: tuple[tuple[float, list[float | None]], ...] = (
+        (CROUCH_MAX_BEND, list(backs)), (CROUCH_DEEP_BEND, [None, *backs]))
+    for max_bend, xs in tries:
+        for x in xs:
+            ground = me.ground if x is None else (x, p.pos[1])
+            try:
+                crouch_solution(replace(me, ground=ground), arm, grip, True, max_bend)
+            except ik.OutOfReach:
+                continue
+            if x is None:  # a deeper bend where it stands
+                keys, end = crouch_reach_keys(
+                    tracks, [], me, t, current, what, grip, arm, z, can_kneel=True, max_bend=max_bend,
+                    arm_after=REST_ARM, parent=parent, position=pos,
+                )
+                return turn + keys, end, None
+            spot = (x, p.pos[1], p.pos[2])
+            keys, end = _step_back_and_place(world, tracks, me, t, spot, what, grip, arm, parent, pos, max_bend)
+            return keys, end, spot
+    raise first_miss
+
+
+def _step_back_and_place(
+    world: World,
+    tracks: TrackSet,
+    me: Body,
+    t: float,
+    spot: Vec3,
+    what: str,
+    grip: tuple[float, float],
+    arm: str,
+    parent: str,
+    pos: Vec3,
+    max_bend: float,
+) -> tuple[list[Key], float]:
+    """Walk back to ``spot`` (motion.locomotion_keys, with the planting markers; held arms keep
+    the hold pose), turn to face the grip (``me.facing``) on arrival, then crouch and let go,
+    as pick_up does from a stepped-to spot (verbs_core._pick_up_from_a_spot). The walk starts
+    from the puppet's world facing, so a turn toward the grip at t is not keyed: it walks off
+    facing away and turns once, at the spot. Returns (keys, end)."""
+    who = me.id
+    p = world.people[who]
+    keys, t_reach, walked_facing = motion.locomotion_keys(
+        who, p.build, t, puppet_root(world, tracks, who, t), spot, p.facing, "walk",  # type: ignore[arg-type]
+        skip_bones=sorted(held_arm_bones(world, who)), speed_scale=p.speed_scale,
+    )
+    if walked_facing != me.facing:
+        keys.append((puppet_target(who), "root.facing", t_reach, me.facing))
+    emitted = last_values(keys)
+    upper, lower = arm_bones(arm)
+    current = (bone_after(emitted, tracks, who, upper, t), bone_after(emitted, tracks, who, lower, t))
+    body = replace(me, ground=(spot[0], spot[1]), torso=bone_after(emitted, tracks, who, "torso", t))
+    crouch, end = crouch_reach_keys(
+        tracks, keys, body, t_reach, current, what, grip, arm, spot[2], can_kneel=True, max_bend=max_bend,
+        arm_after=REST_ARM, parent=parent, position=pos,
+    )
+    return keys + crouch, end
 
 
 def _crouch_place_on_keys(
