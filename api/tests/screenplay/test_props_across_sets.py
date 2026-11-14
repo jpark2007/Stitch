@@ -1,13 +1,16 @@
 """Props across sets: no prop shows on a set before it is placed there or after it is left behind.
 
-There is no visibility channel, so "not on this set" is the ground at OFFSTAGE_LEFT, said with the
-parent and position channels (screenplay/compiler.py module docstring, "Props across sets"):
+There is no visibility channel, so "not on this set" is the ground at the prop's parking spot,
+said with the parent and position channels (screenplay/compiler.py module docstring, "Props
+across sets"). The spot is OFFSTAGE_LEFT for a narrow prop and further left for a wide one (a
+car, a pew), so that its whole drawn width clears the stage edge (``parked_position``):
 
 - a prop whose first keys come in a later shot (propStart, a start ``holding``, carried in by an
   enter) waits offstage from t=0 and steps to its first value at its first key time;
 - a listed prop that is never used waits offstage the whole film (not centre stage at [0, 0, 0]);
 - a prop left behind when the set changes steps offstage at the new shot's start;
-- a set that returns (A, B, A) does not bring back what was left lying on it.
+- a set that returns (A, B, A) does not bring back what was left lying on it;
+- a wide prop (vehicle, long furniture) parks by its width, fully offstage.
 
 Every timeline here also passes timeline_sanity.sanity_problems, which includes
 check_props_on_set; the last tests show that check catching hand-built leaks.
@@ -20,7 +23,7 @@ from typing import Any
 import pytest
 
 import schemas
-from screenplay.compiler import _park_until_placed
+from screenplay.compiler import _park_until_placed, parked_position
 from screenplay.compiler import compile as compile_screenplay
 from screenplay.schema import CompileResult, Screenplay, Timeline
 from screenplay.tracks import TrackSet, evaluate
@@ -53,6 +56,10 @@ PROPS = {
     "cap": schemas.Prop(id="cap", name="cap", size="hand", art={"body": None}, anchor=[0.5, 1.0], grip=[0.5, 0.6]),
     "sedan": schemas.Prop(id="sedan", name="sedan", size="vehicle", art={"body": None}, aspect=2.0,
                           anchor=[0.5, 1.0], sockets={"driver": [0.42, 0.55], "passenger": [0.6, 0.55]}),
+    "car": schemas.Prop(id="car", name="car", size="vehicle", art={"body": None}, aspect=2.0,
+                        anchor=[0.5, 1.0], sockets={"driver": [0.42, 0.55]}),
+    "pew": schemas.Prop(id="pew", name="pew", size="furniture", art={"body": None}, aspect=2.4,
+                        anchor=[0.5, 1.0], sockets={"seat": [0.3, 0.45], "end": [0.8, 0.45]}),
 }
 PEOPLE = {
     "ann": schemas.Person(id="ann", family_id="f", name="Ann", character={"color": "#336699", "build": "average"}),
@@ -66,6 +73,9 @@ DOOR, MID, GATE = [-0.4, 0.0, 0.5], [0.0, 0.0, 0.5], [0.4, 0.0, 0.5]
 STOVE, TABLE = [-0.5, 0.0, 0.5], [0.2, 0.0, 0.5]
 GARAGE = [-0.4, 0.0, 0.5]
 OFFSTAGE_LEFT = [-1.3, 0.0, 0.5]
+# Where a wide prop parks: x = -1 - 0.5 * width - 0.05 (width = sizes[size] * aspect).
+SEDAN_PARKED = [-1.95, 0.0, 0.5]  # vehicle 0.9 * aspect 2.0 = 1.8 wide
+PEW_PARKED = [-1.53, 0.0, 0.5]    # furniture 0.4 * aspect 2.4 = 0.96 wide
 STEP = 1e-3
 
 
@@ -103,11 +113,18 @@ def samples(start: float, end: float, n: int = 20) -> list[float]:
     return [round(start + (end - start) * i / n, 4) for i in range(n)]
 
 
-def offstage_until(tl: Timeline, what: str, t: float) -> None:
-    """``what`` is on the ground at OFFSTAGE_LEFT from 0 up to just before ``t`` (no glide)."""
+def offstage_until(tl: Timeline, what: str, t: float, spot: list[float] = OFFSTAGE_LEFT) -> None:
+    """``what`` is on the ground at ``spot`` from 0 up to just before ``t`` (no glide)."""
     for s in [*samples(0.0, t), round(t - STEP, 4)]:
         assert at(tl, f"prop:{what}", "parent", s) == "ground", s
-        assert at(tl, f"prop:{what}", "position", s) == OFFSTAGE_LEFT, s
+        assert at(tl, f"prop:{what}", "position", s) == spot, s
+
+
+def fully_offstage(prop: schemas.Prop, position: list[float]) -> bool:
+    """The prop's whole drawn width, mirrored or not, is left of the stage edge at x = -1."""
+    width = {"hand": 0.08, "carried": 0.2, "furniture": 0.4, "vehicle": 0.9}[prop.size] * prop.aspect
+    a = prop.anchor[0]
+    return position[0] + max(a, 1 - a) * width < -1
 
 
 # ------------------------------------------------------- the scenarios (each must be sane)
@@ -163,6 +180,25 @@ def vehicle_in_shot_2() -> CompileResult:
     )
 
 
+def car_left_on_the_street() -> CompileResult:
+    return run(
+        shot("s1", "street", {"ann": {"at": "garage"}}, a(0, "walk_to", who="ann", to="corner"),
+             prop_start={"car": {"at": "garage"}}),
+        shot("s2", "porch", {"ann": {"at": "door"}}, a(0, "walk_to", who="ann", to="gate")),
+        props=("cup", "car"),
+    )
+
+
+def pew_left_on_the_porch() -> CompileResult:
+    # the books rest on the pew's seat
+    return run(
+        shot("s1", "porch", {"ann": {"at": "door"}}, a(0, "wave", who="ann"),
+             prop_start={"pew": {"at": "mid"}, "books": {"on": "pew.seat"}}),
+        shot("s2", "kitchen", {"ann": {"at": "stove"}}, a(0, "walk_to", who="ann", to="table")),
+        props=("books", "pew"),
+    )
+
+
 def worn_item_and_props_placed_at_zero() -> CompileResult:
     return run(
         shot("s1", "porch", {"cara": {"at": "door", "holding": "cup"}}, a(0, "walk_to", who="cara", to="gate"),
@@ -182,6 +218,8 @@ SCENARIOS = {
     "a_b_a_re_placed": lambda: a_b_a(replace=True),
     "vehicle_in_shot_2": vehicle_in_shot_2,
     "worn_and_placed_at_zero": worn_item_and_props_placed_at_zero,
+    "car_left_on_the_street": car_left_on_the_street,
+    "pew_left_on_the_porch": pew_left_on_the_porch,
 }
 
 
@@ -189,6 +227,7 @@ SCENARIOS = {
 def test_every_scenario_compiles_sanely(name):
     tl = ok(SCENARIOS[name]())
     assert sanity_problems(tl) == []
+    assert sanity_problems(tl, props=PROPS) == []  # judged by drawn width too
     assert check_props_on_set(tl) == []
 
 
@@ -255,18 +294,20 @@ def test_the_first_key_is_a_step_not_a_glide():
                                     (carried_in_by_an_enter, "bag", 1), (vehicle_in_shot_2, "sedan", 1)):
         tl = ok(build())
         first = tl.shots[shot_index].start
-        assert at(tl, f"prop:{what}", "position", first - STEP) == OFFSTAGE_LEFT, build.__name__
-        assert at(tl, f"prop:{what}", "position", first) != OFFSTAGE_LEFT, build.__name__
+        spot = parked_position(PROPS[what])
+        assert at(tl, f"prop:{what}", "position", first - STEP) == spot, build.__name__
+        assert at(tl, f"prop:{what}", "position", first) != spot, build.__name__
 
 
 # -------------------------------------------------------------------- (b) never used
 
 def test_a_listed_prop_never_used_waits_offstage_the_whole_film():
     tl = ok(never_used())
-    for what in ("cup", "bag", "books", "sedan"):
+    for what, spot in (("cup", OFFSTAGE_LEFT), ("bag", OFFSTAGE_LEFT), ("books", OFFSTAGE_LEFT),
+                       ("sedan", SEDAN_PARKED)):
         assert track(tl, f"prop:{what}", "parent") == [(0.0, "ground")]
-        assert track(tl, f"prop:{what}", "position") == [(0.0, OFFSTAGE_LEFT)]
-        assert at(tl, f"prop:{what}", "position", tl.duration) == OFFSTAGE_LEFT
+        assert track(tl, f"prop:{what}", "position") == [(0.0, spot)]
+        assert at(tl, f"prop:{what}", "position", tl.duration) == spot
 
 
 def test_a_prop_not_listed_gets_no_tracks():
@@ -309,9 +350,65 @@ def test_a_set_that_returns_shows_a_prop_its_prop_start_places_again():
 def test_a_vehicle_first_placed_in_shot_2_waits_offstage_and_steps_in():
     tl = ok(vehicle_in_shot_2())
     s2 = tl.shots[1]
-    offstage_until(tl, "sedan", s2.start)
+    offstage_until(tl, "sedan", s2.start, SEDAN_PARKED)
+    for s in samples(0.0, s2.start):  # not one end of it pokes onto the porch in shot 1
+        assert fully_offstage(PROPS["sedan"], at(tl, "prop:sedan", "position", s)), s
+    assert sanity_problems(tl, props=PROPS) == []
     assert at(tl, "prop:sedan", "position", s2.start) == GARAGE
     assert at(tl, "prop:sedan", "position", s2.end)[0] > GARAGE[0]  # then it drives to the corner
+
+
+# --------------------------------------------------------------- parked by their width
+
+def test_parked_position_clears_the_stage_by_the_drawn_width():
+    assert parked_position(PROPS["sedan"]) == SEDAN_PARKED
+    assert parked_position(PROPS["pew"]) == PEW_PARKED
+    for what in ("cup", "bag", "books", "cap"):  # narrow: exactly offstage_left, as before
+        assert parked_position(PROPS[what]) == OFFSTAGE_LEFT, what
+    assert parked_position(None) == OFFSTAGE_LEFT
+    for prop in PROPS.values():
+        assert fully_offstage(prop, parked_position(prop)), prop.id
+
+
+def test_parked_position_takes_the_longer_side_of_an_off_centre_anchor():
+    # anchored at 0.2 of its width: mirrored, 0.8 * 1.8 = 1.44 of it reaches toward the stage
+    van = PROPS["sedan"].model_copy(update={"anchor": [0.2, 1.0]})
+    assert parked_position(van) == [-2.49, 0.0, 0.5]
+    assert parked_position(van.model_copy(update={"anchor": [0.8, 1.0]})) == [-2.49, 0.0, 0.5]
+    # furniture up to aspect 1.25 still parks at exactly offstage_left
+    chair = schemas.Prop(id="chair", name="chair", size="furniture", art={"body": None}, aspect=1.25)
+    assert parked_position(chair) == OFFSTAGE_LEFT
+
+
+def test_a_car_left_on_the_street_is_fully_offstage_on_the_next_set():
+    tl = ok(car_left_on_the_street())
+    s2 = tl.shots[1]
+    assert at(tl, "prop:car", "position", s2.start - STEP) == GARAGE  # still at the garage on the street
+    x = at(tl, "prop:car", "position", s2.start)[0]
+    assert x + 0.9 * 2.0 * 0.5 < -1
+    assert at(tl, "prop:car", "parent", s2.start) == "ground"
+    for s in [s2.start, *samples(s2.start, s2.end), s2.end]:
+        assert at(tl, "prop:car", "position", s) == SEDAN_PARKED, s
+    assert sanity_problems(tl, props=PROPS) == []
+
+
+def test_a_pew_left_behind_is_fully_offstage_and_what_rests_on_it_leaves_too():
+    tl = ok(pew_left_on_the_porch())
+    s2 = tl.shots[1]
+    assert track(tl, "prop:pew", "position") == [(0.0, MID), (s2.start, MID), (s2.start, PEW_PARKED)]
+    assert fully_offstage(PROPS["pew"], at(tl, "prop:pew", "position", s2.start))
+    # the books on its seat leave the set too, stepping to the ground at their own parking spot
+    assert track(tl, "prop:books", "parent") == [(0.0, "prop:pew.seat"), (s2.start, "ground")]
+    assert at(tl, "prop:books", "position", s2.start) == OFFSTAGE_LEFT
+    assert sanity_problems(tl, props=PROPS) == []
+
+
+def test_a_hand_size_prop_left_behind_still_parks_at_exactly_offstage_left():
+    tl = ok(dropped_at_a_set_change())
+    s2 = tl.shots[1]
+    position = track(tl, "prop:cup", "position")
+    assert position[-1] == (s2.start, OFFSTAGE_LEFT)
+    assert position[-2][0] == s2.start  # the hold key, then the step
 
 
 # ------------------------------------------------------------------------- untouched
@@ -427,6 +524,30 @@ def test_check_props_on_set_flags_a_prop_with_no_position_track_at_centre_stage(
     problems = check_props_on_set(_two_shots(only_state))
     assert [p.split(":")[1].strip() for p in problems] == ["shot s1 (kitchen) at t=0", "shot s2 (porch) at t=5"]
     assert all("prop:lamp is on the ground at x=0 " in p for p in problems)
+
+
+def test_check_props_on_set_judges_a_grounded_prop_by_its_width_when_given_props():
+    # a car anchored at x=-1.3 is half on stage: its right end reaches x=-0.4
+    car_at_offstage_left = [
+        {"target": "prop:sedan", "channel": "parent", "keys": [[0, "ground"]]},
+        {"target": "prop:sedan", "channel": "position", "keys": [[0, [0.2, 0.0, 0.5]], [4, OFFSTAGE_LEFT]]},
+    ]
+    tl = _two_shots(car_at_offstage_left)
+    assert check_props_on_set(tl) == []  # without props: the anchor alone, as before
+    assert sanity_problems(tl) == []
+    want = [
+        "props_on_set: shot s2 (porch) at t=5: prop:sedan is on the ground at x=-1.3 but has no parent or "
+        "position key in this shot, nor in an earlier shot of this set"
+    ]
+    assert check_props_on_set(tl, props=PROPS) == want
+    assert [p for p in sanity_problems(tl, props=PROPS) if p.startswith("props_on_set: ")] == want
+    # parked by its width it is fine; a narrow prop at x=-1.3 is fine either way
+    parked = [car_at_offstage_left[0], {"target": "prop:sedan", "channel": "position",
+                                        "keys": [[0, [0.2, 0.0, 0.5]], [4, SEDAN_PARKED]]}]
+    assert check_props_on_set(_two_shots(parked), props=PROPS) == []
+    cup = [{"target": "prop:cup", "channel": "parent", "keys": [[0, "ground"]]},
+           {"target": "prop:cup", "channel": "position", "keys": [[0, [0.2, 0.0, 0.5]], [4, OFFSTAGE_LEFT]]}]
+    assert check_props_on_set(_two_shots(cup), props=PROPS) == []
 
 
 def test_check_props_on_set_ignores_held_props():

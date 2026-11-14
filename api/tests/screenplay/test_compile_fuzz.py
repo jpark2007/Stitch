@@ -40,9 +40,10 @@ Invariants, for every generated screenplay (``check``):
 2. ok: the timeline survives a JSON round trip through Timeline.model_validate; per track, key
    times never decrease; no NaN or inf anywhere; duration >= the last key time; shots are
    contiguous (shot[i].end == shot[i + 1].start within 1e-6); and
-   timeline_sanity.sanity_problems(timeline) == [] (no prop in two places or a socket holding
-   two, a position key at every parent key, every time within the timeline, nobody walking while
-   seated, finite values, no prop showing on a set it was not placed on).
+   timeline_sanity.sanity_problems(timeline, props=<the scene's props>) == [] (no prop in two
+   places or a socket holding two, a position key at every parent key, every time within the
+   timeline, nobody walking while seated, finite values, no part of a prop's drawn width showing
+   on a set it was not placed on).
 3. not ok: there is at least one error; every code matches ^[a-z]+(_[a-z]+)*$; every message
    starts with "shot " or "screenplay"; error.shot is set whenever the message starts "shot ".
 4. compiling the same input again (a fresh copy of the screenplay and scene) gives
@@ -1345,7 +1346,7 @@ def check(sample: Sample) -> tuple[CompileResult, list[str]]:
             problems.append("ok without a timeline")
         else:
             problems += timeline_problems(result.timeline)
-            problems += [f"sanity: {m}" for m in sanity_problems(result.timeline)]
+            problems += [f"sanity: {m}" for m in sanity_problems(result.timeline, props=scene.props)]
         if result.errors:
             problems.append(f"ok with errors: {[e.message for e in result.errors]}")
     else:

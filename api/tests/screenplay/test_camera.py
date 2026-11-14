@@ -228,19 +228,150 @@ def _camera_keys(res, channel):
     return [(k[0], k[1]) for k in track.keys]
 
 
+# In the yard (verb_cases.base_scene), kid entering from offstage_left at t=0 crosses the
+# stage edge at about t=1.2 and reaches the door at t=1.43; dad exiting from the curb at t=0
+# crosses it at about t=0.57 and is at x=1.3 by t=1.43.
+ENTER_AND_EXIT = [{"t": 0, "who": "kid", "do": "enter", "to": "door"},
+                  {"t": 0, "who": "dad", "do": "exit", "to": "offstage_right"}]
+ENTER_AND_EXIT_START = {"dad": {"at": "curb"}, "kid": {"at": "offstage_left"}}
+
+
 def test_an_offstage_target_is_framed_at_the_stage_edge_on_its_side():
-    """A target offstage when the move ends (a puppet still entering, a car driving off; the
-    seeded green-sedan trip pans after its car to x=1.51) is clamped, not an error: the camera
-    waits at the edge it comes in from or leaves by."""
-    res = _compile_yard([{"t": 0, "move": "close_up", "target": "kid"}, {"t": 6, "move": "pan_to", "target": "dad"}],
-                        [{"t": 0, "who": "kid", "do": "enter", "to": "door"},
-                         {"t": 0, "who": "dad", "do": "exit", "to": "offstage_right"}],
-                        {"dad": {"at": "curb"}, "kid": {"at": "offstage_left"}})
+    """A target on stage at one end of the move and offstage at the other (a puppet leaving, a
+    car driving off; the seeded green-sedan trip pans after its car to x=1.51) is clamped, not an
+    error: the camera waits at the edge it leaves by. A target on stage past CAMERA_X_LIMIT (kid
+    at the door, x=-0.8) is clamped the same way."""
+    res = _compile_yard([{"t": 0.1, "move": "pan_to", "target": "dad", "dur": 2},
+                         {"t": 3, "move": "close_up", "target": "kid", "dur": 1}],
+                        ENTER_AND_EXIT,
+                        ENTER_AND_EXIT_START)
     assert res.ok, res.errors
     pos = _camera_keys(res, "position")
-    assert pos[1] == (1.2, [-CAMERA_X_LIMIT, 0.3, 1.1])  # kid is at x=-1.3 when the action starts
-    assert pos[-1][1][0] == CAMERA_X_LIMIT  # dad has left by x=1.3
+
+    def x_at(t: float) -> float:
+        (x,) = [v[0] for k, v in pos if abs(k - t) < 1e-6]
+        return x
+
+    assert x_at(3.3) == CAMERA_X_LIMIT  # dad (x=0.8 when the pan starts) is at x=1.3 when it lands
+    assert x_at(5.2) == -CAMERA_X_LIMIT
     assert all(abs(v[0]) <= CAMERA_X_LIMIT for _, v in pos)
+
+
+def _bad_camera(res) -> list[str]:
+    assert not res.ok
+    assert {e.code for e in res.errors} == {"bad_camera"}, res.errors
+    return [e.message for e in res.errors]
+
+
+def test_a_close_up_on_someone_waiting_offstage_the_whole_move_is_refused():
+    # mom is not in the start block: she waits at offstage_left all shot long
+    res = _compile_yard([{"t": 1, "move": "close_up", "target": "mom"}],
+                        [{"t": 0, "who": "dad", "do": "wave"}], {"dad": {"at": "curb"}})
+    assert len(res.errors) == 1
+    (err,) = res.errors
+    assert err.code == "bad_camera"
+    assert err.message == ('shot s1, t=1: cannot close_up "mom"; mom is offstage left at t=2.5; '
+                           "aim the camera at someone on stage")
+    assert (err.shot, err.t, err.do, err.who) == ("s1", 1.0, "close_up", None)
+    from screenplay.errors import hint_for
+    assert hint_for(err) == "aim the camera at something on stage"
+
+
+@pytest.mark.parametrize("move", ["dolly_to", "pan_to", "close_up"])
+def test_every_target_move_aimed_offstage_the_whole_move_is_refused(move):
+    res = _compile_yard([{"t": 2, "move": move, "target": "mom", "dur": 1}],
+                        [{"t": 0, "who": "dad", "do": "wave"}], {"dad": {"at": "curb"}})
+    assert _bad_camera(res) == [
+        f'shot s1, t=2: cannot {move} "mom"; mom is offstage left at t=3; aim the camera at someone on stage'
+    ]
+
+
+def test_an_opening_cue_on_someone_walking_on_is_framed_at_their_edge():
+    """A t=0 cue lands on actionStart, where kid still waits at offstage_left, but the offstage
+    check spans its stated dur (DEFAULT_MOVE_SECONDS without one): kid is on stage by then, so
+    the cue is valid and the camera waits at the edge kid comes in from."""
+    for cue in ({"t": 0, "move": "close_up", "target": "kid"}, {"t": 0, "move": "close_up", "target": "kid", "dur": 3}):
+        res = _compile_yard([cue], ENTER_AND_EXIT, ENTER_AND_EXIT_START)
+        assert res.ok, res.errors
+        pos = _camera_keys(res, "position")
+        assert pos[1] == (1.2, [-CAMERA_X_LIMIT, 0.3, 1.1])  # kid is at x=-1.3 when the action starts
+
+
+def test_an_opening_cue_on_someone_still_offstage_when_it_ends_is_refused():
+    # kid is still beyond the edge 0.5 s in; mom never comes on at all
+    res = _compile_yard([{"t": 0, "move": "close_up", "target": "kid", "dur": 0.5}], ENTER_AND_EXIT,
+                        ENTER_AND_EXIT_START)
+    assert _bad_camera(res) == [
+        'shot s1, t=0: cannot close_up "kid"; kid is offstage left at t=0.5; aim the camera at someone on stage'
+    ]
+    res = _compile_yard([{"t": 0, "move": "close_up", "target": "mom"}],
+                        [{"t": 0, "who": "dad", "do": "wave"}], {"dad": {"at": "curb"}})
+    assert _bad_camera(res) == [
+        'shot s1, t=0: cannot close_up "mom"; mom is offstage left at t=1.5; aim the camera at someone on stage'
+    ]
+
+
+def test_a_close_up_on_someone_entering_during_the_move_is_fine():
+    # kid is at x=-1.3 when the move starts and at the door when it lands
+    res = _compile_yard([{"t": 0.2, "move": "close_up", "target": "kid", "dur": 1.5}], ENTER_AND_EXIT,
+                        ENTER_AND_EXIT_START)
+    assert res.ok, res.errors
+
+
+def test_a_pan_to_someone_who_has_already_left_is_refused_on_their_side():
+    res = _compile_yard([{"t": 4, "move": "pan_to", "target": "dad", "dur": 0.5}], ENTER_AND_EXIT,
+                        ENTER_AND_EXIT_START)
+    assert _bad_camera(res) == [
+        'shot s1, t=4: cannot pan_to "dad"; dad is offstage right at t=4.5; aim the camera at someone on stage'
+    ]
+
+
+def test_a_close_up_on_a_prop_held_offstage_is_refused():
+    res = _compile_yard([{"t": 1, "move": "close_up", "target": "hymn_books", "dur": 1}],
+                        [{"t": 0, "who": "dad", "do": "wave"}],
+                        {"dad": {"at": "curb"}, "mom": {"at": "offstage_left", "holding": "hymn_books"}})
+    assert _bad_camera(res) == [
+        'shot s1, t=1: cannot close_up "hymn_books"; hymn_books is offstage left at t=2; '
+        "aim the camera at someone on stage"
+    ]
+
+
+def test_a_wide_prop_counts_as_on_stage_while_any_of_its_drawing_is():
+    """The camera judges a prop by its drawn width, like the sanity check and parking: the sedan
+    (vehicle, aspect 2.0, anchor x 0.5, reach 0.9) at offstage_left (x=-1.3) still shows from
+    x=-0.4, so aiming at it is fine; hymn_books at the same mark is wholly offstage."""
+    wave = [{"t": 0, "who": "dad", "do": "wave"}]
+    res = _compile_yard([{"t": 1, "move": "pan_to", "target": "sedan"}], wave, {"dad": {"at": "curb"}},
+                        {"sedan": {"at": "offstage_left"}})
+    assert res.ok, res.errors
+    res = _compile_yard([{"t": 1, "move": "pan_to", "target": "hymn_books"}], wave, {"dad": {"at": "curb"}},
+                        {"hymn_books": {"at": "offstage_left"}})
+    assert _bad_camera(res) == [
+        'shot s1, t=1: cannot pan_to "hymn_books"; hymn_books is offstage left at t=2.5; '
+        "aim the camera at someone on stage"
+    ]
+
+
+@pytest.mark.parametrize("mark, side", [("offstage_right", "right"), ("offstage_left", "left")])
+def test_a_cue_aimed_at_an_offstage_mark_is_refused(mark, side):
+    res = _compile_yard([{"t": 1, "move": "pan_to", "target": mark}],
+                        [{"t": 0, "who": "dad", "do": "wave"}], {"dad": {"at": "curb"}})
+    assert _bad_camera(res) == [
+        f'shot s1, t=1: cannot pan_to "{mark}"; {mark} is a mark offstage {side}; aim the camera at a mark on stage'
+    ]
+
+
+def test_a_cue_aimed_at_a_mark_on_stage_is_fine():
+    res = _compile_yard([{"t": 1, "move": "dolly_to", "target": "curb"}],
+                        [{"t": 0, "who": "dad", "do": "wave"}], {"dad": {"at": "curb"}})
+    assert res.ok, res.errors
+
+
+def test_cue_span_matches_how_the_keys_play_it():
+    from screenplay.camera import cue_span
+    assert cue_span(CameraCue(t=0, move="close_up", target="dad", dur=3), 1.2) == (1.2, 1.2)
+    assert cue_span(CameraCue(t=2, move="close_up", target="dad"), 1.2) == (3.2, pytest.approx(3.2 + DEFAULT_MOVE_SECONDS))
+    assert cue_span(CameraCue(t=2, move="close_up", target="dad", dur=0.5), 1.2) == (3.2, 3.7)
 
 
 def test_a_close_up_on_a_held_prop_raised_high_frames_the_hand():

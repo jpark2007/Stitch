@@ -24,21 +24,27 @@ prop reads it as of its own time. A shot's end covers every effect: an effect co
 at ``t + dur`` (rain with no ``dur`` at its start, and it then lasts until the shot's end, its
 outgoing fold included). ``Timeline.effects`` is ordered by (t, shot, action index).
 
-Props across sets. There is no visibility channel: a prop is "not on this set" when it is on
-the ground at an offstage x (OFFSTAGE_LEFT, beyond the stage edge at |x| = 1), and the parent
-and position channels say when it is there.
+Props across sets. There is no visibility channel: a prop is "not on this set" when it is
+parked: on the ground on the left, at ``parked_position(prop)``, so far out that its whole
+drawn width clears the stage edge at |x| = 1. The parent and position channels say when it is
+there. Drawn width is ``sizes[size] * aspect`` and the stage may mirror the art, so the side
+reaching furthest from the anchor counts: x = min(OFFSTAGE_LEFT.x, -1 - max(a, 1 - a) * w - 0.05)
+with ``a`` the anchor's x fraction. Hand, tiny and carried props, and furniture up to aspect 1.25,
+park at exactly OFFSTAGE_LEFT (x = -1.3); a car (vehicle, aspect 2) parks at x = -1.95, a pew
+(furniture, aspect 2.4) at -1.53. Puppets wait at OFFSTAGE_LEFT. A prop resting on a prop
+left behind (books on a pew's seat) is taken off the stage with it and parks at its own spot.
 
 - A prop left on the ground (or in an unlisted puppet's hand) when the set changes is taken off
-  the stage by state.py; ``_start_keys`` steps it to the ground at OFFSTAGE_LEFT at the new shot's
-  start, so it never shows at its old coordinates on the new set.
+  the stage by state.py; ``_start_keys`` steps it to its parking spot at the new shot's start,
+  so it never shows at its old coordinates on the new set.
 - After the last shot, ``_park_until_placed`` handles props whose first ``parent`` / ``position``
   key comes after t=0 (placed by a later shot's propStart or start ``holding``, or carried in by
   a puppet listed there), and props in ``Screenplay.props`` that are never placed at all. A track
   holds its first value backwards in time (CONTRACTS.md), and a prop with no tracks sits at
   [0, 0, 0] on the ground (Clarification 8, centre stage), so without this such a prop would
   show on every earlier set, or in the hand of a puppet who carries it only later. Each gets a
-  ``parent`` key of ``ground`` and a ``position`` key at OFFSTAGE_LEFT at t=0, and steps (never
-  glides) to its first real value at its first key time: a hold key at OFFSTAGE_LEFT is put just
+  ``parent`` key of ``ground`` and a ``position`` key at its parking spot at t=0, and steps (never
+  glides) to its first real value at its first key time: a hold key at the parking spot is put just
   before that first position key, and a position key is added there if the first key is a parent
   swap alone (a position key at every parent key). Worn signature items and props placed by the
   first shot are keyed at t=0 and untouched, so is every vehicle that is; the hymn_books sample
@@ -107,6 +113,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import math
 import pkgutil
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -684,8 +691,51 @@ def _seated_root(p: PuppetState, seat: Vec3) -> Vec3:
     return (seat[0], seat[1] - ik.RIG["hipHeight"] * ik.scale(p.build), seat[2])
 
 
-def _start_keys(world: World, tracks: TrackSet, shot: Shot, t: float, same_set: bool) -> tuple[list[Key], list[str]]:
-    """Keys for where everyone starts, at the shot's start. Returns (keys, problems)."""
+# How far past the stage edge a parked prop's nearest drawn side sits.
+PARK_MARGIN = 0.05
+
+
+def parked_position(prop: schemas.Prop | None) -> list[float]:
+    """Where a prop waits off every set (module docstring, "Props across sets"): on the ground
+    on the left, far enough out that its whole drawn width clears the stage edge.
+
+    Drawn width ``w = sizes[prop.size] * prop.aspect`` (CONTRACTS.md, 'World size'), anchor
+    fraction ``a = prop.anchor[0]``. The stage may draw it mirrored, so the side that reaches
+    furthest toward the stage is ``max(a, 1 - a) * w``, and x is
+    ``min(OFFSTAGE_LEFT.x, -STAGE_EDGE - max(a, 1 - a) * w - PARK_MARGIN)``: a prop narrow
+    enough (hand, tiny, carried, most furniture) parks at exactly OFFSTAGE_LEFT, a car or a pew
+    further out. y is the floor and z is OFFSTAGE_LEFT's. ``prop`` None (or a size or aspect
+    that gives no width) parks at OFFSTAGE_LEFT."""
+    x = float(OFFSTAGE_LEFT[0])
+    reach = drawn_reach(prop)
+    if reach > 0:
+        x = min(x, round(-effects.STAGE_EDGE - reach - PARK_MARGIN, 6))
+    return [x, 0.0, float(OFFSTAGE_LEFT[2])]
+
+
+def drawn_reach(prop: schemas.Prop | None) -> float:
+    """How far a prop's drawing can reach sideways from its anchor: ``max(a, 1 - a) * w`` with
+    ``w = sizes[prop.size] * prop.aspect`` and ``a = prop.anchor[0]`` (the stage may mirror the
+    art, so the longer side counts). 0 for None or a size or aspect that gives no width."""
+    if prop is None:
+        return 0.0
+    a = float(prop.anchor[0]) if prop.anchor else 0.5
+    reach = max(a, 1.0 - a) * motion.SIZES.get(prop.size, 0.0) * float(prop.aspect)
+    return reach if math.isfinite(reach) and reach > 0 else 0.0
+
+
+def _start_keys(
+    world: World,
+    tracks: TrackSet,
+    shot: Shot,
+    t: float,
+    same_set: bool,
+    prop_defs: Mapping[str, schemas.Prop] | None = None,
+) -> tuple[list[Key], list[str]]:
+    """Keys for where everyone starts, at the shot's start. Returns (keys, problems).
+
+    ``prop_defs`` sizes the parking spot of each prop left behind (``parked_position``); without
+    it every prop parks at OFFSTAGE_LEFT."""
     keys: list[Key] = []
     problems: list[str] = []
 
@@ -742,14 +792,16 @@ def _start_keys(world: World, tracks: TrackSet, shot: Shot, t: float, same_set: 
             if who not in shot.start:
                 puppet(who, OFFSTAGE_LEFT, held_bones(who))
         # Props the new shot does not bring along (state.py took them off the stage) leave
-        # with the old set: on the ground at offstage_left, stepping there at the shot's start.
+        # with the old set: on the ground clear of the stage on the left (parked_position),
+        # stepping there at the shot's start.
         for what in world.props:
             target = f"prop:{what}"
             if not world.is_unplaced(what) or not tracks.has_track(target, "parent"):
                 continue
             if tracks.value_at(target, "parent", t) != GROUND:
                 keys.append((target, "parent", t, GROUND))
-            keys.extend(_hold_then(tracks, target, "position", t, [float(c) for c in OFFSTAGE_LEFT]))
+            parked = parked_position((prop_defs or {}).get(what))
+            keys.extend(_hold_then(tracks, target, "position", t, parked))
 
     # propStart: on a prop that already has keys (an earlier shot of the same set, or a vehicle
     # driven earlier), each channel holds its old value up to the shot's start and steps there,
@@ -795,12 +847,13 @@ def _reseat_keys(world: World, tracks: TrackSet, shot: Shot, t: float) -> tuple[
     return keys, problems
 
 
-def _park_until_placed(tracks: TrackSet, what: str) -> None:
+def _park_until_placed(tracks: TrackSet, what: str, prop: schemas.Prop | None = None) -> None:
     """Keep a prop off every set until it is first placed (module docstring, "Props across sets").
 
-    A prop with no ``parent`` and no ``position`` key gets ``ground`` and OFFSTAGE_LEFT at t=0.
+    The parking spot is ``parked_position(prop)`` (OFFSTAGE_LEFT when ``prop`` is None).
+    A prop with no ``parent`` and no ``position`` key gets ``ground`` and the parking spot at t=0.
     A prop whose earliest parent or position key is at T > 0 gets the same two keys at t=0, a
-    position key at OFFSTAGE_LEFT at T ahead of its own keys there (so it steps at T, with the
+    position key at the parking spot at T ahead of its own keys there (so it steps at T, with the
     ``_hold_then`` semantics, instead of gliding in from offstage through the earlier shots),
     and, where its first key at T is on one channel only, a key on the other channel at T with
     the value that channel already read there: a position key at every parent key (CONTRACTS.md),
@@ -809,7 +862,7 @@ def _park_until_placed(tracks: TrackSet, what: str) -> None:
     target = f"prop:{what}"
     parent = tracks.raw_keys(target, "parent")
     position = tracks.raw_keys(target, "position")
-    offstage = [float(c) for c in OFFSTAGE_LEFT]
+    offstage = parked_position(prop)
     if not parent and not position:
         tracks.replace_keys(target, "parent", [(0.0, GROUND)])
         tracks.replace_keys(target, "position", [(0.0, offstage)])
@@ -890,7 +943,7 @@ def compile(
 
         if not same_set:
             tracks.extend(layout.rise_keys(shot.set, n_layers, shot_start, shot.transition))
-        start_keys, problems = _start_keys(world, tracks, shot, shot_start, same_set)
+        start_keys, problems = _start_keys(world, tracks, shot, shot_start, same_set, props)
         for reason in problems:
             errors.add(E.error("bad_start", reason, shot.id), si)
         tracks.extend(start_keys)
@@ -939,7 +992,8 @@ def compile(
             elif effect is not None:
                 shot_effects.append((ai, effect))
 
-        cam_errors, cam_pose = _camera(shot, shot_start, action_start, cam_pose, locate, tracks)
+        prop_reach = {what: drawn_reach(world.catalog.get(what)) for what in world.props if what not in world.people}
+        cam_errors, cam_pose = _camera(shot, shot_start, action_start, cam_pose, locate, tracks, prop_reach)
         for err in cam_errors:
             errors.add(err, si, len(shot.actions))
 
@@ -990,7 +1044,7 @@ def compile(
     if errors:
         return CompileResult(ok=False, errors=errors.sorted())
     for what in dict.fromkeys(sp.props):
-        _park_until_placed(tracks, what)
+        _park_until_placed(tracks, what, props.get(what))
     if plant_feet:
         planting.plant_feet(tracks, {who: p.build for who, p in world.people.items()})
     timeline = Timeline(
@@ -1115,11 +1169,14 @@ def _camera(
     prev: camera_mod.CameraPose | None,
     locate: Locate,
     tracks: TrackSet,
+    prop_reach: Mapping[str, float] | None = None,
 ) -> tuple[list[CompileError], camera_mod.CameraPose | None]:
     """The shot's camera keys (added to ``tracks``) and the pose it ends on.
 
     validate.py has checked the cues statically; what is left is a target that cannot be
-    placed when the move happens (a prop that is not on stage)."""
+    placed when the move lands (a prop that is not on stage), and one that is offstage for the
+    whole move (``_offstage_target``). ``prop_reach`` is each prop's ``drawn_reach``, so a wide
+    prop whose anchor is past the edge but whose drawing still shows on stage is not offstage."""
     errs: list[CompileError] = []
     for cue in shot.camera:
         if cue.move in camera_mod.TARGET_MOVES:
@@ -1127,10 +1184,19 @@ def _camera(
             if cue.target is None:
                 reason = "it needs a target"
             else:
+                t0, t1 = camera_mod.cue_span(cue, action_start)
                 try:
-                    locate(cue.target, action_start + cue.t + (cue.dur or 0.0))
+                    locate(cue.target, t1)
                 except StateError as e:
                     reason = e.reason
+                else:
+                    # The offstage check spans the cue's stated duration even for a t=0 cue,
+                    # which the keys land on actionStart: an opening close-up on someone
+                    # walking on during it is framed at the edge they come in from.
+                    span = camera_mod.DEFAULT_MOVE_SECONDS if cue.dur is None else float(cue.dur)
+                    end = t0 + span if cue.t == 0 else t1
+                    reach = (prop_reach or {}).get(cue.target, 0.0)
+                    reason = _offstage_target(locate, cue.target, t0, end, cue.t + (end - t0), reach)
             if reason is not None:
                 errs.append(CompileError(
                     code="bad_camera",
@@ -1146,3 +1212,36 @@ def _camera(
         return [E.error("bad_camera", f"camera: {reason}", shot.id)], prev
     tracks.extend(keys)
     return errs, pose
+
+
+def _offstage_target(
+    locate: Locate, target: str, t0: float, t1: float, shown_end: float, reach: float = 0.0,
+) -> str | None:
+    """Why a camera move from timeline time ``t0`` to ``t1`` cannot aim at ``target``, or None.
+
+    A mark is fixed: one beyond the stage edge (the builtin offstage_left / offstage_right) is
+    refused. A person or prop is refused only when it is beyond the edge both when the move
+    starts and when it ends; one that enters or leaves during the move is framed at the edge on
+    its side (camera.py). "Beyond the edge" is ``|x| > STAGE_EDGE + reach``: ``reach`` is a
+    prop's ``drawn_reach`` (0 for a person), so a wide prop counts as on stage while any of its
+    drawing is. ``shown_end`` is the end time as written in the screenplay, for the message. A
+    target that cannot be placed at ``t0`` or ``t1`` (a prop placed or put away during the move)
+    counts as offstage then, on the side it is found at the other end."""
+    def side_at(t: float) -> tuple[bool, str | None]:
+        try:
+            return True, effects.offstage_side(locate(target, t)[0], reach)
+        except StateError:
+            return False, None
+
+    found1, side1 = side_at(t1)
+    if found1 and side1 is None:
+        return None
+    if effects.is_mark(locate, target):
+        return f"{target} is a mark offstage {side1}; aim the camera at a mark on stage"
+    found0, side0 = side_at(t0)
+    if found0 and side0 is None:
+        return None
+    side = side1 or side0
+    if side is None:  # placed at neither end; the landing check reports that instead
+        return None
+    return f"{target} is offstage {side} at t={fmt_t(shown_end)}; aim the camera at someone on stage"

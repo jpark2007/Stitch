@@ -23,6 +23,8 @@ list ``{t, kind, at, dur, value}``, not tracks).
 
 Durations, rounding and the entry itself come from ``layout.effect_entry``. Effects never
 occupy a puppet and change no world state; the compiler appends the entry to the timeline.
+``offstage_side`` and ``is_mark`` are shared with the compiler's camera check (a camera move
+aimed at a target offstage for the whole move is ``bad_camera``, worded the same way).
 Reasons are written without the message head; errors.error_message adds ``shot <id>, t=<t>:
 cannot <effect>;`` in front, with ``t`` as written in the screenplay.
 """
@@ -52,7 +54,15 @@ def _takes(verb: str, param: str) -> bool:
     return param in spec["required"] or param in spec["optional"]
 
 
-def _is_mark(locate: Locate, name: str) -> bool:
+def offstage_side(x: float, slack: float = 0.0) -> str | None:
+    """``"left"`` or ``"right"`` when ``x`` is beyond the stage edge (``|x| > STAGE_EDGE + slack``),
+    else None. Effects allow ``EDGE_SLACK``; the compiler's camera check allows none."""
+    if abs(x) <= STAGE_EDGE + slack:
+        return None
+    return "left" if x < 0 else "right"
+
+
+def is_mark(locate: Locate, name: str) -> bool:
     """Whether ``name`` resolves to a fixed mark (locate's precedence is person, prop, mark).
     A plain callable cannot say, so only the builtin marks count there."""
     if isinstance(locate, Locator):
@@ -78,9 +88,9 @@ def _place(action: Action, t: float, locate: Locate) -> Vec3:
         if e.code == "unknown_target":
             raise StateError(e.code, f'{do} at "{name}": {e.reason}; aim it at a mark, person or prop') from None
         raise
-    if abs(x) > STAGE_EDGE + EDGE_SLACK:
-        side = "left" if x < 0 else "right"
-        if _is_mark(locate, name):
+    side = offstage_side(x, EDGE_SLACK)
+    if side is not None:
+        if is_mark(locate, name):
             reason = f'{do} at "{name}": {name} is a mark offstage {side}; aim it at a mark on stage'
         else:
             reason = (
