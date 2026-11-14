@@ -188,6 +188,8 @@ export class BookController {
    * own angle while it hovers, eased back flat once a turn takes the leaf over.
    */
   private stageTilt = 0;
+  /** The leaf that last tilted (its stage settles flat as a turn takes it over). */
+  private tiltLeaf = -1;
   /** The stage group (BookParts.stage), as last posed. */
   private stageGroup: Group | null = null;
   private frozen = false;
@@ -851,8 +853,13 @@ export class BookController {
     // stage page tilts under the pointer, the stage tilts with it about the
     // same pivot (the leaf's root at the hinge), so sheet and pop-up share
     // one rigid motion; once a turn takes the leaf over, it settles flat.
-    const page = rt.leaves[this.pos];
-    if (page && page.mode === "hover" && page.tilt) this.stageTilt = page.p * Math.PI;
+    // (Only the settled spread's stage page tilts, and a turn started from it
+    // has moved `pos` on already: follow the leaf itself.)
+    let tilting = -1;
+    for (let i = 0; i < rt.leaves.length; i++) if (rt.leaves[i].mode === "hover" && rt.leaves[i].tilt) tilting = i;
+    if (tilting >= 0) this.tiltLeaf = tilting;
+    const page = rt.leaves[this.tiltLeaf];
+    if (tilting >= 0) this.stageTilt = page.p * Math.PI;
     else if (!page || page.mode === "rest") this.stageTilt = 0;
     else if (this.stageTilt !== 0) {
       this.stageTilt *= dt === 0 || this.frozen ? 0 : Math.exp(-dt * STAGE_UNTILT_RATE);
