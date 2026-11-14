@@ -381,6 +381,187 @@ def test_question_lifecycle(two_families):
     assert set(stored) == {"_id", "familyId", "personId", "text", "memoryId", "status", "createdAt"}
 
 
+def _statuses(db) -> dict[str, str]:
+    return {doc["_id"]: doc["status"] for doc in db["questions"].find()}
+
+
+def test_add_telling_closes_the_authors_question_for_that_memory(two_families):
+    db = two_families
+    m1 = m.create_memory(db, FA, title="Met", year=1988, participant_ids=["dad", "mom"], memory_id="m1")
+    b_mem = m.create_memory(db, FB, title="War years", year=1944, participant_ids=["b_grandma"])
+    text = "Dad says you met on the steps. What do you remember?"
+    mom_q = m.create_question(db, FA, person_id="mom", text=text, memory_id=m1.id)
+    mom_other = m.create_question(db, FA, person_id="mom", text="Tell me about the wedding.")
+    dad_q = m.create_question(db, FA, person_id="dad", text=text, memory_id=m1.id)
+    b_q = m.create_question(db, FB, person_id="b_grandma", text=text, memory_id=b_mem.id)
+
+    got = m.add_telling(db, FA, m1.id, telling("mom", "My side.", question=text))
+    assert got is not None
+
+    statuses = _statuses(db)
+    assert statuses[mom_q.id] == "answered"
+    assert [q.id for q in m.open_questions(db, FA, "mom")] == [mom_other.id]
+    assert statuses[mom_other.id] == "open"
+    assert statuses[dad_q.id] == "open"  # someone else's question for the same memory
+    assert statuses[b_q.id] == "open"  # another family's question with the same text
+    assert [q.id for q in m.open_questions(db, FB, "b_grandma")] == [b_q.id]
+
+    # Editing your own telling again closes nothing more and does not reopen anything.
+    assert m.add_telling(db, FA, m1.id, telling("mom", "Edited.")) is not None
+    assert _statuses(db) == statuses
+
+
+def test_create_memory_closes_the_question_it_answers_by_text(two_families):
+    db = two_families
+    q = m.create_question(db, FA, person_id="mom", text="Q")
+    other = m.create_question(db, FA, person_id="mom", text="A different question?")
+    dad_q = m.create_question(db, FA, person_id="dad", text="Q")
+
+    m.create_memory(db, FA, title="Wedding", year=1990, participant_ids=["mom"],
+                    telling=telling("mom", "We married in June.", question="  Q  "))
+
+    statuses = _statuses(db)
+    assert statuses[q.id] == "answered"
+    assert statuses[other.id] == "open"
+    assert statuses[dad_q.id] == "open"
+    assert [x.id for x in m.open_questions(db, FA, "mom")] == [other.id]
+
+
+def test_blank_question_does_not_match_by_text(two_families):
+    db = two_families
+    q = m.create_question(db, FA, person_id="mom", text="Q")
+    m.create_memory(db, FA, title="One", year=1990, participant_ids=["mom"], telling=telling("mom", question="   "))
+    m.create_memory(db, FA, title="Two", year=1991, participant_ids=["mom"], telling=telling("mom"))
+    m.create_memory(db, FA, title="Three", year=1992, participant_ids=["mom"])
+    assert _statuses(db)[q.id] == "open"
+
+
+def test_close_answered_questions_returns_the_count(two_families):
+    db = two_families
+    m1 = m.create_memory(db, FA, title="Met", year=1988, participant_ids=["mom"], memory_id="m1")
+    m.create_question(db, FA, person_id="mom", text="Q1", memory_id=m1.id)
+    m.create_question(db, FA, person_id="mom", text="Q2")
+    m.create_question(db, FA, person_id="mom", text="Q3")
+    closed = m._close_answered_questions(db, FA, m1.id, telling("mom", question="Q2"))
+    assert closed == 2
+    assert [q.text for q in m.open_questions(db, FA, "mom")] == ["Q3"]
+    assert m._close_answered_questions(db, FA, m1.id, telling("mom", question="Q2")) == 0
+
+
+def test_add_telling_on_unknown_memory_closes_nothing(two_families):
+    db = two_families
+    b_mem = m.create_memory(db, FB, title="War years", year=1944, participant_ids=["b_grandma"])
+    q = m.create_question(db, FA, person_id="mom", text="Q")
+    q_text_only = m.create_question(db, FA, person_id="mom", text="What about the war?")
+
+    assert m.add_telling(db, FA, "missing", telling("mom", question="Q")) is None
+    assert m.add_telling(db, FA, b_mem.id, telling("mom", question="What about the war?")) is None
+    statuses = _statuses(db)
+    assert statuses[q.id] == "open" and statuses[q_text_only.id] == "open"
+
+
+# ---------------------------------------------------------------------------- embeddings
+
+@pytest.fixture
+def embedder():
+    """Install an embedder for one test; always removed afterwards."""
+    from db import search
+
+    def install(fn):
+        search.set_embedder(fn)
+
+    try:
+        yield install
+    finally:
+        search.set_embedder(None)
+
+
+def test_create_memory_stores_embedding(two_families, embedder):
+    db = two_families
+    embedder(lambda text: [1.0, 2.0])
+    mem = m.create_memory(db, FA, title="Met", year=1988, participant_ids=["dad"], telling=telling("dad"))
+    stored = db["memories"].find_one({"_id": mem.id})
+    assert stored["embedding"] == [1.0, 2.0]
+    assert all(isinstance(x, float) for x in stored["embedding"])
+    assert "embedding" not in mem.model_dump_json(by_alias=True)
+    assert "embedding" not in m.get_memory(db, FA, mem.id).model_dump_json(by_alias=True)
+
+
+def test_add_telling_reembeds_with_the_new_text(two_families, embedder):
+    db = two_families
+    seen: list[str] = []
+
+    def record(text: str) -> list[int]:
+        seen.append(text)
+        return [len(seen), 0]
+
+    embedder(record)
+    mem = m.create_memory(db, FA, title="Lake trip", year=1995, participant_ids=["dad", "mom"],
+                          telling=telling("dad", "We rowed out at dawn."))
+    assert seen == ["Lake trip\n\nWe rowed out at dawn."]
+
+    m.add_telling(db, FA, mem.id, telling("mom", "The canoe tipped over."))
+    assert seen[-1] == "Lake trip\n\nWe rowed out at dawn.\n\nThe canoe tipped over."
+    assert db["memories"].find_one({"_id": mem.id})["embedding"] == [2.0, 0.0]
+
+    # Replacing your own telling re-embeds with the edited text, not the old one.
+    m.add_telling(db, FA, mem.id, telling("dad", "We rowed out at noon."))
+    assert seen[-1] == "Lake trip\n\nWe rowed out at noon.\n\nThe canoe tipped over."
+    assert "dawn" not in seen[-1]
+
+    # A failed write embeds nothing.
+    calls = len(seen)
+    assert m.add_telling(db, FA, "missing", telling("dad")) is None
+    assert len(seen) == calls
+
+
+def test_failing_embedder_never_breaks_writes(two_families, embedder):
+    db = two_families
+
+    def boom(text: str) -> list[float]:
+        raise RuntimeError("embedding service down")
+
+    embedder(boom)
+    mem = m.create_memory(db, FA, title="Met", year=1988, participant_ids=["dad", "mom"], telling=telling("dad"))
+    got = m.add_telling(db, FA, mem.id, telling("mom"))
+    assert got is not None and len(got.tellings) == 2
+    assert "embedding" not in db["memories"].find_one({"_id": mem.id})
+
+
+def test_refresh_embedding_never_raises(two_families, embedder, monkeypatch):
+    db = two_families
+    embedder(lambda text: [1.0])
+    mem = m.create_memory(db, FA, title="Met", year=1988, participant_ids=["dad"])
+
+    def broken_embed(text: str):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(m.search_db, "embed", broken_embed)
+    m._refresh_embedding(db, FA, mem.id)  # does not raise
+    assert m.add_telling(db, FA, mem.id, telling("dad")) is not None
+
+
+def test_no_embedder_writes_no_embedding(two_families):
+    from db import search
+
+    search.set_embedder(None)
+    db = two_families
+    mem = m.create_memory(db, FA, title="Met", year=1988, participant_ids=["dad", "mom"], telling=telling("dad"))
+    m.add_telling(db, FA, mem.id, telling("mom"))
+    assert "embedding" not in db["memories"].find_one({"_id": mem.id})
+
+
+def test_save_scene_does_not_reembed(two_families, embedder):
+    db = two_families
+    seen: list[str] = []
+    embedder(lambda text: seen.append(text) or [1.0])
+    mem = m.create_memory(db, FA, title="Met", year=1988, participant_ids=["dad"], telling=telling("dad"))
+    calls = len(seen)
+    sp = Screenplay.model_validate(SAMPLE["memory"]["screenplay"])
+    m.save_scene(db, FA, mem.id, screenplay=sp, timeline=None, prop_ids=[], set_ids=[])
+    assert len(seen) == calls
+
+
 # ----------------------------------------------------------------------------- real Mongo
 
 def test_real_mongodb_round_trip(real_db):
