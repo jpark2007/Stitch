@@ -76,18 +76,27 @@ export function riseAlong(keys: LinearKeys, time: number, size: number, t: PopUp
   return Math.max(0, followAt(keys, time, t.omega / Math.sqrt(size), 0));
 }
 
-/** Seconds after which a flip has finished for any set: stagger, ramp and settle. */
+/** Seconds after issue by which any set's target has reached a flip's end pose: stagger and ramp. */
+const RAMP_WINDOW = 5;
+/** Seconds after issue by which any set's hinge has also settled on that pose. */
 const SETTLE_WINDOW = 10;
-/** Most flips kept, however fast they come (the last one still sets the end pose). */
-const MAX_FLIPS = 4;
 
 /**
- * Bound a growing list of issued flips at stage time `now`. Flips that have
- * long settled are dropped, except the newest of them, which holds the pose
- * the later ones start from. The present and future poses are unchanged.
+ * Bound a growing list of issued flips (in issue order) at stage time `now`
+ * without moving any piece. A flip can stand in for everything before it once
+ * it has settled and no flip (of `flips` or the `fixed` scheduled ones it is
+ * played with) came within RAMP_WINDOW after it: its target then reaches its
+ * end pose before anything later starts, whatever it started from, so the
+ * flips before it are dropped. Flips that have not finished are never dropped,
+ * so a run of quick toggles is kept whole until a pause.
  */
-export function trimFlips(flips: readonly Flip[], now: number): Flip[] {
-  let first = 0;
-  for (let i = 0; i < flips.length - 1; i++) if (flips[i + 1].at < now - SETTLE_WINDOW) first = i + 1;
-  return flips.slice(Math.max(first, flips.length - MAX_FLIPS));
+export function trimFlips(flips: readonly Flip[], now: number, fixed: readonly Flip[] = []): Flip[] {
+  for (let k = flips.length - 1; k > 0; k--) {
+    const at = flips[k].at;
+    if (at > now - SETTLE_WINDOW) continue;
+    if (k + 1 < flips.length && flips[k + 1].at < at + RAMP_WINDOW) continue;
+    if (fixed.some((f) => f.at > at && f.at < at + RAMP_WINDOW)) continue;
+    return flips.slice(k);
+  }
+  return [...flips];
 }

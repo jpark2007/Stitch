@@ -113,9 +113,9 @@ export function PopUp({ open = true, openAt = 0.4, closeAt = null, timing, child
     if (typeof open !== "boolean" || open === last.current) return;
     last.current = open;
     const at = now(get());
-    live.current = trimFlips([...live.current, { at, open }], at);
+    live.current = trimFlips([...live.current, { at, open }], at, scheduled);
     version.current += 1;
-  }, [open, now, get]);
+  }, [open, now, get, scheduled]);
 
   const value = useMemo<PopUpValue>(() => {
     if (typeof open !== "boolean") {
