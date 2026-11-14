@@ -54,7 +54,8 @@ import { BOARD_D, BOARD_W, BookController, COVER_PIVOT_Y, HIT_MARGIN, type BookS
 import { Leaf, type LeafTextures } from "./Leaf";
 import { BLOCK_T, COVER_T, PAGE_H, PAGE_W } from "./leafShape";
 import { PAGE_PX_H, PAGE_PX_W } from "./pageArt";
-import { BookRuntimeProvider, pageControlHeld } from "./pagePrint";
+import { isBookControl } from "./controls";
+import { BookRuntimeProvider } from "./pagePrint";
 import { isMuted, paperLift, setMuted, subscribeMuted, unlockAudio } from "./sound";
 import {
   STAGE_SLOT,
@@ -744,7 +745,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
 
   /** A control on the page (a pull tab) is under the pointer or held: it handles the event. */
   const overControl = (e: ThreeEvent<PointerEvent>) =>
-    pageControlHeld() || e.intersections.some((i) => i.object.userData.pageControl === true);
+    ctl.rt.controlsHeld > 0 || e.intersections.some((i) => isBookControl(i.object));
 
   const onLabelDown = (e: ThreeEvent<PointerEvent>, label: { spread: number; id: string }) => {
     e.stopPropagation();

@@ -59,6 +59,8 @@ export interface BookRuntime {
   restVersion: number;
   /** Total frames rendered (read by the FPS probe). */
   frames: number;
+  /** Page controls (pull tabs) held right now; the book leaves the pointer alone meanwhile (controls.ts). */
+  controlsHeld: number;
 }
 
 export function createLeafState(p: number): LeafState {
@@ -91,6 +93,7 @@ export function createRuntime(leafCount: number, leftCount: number): BookRuntime
     restR: new Float32Array(BONES),
     restVersion: 0,
     frames: 0,
+    controlsHeld: 0,
   };
 }
 

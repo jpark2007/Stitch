@@ -12,8 +12,8 @@
  * into the slit while the targets return to the scene's time ("return").
  * After the scene ends, it nudges out once to show it can be pulled.
  *
- * The lever's meshes carry userData.pageControl, so the book leaves pointer
- * events over it alone. Everything is posed in useFrame from refs; nothing
+ * The lever is marked as a book control (controls.ts), so the book leaves
+ * pointer events over it alone. Everything is posed in useFrame from refs; nothing
  * re-renders while it is pulled.
  */
 
@@ -36,7 +36,8 @@ import type { PlaybackController } from "@/components/stage/playback";
 import { drawLeverFace, pullTabGeometry } from "../labelArt";
 import { PAGE_H, PAGE_W } from "../leafShape";
 import { PAGE_PX_W } from "../pageArt";
-import { holdPageControl, pageHeightAt, usePageSurface } from "../pagePrint";
+import { holdBookControl, markBookControl } from "../controls";
+import { pageHeightAt, usePageSurface } from "../pagePrint";
 import { paperLift } from "../sound";
 import { STAGE_SLOT } from "../StoryPage";
 import type { BookPullTab } from "../types";
@@ -255,7 +256,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     s.nudged = true;
     paperLift();
     s.release();
-    s.release = holdPageControl();
+    s.release = holdBookControl(rt);
     document.body.style.cursor = "grabbing";
     const id = e.pointerId;
     const hold = (v: number) => {
@@ -335,10 +336,14 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
     },
     onPointerMove: (e: ThreeEvent<PointerEvent>) => e.stopPropagation(),
   };
-  const control = { pageControl: true };
-
   return (
-    <group ref={root} position={[geo.slitX, 0, geo.z]}>
+    <group
+      ref={(g) => {
+        root.current = g;
+        markBookControl(g);
+      }}
+      position={[geo.slitX, 0, geo.z]}
+    >
       <group ref={slider}>
         {/* A soft shade under the card on the page. */}
         <mesh geometry={parts.shadow} material={parts.shade} position={[-geo.hidden + 0.0015, 0.00005, 0.0025]} renderOrder={2} />
@@ -347,7 +352,6 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
           material={[parts.card, parts.edge]}
           position={[-geo.hidden, 0.0004, 0]}
           castShadow
-          userData={control}
           {...handlers}
         />
         {/* The grip: the card's end folded back over itself. */}
@@ -357,8 +361,7 @@ export function PullTabLever({ controller, tab, shot = null, reveal }: PullTabLe
             material={[parts.back, parts.backEdge]}
             position={[-FOLD, 0, 0]}
             castShadow
-            userData={control}
-            {...handlers}
+              {...handlers}
           />
         </group>
       </group>

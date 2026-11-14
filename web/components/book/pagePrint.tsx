@@ -27,23 +27,6 @@ export function BookRuntimeProvider({ runtime, children }: { runtime: BookRuntim
   return <BookRuntimeContext.Provider value={runtime}>{children}</BookRuntimeContext.Provider>;
 }
 
-/**
- * A control on the page (a pull tab) is being held: the book leaves the
- * pointer alone meanwhile (no corner peel, no turn), even where the pointer
- * runs ahead of the paper it is pulling.
- */
-let heldControls = 0;
-export function holdPageControl(): () => void {
-  heldControls++;
-  let done = false;
-  return () => {
-    if (done) return;
-    done = true;
-    heldControls--;
-  };
-}
-export const pageControlHeld = () => heldControls > 0;
-
 /** How high above the paper prints sit (clear of the page, under anything standing on it). */
 export const PRINT_LIFT = 0.0007;
 
