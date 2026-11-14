@@ -15,33 +15,23 @@ the state model can never disagree on what is allowed, and world errors win over
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from screenplay import ik
 from screenplay.body import (
-    POSE_SECONDS,
     PUT_ON_SETTLE_SECONDS,
     REACH_SECONDS,
     REST_ARM,
     PropGeom,
     grip_from_anchor,
-    kneel_keys,
     place_on_keys,
     put_on_keys,
-    stand_keys,
     state_keys,
 )
 from screenplay.ik import Body, arm_bones, solve_body_arm
-from screenplay.locate import body_at, bone_at, puppet_root
+from screenplay.locate import Locate, arm_at, arm_of_hand, body_at, gesture_arm, puppet_root, puppet_target
 from screenplay.schema import Action
 from screenplay.state import CLOSED, GROUND, OPEN, SEATED_POSES, StateError, World, parse_parent
 from screenplay.tracks import TrackSet
-from screenplay.verbs_core import _crouch_solution, _kneeling_ground
-
-Vec3 = tuple[float, float, float]
-Locate = Callable[[str, float], Vec3]
-Handler = Callable[[World, TrackSet, Action, float, float, Locate], float]
-Key = tuple[str, str, float, object]
+from screenplay.verb_helpers import Handler, Key, Vec3, crouch_reach_keys, require_param
 
 # The activity a second puppet is busy with while someone else dresses them (put_on target).
 DRESSED_ACTIVITY = "being dressed"
@@ -54,41 +44,16 @@ __all__ = [
 
 # ---------------------------------------------------------------------- geometry
 
-def _body(world: World, tracks: TrackSet, who: str, t: float) -> Body:
-    """The puppet's ``ik.Body`` at ``t`` (locate.body_at: the one source of truth)."""
-    return body_at(world, tracks, who, t)
-
-
-def _rots_now(tracks: TrackSet, who: str, bones: tuple[str, ...], t: float) -> dict[str, float]:
-    out: dict[str, float] = {}
-    for bone in bones:
-        v = tracks.value_at(f"puppet:{who}", f"{bone}.rot", t)
-        out[bone] = float(v) if v is not None else 0.0
-    return out
-
-
-def _arm_now(tracks: TrackSet, who: str, arm: str, t: float) -> tuple[float, float]:
-    upper, lower = arm_bones(arm)
-    rots = _rots_now(tracks, who, (upper, lower), t)
-    return rots[upper], rots[lower]
-
+# Puppet geometry comes from locate: body_at, arm_at (an arm's two rotations, 0 with no track),
+# arm_of_hand (only ever given hand_l / hand_r here: World.put_on, hold and free_hand return a
+# hand) and gesture_arm (arm_r, unless hand_r holds something and hand_l is free).
 
 def _arm_keys(who: str, arm: str, t: float, values: tuple[float, float]) -> list[Key]:
     upper, lower = arm_bones(arm)
     return [
-        (f"puppet:{who}", f"{upper}.rot", t, float(values[0])),
-        (f"puppet:{who}", f"{lower}.rot", t, float(values[1])),
+        (puppet_target(who), f"{upper}.rot", t, float(values[0])),
+        (puppet_target(who), f"{lower}.rot", t, float(values[1])),
     ]
-
-
-def _arm_of(hand: str) -> str:
-    return "arm_l" if hand == "hand_l" else "arm_r"
-
-
-def _reach_arm(world: World, who: str) -> str:
-    """arm_r, unless hand_r is holding something and hand_l is free."""
-    holding = world.people[who].holding
-    return "arm_l" if "hand_r" in holding and "hand_l" not in holding else "arm_r"
 
 
 def _geom(world: World, what: str) -> PropGeom:
@@ -118,23 +83,23 @@ def apply_put_on(world: World, tracks: TrackSet, action: Action, t: float, actio
         world.check_free(target)
 
     geom = _geom(world, what)
-    me = _body(world, tracks, who, t)
-    wearer = me if target == who else _body(world, tracks, target, t)
+    me = body_at(world, tracks, who, t)
+    wearer = me if target == who else body_at(world, tracks, target, t)
     held = world.holder(what)
     if held is not None:  # in one of who's hands (put_on rules)
-        arm = _arm_of(held[1])
-        keys = put_on_keys(me, t, _arm_now(tracks, who, arm, t), geom, wearer, arm)
+        arm = arm_of_hand(held[1])
+        keys = put_on_keys(me, t, arm_at(tracks, who, arm, t), geom, wearer, arm)
         end = t + 2 * REACH_SECONDS
     else:  # on the ground, on stage
         hand = world.free_hand(who)
         assert hand is not None  # world.put_on checked it
-        arm = _arm_of(hand)
+        arm = arm_of_hand(hand)
         grip = grip_from_anchor(geom, world.props[what].world_pos)
         # TODO(put_on off the floor): a prop on the floor with a low grip is below a standing
         # hand's reach and fails here with OutOfReach; pick_up crouches for that, put_on does not.
         reach = solve_body_arm(me, arm, grip)
         t_take = t + REACH_SECONDS
-        keys = _arm_keys(who, arm, t, _arm_now(tracks, who, arm, t)) + _arm_keys(who, arm, t_take, reach)
+        keys = _arm_keys(who, arm, t, arm_at(tracks, who, arm, t)) + _arm_keys(who, arm, t_take, reach)
         keys += [(f"prop:{what}", "parent", t_take, f"puppet:{who}.{hand}"),
                  (f"prop:{what}", "position", t_take, [0.0, 0.0, 0.0])]
         # From the grip the arm carries it to the head. put_on_keys repeats the reach key at
@@ -213,11 +178,11 @@ def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, act
         world.copy().place_on(who, what, parent, dest)
         pos = dest
 
-    arm = _arm_of(hand)
-    me = _body(world, tracks, who, t)
+    arm = arm_of_hand(hand)
+    me = body_at(world, tracks, who, t)
     geom = _geom(world, what)
     grip = grip_from_anchor(geom, dest)
-    current = _arm_now(tracks, who, arm, t)
+    current = arm_at(tracks, who, arm, t)
     shoulder_y = ik.shoulder_world(arm, me.ground, me.facing, me.build)[1]
     if ik.can_reach(arm, grip, me.ground, me.facing, me.build) or grip[1] >= shoulder_y:
         keys = place_on_keys(me, t, current, geom, dest, parent, arm)
@@ -249,37 +214,16 @@ def _crouch_place_on_keys(
     *,
     can_kneel: bool,
 ) -> tuple[list[Key], float]:
-    """place_on of a low grip, mirroring verbs_core._crouch_pick_up_keys: bend (and kneel, if
-    needed) over POSE_SECONDS, reach the grip over REACH_SECONDS and let go (the prop's parent
-    and position keys), then come back up over POSE_SECONDS with the arm at rest. A puppet that
-    cannot kneel (already down) only bends, and its legs and root are left alone. Raises
-    ik.OutOfReach (closest miss) when even crouching cannot reach. Returns (keys, end)."""
-    kneel, bend, reach = _crouch_solution(body, arm, grip, can_kneel)
-    who = body.id
-    target = f"puppet:{who}"
-    t_down = t + POSE_SECONDS
-    t_release = t_down + REACH_SECONDS
-    t_up = t_release + POSE_SECONDS
-    upper, lower = arm_bones(arm)
-    torso = bone_at(tracks, who, "torso", t)
-    keys: list[Key] = [
-        (target, "torso.rot", t, torso), (target, "torso.rot", t_down, bend),
-        (target, "torso.rot", t_release, bend), (target, "torso.rot", t_up, torso),
-    ]
-    for bone, values in ((upper, (current_arm[0], reach[0], REST_ARM[0])),
-                         (lower, (current_arm[1], reach[1], REST_ARM[1]))):
-        keys += [(target, f"{bone}.rot", t, float(values[0])), (target, f"{bone}.rot", t_down, float(values[0])),
-                 (target, f"{bone}.rot", t_release, float(values[1])), (target, f"{bone}.rot", t_up, float(values[2]))]
-    if kneel:  # down over POSE_SECONDS, held kneeling while reaching, then up again
-        kneel_pose = ik.POSES["poses"]["kneel"]
-        legs = {b: bone_at(tracks, who, b, t) for b in kneel_pose if b.startswith("leg_")}
-        keys += kneel_keys(body, t, legs, z=z)
-        low = Body(who, _kneeling_ground(body), body.facing, body.build)
-        kneeling = {b: float(v) for b, v in kneel_pose.items() if b.startswith("leg_")}
-        keys += stand_keys(low, t_release, kneeling, body.ground, z=z)
-    keys += [(f"prop:{what}", "parent", t_release, parent),
-             (f"prop:{what}", "position", t_release, [float(c) for c in position])]
-    return keys, t_up
+    """place_on of a low grip: bend (and kneel, if needed) over POSE_SECONDS, reach the grip over
+    REACH_SECONDS and let go (the prop's parent and position keys), then come back up over
+    POSE_SECONDS with the arm at rest. A puppet that cannot kneel (already down) only bends, and
+    its legs and root are left alone. Raises ik.OutOfReach (closest miss) when even crouching
+    cannot reach. Returns (keys, end). See verb_helpers.crouch_reach_keys, which pick_up's
+    crouch shares; no keys come before it, so its bones are read from the tracks at ``t``."""
+    return crouch_reach_keys(
+        tracks, [], body, t, current_arm, what, grip, arm, z, can_kneel=can_kneel,
+        arm_after=REST_ARM, parent=parent, position=position,
+    )
 
 
 # ------------------------------------------------------------------ open / close
@@ -333,10 +277,10 @@ def _open_close(world: World, tracks: TrackSet, action: Action, t: float, locate
     scratch = world.copy()
     (scratch.open if state == OPEN else scratch.close)(who, what)
 
-    arm = _reach_arm(world, who)
-    me = _body(world, tracks, who, t)
+    arm = gesture_arm(world, who)
+    me = body_at(world, tracks, who, t)
     reach = solve_body_arm(me, arm, _handle_point(world, what, locate, t))
-    now = _arm_now(tracks, who, arm, t)
+    now = arm_at(tracks, who, arm, t)
     t_touch = t + REACH_SECONDS
     keys = _arm_keys(who, arm, t, now) + _arm_keys(who, arm, t_touch, reach)
     keys += _arm_keys(who, arm, t_touch + REACH_SECONDS, now)
@@ -361,8 +305,7 @@ def apply_close(world: World, tracks: TrackSet, action: Action, t: float, action
 
 def apply_set_state(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Switch a prop's state at t (no body motion). ``who`` is optional and is not moved."""
-    if action.state is None:
-        raise StateError("missing_param", "set_state needs state")
+    require_param(action, "state")  # missing_param "set_state needs state"
     keys = state_keys(action.what, t, action.state)
     world.set_prop_state(action.what, action.state)  # validates before it changes anything
     tracks.extend(keys)

@@ -23,19 +23,16 @@ is one, else ``world.people[id].pos``; bones are their ``<bone>.rot`` tracks at 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 
 from screenplay import body as gen
 from screenplay import motion
-from screenplay.ik import RIG, Body, arm_bones
+from screenplay.ik import RIG, Body
+from screenplay.locate import Locate, bones_at, gesture_arm, held_arm_bones, puppet_root, puppet_target
 from screenplay.schema import Action
 from screenplay.state import HEAD, SEATED_POSES, StateError, World
 from screenplay.tracks import TrackSet
-
-Vec3 = tuple[float, float, float]
-Locate = Callable[[str, float], Vec3]
-Handler = Callable[[World, TrackSet, Action, float, float, Locate], float]
-Key = tuple[str, str, float, object]
+from screenplay.verb_helpers import Handler, Key, Vec3, require_on_stage, require_param, require_person
 
 BONES: tuple[str, ...] = tuple(RIG["bones"])
 
@@ -68,85 +65,35 @@ __all__ = [
 
 # ---------------------------------------------------------------------------- helpers
 
-def _puppet_target(who: str) -> str:
-    return f"puppet:{who}"
-
-
-def _who(world: World, action: Action) -> str:
-    who = action.who
-    if who is None or who not in world.people:
-        raise StateError("unknown_id", f"{who} is not in the cast")
-    return who
-
-
-def _on_stage(world: World, who: str) -> None:
-    """Gestures and postures need the puppet on stage; ``enter`` brings it on (as verbs_core)."""
-    if not world.on_stage(who):
-        raise StateError("offstage", f"{who} is offstage; use enter first")
-
-
-def _require(action: Action, field: str) -> str:
-    value = getattr(action, field)
-    if value is None:
-        raise StateError("missing_param", f"{action.do} needs {field}")
-    return value
-
+# Shared checks and geometry come from verb_helpers (require_person: unknown_id;
+# require_on_stage: "<who> is offstage; use enter first"; require_param: "<verb> needs <field>")
+# and locate (puppet_root, bones_at, gesture_arm, held_arm_bones, puppet_target).
 
 def _dur(action: Action, default: float) -> float:
+    # Body verbs' own bad_dur wording; verbs_core's pose says "dur must be positive, not <dur>".
     dur = default if action.dur is None else float(action.dur)
     if not math.isfinite(dur) or dur <= 0:
         raise StateError("bad_dur", f"dur must be a positive number of seconds, got {action.dur}")
     return dur
 
 
-def _root(world: World, tracks: TrackSet, who: str, t: float) -> Vec3:
-    v = tracks.value_at(_puppet_target(who), "root.position", t)
-    if v is None:
-        return world.people[who].pos
-    return (float(v[0]), float(v[1]), float(v[2]))
-
-
-def _rots_now(tracks: TrackSet, who: str, t: float) -> dict[str, float]:
-    out: dict[str, float] = {}
-    for bone in BONES:
-        v = tracks.value_at(_puppet_target(who), f"{bone}.rot", t)
-        out[bone] = 0.0 if v is None else float(v)
-    return out
-
-
 def _body(world: World, tracks: TrackSet, who: str, t: float) -> Body:
-    root = _root(world, tracks, who, t)
+    # Intentionally not locate.body_at: the body verbs build an upright Body (torso 0), and
+    # body_at carries the torso track, which would change their gestures' geometry.
+    root = puppet_root(world, tracks, who, t)
     p = world.people[who]
     return Body(who, (root[0], root[1]), p.facing, p.build)
 
 
-def _gesture_arm(world: World, who: str) -> str:
-    """arm_r, unless hand_r holds something and hand_l is free. Both full: arm_r keeps its prop."""
-    holding = world.people[who].holding
-    if "hand_r" in holding and "hand_l" not in holding:
-        return "arm_l"
-    return "arm_r"
-
-
-def _held_arm_bones(world: World, who: str) -> set[str]:
-    """Bones of every arm whose hand holds a prop: walks and stand-ups leave them alone."""
-    out: set[str] = set()
-    for arm in RIG["ik"]:
-        upper, lower = arm_bones(arm)
-        if RIG["ik"][arm]["socket"] in world.people[who].holding:
-            out |= {upper, lower}
-    return out
-
-
 def _settle_rots(world: World, rots: Mapping[str, float], who: str) -> dict[str, float]:
     """The bones a stand-up returns to 0: every bent bone except the arms holding props."""
-    keep = _held_arm_bones(world, who)
+    keep = held_arm_bones(world, who)
     return {b: v for b, v in rots.items() if v != 0.0 and b not in keep}
 
 
 def _final_facing(keys: list[Key], who: str, facing: int) -> int:
     for target, channel, _t, value in sorted(keys, key=lambda k: k[2]):
-        if target == _puppet_target(who) and channel == "root.facing":
+        if target == puppet_target(who) and channel == "root.facing":
             facing = int(value)  # type: ignore[call-overload]
     return facing
 
@@ -155,7 +102,7 @@ def _walk(world: World, who: str, t: float, start: Vec3, end: Vec3, facing: int)
     """motion.locomotion_keys, leaving the arms that hold props in their hold pose."""
     return motion.locomotion_keys(
         who, world.people[who].build, t, start, end, facing, "walk",
-        skip_bones=sorted(_held_arm_bones(world, who)),
+        skip_bones=sorted(held_arm_bones(world, who)),
         speed_scale=world.people[who].speed_scale,
     )
 
@@ -164,7 +111,7 @@ def _after_walk(rots: Mapping[str, float], keys: list[Key], who: str) -> dict[st
     """Bone rotations once a walk has finished: every walked bone ends at its last key (0)."""
     out = dict(rots)
     for (target, channel), value in gen.last_values(keys).items():
-        if target == _puppet_target(who) and channel.endswith(".rot"):
+        if target == puppet_target(who) and channel.endswith(".rot"):
             out[channel[: -len(".rot")]] = float(value)  # type: ignore[arg-type]
     return out
 
@@ -181,12 +128,12 @@ def _commit_facing(world: World, keys: list[Key], *bodies: Body) -> None:
 def apply_wave(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                locate: Locate) -> float:
     """wave(target?, dur=1.2): raise an arm and wave; turn first to face ``target`` if behind."""
-    who = _who(world, action)
-    _on_stage(world, who)
+    who = require_person(world, action.who)
+    require_on_stage(world, who)
     dur = _dur(action, WAVE_SECONDS)
     toward_x = None if action.target is None else locate(action.target, t)[0]
     me = _body(world, tracks, who, t)
-    keys = gen.wave_keys(me, t, _rots_now(tracks, who, t), dur, _gesture_arm(world, who), toward_x)
+    keys = gen.wave_keys(me, t, bones_at(tracks, who, t, all_bones=True), dur, gesture_arm(world, who), toward_x)
     _commit_facing(world, keys, me)
     tracks.extend(keys)
     return t + dur
@@ -195,13 +142,13 @@ def apply_wave(world: World, tracks: TrackSet, action: Action, t: float, action_
 def apply_point_at(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                    locate: Locate) -> float:
     """point_at(target, dur=1.0): aim the point pose at the target's stage position."""
-    who = _who(world, action)
-    _on_stage(world, who)
-    target = _require(action, "target")
+    who = require_person(world, action.who)
+    require_on_stage(world, who)
+    target = require_param(action, "target")
     dur = _dur(action, POINT_SECONDS)
     at = locate(target, t)
     me = _body(world, tracks, who, t)
-    keys = gen.point_keys(me, t, _rots_now(tracks, who, t), (at[0], at[1]), dur, _gesture_arm(world, who))
+    keys = gen.point_keys(me, t, bones_at(tracks, who, t, all_bones=True), (at[0], at[1]), dur, gesture_arm(world, who))
     _commit_facing(world, keys, me)
     tracks.extend(keys)
     return t + dur
@@ -210,13 +157,13 @@ def apply_point_at(world: World, tracks: TrackSet, action: Action, t: float, act
 def apply_lean_toward(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                       locate: Locate) -> float:
     """lean_toward(target, dur=1.0): face the target and lean the torso toward it."""
-    who = _who(world, action)
-    _on_stage(world, who)
-    target = _require(action, "target")
+    who = require_person(world, action.who)
+    require_on_stage(world, who)
+    target = require_param(action, "target")
     dur = _dur(action, LEAN_SECONDS)
     x = locate(target, t)[0]
     me = _body(world, tracks, who, t)
-    keys = gen.lean_keys(me, t, _rots_now(tracks, who, t), x, dur)
+    keys = gen.lean_keys(me, t, bones_at(tracks, who, t, all_bones=True), x, dur)
     _commit_facing(world, keys, me)
     tracks.extend(keys)
     return t + dur
@@ -235,12 +182,12 @@ def _not_standing(world: World, who: str) -> None:
 def apply_sit_on(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                  locate: Locate) -> float:
     """sit_on(what, socket?): walk to the seat if needed, then sit with the hips on the socket."""
-    who = _who(world, action)
-    what = _require(action, "what")
+    who = require_person(world, action.who)
+    what = require_param(action, "what")
     # World.sit_on validates (unknown_id, vehicle_seat, already_seated, no_seat, unknown_socket,
     # socket_taken) on a copy, so the real world is untouched until every check has passed.
     socket = world.copy().sit_on(who, what, action.socket)
-    _on_stage(world, who)
+    require_on_stage(world, who)
     _not_standing(world, who)
     holder = world.holder(what)
     if holder is not None:
@@ -252,9 +199,9 @@ def apply_sit_on(world: World, tracks: TrackSet, action: Action, t: float, actio
         raise StateError("not_on_stage", f"{what} is not on stage")
 
     p = world.people[who]
-    root = _root(world, tracks, who, t)
+    root = puppet_root(world, tracks, who, t)
     stand_at: Vec3 = (seat[0], anchor[1], seat[2])  # the floor under the seat
-    rots = _rots_now(tracks, who, t)
+    rots = bones_at(tracks, who, t, all_bones=True)
     keys: list[Key] = []
     t_sit, facing, ground = t, p.facing, (root[0], root[1])
     if math.hypot(seat[0] - root[0], seat[2] - root[2]) > SEAT_WALK_EPS:
@@ -274,7 +221,7 @@ def apply_sit_on(world: World, tracks: TrackSet, action: Action, t: float, actio
 def apply_stand_up(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                    locate: Locate) -> float:
     """stand_up: from a seat onto the floor in front of it, or up from kneeling / the floor."""
-    who = _who(world, action)
+    who = require_person(world, action.who)
     world.copy().stand_up(who)  # validates: not_sitting, seated_vehicle
     p = world.people[who]
     stand_at: Vec3 = p.pos
@@ -285,7 +232,7 @@ def apply_stand_up(world: World, tracks: TrackSet, action: Action, t: float, act
         if seat is not None and anchor is not None:
             stand_at = (seat[0], anchor[1], seat[2])
     me = _body(world, tracks, who, t)
-    current = _settle_rots(world, _rots_now(tracks, who, t), who)
+    current = _settle_rots(world, bones_at(tracks, who, t, all_bones=True), who)
     keys = gen.stand_keys(me, t, current, (stand_at[0], stand_at[1]), z=stand_at[2])
 
     world.stand_up(who)
@@ -297,27 +244,27 @@ def apply_stand_up(world: World, tracks: TrackSet, action: Action, t: float, act
 def apply_kneel(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                 locate: Locate) -> float:
     """kneel(dur?): kneel where the puppet stands; with dur, stand back up at t + dur."""
-    who = _who(world, action)
+    who = require_person(world, action.who)
     dur = None if action.dur is None else _dur(action, 0.0)
     world.copy().kneel(who)  # validates: seated
-    _on_stage(world, who)
+    require_on_stage(world, who)
     p = world.people[who]
     if p.pose == "kneel":
         raise StateError("already_kneeling", f"{who} is already kneeling")
     _not_standing(world, who)
 
-    root = _root(world, tracks, who, t)
+    root = puppet_root(world, tracks, who, t)
     me = _body(world, tracks, who, t)
-    rots = _rots_now(tracks, who, t)
+    rots = bones_at(tracks, who, t, all_bones=True)
     blend = gen.POSE_SECONDS if dur is None else min(gen.POSE_SECONDS, dur)
     keys = gen.kneel_keys(me, t, rots, z=root[2], dur=blend)
     end = t + blend
     if dur is not None:
         knelt = gen.last_values(keys)
-        down = knelt[(_puppet_target(who), "root.position")]
+        down = knelt[(puppet_target(who), "root.position")]
         bent = dict(rots)
         for (target, channel), value in knelt.items():
-            if target == _puppet_target(who) and channel.endswith(".rot"):
+            if target == puppet_target(who) and channel.endswith(".rot"):
                 bent[channel[: -len(".rot")]] = float(value)  # type: ignore[arg-type]
         low = Body(who, (down[0], down[1]), me.facing, me.build)  # type: ignore[index]
         current = _settle_rots(world, bent, who)
@@ -343,16 +290,16 @@ def apply_hug(world: World, tracks: TrackSet, action: Action, t: float, action_s
     ``people[id].pos`` at standing height while a puppet kneels). The hugger stands on its own
     surface: the walk ends at standing height, which is what ``world.move`` stores.
     """
-    who = _who(world, action)
-    other = _require(action, "target")
+    who = require_person(world, action.who)
+    other = require_param(action, "target")
     dur = _dur(action, HUG_SECONDS)
     world.hug_check(who, other)  # unknown_id, hug_self, offstage, seated
     world.check_free(other)
 
-    a_root = _root(world, tracks, who, t)
-    b_root = _root(world, tracks, other, t)
+    a_root = puppet_root(world, tracks, who, t)
+    b_root = puppet_root(world, tracks, other, t)
     a = world.people[who]
-    rots_a = _rots_now(tracks, who, t)
+    rots_a = bones_at(tracks, who, t, all_bones=True)
     keys: list[Key] = []
     t_hug, facing, moved_to = t, a.facing, None
     dx = b_root[0] - a_root[0]
@@ -367,7 +314,7 @@ def apply_hug(world: World, tracks: TrackSet, action: Action, t: float, action_s
         moved_to = goal
     me = Body(who, (moved_to or a_root)[:2], facing, a.build)  # type: ignore[arg-type]
     them = _body(world, tracks, other, t_hug)
-    keys += gen.hug_keys(me, them, t_hug, rots_a, _rots_now(tracks, other, t_hug), dur)
+    keys += gen.hug_keys(me, them, t_hug, rots_a, bones_at(tracks, other, t_hug, all_bones=True), dur)
     end = t_hug + dur
 
     if moved_to is not None:
