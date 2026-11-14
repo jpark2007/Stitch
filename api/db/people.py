@@ -67,7 +67,8 @@ ITEMS: list[str] = [
 
 
 class InvalidRelation(ValueError):
-    """A parent or spouse id is missing, from another family, duplicated, or makes a cycle."""
+    """A bad relation or year: an unknown, other-family or duplicate id, a cycle, a spouse
+    in the person's own lineage, death before birth, or a child born before a parent."""
 
 
 class AlreadyClaimed(Exception):
@@ -229,6 +230,44 @@ def _reject_spouse_in_lineage(spouse_ids: list[str], lineage: set[str]) -> None:
         raise InvalidRelation("a person cannot be married to their own ancestor or descendant")
 
 
+def _year_docs(db: Database, query: dict[str, Any]) -> list[dict[str, Any]]:
+    """People matching query that have a known birth year, oldest first, then by name."""
+    docs = db[COLLECTION].find({**query, "born": {"$ne": None}}, {"_id": 1, "name": 1, "born": 1})
+    return sorted(
+        (d for d in docs if isinstance(d.get("born"), int)),
+        key=lambda d: (d["born"], d.get("name") or "", d["_id"]),
+    )
+
+
+def _check_lifespan(born: int | None, died: int | None) -> None:
+    if born is not None and died is not None and died < born:
+        raise InvalidRelation("a person cannot die before they were born")
+
+
+def _check_born_after_parents(
+    db: Database, family_id: str, born: int | None, parent_ids: list[str]
+) -> None:
+    """A child's birth year must not be earlier than a parent's. Unknown years pass."""
+    if born is None or not parent_ids:
+        return
+    for parent in _year_docs(db, {"familyId": family_id, "_id": {"$in": list(parent_ids)}}):
+        if born < parent["born"]:
+            raise InvalidRelation(
+                f"a person cannot be born before their parent ({parent['name']}, born {parent['born']})"
+            )
+
+
+def _check_born_before_children(db: Database, family_id: str, person_id: str, born: int | None) -> None:
+    """A parent's birth year must not be later than any child's. Unknown years pass."""
+    if born is None:
+        return
+    for child in _year_docs(db, {"familyId": family_id, "parentIds": person_id}):
+        if child["born"] < born:
+            raise InvalidRelation(
+                f"a person cannot be born after their child ({child['name']}, born {child['born']})"
+            )
+
+
 # ------------------------------------------------------------------------------ CRUD
 
 
@@ -243,7 +282,8 @@ def create_person(
 ) -> schemas.Person:
     """Add a person to the family tree, auto-picking a character sheet when none is given.
 
-    Raises InvalidRelation for bad parent/spouse ids, AlreadyClaimed when ``user_id``
+    Raises InvalidRelation for bad parent/spouse ids or impossible years (died before
+    born, born before a parent), AlreadyClaimed when ``user_id``
     already has a person in this family, and ValueError for a duplicate ``person_id``.
 
     One person per user per family is enforced by the unique partial index
@@ -268,6 +308,8 @@ def create_person(
         for parent in parent_ids:
             ancestors |= _ancestor_ids(docs, parent)
         _reject_spouse_in_lineage(spouse_ids, ancestors)
+    _check_lifespan(new.born, new.died)
+    _check_born_after_parents(db, family_id, new.born, parent_ids)
     if user_id is not None and people.find_one({"familyId": family_id, "userId": user_id}, {"_id": 1}):
         raise AlreadyClaimed("this user already has a person in this family")
 
@@ -359,7 +401,9 @@ def update_person(
 ) -> schemas.Person | None:
     """Apply only the fields set on the patch. None if the person is not in this family.
 
-    Raises InvalidRelation for bad relations, including making someone their own ancestor.
+    Raises InvalidRelation for bad relations, including making someone their own ancestor
+    or married to one, and for impossible years (died before born, born before a parent,
+    born after a child). Unknown years are never rejected.
     Spouse links stay symmetric: added spouses link back, removed spouses unlink.
     """
     people = db[COLLECTION]
@@ -381,31 +425,42 @@ def update_person(
 
     new_parents = list(patch.parent_ids) if "parent_ids" in fields and patch.parent_ids is not None else None
     new_spouses = _dedupe(patch.spouse_ids) if "spouse_ids" in fields and patch.spouse_ids is not None else None
+    parents_after: list[str] = new_parents if new_parents is not None else list(current.get("parentIds") or [])
 
     if new_parents is not None or new_spouses is not None:
-        # Existence is checked for the lists being replaced; the parent/spouse overlap
-        # check looks at the resulting relations, including the unchanged half.
+        # Existence is checked for the lists being replaced; the overlap and lineage
+        # checks look at the resulting relations, including the unchanged half.
         _validate_relations(db, family_id, new_parents, new_spouses, self_id=person_id)
-        parents_after = new_parents if new_parents is not None else current.get("parentIds") or []
-        spouses_after = new_spouses if new_spouses is not None else current.get("spouseIds") or []
+        spouses_after = new_spouses if new_spouses is not None else list(current.get("spouseIds") or [])
         if set(parents_after) & set(spouses_after):
             raise InvalidRelation("a person cannot be both a parent and a spouse")
         # One read of the family's parent links serves both lineage checks below.
         family_docs = _lineage_docs(db, family_id)
         below = _descendant_ids(family_docs, person_id)
-    if new_parents is not None:
-        if below & set(new_parents):
+        if new_parents is not None and below & set(new_parents):
             raise InvalidRelation("a person cannot be their own ancestor")
-        updates["parentIds"] = new_parents
-    if new_spouses is not None:
-        # Ancestors as they will be after this patch, so a parent change in the same
-        # patch counts. Descendants do not depend on this person's own parentIds.
+        # Ancestors as they will be after this patch, so a parents-only change that
+        # makes an existing spouse an ancestor is caught too. Descendants do not depend
+        # on this person's own parentIds.
         after_docs = [
             {**doc, "parentIds": parents_after} if doc["_id"] == person_id else doc
             for doc in family_docs
         ]
-        _reject_spouse_in_lineage(new_spouses, below | _ancestor_ids(after_docs, person_id))
-        updates["spouseIds"] = new_spouses
+        _reject_spouse_in_lineage(spouses_after, below | _ancestor_ids(after_docs, person_id))
+        if new_parents is not None:
+            updates["parentIds"] = new_parents
+        if new_spouses is not None:
+            updates["spouseIds"] = new_spouses
+
+    # Year sanity against the resulting values. Only the parts a patch touches are
+    # checked, so older data that predates these rules can still be renamed or recolored.
+    born_after = patch.born if "born" in fields else current.get("born")
+    if "born" in fields or "died" in fields:
+        _check_lifespan(born_after, patch.died if "died" in fields else current.get("died"))
+    if "born" in fields or new_parents is not None:
+        _check_born_after_parents(db, family_id, born_after, parents_after)
+    if "born" in fields:
+        _check_born_before_children(db, family_id, person_id, born_after)
 
     if updates:
         people.update_one({"_id": person_id, "familyId": family_id}, {"$set": updates})

@@ -362,6 +362,130 @@ def test_spouse_check_uses_parents_from_same_patch(mdb):
     assert P.get_person(mdb, FAM, "old").spouse_ids == ["young"]
 
 
+def test_parents_only_patch_that_makes_a_spouse_an_ancestor_is_rejected(mdb):
+    add(mdb, "Old", pid="old")
+    add(mdb, "Mid", parents=["old"], pid="mid")
+    add(mdb, "Young", spouses=["old"], pid="young")
+    # Only parentIds is patched, but it would make Young's spouse Old a grandparent.
+    with pytest.raises(P.InvalidRelation, match="ancestor or descendant"):
+        P.update_person(mdb, FAM, "young", schemas.PersonPatch(parent_ids=["mid"]))
+    with pytest.raises(P.InvalidRelation, match="both a parent and a spouse"):
+        P.update_person(mdb, FAM, "young", schemas.PersonPatch(parent_ids=["old"]))
+    assert P.get_person(mdb, FAM, "young").parent_ids == []
+    assert P.get_person(mdb, FAM, "young").spouse_ids == ["old"]
+    assert P.get_person(mdb, FAM, "old").spouse_ids == ["young"]
+    # A parent outside the spouse's line is fine, and keeps the spouse.
+    add(mdb, "Other", pid="other")
+    young = P.update_person(mdb, FAM, "young", schemas.PersonPatch(parent_ids=["other"]))
+    assert young.parent_ids == ["other"] and young.spouse_ids == ["old"]
+
+
+def test_parents_only_patch_that_makes_a_spouse_a_descendant_is_rejected(mdb):
+    add(mdb, "Ann", pid="ann")
+    add(mdb, "Bo", spouses=["ann"], pid="bo")
+    # Ann becoming Bo's child through a parents-only patch on Ann: Bo is then Ann's
+    # parent and spouse at once, which the overlap check already catches.
+    with pytest.raises(P.InvalidRelation):
+        P.update_person(mdb, FAM, "ann", schemas.PersonPatch(parent_ids=["bo"]))
+    # Bo's grandchild-to-be: Cy is Bo's child, and Ann may not become Cy's child.
+    add(mdb, "Cy", parents=["bo"], pid="cy")
+    with pytest.raises(P.InvalidRelation, match="ancestor or descendant"):
+        P.update_person(mdb, FAM, "ann", schemas.PersonPatch(parent_ids=["cy"]))
+    assert P.get_person(mdb, FAM, "ann").parent_ids == []
+
+
+def test_spouse_patch_with_unchanged_spouses_still_succeeds(mdb):
+    build_family(mdb)
+    dad = P.update_person(mdb, FAM, "dad", schemas.PersonPatch(spouse_ids=["mom"]))
+    assert dad.spouse_ids == ["mom"]
+    assert P.get_person(mdb, FAM, "mom").spouse_ids == ["dad"]
+    dad = P.update_person(mdb, FAM, "dad", schemas.PersonPatch(parent_ids=["grandpa", "grandma"], spouse_ids=["mom"]))
+    assert dad.parent_ids == ["grandpa", "grandma"] and dad.spouse_ids == ["mom"]
+    kid = P.update_person(mdb, FAM, "kid", schemas.PersonPatch(parent_ids=["dad", "mom"]))
+    assert kid.parent_ids == ["dad", "mom"]
+
+
+# ------------------------------------------------------------------------------ years
+
+
+def test_died_before_born_is_rejected_on_create_and_update(mdb):
+    with pytest.raises(P.InvalidRelation, match="die before they were born"):
+        add(mdb, "Mei", 1950, died=1949)
+    assert mdb.people.count_documents({}) == 0
+    mei = add(mdb, "Mei", 1950, died=1950, pid="mei")
+    assert mei.died == 1950
+    with pytest.raises(P.InvalidRelation, match="die before they were born"):
+        P.update_person(mdb, FAM, "mei", schemas.PersonPatch(died=1940))
+    with pytest.raises(P.InvalidRelation, match="die before they were born"):
+        P.update_person(mdb, FAM, "mei", schemas.PersonPatch(born=1960))
+    with pytest.raises(P.InvalidRelation, match="die before they were born"):
+        P.update_person(mdb, FAM, "mei", schemas.PersonPatch(born=2000, died=1999))
+    assert P.update_person(mdb, FAM, "mei", schemas.PersonPatch(born=1960, died=2001)).born == 1960
+    assert P.get_person(mdb, FAM, "mei").died == 2001
+
+
+def test_child_born_before_a_parent_is_rejected(mdb):
+    build_family(mdb)
+    count = mdb.people.count_documents({})
+    with pytest.raises(P.InvalidRelation, match=r"born before their parent \(David, born 1962\)"):
+        add(mdb, "Too early", 1960, parents=["dad", "mom"])
+    assert mdb.people.count_documents({}) == count
+    # Same year as a parent is allowed (an unknown-exact-year edge, not an impossibility).
+    assert add(mdb, "Same year", 1964, parents=["dad", "mom"]).born == 1964
+    # Update: moving a child before a parent, or adding a younger parent.
+    with pytest.raises(P.InvalidRelation, match="born before their parent"):
+        P.update_person(mdb, FAM, "kid", schemas.PersonPatch(born=1950))
+    with pytest.raises(P.InvalidRelation, match="born before their parent"):
+        P.update_person(mdb, FAM, "joe", schemas.PersonPatch(parent_ids=["dad"]))  # Joe 1960, David 1962
+    assert P.get_person(mdb, FAM, "kid").born == 1990
+    assert P.get_person(mdb, FAM, "joe").parent_ids == []
+
+
+def test_parent_born_after_a_child_is_rejected_on_update(mdb):
+    build_family(mdb)
+    with pytest.raises(P.InvalidRelation, match=r"born after their child \(David, born 1962\)"):
+        P.update_person(mdb, FAM, "grandpa", schemas.PersonPatch(born=1963))
+    assert P.get_person(mdb, FAM, "grandpa").born == 1935
+    with pytest.raises(P.InvalidRelation, match=r"born after their child \(Sam, born 1990\)"):
+        P.update_person(mdb, FAM, "dad", schemas.PersonPatch(born=1995))
+    # Lucia's year is unknown, so Aunt Maria can move anywhere her parents allow.
+    assert P.update_person(mdb, FAM, "aunt", schemas.PersonPatch(born=2000)).born == 2000
+
+
+def test_unknown_years_are_never_rejected(mdb):
+    build_family(mdb)
+    nobody_knows = add(mdb, "Unknown", None, parents=["dad", "mom"], died=1900, pid="unknown")
+    assert nobody_knows.born is None
+    add(mdb, "Ghost parent", None, pid="ghost")
+    assert add(mdb, "Child of ghost", 1700, parents=["ghost"]).born == 1700
+    assert P.update_person(mdb, FAM, "grandpa", schemas.PersonPatch(born=None)).born is None
+    assert P.update_person(mdb, FAM, "dad", schemas.PersonPatch(born=None, died=1800)).died == 1800
+    assert P.update_person(mdb, FAM, "unknown", schemas.PersonPatch(died=None)).died is None
+
+
+def test_older_data_that_breaks_the_year_rules_can_still_be_renamed(mdb):
+    """Only the fields a patch touches are checked, so a rename never trips an old conflict."""
+    add(mdb, "Parent", 1960, pid="parent")
+    add(mdb, "Child", 1970, parents=["parent"], pid="child")
+    mdb.people.update_one({"_id": "child"}, {"$set": {"born": 1950, "died": 1940}})  # pre-rule data
+    assert P.update_person(mdb, FAM, "child", schemas.PersonPatch(name="Renamed")).name == "Renamed"
+    assert P.update_person(mdb, FAM, "parent", schemas.PersonPatch(died=2020)).died == 2020
+
+
+def test_demo_people_satisfy_the_year_and_lineage_rules(mdb):
+    from seed import demo
+
+    for person in demo.demo_people():
+        P.create_person(
+            mdb,
+            FAM,
+            new(person.name, person.born, person.parent_ids, person.spouse_ids, person.character, died=person.died),
+            added_by="u_admin",
+            person_id=person.id,
+        )
+    assert mdb.people.count_documents({"familyId": FAM}) == len(demo.demo_people())
+
+
 def test_grandparent_as_spouse_rejected_on_create(mdb):
     build_family(mdb)
     count = mdb.people.count_documents({})
