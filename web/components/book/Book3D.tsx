@@ -68,7 +68,7 @@ import {
   type BookArt,
   type StageSlotArgs,
 } from "./StoryPage";
-import type { BookCover, BookSpread } from "./types";
+import { spreadDate, type BookCover, type BookSpread } from "./types";
 
 const LEAF_MASK: DeckledMaskOptions = { aspect: PAGE_W / PAGE_H, style: "deckled", amount: 0.7, seed: 11, resolution: 1024 };
 const KRAFT = "#b58c62";
@@ -443,6 +443,9 @@ function MuteButton({ muted }: { muted: boolean }) {
   );
 }
 
+/** A dot's label when it is a dateLine, not a year: one line, cut with "…". */
+const WORDY_LABEL = { maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } as const;
+
 function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookView; onPick: (i: number) => void }) {
   return (
     <motion.nav
@@ -456,19 +459,22 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
       <ol className="flex max-w-[calc(100vw-1rem)] items-start gap-1 rounded-full bg-[#140c07]/45 px-3 py-1.5">
         {spreads.map((s, i) => {
           const active = view.spread === i + 1;
-          const dated = Number.isFinite(s.year) && s.year > 0;
+          // Its dateLine ("Every Christmas Eve") when it has one, else its year.
+          const date = spreadDate(s);
+          const dated = date !== "";
+          const wordy = s.kind !== "end" && !!s.dateLine?.trim();
           // A long book narrows its dots to fit the screen; past nine, only
           // the open one, the first and the last keep their years.
-          const label = s.kind === "end" ? "end" : dated ? String(s.year) : "·";
+          const label = s.kind === "end" ? "end" : dated ? date : "·";
           const quiet = spreads.length > 9 && !active && i !== 0 && i !== spreads.length - 1;
           return (
             <li key={s.id}>
               <button
                 type="button"
                 onClick={() => onPick(i + 1)}
-                aria-label={s.kind === "end" ? s.title : dated ? `${s.title}, ${s.year}` : s.title}
+                aria-label={s.kind === "end" ? s.title : dated ? `${s.title}, ${date}` : s.title}
                 aria-current={active ? "page" : undefined}
-                title={s.title}
+                title={wordy ? `${s.title}, ${date}` : s.title}
                 className="group flex flex-col items-center gap-1 py-1 outline-offset-2"
                 style={{ width: `min(3.5rem, calc((100vw - 3.5rem) / ${spreads.length} - 0.25rem))` }}
               >
@@ -486,6 +492,8 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
                   style={{
                     color: active ? "rgb(243 230 207 / 0.92)" : "rgb(243 230 207 / 0.5)",
                     visibility: quiet ? "hidden" : undefined,
+                    // A dateLine is cut to the dot's width; the title tells it whole.
+                    ...(wordy ? WORDY_LABEL : null),
                   }}
                 >
                   {label}
