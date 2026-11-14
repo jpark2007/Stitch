@@ -13,6 +13,7 @@ import PropChips from "@/components/agent/PropChips";
 import { useAgentRun, type RunSource, type UseAgentRunOptions } from "@/components/agent/useAgentRun";
 import type { PendingInput } from "@/components/agent/runState";
 
+import { draftPauseKey } from "@/components/agent/answerDraft";
 import { errorRecovery } from "@/components/agent/feedView";
 
 import { Button, ButtonLink } from "./Button";
@@ -30,6 +31,13 @@ export interface MemoryRunTelling {
 }
 
 const HEADINGS = "h1, h2, h3, h4, h5, h6";
+
+/**
+ * No focus ring on a heading this panel focused by script (tabindex="-1",
+ * which no keyboard can reach): after a reload Chromium treats that focus as
+ * keyboard focus and would ring the card's title. Controls keep their ring.
+ */
+export const SCRIPT_FOCUS_QUIET = "[&_:is(h1,h2,h3,h4,h5,h6)[tabindex='-1']]:outline-none";
 
 /**
  * Focus `root`'s first heading (made focusable for script only), or `root`
@@ -126,7 +134,15 @@ export function MemoryRun(props: {
     cardNode = (
       <div key={cardKey} ref={cardRef} className="scroll-mt-6">
         {pending.kind === "answer" ? (
-          <FollowUpCard question={pending.question} onAnswer={answerQuestion} />
+          <FollowUpCard
+            question={pending.question}
+            onAnswer={answerQuestion}
+            draft={
+              runKey && state.pauseSeq !== null
+                ? { runId: runKey, pauseKey: draftPauseKey("answer", state.pauseSeq) }
+                : undefined
+            }
+          />
         ) : pending.kind === "props" ? (
           <PropChips props={pending.props} mediaUrl={mediaUrl} onSubmit={reviewProps} onUploadPhoto={onUploadPhoto} />
         ) : (
@@ -151,7 +167,7 @@ export function MemoryRun(props: {
     ) : undefined;
 
   return (
-    <div className="flex w-full min-w-0 flex-col gap-6">
+    <div className={`flex w-full min-w-0 flex-col gap-6 ${SCRIPT_FOCUS_QUIET}`}>
       {telling ? <TellingNote {...telling} /> : null}
 
       {/* The feed is a full sheet in this column, the same width as the note

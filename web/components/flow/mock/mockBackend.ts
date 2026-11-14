@@ -131,7 +131,6 @@ const INVITE_DAYS = 14;
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** api/routes/memories.py MIN_YEAR; the latest year is next year (the server's clock + 1). */
 const MIN_MEMORY_YEAR = 1800;
-const SHORT_TELLING_WORDS = 25;
 /** api/routes/memories.py MAX_PHOTOS and MAX_PARTICIPANTS. */
 const MAX_PHOTOS = 10;
 const MAX_PARTICIPANTS = 100;
@@ -142,6 +141,10 @@ const UPLOAD_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"
 
 /** api/seed/fake_runs.py FOLLOWUP_QUESTION, so both modes ask the same thing. */
 export const FOLLOW_UP_QUESTION = "Who else was there that day?";
+/** api/seed/fake_runs.py MERGE_QUESTION: "Is Grandpa Joe the Joseph in your family tree?" */
+export function mergeQuestion(said: string, candidate: string): string {
+  return `Is ${said} the ${candidate} in your family tree?`;
+}
 /** api/routes/memories.py NOT_WAITING: the run is not paused on a question or review. */
 export const NOT_WAITING = "This run is not waiting for an answer";
 /** api/routes/memories.py ANSWER_WRONG_KIND: paused, but on another kind of answer. */
@@ -376,10 +379,6 @@ function eraOf(year: number): string {
   return `${Math.floor(year / 10) * 10}s`;
 }
 
-function wordCount(text: string): number {
-  return text.trim().split(/\s+/).filter(Boolean).length;
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
@@ -468,6 +467,78 @@ const STORY_THINGS: Array<{ word: RegExp; name: string; size: PropChip["size"] }
   { word: /\btables?\b/i, name: "kitchen table", size: "furniture" },
   { word: /\bdoors?\b/i, name: "front door", size: "furniture" },
 ];
+
+// The scripted interviewer's merge check (api/seed/fake_runs.py merge_candidate),
+// so a story about "Grandpa Lou" asks the same question in both modes.
+
+/** api/seed/fake_runs.py KIN_TITLES. */
+const KIN_TITLES = [
+  "Grandma", "Grandpa", "Granny", "Grandmother", "Grandfather", "Nana", "Nonna", "Abuela", "Abuelo",
+  "Uncle", "Aunt", "Auntie", "Tia", "Tio", "Tía", "Tío", "Cousin",
+];
+/** A title and the word after it (letters only). Case-sensitive, as the API's. */
+const KIN_NAME = new RegExp(`(?<![\\p{L}\\p{N}_])(${KIN_TITLES.join("|")})\\s+(\\p{L}[\\p{L}\\p{M}]*)`, "gu");
+const ELDER_TITLES = new Set(["grandma", "grandpa", "granny", "grandmother", "grandfather", "nana", "nonna", "abuela", "abuelo"]);
+const FEMALE_WORDS = new Set([
+  "grandma", "granny", "grandmother", "nana", "nonna", "abuela", "aunt", "auntie", "tia", "tía",
+  "mom", "mum", "mother", "mama", "sister", "daughter", "wife", "she", "her", "hers", "herself",
+]);
+const MALE_WORDS = new Set([
+  "grandpa", "grandfather", "abuelo", "uncle", "tio", "tío",
+  "dad", "father", "papa", "brother", "son", "husband", "he", "his", "him", "himself",
+]);
+
+function firstName(name: string): string {
+  return name.trim().split(/\s+/)[0] ?? "";
+}
+
+/** "f", "m" or null, from the record's own words: its id and its character notes. */
+function genderHint(person: Person): "f" | "m" | null {
+  const notes = (person.character as { notes?: string | null } | undefined)?.notes ?? "";
+  const words = `${person.id.replace(/_/g, " ")} ${notes}`.toLowerCase().match(/\p{L}+/gu) ?? [];
+  const female = words.some((w) => FEMALE_WORDS.has(w));
+  const male = words.some((w) => MALE_WORDS.has(w));
+  if (female === male) return null;
+  return female ? "f" : "m";
+}
+
+/** Whether `person` can be the one a family calls "<title> ..." (fake_runs._fits_title). */
+function fitsTitle(person: Person, title: string, parents: Set<string>): boolean {
+  const key = title.toLowerCase();
+  if (ELDER_TITLES.has(key) && !parents.has(person.id)) return false;
+  const wanted = FEMALE_WORDS.has(key) ? "f" : MALE_WORDS.has(key) ? "m" : null;
+  const hint = genderHint(person);
+  return wanted === null || hint === null || hint === wanted;
+}
+
+/**
+ * The first "<title> <Name>" in `text` that may be someone already in the
+ * tree: ("Grandpa Lou", Luis) when Name is capitalised, is nobody's first
+ * name, and starts with the same two letters as exactly one person's who is
+ * neither the teller nor already named and who can carry the title.
+ */
+export function mergeCandidateFor(
+  people: Person[],
+  tellerId: string,
+  named: string[],
+  text: string,
+): { said: string; person: Person } | null {
+  const firsts = new Set(people.map((p) => firstName(p.name).toLowerCase()));
+  const skip = new Set([tellerId, ...named]);
+  const parents = new Set(people.flatMap((p) => p.parentIds ?? []));
+  const others = people.filter((p) => !skip.has(p.id));
+  for (const match of text.matchAll(KIN_NAME)) {
+    const [, title, said] = match;
+    const key = said.toLowerCase();
+    if (!/^\p{Lu}/u.test(said) || firsts.has(key) || Array.from(key).length < 2) continue;
+    const prefix = Array.from(key).slice(0, 2).join("");
+    const alike = others.filter(
+      (p) => Array.from(firstName(p.name).toLowerCase()).slice(0, 2).join("") === prefix && fitsTitle(p, title, parents),
+    );
+    if (alike.length === 1) return { said: `${title} ${said}`, person: alike[0] };
+  }
+  return null;
+}
 
 const PLAN_STEPS = [
   "Listen to the story",
@@ -1527,11 +1598,6 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     return chips;
   }
 
-  function mergeCandidate(s: MockState, run: MockRun): Person | null {
-    const people = familyPeople(s, run.familyId).filter((p) => p.id !== run.authorId);
-    return people.find((p) => p.id === "luis") ?? people[0] ?? null;
-  }
-
   /** Make sure the family owns copies of the template's props and sets. */
   function ensureTemplateAssets(s: MockState, fid: string): void {
     if (!template) return;
@@ -1759,13 +1825,17 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       if (!memory) throw new Error("That moment is no longer in the family.");
       return memory;
     };
-    /** Write the moment (or the new telling) into the family, then say the scene is ready. */
+    /** Write the moment (or the new telling) into the family; part of a step that emits. */
+    const commit = (s: MockState): void => {
+      const memory = commitRun(s, run);
+      save();
+      run.sceneMemoryId = memory.id;
+    };
+    /** The scene is ready: the moment written earlier in the run, at its version now. */
     const sceneReady = () =>
-      action((s) => {
-        const memory = commitRun(s, run);
-        save();
-        run.sceneMemoryId = memory.id;
-        emit(run, "scene_ready", { memoryId: memory.id, version: memory.version ?? 1 });
+      step("scene_ready", (s) => {
+        const memory = written(s);
+        return { memoryId: memory.id, version: memory.version ?? 1 };
       });
     const done = () => step("done", (s) => ({ memoryId: written(s).id }));
 
@@ -1791,32 +1861,30 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
           return { name: "narrator", summary: `${lines} line${lines === 1 ? "" : "s"}, compiled without errors.` };
         });
         await step("plan", plan(2));
+        await action((s) => {
+          commit(s);
+          emit(run, "plan", plan(todos.length));
+        });
         await sceneReady();
-        await step("plan", plan(todos.length));
         await done();
         return;
       }
 
-      const short = () => wordCount(run.text) < SHORT_TELLING_WORDS;
+      // As api/seed/fake_runs.py (seed.serve asks the follow-up every time):
+      // the interviewer, the one follow-up, then the merge check on the
+      // telling with the answer added (the answer route appends it).
       await step("plan", planAt(0));
-      await step("subagent_start", { name: "interviewer", task: "Read the telling and look for what's missing" });
-      await step("subagent_end", () => ({
-        name: "interviewer",
-        summary: short() ? "The story is short, so one question for you." : "The story has what the scene needs.",
-      }));
-      // Decided from the telling as it stands here: the answer, once given,
-      // is part of run.text, but by then this step is done.
-      await pauseOn("answer", "question", () => (short() ? { text: FOLLOW_UP_QUESTION } : null));
+      await step("subagent_start", { name: "interviewer", task: "Read the telling and find what is missing" });
+      await step("subagent_end", { name: "interviewer", summary: "One follow-up: who else was there." });
+      await pauseOn("answer", "question", () => ({ text: FOLLOW_UP_QUESTION }));
       await pauseOn("merge", "merge", (s) => {
-        if (!/\buncle\b/i.test(run.text)) return null;
-        const candidate = mergeCandidate(s, run);
-        if (!candidate) return null;
-        run.mergePersonId = candidate.id;
-        const born = candidate.born ? `, born ${candidate.born}` : "";
+        const found = mergeCandidateFor(familyPeople(s, run.familyId), run.authorId, run.participantIds, run.text);
+        if (!found) return null;
+        run.mergePersonId = found.person.id;
         return {
-          text: `Your story mentions an uncle. ${candidate.name}${born}, is already in the family tree.`,
-          personId: candidate.id,
-          candidateName: `Uncle ${candidate.name}`,
+          text: mergeQuestion(found.said, found.person.name),
+          personId: found.person.id,
+          candidateName: found.person.name,
         };
       });
 
@@ -1875,9 +1943,12 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       await step("frames", { frames, critique: "Everyone is on their marks and the hand-off reads clearly." });
       await step("subagent_end", { name: "checker", summary: "The pages look right." });
 
-      await sceneReady();
-
-      await step("plan", planAt(7));
+      // As the scripted studio: the moment is saved, the linker asks the
+      // others, the plan completes, and only then is the scene ready.
+      await action((s) => {
+        commit(s);
+        emit(run, "plan", planAt(7));
+      });
       await step("subagent_start", { name: "linker", task: "Put it in everyone's books" });
       await action((s) => {
         const memory = written(s);
@@ -1892,6 +1963,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
         });
       });
       await step("plan", planAt(PLAN_STEPS.length));
+      await sceneReady();
       await done();
     } catch (err) {
       if (err instanceof RunStopped || !alive()) return;
