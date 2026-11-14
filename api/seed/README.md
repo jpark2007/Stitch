@@ -139,14 +139,19 @@ year and attach photos, and submit. The live feed then shows, one step every
    screenplay and timeline, the `hymn_books` prop and the `church_steps_1988` set), recast
    with this run's people: the teller plays the sample's Ana, and the first participant
    who is not the teller plays David (else the teller's spouse, else someone else in the
-   family);
+   family). The sample's narration is replaced by the teller's own words: one line per
+   sentence of the telling as saved (with the follow-up answer), over the same action. The
+   teller is the default narrator and the only narration track; whoever plays David is in
+   the scene and the memory's participants but narrates nothing until they tell it too;
 5. `scene_ready`, then `done` with the new memory's id.
 
 The memory, with its photos, the answer and the scene, then opens in the **teller's book
 and in each participant's book** (`GET /families/demo_family/people/{id}/book`). The scene
 is always the hymn-book one, whatever the telling says: it shows the flow, not the agent.
 Adding to an existing memory (`memoryId` in the form) only adds a second telling and links
-the people to it: no question, no prop review, no new scene.
+the people to it: no question, no prop review, no new scene. The new teller's words become
+their own narration track over the same action (the first teller stays the default
+narrator); a retelling by the default narrator replaces the default narration.
 
 The same flow with curl (the server above on port 8000; `steps.png` is any PNG, JPEG,
 WebP, GIF or HEIC file):
