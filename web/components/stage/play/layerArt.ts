@@ -18,6 +18,7 @@
 
 import type { SetLayer } from "@/lib/types";
 import type { CutoutSpec, PaintKit } from "../cutout";
+import { corsModeFor } from "../mediaCors";
 import { rng } from "../timeline";
 
 /** Width of every layer in stage units. */
@@ -226,7 +227,7 @@ export function loadImage(url: string): Promise<HTMLImageElement> {
   if (!p) {
     p = new Promise((resolve, reject) => {
       const img = new Image();
-      img.crossOrigin = "anonymous";
+      img.crossOrigin = corsModeFor(url);
       img.decoding = "async";
       img.onload = () => resolve(img);
       img.onerror = () => reject(new Error(`could not load ${url}`));

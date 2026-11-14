@@ -17,6 +17,7 @@
  */
 
 import { ClampToEdgeWrapping, NoColorSpace, SRGBColorSpace, Texture } from "three";
+import { corsModeFor } from "../mediaCors";
 
 /** Largest side kept, in px. Prop art is never shown bigger than this. */
 const MAX_SIDE = 2048;
@@ -119,7 +120,7 @@ export function acquireArt(url: string): ArtEntry {
   slots.set(url, slot);
 
   const img = new Image();
-  img.crossOrigin = "anonymous";
+  img.crossOrigin = corsModeFor(url);
   img.decoding = "async";
   img.src = url;
   img
