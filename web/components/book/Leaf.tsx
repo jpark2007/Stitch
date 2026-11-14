@@ -129,6 +129,8 @@ export class LeafBody {
   private twTarget = new Float32Array(BONES);
   private started = false;
   private settled = false;
+  /** Skipped while hidden, so its pose may be stale. */
+  private hidden = false;
   private key = "";
   private front = false;
 
@@ -177,7 +179,15 @@ export class LeafBody {
         m.polygonOffsetUnits = leaf.front ? FRONT_OFFSET.units : 0;
       }
     }
-    if (!leaf.visible && this.started) return false;
+    if (!leaf.visible && this.started) {
+      this.hidden = true;
+      return false;
+    }
+    // A sheet back in view on a stack (the stack top again once the sheet
+    // over it lifts off, or pulled back out of a landing) takes its rest
+    // shape at once: its last pose went stale while it was hidden.
+    const reshown = this.hidden && leaf.mode === "rest";
+    this.hidden = false;
 
     turnTargets(leaf, rt.restR, rt.restL, target);
     const twist = turnTwist(leaf);
@@ -187,7 +197,7 @@ export class LeafBody {
     if (this.settled && key === this.key) return false;
     this.key = key;
 
-    if (leaf.mode === "frozen" || !this.started) {
+    if (leaf.mode === "frozen" || !this.started || reshown) {
       springs.snap(target, twTarget);
       this.started = true;
     } else {
