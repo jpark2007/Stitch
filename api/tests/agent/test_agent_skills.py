@@ -147,7 +147,9 @@ def _unsupported_bullet(text: str) -> str:
 def test_directing_names_effects_as_the_only_unsupported_family():
     """On main the compiler has a handler for every verb except the effects. The directing skill
     says so: its `unsupported_verb` fix is about effects only, and its effects line says they do
-    not compile yet. The non-effect half is checked against the real compiler's handlers."""
+    not compile yet. The non-effect half is checked against the real compiler's handlers; the
+    effects half against what the real compiler says about each effect verb in
+    test_agent_real_compiler.py::test_directing_skill_effects_claim_matches_the_compiler."""
     from screenplay.compiler import HANDLERS
 
     text = body("directing")
