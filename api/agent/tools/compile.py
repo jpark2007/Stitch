@@ -11,7 +11,8 @@ changes no file; it repeats the STOP text and the last errors. So an emitted `co
 never has a round above `MAX_COMPILE_ROUNDS`. A successful compile resets the count.
 
 Every failed compile also blanks `/timeline.json`, so a timeline from an earlier successful
-compile can never be voiced, rendered or saved after the draft stopped compiling.
+compile can never be voiced, rendered or saved after the draft stopped compiling, and blanks an
+existing `/scene_review.txt`, whose warnings were about that earlier draft.
 
 After a successful compile the tool also runs `scene_review.review_scene` (pageText,
 explanations, pull tabs, narration sources), `scene_review.review_cue_drift` (narration cues
@@ -445,6 +446,9 @@ def make_compile_tool(
                 # reject it as invalid JSON / not a valid timeline.
                 TIMELINE_PATH: create_file_data(""),
             }
+            if REVIEW_PATH in files:
+                # The review of the last draft that compiled would outlive it: blank it too.
+                updates[REVIEW_PATH] = create_file_data("")
             _emit("compile_error", schemas.CompileErrorEvent(errors=errors, round=rounds))
             content = _failure_text(errors, rounds)
 

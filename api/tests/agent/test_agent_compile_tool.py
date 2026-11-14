@@ -689,3 +689,13 @@ def test_tool_camera_note_crash_does_not_fail_the_compile(monkeypatch):
     assert _last_tool_message(state).content.startswith("ok: ")
     assert "note:" not in _last_tool_message(state).content
 
+
+def test_a_failed_compile_blanks_the_last_scene_review(compiler):
+    """The review of a draft that compiled must not outlive it: after a failure the file is
+    blank, like /timeline.json."""
+    graph = _graph(compiler)
+    state, _ = _call(graph, "stale", 1, files={"/screenplay.json": create_file_data(json.dumps(NO_PAGE_TEXT))})
+    assert _text(state, "/scene_review.txt") == NO_PAGE_TEXT_WARNING + "\n"
+    state, _ = _call(graph, "stale", 2, files={"/screenplay.json": create_file_data(BAD_TEXT)})
+    assert "round 1 of 3" in _last_tool_message(state).content
+    assert _text(state, "/scene_review.txt") == ""
