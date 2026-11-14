@@ -240,7 +240,7 @@ def test_get_in_named_socket_taken():
 def test_get_in_already_seated():
     tracks = TrackSet()
     world = seated_world(tracks, "dad")
-    assert_atomic(world, tracks, "already_seated", "dad is seated in car.driver", do="get_in", who="dad", what="car")
+    assert_atomic(world, tracks, "already_seated", "dad is seated in car.driver; use get_out first", do="get_in", who="dad", what="car")
 
 
 def test_get_in_unplaced_vehicle():
@@ -259,7 +259,7 @@ def test_get_in_unknown_prop_and_socket():
     tracks = TrackSet()
     world = make_world()
     assert_atomic(world, tracks, "unknown_id", "bus is not a known prop", do="get_in", who="dad", what="bus")
-    assert_atomic(world, tracks, "unknown_socket", "car has no socket roof",
+    assert_atomic(world, tracks, "unknown_socket", "car has no socket roof; its sockets are driver, passenger",
                   do="get_in", who="dad", what="car", socket="roof")
 
 
@@ -287,7 +287,7 @@ def test_get_out_stands_beside_the_seat_at_the_acting_plane():
 def test_get_out_when_not_in_that_vehicle():
     tracks = TrackSet()
     world = seated_world(tracks, "dad")
-    assert_atomic(world, tracks, "not_in_vehicle", "kid is not in car", do="get_out", who="kid", what="car")
+    assert_atomic(world, tracks, "not_in_vehicle", "kid is not in car; use get_in first", do="get_out", who="kid", what="car")
 
 
 def test_get_out_of_a_chair_is_not_a_vehicle():
@@ -406,14 +406,14 @@ def test_drive_to_carries_props_resting_on_a_socket_without_keys():
 def test_drive_to_by_a_passenger_is_not_the_driver():
     tracks = TrackSet()
     world = seated_world(tracks, "dad", "mom")
-    assert_atomic(world, tracks, "not_driver", "mom is in car.passenger, not the driver's seat",
+    assert_atomic(world, tracks, "not_driver", "mom is in car.passenger, not car.driver",
                   do="drive_to", who="mom", what="car", to="church")
 
 
 def test_drive_to_by_someone_outside():
     tracks = TrackSet()
     world = seated_world(tracks, "dad")
-    assert_atomic(world, tracks, "not_driver", "kid is not in the driver's seat of car",
+    assert_atomic(world, tracks, "not_driver", "kid is not in car.driver; use get_in with socket driver first",
                   do="drive_to", who="kid", what="car", to="church")
 
 
@@ -485,7 +485,7 @@ def test_ride_to_without_a_driver():
     tracks = TrackSet()
     world = make_world()
     run(world, tracks, 0.0, do="get_in", who="mom", what="car", socket="passenger")
-    assert_atomic(world, tracks, "no_driver", "nobody is driving car", do="ride_to", who="mom", what="car", to="church")
+    assert_atomic(world, tracks, "no_driver", "nobody is in car.driver; someone must get_in it with socket driver first", do="ride_to", who="mom", what="car", to="church")
 
 
 def test_ride_to_with_a_busy_driver():
@@ -500,7 +500,7 @@ def test_ride_to_with_a_busy_driver():
 def test_ride_to_when_not_in_the_vehicle():
     tracks = TrackSet()
     world = seated_world(tracks, "dad")
-    assert_atomic(world, tracks, "not_in_vehicle", "kid is not in car", do="ride_to", who="kid", what="car", to="church")
+    assert_atomic(world, tracks, "not_in_vehicle", "kid is not in car; use get_in first", do="ride_to", who="kid", what="car", to="church")
 
 
 def test_ride_to_a_chair_is_not_a_vehicle():
@@ -947,5 +947,5 @@ def test_ride_to_with_a_busy_stacked_rider():
 def test_ride_to_from_a_chair_on_the_ground_is_not_in_the_vehicle():
     tracks = TrackSet()
     world = pickup_world(chair_on="chair_spot")
-    assert_atomic(world, tracks, "not_in_vehicle", "kid is not in pickup",
+    assert_atomic(world, tracks, "not_in_vehicle", "kid is not in pickup; use get_in first",
                   do="ride_to", who="kid", what="pickup", to="church", t=1.0)

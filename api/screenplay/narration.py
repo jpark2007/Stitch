@@ -67,11 +67,6 @@ def _r(x: float) -> float:
     return round(x, _DIGITS) + 0.0
 
 
-def _f2(x: float) -> str:
-    """A time for messages, to 2 dp (never "-0.00")."""
-    return f"{round(x, 2) + 0.0:.2f}"
-
-
 def _action_name(shot: Shot, idx: int) -> str:
     a = shot.actions[idx]
     return a.id or a.do
@@ -432,8 +427,8 @@ def _check_no_overlap(shot: Shot, action_start: float, author: str | None, lines
         if prev is not None and line.t < prev[1] - 1e-6:
             raise NarrationError(
                 "lines_overlap",
-                f"line {i} starts at shot t={_f2(line.t - action_start)}, before line {prev[0]} has been "
-                f"said (its last word ends at shot t={_f2(prev[1] - action_start)}); start line {i} "
+                f"line {i} starts at shot t={fmt_t(line.t - action_start)}, before line {prev[0]} has been "
+                f"said (its last word ends at shot t={fmt_t(prev[1] - action_start)}); start line {i} "
                 f"later or shorten line {prev[0]}",
                 author=author,
                 shot=shot.id,
@@ -588,7 +583,7 @@ def convert_interactions(
             if t_from is not None and t_to is not None and t_to < t_from:
                 raise NarrationError(
                     "interaction_bad_range",
-                    f'interaction "{it.id}" would scrub from shot t={_f2(t_from)} back to t={_f2(t_to)} '
+                    f'interaction "{it.id}" would scrub from shot t={fmt_t(t_from)} back to t={fmt_t(t_to)} '
                     f"once its actions move onto their cue words; widen the range or cue the actions in order",
                     shot=shot_id,
                     line_index=i,
@@ -605,13 +600,13 @@ def convert_interactions(
             # checked by validate, and above once retimed).
             if t_to is None:
                 reason = (
-                    f'interaction "{it.id}" would scrub from shot t={_f2(tl_from - base)} back to '
-                    f't={_f2(tl_to - base)}, where shot "{shot_id}" ends; give it a "to" after its "from"'
+                    f'interaction "{it.id}" would scrub from shot t={fmt_t(tl_from - base)} back to '
+                    f't={fmt_t(tl_to - base)}, where shot "{shot_id}" ends; give it a "to" after its "from"'
                 )
             else:
                 reason = (
-                    f'interaction "{it.id}" would scrub from shot t=0.00, where shot "{shot_id}" starts, '
-                    f'back to t={_f2(tl_to - base)}; give it a "from" before its "to"'
+                    f'interaction "{it.id}" would scrub from shot t=0, where shot "{shot_id}" starts, '
+                    f'back to t={fmt_t(tl_to - base)}; give it a "from" before its "to"'
                 )
             raise NarrationError("interaction_bad_range", reason, shot=shot_id, line_index=i, interaction=True)
         drives = it.drives.model_copy(deep=True, update={"from_": tl_from, "to": tl_to})

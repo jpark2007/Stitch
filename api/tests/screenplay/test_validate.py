@@ -745,7 +745,7 @@ def test_sit_on_a_vehicle_seat_is_allowed_statically():
     ("hand_to", {"what": "hymn_books", "to": "dad"}, '"to" is dad themselves'),
     ("hug", {"target": "dad"}, '"target" is dad themselves'),
     ("follow", {"target": "dad"}, '"target" is dad themselves'),
-    ("place_on", {"what": "table", "on": "table"}, '"on" is "table" itself'),
+    ("place_on", {"what": "table", "on": "table"}, '"on" is table itself'),
 ])
 def test_self_target(verb, params, reason):
     a = act(verb, who="dad", **params)
@@ -837,13 +837,13 @@ def test_other_telling_cue_before_start():
         "action later"))
 
 
-# The default telling overlaps: line 0 is said until t=1.00 (last word 0.75 + WORD_SECONDS),
-# but line 1 starts at t=0.50. Line 0 cues the drop, which moves to its first word (t=0).
+# The default telling overlaps: line 0 is said until t=1 (last word 0.75 + WORD_SECONDS),
+# but line 1 starts at t=0.5. Line 0 cues the drop, which moves to its first word (t=0).
 OVERLAPPING_DEFAULT = [line(0, "Dropped one two three", cue="drop", cueWord="Dropped"), line(0.5, "four")]
 DEFAULT_OVERLAP = E(
     "lines_overlap",
-    "shot s1, dad's narration line 1: line 1 starts at shot t=0.50, before line 0 has been said "
-    "(its last word ends at shot t=1.00); start line 1 later or shorten line 0")
+    "shot s1, dad's narration line 1: line 1 starts at shot t=0.5, before line 0 has been said "
+    "(its last word ends at shot t=1); start line 1 later or shorten line 0")
 
 
 def test_default_overlap_with_no_other_teller_is_static():
@@ -881,8 +881,8 @@ def test_each_tellers_own_error_comes_before_the_one_default_overlap():
     assert_errors(
         check(sp),
         E("lines_overlap",
-          "shot s1, mom's narration line 1: line 1 starts at shot t=0.20, before line 0 has been said "
-          "(its last word ends at shot t=1.00); start line 1 later or shorten line 0"),
+          "shot s1, mom's narration line 1: line 1 starts at shot t=0.2, before line 0 has been said "
+          "(its last word ends at shot t=1); start line 1 later or shorten line 0"),
         E("cue_before_start",
           'shot s1, kid\'s narration line 0: to land its cue word on the action, "one two three four five dropped" '
           "would start at shot t=-1.25, before the shot starts; shorten the words before the cue word or move the "

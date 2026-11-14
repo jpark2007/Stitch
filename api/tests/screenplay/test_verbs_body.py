@@ -299,15 +299,15 @@ def test_sit_on_errors(world):
     begin(world, {"dad": {"at": "left"}, "mom": {"at": "by_chair"}, "kid": {"at": "mid", "pose": "kneel"}},
           {"chair": {"at": "chair_spot"}, "sedan": {"at": "right"}, "hymn_books": {"at": "mid"}})
     tracks = TrackSet()
-    fails(world, tracks, "no_seat", "hymn_books has nowhere to sit", 3.0, "sit_on", who="dad", what="hymn_books")
-    fails(world, tracks, "not_on_stage", "stool is not on stage", 3.0, "sit_on", who="dad", what="stool")
+    fails(world, tracks, "no_seat", "hymn_books has no sockets to sit on", 3.0, "sit_on", who="dad", what="hymn_books")
+    fails(world, tracks, "not_on_stage", "stool is not on stage; place it with propStart", 3.0, "sit_on", who="dad", what="stool")
     fails(world, tracks, "vehicle_seat", "sedan is a vehicle; use get_in", 3.0, "sit_on", who="dad", what="sedan")
-    fails(world, tracks, "unknown_socket", "chair has no socket arm", 3.0, "sit_on", who="dad", what="chair", socket="arm")
+    fails(world, tracks, "unknown_socket", "chair has no socket arm; its sockets are seat", 3.0, "sit_on", who="dad", what="chair", socket="arm")
     fails(world, tracks, "unknown_id", "piano is not a known prop", 3.0, "sit_on", who="dad", what="piano")
     fails(world, tracks, "not_standing", "kid is kneeling; stand_up first", 3.0, "sit_on", who="kid", what="chair")
     run(world, tracks, 3.0, "sit_on", who="mom", what="chair")
     fails(world, tracks, "socket_taken", "chair.seat is taken by mom", 4.0, "sit_on", who="dad", what="chair")
-    fails(world, tracks, "already_seated", "mom is seated in chair.seat", 4.0, "sit_on", who="mom", what="chair")
+    fails(world, tracks, "already_seated", "mom is seated in chair.seat; use stand_up first", 4.0, "sit_on", who="mom", what="chair")
 
 
 def test_sit_on_a_vehicle_is_the_worlds_vehicle_seat_error_and_no_local_check_is_left(world):
@@ -378,7 +378,7 @@ def test_stand_up_errors(world):
     begin(world, {"dad": {"at": "mid"}, "mom": {"at": "right", "in": "sedan.driver"}}, {"sedan": {"at": "right"}})
     tracks = TrackSet()
     fails(world, tracks, "not_sitting", "dad is not sitting or kneeling", 3.0, "stand_up", who="dad")
-    fails(world, tracks, "seated_vehicle", "mom is in sedan; use get_out", 3.0, "stand_up", who="mom")
+    fails(world, tracks, "seated_vehicle", "mom is seated in sedan.driver; use get_out first", 3.0, "stand_up", who="mom")
 
 
 # ------------------------------------------------------------------ kneel
@@ -423,7 +423,7 @@ def test_kneel_errors(world):
     begin(world, {"dad": {"at": "left", "in": "chair.seat"}, "mom": {"at": "mid", "pose": "kneel"},
                   "kid": {"at": "right", "pose": "sit"}}, {"chair": {"at": "left"}})
     tracks = TrackSet()
-    fails(world, tracks, "seated", "dad is seated in chair.seat", 3.0, "kneel", who="dad")
+    fails(world, tracks, "seated", "dad is seated in chair.seat; use stand_up first", 3.0, "kneel", who="dad")
     fails(world, tracks, "already_kneeling", "mom is already kneeling", 3.0, "kneel", who="mom")
     fails(world, tracks, "not_standing", "kid is sitting on the floor; stand_up first", 3.0, "kneel", who="kid")
     fails(world, tracks, "bad_dur", "dur must be a positive number of seconds, got 0.0", 3.0, "kneel", who="kid", dur=0)
@@ -435,7 +435,7 @@ def test_gestures_and_kneel_refuse_an_offstage_puppet(world):
     for do, params in [("wave", {}), ("point_at", {"target": "mom"}), ("lean_toward", {"target": "mom"}),
                        ("kneel", {})]:
         fails(world, tracks, "offstage", "dad is offstage; use enter first", 3.0, do, who="dad", **params)
-    fails(world, tracks, "offstage", "dad is offstage", 3.0, "hug", who="dad", target="mom")
+    fails(world, tracks, "offstage", "dad is offstage; use enter first", 3.0, "hug", who="dad", target="mom")
     fails(world, tracks, "unknown_id", "ghost is not in the cast", 3.0, "wave", who="ghost")
 
 
@@ -482,8 +482,8 @@ def test_hug_close_enough_does_not_walk(world):
 def test_hug_errors(world):
     begin(world, {"dad": {"at": "left"}, "mom": {"at": "mid"}, "kid": {"at": "offstage_right"}})
     tracks = TrackSet()
-    fails(world, tracks, "hug_self", "dad cannot hug themselves", 3.0, "hug", who="dad", target="dad")
-    fails(world, tracks, "offstage", "kid is offstage", 3.0, "hug", who="dad", target="kid")
+    fails(world, tracks, "hug_self", '"target" is dad themselves', 3.0, "hug", who="dad", target="dad")
+    fails(world, tracks, "offstage", "kid is offstage; use enter first", 3.0, "hug", who="dad", target="kid")
     fails(world, tracks, "unknown_id", "chair is not in the cast", 3.0, "hug", who="dad", target="chair")
     world.occupy("mom", 5.0, "walking", at=0.0)
     fails(world, tracks, "busy", "mom is still walking until t=5", 3.0, "hug", who="dad", target="mom")
@@ -492,7 +492,7 @@ def test_hug_errors(world):
 def test_hug_rejects_a_seated_target(world):
     begin(world, {"dad": {"at": "left"}, "mom": {"at": "mid", "in": "chair.seat"}}, {"chair": {"at": "mid"}})
     tracks = TrackSet()
-    fails(world, tracks, "seated", "mom is seated in chair.seat", 3.0, "hug", who="dad", target="mom")
+    fails(world, tracks, "seated", "mom is seated in chair.seat; use stand_up first", 3.0, "hug", who="dad", target="mom")
 
 
 def test_hug_a_kneeling_hugger_cannot_walk_over(world):
@@ -610,9 +610,9 @@ def test_a_failing_handler_after_earlier_keys_changes_nothing(world):
     run(world, tracks, 4.0, "wave", who="dad", target="mom")
     # every verb that can fail late (after walks or geometry) fails cleanly
     fails(world, tracks, "socket_taken", "chair.seat is taken by mom", 6.0, "sit_on", who="dad", what="chair")
-    fails(world, tracks, "seated", "mom is seated in chair.seat", 6.0, "hug", who="dad", target="mom")
+    fails(world, tracks, "seated", "mom is seated in chair.seat; use stand_up first", 6.0, "hug", who="dad", target="mom")
     fails(world, tracks, "unknown_target", "ghost is not a person, prop or mark", 6.0, "point_at", who="dad", target="ghost")
-    fails(world, tracks, "seated", "mom is seated in chair.seat", 6.0, "kneel", who="mom")
+    fails(world, tracks, "seated", "mom is seated in chair.seat; use stand_up first", 6.0, "kneel", who="mom")
     fails(world, tracks, "not_sitting", "dad is not sitting or kneeling", 6.0, "stand_up", who="dad")
 
 

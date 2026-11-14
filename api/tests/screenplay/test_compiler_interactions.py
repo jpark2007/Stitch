@@ -112,7 +112,7 @@ def test_from_past_the_shots_end_is_a_precise_error():
     bad = [e for e in res.errors if e.code == "interaction_bad_range"]
     assert len(bad) == 1 and bad[0].shot == "s2"
     assert bad[0].message.endswith(
-        'interaction "late" would scrub from shot t=30.00 back to t=9.45, where shot "s2" ends; '
+        'interaction "late" would scrub from shot t=30 back to t=9.45, where shot "s2" ends; '
         'give it a "to" after its "from"'
     )
 

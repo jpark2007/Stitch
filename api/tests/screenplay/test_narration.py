@@ -650,7 +650,7 @@ def test_scrub_from_past_its_shot_end_is_a_bad_range():
     e = _err(convert_interactions, [_scrub("late", 5.0, None)], {"s1": 1.0}, "s1", end_by_shot={"s1": 4.0})
     assert (e.code, e.shot, e.line_index) == ("interaction_bad_range", "s1", 0)
     assert e.reason == (
-        'interaction "late" would scrub from shot t=5.00 back to t=3.00, where shot "s1" ends; '
+        'interaction "late" would scrub from shot t=5 back to t=3, where shot "s1" ends; '
         'give it a "to" after its "from"'
     )
     # Ending exactly where the shot ends is a point, which is allowed.
@@ -679,7 +679,7 @@ def test_scrub_retimed_from_past_the_filled_in_end_is_a_bad_range():
         retimed_by_shot={"s1": ([2.0], [3.0])}, end_by_shot={"s1": 3.5},
     )
     assert (e.code, e.line_index) == ("interaction_bad_range", 0)
-    assert "from shot t=3.00 back to t=2.50" in e.reason
+    assert "from shot t=3 back to t=2.5" in e.reason
 
 
 def test_scrub_retimed_to_before_the_filled_in_from_is_a_bad_range():
@@ -690,7 +690,7 @@ def test_scrub_retimed_to_before_the_filled_in_from_is_a_bad_range():
     )
     assert (e.code, e.line_index) == ("interaction_bad_range", 0)
     assert e.reason == (
-        'interaction "y" would scrub from shot t=0.00, where shot "s1" starts, back to t=-0.50; '
+        'interaction "y" would scrub from shot t=0, where shot "s1" starts, back to t=-0.5; '
         'give it a "from" before its "to"'
     )
 
@@ -718,7 +718,7 @@ def test_scrub_range_turned_around_by_cues_is_an_error():
     )
     assert (e.code, e.shot, e.line_index, e.author) == ("interaction_bad_range", "s1", 1, None)
     assert e.reason == (
-        'interaction "pull" would scrub from shot t=3.50 back to t=2.50 once its actions move onto '
+        'interaction "pull" would scrub from shot t=3.5 back to t=2.5 once its actions move onto '
         "their cue words; widen the range or cue the actions in order"
     )
     assert str(e) == f"shot s1, interaction 1: {e.reason}"
@@ -868,7 +868,7 @@ def test_default_telling_lines_overlap():
     e = _err(build_shot_narration, shot, ACTION_START, [], {}, "dad")
     assert (e.code, e.author, e.shot, e.line_index) == ("lines_overlap", "dad", "s1", 1)
     assert e.reason == (
-        "line 1 starts at shot t=0.50, before line 0 has been said (its last word ends at shot t=1.00); "
+        "line 1 starts at shot t=0.5, before line 0 has been said (its last word ends at shot t=1); "
         "start line 1 later or shorten line 0"
     )
     assert str(e).startswith("shot s1, dad's narration line 1: line 1 starts")
@@ -945,7 +945,7 @@ def test_overlap_uses_tts_word_times_and_skips_silent_lines():
     e = _err(build_shot_narration, shot, 0.0, [], {}, "dad")
     assert (e.code, e.line_index) == ("lines_overlap", 2)
     assert e.reason == (
-        "line 2 starts at shot t=1.50, before line 0 has been said (its last word ends at shot t=1.65); "
+        "line 2 starts at shot t=1.5, before line 0 has been said (its last word ends at shot t=1.65); "
         "start line 2 later or shorten line 0"
     )
     shot.narration[2].t = 1.65
@@ -962,7 +962,7 @@ def test_other_telling_overlaps_after_its_alignment_shift(sp):
     e = _err(build_shot_narration, shot, ACTION_START, retimed, {"mom": mom}, "dad")
     assert (e.code, e.author, e.shot, e.line_index) == ("lines_overlap", "mom", "s1", 1)
     assert e.reason == (
-        "line 1 starts at shot t=2.00, before line 0 has been said (its last word ends at shot t=3.00); "
+        "line 1 starts at shot t=2, before line 0 has been said (its last word ends at shot t=3); "
         "start line 1 later or shorten line 0"
     )
     assert str(e).startswith("shot s1, mom's narration line 1: ")

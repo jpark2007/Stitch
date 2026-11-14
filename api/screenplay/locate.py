@@ -16,7 +16,14 @@ from collections.abc import Callable, Mapping
 
 from screenplay import ik
 from screenplay.motion import prop_socket_offset
-from screenplay.state import HANDS, StateError, World, parse_parent
+from screenplay.state import (
+    HANDS,
+    PLACE_WITH_PROPSTART,
+    StateError,
+    World,
+    parse_parent,
+    unknown_mark_reason,
+)
 from screenplay.tracks import TrackSet
 
 Vec3 = tuple[float, float, float]
@@ -25,7 +32,7 @@ Locate = Callable[[str, float], Vec3]
 BONES: tuple[str, ...] = tuple(ik.RIG["bones"])
 ARM_OF_HAND: dict[str, str] = {chain["socket"]: arm for arm, chain in ik.RIG["ik"].items()}
 
-NOT_ON_STAGE = "{what} is not on stage"
+NOT_ON_STAGE = "{what} is not on stage; " + PLACE_WITH_PROPSTART
 """The not_on_stage reason, worded as state.World's (a prop nothing has placed or carried in)."""
 
 
@@ -148,7 +155,7 @@ class Locator:
 
     def mark(self, name: str) -> Vec3:
         if name not in self.marks:
-            raise StateError("unknown_mark", f"{name} is not a mark in shot {self.shot_id}")
+            raise StateError("unknown_mark", unknown_mark_reason(name, self.marks))
         return self.marks[name]
 
     def prop(self, what: str, t: float, _seen: frozenset[str] = frozenset()) -> Vec3:

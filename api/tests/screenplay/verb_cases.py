@@ -241,7 +241,13 @@ def _movement() -> list[VerbCase]:
                       start={"dad": _at("bench_spot", **{"in": "chair.seat"})}, prop_start=CHAIR),
                  "seated",
                  # verbs_core.py _not_seated (via _locomote)
-                 "shot s1, t=1: dad cannot run_to; dad is seated in chair.seat"),
+                 "shot s1, t=1: dad cannot run_to; dad is seated in chair.seat; use stand_up first"),
+        _dynamic("run_to", "seated_in_vehicle",
+                 _one(_a(1, "run_to", who="dad", to="door"),
+                      start={"dad": _at("curb", **{"in": "sedan.driver"})}, prop_start=SEDAN_CURB),
+                 "seated",
+                 # verbs_core.py _not_seated (World.seat_reason): in a vehicle the fix is get_out
+                 "shot s1, t=1: dad cannot run_to; dad is seated in sedan.driver; use get_out first"),
 
         # -------------------------------------------------------------------- enter
         _ok("enter", "ok", _one(_a(1, "enter", who="dad", to="door", **{"from": "offstage_left"}),
@@ -266,8 +272,8 @@ def _movement() -> list[VerbCase]:
                  _one(_a(1, "exit", who="dad"),
                       start={"dad": _at("bench_spot", **{"in": "chair.seat"})}, prop_start=CHAIR),
                  "seated",
-                 # state.py World.exit (_seat_reason), run on a copy by verbs_motion.py apply_exit
-                 "shot s1, t=1: dad cannot exit; dad is seated in chair.seat"),
+                 # state.py World.exit (seat_reason), run on a copy by verbs_motion.py apply_exit
+                 "shot s1, t=1: dad cannot exit; dad is seated in chair.seat; use stand_up first"),
         _dynamic("exit", "offstage",
                  _one(_a(1, "exit", who="kid"), start={"kid": _at("offstage_left")}),
                  "offstage",
@@ -286,12 +292,12 @@ def _movement() -> list[VerbCase]:
                  _one(_a(1, "turn_to", who="dad", target="dad"), start={"dad": _at("door")}),
                  "self_target",
                  # verbs_motion.py apply_turn_to
-                 "shot s1, t=1: dad cannot turn_to; dad cannot turn to face themselves"),
+                 'shot s1, t=1: dad cannot turn_to; "target" is dad themselves'),
         _dynamic("turn_to", "prop_not_on_stage",
                  _one(_a(1, "turn_to", who="dad", target="cap"), start={"dad": _at("door")}),
                  "not_on_stage",
                  # locate.py Locator._prop_from_world (the locate call in verbs_motion.py apply_turn_to)
-                 "shot s1, t=1: dad cannot turn_to; cap is not on stage"),
+                 "shot s1, t=1: dad cannot turn_to; cap is not on stage; place it with propStart"),
 
         # ------------------------------------------------------------------- follow
         _ok("follow", "ok", _one(_a(0, "walk_to", who="mom", to="curb"), _a(0.5, "follow", who="dad", target="mom"),
@@ -332,7 +338,7 @@ def _body() -> list[VerbCase]:
                       start={"dad": _at("bench_spot", **{"in": "chair.seat"})}, prop_start=CHAIR),
                  "seated",
                  # verbs_core.py _not_seated (via apply_pose)
-                 "shot s1, t=1: dad cannot pose; dad is seated in chair.seat"),
+                 "shot s1, t=1: dad cannot pose; dad is seated in chair.seat; use stand_up first"),
 
         # --------------------------------------------------------------------- wave
         _ok("wave", "ok", _one(_a(1, "wave", who="kid", target="mom"),
@@ -345,7 +351,7 @@ def _body() -> list[VerbCase]:
                  _one(_a(1, "wave", who="kid", target="cap"), start={"kid": _at("door")}),
                  "not_on_stage",
                  # locate.py Locator._prop_from_world (the locate call in verbs_body.py apply_wave)
-                 "shot s1, t=1: kid cannot wave; cap is not on stage"),
+                 "shot s1, t=1: kid cannot wave; cap is not on stage; place it with propStart"),
 
         # ----------------------------------------------------------------- point_at
         _ok("point_at", "ok", _one(_a(1, "point_at", who="kid", target="table"),
@@ -358,7 +364,7 @@ def _body() -> list[VerbCase]:
                  _one(_a(1, "point_at", who="kid", target="lamp"), start={"kid": _at("door")}),
                  "not_on_stage",
                  # locate.py Locator._prop_from_world (the locate call in verbs_body.py apply_point_at)
-                 "shot s1, t=1: kid cannot point_at; lamp is not on stage"),
+                 "shot s1, t=1: kid cannot point_at; lamp is not on stage; place it with propStart"),
 
         # ------------------------------------------------------------------- sit_on
         _ok("sit_on", "ok", _one(_a(1, "sit_on", who="dad", what="chair"),
@@ -401,7 +407,7 @@ def _body() -> list[VerbCase]:
                       start={"dad": _at("curb", **{"in": "sedan.driver"})}, prop_start=SEDAN_CURB),
                  "seated_vehicle",
                  # state.py World.stand_up
-                 "shot s1, t=1: dad cannot stand_up; dad is in sedan; use get_out"),
+                 "shot s1, t=1: dad cannot stand_up; dad is seated in sedan.driver; use get_out first"),
 
         # -------------------------------------------------------------------- kneel
         _ok("kneel", "ok", _one(_a(1, "kneel", who="mom", dur=1.5), start={"mom": _at("bench_spot")})),
@@ -413,8 +419,8 @@ def _body() -> list[VerbCase]:
                  _one(_a(1, "kneel", who="mom"),
                       start={"mom": _at("bench_spot", **{"in": "chair.seat"})}, prop_start=CHAIR),
                  "seated",
-                 # state.py World.kneel (_seat_reason), run on a copy by verbs_body.py apply_kneel
-                 "shot s1, t=1: mom cannot kneel; mom is seated in chair.seat"),
+                 # state.py World.kneel (seat_reason), run on a copy by verbs_body.py apply_kneel
+                 "shot s1, t=1: mom cannot kneel; mom is seated in chair.seat; use stand_up first"),
         _dynamic("kneel", "already_kneeling",
                  _one(_a(1, "kneel", who="mom"), start={"mom": _at("bench_spot", pose="kneel")}),
                  "already_kneeling",
@@ -437,14 +443,14 @@ def _body() -> list[VerbCase]:
                       start={"dad": _at("door"), "mom": _at("bench_spot", **{"in": "chair.seat"})},
                       prop_start=CHAIR),
                  "seated",
-                 # state.py World.hug_check (_seat_reason), called by verbs_body.py apply_hug
-                 "shot s1, t=1: dad cannot hug; mom is seated in chair.seat"),
+                 # state.py World.hug_check (seat_reason), called by verbs_body.py apply_hug
+                 "shot s1, t=1: dad cannot hug; mom is seated in chair.seat; use stand_up first"),
         _dynamic("hug", "target_offstage",
                  _one(_a(1, "hug", who="dad", target="kid"),
                       start={"dad": _at("door"), "kid": _at("offstage_right")}),
                  "offstage",
                  # state.py World._require_on_stage (via World.hug_check)
-                 "shot s1, t=1: dad cannot hug; kid is offstage"),
+                 "shot s1, t=1: dad cannot hug; kid is offstage; use enter first"),
 
         # -------------------------------------------------------------- lean_toward
         _ok("lean_toward", "ok", _one(_a(1, "lean_toward", who="mom", target="dad"),
@@ -457,7 +463,7 @@ def _body() -> list[VerbCase]:
                  _one(_a(1, "lean_toward", who="mom", target="suitcase"), start={"mom": _at("bench_spot")}),
                  "not_on_stage",
                  # locate.py Locator._prop_from_world (the locate call in verbs_body.py apply_lean_toward)
-                 "shot s1, t=1: mom cannot lean_toward; suitcase is not on stage"),
+                 "shot s1, t=1: mom cannot lean_toward; suitcase is not on stage; place it with propStart"),
     ]
 
 
@@ -483,7 +489,7 @@ def _props() -> list[VerbCase]:
                  _one(_a(1, "pick_up", who="dad", what="cap"), start={"dad": _at("door")}),
                  "not_on_stage",
                  # state.py World._require_placed (via World.pick_up)
-                 'shot s1, t=1: dad cannot pick_up "cap"; cap is not on stage'),
+                 'shot s1, t=1: dad cannot pick_up "cap"; cap is not on stage; place it with propStart'),
         # Added with finding F3 (verbs_core.py apply_pick_up steps to a spot the arm reaches
         # from). Standing over the cap, whose grip is under the hips: it steps back first.
         _ok("pick_up", "steps_back_off_the_cap", _one(_a(1, "pick_up", who="dad", what="cap"),
@@ -561,7 +567,7 @@ def _props() -> list[VerbCase]:
                       start={"mom": _at("bench_spot", holding="hymn_books"), "kid": _at("offstage_left")}),
                  "offstage",
                  # state.py World._require_on_stage (via World.hand_to)
-                 'shot s1, t=1: mom cannot hand_to "hymn_books"; kid is offstage'),
+                 'shot s1, t=1: mom cannot hand_to "hymn_books"; kid is offstage; use enter first'),
 
         # ------------------------------------------------------------------- put_on
         _ok("put_on", "ok", _one(_a(1, "put_on", who="dad", what="cap"),
@@ -590,7 +596,7 @@ def _props() -> list[VerbCase]:
                 _one(_a(1, "place_on", who="dad", what="hymn_books", on="hymn_books"),
                      start={"dad": _at("by_table", holding="hymn_books")}),
                 "self_target",
-                'shot s1, t=1: dad cannot place_on "hymn_books"; "on" is "hymn_books" itself'),
+                'shot s1, t=1: dad cannot place_on "hymn_books"; "on" is hymn_books itself'),
         _dynamic("place_on", "socket_taken",
                  _one(_a(1, "place_on", who="dad", what="hymn_books", on="table", socket="top"),
                       start={"dad": _at("by_table", holding="hymn_books")},
@@ -699,8 +705,8 @@ def _vehicles() -> list[VerbCase]:
                       start={"dad": _at("bench_spot", **{"in": "chair.seat"})},
                       prop_start={**CHAIR, **SEDAN_CURB}),
                  "already_seated",
-                 # state.py World.get_in (_seat_reason)
-                 'shot s1, t=1: dad cannot get_in "sedan"; dad is seated in chair.seat'),
+                 # state.py World.get_in (seat_reason)
+                 'shot s1, t=1: dad cannot get_in "sedan"; dad is seated in chair.seat; use stand_up first'),
         _dynamic("get_in", "not_on_stage",
                  _one(_a(1, "get_in", who="dad", what="sedan"), start={"dad": _at("curb")}),
                  "not_on_stage",
@@ -720,7 +726,7 @@ def _vehicles() -> list[VerbCase]:
                       prop_start=SEDAN_CURB),
                  "not_in_vehicle",
                  # state.py World.get_out (run on a copy by verbs_vehicles.py apply_get_out)
-                 'shot s1, t=1: dad cannot get_out "sedan"; dad is not in sedan'),
+                 'shot s1, t=1: dad cannot get_out "sedan"; dad is not in sedan; use get_in first'),
 
         # ----------------------------------------------------------------- drive_to
         _ok("drive_to", "ok", _one(_a(1, "drive_to", who="dad", what="sedan", to="corner"),
@@ -744,13 +750,13 @@ def _vehicles() -> list[VerbCase]:
                       prop_start=SEDAN_GARAGE),
                  "not_driver",
                  # state.py World.check_driver
-                 'shot s1, t=1: mom cannot drive_to "sedan"; mom is in sedan.passenger, not the driver\'s seat'),
+                 'shot s1, t=1: mom cannot drive_to "sedan"; mom is in sedan.passenger, not sedan.driver'),
         _dynamic("drive_to", "not_in_vehicle",
                  _one(_a(1, "drive_to", who="kid", what="sedan", to="corner"),
                       set="street", start={"kid": _at("garage")}, prop_start=SEDAN_GARAGE),
                  "not_driver",
                  # state.py World.check_driver
-                 'shot s1, t=1: kid cannot drive_to "sedan"; kid is not in the driver\'s seat of sedan'),
+                 'shot s1, t=1: kid cannot drive_to "sedan"; kid is not in sedan.driver; use get_in with socket driver first'),
 
         # ------------------------------------------------------------------ ride_to
         _ok("ride_to", "ok", _one(_a(1, "ride_to", who="mom", what="sedan", to="corner"),
@@ -769,14 +775,14 @@ def _vehicles() -> list[VerbCase]:
                       prop_start=SEDAN_GARAGE),
                  "no_driver",
                  # state.py World.check_rider
-                 'shot s1, t=1: mom cannot ride_to "sedan"; nobody is driving sedan'),
+                 'shot s1, t=1: mom cannot ride_to "sedan"; nobody is in sedan.driver; someone must get_in it with socket driver first'),
         _dynamic("ride_to", "not_in_vehicle",
                  _one(_a(1, "ride_to", who="kid", what="sedan", to="corner"),
                       set="street", start={"dad": _at("garage", **in_sedan), "kid": _at("garage")},
                       prop_start=SEDAN_GARAGE),
                  "not_in_vehicle",
                  # state.py World.check_rider
-                 'shot s1, t=1: kid cannot ride_to "sedan"; kid is not in sedan'),
+                 'shot s1, t=1: kid cannot ride_to "sedan"; kid is not in sedan; use get_in first'),
     ]
 
 
@@ -878,7 +884,7 @@ def _camera() -> list[VerbCase]:
                  cam(_cue(1, "dolly_to", target="cap")),
                  "bad_camera",
                  # locate.py Locator._prop_from_world, reported by compiler.py _camera
-                 'shot s1, t=1: cannot dolly_to "cap"; cap is not on stage'),
+                 'shot s1, t=1: cannot dolly_to "cap"; cap is not on stage; place it with propStart'),
 
         # ------------------------------------------------------------------- pan_to
         _ok("pan_to", "ok", cam(_cue(1, "pan_to", target="table"), prop_start=TABLE)),
@@ -890,7 +896,7 @@ def _camera() -> list[VerbCase]:
                  cam(_cue(1, "pan_to", target="lamp", dur=1)),
                  "bad_camera",
                  # locate.py Locator._prop_from_world, reported by compiler.py _camera
-                 'shot s1, t=1: cannot pan_to "lamp"; lamp is not on stage'),
+                 'shot s1, t=1: cannot pan_to "lamp"; lamp is not on stage; place it with propStart'),
 
         # ----------------------------------------------------------------- close_up
         _ok("close_up", "ok", cam(_cue(1, "close_up", target="dad"))),
@@ -903,7 +909,7 @@ def _camera() -> list[VerbCase]:
                  cam(_cue(1, "close_up", target="suitcase")),
                  "bad_camera",
                  # locate.py Locator._prop_from_world, reported by compiler.py _camera
-                 'shot s1, t=1: cannot close_up "suitcase"; suitcase is not on stage'),
+                 'shot s1, t=1: cannot close_up "suitcase"; suitcase is not on stage; place it with propStart'),
 
         # ---------------------------------------------------------------- pull_back
         _ok("pull_back", "ok", cam(_cue(1, "close_up", target="mom"), _cue(3, "pull_back", dur=2))),

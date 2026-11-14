@@ -53,8 +53,37 @@ OFFSTAGE_RIGHT: Vec3 = BUILTIN_MARKS["offstage_right"]
 
 
 def fmt_t(t: float) -> str:
-    """Seconds for messages: at most two decimals, no trailing zeros (4.74, 5, 0.5)."""
-    return f"{round(float(t), 2):g}"
+    """Seconds for messages: at most two decimals, no trailing zeros (4.74, 5, 0.5).
+
+    Never ``-0`` and never exponent notation: 1234567.25 stays ``1234567.25``."""
+    return f"{round(float(t), 2) + 0.0:.2f}".rstrip("0").rstrip(".")
+
+
+# The fixes reasons end with, after a "; " (errors.ERROR_CODES has the hint templates).
+ENTER_FIRST = "use enter first"
+PLACE_WITH_PROPSTART = "place it with propStart"
+
+
+def missing_param_reason(do: str, param: str) -> str:
+    """validate's missing_param wording: ``walk_to requires who, to; "to" is missing``.
+
+    The required list comes from shared/vocabulary.json; a verb it does not know names just
+    ``param``."""
+    spec = _VOCABULARY["actions"].get(do)
+    required = list(spec["required"]) if spec else [param]
+    return f'{do} requires {", ".join(required)}; "{param}" is missing'
+
+
+def unknown_mark_reason(name: str, marks: Iterable[str]) -> str:
+    """``porch is not a mark in this shot; the marks are a, b`` (begin_shot, Locator.mark).
+
+    The shot is already in the message head, so the reason says "this shot"."""
+    return f"{name} is not a mark in this shot; the marks are {', '.join(marks)}"
+
+
+def self_target_reason(param: str, who: str) -> str:
+    """validate's self_target wording: ``"target" is dad themselves``."""
+    return f'"{param}" is {who} themselves'
 
 
 def _vec(v: Iterable[float]) -> Vec3:
@@ -320,18 +349,27 @@ class World:
         held = ", ".join(f"{s}: {p.holding[s]}" for s in HANDS if s in p.holding)
         return f"{who}'s hands are full ({held})"
 
-    def _seat_reason(self, who: str) -> str:
+    def seat_reason(self, who: str) -> str:
+        """``mom is seated in chair.seat; use stand_up first`` (``use get_out first`` in a
+        vehicle), for a seated puppet asked to do something only a standing one can."""
         prop, sock = self.people[who].seat  # type: ignore[misc]
-        return f"{who} is seated in {prop}.{sock}"
+        fix = "use get_out first" if self.is_vehicle(prop) else "use stand_up first"
+        return f"{who} is seated in {prop}.{sock}; {fix}"
 
-    def _require_on_stage(self, *who: str) -> None:
+    def _require_on_stage(self, *who: str, fix: bool = True) -> None:
+        """``offstage``: ``dad is offstage; use enter first``. ``fix=False`` leaves the fix off,
+        for put_on, place_on, open and close, whose bare reason test_verbs_objects.py pins
+        until verbs_objects moves to this wording too."""
         for w in who:
             if not self.on_stage(w):
-                raise StateError("offstage", f"{w} is offstage")
+                raise StateError("offstage", f"{w} is offstage; {ENTER_FIRST}" if fix else f"{w} is offstage")
 
-    def _require_placed(self, what: str) -> None:
+    def _require_placed(self, what: str, fix: bool = True) -> None:
+        """``not_on_stage``: ``cup is not on stage; place it with propStart``. ``fix=False``
+        as in ``_require_on_stage`` (put_on, open and close)."""
         if self.is_unplaced(what):
-            raise StateError("not_on_stage", f"{what} is not on stage")
+            reason = f"{what} is not on stage"
+            raise StateError("not_on_stage", f"{reason}; {PLACE_WITH_PROPSTART}" if fix else reason)
 
     # ----------------------------------------------------- low-level mutations
 
@@ -393,7 +431,7 @@ class World:
     def _check_socket(self, what: str, socket: str, who: str | None = None) -> None:
         d = self.catalog[what]
         if socket not in d.sockets:
-            raise StateError("unknown_socket", f"{what} has no socket {socket}")
+            raise StateError("unknown_socket", f"{what} has no socket {socket}; {self._sockets_list(what)}")
         occ = self.props[what].occupants.get(socket)
         if occ is not None and occ != f"puppet:{who}":
             raise StateError("socket_taken", f"{what}.{socket} is taken by {occ.partition(':')[2]}")
@@ -439,7 +477,7 @@ class World:
     def _begin_shot(self, shot: Shot, marks: dict[str, Vec3], same_set: bool) -> None:
         def mark(name: str) -> Vec3:
             if name not in marks:
-                raise StateError("unknown_mark", f"{name} is not a mark in shot {shot.id}")
+                raise StateError("unknown_mark", unknown_mark_reason(name, marks))
             return marks[name]
 
         # Static-ish checks on the start block before applying anything.
@@ -528,7 +566,7 @@ class World:
         # Seats last, so a seat can be on a prop that prop_start just placed.
         for (prop, sock), who in seats.items():
             if self.props[prop].world_pos is None:
-                raise StateError("not_on_stage", f"{prop} is not on stage in shot {shot.id}; place it with propStart")
+                raise StateError("not_on_stage", f"{prop} is not on stage in this shot; {PLACE_WITH_PROPSTART}")
             occ = self.props[prop].occupants.get(sock)
             if occ is not None and occ != f"puppet:{who}":
                 raise StateError("socket_taken", f"{prop}.{sock} is taken by {occ.partition(':')[2]}")
@@ -590,7 +628,7 @@ class World:
             if ps.on is not None:
                 base = ps.on.partition(".")[0]
                 if not self._placed(base):
-                    raise StateError("not_on_stage", f"{base} is not on stage in shot {shot.id}; place it with propStart")
+                    raise StateError("not_on_stage", f"{base} is not on stage in this shot; {PLACE_WITH_PROPSTART}")
 
     def _check_no_cycle(self, what: str, base: str) -> None:
         """``cycle`` when ``what`` would rest on itself or on a prop that rests on it."""
@@ -612,7 +650,7 @@ class World:
         """Walk/run/enter/exit/follow. Kneeling or sitting on the floor ends; seated puppets cannot move."""
         p = self._person(who)
         if p.seat is not None:
-            raise StateError("seated", self._seat_reason(who))
+            raise StateError("seated", self.seat_reason(who))
         if facing is not None and facing not in (1, -1):
             raise StateError("bad_facing", f"facing must be 1 or -1, not {facing}")
         p.pos = _vec(pos)
@@ -651,7 +689,7 @@ class World:
         """Leave the stage. Default: the nearest side. Returns the offstage position."""
         p = self._person(who)
         if p.seat is not None:
-            raise StateError("seated", self._seat_reason(who))
+            raise StateError("seated", self.seat_reason(who))
         if pos is None:
             pos = OFFSTAGE_LEFT if p.pos[0] < 0 else OFFSTAGE_RIGHT
         pos = _vec(pos)
@@ -704,7 +742,7 @@ class World:
                     raise StateError("occupied", f"{oid} is sitting on {sub}, which rests on it")
         p = self.people[who]
         if p.seat is not None and self.is_vehicle(p.seat[0]):
-            raise StateError("seated_vehicle", f"{who} is seated in {p.seat[0]}; use get_out first")
+            raise StateError("seated_vehicle", self.seat_reason(who))
 
     def hold(self, who: str, what: str) -> str:
         """Raise a prop already in hand into the hold pose. Returns its hand."""
@@ -727,7 +765,7 @@ class World:
         self._prop(what)
         self._person(to)
         if to == who:
-            raise StateError("self_hand_to", f'"to" is {who} themselves')
+            raise StateError("self_hand_to", self_target_reason("to", who))
         self._require_in_hand(who, what)
         self._require_on_stage(who, to)
         hand = self.free_hand(to)
@@ -752,16 +790,16 @@ class World:
             raise StateError("not_holding", self._where(what, who))
         if h is None and st.parent != GROUND:
             raise StateError("not_holding", self._where(what, who))
-        self._require_on_stage(who)
+        self._require_on_stage(who, fix=False)
         if h is None:
-            self._require_placed(what)
+            self._require_placed(what, fix=False)
             self._check_takeable(who, what)
             if self.free_hand(who) is None:
                 raise StateError("hands_full", self._hands_full_reason(who))
         if HEAD in t.holding:
             raise StateError("head_full", f"{target} is already wearing {t.holding[HEAD]}")
         if target != who:
-            self._require_on_stage(target)
+            self._require_on_stage(target, fix=False)
         self._attach_puppet(what, target, HEAD)
 
     def place_on(self, who: str, what: str, parent: str, pos: Vec3) -> None:
@@ -769,7 +807,7 @@ class World:
         self._person(who)
         self._prop(what)
         self._require_in_hand(who, what)
-        self._require_on_stage(who)
+        self._require_on_stage(who, fix=False)
         parsed = parse_parent(parent)
         if parsed is None:
             self._to_ground(what, pos)
@@ -800,8 +838,8 @@ class World:
     def _open_close(self, who: str, what: str, state: str) -> None:
         self._person(who)
         st = self._prop(what)
-        self._require_on_stage(who)
-        self._require_placed(what)
+        self._require_on_stage(who, fix=False)
+        self._require_placed(what, fix=False)
         states = self.catalog[what].states
         if states and state not in states:
             raise StateError("unknown_state", f"{what} has no state {state}")
@@ -817,12 +855,12 @@ class World:
         if self.is_vehicle(what):
             raise StateError("vehicle_seat", f"{what} is a vehicle; use get_in")
         if p.seat is not None:
-            raise StateError("already_seated", self._seat_reason(who))
+            raise StateError("already_seated", self.seat_reason(who))
         sockets = self.catalog[what].sockets
         occ = self.props[what].occupants
         if socket is None:
             if not sockets:
-                raise StateError("no_seat", f"{what} has nowhere to sit")
+                raise StateError("no_seat", f"{what} has no sockets to sit on")
             if "seat" in sockets:
                 socket = "seat"
             else:
@@ -840,14 +878,14 @@ class World:
         if p.seat is None and p.pose not in SEATED_POSES:
             raise StateError("not_sitting", f"{who} is not sitting or kneeling")
         if p.seat is not None and self.is_vehicle(p.seat[0]):
-            raise StateError("seated_vehicle", f"{who} is in {p.seat[0]}; use get_out")
+            raise StateError("seated_vehicle", self.seat_reason(who))
         self._unseat(who)
         p.pose = "stand"
 
     def kneel(self, who: str) -> None:
         p = self._person(who)
         if p.seat is not None:
-            raise StateError("seated", self._seat_reason(who))
+            raise StateError("seated", self.seat_reason(who))
         p.pose = "kneel"
 
     def get_in(self, who: str, what: str, socket: str | None = None) -> str:
@@ -856,7 +894,7 @@ class World:
         if not self.is_vehicle(what):
             raise StateError("not_a_vehicle", f"{what} is not a vehicle")
         if p.seat is not None:
-            raise StateError("already_seated", self._seat_reason(who))
+            raise StateError("already_seated", self.seat_reason(who))
         sockets = self.catalog[what].sockets
         occ = self.props[what].occupants
         if socket is None:
@@ -873,7 +911,7 @@ class World:
         p = self._person(who)
         self._prop(what)
         if p.seat is None or p.seat[0] != what:
-            raise StateError("not_in_vehicle", f"{who} is not in {what}")
+            raise StateError("not_in_vehicle", f"{who} is not in {what}; use get_in first")
         self._unseat(who)
         p.pose = "stand"
 
@@ -882,8 +920,8 @@ class World:
         self._prop(what)
         if p.seat != (what, "driver"):
             if p.seat is not None and p.seat[0] == what:
-                raise StateError("not_driver", f"{who} is in {what}.{p.seat[1]}, not the driver's seat")
-            raise StateError("not_driver", f"{who} is not in the driver's seat of {what}")
+                raise StateError("not_driver", f"{who} is in {what}.{p.seat[1]}, not {what}.driver")
+            raise StateError("not_driver", f"{who} is not in {what}.driver; use get_in with socket driver first")
 
     def check_rider(self, who: str, what: str) -> None:
         """`who` may ride_to in `what`: seated in it, or on a prop resting on it (directly or
@@ -891,9 +929,9 @@ class World:
         p = self._person(who)
         self._prop(what)
         if p.seat is None or (p.seat[0] != what and what not in self.supports(p.seat[0])):
-            raise StateError("not_in_vehicle", f"{who} is not in {what}")
+            raise StateError("not_in_vehicle", f"{who} is not in {what}; use get_in first")
         if not self.props[what].occupants.get("driver", "").startswith("puppet:"):
-            raise StateError("no_driver", f"nobody is driving {what}")
+            raise StateError("no_driver", f"nobody is in {what}.driver; someone must get_in it with socket driver first")
 
     def move_vehicle(self, what: str, pos: Vec3) -> None:
         """Move a prop on the ground; stacked props and puppets seated on it, or on anything
@@ -918,8 +956,8 @@ class World:
         self._person(who)
         self._person(target)
         if who == target:
-            raise StateError("hug_self", f"{who} cannot hug themselves")
+            raise StateError("hug_self", self_target_reason("target", who))
         self._require_on_stage(who, target)
         for w in (who, target):
             if self.people[w].seat is not None:
-                raise StateError("seated", self._seat_reason(w))
+                raise StateError("seated", self.seat_reason(w))

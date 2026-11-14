@@ -59,6 +59,7 @@ from screenplay.schema import (
     Shot,
     StartState,
 )
+from screenplay.state import self_target_reason
 
 VERBS: dict[str, dict] = VOCABULARY["actions"]
 CAMERA: dict[str, dict] = VOCABULARY["camera"]
@@ -562,7 +563,7 @@ class _Validator:
         elif a.do == "exit":
             self.check_offstage(site, "to", to)
         elif a.do == "hand_to" and self.check_person(site, "to", to, marks) and to == a.who:
-            self.add(site, "self_target", f'"to" is {to} themselves')
+            self.add(site, "self_target", self_target_reason("to", to))
 
     def action_what(self, site: _Site, a: Action) -> None:
         what = a.what
@@ -586,7 +587,7 @@ class _Validator:
         assert target is not None
         if a.do in PERSON_TARGET_VERBS:
             if self.check_person(site, "target", target, marks) and a.do in SELF_TARGET_VERBS and target == a.who:
-                self.add(site, "self_target", f'"target" is {target} themselves')
+                self.add(site, "self_target", self_target_reason("target", target))
         else:  # MIXED_TARGET_VERBS
             self.check_any_target(site, target, marks)
 
@@ -598,7 +599,7 @@ class _Validator:
         assert on is not None
         if on in self.sp_props_set:
             if on == a.what:
-                self.add(site, "self_target", f'"on" is "{on}" itself')
+                self.add(site, "self_target", f'"on" is {on} itself')
             d = self.props.get(on)
             if d is not None and not d.sockets:
                 self.add(site, "no_socket", f'"{on}" has no sockets to place on')

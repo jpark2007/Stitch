@@ -44,7 +44,16 @@ from screenplay.ik import POSES, RIG, Body, scale
 from screenplay.locate import Locate, bone_at, held_arm_bones, puppet_root, puppet_target
 from screenplay.motion import prop_socket_offset
 from screenplay.schema import Action
-from screenplay.state import GROUND, HANDS, SEATED_POSES, StateError, World, fmt_t
+from screenplay.state import (
+    GROUND,
+    HANDS,
+    SEATED_POSES,
+    StateError,
+    World,
+    fmt_t,
+    missing_param_reason,
+    self_target_reason,
+)
 from screenplay.tracks import Key, TrackSet
 from screenplay.verb_helpers import Handler, Vec3, require_person, vec3
 
@@ -219,9 +228,9 @@ def apply_turn_to(world: World, tracks: TrackSet, action: Action, t: float, acti
     """
     who = require_person(world, action.who)
     if action.target is None:
-        raise StateError("missing_param", f"{who} cannot turn_to: no target given")
+        raise StateError("missing_param", missing_param_reason("turn_to", "target"))
     if action.target == who:
-        raise StateError("self_target", f"{who} cannot turn to face themselves")
+        raise StateError("self_target", self_target_reason("target", who))
     x = locate(action.target, t)[0]
     p = world.people[who]
     keys, facing = motion.turn_keys(who, t, puppet_root(world, tracks, who, t)[0], x, p.facing)
@@ -246,9 +255,9 @@ def apply_follow(world: World, tracks: TrackSet, action: Action, t: float, actio
     who = require_person(world, action.who)
     target = action.target
     if target is None:
-        raise StateError("missing_param", f"{who} cannot follow: no target given")
+        raise StateError("missing_param", missing_param_reason("follow", "target"))
     if target == who:
-        raise StateError("self_target", f"{who} cannot follow themselves")
+        raise StateError("self_target", self_target_reason("target", who))
     if target not in world.people:
         locate(target, t)  # unknown names raise unknown_target
         raise StateError("bad_target", f"{who} can only follow a person, and {target} is not one")

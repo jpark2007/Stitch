@@ -34,7 +34,7 @@ from collections.abc import Callable
 from screenplay.layout import effect_entry
 from screenplay.locate import Locator
 from screenplay.schema import VOCABULARY, Action, TimelineEffect
-from screenplay.state import BUILTIN_MARKS, StateError, fmt_t
+from screenplay.state import BUILTIN_MARKS, StateError, fmt_t, missing_param_reason
 
 Vec3 = tuple[float, float, float]
 Locate = Callable[[str, float], Vec3]
@@ -95,20 +95,24 @@ def effect_for(action: Action, t: float, locate: Locate, shot_end: float) -> Tim
     """One ``Timeline.effects`` entry for an effect action starting at timeline time ``t``.
 
     Raises ``StateError``: ``not_an_effect`` for a non-effect verb, ``bad_param`` for an ``at``
-    or ``value`` the effect does not take, ``invalid_value`` for a bad time_of_day value,
+    or ``value`` the effect does not take, ``missing_param`` for a time_of_day with no value,
+    ``invalid_value`` for a bad one,
     ``bad_time`` for a negative duration (including rain that starts after ``shot_end``),
     ``unknown_target`` for an ``at`` that is not a mark, person or prop, ``not_on_stage`` for
     an ``at`` prop that is not on stage, and ``offstage`` for an ``at`` beyond the stage edge.
     """
     do = action.do
     if do not in EFFECT_VERBS:
-        raise StateError("not_an_effect", f"{do} is not an effect; effects are {', '.join(EFFECT_VERBS)}")
+        raise StateError("not_an_effect", f"{do} is not an effect; the effects are {', '.join(EFFECT_VERBS)}")
     if action.at is not None and not _takes(do, "at"):
         raise StateError("bad_param", f"{do} fills the whole stage and takes no at")
     if action.value is not None and do != "time_of_day":
         raise StateError("bad_param", f"{do} takes no value")
+    if do == "time_of_day" and action.value is None:
+        raise StateError("missing_param", missing_param_reason(do, "value"))
     if do == "time_of_day" and action.value not in TIMES_OF_DAY:
-        raise StateError("invalid_value", f"time_of_day value must be one of {', '.join(TIMES_OF_DAY)}")
+        times = ", ".join(TIMES_OF_DAY)  # validate's wording for the same value
+        raise StateError("invalid_value", f'"{action.value}" is not a time of day; use one of {times}')
 
     if action.at is not None:
         at: Vec3 | None = _place(action, t, locate)
@@ -123,5 +127,5 @@ def effect_for(action: Action, t: float, locate: Locate, shot_end: float) -> Tim
         if action.dur is not None:
             reason = f"{do} dur must not be negative, not {action.dur:g}"
         else:
-            reason = f"{do} starts {t - shot_end:.2f} s after the shot ends; give it a dur"
+            reason = f"{do} starts {fmt_t(t - shot_end)} s after the shot ends; give it a dur"
         raise StateError("bad_time", reason) from None

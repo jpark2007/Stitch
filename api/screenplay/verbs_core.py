@@ -121,9 +121,8 @@ def _what(world: World, action: Action) -> str:
 
 
 def _not_seated(world: World, who: str) -> None:
-    seat = world.people[who].seat
-    if seat is not None:
-        raise StateError("seated", f"{who} is seated in {seat[0]}.{seat[1]}")
+    if world.people[who].seat is not None:
+        raise StateError("seated", world.seat_reason(who))  # "...; use stand_up first" (get_out in a vehicle)
 
 
 def _travel_keys(world: World, tracks: TrackSet, who: str, t: float, dest: Vec3, gait: str) -> tuple[list[Key], float, int]:
@@ -277,7 +276,7 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
     who = _who(world, action)
     what = _what(world, action)
     hand = world.copy().pick_up(who, what)  # validation only: the real world is untouched
-    require_on_stage(world, who, hint="")  # pick_up's offstage message has no enter hint
+    require_on_stage(world, who)
     anchor = require_prop_on_stage(world, what)
 
     arm = arm_of_hand(hand)

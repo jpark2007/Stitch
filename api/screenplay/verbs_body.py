@@ -30,7 +30,7 @@ from screenplay import motion
 from screenplay.ik import RIG, Body
 from screenplay.locate import Locate, bones_at, gesture_arm, held_arm_bones, puppet_root, puppet_target
 from screenplay.schema import Action
-from screenplay.state import HEAD, SEATED_POSES, StateError, World
+from screenplay.state import HEAD, PLACE_WITH_PROPSTART, SEATED_POSES, StateError, World
 from screenplay.tracks import TrackSet
 from screenplay.verb_helpers import Handler, Key, Vec3, require_on_stage, require_param, require_person
 
@@ -196,7 +196,7 @@ def apply_sit_on(world: World, tracks: TrackSet, action: Action, t: float, actio
     seat = world.socket_world(what, socket)
     anchor = world.props[what].world_pos
     if seat is None or anchor is None:
-        raise StateError("not_on_stage", f"{what} is not on stage")
+        raise StateError("not_on_stage", f"{what} is not on stage; {PLACE_WITH_PROPSTART}")
 
     p = world.people[who]
     root = puppet_root(world, tracks, who, t)
