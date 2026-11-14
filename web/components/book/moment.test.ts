@@ -180,3 +180,223 @@ describe("pickTeller (?narrator)", () => {
     assert.equal(m.pickTeller(tellers, null), null);
   });
 });
+
+/* A book's players (moment/tellings.ts): one per spread with a scene. */
+
+type Tellings = typeof import("./moment/tellings");
+type ControllerModule = typeof import("@/components/stage/playback/controller");
+type SamplerModule = typeof import("@/components/stage/playback/sampler");
+const tl: Tellings = await import(new URL("./moment/tellings.ts", import.meta.url).href);
+const { PlaybackController } = (await import(
+  new URL("../stage/playback/controller.ts", import.meta.url).href
+)) as ControllerModule;
+const { compileTimeline } = (await import(new URL("../stage/playback/sampler.ts", import.meta.url).href)) as SamplerModule;
+
+class FakeAudio {
+  src = "";
+  playbackRate = 1;
+  paused = true;
+  duration = Number.NaN;
+  currentTime = 0;
+  muted = false;
+  play() {
+    this.paused = false;
+    return Promise.resolve();
+  }
+  pause() {
+    this.paused = true;
+  }
+  load() {}
+  removeAttribute(name: string) {
+    if (name === "src") this.src = "";
+  }
+}
+
+describe("ScenePlayers", () => {
+  // Four spreads: the first is paper only, three play the sample (dad and mom tell it).
+  const order = ["paper", "a", "b", "c", "end"];
+  const timelines = { a: timeline, b: timeline, c: timeline };
+  const compiled = compileTimeline(timeline);
+
+  function setup(o: { start?: Record<string, string | null>; audio?: boolean } = {}) {
+    let wall = 1000;
+    const made: string[] = [];
+    const audios: FakeAudio[] = [];
+    let muted = false;
+    const mutedListeners = new Set<(m: boolean) => void>();
+    const players = new tl.ScenePlayers({
+      order,
+      timelines,
+      start: o.start,
+      create: (id, narrator) => {
+        made.push(`${id}:${narrator ?? "-"}`);
+        return new PlaybackController(compiled, { narrator, now: () => wall, resolveAudio: (mid) => `https://x/${mid}` });
+      },
+      createAudio: o.audio
+        ? () => {
+            const a = new FakeAudio();
+            audios.push(a);
+            return a;
+          }
+        : undefined,
+      muted: {
+        get: () => muted,
+        subscribe: (l) => {
+          mutedListeners.add(l);
+          return () => mutedListeners.delete(l);
+        },
+      },
+    });
+    const mute = (m: boolean) => {
+      muted = m;
+      for (const l of mutedListeners) l(m);
+    };
+    return { players, made, audios, mute, advance: (ms: number) => (wall += ms) };
+  }
+
+  it("makes the open spread's player and its neighbours', not far ones", () => {
+    const { players } = setup();
+    players.setOpen("a");
+    assert.deepEqual(players.liveIds, ["a", "b"]);
+    players.setOpen("c");
+    assert.deepEqual(players.liveIds, ["b", "c"]);
+  });
+
+  it("a paper spread has no player", () => {
+    const { players } = setup();
+    assert.equal(players.player("paper"), null);
+    assert.equal(players.player("end"), null);
+  });
+
+  it("only the open spread may play: turning the page pauses the old one", () => {
+    const { players } = setup();
+    players.setOpen("a");
+    const a = players.player("a")!;
+    a.play();
+    assert.equal(a.getStatus().playing, true);
+    players.setOpen("b");
+    assert.equal(a.getStatus().playing, false);
+  });
+
+  it("a stage that still stands keeps its player while the book moves on", () => {
+    const { players } = setup();
+    players.setOpen("a");
+    const a = players.player("a")!;
+    const release = players.retain("a");
+    players.setOpen("c");
+    assert.deepEqual(players.liveIds, ["a", "b", "c"]);
+    assert.equal(players.player("a"), a);
+    release();
+    assert.deepEqual(players.liveIds, ["b", "c"]);
+    release(); // twice is harmless
+  });
+
+  it("each spread keeps its own telling", () => {
+    const { players } = setup();
+    players.setOpen("b");
+    players.tell("b", "mom");
+    assert.equal(players.player("b")!.getStatus().narrator, "mom");
+    // Back to spread a: it replays its own telling, not b's.
+    players.setOpen("a");
+    assert.equal(players.player("a")!.getStatus().narrator, "dad");
+    assert.deepEqual(players.get(), { a: "dad", b: "mom", c: "dad" });
+  });
+
+  it("a spread let go starts again with the telling last chosen there", () => {
+    const { players, made } = setup();
+    players.setOpen("a");
+    players.tell("a", "mom");
+    players.setOpen("c"); // a is let go
+    assert.ok(!players.liveIds.includes("a"));
+    assert.equal(players.get().a, "mom");
+    players.setOpen("a");
+    assert.equal(players.player("a")!.getStatus().narrator, "mom");
+    assert.ok(made.includes("a:mom"));
+  });
+
+  it("a shared link's teller starts its spread; one who is not a teller there is ignored", () => {
+    const { players } = setup({ start: { b: "mom", c: "rosa" } });
+    assert.deepEqual(players.get(), { a: "dad", b: "mom", c: "dad" });
+    players.setOpen("c");
+    assert.equal(players.player("b")!.getStatus().narrator, "mom");
+    assert.equal(players.player("c")!.getStatus().narrator, "dad");
+  });
+
+  it("choosing the telling already playing hears it again from the start", () => {
+    const { players, advance } = setup();
+    players.setOpen("a");
+    const a = players.player("a")!;
+    a.play();
+    advance(3000);
+    a.tick();
+    assert.ok(a.time > 2);
+    players.tell("a", "dad");
+    assert.equal(a.time, 0);
+    assert.equal(a.getStatus().playing, true);
+  });
+
+  it("tells the book only when a spread's teller changes, and keeps the same object otherwise", () => {
+    const { players, advance } = setup();
+    let heard = 0;
+    players.subscribe(() => heard++);
+    players.setOpen("a");
+    const before = players.get();
+    const a = players.player("a")!;
+    a.play();
+    advance(500);
+    a.tick();
+    assert.equal(heard, 0);
+    assert.equal(players.get(), before);
+    players.tell("a", "mom");
+    assert.equal(heard, 1);
+    assert.equal(players.get().a, "mom");
+  });
+
+  it("an ended scene shows no telling playing", () => {
+    const { players, advance } = setup();
+    players.setOpen("a");
+    const a = players.player("a")!;
+    a.play();
+    advance((a.duration + 1) * 1000);
+    a.tick();
+    assert.equal(a.getStatus().ended, true);
+    assert.equal(players.get().a, undefined);
+  });
+
+  it("narration elements while shown, muted with the book; deactivating pauses and lets them go", () => {
+    const { players, audios, mute } = setup({ audio: true });
+    players.setOpen("a");
+    assert.equal(audios.length, 0, "no elements before the page is shown");
+    const off = players.activate();
+    assert.equal(audios.length, 2);
+    mute(true);
+    assert.ok(audios.every((el) => el.muted));
+    players.setOpen("b"); // c joins, muted from the start
+    assert.equal(audios.length, 3);
+    assert.equal(audios[2].muted, true);
+    const b = players.player("b")!;
+    b.play();
+    off();
+    assert.equal(b.getStatus().playing, false);
+    assert.equal(b.getStatus().audio, "none");
+    // Shown again: fresh elements for a, b and c.
+    players.activate();
+    assert.equal(audios.length, 6);
+  });
+
+  it("disposing lets go of everything", () => {
+    const { players } = setup();
+    players.setOpen("b");
+    players.dispose();
+    assert.deepEqual(players.liveIds, []);
+  });
+});
+
+describe("timelineTellers", () => {
+  it("default narrator first, as the player orders them", () => {
+    assert.deepEqual(tl.timelineTellers(timeline), ["dad", "mom"]);
+    assert.deepEqual(tl.timelineTellers({ ...timeline, defaultNarrator: "mom" }), ["mom", "dad"]);
+    assert.deepEqual(tl.timelineTellers({ narrations: null, captions: [], audio: null }), []);
+    assert.deepEqual(tl.timelineTellers({ narrations: null, captions: [{ t: 0, text: "hi" }] }), ["narrator"]);
+  });
+});
