@@ -31,10 +31,10 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-haiku-5-5"
-REQUEST_TIMEOUT_S = 8.0  # per request to the model
+REQUEST_TIMEOUT_S = 4.0  # per request to the model
 MAX_RETRIES = 1
 # The whole model step, retry included; past this the deterministic answer is used.
-DEADLINE_S = 12.0
+DEADLINE_S = 6.0
 MAX_CANDIDATES = 20
 MAX_QUOTE_CHARS = 300  # per quote sentence
 MAX_QUOTES_PER_CANDIDATE = 2
@@ -126,15 +126,24 @@ def build_prompt(ctx: AskContext) -> tuple[str, str]:
         })
         if budget <= 0:
             break
-    asker = ctx.asker or "a family member who is not in the tree"
-    relatives = "; ".join(f"{phrase} = {', '.join(names)}" for phrase, names in ctx.relatives) or "none"
+    asker = _no_tags(ctx.asker or "a family member who is not in the tree")
+    relatives = _no_tags(
+        "; ".join(f"{phrase} = {', '.join(names)}" for phrase, names in ctx.relatives) or "none"
+    )
+    # "<" inside the family's text is escaped (JSON <, or a full-width ＜ in plain text),
+    # so a telling or question holding "</family_memories>" cannot end the data block early.
+    memories = json.dumps(items, ensure_ascii=False).replace("<", "\\u003c")
     user = (
         f"Asked by: {asker}\n"
         f"Relatives named in the question: {relatives}\n"
-        f"<question>\n{_clip(ctx.question, 1_000)}\n</question>\n"
-        f"<family_memories>\n{json.dumps(items, ensure_ascii=False)}\n</family_memories>"
+        f"<question>\n{_no_tags(_clip(ctx.question, 1_000))}\n</question>\n"
+        f"<family_memories>\n{memories}\n</family_memories>"
     )
     return SYSTEM_PROMPT, user
+
+
+def _no_tags(text: str) -> str:
+    return text.replace("<", "＜")
 
 
 OUTPUT_SCHEMA = {
