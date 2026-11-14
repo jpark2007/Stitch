@@ -1,7 +1,17 @@
 {
   "memoryId": "demo_lily_graduation",
   "cast": ["lily", "mom", "dad", "sam", "grandma_rosa", "grandma_carmen"],
-  "props": ["diploma", "lectern", "folding_chair_rosa", "folding_chair_carmen", "rosa_hat", "carmen_hat"],
+  "props": [
+    "diploma",
+    "lectern",
+    "folding_chair_rosa",
+    "folding_chair_carmen",
+    "folding_chair_mom",
+    "folding_chair_sam",
+    "folding_chair_dad",
+    "rosa_hat",
+    "carmen_hat"
+  ],
   "shots": [
     {
       "id": "s1",
@@ -10,11 +20,17 @@
       "start": {
         "grandma_rosa": {"at": "row_left", "in": "folding_chair_rosa.seat", "holding": "rosa_hat", "facing": "right"},
         "grandma_carmen": {"at": "row_right", "in": "folding_chair_carmen.seat", "holding": "carmen_hat", "facing": "right"},
+        "mom": {"at": "second_row_left", "in": "folding_chair_mom.seat", "facing": "right"},
+        "sam": {"at": "second_row_mid", "in": "folding_chair_sam.seat", "facing": "right"},
+        "dad": {"at": "second_row_aisle", "in": "folding_chair_dad.seat", "facing": "right"},
         "lily": {"at": "aisle", "facing": "right"}
       },
       "propStart": {
         "folding_chair_rosa": {"at": "row_left"},
         "folding_chair_carmen": {"at": "row_right"},
+        "folding_chair_mom": {"at": "second_row_left"},
+        "folding_chair_sam": {"at": "second_row_mid"},
+        "folding_chair_dad": {"at": "second_row_aisle"},
         "lectern": {"at": "lectern_spot"},
         "diploma": {"on": "lectern.top"}
       },
@@ -36,6 +52,10 @@
         {"t": 8.1, "who": "grandma_rosa", "do": "pose", "pose": "arms_raised", "dur": 1.6, "id": "clap"},
         {"t": 10.4, "who": "grandma_rosa", "do": "sit_on", "what": "folding_chair_rosa"},
         {"t": 8.0, "who": "grandma_carmen", "do": "lean_toward", "target": "grandma_rosa", "dur": 1.2},
+        {"t": 8.2, "who": "sam", "do": "point_at", "target": "lily", "dur": 1.4, "id": "sam_saw"},
+        {"t": 8.8, "who": "mom", "do": "lean_toward", "target": "lily", "dur": 1.4, "id": "mom_cries"},
+        {"t": 10.6, "who": "dad", "do": "stand_up", "id": "photo"},
+        {"t": 12.4, "who": "dad", "do": "sit_on", "what": "folding_chair_dad"},
         {"t": 8.6, "who": "lily", "do": "walk_to", "to": "stage_edge"},
         {"t": 9.6, "who": "lily", "do": "walk_to", "to": "lectern_front"},
         {"t": 10.4, "who": "lily", "do": "pick_up", "what": "diploma", "id": "diploma"},
@@ -65,7 +85,7 @@
         }
       ],
       "transition": "fold",
-      "pageText": "Class of 2015. Two grandmothers in matching hats, and Lily turning a trip on the stairs into a bow."
+      "pageText": "Class of 2015. The whole family came, two grandmas wore matching hats, and Lily turned a trip on the stairs into a bow."
     },
     {
       "id": "s2",
@@ -161,11 +181,14 @@
   ],
   "explanations": [
     {"target": "puppet:lily", "text": "Lily was twenty-two, the first in the family to finish college."},
-    {"target": "puppet:mom", "text": "Ana cried from the first name called to the last."},
-    {"target": "puppet:dad", "text": "David took ninety photos that day. Three of them are in focus."},
+    {"target": "puppet:mom", "text": "Ana sat right behind Rosa and cried from the first name called to the last."},
+    {
+      "target": "puppet:dad",
+      "text": "David took the aisle seat so he could jump up for photos. He took ninety that day, and three are in focus."
+    },
     {
       "target": "puppet:sam",
-      "text": "Sam drove four hours to be there and has brought up the bow every Thanksgiving since."
+      "text": "Sam drove four hours to be there. From his seat behind the grandmothers he saw Lily's foot catch first, and he has brought it up every Thanksgiving since."
     },
     {
       "target": "puppet:grandma_rosa",
@@ -179,12 +202,27 @@
       "target": "prop:diploma",
       "text": "Lily's diploma, tied with a blue ribbon. It hangs in Ana's hallway now."
     },
-    {"target": "prop:lectern", "text": "The lectern where the dean handed out the diplomas."},
+    {"target": "prop:lectern", "text": "The lectern where the diplomas waited. Lily had to cross the whole stage to reach hers."},
     {
       "target": "prop:folding_chair_rosa",
       "text": "Rosa's front-row seat, saved for her since seven that morning."
     },
-    {"target": "prop:folding_chair_carmen", "text": "Carmen's seat, right next to Rosa's, in the front row."},
+    {
+      "target": "prop:folding_chair_carmen",
+      "text": "Carmen's seat, right next to Rosa's in the front row, which is how the whole hall noticed the matching hats."
+    },
+    {
+      "target": "prop:folding_chair_mom",
+      "text": "Ana's seat in the second row, right behind Rosa, close enough to pass the tissues forward."
+    },
+    {
+      "target": "prop:folding_chair_sam",
+      "text": "Sam's seat, between his parents and right behind Carmen, who shushed him when he laughed at the bow."
+    },
+    {
+      "target": "prop:folding_chair_dad",
+      "text": "David's seat on the aisle, picked so he could stand up for photos without blocking anyone's view."
+    },
     {
       "target": "prop:rosa_hat",
       "text": "Rosa's pale blue hat with a white silk flower, bought specially for the day."

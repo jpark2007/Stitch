@@ -474,6 +474,36 @@ def test_rosa_cheers_at_the_graduation_from_her_front_row_seat(memories):
         assert _at(_track(tl, f"prop:{hat}", "parent"), s1.action_start + 3.0) == f"puppet:{grandma}.head"
 
 
+def test_the_family_watches_lily_from_their_seats(memories, scene):
+    """Mom, Dad and Sam are in the graduation's cast, and Sam is asked what he saw "from your
+    seat that day" (seed.demo.DEMO_QUESTIONS): in the hall (s1) each of them starts in a
+    folding chair's seat socket or sits on one during the shot, is seated at the start and the
+    end of the shot, and has an explanation, as does their chair."""
+    sp, tl = memories["demo_lily_graduation"].screenplay, memories["demo_lily_graduation"].timeline
+    hall = sp.shots[0]
+    assert hall.id == "s1" and hall.set == "school_hall_2015"
+    s1 = _shot(tl, "s1")
+    explained = {e.target: e.text for e in sp.explanations or []}
+    for pid in ("mom", "dad", "sam"):
+        start = hall.start.get(pid)
+        in_seat = start is not None and start.in_ is not None and start.in_.endswith(".seat")
+        sits = [a for a in hall.actions if a.who == pid and a.do == "sit_on"]
+        assert in_seat or sits, f"{pid} should be seated in the hall"
+        chairs = {start.in_.split(".", 1)[0]} if in_seat else {a.what for a in sits}
+        for chair in chairs:
+            assert chair in sp.props and "seat" in scene["props"][chair].sockets, (pid, chair)
+            assert chair in hall.prop_start, f"{chair} stands in the hall"
+            if in_seat:
+                assert hall.prop_start[chair].at == start.at, f"{pid} sits where {chair} stands"
+            assert f"prop:{chair}" in explained, f"say why {chair} matters"
+        assert f"puppet:{pid}" in explained, f"say why {pid} matters"
+        assert _seated(tl, pid, s1.action_start), f"{pid} watches from a seat"
+        assert _seated(tl, pid, s1.end - 0.01), f"{pid} ends the shot in a seat"
+        # one small reaction each to Lily's bow, so the audience is alive but not crowding
+        reactions = [a for a in hall.actions if a.who == pid and a.do != "sit_on"]
+        assert len(reactions) == 1, (pid, [a.do for a in reactions])
+
+
 def test_rosa_and_joseph_come_out_into_the_sun(memories):
     sp, tl = memories["demo_rosa_joseph_wedding"].screenplay, memories["demo_rosa_joseph_wedding"].timeline
     assert [s.set for s in sp.shots] == ["church_steps_1988", "st_marys_churchyard_1958"]
