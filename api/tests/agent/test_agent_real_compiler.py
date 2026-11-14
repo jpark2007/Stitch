@@ -585,9 +585,9 @@ def _skip_effects_gap(res: CompileResult) -> None:
     """The one known compiler-side gap: screenplay/effects.py exists, but compile() emits
     `effects=[]` and has no handler for an effect verb. Skip, naming the gap, only while the real
     compiler says so for an effect verb; any other unsupported_verb is a real failure."""
-    verbs = sorted({e.do for e in res.errors if e.code in EFFECTS_GAP_CODES and e.do in EFFECT_VERBS})
-    if verbs:
-        pytest.skip(f"{EFFECTS_GAP} ({', '.join(verbs)}: unsupported_verb)")
+    hits = sorted({f"{e.do}: {e.code}" for e in res.errors if e.code in EFFECTS_GAP_CODES and e.do in EFFECT_VERBS})
+    if hits:
+        pytest.skip(f"{EFFECTS_GAP} ({', '.join(hits)})")
 
 
 def test_effects_gap_skip_is_narrow():
@@ -599,6 +599,45 @@ def test_effects_gap_skip_is_narrow():
         _skip_effects_gap(gap)
     for code, do in (("unsupported_verb", "follow"), ("busy", "confetti"), ("unsupported_verb", None)):
         _skip_effects_gap(CompileResult(ok=False, errors=[CompileError(code=code, message="m", do=do)]))
+
+
+EFFECT_SAMPLES: dict[str, dict] = {
+    "confetti": {"do": "confetti", "at": "steps_top", "dur": 2},
+    "steam": {"do": "steam", "at": "steps_top", "dur": 2},
+    "rain": {"do": "rain", "dur": 2},
+    "smoke": {"do": "smoke", "at": "steps_top", "dur": 2},
+    "time_of_day": {"do": "time_of_day", "value": "dusk", "dur": 2},
+}
+
+
+def test_directing_skill_effects_claim_matches_the_compiler(real, lookup):
+    """The directing skill tells the director that effects fail with `unsupported_verb` and to
+    leave them out. That is true only while compile() does not dispatch effect verbs. Compile
+    each effect on the sample and check the skill's claim against what the real compiler says, so
+    the text is flagged as stale the day the compiler wires effects in (and the other way round)."""
+    assert set(EFFECT_SAMPLES) == EFFECT_VERBS
+    rejected = set()
+    for verb, action in EFFECT_SAMPLES.items():
+        data = _sample()
+        _actions(data).append({"t": 8.5, **action})
+        res = compile_text(json.dumps(data), real, lookup)
+        if any(e.code in EFFECTS_GAP_CODES and e.do == verb for e in res.errors):
+            rejected.add(verb)
+    text = " ".join(SKILL.read_text().split())
+    claims_unsupported = "The compiler does not run effects yet" in text and "Only effects report it today" in text
+    if rejected == EFFECT_VERBS:
+        assert claims_unsupported, "the compiler rejects every effect; the directing skill must say so"
+    elif not rejected:
+        assert not claims_unsupported, (
+            "the real compiler now compiles every effect verb: update agent/skills/directing/SKILL.md "
+            "(effects line and the `unsupported_verb` fix) and test_agent_skills.py, which still say "
+            "effects fail with unsupported_verb"
+        )
+    else:
+        pytest.fail(
+            f"the real compiler rejects some effects ({sorted(rejected)}) and compiles others "
+            f"({sorted(EFFECT_VERBS - rejected)}): the directing skill must name exactly the rejected ones"
+        )
 
 
 @pytest.mark.parametrize("name", list(CORPUS))
