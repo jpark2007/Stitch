@@ -8,7 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 from db import client, contacts, conversations
 from .auth import authenticated_body
-from .models import AuthorizeContact, InboundMessage, InboundPhoto, Tick, WHITESPACE
+from .models import AuthorizeContact, InboundMessage, InboundPhoto, InboundVoice, Tick, WHITESPACE
 
 router = APIRouter(prefix="/internal/channels", tags=["channels"])
 
@@ -121,3 +121,36 @@ async def inbound_photo(body: bytes = Depends(authenticated_body)) -> dict:
     except ValidationError:
         raise HTTPException(422, "Invalid photo message") from None
     return await run_in_threadpool(_receive_photo, message)
+
+
+def _receive_voice(message: InboundVoice) -> dict:
+    from .voice import receive_voice
+    try:
+        return receive_voice(client.get_db(), message)
+    except LookupError:
+        raise HTTPException(404, "Unknown contact") from None
+    except PermissionError:
+        raise HTTPException(403, "Contact is not opted in") from None
+    except conversations.PhotoConflict:
+        raise HTTPException(409, "Message ID was already used for different content") from None
+    except conversations.PhotoPending:
+        raise HTTPException(503, "Audio storage requires retry or reconciliation") from None
+    except ValueError as exc:
+        if str(exc) == "Family selection required":
+            raise HTTPException(409, "Family selection required") from None
+        raise HTTPException(422, "Invalid voice note") from None
+
+
+@router.post("/inbound-voice", status_code=202)
+async def inbound_voice(request: Request, body: bytes = Depends(authenticated_body)) -> dict:
+    from .transcription import TranscriptionConfig, TranscriptionError
+    if getattr(request.app.state, "channels_transcriber", None) is None:
+        try:
+            TranscriptionConfig.from_env()  # Validation only; no provider call.
+        except TranscriptionError:
+            raise HTTPException(503, "Voice transcription is not configured") from None
+    try:
+        message = InboundVoice.model_validate_json(body)
+    except ValidationError:
+        raise HTTPException(422, "Invalid voice message") from None
+    return await run_in_threadpool(_receive_voice, message)

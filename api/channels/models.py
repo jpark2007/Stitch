@@ -83,6 +83,7 @@ class InboundPhoto(AuthorizeContact):
             raise ValueError("Invalid encoded photo length")
         return value
 
+
     @field_validator("caption")
     @classmethod
     def caption_size(cls, value: str) -> str:
@@ -92,4 +93,29 @@ class InboundPhoto(AuthorizeContact):
             raise ValueError("Invalid caption Unicode") from None
         if size > 8000:
             raise ValueError("Caption is too long")
+        return value
+
+
+class InboundVoice(AuthorizeContact):
+    messageId: str
+    spaceId: str
+    attachmentId: str
+    mimeType: str
+    dataBase64: str
+
+    @field_validator("messageId", "spaceId", "attachmentId")
+    @classmethod
+    def voice_identifier(cls, value: str) -> str:
+        return bounded_text(value, 256)
+
+    @field_validator("mimeType")
+    @classmethod
+    def voice_mime(cls, value: str) -> str:
+        return bounded_text(value, 100)
+
+    @field_validator("dataBase64")
+    @classmethod
+    def voice_size(cls, value: str) -> str:
+        if not value or len(value) > MAX_PHOTO_BASE64 or not value.isascii():
+            raise ValueError("Invalid encoded voice length")
         return value
