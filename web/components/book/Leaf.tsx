@@ -28,7 +28,7 @@ import {
 } from "three";
 import { BONES, PAGE_H, PAGE_W, SEG, turnTargets, turnTwist } from "./leafShape";
 import type { BookRuntime } from "./runtime";
-import { FRONT_OFFSET_FACTOR, FRONT_OFFSET_UNITS } from "./stacking";
+import { FRONT_OFFSET } from "./stacking";
 
 const X_SEGS = BONES * 2;
 const Z_SEGS = 2;
@@ -184,8 +184,8 @@ export class LeafBody {
       this.front = leaf.front;
       for (const m of mesh.material as MeshStandardMaterial[]) {
         m.polygonOffset = leaf.front;
-        m.polygonOffsetFactor = leaf.front ? FRONT_OFFSET_FACTOR : 0;
-        m.polygonOffsetUnits = leaf.front ? FRONT_OFFSET_UNITS : 0;
+        m.polygonOffsetFactor = leaf.front ? FRONT_OFFSET.factor : 0;
+        m.polygonOffsetUnits = leaf.front ? FRONT_OFFSET.units : 0;
       }
     }
     if (!leaf.visible && this.started) return false;
