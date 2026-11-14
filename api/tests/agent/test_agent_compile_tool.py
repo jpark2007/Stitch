@@ -281,6 +281,88 @@ def test_tool_scene_review_crash_does_not_fail_the_compile(monkeypatch):
     assert events == []
 
 
+LATE_TAB = copy.deepcopy(NO_PAGE_TEXT)
+LATE_TAB["interactions"][0]["drives"]["to"] = 50  # shot time; lands far past the end of the timeline
+
+
+def _late_tab_warning(tl: Timeline) -> str:
+    shot = tl.shots[0]
+    return (
+        f"interaction drop_books: scrub to {shot.action_start + 50:g}s is outside the timeline "
+        f"(0 to {tl.duration:g}s); keep from and to between 0 and "
+        f"{round(shot.end - shot.action_start, 2):g} (seconds from the start of shot s1)"
+    )
+
+
+def test_tool_success_appends_timeline_warnings_after_scene_warnings_without_using_a_round():
+    graph = _graph()
+    # a failed round first, so we can see the warnings neither add a round nor stop the loop
+    state, _ = _call(graph, "tl", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
+    assert json.loads(_text(state, "/compile_log.json")) == {"rounds": 1}
+
+    for n in (2, 3, 4):  # more successful compiles with warnings than MAX_COMPILE_ROUNDS
+        state, events = _call(graph, "tl", n, files={"/screenplay.json": create_file_data(json.dumps(LATE_TAB))})
+        tl = Timeline.model_validate_json(_text(state, "/timeline.json"))
+        warnings = [NO_PAGE_TEXT_WARNING, _late_tab_warning(tl)]
+        assert _last_tool_message(state).content.splitlines() == [
+            f"ok: 1 shots, {round(tl.duration, 2):g}s, {len(tl.tracks)} tracks",
+            "warnings (fix in /screenplay.json, then compile again; these do not use a compile round):",
+            *(f"- {w}" for w in warnings),
+        ]
+        assert _text(state, "/scene_review.txt") == "".join(f"{w}\n" for w in warnings)
+        assert json.loads(_text(state, "/compile_log.json")) == {"rounds": 0}
+        assert _text(state, "/compile_errors.txt") == ""
+        assert events == []
+
+    state, events = _call(graph, "tl", 5, files={"/screenplay.json": create_file_data(BAD_TEXT)})
+    assert _last_tool_message(state).content == (
+        f"{BAD_MESSAGE}\nround 1 of 3\nFix /screenplay.json and call compile_screenplay again."
+    )
+    assert [e["event"] for e in events] == ["compile_error"]
+    assert events[0]["data"]["round"] == 1
+
+
+def test_tool_timeline_review_reads_the_compiled_timeline():
+    """A compiler whose timeline leaves dad without tracks: the explanation for him warns."""
+
+    def no_dad(screenplay, scene):
+        result = FakeCompiler()(screenplay, scene)
+        tl = result.timeline.model_copy(
+            update={"tracks": [t for t in result.timeline.tracks if t.target != "puppet:dad"]}
+        )
+        return result.model_copy(update={"timeline": tl})
+
+    warning = (
+        'explanations: target "puppet:dad" has no track in the timeline, so there is nothing to click; '
+        "bring dad on stage in a shot (start or enter), or remove the explanation"
+    )
+    graph = _graph(no_dad)
+    state, events = _call(graph, "nodad", 1, files={"/screenplay.json": create_file_data(SAMPLE_TEXT)})
+    lines = _last_tool_message(state).content.splitlines()
+    assert lines[0].startswith("ok: ")
+    assert lines[1:] == [
+        "warnings (fix in /screenplay.json, then compile again; these do not use a compile round):",
+        f"- {warning}",
+    ]
+    assert _text(state, "/scene_review.txt") == warning + "\n"
+    assert json.loads(_text(state, "/compile_log.json")) == {"rounds": 0}
+    assert events == []
+
+
+def test_tool_timeline_review_crash_keeps_the_scene_warnings(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("timeline review bug")
+
+    monkeypatch.setattr(compile_mod, "review_timeline", boom)
+    graph = _graph()
+    state, events = _call(graph, "tlboom", 1, files={"/screenplay.json": create_file_data(json.dumps(LATE_TAB))})
+    lines = _last_tool_message(state).content.splitlines()
+    assert lines[0].startswith("ok: ")
+    assert lines[2:] == [f"- {NO_PAGE_TEXT_WARNING}"]
+    assert _text(state, "/scene_review.txt") == NO_PAGE_TEXT_WARNING + "\n"
+    assert events == []
+
+
 def test_tool_failure_output_is_unchanged_and_writes_no_scene_review():
     graph = _graph()
     state, _ = _call(graph, "fail", 1, files={"/screenplay.json": create_file_data(BAD_TEXT)})
