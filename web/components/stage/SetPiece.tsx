@@ -411,3 +411,176 @@ export function SetPiece({
     </group>
   );
 }
+
+/* ------------------------------------------------------------------------ */
+/* Page patch                                                                */
+/* ------------------------------------------------------------------------ */
+
+export interface PagePatchProps {
+  cutout: Cutout;
+  /** Width on the page (depth follows the cutout's aspect). */
+  width: number;
+  /** Centre on the page. */
+  x?: number;
+  z?: number;
+  yaw?: number;
+  /** Stacking slot for overlapping patches (higher lies on top). */
+  layer?: number;
+}
+
+/**
+ * A paper cutout glued flat to the page (a lawn, a path, a pond). It never
+ * rises; it receives the set's shadows. The cutout's top edge points away
+ * from the reader.
+ */
+export function PagePatch({ cutout, width, x = 0, z = 0, yaw = 0, layer = 0 }: PagePatchProps) {
+  const depth = width / cutout.aspect;
+  const material = useMemo(() => {
+    const grain = getPaperTextures("paper", [Math.max(0.5, width), Math.max(0.5, depth)]);
+    const m = new MeshStandardMaterial({
+      map: cutout.map,
+      alphaMap: cutout.alphaMap,
+      alphaTest: 0.5,
+      roughness: 0.95,
+      metalness: 0,
+    });
+    m.alphaToCoverage = true;
+    m.normalMap = grain.normalMap;
+    m.normalScale.set(0.5, 0.5);
+    m.polygonOffset = true;
+    m.polygonOffsetFactor = -1 - layer;
+    m.polygonOffsetUnits = -2 - 2 * layer;
+    return m;
+  }, [cutout, width, depth, layer]);
+  useEffect(() => () => material.dispose(), [material]);
+  return (
+    <mesh position={[x, 0.0006 + layer * 0.0004, z]} rotation={[-Math.PI / 2, 0, yaw]} material={material} receiveShadow>
+      <planeGeometry args={[width, depth]} />
+    </mesh>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Floating layer (parallel fold)                                            */
+/* ------------------------------------------------------------------------ */
+
+export interface FloatingLayerProps {
+  /** Centre of the back wall's fold on the page. */
+  x?: number;
+  z?: number;
+  /** Platform width (x), wall height and top depth (z). */
+  width: number;
+  height: number;
+  depth: number;
+  /** Stagger slot, as for SetPiece. Give it a slot before what stands on it. */
+  order?: number;
+  count?: number;
+  /** Paint for the front wall (stretched over it), e.g. steps or a stone base. */
+  front?: Cutout;
+  /** Card colour of the walls and top. */
+  color?: string;
+  thickness?: number;
+  /** Pieces standing on the platform, in coordinates whose origin is the
+   *  top's back edge centre (+z towards the front edge). */
+  children?: ReactNode;
+}
+
+/**
+ * A raised platform made the way a pop-up book makes one: a back wall, a
+ * front wall and a centre support strip, all hinged on the page, carrying a
+ * top. Every quad is a parallelogram, so as the walls tilt the top stays
+ * parallel to the page and simply sinks towards the reader; folded, the whole
+ * thing lies flat. Pieces mounted on it (`children`) ride on the top and can
+ * rise on their own hinges.
+ */
+export function FloatingLayer({
+  x = 0,
+  z = 0,
+  width,
+  height,
+  depth,
+  order = 0,
+  count = 1,
+  front,
+  color = "#e4d6bd",
+  thickness = 0.007,
+  children,
+}: FloatingLayerProps) {
+  const { rise } = useContext(PopUpContext);
+  const now = useStageTime();
+  const walls = useRef<(Group | null)[]>([]);
+  const top = useRef<Group>(null);
+  const motion = Math.sqrt(Math.max(0.25, height * 2));
+
+  const mats = useMemo(() => {
+    const card = createPaperMaterial({ color, kind: "card", grain: 0.7, repeat: [width, height * 2] });
+    const edge = createCardEdgeMaterial({ color, darken: 0.14 });
+    let face = card;
+    if (front) {
+      face = new MeshStandardMaterial({ map: front.map, roughness: 0.93, metalness: 0 });
+      const grain = getPaperTextures("card", [width, height * 2]);
+      face.normalMap = grain.normalMap;
+      face.normalScale.set(0.4, 0.4);
+    }
+    // Box faces: [+x, -x, +y, -y, +z, -z]. Walls stand in local XY (+z faces the reader).
+    const wall = [edge, edge, edge, edge, face, card];
+    const plain = [edge, edge, edge, edge, card, card];
+    // The top lies in XZ: +y is its upper face.
+    const plate = [edge, edge, card, card, edge, edge];
+    return { card, edge, face, wall, plain, plate };
+  }, [color, width, height, front]);
+  useEffect(
+    () => () => {
+      mats.card.dispose();
+      mats.edge.dispose();
+      if (mats.face !== mats.card) mats.face.dispose();
+    },
+    [mats],
+  );
+
+  // Wall bases along the platform's depth: back, centre support, front.
+  const bases = [0, depth / 2, depth];
+  const lastRise = useRef(NaN);
+  useFrame((state) => {
+    const r = rise(order, count, now(state), motion);
+    if (r === lastRise.current) return;
+    lastRise.current = r;
+    markShadowsDirty(state);
+    // Walls tilt towards the reader, like every hinge on the stage.
+    const a = Math.min(1, 1 - r) * (Math.PI / 2);
+    const lift = (1 - smoothstep(r)) * thickness * 1.6;
+    for (const g of walls.current) if (g) g.rotation.x = a;
+    const t = top.current;
+    if (t) t.position.set(0, height * Math.cos(a) + lift, height * Math.sin(a));
+  });
+
+  return (
+    <group position={[x, 0, z]}>
+      {bases.map((bz, i) => (
+        <group
+          key={bz}
+          position-z={bz}
+          ref={(el) => {
+            walls.current[i] = el;
+          }}
+        >
+          {/* The centre support is a narrow strip, hidden under the top. */}
+          <mesh
+            position={[0, height / 2, -thickness / 2]}
+            material={i === 2 ? mats.wall : mats.plain}
+            castShadow={i !== 1}
+            receiveShadow
+          >
+            <boxGeometry args={[i === 1 ? width * 0.3 : width, height, thickness]} />
+          </mesh>
+        </group>
+      ))}
+      <group ref={top}>
+        <mesh position={[0, thickness / 2, depth / 2]} material={mats.plate} castShadow receiveShadow>
+          <boxGeometry args={[width, thickness, depth + thickness]} />
+        </mesh>
+        <group position-y={thickness}>{children}</group>
+      </group>
+    </group>
+  );
+}
