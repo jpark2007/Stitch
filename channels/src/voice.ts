@@ -7,6 +7,8 @@ type VoiceSource = Pick<Voice, "id" | "mimeType" | "size" | "stream">;
 export type VoiceIdentity = { messageId: string; provider: Provider; spaceId: string; senderId: string };
 
 export function downloadVoice(voice: VoiceSource, options: DownloadOptions = {}): Promise<Buffer> {
+  // Native iMessage audio/x-caf stays CAF here. The authenticated backend must
+  // decode it locally before transcription; never relabel its bytes as WAV.
   return downloadMedia(voice, VOICE_TYPES, MAX_VOICE_BYTES, "Voice", options);
 }
 

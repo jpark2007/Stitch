@@ -91,7 +91,10 @@ Voice content uses the actual SDK `Voice.stream()` API, never `read()`, a filena
 or a user-supplied URL. Sender preauthorization happens before opening the stream.
 Allowed MIME types match the transcription adapter: `audio/mpeg`, `audio/mp3`,
 `audio/mpga`, `audio/mp4`, `audio/m4a`, `audio/x-m4a`, `audio/wav`, `audio/x-wav`,
-`audio/webm`, `audio/ogg`, `audio/flac`, `audio/x-flac`. CAF and other unsupported
+`audio/webm`, `audio/ogg`, `audio/flac`, `audio/x-flac`, plus native iMessage
+`audio/x-caf`. CAF is preserved unchanged for the backend's optional bounded
+afconvert/ffmpeg conversion to verified WAV before transcription. Deployments
+without a converter block CAF before a provider request. Other unsupported
 containers are rejected; this bridge performs no conversion and does not trust
 MIME as proof of file contents. Voice downloads share the 20 MiB limit and one
 absolute 15-second deadline covering stream opening and all reads; stalled or
