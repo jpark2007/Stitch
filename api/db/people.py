@@ -140,6 +140,15 @@ def _character_doc(character: schemas.CharacterSheet) -> dict[str, Any]:
     return character.model_dump(mode="json", by_alias=True)
 
 
+def _user_has_other_person(db: Database, family_id: str, user_id: str, person_id: str) -> bool:
+    """True if user_id is linked to a person in this family other than person_id."""
+    return bool(
+        db[COLLECTION].count_documents(
+            {"familyId": family_id, "userId": user_id, "_id": {"$ne": person_id}}, limit=1
+        )
+    )
+
+
 # ------------------------------------------------------------------------ validation
 
 
@@ -236,6 +245,13 @@ def create_person(
 
     Raises InvalidRelation for bad parent/spouse ids, AlreadyClaimed when ``user_id``
     already has a person in this family, and ValueError for a duplicate ``person_id``.
+
+    One person per user per family is enforced by the unique partial index
+    ``people_userId_familyId_unique`` (db/client.py), so of two racing creates or a
+    create racing a claim only one write lands. The early lookup is just a fast path.
+    For databases without that index, a post-insert check also counts the user's
+    people here and, if another exists, deletes the new document and raises
+    AlreadyClaimed before any spouse is linked back to it.
     """
     people = db[COLLECTION]
     parent_ids = list(new.parent_ids)
@@ -274,7 +290,21 @@ def create_person(
     try:
         people.insert_one(doc)
     except DuplicateKeyError as exc:
+        # Never read exc.details: mongomock leaves it None. Look at the data instead. If
+        # our _id is free, the clash was on the one-person-per-user index even when the
+        # other person is gone again by now (unclaimed or rolled back).
+        if user_id is not None and (
+            _user_has_other_person(db, family_id, user_id, doc["_id"])
+            or not people.count_documents({"_id": doc["_id"]}, limit=1)
+        ):
+            raise AlreadyClaimed("this user already has a person in this family") from exc
         raise ValueError(f"person id already exists: {doc['_id']}") from exc
+
+    if user_id is not None and _user_has_other_person(db, family_id, user_id, doc["_id"]):
+        # Only reachable without the unique index: another create or a claim for this
+        # user landed between our check and our insert. Yield to it, leaving nothing.
+        people.delete_one({"_id": doc["_id"], "familyId": family_id})
+        raise AlreadyClaimed("this user already has a person in this family")
 
     if spouse_ids:
         people.update_many(
@@ -405,6 +435,12 @@ def claim_person(
 
     None if the person is not in this family. AlreadyClaimed if someone else holds the
     person or the user already has a different person here. Re-claiming is a no-op.
+
+    One person per user per family is enforced by the unique partial index
+    ``people_userId_familyId_unique`` (db/client.py): a claim racing another claim or a
+    create for the same user fails with DuplicateKeyError, raised as AlreadyClaimed.
+    For databases without that index, a post-write recount undoes our claim if the user
+    ended up with another person here.
     """
     people = db[COLLECTION]
     mine = people.find_one({"familyId": family_id, "userId": user_id})
@@ -413,11 +449,14 @@ def claim_person(
             return _to_person(mine)
         raise AlreadyClaimed("this user already has a person in this family")
 
-    doc = people.find_one_and_update(
-        {"_id": person_id, "familyId": family_id, "userId": None},
-        {"$set": {"userId": user_id}},
-        return_document=ReturnDocument.AFTER,
-    )
+    try:
+        doc = people.find_one_and_update(
+            {"_id": person_id, "familyId": family_id, "userId": None},
+            {"$set": {"userId": user_id}},
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError as exc:
+        raise AlreadyClaimed("this user already has a person in this family") from exc
     if doc is None:
         existing = people.find_one({"_id": person_id, "familyId": family_id})
         if existing is None:
