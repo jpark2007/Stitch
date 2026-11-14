@@ -240,8 +240,10 @@ On each page, in each mode and viewport:
 - **Empty submit**: every required field gets `aria-invalid="true"` and an
   `aria-describedby` that includes its message; focus moves to the first invalid field.
 - **Validation errors**: log in: a bad email. Sign up: a blank name, a bad email, a password
-  under `PASSWORD_MIN`. Start a family: an empty family name, an empty name, a year in the
-  future and before 1850. There is no confirm-password field, so nothing can mismatch.
+  under `PASSWORD_MIN`. Start a family: an empty family name, an empty name, a born year in
+  the future and before 1850 (the born-year floor in `validation.ts`; a memory's year on
+  `/add` starts at 1800, `MEMORY_YEAR_MIN` in `memoryForm.ts`, which `sweep_add.py` reads).
+  There is no confirm-password field, so nothing can mismatch.
 - **Enter submits**: the 401, the 409 and the bad year are sent by pressing Enter.
 - **Wrong password (401)** and **a taken email (409)**: a form-level message (not a generic
   one), focus on it, the email kept.
