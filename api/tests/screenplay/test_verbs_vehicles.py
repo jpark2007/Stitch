@@ -355,7 +355,12 @@ def test_drive_to_toward_minus_x_spins_the_wheels_positive():
     assert arrival == pytest.approx(2.0 + 0.4 / motion.DRIVE_SPEED)
     end_rot = [k[3] for k in tracks.raw if k[1] == "part.wheel_front.rot" and k[2] == arrival]
     assert end_rot == [pytest.approx(0.4 / RADIUS, abs=1e-9)]
-    assert world.people["dad"].pos == pytest.approx((-1.07, 0.405 - HIP["dad"], 0.5))
+    # The driver's seat ends at x = -1.07, past the edge, while the car (anchor -0.8) is on
+    # stage: dad's recorded position is held at the edge so he stays on stage with the car
+    # (verbs_body.seated_world_pos); his root keys stay on the seat.
+    assert world.people["dad"].pos == pytest.approx((-1.0, 0.405 - HIP["dad"], 0.5))
+    assert world.on_stage("dad")
+    assert tracks.value_at("puppet:dad", "root.position", arrival) == pytest.approx([-1.07, 0.405 - HIP["dad"], 0.5], abs=1e-3)
 
 
 def test_two_drives_keep_the_wheel_angle_continuous():
@@ -949,3 +954,45 @@ def test_ride_to_from_a_chair_on_the_ground_is_not_in_the_vehicle():
     world = pickup_world(chair_on="chair_spot")
     assert_atomic(world, tracks, "not_in_vehicle", "kid is not in pickup; use get_in first",
                   do="ride_to", who="kid", what="pickup", to="church", t=1.0)
+
+
+# ------------------------------------------------------------------ the stage edge
+# (test_stage_edge.py compiles whole scenarios; these call the handlers directly)
+
+def test_get_out_through_a_door_past_the_edge_steps_back_on_stage():
+    """The car on far_left (x = -0.8): its driver's door is at -1.07. dad gets in from the
+    edge, gets out, and steps in to -0.95; the action ends when the step does."""
+    tracks = RecordingTracks()
+    world = make_world({"dad": {"at": "far_left"}}, {"car": {"at": "far_left"}})
+    t = run(world, tracks, 0.0, do="get_in", who="dad", what="car", socket="driver")
+    assert world.people["dad"].pos[0] == -1.0 and world.on_stage("dad")  # held at the edge while seated
+    end = run(world, tracks, t + 1.0, do="get_out", who="dad", what="car")
+    margin = verbs_vehicles.DISMOUNT_EDGE_MARGIN
+    assert margin == verbs_body.DISMOUNT_EDGE_MARGIN
+    stood = t + 1.0 + POSE_SECONDS
+    assert end > stood
+    assert tracks.value_at("puppet:dad", "root.position", stood) == pytest.approx([-1.07, 0.0, 0.5], abs=1e-3)
+    assert tracks.value_at("puppet:dad", "root.position", end) == pytest.approx([-1.0 + margin, 0.0, 0.5], abs=1e-3)
+    dad = world.people["dad"]
+    assert dad.pos == pytest.approx((-1.0 + margin, 0.0, 0.5)) and dad.seat is None and dad.facing == 1
+    assert world.people["dad"].busy_until == pytest.approx(end)
+
+
+def test_get_out_through_a_door_inside_the_band_is_unchanged():
+    tracks = RecordingTracks()
+    world = make_world()
+    t = run(world, tracks, 0.0, do="get_in", who="dad", what="car")
+    end = run(world, tracks, t + 1.0, do="get_out", who="dad", what="car")
+    assert end == pytest.approx(t + 1.0 + POSE_SECONDS)
+    assert world.people["dad"].pos == pytest.approx((-0.67, 0.0, 0.5))
+
+
+def test_a_car_driven_offstage_takes_its_riders_off_and_get_out_leaves_them_there(monkeypatch):
+    monkeypatch.setitem(MARKS, "gone", (1.3, 0.0, 0.5))
+    tracks = RecordingTracks()
+    world = seated_world(tracks, "dad")
+    arrival = run(world, tracks, 2.0, do="drive_to", who="dad", what="car", to="gone")
+    assert not world.on_stage("dad")
+    end = run(world, tracks, arrival + 1.0, do="get_out", who="dad", what="car")
+    assert end == pytest.approx(arrival + 1.0 + POSE_SECONDS)  # no step: the car is offstage
+    assert not world.on_stage("dad")

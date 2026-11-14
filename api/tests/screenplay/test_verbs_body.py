@@ -314,7 +314,7 @@ def test_sit_on_a_vehicle_is_the_worlds_vehicle_seat_error_and_no_local_check_is
     begin(world, {"dad": {"at": "left"}}, {"sedan": {"at": "right"}})
     tracks = TrackSet()
     fails(world, tracks, "vehicle_seat", "sedan is a vehicle; use get_in", 3.0, "sit_on", who="dad", what="sedan")
-    src = inspect.getsource(verbs_body)
+    src = inspect.getsource(verbs_body.apply_sit_on)
     assert "is_vehicle" not in src and '"vehicle"' not in src  # World.sit_on owns the check
 
 
@@ -692,3 +692,75 @@ def test_gestures_do_not_depend_on_notes():
                          (3.0, "wave", {"who": "dad", "target": "mom"}),
                          (5.0, "point_at", {"who": "dad", "target": "right"}),
                          (7.0, "lean_toward", {"who": "dad", "target": "mom"}))
+
+
+# ------------------------------------------------------------------ the stage edge
+# (test_stage_edge.py compiles whole scenarios; these call the handlers directly)
+
+EDGE_MARKS = {"edge_r": (0.9, 0.0, 0.5), "edge_l": (-0.9, 0.0, 0.5), "gone": (1.3, 0.0, 0.5)}
+
+
+def begin_edge(world: World, start: dict, prop_start: dict) -> World:
+    shot = Shot.model_validate({"id": "s1", "set": "porch", "start": start, "propStart": prop_start})
+    world.begin_shot(shot, {**MARKS, **EDGE_MARKS}, same_set_as_previous=False)
+    return world
+
+
+def test_dismount_step_only_past_the_edge_with_the_prop_on_stage(world):
+    begin(world, {"dad": {"at": "mid"}})
+    margin = verbs_body.DISMOUNT_EDGE_MARGIN
+    assert margin == 0.05
+    inside = (0.99, 0.2, 0.5)
+    assert verbs_body.dismount_step(world, "dad", 3.0, inside, 0.8, 1) == ([], 3.0, inside, 1)
+    gone = (1.4, 0.0, 0.5)  # the prop itself is offstage: no step
+    assert verbs_body.dismount_step(world, "dad", 3.0, gone, 1.3, 1) == ([], 3.0, gone, 1)
+    for x, side in ((1.04, 1), (-1.04, -1)):
+        keys, end, landed, facing = verbs_body.dismount_step(world, "dad", 3.0, (x, 0.2, 0.5), side * 0.8, side)
+        assert landed == pytest.approx((side * (1.0 - margin), 0.2, 0.5))  # same surface, same z
+        assert facing == -side  # turned to step inward
+        assert end > 3.0
+        roots = [k for k in keys if k[1] == "root.position"]
+        assert roots[0][2:] == (3.0, [x, 0.2, 0.5]) and roots[-1][3] == pytest.approx(list(landed))
+    assert world.people["dad"].pos == pytest.approx(MARKS["mid"])  # pure
+
+
+def test_seated_world_pos_holds_an_overhanging_seat_at_the_edge():
+    p = (1.07, 0.1, 0.5)
+    assert verbs_body.seated_world_pos(p, 0.84) == (1.0, 0.1, 0.5)
+    assert verbs_body.seated_world_pos((-1.07, 0.1, 0.5), -0.84) == (-1.0, 0.1, 0.5)
+    assert verbs_body.seated_world_pos(p, 1.3) == p           # the prop is offstage too
+    assert verbs_body.seated_world_pos((0.97, 0.1, 0.5), 0.84) == (0.97, 0.1, 0.5)
+
+
+def test_stand_up_from_a_seat_past_the_edge_steps_back_on_stage(world):
+    # a wide bench at x = 0.9 whose seat sits at its right end, past x = 1
+    bench = prop("bench", "furniture", {"seat": [0.95, 0.5]}, aspect=3.0)
+    w = World(PEOPLE, PROPS + [bench])
+    begin_edge(w, {"dad": {"at": "edge_r", "in": "bench.seat", "facing": "right"}}, {"bench": {"at": "edge_r"}})
+    seat_x = w.socket_world("bench", "seat")[0]
+    assert seat_x > 1.0
+    tracks = TrackSet()
+    end = run(w, tracks, 3.0, "stand_up", who="dad")
+    assert end > 3.4
+    dad = w.people["dad"]
+    assert dad.pos == pytest.approx((0.95, 0.0, 0.5)) and w.on_stage("dad")
+    assert (dad.pose, dad.seat, dad.facing) == ("stand", None, -1)
+    assert at(tracks, "dad", "root.position", 3.4) == pytest.approx([seat_x, 0.0, 0.5], abs=1e-3)
+    assert at(tracks, "dad", "root.position", end) == pytest.approx([0.95, 0.0, 0.5], abs=1e-3)
+    assert at(tracks, "dad", "root.facing", end) == -1
+
+
+def test_sit_on_a_seat_past_the_edge_keeps_the_puppet_on_stage():
+    bench = prop("bench", "furniture", {"seat": [0.05, 0.5]}, aspect=3.0)
+    w = World(PEOPLE, PROPS + [bench])
+    begin_edge(w, {"mom": {"at": "mid"}}, {"bench": {"at": "edge_l"}})
+    seat_x = w.socket_world("bench", "seat")[0]
+    assert seat_x < -1.0
+    tracks = TrackSet()
+    end = run(w, tracks, 3.0, "sit_on", who="mom", what="bench")
+    assert at(tracks, "mom", "root.position", end)[0] == pytest.approx(seat_x, abs=1e-3)  # on the seat
+    assert w.people["mom"].pos[0] == -1.0 and w.on_stage("mom")
+    run(w, tracks, end + 0.5, "wave", who="mom")
+    up = run(w, tracks, end + 3.0, "stand_up", who="mom")
+    assert w.people["mom"].pos == pytest.approx((-0.95, 0.0, 0.5))
+    assert at(tracks, "mom", "root.position", up) == pytest.approx([-0.95, 0.0, 0.5], abs=1e-3)
