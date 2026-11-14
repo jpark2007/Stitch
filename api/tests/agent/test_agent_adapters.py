@@ -12,6 +12,7 @@ import json
 import os
 import struct
 import wave
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import httpx
@@ -268,7 +269,12 @@ class ImageAPI:
         return httpx.Response(200, json=self.body or {"data": [{"b64_json": self.b64}]})
 
 
+def no_sleep(seconds: float) -> None:
+    """Retry backoff in tests: never actually wait."""
+
+
 def image_model(api: ImageAPI, **kwargs) -> OpenAIImageModel:
+    kwargs.setdefault("sleep", no_sleep)
     return OpenAIImageModel(api_key=SECRET, transport=httpx.MockTransport(api), **kwargs)
 
 
@@ -363,7 +369,7 @@ def test_images_bad_payload_and_network_error(clean_env: pytest.MonkeyPatch) -> 
     def down(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError(f"cannot connect with {request.headers['authorization']}")
 
-    model = OpenAIImageModel(api_key=SECRET, transport=httpx.MockTransport(down))
+    model = OpenAIImageModel(api_key=SECRET, transport=httpx.MockTransport(down), sleep=no_sleep)
     with pytest.raises(RuntimeError) as info:
         model.generate("x")
     assert SECRET not in str(info.value)
@@ -499,7 +505,7 @@ def test_tts_blank_text_makes_no_request(clean_env: pytest.MonkeyPatch) -> None:
 def test_tts_http_error_has_status_and_no_key(clean_env: pytest.MonkeyPatch, status: int) -> None:
     api = TTSAPI(status=status, body={"detail": {"message": f"invalid api key {SECRET}"}})
     with pytest.raises(RuntimeError) as info:
-        ElevenLabsTTS(api_key=SECRET, transport=httpx.MockTransport(api)).synthesize("Hi.")
+        ElevenLabsTTS(api_key=SECRET, transport=httpx.MockTransport(api), sleep=no_sleep).synthesize("Hi.")
     assert str(status) in str(info.value)
     assert SECRET not in str(info.value)
 
@@ -615,6 +621,259 @@ def test_cutout_threshold_validation() -> None:
         AlphaAwareRemover(threshold=300)
     with pytest.raises(ValueError):
         AlphaAwareRemover(feather=-1)
+
+
+# --------------------------------------------------------------------------- bounded timeouts and retries
+
+
+def _timeout_of(request: httpx.Request) -> dict:
+    """The timeouts httpx sent this request with (connect, read, write, pool)."""
+    return dict(request.extensions["timeout"])
+
+
+class Flaky:
+    """MockTransport handler: answers each request with the next of `script`, then the last one forever.
+
+    A script item is an int status (200 means a good body from `ok`), an httpx.Response, or an
+    exception class to raise.
+    """
+
+    def __init__(self, script: list, ok: Callable[[], httpx.Response]) -> None:
+        self.script = list(script)
+        self.ok = ok
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        step = self.script[min(len(self.requests), len(self.script)) - 1]
+        if isinstance(step, type) and issubclass(step, Exception):
+            raise step("simulated", request=request)
+        if isinstance(step, httpx.Response):
+            return step
+        if step == 200:
+            return self.ok()
+        return httpx.Response(step, json={"error": {"message": "busy"}, "detail": {"message": "busy"}})
+
+
+def image_ok() -> httpx.Response:
+    return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(make_image((32, 32))).decode()}]})
+
+
+def tts_ok() -> httpx.Response:
+    return httpx.Response(200, json=hello_payload())
+
+
+def flaky_image_model(script: list, sleeps: list[float], **kwargs) -> tuple[OpenAIImageModel, Flaky]:
+    api = Flaky(script, image_ok)
+    model = OpenAIImageModel(api_key=SECRET, transport=httpx.MockTransport(api), sleep=sleeps.append, **kwargs)
+    return model, api
+
+
+def flaky_tts(script: list, sleeps: list[float], **kwargs) -> tuple[ElevenLabsTTS, Flaky]:
+    api = Flaky(script, tts_ok)
+    tts = ElevenLabsTTS(api_key=SECRET, transport=httpx.MockTransport(api), sleep=sleeps.append, **kwargs)
+    return tts, api
+
+
+def test_image_requests_carry_bounded_timeouts(clean_env: pytest.MonkeyPatch) -> None:
+    model, api = flaky_image_model([200], [])
+    assert model.max_retries == images_mod.DEFAULT_MAX_RETRIES == 1
+    model.generate("x", size=(32, 32))
+    assert _timeout_of(api.requests[0]) == {"connect": 10.0, "read": 120.0, "write": 120.0, "pool": 120.0}
+
+    model, api = flaky_image_model([200], [], timeout=30, max_retries=0)
+    model.generate("x", size=(32, 32))
+    assert _timeout_of(api.requests[0]) == {"connect": 10.0, "read": 30.0, "write": 30.0, "pool": 30.0}
+    model, api = flaky_image_model([200], [], timeout=4)
+    model.generate("x", size=(32, 32))
+    assert _timeout_of(api.requests[0])["connect"] == 4.0  # never longer than the whole timeout
+
+
+def test_an_image_url_result_is_fetched_with_the_same_bounded_timeout(clean_env: pytest.MonkeyPatch) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "cdn.example.test":
+            return httpx.Response(200, content=make_image((32, 32)))
+        return httpx.Response(200, json={"data": [{"url": "https://cdn.example.test/a.png"}]})
+
+    model = OpenAIImageModel(api_key=SECRET, transport=httpx.MockTransport(handler), timeout=45, sleep=no_sleep)
+    model.generate("x", size=(32, 32))
+    assert [r.url.host for r in seen] == ["api.openai.com", "cdn.example.test"]
+    assert all(_timeout_of(r) == {"connect": 10.0, "read": 45.0, "write": 45.0, "pool": 45.0} for r in seen)
+
+
+@pytest.mark.parametrize("status", sorted(images_mod.RETRY_STATUSES))
+def test_images_retry_a_transient_status_once_then_succeed(clean_env: pytest.MonkeyPatch, status: int) -> None:
+    sleeps: list[float] = []
+    model, api = flaky_image_model([status, 200], sleeps)
+    assert open_image(model.generate("x", size=(32, 32))).size == (32, 32)
+    assert len(api.requests) == 2 and sleeps == [images_mod.RETRY_BACKOFF_S]
+
+
+def test_images_give_up_after_max_retries(clean_env: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    model, api = flaky_image_model([503], sleeps)
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        model.generate("x")
+    assert len(api.requests) == 1 + images_mod.DEFAULT_MAX_RETRIES
+
+    sleeps.clear()
+    model, api = flaky_image_model([503], sleeps, max_retries=3)
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        model.generate("x")
+    assert len(api.requests) == 4 and sleeps == [0.5, 1.0, 2.0]
+
+    model, api = flaky_image_model([503], sleeps, max_retries=0)
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        model.generate("x")
+    assert len(api.requests) == 1
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422])
+def test_images_never_retry_a_request_the_provider_refused(clean_env: pytest.MonkeyPatch, status: int) -> None:
+    sleeps: list[float] = []
+    model, api = flaky_image_model([status, 200], sleeps, max_retries=3)
+    with pytest.raises(RuntimeError, match=f"HTTP {status}"):
+        model.generate("x")
+    assert len(api.requests) == 1 and sleeps == []
+
+
+def test_images_retry_a_connection_that_was_never_made(clean_env: pytest.MonkeyPatch) -> None:
+    for error in (httpx.ConnectError, httpx.ConnectTimeout):
+        sleeps: list[float] = []
+        model, api = flaky_image_model([error, 200], sleeps)
+        assert model.generate("x", size=(32, 32))
+        assert len(api.requests) == 2 and sleeps == [0.5]
+
+
+@pytest.mark.parametrize("error", [httpx.ReadTimeout, httpx.WriteTimeout, httpx.ReadError, httpx.RemoteProtocolError])
+def test_images_never_retry_once_the_request_was_sent(clean_env: pytest.MonkeyPatch, error: type[Exception]) -> None:
+    """The provider may still be drawing (and billing) that image: waiting again doubles the worst case."""
+    sleeps: list[float] = []
+    model, api = flaky_image_model([error, 200], sleeps, max_retries=3)
+    with pytest.raises(RuntimeError, match=error.__name__) as info:
+        model.generate("x")
+    assert len(api.requests) == 1 and sleeps == []
+    assert SECRET not in str(info.value)
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "waited"),
+    [("3", 3.0), ("0.25", 0.25), ("600", images_mod.MAX_BACKOFF_S), ("Wed, 21 Oct 2015 07:28:00 GMT", 0.5), ("-1", 0.5)],
+)
+def test_images_honor_retry_after_up_to_the_cap(clean_env: pytest.MonkeyPatch, retry_after: str, waited: float) -> None:
+    sleeps: list[float] = []
+    busy = httpx.Response(429, headers={"Retry-After": retry_after}, json={"error": {"message": "slow down"}})
+    model, _ = flaky_image_model([busy, 200], sleeps)
+    model.generate("x", size=(32, 32))
+    assert sleeps == [waited]
+
+
+@pytest.mark.parametrize("bad", [{"timeout": 0}, {"timeout": -1}, {"timeout": float("inf")}, {"timeout": float("nan")},
+                                 {"max_retries": -1}, {"max_retries": 1.5}])
+def test_adapter_limits_are_validated(clean_env: pytest.MonkeyPatch, bad: dict) -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(500))
+    with pytest.raises(ValueError):
+        OpenAIImageModel(api_key=SECRET, transport=transport, **bad)
+    with pytest.raises(ValueError):
+        ElevenLabsTTS(api_key=SECRET, transport=transport, **bad)
+    with pytest.raises(ValueError):
+        AnthropicVision(client=SimpleNamespace(messages=None), **bad)
+
+
+def test_tts_requests_carry_bounded_timeouts(clean_env: pytest.MonkeyPatch) -> None:
+    tts, api = flaky_tts([200], [])
+    assert tts.max_retries == tts_mod.DEFAULT_MAX_RETRIES == 2
+    tts.synthesize(HELLO_TEXT)
+    assert _timeout_of(api.requests[0]) == {"connect": 10.0, "read": 30.0, "write": 30.0, "pool": 30.0}
+    tts, api = flaky_tts([200], [], timeout=12)
+    tts.synthesize(HELLO_TEXT)
+    assert _timeout_of(api.requests[0])["read"] == 12.0
+
+
+def test_tts_retries_transient_failures_and_gives_up_after_max_retries(clean_env: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    tts, api = flaky_tts([503, httpx.ConnectError, 200], sleeps)
+    speech = tts.synthesize(HELLO_TEXT)
+    assert [w.word for w in speech.words] == ["Hello", "world"]
+    assert len(api.requests) == 3 and sleeps == [0.5, 1.0]
+
+    sleeps.clear()
+    tts, api = flaky_tts([500], sleeps)
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        tts.synthesize(HELLO_TEXT)
+    assert len(api.requests) == 1 + tts_mod.DEFAULT_MAX_RETRIES and sleeps == [0.5, 1.0]
+
+
+@pytest.mark.parametrize("step", [401, 422, httpx.ReadTimeout])
+def test_tts_never_retries_a_refusal_or_a_read_timeout(clean_env: pytest.MonkeyPatch, step: object) -> None:
+    sleeps: list[float] = []
+    tts, api = flaky_tts([step, 200], sleeps)
+    with pytest.raises(RuntimeError) as info:
+        tts.synthesize(HELLO_TEXT)
+    assert len(api.requests) == 1 and sleeps == []
+    assert SECRET not in str(info.value)
+
+
+def test_vision_client_is_built_with_the_run_limits(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("ANTHROPIC_API_KEY", SECRET)
+    for name in ("STITCH_MODEL_TIMEOUT_S", "STITCH_MODEL_MAX_RETRIES"):
+        clean_env.delenv(name, raising=False)
+    vision = AnthropicVision()
+    assert (vision.timeout, vision.max_retries) == (120.0, 2)
+    assert vision.client.timeout == 120.0 and vision.client.max_retries == 2
+
+    clean_env.setenv("STITCH_MODEL_TIMEOUT_S", "45")
+    clean_env.setenv("STITCH_MODEL_MAX_RETRIES", "1")
+    vision = AnthropicVision()
+    assert vision.client.timeout == 45.0 and vision.client.max_retries == 1
+
+    vision = AnthropicVision(timeout=9, max_retries=0)  # explicit values win over the env
+    assert vision.client.timeout == 9.0 and vision.client.max_retries == 0
+
+
+def test_vision_stops_after_its_retries_over_the_wire(clean_env: pytest.MonkeyPatch) -> None:
+    """The SDK client AnthropicVision builds gives up after 1 + max_retries requests, each with the bounded timeout."""
+    import anthropic
+    import anthropic._base_client as sdk_base
+
+    sdk_httpx = getattr(sdk_base, "httpx2", None) or sdk_base.httpx
+    clean_env.setenv("ANTHROPIC_API_KEY", SECRET)
+    seen: list[object] = []
+
+    def overloaded(request: object) -> object:
+        seen.append(request)
+        return sdk_httpx.Response(
+            529, headers={"retry-after-ms": "1"},
+            json={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+        )
+
+    real = anthropic.Anthropic
+
+    def wired(**kwargs: object) -> object:
+        return real(http_client=sdk_httpx.Client(transport=sdk_httpx.MockTransport(overloaded)), **kwargs)
+
+    clean_env.setattr(anthropic, "Anthropic", wired)
+    vision = AnthropicVision(timeout=7, max_retries=2)
+    with pytest.raises(anthropic.APIStatusError):
+        vision.describe([make_image((10, 10))], "what is this?")
+    assert len(seen) == 3
+    assert all(dict(r.extensions["timeout"])["read"] == 7.0 for r in seen)  # type: ignore[attr-defined]
+
+
+def test_worst_case_adapter_call_fits_well_inside_a_run() -> None:
+    """A provider that hangs every request still lets the tool degrade long before the run timeout."""
+    from agent.guards import RunLimits
+
+    run_timeout = RunLimits().run_timeout_s
+    image_worst = (1 + images_mod.DEFAULT_MAX_RETRIES) * (images_mod.CONNECT_TIMEOUT_S + images_mod.DEFAULT_TIMEOUT_S) \
+        + images_mod.DEFAULT_MAX_RETRIES * images_mod.MAX_BACKOFF_S
+    tts_worst = (1 + tts_mod.DEFAULT_MAX_RETRIES) * (images_mod.CONNECT_TIMEOUT_S + tts_mod.DEFAULT_TIMEOUT_S) \
+        + tts_mod.DEFAULT_MAX_RETRIES * images_mod.MAX_BACKOFF_S
+    assert image_worst <= run_timeout / 4
+    assert tts_worst <= run_timeout / 8
 
 
 # --------------------------------------------------------------------------- live (opt-in)

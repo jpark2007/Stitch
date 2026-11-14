@@ -24,19 +24,33 @@ the mapping uses ``DEFAULT_VOICE_ID`` (ElevenLabs' premade "Rachel" voice), or
 Env: ``ELEVENLABS_API_KEY`` (required unless a ``transport`` is injected),
 ``ELEVENLABS_MODEL`` (default ``eleven_multilingual_v2``), ``ELEVENLABS_VOICES``,
 ``ELEVENLABS_DEFAULT_VOICE``. Errors raise ``RuntimeError`` with the HTTP status and never
-include the key. Tests inject an ``httpx.MockTransport``.
+include the key. Tests inject an ``httpx.MockTransport`` (and a no-op ``sleep``).
+
+Bounded, so a hung speech service cannot stall a voice pass (which, on any error here, narrates
+silently with estimated word timings):
+
+- Every request has a timeout: ``timeout`` seconds (default ``DEFAULT_TIMEOUT_S``, 30; one line
+  of speech takes a few seconds) to write the request and between bytes of the response, and at
+  most ``images.CONNECT_TIMEOUT_S`` (10) to connect.
+- A request that fails fast is retried at most ``max_retries`` times (default
+  ``DEFAULT_MAX_RETRIES``, 2), with the same rules as the image adapter
+  (``images.retryable_error``, ``images.RETRY_STATUSES``, ``images.backoff_s``): a connection
+  that could not be made, or HTTP 408, 429, 500, 502, 503 or 504. A read timeout is not retried.
 """
 
 from __future__ import annotations
 
 import base64
+import math
 import os
 import re
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import httpx
 
+from agent.adapters.images import CONNECT_TIMEOUT_S, RETRY_STATUSES, backoff_s, retryable_error
 from agent.tools.narration import _EDGE, PLACEHOLDER_VOICES, Speech, _wav_bytes
 from screenplay.schema import WordTiming
 
@@ -52,6 +66,11 @@ DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 
 SAMPLE_RATE = 16_000
 OUTPUT_FORMAT = "pcm_16000"
+
+DEFAULT_TIMEOUT_S = 30.0
+"""Seconds to write a request and between bytes of the response."""
+DEFAULT_MAX_RETRIES = 2
+"""Retries of a request that failed fast (no connection, HTTP 408/429/5xx); never of a read timeout."""
 
 _VOICE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _ERROR_DETAIL_CHARS = 200
@@ -125,7 +144,14 @@ class ElevenLabsTTS:
         voices: Mapping[str, str] | None = None,
         model: str | None = None,
         transport: httpx.BaseTransport | None = None,
+        timeout: float = DEFAULT_TIMEOUT_S,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        if not (isinstance(timeout, (int, float)) and math.isfinite(timeout) and timeout > 0):
+            raise ValueError(f"timeout must be a number of seconds > 0, got {timeout!r}")
+        if not isinstance(max_retries, int) or max_retries < 0:
+            raise ValueError(f"max_retries must be a whole number >= 0, got {max_retries!r}")
         key = api_key or os.environ.get(API_KEY_ENV)
         if not key and transport is None:
             raise RuntimeError(f"{API_KEY_ENV} is not set; ElevenLabsTTS needs it (or an injected transport)")
@@ -134,8 +160,11 @@ class ElevenLabsTTS:
         mapping = dict(voices) if voices is not None else parse_voices(os.environ.get(VOICES_ENV))
         self.voices = {name: _check_voice_id(vid) for name, vid in mapping.items()}
         self.default_voice_id = _check_voice_id(os.environ.get(DEFAULT_VOICE_ENV) or DEFAULT_VOICE_ID)
+        self.max_retries = max_retries
+        self._sleep = sleep
+        self.timeout = httpx.Timeout(float(timeout), connect=min(CONNECT_TIMEOUT_S, float(timeout)))
         headers = {"xi-api-key": key} if key else {}
-        self._client = httpx.Client(base_url=BASE_URL, headers=headers, timeout=60, transport=transport)
+        self._client = httpx.Client(base_url=BASE_URL, headers=headers, timeout=self.timeout, transport=transport)
 
     def __repr__(self) -> str:  # never show the key
         return f"ElevenLabsTTS(model={self.model!r}, voices={sorted(self.voices)!r})"
@@ -153,14 +182,7 @@ class ElevenLabsTTS:
         if not text.strip():
             return Speech(audio=_wav_bytes(b"", SAMPLE_RATE), sample_rate=SAMPLE_RATE, duration=0.0, words=[])
         path = f"/v1/text-to-speech/{self.voice_id(voice)}/with-timestamps"
-        try:
-            response = self._client.post(
-                path,
-                params={"output_format": OUTPUT_FORMAT},
-                json={"text": text, "model_id": self.model},
-            )
-        except httpx.HTTPError as exc:
-            raise RuntimeError(self._scrub(f"ElevenLabs request failed: {type(exc).__name__}")) from None
+        response = self._post(path, params={"output_format": OUTPUT_FORMAT}, json={"text": text, "model_id": self.model})
         if response.status_code >= 400:
             raise RuntimeError(
                 self._scrub(f"ElevenLabs text-to-speech returned HTTP {response.status_code}{self._detail(response)}")
@@ -189,6 +211,24 @@ class ElevenLabsTTS:
 
     # ------------------------------------------------------------------ internals
 
+    def _post(self, path: str, **kwargs: Any) -> httpx.Response:
+        """POST with the bounded retry policy of the module docstring; an error status is returned."""
+        attempt = 0
+        while True:
+            try:
+                response = self._client.post(path, **kwargs)
+            except httpx.HTTPError as exc:
+                if attempt < self.max_retries and retryable_error(exc):
+                    self._sleep(backoff_s(attempt, None))
+                    attempt += 1
+                    continue
+                raise RuntimeError(self._scrub(f"ElevenLabs request failed: {type(exc).__name__}")) from None
+            if response.status_code in RETRY_STATUSES and attempt < self.max_retries:
+                self._sleep(backoff_s(attempt, response))
+                attempt += 1
+                continue
+            return response
+
     def _scrub(self, text: str) -> str:
         return text.replace(self._key, "[redacted]") if self._key else text
 
@@ -204,7 +244,9 @@ class ElevenLabsTTS:
 
 
 __all__ = [
+    "DEFAULT_MAX_RETRIES",
     "DEFAULT_MODEL",
+    "DEFAULT_TIMEOUT_S",
     "DEFAULT_VOICE_ID",
     "PLACEHOLDER_VOICES",
     "ElevenLabsTTS",
