@@ -852,6 +852,65 @@ def _resolve(
     return mentions, unresolved
 
 
+# Kinship words written in the plural ("my grandparents", "dad's parents") name everyone the
+# relation holds; a singular word ("grandpa", "my wife") names one person.
+_PLURAL_KIN = frozenset({"grandparents", "children", "grandchildren", "wives"})
+
+
+def _plural_kin(word: str) -> bool:
+    return word in _PLURAL_KIN or (word not in _KIN_RELATION and _plural(word) in _KIN_RELATION)
+
+
+@dataclass(frozen=True)
+class Relatives:
+    """A phrase of the question and the people it may name (for the /ask model step).
+
+    exact is True when the phrase names exactly these people ("my wife" -> one spouse, "my
+    grandparents" -> all of them), False when it matches more people than it denotes: the
+    tree has no gender, so "grandpa" matches every grandparent, and "grandpa and grandma"
+    (two people) matches both couples. Then the question does not say which were meant.
+    """
+
+    phrase: str
+    person_ids: frozenset[str]
+    exact: bool
+
+
+def describe_mentions(query: str, mentions: list[Mention]) -> list[Relatives]:
+    """The question's mentions (not "self"), for telling a model who the question may mean.
+
+    Neighbouring mentions joined by "and" in the query with the same relation and the same
+    people are one phrase ("grandpa and grandma"). A group denotes one person per singular
+    word, or everyone when any word is plural; it is exact when it matches no more people
+    than that. Pure; does not change resolve_people or ranking.
+    """
+    text = unicodedata.normalize("NFKC", query or "").replace("’", "'")
+    groups: list[list[Mention]] = []
+    for mention in mentions:
+        if mention.relation == "self":
+            continue
+        last = groups[-1][-1] if groups else None
+        if (
+            last is not None
+            and last.relation == mention.relation != "name"
+            and last.person_ids == mention.person_ids
+            and re.search(rf"\b{re.escape(last.phrase)}\s+and\s+{re.escape(mention.phrase)}\b", text, re.I)
+        ):
+            groups[-1].append(mention)
+        else:
+            groups.append([mention])
+    out = []
+    for group in groups:
+        ids = group[0].person_ids
+        plural = any(m.relation != "name" and m.words and _plural_kin(m.words[-1]) for m in group)
+        out.append(Relatives(
+            phrase=" and ".join(m.phrase for m in group),
+            person_ids=ids,
+            exact=plural or len(ids) <= len(group),
+        ))
+    return out
+
+
 # ------------------------------------------------------------------ ranking for /ask
 
 # How much the people a query names count against keyword relevance (which is in [0, 1]).
@@ -922,6 +981,20 @@ class Ranking:
             return False
         runner_up = self.candidates[1].score if len(self.candidates) > 1 else 0.0
         return first.score >= CONFIDENT_MIN_SCORE and first.score >= CONFIDENT_RATIO * runner_up
+
+    def outweighs_a_null_pick(self) -> bool:
+        """Keep the search result even when the model says no candidate relates.
+
+        True when the ranking is confident, or the top candidate takes in people the
+        question named (person > 0), or it has a full keyword match (keyword >= 1.0).
+        The model can miss a page it was shown (it returned null for Rosa and Joseph's
+        wedding on "where did grandpa and grandma meet"); a match this concrete is better
+        than "no one has told that story".
+        """
+        if not self.candidates:
+            return False
+        first = self.candidates[0]
+        return self.confident() or first.person > 0 or first.keyword >= 1.0
 
     def best(self, memory_id: str | None = None, confident: bool | None = None) -> schemas.AskBest | None:
         """AskBest for memory_id (default: the top candidate), or None when there is none."""
@@ -1096,6 +1169,18 @@ def _join_names(names: list[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
+# "told by" names at most this many tellers before "and N others".
+BEST_ANSWER_TELLERS = 3
+
+
+def _tellers_phrase(names: list[str]) -> str:
+    """'A', 'A and B', 'A, B and C', or past BEST_ANSWER_TELLERS 'A, B and 3 others'."""
+    if len(names) <= BEST_ANSWER_TELLERS:
+        return _join_names(names)
+    shown = BEST_ANSWER_TELLERS - 1
+    return f"{', '.join(names[:shown])} and {len(names) - shown} others"
+
+
 def best_answer(
     query: str,
     candidate: Candidate | None,
@@ -1106,8 +1191,10 @@ def best_answer(
 
     Its title and year, who tells it, and its one or two quote sentences most relevant to
     the query (quotes from other memories are never used). Not confident, it is phrased as
-    the closest page in the book rather than the answer. Aims at BEST_ANSWER_CHARS.
-    NO_STORY when there is no candidate. Deterministic, no model.
+    the closest page in the book rather than the answer. Aims at BEST_ANSWER_CHARS: at most
+    BEST_ANSWER_TELLERS tellers are named ("told by A, B and 3 others"). Typographic quotes:
+    “…” around the title, ‘…’ around quoted sentences, so an apostrophe inside either is
+    unambiguous. NO_STORY when there is no candidate. Deterministic, no model.
     """
     if candidate is None:
         return NO_STORY
@@ -1119,7 +1206,7 @@ def best_answer(
     title = _clip_text(candidate.title, 80)
     when = f" ({candidate.year})" if candidate.year is not None else ""
     if title:
-        head = f'The {"page" if confident else "closest page"} is "{title}"{when}.'
+        head = f"The {'page' if confident else 'closest page'} is “{title}”{when}."
     else:
         head = f"The {'page' if confident else 'closest page'} has no title yet{when}."
 
@@ -1129,24 +1216,25 @@ def best_answer(
     ranked = sorted(enumerate(quotes), key=lambda iq: (-len(wanted & set(_tokens(iq[1].text))), iq[0]))
     chosen = [q for _, q in ranked[:BEST_ANSWER_QUOTES]]
 
-    tellers = [who(t) for t in dict.fromkeys(candidate.teller_ids or [q.author_id for q in quotes])]
+    # Deduped by name, so several unnamed tellers are one "Someone in the family".
+    tellers = list(dict.fromkeys(who(t) for t in candidate.teller_ids or [q.author_id for q in quotes]))
     quoted = {who(q.author_id) for q in chosen}
     if not chosen:
         if tellers:
-            return f"{head[:-1]}, told by {_join_names(tellers)}, but no one has said more about it yet."
+            return f"{head[:-1]}, told by {_tellers_phrase(tellers)}, but no one has said more about it yet."
         return f"{head} No one has told it in words yet."
     if set(tellers) - quoted:
-        head = f"{head[:-1]}, told by {_join_names(tellers)}."
+        head = f"{head[:-1]}, told by {_tellers_phrase(tellers)}."
 
     parts = [head]
     first_speaker = who(chosen[0].author_id)
     for index, quote in enumerate(chosen):
         speaker = who(quote.author_id)
         verb = "adds" if index and speaker == first_speaker else "remembers"
-        prefix = f" {speaker} {verb}: '"
+        prefix = f" {speaker} {verb}: ‘"
         room = BEST_ANSWER_CHARS - len("".join(parts)) - len(prefix) - 1
         text = " ".join(quote.text.split())
         if index and len(text) > room:
             break  # a second quote only when it fits whole
-        parts.append(f"{prefix}{_clip_text(text, max(room, 60))}'")
+        parts.append(f"{prefix}{_clip_text(text, max(room, 60))}’")
     return "".join(parts)

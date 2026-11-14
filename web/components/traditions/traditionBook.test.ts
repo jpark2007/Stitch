@@ -11,10 +11,13 @@ import type { Person, Tradition } from "@/lib/types";
 
 // By a computed path, so the type check reads it as the app does (no ".ts").
 type Module = typeof import("./traditionBook");
-const paths = ["./traditionBook.ts"];
+const paths = ["./traditionBook.ts", "../book/types.ts"];
+const { spreadDate }: typeof import("../book/types") = await import(paths[1]);
 const {
   WHEN_MAX,
   STORY_MAX_ALONE,
+  cleanLabel,
+  dateLineOf,
   STORY_MAX_WITH_PHOTOS,
   familyCore,
   fitStory,
@@ -102,6 +105,101 @@ describe("whenLine", () => {
   });
 });
 
+describe("cleanLabel", () => {
+  it("trims, collapses spaces and drops trailing punctuation, nothing else", () => {
+    assert.equal(cleanLabel("  summer   at the lake,  "), "summer at the lake");
+    assert.equal(cleanLabel("Every Sunday night?"), "Every Sunday night");
+    assert.equal(cleanLabel("Christmas Eve!!"), "Christmas Eve");
+    assert.equal(cleanLabel("eVERY sunday;:"), "eVERY sunday");
+    assert.equal(cleanLabel(null), "");
+  });
+});
+
+describe("dateLineOf and the story's opening, row by row", () => {
+  // [kind, label, month, dateLineOf, whenLine (the opening of storyText's sentence)]
+  type Row = [Tradition["when"]["kind"], string | null, number | null, string, string];
+  const rows: Row[] = [
+    // No label: the kind and month.
+    ["yearly", null, 7, "July, every year", "Every July"],
+    ["yearly", null, null, "Once a year", "Every year"],
+    ["seasonal", null, 1, "Winter, every year", "Every winter"],
+    ["seasonal", null, null, "Once a season", "Every season"],
+    ["monthly", null, 12, "Once a month", "Every month"],
+    ["weekly", null, null, "Once a week", "Every week"],
+    ["occasional", null, 7, "Now and then", "Now and then"],
+    // every|each + one weekday.
+    ["weekly", "every Sunday", null, "Sundays", "Every Sunday"],
+    ["weekly", "each sundays", null, "Sundays", "Each sundays"],
+    ["yearly", "every Sunday", null, "Every Sunday", "Every Sunday"],
+    ["occasional", "every Friday", null, "Every Friday", "Every Friday"],
+    // every|each + one month.
+    ["yearly", "every July", 7, "July, every year", "Every July"],
+    ["seasonal", "every July", null, "Every July", "Every July"],
+    ["monthly", "Each march", null, "Each march", "Each march"],
+    // Any other every|each: as written, never stripped, nothing appended (findings 1-3, 5).
+    ["yearly", "every year", null, "Every year", "Every year"],
+    ["monthly", "every month", null, "Every month", "Every month"],
+    ["weekly", "every week", null, "Every week", "Every week"],
+    ["weekly", "every other Friday", null, "Every other Friday", "Every other Friday"],
+    ["weekly", "every Sunday night", null, "Every Sunday night", "Every Sunday night"],
+    ["yearly", "Every Sunday night?", null, "Every Sunday night", "Every Sunday night"],
+    ["seasonal", "each first snow", null, "Each first snow", "Each first snow"],
+    // A plural weekday, or words that already say how often: as written (findings 3-4).
+    ["weekly", "Sundays", null, "Sundays", "On Sundays"],
+    ["yearly", "sundays after church", null, "Sundays after church", "On Sundays after church"],
+    ["weekly", "Sunday nights", null, "Sunday nights", "Sunday nights"],
+    ["yearly", "saturday mornings", null, "Saturday mornings", "Saturday mornings"],
+    ["weekly", "weekly game night", null, "Weekly game night", "Weekly game night"],
+    ["yearly", "twice a year", null, "Twice a year", "Twice a year"],
+    ["weekly", "cada domingo", null, "Cada domingo", "Cada domingo"],
+    // A phrase already complete: as written.
+    ["yearly", "first Saturday in October", 10, "First Saturday in October", "First Saturday in October"],
+    ["yearly", "on the first snow", null, "On the first snow", "On the first snow"],
+    ["occasional", "when everyone is home", null, "When everyone is home", "When everyone is home"],
+    // A bare occasion: the kind's frequency after it (a seasonal one comes round every year).
+    ["yearly", "Christmas Eve", 12, "Christmas Eve, every year", "Every Christmas Eve"],
+    ["yearly", "Nochebuena", null, "Nochebuena, every year", "Every Nochebuena"],
+    ["seasonal", "summer", 7, "Summer, every year", "Every summer"],
+    ["seasonal", "summer at the lake,", null, "Summer at the lake, every year", "Every summer at the lake"],
+    ["monthly", "Full moon.", null, "Full moon, every month", "Every Full moon"],
+    ["weekly", "game night", null, "Game night, every week", "Every game night"],
+    ["occasional", "birthdays", null, "Birthdays", "Birthdays"],
+    // No letters: as written.
+    ["yearly", "🎄", null, "🎄", "🎄"],
+    // Odd casing and spaces: tidied, the case as written, the first letter up.
+    ["yearly", "  eVERY   sunday.  ", null, "EVERY sunday", "EVERY sunday"],
+    // Longer than WHEN_MAX (26): the kind and month.
+    ["yearly", "the Saturday after the first frost", 11, "November, every year", "Every November"],
+    ["weekly", "x".repeat(27), null, "Once a week", "Every week"],
+  ];
+  for (const [kind, label, month, date, opening] of rows) {
+    it(`${kind} ${JSON.stringify(label)}${month ? ` (month ${month})` : ""}`, () => {
+      const when = { kind, label, month };
+      assert.equal(dateLineOf(when), date);
+      assert.equal(whenLine(when), opening);
+      const t = tradition({ description: "", when, participantIds: ["rosa"] });
+      assert.equal(storyText(t, keepersOf(t, peopleById([person("rosa", "Rosa")]))), `${opening}, Rosa keeps it going.`);
+    });
+  }
+
+  it("says Now and then for no when at all", () => {
+    assert.equal(dateLineOf(null), "Now and then");
+  });
+
+  it("never opens on \"Every\", so the dots tell the demo's traditions apart", () => {
+    const demo = [
+      { kind: "yearly", label: "Christmas Eve", month: 12 },
+      { kind: "weekly", label: "every Sunday" },
+      { kind: "yearly", label: "every July", month: 7 },
+      { kind: "occasional", label: "when everyone is home" },
+      { kind: "yearly", label: "Easter Sunday", month: 4 },
+    ] as const;
+    const lines = demo.map((w) => dateLineOf(w));
+    for (const line of lines) assert.ok(!/^every\b/i.test(line), line);
+    assert.equal(new Set(lines.map((l) => l.slice(0, 4))).size, lines.length);
+  });
+});
+
 describe("sinceLine and namesLine", () => {
   it("says since when, only for a real year", () => {
     assert.equal(sinceLine(1962), "since 1962");
@@ -169,6 +267,17 @@ describe("the spreads", () => {
     assert.equal(storyText(t, []), "Every Christmas Eve, without fail.");
   });
 
+  it("says keeps for one keeper, keep for several, and needs none", () => {
+    const known = peopleById([...people, person("pat", "Pat Probe")]);
+    const monthly = tradition({ description: "", when: { kind: "monthly" } });
+    const line = (ids: string[]) => storyText(monthly, keepersOf({ participantIds: ids }, known));
+    assert.equal(line(["pat"]), "Every month, Pat Probe keeps it going.");
+    assert.equal(line(["pat", "rosa"]), "Every month, Pat Probe & Rosa keep it going.");
+    assert.equal(line(["pat", "rosa", "luis"]), "Every month, Pat Probe, Rosa & Luis keep it going.");
+    assert.equal(line([]), "Every month, without fail.");
+    assert.equal(line(["ghost"]), "Every month, without fail.");
+  });
+
   it("binds one spread per tradition, then the closing spread", () => {
     const traditions = [tradition(), tradition({ id: "t2", title: "Hymns", startedYear: null, participantIds: ["dad"], category: "music" })];
     const book = traditionBook(traditions, people, {
@@ -178,8 +287,12 @@ describe("the spreads", () => {
     assert.equal(book.title, "The Rivera Book of Traditions");
     assert.deepEqual(book.spreads.map((s) => s.id), ["t1", "t2", "traditions:end"]);
     const first = book.spreads[0];
-    assert.equal(String(first.year), "Every Christmas Eve");
-    assert.ok(!(Number.isFinite(first.year) && first.year > 0), "the dots and contents read it as undated");
+    assert.equal(first.dateLine, "Christmas Eve, every year");
+    assert.equal(first.year, 1962);
+    assert.equal(spreadDate(first), "Christmas Eve, every year", "contents and the dots show the date line");
+    const undated = book.spreads[1];
+    assert.equal(undated.dateLine, "Christmas Eve, every year");
+    assert.equal(undated.year, 0, "no year it began: 0, which the book reads as undated");
     assert.deepEqual(first.stage, {});
     assert.deepEqual(first.photos, [{ id: "t1:keepers", src: "data:image/png;base64,t1-2", caption: "since 1962" }]);
     assert.equal(book.spreads[1].photos[0].caption, undefined);
@@ -254,6 +367,15 @@ describe("the story fits the page", () => {
     assert.ok(storyBudget("x".repeat(200), true) >= 160);
   });
 
+  it("counts no more title lines than the book prints (three)", () => {
+    assert.equal(storyBudget("x".repeat(22), true), STORY_MAX_WITH_PHOTOS);
+    assert.equal(storyBudget("x".repeat(44), true), STORY_MAX_WITH_PHOTOS - 75);
+    assert.equal(storyBudget("x".repeat(66), true), STORY_MAX_WITH_PHOTOS - 150);
+    assert.equal(storyBudget("x".repeat(120), true), STORY_MAX_WITH_PHOTOS - 150);
+    assert.equal(storyBudget("x".repeat(200), true), STORY_MAX_WITH_PHOTOS - 150);
+    assert.equal(storyBudget("x".repeat(200), false), STORY_MAX_ALONE - 150);
+  });
+
   it("prints a 5000-character description within the page's limit", () => {
     const withShot = traditionBook([tradition({ description: long })], people, { snapshot: () => "data:image/png;base64,x" });
     assert.ok(withShot.spreads[0].photos.length > 0);
@@ -263,6 +385,27 @@ describe("the story fits the page", () => {
     assert.ok(plain.spreads[0].text.length <= STORY_MAX_ALONE, `${plain.spreads[0].text.length}`);
     assert.ok(plain.spreads[0].text.endsWith("… Kept since 1962."), plain.spreads[0].text.slice(-40));
   });
+});
+
+describe("a long title", () => {
+  const people = [person("rosa", "Rosa"), person("luis", "Luis", "#5f7f52")];
+  const long = "We walk to the old orchard and pick apples for the pies. ".repeat(20);
+
+  // The book cuts a title to three lines (pageArt TITLE_MAX_LINES) and never
+  // prints a photo narrower than PHOTO_MIN_W, so even the longest title the
+  // API allows (200) leaves the prints their size: they stay, captioned.
+  for (const n of [60, 120, 200]) {
+    it(`keeps the prints and their "since" under a ${n}-character title`, () => {
+      const t = tradition({ title: "x".repeat(n), description: long, photoIds: ["m1"] });
+      const spread = traditionBook([t], people, { photoUrl: (id) => `blob:${id}`, snapshot: () => "data:x" }).spreads[0];
+      assert.deepEqual(spread.photos.map((p) => [p.id, p.caption]), [
+        ["m1", undefined],
+        ["t1:keepers", "since 1962"],
+      ]);
+      assert.ok(!spread.text.includes("since"));
+      assert.ok(spread.text.length <= storyBudget(t.title, true), `${spread.text.length}`);
+    });
+  }
 });
 
 describe("since, on the left page", () => {

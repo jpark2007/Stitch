@@ -6,7 +6,7 @@
  *   <Book3D spreads={book.spreads} cover={book.cover} renderStage={...} />
  *
  * The story page of a tradition prints, top to bottom: when it happens, in
- * hand ("Every Christmas Eve", whenLine), its title, its story, and taped in
+ * hand ("Christmas Eve, every year", dateLineOf), its title, its story, and taped in
  * below a snapshot of the people who keep it (their paper puppets and names,
  * captioned "since 1962" when it is known; with no print to caption, the
  * story closes on "Kept since 1962."), beside its first photo. The
@@ -83,24 +83,131 @@ function plainWhen(when: Pick<TraditionWhen, "kind" | "month">): string {
 }
 
 /**
- * When a tradition happens, as a person would say it: "Every Christmas Eve",
- * "Every Sunday", "Every July", "When everyone is home". The label leads
- * when there is one ("Christmas Eve" on a yearly tradition is "Every
- * Christmas Eve"; "every Sunday" is kept as written); without one, or when
- * it is too long for the page, the kind and month say it ("Every December",
- * "Every week", "Now and then").
+ * A family's "when" words, tidied and nothing more: trimmed, spaces
+ * collapsed, trailing punctuation (". ! ? , ; :") dropped. The case is left
+ * as written; callers capitalise the first letter where it opens a line.
+ */
+export function cleanLabel(label: string | null | undefined): string {
+  return (label ?? "").replace(/\s+/g, " ").trim().replace(/[\s.!?,;:]+$/, "");
+}
+
+const WEEKDAY = "(monday|tuesday|wednesday|thursday|friday|saturday|sunday)";
+const MONTH = `(${MONTHS.join("|")})`;
+/** "every Sunday", "Each sundays": every or each and one weekday, nothing else. */
+const EVERY_WEEKDAY = new RegExp(`^(every|each) ${WEEKDAY}s?$`, "i");
+/** "every July": every or each and one month, nothing else. */
+const EVERY_MONTH = new RegExp(`^(every|each) ${MONTH}$`, "i");
+/** "every other Friday", "each first snow". */
+const STARTS_EVERY = /^(every|each)\b/i;
+/** "Sundays", "Sunday nights": a plural weekday leads. */
+const PLURAL_WEEKDAY = new RegExp(`^${WEEKDAY}s\\b`, "i");
+/** "Sunday nights", "Saturday mornings": a weekday's plural times, already how often. */
+const WEEKDAY_TIMES = new RegExp(`^${WEEKDAY} \\p{L}+s$`, "iu");
+/** Words that already say how often ("weekly game night", "twice a year", "cada domingo"). */
+const FREQUENCY =
+  /(^|[^\p{L}])(every|each|weekly|monthly|yearly|annual|annually|daily|once|twice|always|whenever|when|cada|todos|todas)(?![\p{L}])/iu;
+/** A season's name: a seasonal tradition's bare label ("summer"). */
+const SEASON = /^(spring|summer|autumn|fall|winter)$/i;
+
+/** The family's words, read: which of the forms below they take. */
+type LabelForm = "everyWeekday" | "everyMonth" | "asWritten" | "pluralWeekday" | "occasion";
+
+function labelForm(label: string): LabelForm {
+  if (EVERY_WEEKDAY.test(label)) return "everyWeekday";
+  if (EVERY_MONTH.test(label)) return "everyMonth";
+  if (STARTS_EVERY.test(label)) return "asWritten";
+  if (PLURAL_WEEKDAY.test(label)) return "pluralWeekday";
+  // No words to say "every" of ("🎄"): as written too.
+  if (FREQUENCY.test(label) || PHRASE_START.test(label) || WEEKDAY_TIMES.test(label) || !/\p{L}/u.test(label)) return "asWritten";
+  return "occasion";
+}
+
+/** "Sunday" or "sundays" as "Sundays". */
+function pluralWeekday(word: string): string {
+  const day = word.toLowerCase().replace(/s$/, "");
+  return `${capitalize(day)}s`;
+}
+
+/**
+ * When a tradition happens, as the opening of a sentence: "Every Christmas
+ * Eve" (a bare occasion), "Every Sunday" and "Every other Friday" (as
+ * written), "On Sundays", "When everyone is home". storyText says
+ * "Every Christmas Eve, Rosa keeps it going." with it. Without a label, or
+ * one too long for the page (WHEN_MAX), the kind and month say it ("Every
+ * December", "Every week", "Now and then").
  */
 export function whenLine(when: TraditionWhen | null | undefined): string {
   if (!when) return plainWhen({ kind: "occasional" });
-  const label = (when.label ?? "").replace(/\s+/g, " ").trim().replace(/[.!]+$/, "");
-  if (label) {
-    let line: string;
-    if (PHRASE_START.test(label)) line = capitalize(label);
-    else if (when.kind === "occasional") line = capitalize(label);
-    else line = `Every ${label}`;
-    if (line.length <= WHEN_MAX) return line;
+  const label = cleanLabel(when.label);
+  if (label && label.length <= WHEN_MAX) {
+    const form = labelForm(label);
+    if (form === "pluralWeekday") {
+      const [day, ...rest] = label.split(" ");
+      return `On ${[pluralWeekday(day), ...rest].join(" ")}`;
+    }
+    if (form === "occasion" && when.kind !== "occasional") return `Every ${label}`;
+    return capitalize(label);
   }
   return plainWhen(when);
+}
+
+/** How often, said after a bare occasion: "Christmas Eve, every year". */
+const OFTEN: Record<TraditionWhen["kind"], string> = {
+  yearly: "every year",
+  // A seasonal tradition comes round once a year ("Summer at the lake, every year").
+  seasonal: "every year",
+  monthly: "every month",
+  weekly: "every week",
+  occasional: "",
+};
+
+/** How often, alone: "Once a year". */
+const PLAIN_OFTEN: Record<TraditionWhen["kind"], string> = {
+  yearly: "Once a year",
+  seasonal: "Once a season",
+  monthly: "Once a month",
+  weekly: "Once a week",
+  occasional: "Now and then",
+};
+
+/**
+ * When a tradition happens, for the spread's dateLine (printed over the
+ * title, in Contents and under the navigation dots, which cut it to a few
+ * letters). The family's words are rewritten as little as possible:
+ *
+ *   "every Sunday" (weekly)        -> "Sundays"
+ *   "every July" (yearly)          -> "July, every year"
+ *   "Christmas Eve" (bare, yearly) -> "Christmas Eve, every year"
+ *   "every other Friday", "Sundays", "weekly game night", "When everyone
+ *   is home", any occasional label -> as written
+ *
+ * Without a label, or one longer than WHEN_MAX, the kind and month say it
+ * ("July, every year", "Winter, every year", "Once a week", "Now and then").
+ */
+export function dateLineOf(when: TraditionWhen | null | undefined): string {
+  const kind = when?.kind && when.kind in OFTEN ? when.kind : "occasional";
+  const label = cleanLabel(when?.label);
+  if (label && label.length <= WHEN_MAX) {
+    const written = capitalize(label);
+    switch (labelForm(label)) {
+      case "everyWeekday":
+        return kind === "weekly" ? pluralWeekday(label.split(" ")[1]) : written;
+      case "everyMonth":
+        return kind === "yearly" ? `${capitalize(label.split(" ")[1].toLowerCase())}, every year` : written;
+      case "occasion":
+        if (kind === "occasional") return written;
+        if (kind === "seasonal" && SEASON.test(label)) return `${capitalize(label.toLowerCase())}, every year`;
+        return `${written}, ${OFTEN[kind]}`;
+      default:
+        return written;
+    }
+  }
+  const month = monthName(when?.month);
+  if (month && (kind === "yearly" || kind === "seasonal")) {
+    const name = kind === "yearly" ? month : capitalize(seasonOf(when?.month as number));
+    return `${name}, every year`;
+  }
+  return PLAIN_OFTEN[kind];
 }
 
 /** "since 1962", or null when the year it began is not known. */
@@ -218,23 +325,17 @@ export function orderTraditions<T extends Pick<Tradition, "id" | "title" | "star
 }
 
 /**
- * The page's top line goes where a moment prints its year. BookSpread.year
- * is a number, and the story page prints it with String() (pageArt.ts),
- * while Contents and the dots read anything but a positive number as
- * undated; so the words are handed through as they are. Requested of the
- * book's owner: a `dateLine?: string` of its own on BookSpread.
+ * The words of a spread: the story, or a line made from the tradition when
+ * it has none ("Every month, Pat keeps it going.", "Every Christmas Eve,
+ * Rosa & Luis keep it going.", "Every Christmas Eve, without fail.").
  */
-export function printedLine(line: string): number {
-  return line as unknown as number;
-}
-
-/** The words of a spread: the story, or a line made from the tradition when it has none. */
 export function storyText(tradition: Pick<Tradition, "description" | "title" | "when">, keepers: readonly TraditionPerson[]): string {
   const story = (tradition.description ?? "").trim();
   if (story) return story;
   const when = whenLine(tradition.when);
-  const who = namesLine(keepers.map((k) => k.name));
-  return who ? `${when}, ${who} keep it going.` : `${when}, without fail.`;
+  const names = keepers.map((k) => k.name.trim()).filter(Boolean);
+  if (!names.length) return `${when}, without fail.`;
+  return `${when}, ${namesLine(names)} ${names.length === 1 ? "keeps" : "keep"} it going.`;
 }
 
 /**
@@ -242,15 +343,18 @@ export function storyText(tradition: Pick<Tradition, "description" | "title" | "
  * 770px measure, about 50 characters a line): with prints taped in below,
  * about nine lines, so the prints keep their size; alone, the page's height.
  * A title over one line takes about a line and a half of story with each
- * extra line (it is set at 64px, about 22 characters a line).
+ * extra line (it is set at 64px, about 22 characters a line), up to the
+ * three lines the book prints (pageArt cuts a longer one with "…").
  */
 export const STORY_MAX_WITH_PHOTOS = 440;
 export const STORY_MAX_ALONE = 750;
 const STORY_MIN = 160;
+/** The most lines of title the story page prints (pageArt.ts TITLE_MAX_LINES). */
+const TITLE_LINES = 3;
 
 /** How much of a story fits on the page beside its title, with or without prints. */
 export function storyBudget(title: string, withPhotos: boolean): number {
-  const extraTitleLines = Math.max(0, Math.ceil(title.trim().length / 22) - 1);
+  const extraTitleLines = Math.min(TITLE_LINES - 1, Math.max(0, Math.ceil(title.trim().length / 22) - 1));
   const max = withPhotos ? STORY_MAX_WITH_PHOTOS : STORY_MAX_ALONE;
   return Math.max(STORY_MIN, max - extraTitleLines * 75);
 }
@@ -295,20 +399,26 @@ export function traditionSpread(tradition: Tradition, keepers: readonly Traditio
   const shot = keepers.length && options.snapshot ? options.snapshot(tradition, keepers) : null;
   // The page holds two prints: with a snapshot of the people, one photo beside it.
   const photos: BookPhoto[] = shot ? [...real.slice(0, 1), { id: `${tradition.id}:keepers`, src: shot }] : real.slice(0, 2);
+  const title = tradition.title.trim() || "A family tradition";
+  const story = storyText(tradition, keepers);
   if (since && photos.length) {
     const last = photos[photos.length - 1];
     photos[photos.length - 1] = { ...last, caption: since };
   }
   // With no print to caption, the year closes the story instead ("Kept since 2001.").
   const closing = since && !photos.length ? ` Kept ${since}.` : "";
-  const title = tradition.title.trim() || "A family tradition";
   const budget = storyBudget(title, photos.length > 0) - closing.length;
   return {
     id: tradition.id,
     title,
-    year: printedLine(whenLine(tradition.when)),
+    // The book is not re-ordered by year (traditionBook orders it), and with
+    // a dateLine the year is printed nowhere: the year it began, else 0
+    // ("undated", as the book reads it).
+    year: since ? (tradition.startedYear as number) : 0,
+    // "Christmas Eve, every year": over the title, in Contents and the dots.
+    dateLine: dateLineOf(tradition.when),
     // Cut to what the page holds: the printer has no overflow of its own.
-    text: fitStory(storyText(tradition, keepers), budget) + closing,
+    text: fitStory(story, budget) + closing,
     photos,
     // The kit stands on the right page: printed plain, no "the pop-up rises here".
     stage: {},
