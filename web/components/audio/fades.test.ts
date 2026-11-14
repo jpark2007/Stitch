@@ -198,3 +198,66 @@ describe("transport", () => {
     assert.equal(phase.kind, "playing");
   });
 });
+
+describe("voice fade stages", () => {
+  type Ramp = Parameters<Fades["rampValue"]>[0];
+  /** A voice's stages as data, driven like voice.ts drives them. */
+  function voice() {
+    const v = { in: null as Ramp | null, out: null as Ramp | null, cut: null as Ramp | null, stopAt: Infinity, fired: 0 };
+    const at = (r: Ramp | null, rest: number, t: number) => (r ? f.rampValue(r, t) : rest);
+    return {
+      v,
+      start(now: number, dur: number) {
+        v.in = { from: 0, to: 1, t0: now, dur, shape: "in" };
+      },
+      end(now: number, dur: number) {
+        const stage = f.planEnd(v.out !== null, v.cut !== null, v.stopAt, now, dur);
+        if (!stage) return;
+        v[stage] = { from: 1, to: 0, t0: now, dur, shape: "out" };
+        v.stopAt = now + dur;
+        v.fired++;
+      },
+      level: (t: number) => at(v.in, 0, t) * at(v.out, 1, t) * at(v.cut, 1, t),
+    };
+  }
+
+  it("each stage moves once; a later end changes nothing", () => {
+    const x = voice();
+    x.start(0, f.CROSSFADE);
+    x.end(5, f.CROSSFADE);
+    assert.equal(f.planEnd(true, false, x.v.stopAt, 6, f.CROSSFADE), null, "later end ignored");
+    x.end(6, 0.35);
+    assert.equal(x.v.fired, 2);
+    assert.equal(x.v.stopAt, 6.35);
+    x.end(6.1, 0.1);
+    assert.equal(x.v.fired, 2, "both stages used: nothing left to move");
+    assert.equal(x.level(6.35), 0);
+  });
+
+  it("an interrupted crossfade stays continuous: fade-in cut by a fade-out, then a cut", () => {
+    const x = voice();
+    x.start(0, f.CROSSFADE);
+    x.end(1.0, f.CROSSFADE); // the reader turned on mid fade-in
+    x.end(1.5, 0.35); // and again: cut short
+    let prev = x.level(0);
+    let maxStep = 0;
+    for (let t = 0.001; t <= 3; t += 0.001) {
+      const l = x.level(t);
+      maxStep = Math.max(maxStep, Math.abs(l - prev));
+      prev = l;
+    }
+    // A 1 ms step of a 0.35 s cosine is at most ~0.0045; no jumps anywhere.
+    assert.ok(maxStep < 0.006, `max step ${maxStep}`);
+    assert.equal(x.level(1.85), 0);
+    close(x.level(1.0), f.rampValue(x.v.in!, 1.0), 1e-12);
+  });
+
+  it("a full crossfade between two voices keeps equal power", () => {
+    const a = voice();
+    const b = voice();
+    a.start(-10, 0.001);
+    a.end(0, f.CROSSFADE);
+    b.start(0, f.CROSSFADE);
+    for (let t = 0; t <= f.CROSSFADE; t += 0.05) close(a.level(t) ** 2 + b.level(t) ** 2, 1, 1e-9);
+  });
+});

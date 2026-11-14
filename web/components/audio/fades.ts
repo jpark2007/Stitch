@@ -79,6 +79,22 @@ export function crossfadeShape(from: number, to: number): Shape {
   return to >= from ? "in" : "out";
 }
 
+/**
+ * A voice's fades are three gain stages in series, each moved at most once
+ * (line.ts OnceRamp): in (rises at start), out (falls when it is told to end)
+ * and cut (falls when told to end sooner still). No ramp is ever interrupted,
+ * so no automation is ever cancelled.
+ *
+ * Which stage an end request moves, or null when it changes nothing (a later
+ * end than the one already set, or both stages already used).
+ */
+export function planEnd(outFired: boolean, cutFired: boolean, stopAt: number, now: number, dur: number): "out" | "cut" | null {
+  if (now + dur >= stopAt) return null;
+  if (!outFired) return "out";
+  if (!cutFired) return "cut";
+  return null;
+}
+
 /** The music's absolute output ceiling: -12 dBFS. */
 export const CEILING = 0.25;
 

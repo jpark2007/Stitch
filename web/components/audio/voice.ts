@@ -16,7 +16,7 @@
  * per core and kept, so a prefetched or revisited era starts with no work.
  */
 
-import { CROSSFADE, dbToGain } from "./fades";
+import { CROSSFADE, dbToGain, planEnd } from "./fades";
 import { OnceRamp } from "./line";
 import { STRING_PATCHES, createPartBus, playNote, startBed, type Kit, type PartBus } from "./patches";
 import { scoreLoop, type Palette, type ScoreLoop } from "./score";
@@ -151,9 +151,10 @@ export class EraVoice {
    * ramp is ever interrupted; anything later than the current end is ignored.
    */
   end(now: number, dur = CROSSFADE) {
-    const until = now + dur;
-    if (until >= this.stopAt) return;
-    if (this.fadeOut.fire(0, dur, now, "out") || this.cut.fire(0, dur, now, "out")) this.stopAt = until;
+    const stage = planEnd(this.fadeOut.fired, this.cut.fired, this.stopAt, now, dur);
+    if (!stage) return;
+    (stage === "out" ? this.fadeOut : this.cut).fire(0, dur, now, "out");
+    this.stopAt = now + dur;
   }
 
   get ending() {
