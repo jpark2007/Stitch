@@ -5,15 +5,36 @@ Routes:
 - GET  /families/{fid}/runs/{run_id}/stream   server-sent events for that run
 - POST /families/{fid}/runs/{run_id}/answer   answer a follow-up, review props, approve a merge (204)
 
-The agent is reached ONLY through `agent.runs` (start_run, stream_run, answer_run), imported
-lazily inside each handler so that importing this module, and serving read routes, never
-imports the agent package. Every route depends on `auth.family_member`, so a caller who is
-not in family `fid` gets 404 before the agent is touched.
+Every route depends on `auth.family_member`, so a caller who is not in family `fid` gets
+404 before the agent is touched.
+
+The agent is reached ONLY through `agent.runs`, imported lazily inside each handler so
+that importing this module, and serving read routes, never imports the agent package:
+
+- `start_run(family_id, user_id, person_id, fields: schemas.SubmitMemoryFields,
+  photo_ids: list[str]) -> str` returns the run id at once (the run continues on the
+  agent's own worker), so it is called on the event loop (and awaited if it returns an
+  awaitable). It raises ValueError when the person is not in the family (422) and
+  `MemoryNotFound(LookupError)` when `memory_id` is missing or has no scene yet (404).
+  Anything else, including the plain RuntimeError `get_manager()` raises when no run
+  manager is configured, is 503 START_FAILED. Stored photos are deleted on every failure.
+- `stream_run(family_id, run_id) -> AsyncIterator[(event name, model)]` is called and
+  iterated on the event loop. `RunNotFound(LookupError)` (unknown or other-family run)
+  or PermissionError at the call or on the first item is 404; any other exception at the
+  call is 503 STUDIO_UNAVAILABLE. Each item becomes `event: <name>` with
+  `data: <model JSON by alias>`, `name` one of `schemas.RUN_EVENTS`.
+- `answer_run(family_id, run_id, user_id, answer: schemas.AnswerRequest) -> None` may
+  block (up to a few seconds on a threading.Condition while a question settles), so a
+  sync one runs in the threadpool; a coroutine function is awaited. `RunNotFound` is 404,
+  `NotRunOwner(PermissionError)` 403, `RunNotWaiting(RuntimeError)` 409 NOT_WAITING, a
+  ValueError (the answer does not fit the pending question) 409, and anything else,
+  including the not-configured RuntimeError, 503 STUDIO_UNAVAILABLE.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib
 import inspect
 import logging
 from collections.abc import AsyncIterator
@@ -51,6 +72,8 @@ START_FAILED = "Could not start the studio"
 STUDIO_UNAVAILABLE = "The studio is unavailable"
 RUN_NOT_FOUND = "Run not found"
 NOT_RUN_OWNER = "Only the person who started this run can answer"
+NOT_WAITING = "This run is not waiting for an answer"
+ANSWER_CONFLICT = "Run cannot take that answer"
 STREAM_INVALID = "Internal stream error"
 STREAM_FAILED = "Something went wrong while making this memory"
 
@@ -218,9 +241,15 @@ async def submit_memory(
         run_id = await _maybe_await(start_run(fid, access.user.id, person.id, fields, list(photo_ids)))
         if not isinstance(run_id, str) or not run_id:
             raise RuntimeError(f"start_run returned {run_id!r}, expected a run id")
-    except Exception:
-        log.exception("Could not start a run for family %s", fid)
+    except Exception as exc:
         await _delete_media(db, fid, photo_ids)
+        if isinstance(exc, LookupError):
+            log.info("start_run for family %s: %s", fid, exc)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found") from None
+        if isinstance(exc, ValueError):
+            log.info("start_run for family %s refused the submit: %s", fid, exc)
+            raise _unprocessable(str(exc) or "Invalid memory") from None
+        log.exception("Could not start a run for family %s", fid)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=START_FAILED) from None
 
     return schemas.SubmitMemoryResponse(run_id=run_id, memory_id=fields.memory_id)
@@ -361,9 +390,12 @@ async def stream_run_events(run_id: str, access: FamilyAccess = Depends(family_m
 
     try:
         source = await _maybe_await(stream_run(access.family_id, run_id))
-    except LookupError:
+        agen = source if hasattr(source, "__anext__") else aiter(source)
+    except (LookupError, PermissionError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=RUN_NOT_FOUND) from None
-    agen = source if hasattr(source, "__anext__") else aiter(source)
+    except Exception:
+        log.exception("Could not open the stream for run %s", run_id)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=STUDIO_UNAVAILABLE) from None
 
     try:
         first = await anext(agen)
@@ -415,16 +447,38 @@ async def answer_run_route(
     _check_answer(body)
     try:
         from agent.runs import answer_run
+
+        runs_mod = importlib.import_module("agent.runs")
     except ImportError:
         log.exception("agent.runs is not importable")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=STUDIO_UNAVAILABLE) from None
+    not_waiting = _exception_class(getattr(runs_mod, "RunNotWaiting", None))
 
+    args = (access.family_id, run_id, access.user.id, body)
     try:
-        await _maybe_await(answer_run(access.family_id, run_id, access.user.id, body))
-    except LookupError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=RUN_NOT_FOUND) from None
-    except PermissionError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_RUN_OWNER) from None
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc) or "Run cannot take that answer") from None
+        if inspect.iscoroutinefunction(answer_run):
+            await answer_run(*args)
+        else:
+            # The real answer_run can block for seconds on a threading.Condition.
+            await _maybe_await(await run_in_threadpool(answer_run, *args))
+    except Exception as exc:
+        raise _answer_error(exc, run_id, not_waiting) from None
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _exception_class(value: Any) -> type[BaseException] | None:
+    return value if isinstance(value, type) and issubclass(value, BaseException) else None
+
+
+def _answer_error(exc: Exception, run_id: str, not_waiting: type[BaseException] | None) -> HTTPException:
+    """The HTTP error for an exception from answer_run (see the module docstring)."""
+    if not_waiting is not None and isinstance(exc, not_waiting):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=NOT_WAITING)
+    if isinstance(exc, LookupError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=RUN_NOT_FOUND)
+    if isinstance(exc, PermissionError):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NOT_RUN_OWNER)
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc) or ANSWER_CONFLICT)
+    log.exception("Could not answer run %s", run_id, exc_info=exc)
+    return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=STUDIO_UNAVAILABLE)
