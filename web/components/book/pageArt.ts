@@ -5,6 +5,7 @@
  */
 
 import { ACCENT, canvas, drawGutterStitches, drawStitchLine, INK, INK_FAINT, INK_SOFT, paper, setSpacing, wrap, type Ctx, type PageFonts } from "./paperArt";
+import { drawLabelsPrompt, drawPullTabPrint, drawPuppetAvatar, drawTellerLabels, layoutTellerLabels, tellerLabelsHeight, type LabelRect } from "./labelArt";
 import { drawPhoto } from "./photoArt";
 import type { BookCover, BookSpread } from "./types";
 
@@ -25,16 +26,42 @@ function pageNumber(ctx: Ctx, n: number, side: "left" | "right", fonts: PageFont
   ctx.fillText(String(n), side === "left" ? 96 : PAGE_PX_W - 96, PAGE_PX_H - 74);
 }
 
-/** Left page: year, title, storybook text, tellers and taped-in photos. */
-export async function drawStoryPage(spread: BookSpread, page: number, fonts: PageFonts, seed: number) {
+/** A drawn story page, and where its teller labels are (page px) for hit testing. */
+export interface StoryPageArt {
+  canvas: HTMLCanvasElement;
+  labels: LabelRect[];
+}
+
+/**
+ * Left page: year, title, storybook text, tellers and taped-in photos. With
+ * `spread.tellings`, the tellers are taped labels to choose a telling by,
+ * the `active` one inked as playing.
+ */
+export async function drawStoryPage(
+  spread: BookSpread,
+  page: number,
+  fonts: PageFonts,
+  seed: number,
+  active: string | null = null,
+): Promise<StoryPageArt> {
   const W = PAGE_PX_W;
   const H = PAGE_PX_H;
-  const { c, ctx } = canvas(W, H);
-  paper(ctx, W, H, { seed, gutter: "right" });
-  drawGutterStitches(ctx, W, H, "right");
+  const { c, ctx: pageCtx } = canvas(W, H);
+  paper(pageCtx, W, H, { seed, gutter: "right" });
+  drawGutterStitches(pageCtx, W, H, "right");
+  if (spread.kind === "end") {
+    drawEndPage(pageCtx, spread, fonts);
+    pageNumber(pageCtx, page, "left", fonts);
+    return { canvas: c, labels: [] };
+  }
   const left = 96;
   const right = W - 134;
   const width = right - left;
+  const photos = spread.photos.slice(0, 2);
+  // Without photos the words sit on their own layer, to be set in the
+  // page's optical middle rather than hung from its head.
+  const layer = photos.length ? null : canvas(W, H);
+  const ctx = layer ? layer.ctx : pageCtx;
 
   // Year, handwritten in the accent ink.
   ctx.save();
@@ -66,8 +93,12 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
   y += 58;
 
   // Storybook text, opening on a two-line drop cap like a printed storybook.
-  const text = spread.text.trim();
-  const lead = 46;
+  // A line or two is set larger, so a short page still reads as a page.
+  const tellings = spread.tellings ?? [];
+  const teller = tellings.find((t) => t.id === active) ?? tellings[0];
+  const text = spread.text.trim() || teller?.text?.trim() || "";
+  const short = text.length < 150;
+  const lead = short ? 54 : 46;
   const first = text.charAt(0);
   const capSize = Math.round(lead * 2.3);
   ctx.font = `600 ${capSize}px ${fonts.display}`;
@@ -79,7 +110,7 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
   // The cap's baseline sits on the second line's baseline.
   ctx.fillText(first, left - 2, y + lead);
   ctx.fillStyle = INK_SOFT;
-  ctx.font = `400 31px ${fonts.display}`;
+  ctx.font = `400 ${short ? 37 : 31}px ${fonts.display}`;
   // No widows: narrow the measure a little until the last line has company.
   let body = wrap(ctx, text.slice(1), (i) => (i < 2 ? width - capW : width));
   for (let k = 1; k <= 10 && body.length > 2 && !body[body.length - 1].includes(" "); k++) {
@@ -90,8 +121,18 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
     ctx.fillText(line, left + (i < 2 ? capW : 0), y);
     y += lead;
   });
+  // The drop cap is two lines tall, however short the text.
+  if (text && body.length < 2) y += lead * (2 - body.length);
 
-  if (spread.tellers?.length) {
+  let labels: LabelRect[] = [];
+  if (tellings.length > 1) {
+    // One taped label per telling, to hear the same scene told another way.
+    y += 58;
+    y += drawLabelsPrompt(ctx, left + 4, y, fonts, seed + 40) + 16;
+    labels = layoutTellerLabels(tellings, left + 4, width - 8, y);
+    drawTellerLabels(ctx, tellings, labels, active, fonts, seed + 50);
+    y += tellerLabelsHeight(tellings.length) + 6;
+  } else if (spread.tellers?.length) {
     y += 14;
     ctx.fillStyle = INK_FAINT;
     ctx.font = `500 38px ${fonts.hand}`;
@@ -102,8 +143,15 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
     y += 20;
   }
 
+  if (layer) {
+    // The block runs from the year (~110) to y; centre it a little high.
+    const room = H - 150 - 100;
+    const dy = Math.max(0, Math.round(((room - (y - 110)) / 2) * 0.72));
+    pageCtx.drawImage(layer.c, 0, dy);
+    labels = labels.map((r) => ({ ...r, y: r.y + dy }));
+  }
+
   // Photos, taped into the space that is left.
-  const photos = spread.photos.slice(0, 2);
   const top = Math.max(y + 46, 700);
   if (photos.length === 1) {
     const pw = Math.min(520, (H - 150 - top) * (photos[0].aspect ?? 4 / 3) * 0.9);
@@ -118,8 +166,40 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
     await drawPhoto(ctx, photos[1], right - w1 + 8, top + Math.min(70, room * 0.16), w1, 0.06, seed + 2, fonts, "corners");
   }
 
-  pageNumber(ctx, page, "left", fonts);
-  return c;
+  pageNumber(pageCtx, page, "left", fonts);
+  return { canvas: c, labels };
+}
+
+/**
+ * The last page: "The end" in hand, a stitched rule, a small line (the
+ * spread's text), and the tellers' paper puppets standing side by side.
+ */
+function drawEndPage(ctx: Ctx, spread: BookSpread, fonts: PageFonts) {
+  const W = PAGE_PX_W;
+  const H = PAGE_PX_H;
+  const cx = W / 2 - 18;
+  const top = H * 0.36;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = INK;
+  ctx.font = `600 96px ${fonts.hand}`;
+  ctx.save();
+  ctx.translate(cx, top);
+  ctx.rotate(-0.03);
+  ctx.fillText(spread.title || "The end", 0, 0);
+  ctx.restore();
+  drawStitchLine(ctx, cx - 80, top + 46, cx + 80, top + 46, ACCENT, 3.2, 16, 11);
+  if (spread.text) {
+    ctx.fillStyle = INK_SOFT;
+    ctx.font = `italic 400 32px ${fonts.display}`;
+    wrap(ctx, spread.text, 560).forEach((line, i) => ctx.fillText(line, cx, top + 118 + i * 44));
+  }
+  // The tellers, side by side, as on the tree.
+  const tellers = spread.tellings ?? [];
+  const h = 230;
+  const step = 132;
+  const x0 = cx - ((tellers.length - 1) * step) / 2 - (h * 100) / 130 / 2;
+  tellers.slice(0, 5).forEach((t, i) => drawPuppetAvatar(ctx, x0 + i * step, top + 190, h, t.color, false));
 }
 
 /**
@@ -128,13 +208,26 @@ export async function drawStoryPage(spread: BookSpread, page: number, fonts: Pag
  */
 export const STAGE_SLOT_PX = { x0: 134, x1: PAGE_PX_W - 96, y0: 104, y1: PAGE_PX_H - 132 } as const;
 
-/** Right page: an empty, clearly marked slot where the pop-up stage mounts. */
+/**
+ * Right page: an empty, clearly marked slot where the pop-up stage mounts.
+ * Under a real pop-up (`spread.stage`) the page is printed plain, with the
+ * slits and pencilled labels of its pull tabs.
+ */
 export function drawStagePage(spread: BookSpread, page: number, fonts: PageFonts, seed: number) {
   const W = PAGE_PX_W;
   const H = PAGE_PX_H;
   const { c, ctx } = canvas(W, H);
   paper(ctx, W, H, { seed, gutter: "left" });
   drawGutterStitches(ctx, W, H, "left");
+  if (spread.kind === "end") {
+    pageNumber(ctx, page, "right", fonts);
+    return c;
+  }
+  if (spread.stage) {
+    (spread.stage.pullTabs ?? []).forEach((tab, i) => drawPullTabPrint(ctx, tab, fonts, seed + 20 + i));
+    pageNumber(ctx, page, "right", fonts);
+    return c;
+  }
 
   const { x0, x1, y0, y1 } = STAGE_SLOT_PX;
   // Pencil-dashed slot outline.

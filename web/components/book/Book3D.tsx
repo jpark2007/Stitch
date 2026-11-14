@@ -38,6 +38,7 @@ import {
   MeshStandardMaterial,
   type PerspectiveCamera,
   Vector2,
+  Vector3,
 } from "three";
 import {
   createCardEdgeMaterial,
@@ -53,8 +54,20 @@ import { createBlockGeometry } from "./blockGeometry";
 import { BOARD_D, BOARD_W, BookController, COVER_PIVOT_Y, HIT_MARGIN, type BookStart, type BookView } from "./controller";
 import { Leaf, type LeafTextures } from "./Leaf";
 import { BLOCK_T, COVER_T, PAGE_H, PAGE_W } from "./leafShape";
-import { isMuted, setMuted, subscribeMuted, unlockAudio } from "./sound";
-import { STAGE_SLOT, SlotProbe, StageSlot, buildBookArt, useBookTextures, type BookArt, type StageSlotArgs } from "./StoryPage";
+import { PAGE_PX_H, PAGE_PX_W } from "./pageArt";
+import { isBookControl } from "./controls";
+import { BookRuntimeProvider } from "./pagePrint";
+import { isMuted, paperLift, setMuted, subscribeMuted, unlockAudio } from "./sound";
+import {
+  STAGE_SLOT,
+  SlotProbe,
+  StageSlot,
+  buildBookArt,
+  drawSpreadStory,
+  useBookTextures,
+  type BookArt,
+  type StageSlotArgs,
+} from "./StoryPage";
 import type { BookCover, BookSpread } from "./types";
 
 const LEAF_MASK: DeckledMaskOptions = { aspect: PAGE_W / PAGE_H, style: "deckled", amount: 0.7, seed: 11, resolution: 1024 };
@@ -62,6 +75,10 @@ const KRAFT = "#b58c62";
 /** Fraction of the deckle mask skipped at the gutter edge. */
 const GUTTER_INSET = 0.035;
 const TABLE_BG = "#1a110b";
+/** useFrame priority of the book's controller: first in every frame (stages tick at -4..-2). */
+const BOOK_PRIORITY = -10;
+/** useFrame priority of the book's camera: after the stages tick (-4..-2), before default (0) work. */
+const CAMERA_PRIORITY = -1;
 
 export interface BookInitial {
   state?: "closed" | "open";
@@ -79,6 +96,15 @@ export interface Book3DProps {
   initial?: BookInitial;
   /** The pop-up stage for a spread, mounted in the right page's slot. */
   renderStage?: (args: StageSlotArgs) => ReactNode;
+  /**
+   * Which telling is playing on each spread with `tellings` (spread id ->
+   * teller id), as a source the book subscribes to: its label is printed as
+   * playing, and a change reprints only that story page, with no React
+   * render of the book.
+   */
+  tellings?: TellingsSource;
+  /** A teller's label was chosen on a story page. */
+  onTelling?: (spreadId: string, tellerId: string) => void;
   /** Screenshots and tests: no parallax, no hover peels, no hints. */
   still?: boolean;
   /** Tests: expose the raw controller as `window.__book`, and stand a probe card in empty stage slots. */
@@ -109,7 +135,25 @@ function resolveStart(initial: BookInitial | undefined, n: number): BookStart {
 /* Shell: loading, overlay UI                                                */
 /* ------------------------------------------------------------------------ */
 
-export function Book3D({ spreads, cover, initial, renderStage, still = false, debug = false }: Book3DProps) {
+/** Which telling plays on each spread (spread id -> teller id), read when it says it changed. */
+export interface TellingsSource {
+  get(): Readonly<Record<string, string>>;
+  subscribe(listener: () => void): () => void;
+}
+
+const NONE: Readonly<Record<string, string>> = {};
+const NO_TELLINGS: TellingsSource = { get: () => NONE, subscribe: () => () => {} };
+
+export function Book3D({
+  spreads,
+  cover,
+  initial,
+  renderStage,
+  tellings = NO_TELLINGS,
+  onTelling,
+  still = false,
+  debug = false,
+}: Book3DProps) {
   // The starting view is read once; later prop changes do not reset the book.
   const [start] = useState(() => resolveStart(initial, spreads.length));
   const [art, setArt] = useState<BookArt | null>(null);
@@ -120,10 +164,22 @@ export function Book3D({ spreads, cover, initial, renderStage, still = false, de
   }, []);
   const muted = useSyncExternalStore(subscribeMuted, isMuted, () => false);
 
+  // The art is drawn with the tellings of the moment it is built; later
+  // changes reprint single pages (BookModel).
+  const tellingsNow = useRef(tellings);
+  useEffect(() => {
+    tellingsNow.current = tellings;
+  }, [tellings]);
+  const onTellingRef = useRef(onTelling);
+  useEffect(() => {
+    onTellingRef.current = onTelling;
+  }, [onTelling]);
+  const chooseTelling = useCallback((spreadId: string, tellerId: string) => onTellingRef.current?.(spreadId, tellerId), []);
+
   useEffect(() => {
     let live = true;
     Promise.all([
-      buildBookArt(spreads, cover),
+      buildBookArt(spreads, cover, tellingsNow.current.get()),
       preloadPaperTextures({ kinds: ["paper", "card"], wood: true, masks: [LEAF_MASK] }),
     ]).then(([a]) => {
       if (live) setArt(a);
@@ -209,6 +265,8 @@ export function Book3D({ spreads, cover, initial, renderStage, still = false, de
               onControls={onControls}
               onView={setView}
               renderStage={renderStage ?? (debug ? SlotProbe : undefined)}
+              tellings={tellings}
+              onTelling={chooseTelling}
               still={still}
               debug={debug}
             />
@@ -347,7 +405,7 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
               <button
                 type="button"
                 onClick={() => onPick(i + 1)}
-                aria-label={`${s.title}, ${s.year}`}
+                aria-label={s.kind === "end" ? s.title : `${s.title}, ${s.year}`}
                 aria-current={active ? "page" : undefined}
                 title={s.title}
                 className="group flex w-14 flex-col items-center gap-1 py-1 outline-offset-2"
@@ -365,7 +423,7 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
                   className="font-sans text-[0.68rem] font-bold tracking-[0.14em] transition-colors duration-300"
                   style={{ color: active ? "rgb(243 230 207 / 0.92)" : "rgb(243 230 207 / 0.5)" }}
                 >
-                  {s.year}
+                  {s.kind === "end" ? "end" : s.year}
                 </span>
               </button>
             </li>
@@ -387,6 +445,8 @@ interface SceneProps {
   onControls: (api: BookControls | null) => void;
   onView: (v: BookView) => void;
   renderStage?: (args: StageSlotArgs) => ReactNode;
+  tellings: TellingsSource;
+  onTelling: (spreadId: string, tellerId: string) => void;
   still: boolean;
   debug: boolean;
 }
@@ -515,7 +575,7 @@ function useBookGeometry() {
   return geo;
 }
 
-function BookModel({ art, spreads, start, onControls, onView, renderStage, still, debug }: SceneProps) {
+function BookModel({ art, spreads, start, onControls, onView, renderStage, tellings, onTelling, still, debug }: SceneProps) {
   const camera = useThree((s) => s.camera) as PerspectiveCamera;
   const gl = useThree((s) => s.gl);
   const invalidate = useThree((s) => s.invalidate);
@@ -559,6 +619,36 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
     }));
   }, [textures, leafMasks]);
 
+  // A telling chosen: reprint that story page (its labels), in place. The
+  // book subscribes itself, so this never renders React.
+  useEffect(() => {
+    let live = true;
+    const sync = () => {
+      const now = tellings.get();
+      spreads.forEach((spread, i) => {
+        const want = now[spread.id] ?? null;
+        const leaf = art.leaves[i];
+        if (!leaf || leaf.active === want) return;
+        leaf.active = want;
+        drawSpreadStory(spread, i, art.fonts, want).then((story) => {
+          if (!live || leaf.active !== want) return;
+          leaf.back = story.canvas;
+          leaf.labels = story.labels;
+          const t = textures.leaves[i].back;
+          t.image = story.canvas;
+          t.needsUpdate = true;
+          invalidate();
+        });
+      });
+    };
+    sync();
+    const off = tellings.subscribe(sync);
+    return () => {
+      live = false;
+      off();
+    };
+  }, [tellings, spreads, art, textures, invalidate]);
+
   useEffect(() => {
     ctl.attach(camera, () => gl.domElement.getBoundingClientRect());
     const api: BookControls = {
@@ -577,7 +667,25 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
       ...api,
       frames: () => ctl.rt.frames,
       focus: () => ctl.focus,
+      /** How far the camera is into the playing stage's shot (0..1). */
+      shot: () => ctl.shotWeight,
       leaves: () => ctl.rt.leaves.map((l) => `${l.mode}:${l.p.toFixed(3)}${l.visible ? "" : "(hidden)"}`),
+      /** Screen points (CSS px) of the open spread's teller labels, by teller id. */
+      labels: () => {
+        const j = ctl.settledSpread;
+        const leaf = j > 0 ? art.leaves[j - 1] : null;
+        const out: Record<string, { x: number; y: number }> = {};
+        if (!leaf) return out;
+        const r = gl.domElement.getBoundingClientRect();
+        const bx = book.current?.position.x ?? 0;
+        const at = new Vector3();
+        for (const l of leaf.labels) {
+          at.set(bx - PAGE_W + ((l.x + l.w / 2) / PAGE_PX_W) * PAGE_W, ctl.leftSurfaceY, ((l.y + l.h / 2) / PAGE_PX_H) * PAGE_H - PAGE_H / 2);
+          at.project(camera);
+          out[l.id] = { x: r.left + ((at.x + 1) / 2) * r.width, y: r.top + ((1 - at.y) / 2) * r.height };
+        }
+        return out;
+      },
     };
     invalidate();
     return () => {
@@ -585,7 +693,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
       delete w.__stitchBook;
       delete w.__book;
     };
-  }, [ctl, camera, gl, onControls, invalidate, debug]);
+  }, [ctl, camera, gl, art, onControls, invalidate, debug]);
 
   // Reduced motion and pointer parallax follow the reader's settings live.
   useEffect(() => {
@@ -641,14 +749,71 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
     if (moving) state.invalidate();
     // Screenshot hook: the scene has drawn (a still closed book stops at ~2 frames).
     if (ctl.rt.frames === 2) document.documentElement.dataset.bookReady = "1";
-  });
+    // Before the leaves read the runtime, and before a mounted stage ticks:
+    // otherwise the last frame of a settle draws the stacks a frame stale.
+  }, BOOK_PRIORITY);
+
+  // The camera, once the stages have ticked and written this frame's shot,
+  // and before anything (labels, pull tabs) projects through it.
+  useFrame((state) => {
+    if (ctl.poseCamera(state.camera as PerspectiveCamera, state.scene)) state.invalidate();
+  }, CAMERA_PRIORITY);
 
   const toBook = (e: ThreeEvent<PointerEvent>) => ({ x: e.point.x - (book.current?.position.x ?? 0), z: e.point.z });
   const setCursor = (c: string) => {
     document.body.style.cursor = c;
   };
 
+  /**
+   * The teller label under the pointer on the open spread's story page, if
+   * the book lies still. The ray meets the page at its own height, not the
+   * pointer target's, so the labels hit where they are drawn.
+   */
+  const labelAt = (e: ThreeEvent<PointerEvent>): { spread: number; id: string } | null => {
+    const j = ctl.settledSpread;
+    const leaf = j > 0 ? art.leaves[j - 1] : null;
+    if (!leaf || leaf.labels.length === 0) return null;
+    const { origin, direction } = e.ray;
+    if (Math.abs(direction.y) < 1e-6) return null;
+    const k = (ctl.leftSurfaceY - origin.y) / direction.y;
+    const x = origin.x + direction.x * k - (book.current?.position.x ?? 0);
+    const z = origin.z + direction.z * k;
+    // The story page: x from -PAGE_W (outer edge) to 0 (gutter), z down the page.
+    const px = ((x + PAGE_W) / PAGE_W) * PAGE_PX_W;
+    const py = ((z + PAGE_H / 2) / PAGE_H) * PAGE_PX_H;
+    const hit = leaf.labels.find((r) => px >= r.x - 6 && px <= r.x + r.w + 6 && py >= r.y - 10 && py <= r.y + r.h + 6);
+    return hit ? { spread: j - 1, id: hit.id } : null;
+  };
+
+  /** A control on the page (a pull tab) is under the pointer or held: it handles the event. */
+  const overControl = (e: ThreeEvent<PointerEvent>) =>
+    ctl.rt.controlsHeld > 0 || e.intersections.some((i) => isBookControl(i.object));
+
+  const onLabelDown = (e: ThreeEvent<PointerEvent>, label: { spread: number; id: string }) => {
+    e.stopPropagation();
+    const id = e.pointerId;
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    const up = (ev: PointerEvent) => {
+      if (ev.pointerId !== id) return;
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      if (ev.type !== "pointerup" || Math.hypot(ev.clientX - x0, ev.clientY - y0) > 10) return;
+      paperLift();
+      onTelling(spreads[label.spread].id, label.id);
+      ctl.resumeShot();
+      // Show the stage the new telling plays on: a phone pans to it, a
+      // close look at the story page steps back to the spread.
+      if (ctl.focus === -1) ctl.setFocus(ctl.onePage ? 1 : 0);
+    };
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+
   const onPageDown = (e: ThreeEvent<PointerEvent>) => {
+    if (overControl(e)) return;
+    const label = labelAt(e);
+    if (label) return onLabelDown(e, label);
     if (!ctl.pageDown(toBook(e), e.clientX, e.clientY)) return;
     e.stopPropagation();
     const id = e.pointerId;
@@ -703,7 +868,18 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
         position={[0, COVER_T + BLOCK_T * 0.6, 0]}
         rotation-x={-Math.PI / 2}
         material={mats.hit}
-        onPointerMove={(e) => setCursor(ctl.pageMove(toBook(e)))}
+        onPointerMove={(e) => {
+          if (overControl(e)) {
+            ctl.pageLeave();
+            return;
+          }
+          if (labelAt(e)) {
+            ctl.pageLeave();
+            setCursor("pointer");
+            return;
+          }
+          setCursor(ctl.pageMove(toBook(e)));
+        }}
         onPointerLeave={() => {
           ctl.pageLeave();
           setCursor("");
@@ -736,16 +912,27 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, still
       </mesh>
 
       <group ref={stage}>
-        {renderStage
-          ? stages.map((i) => (
-              <StageSlot key={spreads[i].id}>
-                <StageMount
-                  render={renderStage}
-                  args={{ spread: spreads[i], index: i, reveal: ctl.reveals[i], width: STAGE_SLOT.width, depth: STAGE_SLOT.depth }}
-                />
-              </StageSlot>
-            ))
-          : null}
+        <BookRuntimeProvider runtime={ctl.rt}>
+          {renderStage
+            ? stages.map((i) => (
+                <StageSlot key={spreads[i].id}>
+                  <StageMount
+                    render={renderStage}
+                    args={{
+                      spread: spreads[i],
+                      index: i,
+                      reveal: ctl.reveals[i],
+                      view: ctl.stageView,
+                      shot: ctl.shots[i],
+                      fonts: art.fonts,
+                      width: STAGE_SLOT.width,
+                      depth: STAGE_SLOT.depth,
+                    }}
+                  />
+                </StageSlot>
+              ))
+            : null}
+        </BookRuntimeProvider>
       </group>
     </group>
   );
