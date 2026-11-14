@@ -65,6 +65,73 @@ export function stepTabAway(away: number, out: boolean, dt: number, rate = 4): n
   return Math.abs(target - next) < 1e-3 ? target : next;
 }
 
+/**
+ * A home tab's printed slit and label eat a press (and show the plain
+ * cursor), so a click on them does nothing rather than turning the page:
+ * while the page is open and the tab does not take a pull. While the page is
+ * still opening or turning, a press falls through to the book.
+ */
+export function printEats(i: { grabbable: boolean; reveal: number; openAt: number }): boolean {
+  return !i.grabbable && i.reveal >= i.openAt;
+}
+
+export interface PrintRect {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+}
+
+/** The pencilled label's hand, page px (labelArt.drawPullTabPrint): its size, a generous letter, its widest line. */
+const LABEL = { size: 35, gap: 46, letter: 14, wrap: 360 } as const;
+
+/**
+ * The printed slit and label, in page px about the slit's middle (x along
+ * the tab, y down the page), for a card `length` × `width` and its `label`:
+ * the slit's cut and the strip's footprint, and the pencilled label under
+ * it, right-aligned under the grip, up to its arrow. Nothing above the
+ * slit's top, so the stage and its caption stay clear. The label's width is
+ * estimated from its letters (it is drawn on the page canvas, not here),
+ * generously, as labelArt wraps it: one line up to 360 px, else two.
+ */
+export function printRects(length: number, width: number, label: string): PrintRect[] {
+  const end = length + 4;
+  const words = label.trim();
+  const full = words.length * LABEL.letter;
+  const lines = full > LABEL.wrap ? 2 : 1;
+  const wide = Math.min(LABEL.wrap + 40, lines === 2 ? Math.ceil(words.length / 2 + 3) * LABEL.letter : full);
+  const base = width / 2 + LABEL.gap;
+  return [
+    { x0: -24, x1: end + 44, y0: -(width / 2 + 9), y1: width / 2 + 8 },
+    { x0: end - wide - 12, x1: end + 48, y0: base - LABEL.size - 4, y1: base + (lines - 1) * LABEL.size + 14 },
+  ];
+}
+
+/**
+ * The grab area's margin round the card: this many screen px (the old fixed
+ * 0.04 world gave ~50 px on a close desktop view but ~13 px on a phone).
+ */
+export const HIT_PAD_PX = 22;
+/** ...but never under or over this, world units (the page is 1 wide, a card 0.15 × 0.076). */
+export const HIT_PAD_MIN = 0.02;
+export const HIT_PAD_MAX = 0.07;
+
+/**
+ * The grab area's margin, world units, for a view showing `worldPerPx` world
+ * units per CSS px at the tab: a steady HIT_PAD_PX on screen, clamped so a
+ * far view does not take a slab of the page-turn band and a close one still
+ * forgives a press just off the card.
+ */
+export function hitPad(worldPerPx: number): number {
+  if (!(worldPerPx > 0) || !Number.isFinite(worldPerPx)) return HIT_PAD_MIN;
+  return Math.min(HIT_PAD_MAX, Math.max(HIT_PAD_MIN, HIT_PAD_PX * worldPerPx));
+}
+
+/** World units per CSS px at `distance` from a perspective camera of vertical `fovDeg`, on a view `heightPx` tall. */
+export function worldPerPx(distance: number, fovDeg: number, heightPx: number): number {
+  return (2 * distance * Math.tan((fovDeg * Math.PI) / 360)) / Math.max(1, heightPx);
+}
+
 /** The end-of-telling nudge: once, for a tab that can be pulled and has not been. */
 export function endNudge(i: { ended: boolean; grabbable: boolean; pulled: boolean; held: boolean; nudged: boolean }): boolean {
   return i.ended && i.grabbable && !i.pulled && !i.held && !i.nudged;
