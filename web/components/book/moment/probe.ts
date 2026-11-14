@@ -7,8 +7,11 @@
  *   __stitchMoment.narrator()    the teller being heard (person id)
  *   __stitchMoment.caption()     the caption showing now, or null
  *   __stitchMoment.playing()     the scene is playing
- *   __stitchMoment.tab(id)       a pull tab's grip on screen (CSS px), and how far a full pull travels there
+ *   __stitchMoment.tab(id)       a pull tab's grip on screen (CSS px), how far a full pull travels there,
+ *                                whether it takes a pull now (live) and how far out of its slit it is (out)
  *   __stitchMoment.tellers()     each teller label's centre on screen, by teller id (the open spread)
+ *   __stitchMoment.shot()        the shot on stage now (id), or null
+ *   __stitchMoment.held(id)      the value an interaction is held at, or null
  *
  * The page installs it (installMomentProbe); each pull tab registers where
  * it is (registerTabProbe); the book reports its labels (__stitchBook.labels).
@@ -27,6 +30,10 @@ export interface TabPoint extends ScreenPoint {
   /** Screen direction (unit) the tab pulls out along. */
   dx: number;
   dy: number;
+  /** It takes a pull now (pullTabGate). */
+  live: boolean;
+  /** How far out of its slit the card is, 0 home .. 1 out. */
+  out: number;
 }
 
 export interface MomentProbe {
@@ -36,6 +43,8 @@ export interface MomentProbe {
   playing(): boolean;
   tab(id: string): TabPoint | null;
   tellers(): Record<string, ScreenPoint>;
+  shot(): string | null;
+  held(id: string): number | null;
 }
 
 declare global {
@@ -67,6 +76,8 @@ export function installMomentProbe(controller: PlaybackController): () => void {
     playing: () => controller.getStatus().playing,
     tab: (id) => tabs.get(id)?.() ?? null,
     tellers: () => window.__stitchBook?.labels?.() ?? {},
+    shot: () => controller.frame.shot?.id ?? null,
+    held: (id) => controller.heldValue(id),
   };
   window.__stitchMoment = probe;
   return () => {
