@@ -23,16 +23,23 @@ Script for a new memory (`fields.memory_id is None`), one step every `step_secon
    out of the memory and strips it from the scene (the saved prop itself is never deleted,
    and is not created for this run if it did not exist yet). subagent_end prop_master says
    "Reused the X.", "Saved the X." or "Left out the X.".
-5. plan, subagent_start director, subagent_end director, plan
-6. the memory is saved: create_memory with the telling, then save_scene with the sample's
-   screenplay and timeline. Person ids are recast: the sample's `mom` becomes the teller,
-   and `dad` the first participant who is not the teller, else the teller's spouse, else
-   another person of the family. When the family has nobody else, `dad` is stripped from
-   the scene (`strip_person`): one puppet, the teller's narration, and the books left where
-   they fell. The sample's prop and set are created in the run's family when missing
-   (keeping the sample ids when free, otherwise `<sampleId>_<familyId>`), and the scene
-   points at the family's copies. The memory's participants are the teller, the recast
-   `dad` (if any) and the named participants.
+5. plan, subagent_start director. The director stages the sample's screenplay for this
+   family and COMPILES it with the real compiler (`screenplay.compiler.compile`) against
+   this family's sets, props and people. Person ids are recast: the sample's `mom` becomes
+   the teller, and `dad` the first participant who is not the teller, else the teller's
+   spouse, else another person of the family. When the family has nobody else, `dad` is
+   stripped from the scene (`strip_person`): one puppet, the teller's narration, and the
+   books left where they fell. Before the hand-off the giver walks up beside the receiver
+   (`stage_handoffs`), so arm reach holds for every build. The sample's prop and set are
+   created in the run's family when missing (keeping the sample ids when free, otherwise
+   `<sampleId>_<familyId>`), and the scene points at the family's copies.
+   subagent_end director reports the real outcome. If the compiler returns errors, the run
+   emits compile_error, then subagent_end director with the first error, then one plain
+   error event, and nothing is saved.
+6. plan, then the memory is saved: create_memory with the telling, then save_scene with the
+   recast screenplay and the COMPILED timeline (never the sample's own timeline). The
+   memory's participants are the teller, the recast `dad` (if any) and the named
+   participants.
 7. the linker (only when someone besides the teller was named in `participant_ids`): plan
    with "Ask the others for their version" in progress, then one open question per named
    participant, linked to the new memory ("<teller> told the story of "<title>". What do
@@ -41,9 +48,20 @@ Script for a new memory (`fields.memory_id is None`), one step every `step_secon
    not asked unless named.
 8. plan (all completed), scene_ready, done(memoryId)
 
-A second telling (`fields.memory_id` set) adds the telling to that memory, links the teller
-and participants to it, and sends plan, subagent_start, subagent_end, plan and done: no
-question, no prop review, no scene save.
+A second telling (`fields.memory_id` set) needs a memory of this family WITH a scene:
+`start_run` raises `MemoryNotFound` (a LookupError, like agent.runs.MemoryNotFound) when the
+memory is missing, belongs to another family, or has no screenplay or timeline yet, so the
+route answers 409 NO_SCENE. The run: plan, interviewer, then the narrator writes the new
+teller's narration from the telling text (`telling_narration`: one line per sentence,
+spread over the existing shots in order, the first line of each shot cued to an action),
+and the scene is recompiled with the real compiler. Only when that compiles are the telling
+added, the participants linked and the scene saved (`save_scene`: the version goes up by
+one, and the timeline carries the new teller's narration track). Participants follow
+agent/tools/family.py: the teller joins the moment; then, as the real linker does, the named
+participants who are new to the moment are linked and each is asked for their version
+(never the teller, and never someone who already told it). Then plan, scene_ready with the
+new version, done. No question, no prop review. A recompile that fails emits compile_error,
+then a plain error event, and writes nothing.
 
 Any exception ends the run with a single error event with a plain message. Every payload is
 an instance of `schemas.RUN_EVENTS[name]`, and every run ends with exactly one done or error.
@@ -55,6 +73,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
 import re
 import threading
@@ -72,7 +91,9 @@ from db import media as media_db
 from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
-from screenplay.schema import Screenplay, Timeline
+from screenplay import compiler as screenplay_compiler
+from screenplay import narration as narration_timing
+from screenplay.schema import CompileError, CompileResult, NarrationLine, Screenplay, Timeline
 from seed import demo
 
 logger = logging.getLogger(__name__)
@@ -85,7 +106,28 @@ FOLLOWUP_QUESTION = "Who else was there that day?"
 ASK_OTHERS = "Ask the others for their version"
 ERROR_MESSAGE = "Something went wrong while making this memory. Please try again."
 STOPPED_MESSAGE = "The studio stopped before this memory was finished."
+SCENE_FAILED_MESSAGE = "The scene for this memory could not be staged, so nothing was saved. Please try again."
+TELLING_FAILED_MESSAGE = "This telling could not be added to the scene, so nothing was saved. Please try again."
 TITLE_WORDS = 6
+
+HANDOFF_MARK = "handoff_spot"
+HANDOFF_GAP = 0.07
+"""How far (in u, a fraction of the stage width) beside the receiver the giver stands to hand
+a prop over. Every pair of builds reaches across it (tests/data/test_fake_runs.py checks all)."""
+HANDOFF_DELAY = 1.05
+"""Seconds the hand-off (and everything after it) moves later, to make room for that walk."""
+HANDOFF_WALK_LEAD = 0.2
+"""The giver starts walking this long before the hand-off's original time."""
+LINE_GAP = 0.4
+"""Seconds of silence between two of a second teller's lines in one shot."""
+
+
+class MemoryNotFound(LookupError):
+    """`fields.memory_id` is not a memory of this family, or it has no scene yet.
+
+    Mirrors agent.runs.MemoryNotFound, so routes/memories.py answers 409 NO_SCENE for a
+    memory it found but that cannot take another telling.
+    """
 
 NEEDS_INPUT = {"question": "answer", "props_found": "props"}
 """Event that pauses the run -> the AnswerRequest kind that resumes it."""
@@ -126,6 +168,17 @@ class _Run:
                 loop.call_soon_threadsafe(wake.set)
             except RuntimeError:  # that subscriber's loop is closed
                 self.subscribers.remove((loop, wake))
+
+
+@dataclass
+class _Staged:
+    """The director's work for a new memory: the recast screenplay and its compile."""
+
+    screenplay: Screenplay
+    result: CompileResult
+    participants: list[str]
+    prop_ids: list[str]
+    set_ids: list[str]
 
 
 # --------------------------------------------------------------------- scene recasting
@@ -388,6 +441,214 @@ def short_title(text: str, words: int = TITLE_WORDS) -> str:
     return title or "A memory"
 
 
+# ------------------------------------------------------------------------ staging
+
+_MOVES_TO = frozenset({"enter", "walk_to", "run_to"})
+
+
+def _mark_of(shot: dict, who: str, before: float) -> str | None:
+    """The mark `who` stands on just before shot time `before`: their last enter/walk_to/run_to
+    destination, else their start mark."""
+    at = (shot.get("start") or {}).get(who, {}).get("at")
+    for action in sorted(shot.get("actions", []), key=lambda a: a.get("t", 0)):
+        if action.get("t", 0) < before and action.get("who") == who and action.get("do") in _MOVES_TO:
+            at = action.get("to") or at
+    return at
+
+
+def stage_handoffs(screenplay: dict, sets: dict[str, dict[str, list[float]]]) -> dict:
+    """Make every hand_to reachable for any pair of builds (camelCase JSON dict in and out). Pure.
+
+    For each hand_to whose receiver stands on a known mark, the giver first walks to a new
+    shot mark HANDOFF_GAP beside the receiver, on the receiver's height and on the giver's
+    side. The walk starts HANDOFF_WALK_LEAD before the hand-off's original time, and the
+    hand-off, every later action and every narration line from the one cued to it on move
+    HANDOFF_DELAY later to make room. `sets` maps set id -> that set's marks.
+    """
+    sp = json.loads(json.dumps(screenplay))
+    for shot in sp.get("shots", []):
+        handoffs = [a for a in shot.get("actions", []) if a.get("do") == "hand_to" and a.get("who") and a.get("to")]
+        if len(handoffs) != 1:
+            continue  # the sample has one; anything else is left as written
+        hand = handoffs[0]
+        marks = {**sets.get(shot.get("set"), {}), **(shot.get("marks") or {})}
+        hand_t = float(hand.get("t", 0))
+        taker_mark = marks.get(_mark_of(shot, hand["to"], hand_t) or "")
+        giver_mark = marks.get(_mark_of(shot, hand["who"], hand_t) or "")
+        if taker_mark is None:
+            continue
+        side = -1.0 if giver_mark is None or giver_mark[0] <= taker_mark[0] else 1.0
+        u = min(1.0, max(0.0, taker_mark[0] + side * HANDOFF_GAP))
+        shot["marks"] = {**(shot.get("marks") or {}), HANDOFF_MARK: [round(u, 6), *taker_mark[1:]]}
+
+        cue_names = {name for name in (hand.get("id"), hand.get("do")) if name}
+        cued = [line for line in shot.get("narration", []) if line.get("cue") in cue_names]
+        line_from = min((float(line["t"]) for line in cued), default=hand_t)
+        for action in shot["actions"]:
+            if float(action.get("t", 0)) >= hand_t:
+                action["t"] = round(float(action["t"]) + HANDOFF_DELAY, 6)
+        lines = [shot.get("narration", [])] + [
+            by_shot.get(shot["id"], []) for by_shot in (sp.get("narrations") or {}).values()
+        ]
+        for group in lines:
+            for line in group:
+                if float(line.get("t", 0)) >= line_from:
+                    line["t"] = round(float(line["t"]) + HANDOFF_DELAY, 6)
+        walk = {"t": round(max(0.0, hand_t - HANDOFF_WALK_LEAD), 6), "who": hand["who"], "do": "walk_to",
+                "to": HANDOFF_MARK}
+        shot["actions"].insert(shot["actions"].index(hand), walk)
+    return sp
+
+
+def scene_inputs(
+    db: Database, family_id: str, screenplay: Screenplay
+) -> tuple[dict[str, schemas.SetDef], dict[str, schemas.Prop], dict[str, schemas.Person], list[CompileError]]:
+    """This family's sets, props and people for a screenplay (as agent/wiring.scene_for loads
+    them), plus an unknown_set / unknown_prop / unknown_person error for each id it lacks."""
+    sets: dict[str, schemas.SetDef] = {}
+    props: dict[str, schemas.Prop] = {}
+    people: dict[str, schemas.Person] = {}
+    missing: list[CompileError] = []
+    for person_id in dict.fromkeys(screenplay.cast):
+        person = people_db.get_person(db, family_id, person_id)
+        if person is None:
+            missing.append(CompileError(code="unknown_person", message=f'unknown person "{person_id}"'))
+        else:
+            people[person_id] = person
+    for prop_id in dict.fromkeys(screenplay.props):
+        prop = props_db.get_prop(db, family_id, prop_id)
+        if prop is None:
+            missing.append(CompileError(code="unknown_prop", message=f'unknown prop "{prop_id}"'))
+        else:
+            props[prop_id] = prop
+    for set_id in dict.fromkeys(shot.set for shot in screenplay.shots):
+        set_def = props_db.get_set(db, family_id, set_id)
+        if set_def is None:
+            missing.append(CompileError(code="unknown_set", message=f'unknown set "{set_id}"'))
+        else:
+            sets[set_id] = set_def
+    return sets, props, people, missing
+
+
+def compile_scene(db: Database, family_id: str, screenplay: Screenplay) -> CompileResult:
+    """Compile with the real compiler against this family's sets, props and people.
+
+    Never raises for a bad screenplay: a missing id or a compiler crash comes back as errors.
+    """
+    sets, props, people, missing = scene_inputs(db, family_id, screenplay)
+    if missing:
+        return CompileResult(ok=False, errors=missing)
+    try:
+        result = screenplay_compiler.compile(screenplay, sets=sets, props=props, people=people)
+    except Exception as exc:  # noqa: BLE001 - a compiler crash is a failed compile, never a crashed run
+        logger.exception("the compiler crashed")
+        return CompileResult(
+            ok=False, errors=[CompileError(code="compiler_crash", message=f"compiler crashed: {type(exc).__name__}")]
+        )
+    if result.ok and result.timeline is None:
+        return CompileResult(
+            ok=False, errors=[CompileError(code="no_timeline", message="compiler returned ok without a timeline")]
+        )
+    return result
+
+
+# ------------------------------------------------------------------ second tellings
+
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+|(?<=[.!?…][\"'”’)\]])\s+|\n+")
+
+
+def split_sentences(text: str) -> list[str]:
+    """The telling as sentences (and paragraphs), in order, each with at least one spoken word."""
+    parts = [p.strip() for p in _SENTENCE_END.split(text.strip()) if p and p.strip()]
+    sentences = [p for p in parts if narration_timing.tokenize(p)]
+    return sentences or ([text.strip()] if narration_timing.tokenize(text) else [])
+
+
+def _spread(count: int, shots: int) -> list[range]:
+    """Contiguous, in-order slices of `count` sentences over `shots` shots (earlier shots first)."""
+    if shots <= 0:
+        return []
+    if count <= shots:
+        return [range(i, i + 1) if i < count else range(0) for i in range(shots)]
+    return [range(count * j // shots, count * (j + 1) // shots) for j in range(shots)]
+
+
+def _cue_for(shot: Any, retimed: list[float]) -> tuple[str, float] | None:
+    """(cue name, shot time) of the earliest action a cue can name unambiguously, or None."""
+    best: tuple[str, float] | None = None
+    for i, action in enumerate(shot.actions):
+        name = action.id or action.do
+        try:
+            if narration_timing.cue_action_index(shot, name) != i:
+                continue  # a later action with the same verb and no id cannot be named
+        except narration_timing.NarrationError:
+            continue
+        if retimed[i] >= 0 and (best is None or retimed[i] < best[1]):
+            best = (name, retimed[i])
+    return best
+
+
+def telling_narration(screenplay: Screenplay, author_id: str, text: str, *, cued: bool = True) -> Screenplay:
+    """The screenplay with `author_id`'s narration of `text` over the existing action. Pure.
+
+    The text is split into sentences, spread over the shots in order, one line per sentence,
+    each with source "telling:<author>:s<n>". With `cued`, a shot's first line is cued on its
+    first word to the shot's earliest nameable action (where that action already lands, so
+    nothing moves) and starts there; the rest follow, LINE_GAP apart, never overlapping.
+
+    A teller who does not tell the default narration gets `narrations[author_id]` (replacing
+    any lines they had). The default narrator's retelling replaces the shots' own narration;
+    every action is pinned at the time the old narration gave it first, so the shared action
+    does not move.
+    """
+    sp = screenplay.model_copy(deep=True)
+    default = narration_timing.default_author(sp)
+    sentences = split_sentences(text)
+    slices = _spread(len(sentences), len(sp.shots))
+    by_shot: dict[str, list[NarrationLine]] = {}
+    for shot, idx in zip(sp.shots, slices, strict=True):
+        try:
+            retimed = narration_timing.retime_actions(shot, 0.0, author=default)
+        except narration_timing.NarrationError:
+            retimed = [a.t for a in shot.actions]
+        if author_id == default:  # pin the action where the old narration put it
+            for action, t in zip(shot.actions, retimed, strict=True):
+                action.t = t
+        cue = _cue_for(shot, retimed) if cued else None
+        lines: list[NarrationLine] = []
+        t = cue[1] if cue is not None else 0.0
+        for n in idx:
+            sentence = sentences[n]
+            words = narration_timing.tokenize(sentence)
+            line = NarrationLine(t=round(t, 6), text=sentence, source=f"telling:{author_id}:s{n + 1}")
+            if cue is not None and not lines:
+                line.cue, line.cue_word = cue[0], words[0]
+            lines.append(line)
+            t += len(words) * narration_timing.WORD_SECONDS + LINE_GAP
+        if lines:
+            by_shot[shot.id] = lines
+    if author_id == default:
+        for shot in sp.shots:
+            shot.narration = by_shot.get(shot.id, [])
+        others = {a: lines for a, lines in (sp.narrations or {}).items() if a != author_id}
+        sp.narrations = others or None
+    else:
+        sp.narrations = {**(sp.narrations or {}), author_id: by_shot}
+    return sp
+
+
+def keep_audio(old: Timeline, new: Timeline, author_id: str) -> Timeline:
+    """`new` with the narration audio `old` had for every teller but `author_id` (whose words changed)."""
+    tl = new.model_copy(deep=True)
+    old_tracks = old.narrations or {}
+    for author, track in (tl.narrations or {}).items():
+        if author != author_id and author in old_tracks and old_tracks[author].audio is not None:
+            track.audio = old_tracks[author].audio
+    if tl.default_narrator == old.default_narrator and tl.default_narrator != author_id and old.audio is not None:
+        tl.audio = old.audio
+    return tl
+
+
 # ----------------------------------------------------------------------------- linker
 
 
@@ -456,7 +717,8 @@ class ScriptedRunManager:
         """Start a scripted run and return its id at once.
 
         ValueError: `person_id` (or a participant) is not a person of the family.
-        LookupError: `fields.memory_id` is set but is not a memory of the family.
+        MemoryNotFound (a LookupError): `fields.memory_id` is set but is not a memory of the
+        family, or that memory has no screenplay or timeline yet (agent.runs semantics).
         """
         if self._stop.is_set():
             raise RuntimeError("the scripted studio has been shut down")
@@ -468,8 +730,10 @@ class ScriptedRunManager:
             missing = [pid for pid in fields.participant_ids if pid not in found]
             if missing:
                 raise ValueError(f"participants not in this family: {', '.join(missing)}")
-        if fields.memory_id is not None and memories_db.get_memory(db, family_id, fields.memory_id) is None:
-            raise LookupError(f"memory {fields.memory_id!r} not found")
+        if fields.memory_id is not None:
+            memory = memories_db.get_memory(db, family_id, fields.memory_id)
+            if memory is None or memory.screenplay is None or memory.timeline is None:
+                raise MemoryNotFound(f"memory {fields.memory_id!r} not found, or it has no scene yet")
 
         run = _Run(
             run_id=uuid.uuid4().hex,
@@ -714,13 +978,28 @@ class ScriptedRunManager:
         self._emit(run, "subagent_start", schemas.SubagentStartEvent(
             name="director", task="Stage the scene on the church steps"))
         self._step()
+        staged = self._stage(run, db, sample, edits, removed)
+        result = staged.result
+        if not result.ok or result.timeline is None:
+            errors = result.errors or [CompileError(code="no_timeline", message="the compiler made no timeline")]
+            logger.error(
+                "scripted run %s: the scene did not compile: %s", run.run_id, "; ".join(e.message for e in errors)
+            )
+            self._emit(run, "compile_error", schemas.CompileErrorEvent(errors=errors, round=1))
+            self._emit(run, "subagent_end", schemas.SubagentEndEvent(
+                name="director", summary=f"The scene did not compile: {errors[0].message}"))
+            self._emit(run, "error", schemas.ErrorEvent(message=SCENE_FAILED_MESSAGE))
+            return
+        shots = len(result.timeline.shots)
         self._emit(run, "subagent_end", schemas.SubagentEndEvent(
-            name="director", summary="One shot, compiled without errors."))
+            name="director",
+            summary=f"{shots} shot{'' if shots == 1 else 's'}, {result.timeline.duration:.1f}s, compiled without errors.",
+        ))
         self._step()
         self._emit(run, "plan", self._plan(todos, at["Narrate"]))
         self._step()
 
-        memory = self._save(run, db, sample, text, edits, removed)
+        memory = self._save(run, db, staged, text)
 
         if askees:
             self._emit(run, "plan", self._plan(todos, at[ASK_OTHERS]))
@@ -740,29 +1019,109 @@ class ScriptedRunManager:
         fields = run.fields
         memory_id = fields.memory_id
         assert memory_id is not None
-        todos = ["Read the telling", "Add it to the moment"]
+        fid, teller = run.family_id, run.person_id
+        existing = memories_db.get_memory(db, fid, memory_id)
+        if existing is None or existing.screenplay is None or existing.timeline is None:
+            raise MemoryNotFound(f"memory {memory_id!r} not found, or it has no scene yet")
+        told = {t.author_id for t in existing.tellings}
+        # The linker's people (agent/prompts/studio.md, second telling): named participants
+        # new to the moment. All of them are linked; those who already told it are not asked.
+        newcomers = [pid for pid in _askees(teller, fields.participant_ids) if pid not in existing.participant_ids]
+        todos = ["Read the telling", "Write the narration", "Add it to the moment"]
+        if newcomers:
+            todos.append(ASK_OTHERS)
+        at = {name: i for i, name in enumerate(todos)}
+
         self._emit(run, "plan", self._plan(todos, 0))
         self._step()
         self._emit(run, "subagent_start", schemas.SubagentStartEvent(
             name="interviewer", task="Read the new telling of this moment"))
         self._step()
+        self._emit(run, "subagent_end", schemas.SubagentEndEvent(
+            name="interviewer", summary="The telling is ready to narrate."))
+        self._step()
+
+        # The narrator writes this teller's lines over the shared action; the scene is recompiled.
+        self._emit(run, "plan", self._plan(todos, at["Write the narration"]))
+        self._step()
+        self._emit(run, "subagent_start", schemas.SubagentStartEvent(
+            name="narrator", task="Write the new teller's narration over the scene"))
+        self._step()
+        screenplay, result = self._narrate(db, fid, existing.screenplay, teller, fields.text)
+        if not result.ok or result.timeline is None:
+            errors = result.errors or [CompileError(code="no_timeline", message="the compiler made no timeline")]
+            logger.error(
+                "scripted run %s: the second telling did not compile: %s",
+                run.run_id, "; ".join(e.message for e in errors),
+            )
+            self._emit(run, "compile_error", schemas.CompileErrorEvent(errors=errors, round=1))
+            self._emit(run, "subagent_end", schemas.SubagentEndEvent(
+                name="narrator", summary=f"The narration did not compile: {errors[0].message}"))
+            self._emit(run, "error", schemas.ErrorEvent(message=TELLING_FAILED_MESSAGE))
+            return
+        lines = sum(len(by_shot) for by_shot in self._lines_of(screenplay, teller).values())
+        self._emit(run, "subagent_end", schemas.SubagentEndEvent(
+            name="narrator", summary=f"{lines} line{'' if lines == 1 else 's'}, compiled without errors."))
+        self._step()
+
+        self._emit(run, "plan", self._plan(todos, at["Add it to the moment"]))
+        self._step()
         telling = schemas.Telling(
-            author_id=run.person_id,
+            author_id=teller,
             question=fields.question,
             text=fields.text,
             photo_ids=list(run.photo_ids),
         )
-        if memories_db.add_telling(db, run.family_id, memory_id, telling) is None:
-            raise LookupError(f"memory {memory_id!r} not found")
-        memories_db.link_participants(
-            db, run.family_id, memory_id, _dedupe([run.person_id, *fields.participant_ids])
+        if memories_db.add_telling(db, fid, memory_id, telling) is None:
+            raise MemoryNotFound(f"memory {memory_id!r} not found")
+        # agent/tools/family.py _add_telling: the teller joins the moment.
+        memories_db.link_participants(db, fid, memory_id, [teller])
+        timeline = keep_audio(existing.timeline, result.timeline, teller)
+        saved = memories_db.save_scene(
+            db, fid, memory_id,
+            screenplay=screenplay, timeline=timeline,
+            prop_ids=existing.prop_ids, set_ids=existing.set_ids,
         )
-        self._emit(run, "subagent_end", schemas.SubagentEndEvent(
-            name="interviewer", summary="Added the telling to the moment."))
-        self._step()
+        if saved is None:
+            raise MemoryNotFound(f"memory {memory_id!r} vanished before its scene was saved")
+
+        if newcomers:
+            # The linker: add the named newcomers to the moment and ask each for their version.
+            self._emit(run, "plan", self._plan(todos, at[ASK_OTHERS]))
+            self._step()
+            try:
+                linked = memories_db.link_participants(db, fid, memory_id, newcomers)
+                ask_participants(db, fid, linked or saved, teller, [p for p in newcomers if p not in told])
+            except Exception:  # noqa: BLE001 - the linker never fails the run
+                logger.exception("run %s: the linker failed; no one new was added", run.run_id)
+            saved = memories_db.get_memory(db, fid, memory_id) or saved
+
         self._emit(run, "plan", self._plan(todos, len(todos)))
         self._step()
+        self._emit(run, "scene_ready", schemas.SceneReadyEvent(memory_id=memory_id, version=saved.version))
+        self._step()
         self._emit(run, "done", schemas.DoneEvent(memory_id=memory_id))
+
+    @staticmethod
+    def _lines_of(screenplay: Screenplay, author_id: str) -> dict[str, list[NarrationLine]]:
+        """`author_id`'s lines by shot, wherever they are (narrations, or the shots' own)."""
+        if screenplay.narrations and author_id in screenplay.narrations:
+            return screenplay.narrations[author_id]
+        return {shot.id: shot.narration for shot in screenplay.shots if shot.narration}
+
+    @staticmethod
+    def _narrate(
+        db: Database, family_id: str, screenplay: Screenplay, author_id: str, text: str
+    ) -> tuple[Screenplay, CompileResult]:
+        """The new teller's narration over the scene, compiled. Cued first; uncued if cues fail."""
+        drafted = telling_narration(screenplay, author_id, text)
+        result = compile_scene(db, family_id, drafted)
+        if not result.ok:
+            plain = telling_narration(screenplay, author_id, text, cued=False)
+            plain_result = compile_scene(db, family_id, plain)
+            if plain_result.ok:
+                return plain, plain_result
+        return drafted, result
 
     # ------------------------------------------------------------------ saving
 
@@ -811,15 +1170,19 @@ class ScriptedRunManager:
             other = next(iter(spouses + others), None)
         return {SAMPLE_TELLER: teller, SAMPLE_OTHER: other}
 
-    def _save(
+    def _stage(
         self,
         run: _Run,
         db: Database,
         sample: schemas.MemoryResponse,
-        text: str,
         edits: list[schemas.PropEdit],
         removed: bool,
-    ) -> schemas.Memory:
+    ) -> _Staged:
+        """The director: the sample's screenplay recast for this family, and compiled.
+
+        Creates the family's copies of the sample's set and prop when missing (and applies the
+        prop review's edits), so the compiler sees exactly what the memory will point at.
+        """
         fid = run.family_id
         fields = run.fields
         sample_memory = sample.memory
@@ -858,42 +1221,57 @@ class ScriptedRunManager:
             if prop is sample_prop:
                 self._apply_edits(db, fid, final, edits)
 
+        # Stage on the sample's own ids, strip what this family leaves out, then recast. The
+        # sample's timeline is only carried through the strips; the compiler makes the real one.
         screenplay = sample_memory.screenplay.model_dump(mode="json", by_alias=True, exclude_none=True)
         timeline = sample_memory.timeline.model_dump(mode="json", by_alias=True, exclude_none=True)
+        screenplay = stage_handoffs(screenplay, {s.id: dict(s.marks) for s in sample.sets})
         for pid in removed_ids:
             screenplay, timeline = strip_prop(screenplay, timeline, pid)
         if other is None:  # a family of one: the teller plays alone
             screenplay, timeline = strip_person(screenplay, timeline, SAMPLE_OTHER, keep_narrator=SAMPLE_TELLER)
+        screenplay = remap_ids(screenplay, ids)
+        screenplay["cast"] = _dedupe(screenplay.get("cast", []))
+        screenplay["props"] = _dedupe(screenplay.get("props", []))
+        staged = Screenplay.model_validate(screenplay)
+        return _Staged(
+            screenplay=staged,
+            result=compile_scene(db, fid, staged),
+            participants=participants,
+            prop_ids=prop_ids,
+            set_ids=set_ids,
+        )
 
+    def _save(self, run: _Run, db: Database, staged: _Staged, text: str) -> schemas.Memory:
+        """Create the memory with the teller's telling, then store the staged screenplay and
+        the timeline the compiler made from it."""
+        fid = run.family_id
+        fields = run.fields
+        timeline = staged.result.timeline
+        assert staged.result.ok and timeline is not None
         memory = memories_db.create_memory(
             db,
             fid,
             title=fields.title or short_title(fields.text),
             year=fields.year,
-            participant_ids=participants,
+            participant_ids=staged.participants,
             telling=schemas.Telling(
                 author_id=run.person_id,
                 question=fields.question,
                 text=text,
                 photo_ids=list(run.photo_ids),
             ),
-            prop_ids=prop_ids,
-            set_ids=set_ids,
+            prop_ids=staged.prop_ids,
+            set_ids=staged.set_ids,
         )
-
-        screenplay = remap_ids(screenplay, ids)
-        timeline = remap_ids(timeline, ids)
-        screenplay["memoryId"] = memory.id
-        screenplay["cast"] = _dedupe(screenplay.get("cast", []))
-        screenplay["props"] = _dedupe(screenplay.get("props", []))
         saved = memories_db.save_scene(
             db,
             fid,
             memory.id,
-            screenplay=Screenplay.model_validate(screenplay),
-            timeline=Timeline.model_validate(timeline),
-            prop_ids=prop_ids,
-            set_ids=set_ids,
+            screenplay=staged.screenplay.model_copy(update={"memory_id": memory.id}, deep=True),
+            timeline=timeline,
+            prop_ids=staged.prop_ids,
+            set_ids=staged.set_ids,
         )
         if saved is None:
             raise LookupError(f"memory {memory.id!r} vanished before its scene was saved")
@@ -937,11 +1315,18 @@ def install_fake_runs(*, step_seconds: float = 0.6) -> bool:
 
 
 __all__ = [
+    "MemoryNotFound",
     "ScriptedRunManager",
     "ask_participants",
+    "compile_scene",
     "install_fake_runs",
+    "keep_audio",
     "remap_ids",
+    "scene_inputs",
     "short_title",
+    "split_sentences",
+    "stage_handoffs",
     "strip_person",
     "strip_prop",
+    "telling_narration",
 ]

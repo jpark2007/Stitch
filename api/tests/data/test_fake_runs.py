@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import subprocess
 import sys
@@ -20,10 +21,21 @@ from db import media as media_db
 from db import memories as memories_db
 from db import people as people_db
 from db import props as props_db
-from screenplay.schema import Screenplay, Timeline
+from screenplay import compiler as real_compiler
+from screenplay.schema import CompileResult, Screenplay, Timeline
 from seed import fake_runs
-from seed.demo import DEMO_FAMILY_ID, DEMO_PERSON_IDS, SAMPLE_PATH, seed_demo
-from seed.fake_runs import ScriptedRunManager, install_fake_runs, remap_ids, short_title, strip_person
+from seed.demo import DEMO_FAMILY_ID, DEMO_PERSON_IDS, HYMN_MEMORY_ID, SAMPLE_PATH, load_sample, seed_demo
+from seed.fake_runs import (
+    MemoryNotFound,
+    ScriptedRunManager,
+    install_fake_runs,
+    remap_ids,
+    short_title,
+    split_sentences,
+    stage_handoffs,
+    strip_person,
+    telling_narration,
+)
 
 API_DIR = Path(__file__).resolve().parents[2]
 TIMEOUT = 10.0
@@ -198,10 +210,41 @@ def family_person_ids(db, family_id: str) -> set[str]:
     return {p.id for p in people_db.list_people(db, family_id)}
 
 
+def recompile(db, family_id: str, screenplay: Screenplay) -> CompileResult:
+    """The real compiler on a screenplay, with this family's sets, props and people from the db."""
+    sets = {sid: props_db.get_set(db, family_id, sid) for sid in {shot.set for shot in screenplay.shots}}
+    props = {pid: props_db.get_prop(db, family_id, pid) for pid in screenplay.props}
+    people = {pid: people_db.get_person(db, family_id, pid) for pid in screenplay.cast}
+    for kind, found in (("set", sets), ("prop", props), ("person", people)):
+        missing = [i for i, v in found.items() if v is None]
+        assert not missing, f"{kind}s missing from family {family_id}: {missing}"
+        assert all(v.family_id == family_id for v in found.values()), f"a {kind} of another family"
+    return real_compiler.compile(screenplay, sets=sets, props=props, people=people)
+
+
+def assert_compiles(db, family_id: str, memory: schemas.Memory) -> CompileResult:
+    """The stored screenplay recompiles with zero errors, and the stored timeline IS that compile."""
+    assert memory.screenplay is not None and memory.timeline is not None
+    result = recompile(db, family_id, memory.screenplay)
+    assert result.errors == [], [e.message for e in result.errors]
+    assert result.ok and result.timeline is not None
+    assert result.timeline == memory.timeline, "the stored timeline is not the compiler's output"
+    Timeline.model_validate(memory.timeline.model_dump(mode="json", by_alias=True))
+    Screenplay.model_validate(memory.screenplay.model_dump(mode="json", by_alias=True))
+    return result
+
+
+def director_summary(events: list[tuple[str, Any]]) -> str:
+    [summary] = [p.summary for n, p in events if n == "subagent_end" and p.name == "director"]
+    return summary
+
+
 # ------------------------------------------------------------------------------ full run
 
 
 def test_full_run_in_the_demo_family(db, manager):
+    props_before = props_db.list_props(db, DEMO_FAMILY_ID)
+    sets_before = props_db.list_sets(db, DEMO_FAMILY_ID)
     photo = media_db.put_media(db, DEMO_FAMILY_ID, b"\x89PNG fake", content_type="image/png", kind="photo")
     run_id = manager.start_run(
         DEMO_FAMILY_ID, ANA, "mom", fields(participant_ids=["lily"]), [photo]
@@ -268,9 +311,15 @@ def test_full_run_in_the_demo_family(db, manager):
     assert "dad" not in id_tokens(memory.screenplay.model_dump(mode="json", by_alias=True))
 
     # The demo already had the prop and set; nothing was duplicated.
-    assert [p.id for p in props_db.list_props(db, DEMO_FAMILY_ID)] == ["hymn_books"]
-    assert [s.id for s in props_db.list_sets(db, DEMO_FAMILY_ID)] == ["church_steps_1988"]
+    assert props_db.list_props(db, DEMO_FAMILY_ID) == props_before
+    assert props_db.list_sets(db, DEMO_FAMILY_ID) == sets_before
     assert memory in memories_db.get_book(db, DEMO_FAMILY_ID, "lily")
+
+    # The scene is the compiler's own output, and the director said so.
+    result = assert_compiles(db, DEMO_FAMILY_ID, memory)
+    assert director_summary(events).endswith("compiled without errors.")
+    assert director_summary(events).startswith(f"{len(result.timeline.shots)} shot")
+    assert "compile_error" not in seq
 
 
 def test_demo_teller_without_participants_casts_their_spouse(db, manager):
@@ -281,6 +330,7 @@ def test_demo_teller_without_participants_casts_their_spouse(db, manager):
     assert memory is not None
     assert scene_person_ids(memory) == {"mom", "dad"}  # the sample ids, which really are this family's
     assert set(memory.participant_ids) == {"mom", "dad"}
+    assert_compiles(db, DEMO_FAMILY_ID, memory)
 
 
 def test_run_in_another_family_recasts_people_and_copies_the_prop_and_set(db, manager):
@@ -313,6 +363,7 @@ def test_run_in_another_family_recasts_people_and_copies_the_prop_and_set(db, ma
     assert memory.screenplay.props == [prop.id]
     assert {shot.set for shot in memory.screenplay.shots} == {set_def.id}
     assert f"prop:{prop.id}" in {t.target for t in memory.timeline.tracks}
+    assert_compiles(db, FAM_B, memory)
 
     # The demo family was not touched.
     assert props_db.list_props(db, DEMO_FAMILY_ID) == demo_props_before
@@ -330,6 +381,7 @@ def test_run_in_another_family_recasts_people_and_copies_the_prop_and_set(db, ma
     # No participants: dad becomes another person of the family.
     assert scene_person_ids(memory_2) <= family_person_ids(db, FAM_B)
     assert B_OTHER in scene_person_ids(memory_2) and len(scene_person_ids(memory_2)) == 2
+    assert_compiles(db, FAM_B, memory_2)
 
 
 def test_family_of_one_casts_the_teller_alone(db, manager):
@@ -341,6 +393,7 @@ def test_family_of_one_casts_the_teller_alone(db, manager):
     assert memory is not None
     assert scene_person_ids(memory) == {SOLO_PERSON}
     assert memory.screenplay.cast == [SOLO_PERSON]
+    assert_compiles(db, SOLO, memory)
 
 
 def _strings(value: Any) -> list[str]:
@@ -402,6 +455,7 @@ def test_family_made_by_post_families_gets_a_one_puppet_scene(mdb):
     parent = next(t for t in memory.timeline.tracks if t.target.startswith("prop:") and t.channel == "parent")
     assert parent.keys[-1][1] == "ground"
     assert memories_db.open_questions(mdb, family.id, me.id) == []
+    assert_compiles(mdb, family.id, memory)
 
 
 def test_two_person_family_keeps_both_puppets(db, manager):
@@ -417,6 +471,13 @@ def test_two_person_family_keeps_both_puppets(db, manager):
     assert memory.timeline.default_narrator == B_OTHER  # the sample's default telling, recast
     hand = [a for a in memory.screenplay.shots[0].actions if a.do == "hand_to"]
     assert [(a.who, a.to) for a in hand] == [(B_OTHER, B_TELLER)]
+    # Bea and Ben have the default ('average') build: the giver walks up beside her first.
+    people = {p.id: p for p in people_db.list_people(db, FAM_B)}
+    assert people[B_TELLER].character.build == people[B_OTHER].character.build == "average"
+    actions = memory.screenplay.shots[0].actions
+    walk = actions[actions.index(hand[0]) - 1]
+    assert (walk.do, walk.who, walk.to) == ("walk_to", B_OTHER, fake_runs.HANDOFF_MARK)
+    assert_compiles(db, FAM_B, memory)
 
 
 # ------------------------------------------------------------------------------ strip_person
@@ -609,6 +670,9 @@ def test_rename_edit_renames_the_saved_prop(db, manager):
     [prop] = props_db.list_props(db, FAM_B)
     assert prop.name == "Mom's hymnals"
     assert props_db.get_prop(db, DEMO_FAMILY_ID, "hymn_books").name == "hymn books"
+    memory = memories_db.get_memory(db, FAM_B, events[-1][1].memory_id)
+    assert memory is not None and memory.prop_ids == [prop.id]
+    assert_compiles(db, FAM_B, memory)
 
 
 def _replace_photo(photo_id: str):
@@ -629,6 +693,9 @@ def test_replace_photo_edit_uses_a_photo_of_this_family(db, manager, as_ref):
     # The same shape as PATCH /families/{fid}/props/{id} and the schemas.Prop.art example.
     assert props_db.get_prop(db, FAM_B, prop.id).art == {"body": f"media/{photo}"}
     assert prop.source == "photo"
+    memory = memories_db.get_memory(db, FAM_B, events[-1][1].memory_id)
+    assert memory is not None
+    assert_compiles(db, FAM_B, memory)  # compiled against the prop as the photo left it
 
 
 @pytest.mark.parametrize(
@@ -641,7 +708,7 @@ def test_replace_photo_with_an_unknown_photo_leaves_the_art(db, manager, photo_i
     assert_well_formed(events)
     assert events[-1][0] == "done"
     [prop] = props_db.list_props(db, FAM_B)
-    sample_prop = props_db.get_prop(db, DEMO_FAMILY_ID, "hymn_books")
+    sample_prop = load_sample().props[0]
     assert prop.art == sample_prop.art and prop.source == sample_prop.source
 
 
@@ -650,7 +717,7 @@ def test_replace_photo_with_another_familys_photo_leaves_the_art(db, manager):
     run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(), [])
     drive(manager, FAM_B, run_id, B_USER, review=_replace_photo(theirs))
     [prop] = props_db.list_props(db, FAM_B)
-    assert prop.art == props_db.get_prop(db, DEMO_FAMILY_ID, "hymn_books").art
+    assert prop.art == load_sample().props[0].art
 
 
 def test_remove_edit_leaves_the_prop_out(db, manager):
@@ -677,6 +744,7 @@ def test_remove_edit_leaves_the_prop_out(db, manager):
     assert len(props_db.list_sets(db, FAM_B)) == 1
     summary = next(p for n, p in events if n == "subagent_end" and p.name == "prop_master").summary
     assert summary.startswith("Left out")
+    assert_compiles(db, FAM_B, memory)
 
 
 def test_remove_in_the_demo_family_keeps_the_saved_prop(db, manager):
@@ -689,8 +757,9 @@ def test_remove_in_the_demo_family_keeps_the_saved_prop(db, manager):
     memory = memories_db.get_memory(db, DEMO_FAMILY_ID, events[-1][1].memory_id)
     assert memory is not None and memory.prop_ids == []
     assert props_db.get_prop(db, DEMO_FAMILY_ID, "hymn_books") is not None
-    sample = memories_db.get_memory(db, DEMO_FAMILY_ID, "sample_hymn_books")
+    sample = memories_db.get_memory(db, DEMO_FAMILY_ID, HYMN_MEMORY_ID)
     assert sample is not None and sample.prop_ids == ["hymn_books"]
+    assert_compiles(db, DEMO_FAMILY_ID, memory)
 
 
 def test_no_followup_skips_the_question(db):
@@ -713,32 +782,313 @@ def test_no_followup_skips_the_question(db):
 # ------------------------------------------------------------------------------ second telling
 
 
-def test_second_telling_adds_to_the_moment_without_asking(db, manager):
-    before = memories_db.get_memory(db, DEMO_FAMILY_ID, "demo_sams_first_bike")
-    assert before is not None
-    photo = media_db.put_media(db, DEMO_FAMILY_ID, b"\x89PNG bike", content_type="image/png", kind="photo")
+def _tell(db, mgr: ScriptedRunManager, family_id: str, user_id: str, teller: str, **kw: Any) -> schemas.Memory:
+    """A finished scripted new memory (follow-up and prop review answered)."""
+    run_id = mgr.start_run(family_id, user_id, teller, fields(**kw), [])
+    events = drive(mgr, family_id, run_id, user_id)
+    assert events[-1][0] == "done", events[-1]
+    memory = memories_db.get_memory(db, family_id, events[-1][1].memory_id)
+    assert memory is not None
+    return memory
+
+
+B_FOURTH = "64b000000000000000000004"
+SECOND_TEXT = "I was across the street. The wind was cold!\n\nBen ran up the steps, and Bea laughed."
+
+
+def test_second_telling_adds_a_compiled_narration_and_bumps_the_version(db, manager):
+    people_db.create_person(db, FAM_B, schemas.NewPerson(name="Bix", born=1990), added_by=B_USER, person_id=B_FOURTH)
+    before = _tell(db, manager, FAM_B, B_USER, B_TELLER, participant_ids=[B_OTHER])
+    assert before.version == 1 and set(before.participant_ids) == {B_TELLER, B_OTHER}
+    asked_before = [q for q in memories_db.open_questions(db, FAM_B, B_OTHER) if q.memory_id == before.id]
+    assert len(asked_before) == 1  # the first run's linker asked Ben
+    photo = media_db.put_media(db, FAM_B, b"\x89PNG steps", content_type="image/png", kind="photo")
+
     run_id = manager.start_run(
-        DEMO_FAMILY_ID, "demo_user_lily", "lily",
-        fields(text="I watched from the porch.", year=1997, memory_id="demo_sams_first_bike",
-               question="What do you remember?"),
+        FAM_B, B_USER, B_THIRD,
+        fields(text=SECOND_TEXT, memory_id=before.id, question="What do you remember?",
+               participant_ids=[B_OTHER, B_FOURTH, B_THIRD]),
         [photo],
+    )
+    events = collect(manager, FAM_B, run_id)
+    assert_well_formed(events)
+    seq = names(events)
+    assert "question" not in seq and "props_found" not in seq and "compile_error" not in seq
+    assert seq[-2:] == ["scene_ready", "done"]
+    assert events[-1][1].memory_id == before.id
+    ready = events[-2][1]
+    assert ready.memory_id == before.id and ready.version == before.version + 1
+    narrator = next(p for n, p in events if n == "subagent_end" and p.name == "narrator")
+    assert narrator.summary.endswith("compiled without errors.")
+    assert fake_runs.ASK_OTHERS in [t.text for t in events[0][1].todos]
+    assert all(t.status == "completed" for t in [p for n, p in events if n == "plan"][-1].todos)
+
+    after = memories_db.get_memory(db, FAM_B, before.id)
+    assert after is not None and after.version == before.version + 1
+    assert [t.author_id for t in after.tellings] == [B_TELLER, B_THIRD]
+    new = after.tellings[-1]
+    assert (new.text, new.photo_ids, new.question) == (SECOND_TEXT, [photo], "What do you remember?")
+
+    # The new teller's narration, one line per sentence, in both the screenplay and the timeline.
+    sp, tl = after.screenplay, after.timeline
+    assert sp is not None and tl is not None
+    assert B_THIRD in (sp.narrations or {}) and B_THIRD in (tl.narrations or {})
+    lines = [line for shot in sp.shots for line in sp.narrations[B_THIRD].get(shot.id, [])]
+    assert [line.text for line in lines] == split_sentences(SECOND_TEXT) == [
+        "I was across the street.", "The wind was cold!", "Ben ran up the steps, and Bea laughed."
+    ]
+    assert [line.source for line in lines] == [f"telling:{B_THIRD}:s{i}" for i in (1, 2, 3)]
+    assert lines[0].cue is not None  # cued to the shared action
+    track = tl.narrations[B_THIRD]
+    assert track.author_id == B_THIRD and [line.text for line in track.lines] == [line.text for line in lines]
+    assert all(line.words for line in track.lines)
+
+    # The shared action and every other telling are untouched; the default narrator stays.
+    assert sp.shots == before.screenplay.shots and sp.cast == before.screenplay.cast
+    for author, by_shot in (before.screenplay.narrations or {}).items():
+        assert sp.narrations[author] == by_shot
+    assert tl.default_narrator == before.timeline.default_narrator
+    assert tl.tracks == before.timeline.tracks
+    assert_compiles(db, FAM_B, after)
+
+    # Participants as agent/tools/family.py and the real linker: the teller joins, the named
+    # newcomer (Bix) is linked and asked; Ben was already in it, so he is not asked again.
+    assert set(after.participant_ids) == {B_TELLER, B_OTHER, B_THIRD, B_FOURTH}
+    assert [q.memory_id for q in memories_db.open_questions(db, FAM_B, B_FOURTH)] == [before.id]
+    assert [q for q in memories_db.open_questions(db, FAM_B, B_THIRD) if q.memory_id == before.id] == []
+    assert [q for q in memories_db.open_questions(db, FAM_B, B_OTHER) if q.memory_id == before.id] == asked_before
+    assert after in memories_db.get_book(db, FAM_B, B_THIRD)
+
+
+def test_second_telling_links_only_the_teller_without_participants(db, manager):
+    before = _tell(db, manager, FAM_B, B_USER, B_TELLER, participant_ids=[B_OTHER])
+    run_id = manager.start_run(FAM_B, B_USER, B_THIRD, fields(text="I only heard about it.", memory_id=before.id), [])
+    events = collect(manager, FAM_B, run_id)
+    assert_well_formed(events)
+    assert fake_runs.ASK_OTHERS not in [t.text for t in events[0][1].todos]
+    after = memories_db.get_memory(db, FAM_B, before.id)
+    assert after is not None
+    # Never the cast or anyone else: only the teller joins.
+    assert set(after.participant_ids) == set(before.participant_ids) | {B_THIRD}
+    assert memories_db.open_questions(db, FAM_B, B_THIRD) == []
+    assert_compiles(db, FAM_B, after)
+
+
+def test_the_default_narrators_retelling_keeps_the_action(db, manager):
+    before = _tell(db, manager, FAM_B, B_USER, B_TELLER, participant_ids=[B_OTHER])
+    assert before.timeline.default_narrator == B_OTHER  # the sample's narrator, recast
+    run_id = manager.start_run(
+        FAM_B, B_USER, B_OTHER, fields(text="She dropped them all. I picked them up.", memory_id=before.id), []
+    )
+    events = collect(manager, FAM_B, run_id)
+    assert_well_formed(events)
+    assert events[-2][0] == "scene_ready" and events[-2][1].version == 2
+    after = memories_db.get_memory(db, FAM_B, before.id)
+    assert after is not None
+    sp = after.screenplay
+    assert [line.text for line in sp.shots[0].narration] == ["She dropped them all.", "I picked them up."]
+    assert B_OTHER not in (sp.narrations or {})
+    assert after.timeline.default_narrator == B_OTHER
+    assert after.timeline.captions == after.timeline.narrations[B_OTHER].captions
+    assert after.timeline.tracks == before.timeline.tracks  # the action did not move
+    assert sp.narrations == before.screenplay.narrations  # the teller's own telling is untouched
+    assert_compiles(db, FAM_B, after)
+
+
+def test_second_telling_of_the_hymn_moment(db, manager):
+    before = memories_db.get_memory(db, DEMO_FAMILY_ID, HYMN_MEMORY_ID)
+    assert before is not None and before.screenplay is not None and before.timeline is not None
+    told = {t.author_id for t in before.tellings}
+    teller = next(pid for pid in DEMO_PERSON_IDS if pid not in told and pid not in before.participant_ids)
+    run_id = manager.start_run(
+        DEMO_FAMILY_ID, "someone", teller, fields(text="I heard this story every Christmas.", memory_id=HYMN_MEMORY_ID),
+        [],
     )
     events = collect(manager, DEMO_FAMILY_ID, run_id)
     assert_well_formed(events)
-    assert names(events) == ["plan", "subagent_start", "subagent_end", "plan", "done"]
-    assert events[-1][1].memory_id == "demo_sams_first_bike"
-    assert manager.status(DEMO_FAMILY_ID, run_id) == "done"
+    assert names(events)[-2:] == ["scene_ready", "done"], events[-1]
+    assert events[-2][1].version == before.version + 1
+    after = memories_db.get_memory(db, DEMO_FAMILY_ID, HYMN_MEMORY_ID)
+    assert after is not None and teller in after.screenplay.narrations and teller in after.timeline.narrations
+    assert teller in after.participant_ids and teller not in after.screenplay.cast
+    assert_compiles(db, DEMO_FAMILY_ID, after)
 
-    after = memories_db.get_memory(db, DEMO_FAMILY_ID, "demo_sams_first_bike")
-    assert after is not None
-    assert len(after.tellings) == len(before.tellings) + 1
-    new = after.tellings[-1]
-    assert (new.author_id, new.text, new.photo_ids, new.question) == (
-        "lily", "I watched from the porch.", [photo], "What do you remember?"
+
+def _failing_compile(*_a: Any, **_k: Any) -> CompileResult:
+    return CompileResult(
+        ok=False, errors=[schemas.CompileError(code="out_of_reach", message="shot s1, t=6.6: nobody can reach")]
     )
-    assert "lily" in after.participant_ids
-    assert after.screenplay is None and after.timeline is None  # no scene save
-    assert after.title == before.title and after.year == before.year
+
+
+def test_second_telling_that_does_not_compile_writes_nothing(db, manager, monkeypatch):
+    before = _tell(db, manager, FAM_B, B_USER, B_TELLER, participant_ids=[B_OTHER])
+    people_db.create_person(db, FAM_B, schemas.NewPerson(name="Bix", born=1990), added_by=B_USER, person_id=B_FOURTH)
+    monkeypatch.setattr(fake_runs.screenplay_compiler, "compile", _failing_compile)
+    run_id = manager.start_run(
+        FAM_B, B_USER, B_THIRD, fields(text="I was there.", memory_id=before.id, participant_ids=[B_FOURTH]), []
+    )
+    events = collect(manager, FAM_B, run_id)
+    assert_well_formed(events)
+    seq = names(events)
+    assert seq[-1] == "error" and "scene_ready" not in seq and "done" not in seq
+    assert events[-1][1].message == fake_runs.TELLING_FAILED_MESSAGE
+    [failed] = [p for n, p in events if n == "compile_error"]
+    assert [e.message for e in failed.errors] == ["shot s1, t=6.6: nobody can reach"]
+    narrator = next(p for n, p in events if n == "subagent_end" and p.name == "narrator")
+    assert "compiled without errors" not in narrator.summary
+    after = memories_db.get_memory(db, FAM_B, before.id)
+    assert after == before  # no telling, no participants, no scene, no version bump
+    assert memories_db.open_questions(db, FAM_B, B_FOURTH) == []
+
+
+def test_new_memory_that_does_not_compile_is_not_saved(db, manager, monkeypatch):
+    monkeypatch.setattr(fake_runs.screenplay_compiler, "compile", _failing_compile)
+    run_id = manager.start_run(FAM_B, B_USER, B_TELLER, fields(participant_ids=[B_OTHER]), [])
+    events = drive(manager, FAM_B, run_id, B_USER)
+    assert_well_formed(events)
+    seq = names(events)
+    assert seq[-1] == "error" and "scene_ready" not in seq and "done" not in seq
+    assert events[-1][1].message == fake_runs.SCENE_FAILED_MESSAGE
+    assert seq.index("compile_error") < len(seq) - 1
+    summary = director_summary(events)
+    assert "compiled without errors" not in summary and "nobody can reach" in summary
+    assert not any("compiled without errors" in getattr(p, "summary", "") for _, p in events)
+    assert memories_db.moment_summaries(db, FAM_B) == []
+    assert memories_db.open_questions(db, FAM_B, B_OTHER) == []
+
+
+# ------------------------------------------------------------------------------ parity
+
+
+def test_start_run_refuses_a_memory_without_a_scene(db, manager):
+    bare = memories_db.create_memory(
+        db, FAM_B, title="No scene yet", year=1990, participant_ids=[B_TELLER],
+        telling=schemas.Telling(author_id=B_TELLER, text="Just words."),
+    )
+    with pytest.raises(LookupError) as caught:
+        manager.start_run(FAM_B, B_USER, B_OTHER, fields(memory_id=bare.id), [])
+    assert isinstance(caught.value, MemoryNotFound)
+
+    # A screenplay without a timeline is no scene either.
+    half = memories_db.create_memory(db, FAM_B, title="Half a scene", year=1991, participant_ids=[B_TELLER])
+    sample = load_sample().memory
+    memories_db.save_scene(
+        db, FAM_B, half.id, screenplay=sample.screenplay, timeline=None, prop_ids=[], set_ids=[]
+    )
+    with pytest.raises(MemoryNotFound):
+        manager.start_run(FAM_B, B_USER, B_OTHER, fields(memory_id=half.id), [])
+
+    # Missing, and another family's memory with a scene: LookupError too.
+    with pytest.raises(MemoryNotFound):
+        manager.start_run(FAM_B, B_USER, B_OTHER, fields(memory_id="no-such-memory"), [])
+    with pytest.raises(LookupError):
+        manager.start_run(FAM_B, B_USER, B_OTHER, fields(memory_id=HYMN_MEMORY_ID), [])
+    assert [t.text for t in memories_db.get_memory(db, FAM_B, bare.id).tellings] == ["Just words."]  # nothing added
+
+
+def test_route_answers_409_no_scene_in_scripted_mode(monkeypatch):
+    """POST /families/{fid}/memories with a scene-less memoryId, STITCH_AGENT=fake: 409 NO_SCENE."""
+    from fastapi.testclient import TestClient
+
+    import agent.runs
+    import main
+    import routes.memories
+
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("STITCH_AGENT", "fake")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    db_client.set_db(None)
+    try:
+        with TestClient(main.create_app()) as client:
+            assert isinstance(agent.runs._manager, ScriptedRunManager)
+            body = {"email": "nora@example.test", "password": "nora-password-1", "name": "Nora"}
+            assert client.post("/auth/signup", json=body).status_code == 201
+            created = client.post("/families", json={"name": "Nora's", "person": {"name": "Nora"}})
+            assert created.status_code == 201, created.text
+            fid, pid = created.json()["family"]["id"], created.json()["person"]["id"]
+            bare = memories_db.create_memory(
+                db_client.get_db(), fid, title="Words only", year=2001, participant_ids=[pid],
+                telling=schemas.Telling(author_id=pid, text="Just words."),
+            )
+            res = client.post(
+                f"/families/{fid}/memories", data={"text": "My version.", "year": "2001", "memoryId": bare.id}
+            )
+            assert res.status_code == 409, res.text
+            assert res.json()["detail"] == routes.memories.NO_SCENE
+            missing = client.post(
+                f"/families/{fid}/memories", data={"text": "My version.", "year": "2001", "memoryId": "nope"}
+            )
+            assert missing.status_code == 404, missing.text
+    finally:
+        agent.runs.configure(None)
+        db_client.set_db(None)
+
+
+# ------------------------------------------------------------------------------ builds
+
+BUILDS = ["small", "short", "average", "tall"]
+
+
+@pytest.mark.parametrize("giver", BUILDS)
+@pytest.mark.parametrize("taker", BUILDS)
+def test_the_scene_compiles_for_every_pair_of_builds(db, manager, giver, taker):
+    for pid, build in ((B_TELLER, taker), (B_OTHER, giver)):  # the sample's mom takes, dad gives
+        person = people_db.get_person(db, FAM_B, pid)
+        sheet = person.character.model_copy(update={"build": build})
+        people_db.update_person(db, FAM_B, pid, schemas.PersonPatch(character=sheet))
+    memory = _tell(db, manager, FAM_B, B_USER, B_TELLER, participant_ids=[B_OTHER])
+    assert {a.who for a in memory.screenplay.shots[0].actions if a.do == "hand_to"} == {B_OTHER}
+    assert_compiles(db, FAM_B, memory)
+
+
+# ------------------------------------------------------------------------------ pure helpers
+
+
+def test_split_sentences():
+    assert split_sentences("One. Two!  Three?\n\nFour") == ["One.", "Two!", "Three?", "Four"]
+    assert split_sentences('He said "stop." Then we left.') == ['He said "stop."', "Then we left."]
+    assert split_sentences("... !") == []
+    assert split_sentences("No full stop") == ["No full stop"]
+
+
+def test_stage_handoffs_walks_the_giver_up_beside_the_receiver():
+    sample = load_sample()
+    raw = sample.memory.screenplay.model_dump(mode="json", by_alias=True, exclude_none=True)
+    staged = stage_handoffs(raw, {s.id: dict(s.marks) for s in sample.sets})
+    assert raw == sample.memory.screenplay.model_dump(mode="json", by_alias=True, exclude_none=True)  # pure
+    shot = staged["shots"][0]
+    top = shot["marks"]["steps_top"]
+    assert shot["marks"][fake_runs.HANDOFF_MARK] == [round(top[0] - fake_runs.HANDOFF_GAP, 6), top[1]]
+    actions = shot["actions"]
+    i = next(k for k, a in enumerate(actions) if a["do"] == "hand_to")
+    assert actions[i - 1] == {"t": 6.4, "who": "dad", "do": "walk_to", "to": fake_runs.HANDOFF_MARK}
+    assert actions[i]["t"] == pytest.approx(6.6 + fake_runs.HANDOFF_DELAY)
+    hand_line = next(line for line in shot["narration"] if line.get("cue") == "hand_back")
+    assert hand_line["t"] == pytest.approx(6.35 + fake_runs.HANDOFF_DELAY)
+    # It compiles for the sample's own people.
+    people = {p.id: p for p in sample.people}
+    result = real_compiler.compile(
+        Screenplay.model_validate(staged), sets={s.id: s for s in sample.sets},
+        props={p.id: p for p in sample.props}, people=people,
+    )
+    assert result.errors == []
+
+
+def test_telling_narration_spreads_sentences_without_overlap():
+    sample = load_sample()
+    sp = sample.memory.screenplay
+    text = "First thing. Second thing! A third, longer sentence with many more words in it. Last."
+    out = telling_narration(sp, "lily", text)
+    assert out.shots == sp.shots and out.narrations["mom"] == sp.narrations["mom"]
+    lines = out.narrations["lily"]["s1"]
+    assert [line.text for line in lines] == split_sentences(text)
+    assert lines[0].cue is not None and lines[0].cue_word == "First"
+    assert all(line.cue is None for line in lines[1:])
+    for prev, line in itertools.pairwise(lines):
+        assert line.t >= prev.t + len(prev.text.split()) * 0.25
+    plain = telling_narration(sp, "lily", text, cued=False)
+    assert all(line.cue is None for line in plain.narrations["lily"]["s1"])
+    assert plain.narrations["lily"]["s1"][0].t == 0
 
 
 # ------------------------------------------------------------------------------ subscribers
@@ -882,7 +1232,7 @@ def test_start_run_errors(db, manager):
     with pytest.raises(LookupError):
         manager.start_run(FAM_B, B_USER, B_TELLER, fields(memory_id="nope"), [])
     with pytest.raises(LookupError):  # another family's memory
-        manager.start_run(FAM_B, B_USER, B_TELLER, fields(memory_id="demo_sams_first_bike"), [])
+        manager.start_run(FAM_B, B_USER, B_TELLER, fields(memory_id=HYMN_MEMORY_ID), [])
 
 
 def test_other_family_cannot_see_a_run(db, manager):

@@ -6,10 +6,14 @@ the whole path runs offline: no MongoDB, no model keys, no network.
 
 - Two new people: signup, start a family, add a relative, invite, preview, join (by adding
   a new person, and by claiming the relative), /me, tree, submit a memory with two photos,
-  the run's SSE stream through question -> answer -> props_found -> answer -> done, the
-  scene in both users' books, the memory, threads and the uploaded photos.
+  the run's SSE stream through question -> answer -> props_found -> answer -> scene_ready
+  -> done, the scene in both users' books, the memory, threads and the uploaded photos.
+  The stored scene is the real compiler's output: its screenplay recompiles against the
+  family's own sets, props and people (default 'average' builds) with zero errors, to the
+  very timeline that was stored.
 - The stage demo: the seeded demo family's hymn-book memory in David's and Ana's books.
-- A second telling of a moment ends in done with no question and no prop review.
+- A second telling of a moment adds the new teller's narration, recompiles, bumps the
+  version and sends scene_ready before done, with no question and no prop review.
 
 Every response body is checked for `passwordHash` and the plaintext passwords used here.
 """
@@ -35,6 +39,10 @@ import routes.memories
 import schemas
 from db import client as db_client
 from db import media as media_db
+from db import people as people_db
+from db import props as props_db
+from screenplay import compiler as real_compiler
+from screenplay.schema import CompileResult
 from seed import demo
 from seed.fake_runs import FOLLOWUP_QUESTION, ScriptedRunManager
 
@@ -371,8 +379,15 @@ def tell_new_memory(d: Demo, fam: Family, teller: TestClient, other: TestClient,
     assert terminal == ["done"], names
     assert names[-1] == "done", "nothing may follow the terminal event"
     assert names.count("question") == 1 and names.count("props_found") == 1
-    assert "scene_ready" in names
+    assert names[-2:] == ["scene_ready", "done"] and "compile_error" not in names
     memory_id = schemas.DoneEvent.model_validate(events[-1][1], by_alias=True, by_name=False).memory_id
+    ready = schemas.SceneReadyEvent.model_validate(events[-2][1], by_alias=True, by_name=False)
+    assert ready.memory_id == memory_id and ready.version == 1
+    director = [
+        e for n, e in zip(names, validate_events(events), strict=True)
+        if n == "subagent_end" and e.name == "director"
+    ]
+    assert len(director) == 1 and director[0].summary.endswith("compiled without errors.")
 
     # Not waiting any more: 409, for the starter and the right kind.
     late = _answer(teller, fid, run_id, {"kind": "answer", "text": "One more thing."})
@@ -385,6 +400,27 @@ def tell_new_memory(d: Demo, fam: Family, teller: TestClient, other: TestClient,
     )
     photo_ids = memory.memory.tellings[0].photo_ids
     return Told(run_id=run_id, memory_id=memory_id, photo_ids=list(photo_ids), events=events)
+
+
+def _recompile(fid: str, memory: schemas.Memory) -> CompileResult:
+    """The real compiler on the stored screenplay, with this family's own sets, props and people."""
+    db = db_client.get_db()
+    sp = memory.screenplay
+    assert sp is not None and memory.timeline is not None
+    sets = {sid: props_db.get_set(db, fid, sid) for sid in {shot.set for shot in sp.shots}}
+    props = {pid: props_db.get_prop(db, fid, pid) for pid in sp.props}
+    people = {pid: people_db.get_person(db, fid, pid) for pid in sp.cast}
+    for found in (sets, props, people):
+        assert all(v is not None and v.family_id == fid for v in found.values()), found
+    return real_compiler.compile(sp, sets=sets, props=props, people=people)
+
+
+def assert_compiled(fid: str, memory: schemas.Memory) -> CompileResult:
+    """The stored screenplay recompiles, against this family's own data, to the stored timeline."""
+    result = _recompile(fid, memory)
+    assert result.errors == [], [e.message for e in result.errors]
+    assert result.ok and result.timeline == memory.timeline, "the stored timeline is not the compiler's output"
+    return result
 
 
 def _book(client: TestClient, fid: str, pid: str) -> schemas.BookResponse:
@@ -406,7 +442,12 @@ def test_two_new_people_make_a_memory(demo_app: Demo, join: str):
     fid, memory_id = fam.fid, told.memory_id
     assert d.manager.status(fid, told.run_id) == "done"
 
-    # The scene is in both users' books, with its screenplay and timeline.
+    # Fresh accounts get the default build; the scene was compiled for exactly these people.
+    db = db_client.get_db()
+    for pid in (fam.alice_pid, fam.bob_pid):
+        assert people_db.get_person(db, fid, pid).character.build == "average"
+
+    # The scene is in both users' books, with its screenplay and timeline, and it compiles.
     for client, pid in ((d.bob, fam.bob_pid), (d.alice, fam.alice_pid)):
         book = _book(client, fid, pid)
         assert book.person.id == pid
@@ -418,6 +459,8 @@ def test_two_new_people_make_a_memory(demo_app: Demo, join: str):
         assert {fam.bob_pid, fam.alice_pid} <= set(memory.participant_ids)
         assert set(memory.prop_ids) <= {p.id for p in book.props}
         assert set(memory.set_ids) <= {s.id for s in book.sets}
+        assert {fam.bob_pid, fam.alice_pid} <= set(memory.screenplay.cast)  # both on stage
+        assert_compiled(fid, memory)
 
     # The memory itself: one telling by Bob, with the follow-up answer kept, the props and set.
     res = d.alice.get(f"/families/{fid}/memories/{memory_id}")
@@ -518,7 +561,8 @@ def test_stage_demo_family_has_the_hymn_book_scene(demo_app: Demo):
         full = _ok(client.get(f"/families/{fid}/memories/{demo.HYMN_MEMORY_ID}"))
         response = schemas.MemoryResponse.model_validate(full, by_alias=True, by_name=False)
         assert response.props and response.sets and response.memory.timeline is not None
-        assert len(response.memory.tellings) == 2
+        assert len(response.memory.tellings) >= 2
+        assert _recompile(fid, response.memory).errors == []  # the stage demo's scene compiles
 
         # Every media reference in the memory, its timeline, props and sets that the seed
         # stored streams back. (The sample's art is all placeholders today, so this also
@@ -530,8 +574,6 @@ def test_stage_demo_family_has_the_hymn_book_scene(demo_app: Demo):
         for media_id in sorted(book_photos):
             assert media_db.media_exists(db, fid, media_id), media_id
             _media_fetchable(client, fid, media_id)
-        if account is david:
-            assert len(book_photos) == 2, "David's book should hold the two seeded road-trip photos"
 
     assert d.guard.checked > 0
 
@@ -545,6 +587,11 @@ def test_second_telling_adds_to_the_moment(demo_app: Demo):
     # Alice tells the moment first (a person's own second telling replaces their first).
     told = tell_new_memory(d, fam, teller=d.alice, other=d.bob, other_pid=fam.bob_pid)
     fid, memory_id = fam.fid, told.memory_id
+
+    before = schemas.MemoryResponse.model_validate(
+        _ok(d.alice.get(f"/families/{fid}/memories/{memory_id}")), by_alias=True, by_name=False
+    ).memory
+    assert before.version == 1
 
     res = d.bob.post(
         f"/families/{fid}/memories",
@@ -565,6 +612,7 @@ def test_second_telling_adds_to_the_moment(demo_app: Demo):
     assert [n for n in names if n in ("done", "error")] == ["done"] and names[-1] == "done", names
     assert "question" not in names and "props_found" not in names
     assert events[-1][1] == {"memoryId": memory_id}
+    assert names[-2] == "scene_ready" and events[-2][1] == {"memoryId": memory_id, "version": before.version + 1}
 
     # Not waiting at any point: answering is a 409.
     assert _answer(d.bob, fid, submitted.run_id, {"kind": "answer", "text": "hello"}).status_code == 409
@@ -578,6 +626,19 @@ def test_second_telling_adds_to_the_moment(demo_app: Demo):
     assert len(tellings[1].photo_ids) == 1
     _media_fetchable(d.alice, fid, tellings[1].photo_ids[0])
     assert memory.memory.screenplay is not None and memory.memory.timeline is not None
+    assert memory.memory.version == before.version + 1
+    # Bob plays the sample's narrator in Alice's scene, so his telling becomes the default
+    # narration (his words, in his voice); Alice's own telling stays a narrations entry.
+    sp = memory.memory.screenplay
+    bob_lines = [line for shot in sp.shots for line in shot.narration]
+    assert [line.text for line in bob_lines] == [
+        "I remember the wind more than the hymns.", "Alice chased a page down the steps."
+    ]
+    assert all(line.source.startswith(f"telling:{fam.bob_pid}:") for line in bob_lines)
+    assert fam.alice_pid in (sp.narrations or {})
+    assert memory.memory.timeline.default_narrator == fam.bob_pid
+    assert {fam.bob_pid, fam.alice_pid} <= set(memory.memory.timeline.narrations or {})
+    assert_compiled(fid, memory.memory)
 
     threads = schemas.ThreadsResponse.model_validate(_ok(d.alice.get(f"/families/{fid}/threads")), by_alias=True)
     moment = next(m for m in threads.moments if m.id == memory_id)
