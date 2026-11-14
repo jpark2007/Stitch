@@ -24,6 +24,30 @@ prop reads it as of its own time. A shot's end covers every effect: an effect co
 at ``t + dur`` (rain with no ``dur`` at its start, and it then lasts until the shot's end, its
 outgoing fold included). ``Timeline.effects`` is ordered by (t, shot, action index).
 
+Props across sets. There is no visibility channel: a prop is "not on this set" when it is on
+the ground at an offstage x (OFFSTAGE_LEFT, beyond the stage edge at |x| = 1), and the parent
+and position channels say when it is there.
+
+- A prop left on the ground (or in an unlisted puppet's hand) when the set changes is taken off
+  the stage by state.py; ``_start_keys`` steps it to the ground at OFFSTAGE_LEFT at the new shot's
+  start, so it never shows at its old coordinates on the new set.
+- After the last shot, ``_park_until_placed`` handles props whose first ``parent`` / ``position``
+  key comes after t=0 (placed by a later shot's propStart or start ``holding``, or carried in by
+  a puppet listed there), and props in ``Screenplay.props`` that are never placed at all. A track
+  holds its first value backwards in time (CONTRACTS.md), and a prop with no tracks sits at
+  [0, 0, 0] on the ground (Clarification 8, centre stage), so without this such a prop would
+  show on every earlier set, or in the hand of a puppet who carries it only later. Each gets a
+  ``parent`` key of ``ground`` and a ``position`` key at OFFSTAGE_LEFT at t=0, and steps (never
+  glides) to its first real value at its first key time: a hold key at OFFSTAGE_LEFT is put just
+  before that first position key, and a position key is added there if the first key is a parent
+  swap alone (a position key at every parent key). Worn signature items and props placed by the
+  first shot are keyed at t=0 and untouched, so is every vehicle that is; the hymn_books sample
+  places all its props at t=0 and is unchanged.
+- A set that returns (A, B, A): a prop left on A's ground in the first A shot went offstage when
+  B rose, and it stays there in the second A shot unless that shot's propStart (or a start
+  ``holding``) places it again. A set is raised fresh each time it comes back; the compiler does
+  not remember what was left lying on it.
+
 Foot planting (shared/CONTRACTS.md Clarifications 1): after the last shot, and before the
 tracks are written, ``planting.plant_feet`` lowers ``root.position.y`` at every walk and run cycle
 key (the PLANT_CHANNEL markers motion.locomotion_keys leaves: walk_to, run_to, enter, exit, follow
@@ -771,6 +795,43 @@ def _reseat_keys(world: World, tracks: TrackSet, shot: Shot, t: float) -> tuple[
     return keys, problems
 
 
+def _park_until_placed(tracks: TrackSet, what: str) -> None:
+    """Keep a prop off every set until it is first placed (module docstring, "Props across sets").
+
+    A prop with no ``parent`` and no ``position`` key gets ``ground`` and OFFSTAGE_LEFT at t=0.
+    A prop whose earliest parent or position key is at T > 0 gets the same two keys at t=0, a
+    position key at OFFSTAGE_LEFT at T ahead of its own keys there (so it steps at T, with the
+    ``_hold_then`` semantics, instead of gliding in from offstage through the earlier shots),
+    and, where its first key at T is on one channel only, a key on the other channel at T with
+    the value that channel already read there: a position key at every parent key (CONTRACTS.md),
+    and its parent from T on exactly as before. A prop keyed at t=0 is left as it is. The new keys
+    go first in insertion order, so a real key at T still wins from T on."""
+    target = f"prop:{what}"
+    parent = tracks.raw_keys(target, "parent")
+    position = tracks.raw_keys(target, "position")
+    offstage = [float(c) for c in OFFSTAGE_LEFT]
+    if not parent and not position:
+        tracks.replace_keys(target, "parent", [(0.0, GROUND)])
+        tracks.replace_keys(target, "position", [(0.0, offstage)])
+        return
+    first = min(float(t) for t, _ in (*parent, *position))
+    if round_value(first) <= 0.0:
+        return
+
+    def keyed_at(keys: list[tuple[float, object]]) -> bool:
+        return any(round_value(float(t)) == round_value(first) for t, _ in keys)
+
+    new_parent: list[tuple[float, object]] = [(0.0, GROUND)]
+    if parent and not keyed_at(parent):  # a position key comes first: keep the parent it reads
+        new_parent.append((first, tracks.value_at(target, "parent", first)))
+    new_position: list[tuple[float, object]] = [(0.0, offstage), (first, offstage)]
+    if not keyed_at(position):  # a parent swap alone at T: what position reads there (default origin)
+        value = tracks.value_at(target, "position", first)
+        new_position.append((first, value if value is not None else [0.0, 0.0, 0.0]))
+    tracks.replace_keys(target, "parent", new_parent + parent)
+    tracks.replace_keys(target, "position", new_position + position)
+
+
 # --------------------------------------------------------------------------- compile
 
 def compile(
@@ -928,6 +989,8 @@ def compile(
 
     if errors:
         return CompileResult(ok=False, errors=errors.sorted())
+    for what in dict.fromkeys(sp.props):
+        _park_until_placed(tracks, what)
     if plant_feet:
         planting.plant_feet(tracks, {who: p.build for who, p in world.people.items()})
     timeline = Timeline(
