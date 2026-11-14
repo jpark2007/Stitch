@@ -533,6 +533,26 @@ function clearOfKnots(g: FrameGeometry, x: number, w: number, yb: number, size: 
 }
 
 /**
+ * The highest point (least y) of a strand's polyline between x and x + w,
+ * its ends interpolated, so it does not jump as the view pans across the
+ * sample grid. Infinity where the strand does not reach.
+ */
+function highestOver(pts: Float32Array, n: number, x: number, w: number): number {
+  const step = pts[2] - pts[0] || 1;
+  const at = (px: number) => {
+    const f = (px - pts[0]) / step;
+    const k = Math.max(0, Math.min(n - 2, Math.floor(f)));
+    const t = Math.max(0, Math.min(1, f - k));
+    return pts[k * 2 + 1] + (pts[k * 2 + 3] - pts[k * 2 + 1]) * t;
+  };
+  if (n < 2) return Infinity;
+  let lo = Math.min(at(x), at(x + w));
+  const k1 = Math.min(n - 1, Math.floor((x + w - pts[0]) / step));
+  for (let k = Math.max(0, Math.ceil((x - pts[0]) / step)); k <= k1; k++) lo = Math.min(lo, pts[k * 2 + 1]);
+  return lo;
+}
+
+/**
  * A thread that never settles in view: the left edge x (from x0 to x1) where
  * a name `w` wide spans the flattest stretch of strand `self`, and the
  * baseline `drop` off that stretch's highest point, with the name's box clear
@@ -565,7 +585,7 @@ function swingSpot(
       if (y > hi) hi = y;
     }
     if (!(hi - lo < bestSpan)) continue;
-    const yb = lo + drop;
+    const yb = highestOver(pts, n, x, w) + drop;
     if (!clearOfKnots(g, x, w, yb, size)) continue;
     bestSpan = hi - lo;
     bestX = x;
@@ -738,13 +758,18 @@ function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: Frame
           return fits(k, x) ? baseline(k) : NaN;
         }
       : undefined;
-    // With only crossed spots: the same, other threads allowed through the name.
+    // With only spots that have a cost: the same, other threads allowed
+    // through the name, and (as for swingSpot) over a stretch still swinging,
+    // just above its highest point, so such a name holds its place too.
     const fitCrossed =
       Number.isFinite(held) && spots[0]?.cost
         ? (x: number) => {
-            if (x < startX + lead) return NaN;
+            if (x < startX + lead || x + w > endX) return NaN;
             const k = Math.min(n - 1, Math.floor((x - startX) / step));
-            return settled(k, x) ? baseline(k) : NaN;
+            if (settled(k, x)) return baseline(k);
+            if (inline) return NaN;
+            const yb = highestOver(pts, n, x, w) + drop;
+            return clearOfKnots(geom, x, w, yb, size) ? yb : NaN;
           }
         : undefined;
     if (!spots.length && !fit) continue;

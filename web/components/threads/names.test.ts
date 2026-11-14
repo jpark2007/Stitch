@@ -629,11 +629,19 @@ type Placed = NameBox & { strand: number; x: number; y: number };
  * A slow drag: the view panned 1px a frame (content moving left), through
  * the real renderer with the engine's per-strand memory. Each frame's names.
  */
-function pan(n: number, W: number, H: number, skip: number, frames: number): Map<number, Placed>[] {
-  const { people, moments } = family(n);
+function pan(
+  n: number,
+  W: number,
+  H: number,
+  skip: number,
+  frames: number,
+  f: { people: ThreadPerson[]; moments: ThreadMoment[] } = family(n),
+  zoom: "year" | null = "year",
+): Map<number, Placed>[] {
+  const { people, moments } = f;
   const model = buildModel(people, moments, NOW);
   const b = { tMin: model.tMin, tMax: model.tMax, width: W };
-  const s = initialCamera("year", null, b, model.knots.map((k) => k.t)).s;
+  const s = initialCamera(zoom, null, b, model.knots.map((k) => k.t)).s;
   let cam = clampCam({ s, cx: -1e9 }, b);
   cam = { s, cx: cam.cx + skip / s };
   const layout = makeLayout(W, H, model.strands.length);
@@ -668,36 +676,46 @@ for (const [n, W, H, skip, FRAMES] of [
   [30, 1440, 900, 4000, 800],
 ] as const) {
   test(`${n} people at ${W}px, panned 1px a frame: names stay put on their threads, not hopping between spots`, () => {
-    const seq = pan(n, W, H, skip, FRAMES);
-    let moves = 0;
-    let shown = 0;
-    // Per strand: the frame it last moved, and where (in pan-free px) it moved from.
-    const left = new Map<number, { f: number; x: number; y: number }>();
-    const flips = new Map<number, number>();
-    for (let f = 1; f < FRAMES; f++) {
-      // Shown or not: a name does not blink on and off.
-      for (let i = 0; i < n; i++) if (seq[f].has(i) !== seq[f - 1].has(i)) flips.set(i, (flips.get(i) ?? 0) + 1);
-      for (const [i, c] of seq[f]) {
-        shown++;
-        const a = seq[f - 1].get(i);
-        if (!a) continue;
-        // Held in place it moves exactly with the pan (-1px), riding a margin
-        // or behind a rider it stays still: anything else is a move.
-        const dx = c.x - a.x;
-        if (Math.abs(dx + 1) <= 3 && Math.abs(c.y - a.y) <= 4) continue;
-        moves++;
-        // Never back to the spot it just left.
-        const prev = left.get(i);
-        if (prev && f - prev.f <= 30) {
-          const back = Math.abs(c.x + f - prev.x) < 3 && Math.abs(c.y - prev.y) < 3;
-          assert.ok(!back, `strand ${i} went back to the spot it left at frame ${prev.f} (${f})`);
-        }
-        left.set(i, { f, x: a.x + f - 1, y: a.y });
-      }
-    }
-    // A name moves only when its spot is taken or gone: rarely. (Before names
-    // kept their places, about 20 in every 1000 name-frames on a phone hopped.)
-    assert.ok(moves * 1000 <= shown * 5, `${moves} moves in ${shown} name-frames`);
-    for (const [i, k] of flips) assert.ok(k <= 6, `strand ${i} shown and hidden ${k} times`);
+    assertSteady(pan(n, W, H, skip, FRAMES), n, FRAMES);
   });
+}
+
+test("the demo family on a phone, panned end to end at the opening zoom: names over swinging or crossed thread stay put too", () => {
+  const f = demo();
+  const FRAMES = 400;
+  assertSteady(pan(f.people.length, 390, 844, 0, FRAMES, f, null), f.people.length, FRAMES);
+});
+
+/** Names in a pan move only when their spot is taken or gone, never back to where they were, and rarely blink. */
+function assertSteady(seq: Map<number, Placed>[], n: number, FRAMES: number) {
+  let moves = 0;
+  let shown = 0;
+  // Per strand: the frame it last moved, and where (in pan-free px) it moved from.
+  const left = new Map<number, { f: number; x: number; y: number }>();
+  const flips = new Map<number, number>();
+  for (let f = 1; f < FRAMES; f++) {
+    // Shown or not: a name does not blink on and off.
+    for (let i = 0; i < n; i++) if (seq[f].has(i) !== seq[f - 1].has(i)) flips.set(i, (flips.get(i) ?? 0) + 1);
+    for (const [i, c] of seq[f]) {
+      shown++;
+      const a = seq[f - 1].get(i);
+      if (!a) continue;
+      // Held in place it moves exactly with the pan (-1px), riding a margin
+      // or behind a rider it stays still: anything else is a move.
+      const dx = c.x - a.x;
+      if (Math.abs(dx + 1) <= 3 && Math.abs(c.y - a.y) <= 4) continue;
+      moves++;
+      // Never back to the spot it just left.
+      const prev = left.get(i);
+      if (prev && f - prev.f <= 30) {
+        const back = Math.abs(c.x + f - prev.x) < 3 && Math.abs(c.y - prev.y) < 3;
+        assert.ok(!back, `strand ${i} went back to the spot it left at frame ${prev.f} (${f})`);
+      }
+      left.set(i, { f, x: a.x + f - 1, y: a.y });
+    }
+  }
+  // A name moves only when its spot is taken or gone: rarely. (Before names
+  // kept their places, about 20 in every 1000 name-frames on a phone hopped.)
+  assert.ok(moves * 1000 <= shown * 5, `${moves} moves in ${shown} name-frames`);
+  for (const [i, k] of flips) assert.ok(k <= 6, `strand ${i} shown and hidden ${k} times`);
 }
