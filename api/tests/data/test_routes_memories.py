@@ -6,10 +6,13 @@ import asyncio
 import json
 import subprocess
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -96,6 +99,103 @@ def fake(monkeypatch) -> FakeRuns:
     runs = FakeRuns()
     monkeypatch.setitem(sys.modules, "agent.runs", runs.module())
     return runs
+
+
+class RunNotFound(LookupError):
+    pass
+
+
+class MemoryNotFound(LookupError):
+    pass
+
+
+class NotRunOwner(PermissionError):
+    pass
+
+
+class RunNotWaiting(RuntimeError):
+    pass
+
+
+class RealShapedRuns:
+    """Mirrors the real agent.runs: sync functions and its exception classes."""
+
+    def __init__(self) -> None:
+        self.start_error: BaseException | None = None
+        self.stream_error: BaseException | None = None
+        self.answer_error: BaseException | None = None
+        self.answered: list[tuple] = []
+        self.answer_delay: float = 0.0
+        self.answer_started = threading.Event()
+        self.answer_returned_at: float | None = None
+        self.answer_thread: str | None = None
+        self.started: list[tuple] = []
+        self.on_start = None
+
+    def start_run(self, family_id, user_id, person_id, fields, photo_ids):
+        self.started.append((family_id, user_id, person_id, fields, photo_ids))
+        if self.on_start is not None:
+            self.on_start(photo_ids)
+        if self.start_error is not None:
+            raise self.start_error
+        return "run-real"
+
+    def stream_run(self, family_id, run_id):
+        if self.stream_error is not None:
+            raise self.stream_error
+
+        async def gen():
+            yield ("done", schemas.DoneEvent(memory_id="m"))
+
+        return gen()
+
+    def answer_run(self, family_id, run_id, user_id, answer):
+        self.answer_thread = threading.current_thread().name
+        self.answered.append((family_id, run_id, user_id, answer))
+        self.answer_started.set()
+        if self.answer_delay:
+            time.sleep(self.answer_delay)  # like the real one waiting on a threading.Condition
+        self.answer_returned_at = time.monotonic()
+        if self.answer_error is not None:
+            raise self.answer_error
+
+    def module(self) -> types.ModuleType:
+        mod = types.ModuleType("agent.runs")
+        mod.start_run = self.start_run
+        mod.stream_run = self.stream_run
+        mod.answer_run = self.answer_run
+        mod.RunNotFound = RunNotFound
+        mod.MemoryNotFound = MemoryNotFound
+        mod.NotRunOwner = NotRunOwner
+        mod.RunNotWaiting = RunNotWaiting
+        return mod
+
+
+def not_configured_module() -> types.ModuleType:
+    """agent.runs with no RunManager installed: every seam call raises a plain RuntimeError."""
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("agent runs are not configured")
+
+    mod = types.ModuleType("agent.runs")
+    mod.start_run = mod.stream_run = mod.answer_run = fail
+    mod.RunNotFound = RunNotFound
+    mod.MemoryNotFound = MemoryNotFound
+    mod.NotRunOwner = NotRunOwner
+    mod.RunNotWaiting = RunNotWaiting
+    return mod
+
+
+@pytest.fixture
+def real(env, monkeypatch) -> RealShapedRuns:
+    runs = RealShapedRuns()
+    monkeypatch.setitem(sys.modules, "agent.runs", runs.module())
+    return runs
+
+
+@pytest.fixture
+def unconfigured(env, monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "agent.runs", not_configured_module())
 
 
 # ------------------------------------------------------------------------------ app and data
@@ -543,6 +643,146 @@ def test_answer_seam_errors(env, exc, code, detail):
     assert res.json() == {"detail": detail}
 
 
+def test_answer_seam_other_error_is_503(env, caplog):
+    env.fake.answer_error = OSError("disk: secret-key-123")
+    with caplog.at_level("ERROR"):
+        res = env.a.post(f"/families/{env.fam_a.id}/runs/run-1/answer", json={"kind": "answer", "text": "yes"})
+    assert res.status_code == 503
+    assert res.json() == {"detail": "The studio is unavailable"}
+    assert "secret-key-123" in caplog.text
+
+
+# ------------------------------------------------------------------------------ real-shaped seam
+
+
+ANSWER = {"kind": "answer", "text": "Green"}
+
+
+@pytest.mark.parametrize(
+    ("exc", "code", "detail"),
+    [
+        (RunNotWaiting("run run-1 is done, not waiting for an answer"), 409, "This run is not waiting for an answer"),
+        (RunNotFound("run 'run-1' not found"), 404, "Run not found"),
+        (NotRunOwner("only the person who started this run can answer it"), 403, "Only the person who started this run can answer"),
+        (ValueError("This question needs a text answer"), 409, "This question needs a text answer"),
+        (ValueError(""), 409, "Run cannot take that answer"),
+    ],
+)
+def test_real_answer_errors(env, real, exc, code, detail):
+    real.answer_error = exc
+    res = env.a.post(f"/families/{env.fam_a.id}/runs/run-1/answer", json=ANSWER)
+    assert res.status_code == code
+    assert res.json() == {"detail": detail}
+
+
+def test_real_answer_runs_sync_seam_off_the_event_loop(env, real):
+    res = env.a.post(f"/families/{env.fam_a.id}/runs/run-1/answer", json=ANSWER)
+    assert res.status_code == 204
+    assert real.answered[0][:3] == (env.fam_a.id, "run-1", env.alice.id)
+    assert real.answer_thread != threading.main_thread().name
+
+
+def test_sync_answer_run_does_not_block_the_loop(env, real):
+    real.answer_delay = 1.0
+    app = FastAPI()
+    app.include_router(memories_routes.router)
+    app.dependency_overrides[get_db] = lambda: env.db
+    health_at: list[float] = []
+
+    @app.get("/health")
+    async def health() -> dict:
+        health_at.append(time.monotonic())
+        return {"ok": True}
+
+    async def main():
+        transport = httpx.ASGITransport(app=app)
+        cookies = {auth.COOKIE_NAME: auth.create_session_token(env.alice.id)}
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", cookies=cookies) as client:
+
+            async def answer():
+                return await client.post(f"/families/{env.fam_a.id}/runs/run-1/answer", json=ANSWER)
+
+            async def ping():
+                deadline = time.monotonic() + 5
+                while not real.answer_started.is_set():  # only polls if the loop is free
+                    assert time.monotonic() < deadline
+                    await asyncio.sleep(0.01)
+                return await client.get("/health")
+
+            return await asyncio.gather(answer(), ping())
+
+    answer_res, health_res = asyncio.run(main())
+    assert answer_res.status_code == 204
+    assert health_res.status_code == 200
+    assert len(health_at) == 1 and real.answer_returned_at is not None
+    assert health_at[0] < real.answer_returned_at
+    assert real.answer_returned_at - health_at[0] > 0.5  # health was served while answer_run slept
+
+
+def test_unconfigured_answer_is_503(env, unconfigured):
+    res = env.a.post(f"/families/{env.fam_a.id}/runs/run-1/answer", json=ANSWER)
+    assert res.status_code == 503
+    assert res.json() == {"detail": "The studio is unavailable"}
+
+
+def test_unconfigured_stream_is_503(env, unconfigured):
+    res = env.a.get(f"/families/{env.fam_a.id}/runs/run-1/stream")
+    assert res.status_code == 503
+    assert res.json() == {"detail": "The studio is unavailable"}
+
+
+def test_unconfigured_submit_is_503_and_photos_deleted(env, unconfigured):
+    res = _submit(env.a, env.fam_a.id, files=[("photos", ("a.png", PNG_1, "image/png"))])
+    assert res.status_code == 503
+    assert res.json() == {"detail": "Could not start the studio"}
+    assert _all_media(env.db) == []
+
+
+@pytest.mark.parametrize("exc", [RunNotFound("run 'x' not found"), NotRunOwner("not yours")])
+def test_real_stream_lookup_at_call_is_404(env, real, exc):
+    real.stream_error = exc
+    res = env.a.get(f"/families/{env.fam_a.id}/runs/x/stream")
+    assert res.status_code == 404
+    assert res.json() == {"detail": "Run not found"}
+
+
+def test_real_stream_sends_events(env, real):
+    res = env.a.get(f"/families/{env.fam_a.id}/runs/run-1/stream")
+    assert res.status_code == 200
+    assert _parse_sse(res.text) == [("done", {"memoryId": "m"})]
+
+
+def test_real_submit_starts_run(env, real):
+    res = _submit(env.a, env.fam_a.id, files=[("photos", ("a.png", PNG_1, "image/png"))])
+    assert res.status_code == 202
+    assert res.json()["runId"] == "run-real"
+    assert len(_all_media(env.db)) == 1
+
+
+@pytest.mark.parametrize(
+    ("exc", "code", "detail"),
+    [
+        (MemoryNotFound("memory 'm' not found, or it has no scene yet"), 404, "Memory not found"),
+        (ValueError("person 'p' is not in this family"), 422, "person 'p' is not in this family"),
+        (RuntimeError("graph exploded"), 503, "Could not start the studio"),
+    ],
+)
+def test_real_submit_errors_delete_photos(env, real, exc, code, detail):
+    real.start_error = exc
+    stored_during_start: list[int] = []
+    real.on_start = lambda photo_ids: stored_during_start.append(len(_all_media(env.db)))
+    files = [("photos", ("a.png", PNG_1, "image/png")), ("photos", ("b.png", PNG_2, "image/png"))]
+    before = len(_all_media(env.db))
+    res = _submit(env.a, env.fam_a.id, files=files)
+    assert res.status_code == code
+    assert res.json() == {"detail": detail}
+    assert before == 0
+    assert stored_during_start == [2]  # both photos were stored when start_run ran
+    photo_ids = real.started[0][4]
+    assert all(media_db.get_media(env.db, env.fam_a.id, pid) is None for pid in photo_ids)
+    assert len(_all_media(env.db)) == 0  # and both were deleted when it failed
+
+
 # ------------------------------------------------------------------------------ cross-family
 
 
@@ -590,3 +830,15 @@ def test_importing_routes_does_not_import_agent():
     result = subprocess.run([sys.executable, "-c", code], cwd=API_DIR, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
+
+
+def test_fresh_import_of_routes_does_not_import_agent(monkeypatch):
+    import routes
+
+    monkeypatch.setattr(routes, "memories", memories_routes)  # restored after the re-import
+    for name in list(sys.modules):
+        if name in ("agent", "routes.memories") or name.startswith("agent."):
+            monkeypatch.delitem(sys.modules, name)
+    import routes.memories  # noqa: F401
+
+    assert not [m for m in sys.modules if m == "agent" or m.startswith("agent.")]
