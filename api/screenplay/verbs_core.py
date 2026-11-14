@@ -51,9 +51,10 @@ from screenplay.verb_helpers import (
     crouch_solution,
     crouch_tries,
     kneeling_ground,
+    note_seat_when_out_of_reach,
     require_on_stage,
     require_person,
-    require_prop_on_stage,
+    require_prop_inside_stage,
     require_value,
     sign,
     solve_bent_arm,
@@ -293,6 +294,7 @@ def apply_pose(world: World, tracks: TrackSet, action: Action, t: float, action_
 
 # --------------------------------------------------------------------------- props
 
+@note_seat_when_out_of_reach
 def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Reach the prop's grip and take it into the free hand (hand_r first), then raise it into
     the hold pose, with the arm of that hand.
@@ -314,7 +316,12 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
        first if it is on the floor, walks there, turns to face the grip, and reaches, standing
        or crouching.
     3. Raises ik.OutOfReach, with the closest miss, only when no spot reaches. A seated puppet
-       never moves: it reaches from the seat or fails. On any failure the world is untouched.
+       never moves: it reaches from the seat or fails, and its miss names the seat and the fix
+       (verb_helpers.note_seat_when_out_of_reach: ``...; mom is seated in chair.seat; use
+       stand_up first``). On any failure the world is untouched.
+
+    A prop whose anchor lies past the stage edge is ``not_on_stage`` before anything else is
+    planned (verb_helpers.require_prop_inside_stage); exactly on the edge is on stage.
 
     Steps 1 and 2 run at each height _approach_ys gives, in order, until one reaches (the
     closest miss over all of them is raised): from a raised mark the walk-up and the spots are
@@ -327,7 +334,9 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
     what = _what(world, action)
     hand = world.copy().pick_up(who, what)  # validation only: the real world is untouched
     require_on_stage(world, who)
-    anchor = require_prop_on_stage(world, what)
+    # Before any walk is planned: a prop past the stage edge is not_on_stage (naming the prop),
+    # never an "offstage" for the actor the walk-up would have taken off the stage.
+    anchor = require_prop_inside_stage(world, what)
 
     arm = arm_of_hand(hand)
     geom = B.PropGeom.from_prop(world.catalog[what])
@@ -595,6 +604,7 @@ def apply_drop(world: World, tracks: TrackSet, action: Action, t: float, action_
     return t + B.FALL_SECONDS
 
 
+@note_seat_when_out_of_reach
 def apply_hand_to(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Pass a held prop to another puppet: both hands meet at the handover point. The two face
     each other first. No auto-walk: OutOfReach when the hands cannot meet."""

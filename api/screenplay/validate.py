@@ -34,6 +34,13 @@ then the list to pick from); offending numbers are shown as written (``:g``), no
 written t that is not finite stays in the message head (``t=inf``) but not in CompileError.t
 (errors.error_t), so the errors are JSON-safe.
 
+Each problem has the code that names it, so the director's fix follows from the code alone:
+bad_exit (enter from a mark on stage), bad_target (a person-only field given a prop or mark;
+place_on onto a person), bad_mark (a malformed shot mark, or one whose h or d is out of range),
+unknown_state (open or close on a prop without that state), bad_time / bad_dur (a t or dur over
+MAX_SECONDS). Two keep an older code because another stream's test pins it: exit to a mark is
+unknown_mark, and set_state to a state the prop lacks is invalid_value.
+
 When a shot's set is unknown its marks are unknown too, so mark checks for that shot are
 skipped (one unknown_set error instead of a cascade of unknown_mark errors).
 """
@@ -81,6 +88,15 @@ SELF_TARGET_VERBS = frozenset({"follow", "hug"})  # put_on may target oneself (t
 SEAT_SOCKET_VERBS = frozenset({"sit_on", "get_in"})
 STATE_VERBS = {"open": "open", "close": "closed"}
 
+# The latest an action, camera cue or narration line may start, and the longest dur, in seconds.
+# A story's shot plays for well under a minute; anything near this is a typo (an extra zero, ms
+# for s), and a huge dur would make the compiler build keys or rain for hours.
+MAX_SECONDS = 600
+# A shot mark's h (the standing surface's height) and d (its depth) must lie in these ranges;
+# u is free, since offstage marks lie past the stage edge.
+MARK_H_RANGE = (0.0, 1.5)
+MARK_D_RANGE = (0.0, 1.0)
+
 # Action parameters in Action field order: (python attribute, JSON name).
 _PARAMS: list[tuple[str, str]] = [
     (name, field.alias or name) for name, field in Action.model_fields.items() if name not in ("t", "do", "id")
@@ -109,6 +125,11 @@ def _finite(x: float) -> bool:
 def _numbers(values: Iterable[float]) -> str:
     """A list of numbers as written: ``[0.5, nan]``."""
     return "[" + ", ".join(f"{v:g}" for v in values) + "]"
+
+
+def _over_max_reason(name: str, value: float) -> str:
+    """``t must be at most 600 s, not 1e+07`` (the value as written, ``:g``)."""
+    return f"{name} must be at most {MAX_SECONDS:g} s, not {value:g}"
 
 
 @dataclass(frozen=True)
@@ -193,13 +214,24 @@ class _Validator:
         return f"its states are {_names(d.states)}"
 
     def check_time(self, site: _Site, name: str, value: float | None, *, positive: bool) -> None:
+        """bad_time for a t (``positive=False``) or dur (``positive=True``) that is not finite, or
+        negative (a dur: not > 0); then, over MAX_SECONDS, bad_time for a t and bad_dur for a
+        dur."""
         if value is None:
             return
         if positive:
             if not _finite(value) or value <= 0:
                 self.add(site, "bad_time", f"{name} must be a finite number > 0, not {value:g}")
+                return
         elif not _finite(value) or value < 0:
             self.add(site, "bad_time", f"{name} must be a finite number >= 0, not {value:g}")
+            return
+        if value > MAX_SECONDS:
+            reason = _over_max_reason(name, value)
+            if positive:
+                self.add(site, "bad_dur", reason)
+            else:
+                self.add(site, "bad_time", reason)
 
     def check_params(self, site: _Site, name: str, spec: dict, given: Mapping[str, object]) -> set[str]:
         """missing_param / unexpected_param. Returns the given params the verb accepts."""
@@ -231,8 +263,19 @@ class _Validator:
         self.add(site, "unknown_mark", f"{what} is not a mark in this shot; {self.marks_list(marks)}")
 
     def check_offstage(self, site: _Site, param: str, value: str) -> None:
-        if value not in OFFSTAGE:
-            self.add(site, "unknown_mark", f'"{param}" must be offstage_left or offstage_right, not "{value}"')
+        """enter's "from" (bad_exit) or exit's "to" must be offstage_left or offstage_right.
+
+        exit's "to" keeps the code unknown_mark: tests/agent/test_agent_skills.py (another
+        stream's) pins it as the code the director sees, and the directing skill's error table
+        lists it there. errors.HINT_VARIANTS gives it the exit hint all the same. Move it to
+        bad_exit together with that test and the skill's table."""
+        if value in OFFSTAGE:
+            return
+        reason = f'"{param}" must be offstage_left or offstage_right, not "{value}"'
+        if param == "from":
+            self.add(site, "bad_exit", reason)
+        else:
+            self.add(site, "unknown_mark", reason)
 
     def check_prop_listed(self, site: _Site, prop_id: str, lead: str = "") -> bool:
         """unknown_prop unless the screenplay lists the prop. `lead` names the field."""
@@ -247,9 +290,9 @@ class _Validator:
         if value in self.cast_set:
             return True
         if value in self.sp_props_set:
-            self.add(site, "unknown_target", f'"{param}" must be a person in the cast, and "{value}" is a prop')
+            self.add(site, "bad_target", f'"{param}" must be a person in the cast, and "{value}" is a prop')
         elif marks is not None and value in marks:
-            self.add(site, "unknown_target", f'"{param}" must be a person in the cast, and "{value}" is a mark')
+            self.add(site, "bad_target", f'"{param}" must be a person in the cast, and "{value}" is a mark')
         else:
             self.add(site, "unknown_person", f'"{value}" is not in the cast; {self.cast_list()}')
         return False
@@ -487,10 +530,23 @@ class _Validator:
         self.narration(shot)
 
     def shot_marks(self, site: _Site, shot: Shot, set_def: schemas.SetDef | None) -> None:
+        """bad_mark for a shot mark that is not [u, h] or [u, h, d] (numbers), or whose h or d
+        is out of range (MARK_H_RANGE, MARK_D_RANGE); then ambiguous_name for any mark of the
+        shot named like a cast member or a prop. The set's own marks are not range-checked."""
         for name, value in shot.marks.items():
             if len(value) not in (2, 3) or not all(_finite(v) for v in value):
                 reason = f'mark "{name}" is {value}, but a mark is [u, h] or [u, h, d] (numbers)'
-                self.add(site, "invalid_value", reason)
+                self.add(site, "bad_mark", reason)
+                continue
+            lo, hi = MARK_H_RANGE
+            if not lo <= value[1] <= hi:
+                reason = (f'mark "{name}" has h {value[1]:g}, but h is the standing surface\'s height above '
+                          f"the ground, from {lo:g} to {hi:g}")
+                self.add(site, "bad_mark", reason)
+            lo, hi = MARK_D_RANGE
+            if len(value) == 3 and not lo <= value[2] <= hi:
+                reason = f'mark "{name}" has d {value[2]:g}, but d is a depth from {lo:g} (back of the set) to {hi:g}'
+                self.add(site, "bad_mark", reason)
         names = {**BUILTIN_MARKS, **(set_def.marks if set_def else {}), **shot.marks}
         for name in names:
             if name in self.cast_set:
@@ -577,6 +633,8 @@ class _Validator:
         if "state" in ok:
             d = self.prop_def(a.what) if a.what is not None else None
             if d is not None and d.states and a.state not in d.states:
+                # invalid_value, not unknown_state (open / close's code): tests/agent/
+                # test_agent_skills.py (another stream's) pins it as the code the director sees.
                 self.add(site, "invalid_value", f'"{a.what}" has no state "{a.state}"; {self.states_list(d)}')
         if "at" in ok:
             self.check_any_target(site, a.at, marks)  # type: ignore[arg-type]
@@ -617,7 +675,7 @@ class _Validator:
         if a.do == "sit_on" and not d.sockets:
             self.add(site, "no_seat", f'"{what}" has no sockets to sit on')
         if a.do in STATE_VERBS and d.states and STATE_VERBS[a.do] not in d.states:
-            self.add(site, "invalid_value", f'"{what}" has no state "{STATE_VERBS[a.do]}"; {self.states_list(d)}')
+            self.add(site, "unknown_state", f'"{what}" has no state "{STATE_VERBS[a.do]}"; {self.states_list(d)}')
 
     def action_target(self, site: _Site, a: Action, marks: Mapping[str, object] | None) -> None:
         target = a.target
@@ -635,8 +693,9 @@ class _Validator:
         on = a.on
         assert on is not None
         if on in self.sp_props_set:
-            if on == a.what:
+            if on == a.what:  # one error: whether it has sockets does not matter
                 self.add(site, "self_target", f'"on" is {on} itself')
+                return None, False
             d = self.props.get(on)
             if d is not None and not d.sockets:
                 self.add(site, "no_socket", f'"{on}" has no sockets to place on')
@@ -648,8 +707,9 @@ class _Validator:
         if on in self.cast_set:
             self.add(
                 site,
-                "unknown_mark",
-                f'"on" must be a prop or a mark, and "{on}" is a person; {self.props_list()}; {self.marks_list(marks)}',
+                "bad_target",
+                f'"on" must be a prop or a mark, and "{on}" is a person; {self.props_list()}; '
+                f"{self.marks_list(marks)}",
             )
             return None, False
         self.add(
@@ -711,11 +771,12 @@ class _Validator:
         """Per-line checks for one telling of one shot. True if every line passed."""
         ok = True
         for li, line in enumerate(lines):
-            if not _finite(line.t) or line.t < 0:
+            if not _finite(line.t) or line.t < 0 or line.t > MAX_SECONDS:
                 ok = False
+                reason = (_over_max_reason("t", line.t) if _finite(line.t) and line.t > MAX_SECONDS
+                          else f"t must be a finite number >= 0, not {line.t:g}")
                 self.errors.append(_from_narration(NarrationError(
-                    "bad_time", f"t must be a finite number >= 0, not {line.t:g}",
-                    author=author, shot=shot.id, line_index=li,
+                    "bad_time", reason, author=author, shot=shot.id, line_index=li,
                 )))
             if line.cue is None:
                 continue

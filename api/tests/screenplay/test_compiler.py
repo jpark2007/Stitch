@@ -101,7 +101,7 @@ def test_static_errors_are_exactly_validates_and_stop_compilation():
     assert res.errors == validate(sp, SETS, PROPS, PEOPLE)
     assert [e.code for e in res.errors] == [
         "telling_unknown_shot", "explanation_bad_target", "unexpected_param", "missing_param", "unknown_person",
-        "unexpected_param", "invalid_value", "bad_time", "unknown_mark",
+        "unexpected_param", "invalid_value", "bad_time", "bad_exit",
     ]
     assert "busy" not in [e.code for e in res.errors]
 

@@ -2,10 +2,13 @@
 
 import math
 
+import schemas
 from screenplay.compiler import compile as compile_screenplay
 from screenplay.errors import (
     ERROR_CODES,
     HINT_VARIANTS,
+    PENDING_SKILL_HINTS,
+    NotedOutOfReach,
     error,
     error_message,
     error_t,
@@ -19,6 +22,7 @@ from screenplay.ik import OutOfReach
 from screenplay.narration import NarrationError
 from screenplay.schema import Action, CompileError, CompileResult, Screenplay
 from screenplay.state import StateError
+from screenplay.validate import validate
 from verb_cases import CAST, PROPS, base_scene
 
 
@@ -274,11 +278,15 @@ def test_hint_effect_aimed_at_an_unknown_target():
     assert hint_for(err) == "aim the steam at a person, prop or mark the message lists"
 
 
-def test_hint_variants_are_registered_codes_with_hints():
+def test_hint_variants_are_registered_codes():
+    # a code with no general hint (bad_target) may still have variants for the cases that do
     for code, variants in HINT_VARIANTS.items():
-        assert code in ERROR_CODES and ERROR_CODES[code].hint is not None, code
+        assert code in ERROR_CODES, code
         for _, hint in variants:
             assert hint is None or (hint[0].islower() and not hint.endswith(".")), (code, hint)
+    assert ERROR_CODES["bad_target"].hint is None
+    assert hint_for(_state("bad_target", "dad can only follow a person, and lamp is not one",
+                           t=1, who="dad", do="follow", target="lamp")) is None
 
 
 def test_hint_hands_full_names_whose_hands():
@@ -347,6 +355,113 @@ def test_hint_out_of_reach():
     assert hint_for(err) == "walk dad closer first, or move the target nearer"
 
 
+def test_a_noted_out_of_reach_appends_its_note_and_stays_an_out_of_reach():
+    base = OutOfReach("arm_r", 0.234, 0.17)
+    e = NotedOutOfReach(base, "mom is seated in chair.seat; use stand_up first", who="mom")
+    assert isinstance(e, OutOfReach) and (e.arm, e.distance, e.reach, e.who) == ("arm_r", 0.234, 0.17, "mom")
+    assert str(e) == str(base.with_who("mom"))
+    assert out_of_reach_reason(e) == (
+        "mom's arm_r cannot reach: target is 0.23 from the shoulder, reach is 0.17; "
+        "mom is seated in chair.seat; use stand_up first"
+    )
+
+
+def test_hint_out_of_reach_from_a_seat():
+    a = _action(t=1, who="mom", do="pick_up", what="cap")
+    seated = NotedOutOfReach(OutOfReach("arm_r", 0.23, 0.17, "mom"), "mom is seated in chair.seat; use stand_up first")
+    err = from_out_of_reach(seated, "s1", a)
+    assert err.code == "out_of_reach"
+    assert err.message.endswith("; mom is seated in chair.seat; use stand_up first")
+    # not "walk mom closer first": a seated puppet cannot walk. The reason names the fix; the
+    # hint waits for the directing skill's row (errors.PENDING_SKILL_HINTS)
+    assert hint_for(err) is None
+    assert hint_for(err, pending=True) == "add a stand_up for mom before this pick_up"
+    in_car = NotedOutOfReach(OutOfReach("arm_r", 0.4, 0.17, "mom"), "mom is seated in sedan.driver; use get_out first")
+    err = from_out_of_reach(in_car, "s1", _action(t=1, who="mom", do="open", what="suitcase"))
+    assert hint_for(err) is None
+    assert hint_for(err, pending=True) == "add a get_out for mom before this open"
+    # hand_to: the seated taker's arm missed, so the stand_up is the taker's
+    a = _action(t=1, who="dad", do="hand_to", what="cup", to="gran")
+    taker = NotedOutOfReach(OutOfReach("arm_r", 0.5, 0.17, "gran"), "gran is seated in chair.seat; use stand_up first")
+    assert hint_for(from_out_of_reach(taker, "s1", a), pending=True) == "add a stand_up for gran before this hand_to"
+    # standing, the general hint still applies
+    standing = from_out_of_reach(OutOfReach("arm_r", 0.5, 0.17, "mom"), "s1", _action(t=1, who="mom", do="pick_up",
+                                                                                        what="cap"))
+    assert hint_for(standing) == hint_for(standing, pending=True) == "walk mom closer first, or move the target nearer"
+
+
+def test_hint_not_driver():
+    err = _state("not_driver", "mom is in sedan.passenger, not sedan.driver", t=1, who="mom", do="drive_to",
+                 what="sedan", to="corner")
+    # PENDING_SKILL_HINTS: the general get_in hint would fail with already_seated, so none yet
+    assert hint_for(err) is None
+    assert hint_for(err, pending=True) == (
+        "add a get_out for mom, then get_in sedan with socket driver, before this drive_to"
+    )
+    err = _state("not_driver", "kid is not in sedan.driver; use get_in with socket driver first", t=1, who="kid",
+                 do="drive_to", what="sedan", to="corner")
+    assert hint_for(err) == "add a get_in sedan with socket driver for kid first"
+
+
+def test_hint_offstage_props():
+    # PENDING_SKILL_HINTS: a vehicle's fix (drive_to) is in its reason; no propStart hint for it
+    err = _state("not_on_stage", "sedan is offstage at x=1.3; drive_to a mark on stage first",
+                 t=9, who="mom", do="get_in", what="sedan")
+    assert hint_for(err) is None
+    assert hint_for(err, pending=True) == "add a drive_to of sedan to a mark on stage before this get_in"
+    err = _state("not_on_stage", "suitcase is on pickup, offstage at x=1.4; drive_to a mark on stage first",
+                 t=9, who="mom", do="pick_up", what="suitcase")
+    assert hint_for(err) is None
+    assert hint_for(err, pending=True) == "add a drive_to of pickup to a mark on stage before this pick_up"
+    err = _state("not_on_stage", "hymn_books is on table, offstage at x=1.3; place table on stage with propStart",
+                 t=9, who="mom", do="pick_up", what="hymn_books")
+    assert hint_for(err) == "place table on stage with propStart in shot s1"
+    err = _state("not_on_stage", "chair is offstage at x=1.3; place it on stage with propStart",
+                 t=1, who="dad", do="sit_on", what="chair")
+    assert hint_for(err) == "place chair on stage with propStart in shot s1"
+
+
+def test_hint_mark_and_time_ranges():
+    assert hint_for(error("bad_mark", 'mark "pit" has h -0.3, but h is the standing surface\'s height above the '
+                                      "ground, from 0 to 1.5", "s1")) == "give mark pit an h from 0 to 1.5"
+    assert hint_for(error("bad_mark", 'mark "front" has d 4, but d is a depth from 0 (back of the set) to 1',
+                          "s1")) == "give mark front a d from 0 to 1"
+    assert hint_for(error("bad_mark", 'mark "spot" is [0.5], but a mark is [u, h] or [u, h, d] (numbers)', "s1")) == (
+        "write the mark as [u, h] or [u, h, d] (numbers)"
+    )
+    err = _state("bad_time", "t must be at most 600 s, not 1e+07", t=1e7, who="dad", do="wave")
+    assert hint_for(err) == "use a t of at most 600 s"
+    err = _state("bad_dur", "dur must be at most 600 s, not 1e+09", t=1, who="dad", do="wave", dur=1e9)
+    assert hint_for(err) == "give dur at most 600 seconds"
+    err = _state("bad_time", "t must be a finite number >= 0, not -1", t=-1, who="dad", do="wave")
+    assert hint_for(err) == "use a finite t >= 0 and a dur > 0, in order"
+
+
+def _unknown_in_scene(**overrides) -> CompileError:
+    """The screenplay-level error validate reports for a cast member or prop the scene lacks."""
+    people = {pid: schemas.Person(id=pid, family_id="f", name=pid, character={"color": "#123456"})
+              for pid in ("dad", "mom")}
+    props = {"lamp": schemas.Prop(id="lamp", name="lamp", size="hand", art={"body": None})}
+    data = {"memoryId": "m", "cast": ["dad"], "props": ["lamp"], "shots": [{"id": "s1", "set": "yard"}], **overrides}
+    sets = {"yard": schemas.SetDef(id="yard", name="Yard", layers=[{"art": None, "depth": 0, "height": 1.0}])}
+    errors = validate(Screenplay.model_validate(data), sets, props, people)
+    assert len(errors) == 1, errors
+    return errors[0]
+
+
+def test_hint_unknown_prop_and_person_from_validates_reasons():
+    err = _unknown_in_scene(props=["lamp", "kite"])
+    assert (err.code, err.message) == ("unknown_prop", 'screenplay: prop "kite" is not a known prop; known props: lamp')
+    assert hint_for(err) == "remove kite from the screenplay's props, or use a prop the message lists"
+    err = _unknown_in_scene(cast=["dad", "gran"])
+    assert (err.code, err.message) == (
+        "unknown_person", 'screenplay: cast member "gran" is not a known person; known people: dad, mom')
+    assert hint_for(err) == "remove gran from the cast, or use a person the message lists"
+    # an action naming someone outside the cast keeps the general hint
+    err = _state("unknown_person", '"gran" is not in the cast; the cast is dad', t=1, who="gran", do="wave")
+    assert hint_for(err) == "add the person to the cast, or use a name the message lists"
+
+
 def test_hint_from_a_narration_error():
     e = NarrationError("cue_unknown_action", 'cue "hug" matches no action', author="dad", shot="s2", line_index=0)
     assert hint_for(from_narration_error(e)) == "set cue to an action id or verb in shot s2"
@@ -375,11 +490,49 @@ def test_every_hint_formats_with_and_without_fields():
         "prop_conflict": ["dad starts holding cup, and propStart also places it"],
         "seated": ["mom is seated in sedan.driver; use get_out first"],
         "already_seated": ["mom is seated in sedan.driver; use get_out first"],
+        "bad_exit": ['"from" must be offstage_left or offstage_right, not "curb"'],
+        "bad_target": ['"target" must be a person in the cast, and "lamp" is a prop',
+                       '"on" must be a prop or a mark, and "mom" is a person',
+                       "mom is a person; place_on needs a prop or a mark"],
+        "self_target": ['"on" is cup itself'],
+        "unknown_state": ['"lamp" has no state "open"', '"lamp" has no state "closed"'],
+        "unknown_prop": ['prop "kite" is not a known prop'],
+        "unknown_person": ['cast member "gran" is not a known person'],
+        "bad_mark": ['mark "pit" has h -1', 'mark "pit" has d 4'],
+        "bad_time": ["t must be at most 600 s, not 601"],
+        "bad_dur": ["dur must be at most 600 s, not 601"],
     }
+    # the PENDING_SKILL_HINTS give no hint yet, and their pending one on request
+    pending = {
+        "out_of_reach": ["mom's arm_r cannot reach; mom is seated in chair.seat; use stand_up first",
+                         "mom's arm_r cannot reach; mom is seated in sedan.driver; use get_out first"],
+        "unknown_mark": ['"to" must be offstage_left or offstage_right, not "door"'],
+        "not_driver": ["mom is in sedan.passenger, not sedan.driver"],
+        "not_on_stage": ["sedan is offstage at x=1.3; drive_to a mark on stage first",
+                         "cup is on sedan, offstage at x=1.3; drive_to a mark on stage first"],
+    }
+    for code, reasons in pending.items():
+        for reason in reasons:
+            assert hint_for(error(code, reason)) is None, (code, reason)
+            hint = hint_for(error(code, reason), pending=True)
+            assert hint and "{" not in hint and "}" not in hint, (code, reason, hint)
+    samples["not_on_stage"] += ["chair is offstage at x=1.3; place it on stage with propStart",
+                                "cup is on table, offstage at x=1.3; place table on stage with propStart"]
     for code, reasons in samples.items():
         for reason in reasons:
             hint = hint_for(error(code, reason))
             assert hint and "{" not in hint and "}" not in hint, (code, reason, hint)
+    assert set(samples) | set(pending) == set(HINT_VARIANTS)
+
+
+def test_pending_hints_are_variants_that_give_none_for_now():
+    """Each errors.PENDING_SKILL_HINTS pattern is a HINT_VARIANTS entry of the same code whose
+    hint is None, so hint_for never falls through to the code's general (wrong) hint."""
+    for code, pending in PENDING_SKILL_HINTS.items():
+        variants = dict(HINT_VARIANTS[code])
+        for pattern, template in pending:
+            assert pattern in variants and variants[pattern] is None, (code, pattern.pattern)
+            assert template[0].islower() and not template.endswith("."), template
 
 
 def test_hints_are_not_on_compile_error():

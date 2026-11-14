@@ -92,11 +92,24 @@ def from_state_error(e: StateError, shot: str | None, action: Action | None) -> 
     return error(e.code, e.reason, shot, action)
 
 
+class NotedOutOfReach(OutOfReach):
+    """An ``OutOfReach`` that carries one more fact for its reason, after a ``; ``: where the
+    puppet whose arm failed is seated (verb_helpers.note_seat_when_out_of_reach). It is still an
+    ``ik.OutOfReach``, so everything that catches one is unaffected."""
+
+    def __init__(self, base: OutOfReach, note: str, who: str | None = None):
+        super().__init__(base.arm, base.distance, base.reach, base.who or who)
+        self.note = note
+
+
 def out_of_reach_reason(e: OutOfReach, who: str | None = None) -> str:
-    """``dad's arm_r cannot reach: target is 0.62 from the shoulder, reach is 0.37``."""
+    """``dad's arm_r cannot reach: target is 0.62 from the shoulder, reach is 0.37``, plus a
+    NotedOutOfReach's note (``; dad is seated in chair.seat; use stand_up first``)."""
     name = e.who or who
     whose = f"{name}'s {e.arm}" if name else e.arm
-    return f"{whose} cannot reach: target is {e.distance:.2f} from the shoulder, reach is {e.reach:.2f}"
+    reason = f"{whose} cannot reach: target is {e.distance:.2f} from the shoulder, reach is {e.reach:.2f}"
+    note = getattr(e, "note", None)
+    return f"{reason}; {note}" if note else reason
 
 
 def from_out_of_reach(e: OutOfReach, shot: str | None, action: Action | None) -> CompileError:
@@ -124,7 +137,9 @@ class ErrorCode:
     reads as a generic phrase (``_Fields.FALLBACK``), so a hint is always a whole sentence.
 
     Some codes cover situations with different fixes; HINT_VARIANTS refines ``hint`` for them
-    from the reason's wording (an effect aimed offstage, a prop someone else is holding).
+    from the reason's wording (an effect aimed offstage, a prop someone else is holding). A
+    variant's named groups become fields too, and may replace one (out_of_reach's ``{who}`` is
+    the seated puppet, who is the taker in a hand_to).
     """
 
     summary: str
@@ -144,7 +159,10 @@ ERROR_CODES: dict[str, ErrorCode] = {
         "a name is used for two kinds of thing (person, prop, mark)", "rename one of them"
     ),
     "unknown_set": ErrorCode("a shot's set is not a known set", "use one of the sets the message lists"),
-    "bad_mark": ErrorCode("a mark is not [u, h] or [u, h, d]", "write the mark as [u, h] or [u, h, d] (numbers)"),
+    "bad_mark": ErrorCode(
+        "a mark is not [u, h] or [u, h, d], or its h or d is out of range",
+        "write the mark as [u, h] or [u, h, d] (numbers)",
+    ),
     "bad_start": ErrorCode("a shot's start block cannot be applied", None),
     "prop_conflict": ErrorCode(
         "a prop starts both in a hand and in propStart", "remove the prop from propStart or from the start holding"
@@ -182,11 +200,15 @@ ERROR_CODES: dict[str, ErrorCode] = {
     "invalid_action": ErrorCode("an action the compiler cannot build keys for", None),
     "bad_param": ErrorCode("an effect parameter does not apply", "remove the parameter from this {do}"),
     "bad_time": ErrorCode(
-        "a time is negative, not finite, or out of order", "use a finite t >= 0 and a dur > 0, in order"
+        "a time is negative, not finite, too late, or out of order", "use a finite t >= 0 and a dur > 0, in order"
     ),
-    "bad_dur": ErrorCode("a dur is not a positive number of seconds", "give dur a positive number of seconds"),
+    "bad_dur": ErrorCode(
+        "a dur is not a positive number of seconds, or is too long", "give dur a positive number of seconds"
+    ),
     "bad_target": ErrorCode("a target of the wrong kind for the verb", None),
-    "bad_exit": ErrorCode("an exit to somewhere that is not offstage", "exit to offstage_left or offstage_right"),
+    "bad_exit": ErrorCode(
+        "an enter from or exit to somewhere that is not offstage", "exit to offstage_left or offstage_right"
+    ),
     "bad_facing": ErrorCode("a facing that is not 1 or -1", None),
     "bad_socket": ErrorCode("a hand socket that is not a hand", "use socket hand_r or hand_l"),
     "bad_parent": ErrorCode("a place_on parent that is not the ground or a prop socket", None),
@@ -212,7 +234,8 @@ ERROR_CODES: dict[str, ErrorCode] = {
     ),
     # ---- props (state.py, locate.py, verbs)
     "not_on_stage": ErrorCode(
-        "a prop is not on stage", "place {subject} with propStart in shot {shot}, or have someone carry it in"
+        "a prop is not on stage, or stands offstage",
+        "place {subject} with propStart in shot {shot}, or have someone carry it in",
     ),
     "not_holding": ErrorCode("a prop is not in the actor's hand", "have {who} pick_up {what} before this {do}"),
     "already_held": ErrorCode("a prop is already held or worn", "remove this {do}, or hand_to from its holder"),
@@ -240,7 +263,9 @@ ERROR_CODES: dict[str, ErrorCode] = {
     "seated_vehicle": ErrorCode("a person seated in a vehicle", "add a get_out for {subject} first"),
     "not_a_vehicle": ErrorCode("a vehicle verb on a prop that is not a vehicle", "use a vehicle prop, or sit_on"),
     "not_in_vehicle": ErrorCode("a person is not in the vehicle", "add a get_in for {subject} first"),
-    "not_driver": ErrorCode("drive_to by someone not in the driver's seat", "get_in with socket driver first"),
+    "not_driver": ErrorCode(
+        "drive_to by someone not in the driver's seat", "add a get_in {what} with socket driver for {who} first"
+    ),
     "no_driver": ErrorCode("ride_to with nobody in the driver's seat", "have someone get_in {what} with socket driver"),
     "vehicle_moving": ErrorCode("a vehicle is still moving", "wait until it stops, at the time the message gives"),
     "not_on_ground": ErrorCode("a vehicle that is not on the ground", None),
@@ -282,9 +307,43 @@ ERROR_CODES: dict[str, ErrorCode] = {
 # An effect's reason (effects.py) starts ``<effect> at "<name>": ``; its fix is to re-aim it.
 _EFFECT_AT = r'^\w+ at "(?P<subject>[^"]*)": '
 
+# Situations whose fix is a verb the directing skill's row for that code does not name yet
+# (api/agent/skills is another stream's; tests/agent/test_agent_skills.py
+# test_every_table_fix_names_the_verbs_of_the_catalogues_hint holds every hint to its row).
+# HINT_VARIANTS gives these None for now, rather than the code's general hint, which would be
+# wrong there (a seated puppet cannot "walk closer"); their reasons carry the fix themselves
+# ("...; use stand_up first", "...; drive_to a mark on stage first"). Once a row names the verb,
+# move its template into HINT_VARIANTS in place of the None. ``hint_for(e, pending=True)`` gives
+# them already (tests/screenplay/test_hints_actionable.py checks each one compiles when applied).
+_SEATED_STAND_UP = re.compile(r"(?P<who>\S+) is seated in \S+; use stand_up first$")
+_SEATED_GET_OUT = re.compile(r"(?P<who>\S+) is seated in \S+; use get_out first$")
+_VEHICLE_OFFSTAGE = re.compile(r"^\S+ is offstage at x=\S+; drive_to a mark on stage first$")
+_ON_VEHICLE_OFFSTAGE = re.compile(r"^\S+ is on (?P<base>\S+), offstage at x=\S+; drive_to a mark on stage first$")
+_EXIT_TO = re.compile(r'^"to" must be offstage_left or offstage_right')
+_OTHER_SEAT = re.compile(r"^(?P<subject>\S+) is in \S+\.\w+, not \S+\.driver")
+
+PENDING_SKILL_HINTS: dict[str, tuple[tuple[re.Pattern[str], str], ...]] = {
+    "out_of_reach": (
+        (_SEATED_STAND_UP, "add a stand_up for {who} before this {do}"),
+        (_SEATED_GET_OUT, "add a get_out for {who} before this {do}"),
+    ),
+    "not_driver": (
+        (_OTHER_SEAT, "add a get_out for {subject}, then get_in {what} with socket driver, before this {do}"),
+    ),
+    "not_on_stage": (
+        (_VEHICLE_OFFSTAGE, "add a drive_to of {subject} to a mark on stage before this {do}"),
+        (_ON_VEHICLE_OFFSTAGE, "add a drive_to of {base} to a mark on stage before this {do}"),
+    ),
+    "unknown_mark": ((_EXIT_TO, "exit to offstage_left or offstage_right"),),
+}
+_PENDING_BY_PATTERN: dict[re.Pattern[str], str] = {
+    pattern: hint for variants in PENDING_SKILL_HINTS.values() for pattern, hint in variants
+}
+
 # Per code, (pattern, hint) pairs tried in order on the error's reason before the code's own
 # hint. The first pattern that matches wins; its named groups become hint fields, and a None
-# hint means the situation has no obvious fix.
+# hint means the situation has no obvious fix, or none this catalogue may give yet
+# (PENDING_SKILL_HINTS).
 HINT_VARIANTS: dict[str, tuple[tuple[re.Pattern[str], str | None], ...]] = {
     "offstage": (
         # a mark beyond the stage edge: no enter can bring it on
@@ -293,6 +352,18 @@ HINT_VARIANTS: dict[str, tuple[tuple[re.Pattern[str], str | None], ...]] = {
     ),
     "not_on_stage": (
         (re.compile(_EFFECT_AT), "place {subject} with propStart in shot {shot}, or aim the {do} at a mark"),
+        # verb_helpers.offstage_prop_reason: a prop (or the prop its stack rests on) standing
+        # offstage; a vehicle is driven back, anything else placed again
+        (_VEHICLE_OFFSTAGE, None),  # PENDING_SKILL_HINTS
+        (
+            re.compile(r"^\S+ is offstage at x=\S+; place it on stage with propStart$"),
+            "place {subject} on stage with propStart in shot {shot}",
+        ),
+        (_ON_VEHICLE_OFFSTAGE, None),  # PENDING_SKILL_HINTS
+        (
+            re.compile(r"^\S+ is on (?P<base>\S+), offstage at x=\S+; place \S+ on stage with propStart$"),
+            "place {base} on stage with propStart in shot {shot}",
+        ),
     ),
     "unknown_target": (
         (re.compile(_EFFECT_AT), "aim the {do} at a person, prop or mark the message lists"),
@@ -307,12 +378,58 @@ HINT_VARIANTS: dict[str, tuple[tuple[re.Pattern[str], str | None], ...]] = {
     # state.World.seat_reason ends with the fix: get_out in a vehicle, stand_up anywhere else
     "seated": ((re.compile(r"; use get_out first$"), "add a get_out for {subject} before this {do}"),),
     "already_seated": ((re.compile(r"; use get_out first$"), "add a get_out for {subject} first"),),
+    # A seated puppet's reach (verb_helpers.note_seat_when_out_of_reach) ends with seat_reason,
+    # which names whoever sits: the actor, or the taker of a hand_to. Walking closer, the
+    # general hint, is not open to someone seated.
+    "out_of_reach": ((_SEATED_STAND_UP, None), (_SEATED_GET_OUT, None)),  # PENDING_SKILL_HINTS
     "prop_conflict": (
         (
             re.compile(r"^(?P<holder>\S+) starts holding (?P<what>\S+),"),
             "remove {what} from propStart or from {holder}'s start holding",
         ),
     ),
+    # validate.check_offstage: enter's "from" (an exit's "to" is reported as unknown_mark below)
+    "bad_exit": ((re.compile(r'^"from" must be '), "enter from offstage_left or offstage_right"),),
+    # not unknown_mark's general hint (add a mark): the reason says what to write
+    "unknown_mark": ((_EXIT_TO, None),),  # PENDING_SKILL_HINTS
+    "bad_target": (
+        (re.compile(r'^"(?P<field>\w+)" must be a person in the cast'), "name a person in the cast as {field}"),
+        (re.compile(r'^"on" must be a prop or a mark'), "place it on a prop or a mark"),
+        (re.compile(r"^\S+ is a person; place_on needs a prop or a mark"), "place it on a prop or a mark"),
+    ),
+    "self_target": ((re.compile(r'^"on" is \S+ itself$'), "place it on a different prop or a mark"),),
+    # in another of its seats: the general hint (a get_in) would fail with already_seated
+    "not_driver": ((_OTHER_SEAT, None),),  # PENDING_SKILL_HINTS
+    "unknown_state": (
+        (
+            re.compile(r'has no state "open"'),
+            "use set_state with a state the message lists, or open a prop that has an open state",
+        ),
+        (
+            re.compile(r'has no state "closed"'),
+            "use set_state with a state the message lists, or close a prop that has a closed state",
+        ),
+    ),
+    "unknown_prop": (
+        (
+            re.compile(r'^prop "(?P<subject>[^"]+)" is not a known prop'),
+            "remove {subject} from the screenplay's props, or use a prop the message lists",
+        ),
+    ),
+    "unknown_person": (
+        (
+            re.compile(r'^cast member "(?P<subject>[^"]+)" is not a known person'),
+            "remove {subject} from the cast, or use a person the message lists",
+        ),
+    ),
+    # validate.shot_marks: a mark whose h or d is out of range
+    "bad_mark": (
+        (re.compile(r'^mark "(?P<subject>[^"]+)" has h '), "give mark {subject} an h from 0 to 1.5"),
+        (re.compile(r'^mark "(?P<subject>[^"]+)" has d '), "give mark {subject} a d from 0 to 1"),
+    ),
+    # validate.check_time: a time or dur over validate.MAX_SECONDS
+    "bad_time": ((re.compile(r"^t must be at most (?P<limit>\S+) s"), "use a t of at most {limit} s"),),
+    "bad_dur": ((re.compile(r"^dur must be at most (?P<limit>\S+) s"), "give dur at most {limit} seconds"),),
 }
 
 
@@ -329,6 +446,9 @@ class _Fields(dict):
         "until": "a later time",
         "param": "the missing parameter",
         "holder": "its holder",
+        "field": "that field",
+        "base": "the prop it rests on",
+        "limit": "the limit",
     }
 
     def __missing__(self, key: str) -> str:
@@ -350,11 +470,15 @@ def _reason(error: CompileError) -> str:
     return body
 
 
-def hint_for(error: CompileError) -> str | None:
+def hint_for(error: CompileError, *, pending: bool = False) -> str | None:
     """A short fix for ``error`` from ERROR_CODES, filled from its fields; None when the code
-    has no obvious fix (or is unknown)."""
+    has no obvious fix (or is unknown).
+
+    A HINT_VARIANTS pattern that matches the reason wins over the code's own hint, even when
+    that hint is None (bad_target has no general fix, but a person-only field does).
+    ``pending=True`` also gives the PENDING_SKILL_HINTS that wait on the directing skill."""
     entry = ERROR_CODES.get(error.code)
-    if entry is None or entry.hint is None:
+    if entry is None:
         return None
     reason = _reason(error)
     fields = _Fields()
@@ -385,5 +509,7 @@ def hint_for(error: CompileError) -> str | None:
         if m:
             fields.update({k: v for k, v in m.groupdict().items() if v})
             hint = variant
+            if hint is None and pending:
+                hint = _PENDING_BY_PATTERN.get(pattern)
             break
     return None if hint is None else hint.format_map(fields)

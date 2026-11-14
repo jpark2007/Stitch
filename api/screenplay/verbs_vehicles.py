@@ -27,6 +27,7 @@ from collections.abc import Iterable
 
 from screenplay import motion
 from screenplay.body import POSE_SECONDS, sit_keys, stand_keys
+from screenplay.effects import STAGE_EDGE
 from screenplay.ik import RIG, Body, scale
 from screenplay.locate import Locate, bones_at, held_arm_bones, puppet_root, puppet_target
 from screenplay.schema import Action
@@ -36,6 +37,7 @@ from screenplay.verb_helpers import (
     Handler,
     Key,
     Vec3,
+    offstage_prop_reason,
     require_param,
     require_person,
     require_prop_on_stage,
@@ -139,15 +141,35 @@ def _stacked(world: World, what: str) -> list[tuple[str, str, str]]:
 
 # --------------------------------------------------------------------------- get_in
 
+def _check_reachable(world: World, who: str, what: str) -> None:
+    """``not_on_stage`` for a vehicle parked past the stage edge (|x| > STAGE_EDGE) when the
+    walk to its door would take ``who`` off the stage: "sedan is offstage at x=1.3; drive_to a
+    mark on stage first" (verb_helpers.offstage_prop_reason). Checked before any walk is
+    planned, so the error names the vehicle, not the person. Someone already offstage on the
+    vehicle's side (getting in out of sight, then driving on) walks nowhere near the stage and
+    may get in."""
+    reason = offstage_prop_reason(world, what)
+    if reason is None:
+        return
+    x, pos = world.props[what].pos[0], world.people[who].pos[0]
+    if abs(pos) > STAGE_EDGE and (pos > 0) == (x > 0):
+        return
+    raise StateError("not_on_stage", reason)
+
+
 def apply_get_in(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
                  locate: Locate) -> float:
     """Get up first if kneeling or sitting on the floor, walk up to the seat (if it is more than
-    0.05 away in x), and sit with the hips on it. Arms holding props keep the hold pose."""
+    0.05 away in x), and sit with the hips on it. Arms holding props keep the hold pose.
+
+    A vehicle parked past the stage edge is ``not_on_stage`` for anyone on stage
+    (``_check_reachable``): bring it on with drive_to first."""
     who = require_param(action, "who")
     what = require_param(action, "what")
     require_person(world, who)
     _vehicle(world, what)
     require_prop_on_stage(world, what)
+    _check_reachable(world, who, what)
     socket = world.copy().get_in(who, what, action.socket)  # validates seat choice and occupancy
     _check_still(tracks, what, t, action_start)
 

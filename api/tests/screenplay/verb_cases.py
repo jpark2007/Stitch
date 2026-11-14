@@ -254,7 +254,7 @@ def _movement() -> list[VerbCase]:
                                 start={"dad": _at("offstage_left")})),
         _static("enter", "bad_from",
                 _one(_a(1, "enter", who="dad", to="door", **{"from": "curb"}), start={"dad": _at("offstage_left")}),
-                "unknown_mark",
+                "bad_exit",
                 'shot s1, t=1: dad cannot enter; "from" must be offstage_left or offstage_right, not "curb"'),
         _dynamic("enter", "already_on_stage",
                  _one(_a(1, "enter", who="dad", to="curb"), start={"dad": _at("door")}),
@@ -264,6 +264,9 @@ def _movement() -> list[VerbCase]:
 
         # --------------------------------------------------------------------- exit
         _ok("exit", "ok", _one(_a(1, "exit", who="mom", to="offstage_right"), start={"mom": _at("curb")})),
+        # unknown_mark, not bad_exit: tests/agent/test_agent_skills.py (another stream's) pins
+        # exit to a mark as unknown_mark (validate.py check_offstage). Its hint still says
+        # "exit to offstage_left or offstage_right" (errors.HINT_VARIANTS).
         _static("exit", "bad_to",
                 _one(_a(1, "exit", who="mom", to="door"), start={"mom": _at("curb")}),
                 "unknown_mark",
@@ -302,11 +305,11 @@ def _movement() -> list[VerbCase]:
         # ------------------------------------------------------------------- follow
         _ok("follow", "ok", _one(_a(0, "walk_to", who="mom", to="curb"), _a(0.5, "follow", who="dad", target="mom"),
                                  start={"dad": _at("door"), "mom": _at("bench_spot")})),
-        # Following a prop is caught statically: validate's person check runs before the
-        # handler's bad_target (verbs_motion.py apply_follow) could.
+        # Following a prop is caught statically, with the handler's own code (verbs_motion.py
+        # apply_follow's bad_target): validate's person check runs first.
         _static("follow", "prop",
                 _one(_a(1, "follow", who="dad", target="hymn_books"), start={"dad": _at("door")}),
-                "unknown_target",
+                "bad_target",
                 'shot s1, t=1: dad cannot follow; "target" must be a person in the cast, and "hymn_books" is a prop'),
         _static("follow", "self",
                 _one(_a(1, "follow", who="dad", target="dad"), start={"dad": _at("door")}),
@@ -381,6 +384,12 @@ def _body() -> list[VerbCase]:
                  # state.py World.sit_on (run on a copy by verbs_body.py apply_sit_on; the landing
                  # verbs_body.py has no "vehicle" pre-check of its own)
                  'shot s1, t=1: dad cannot sit_on "sedan"; sedan is a vehicle; use get_in'),
+        _dynamic("sit_on", "chair_offstage",
+                 _one(_a(1, "sit_on", who="dad", what="chair"), start={"dad": _at("curb")},
+                      prop_start={"chair": _at("offstage_right")}),
+                 "not_on_stage",
+                 # verb_helpers.py offstage_prop_reason (via require_prop_inside_stage in verbs_body.py apply_sit_on)
+                 'shot s1, t=1: dad cannot sit_on "chair"; chair is offstage at x=1.3; place it on stage with propStart'),
         _dynamic("sit_on", "socket_taken",
                  _one(_a(1, "sit_on", who="dad", what="chair"),
                       start={"dad": _at("door"), "mom": _at("bench_spot", **{"in": "chair.seat"})},
@@ -436,7 +445,7 @@ def _body() -> list[VerbCase]:
                 'shot s1, t=1: dad cannot hug; "target" is dad themselves'),
         _static("hug", "prop",
                 _one(_a(1, "hug", who="dad", target="lamp"), start={"dad": _at("door")}),
-                "unknown_target",
+                "bad_target",
                 'shot s1, t=1: dad cannot hug; "target" must be a person in the cast, and "lamp" is a prop'),
         _dynamic("hug", "target_seated",
                  _one(_a(1, "hug", who="dad", target="mom"),
@@ -485,6 +494,13 @@ def _props() -> list[VerbCase]:
                  "already_held",
                  # state.py World._where (via World.pick_up)
                  'shot s1, t=1: dad cannot pick_up "hymn_books"; mom is holding it'),
+        _dynamic("pick_up", "prop_offstage",
+                 _one(_a(1, "pick_up", who="dad", what="hymn_books"), start={"dad": _at("curb")},
+                      prop_start={"hymn_books": _at("offstage_right")}),
+                 "not_on_stage",
+                 # verb_helpers.py offstage_prop_reason (via require_prop_inside_stage in verbs_core.py apply_pick_up)
+                 'shot s1, t=1: dad cannot pick_up "hymn_books"; hymn_books is offstage at x=1.3; '
+                 "place it on stage with propStart"),
         _dynamic("pick_up", "not_on_stage",
                  _one(_a(1, "pick_up", who="dad", what="cap"), start={"dad": _at("door")}),
                  "not_on_stage",
@@ -513,9 +529,10 @@ def _props() -> list[VerbCase]:
                  _one(_a(1, "pick_up", who="mom", what="cap"), start={"mom": _at("bench_spot", **{"in": "chair.seat"})},
                       prop_start={**CHAIR, "cap": _at("bench_spot")}),
                  "out_of_reach",
-                 # errors.py out_of_reach_reason (ik.OutOfReach from verbs_core.py _crouch_solution)
+                 # errors.py out_of_reach_reason (ik.OutOfReach from verbs_core.py _crouch_solution,
+                 # with the seat appended by verb_helpers.py note_seat_when_out_of_reach)
                  "shot s1, t=1: mom cannot pick_up \"cap\"; mom's arm_r cannot reach: target is 0.23 from the "
-                 "shoulder, reach is 0.17"),
+                 "shoulder, reach is 0.17; mom is seated in chair.seat; use stand_up first"),
 
         # --------------------------------------------------------------------- hold
         _ok("hold", "ok", _one(_a(1, "hold", who="mom", what="hymn_books"),
@@ -578,7 +595,7 @@ def _props() -> list[VerbCase]:
         _static("put_on", "prop_target",
                 _one(_a(1, "put_on", who="dad", what="cap", target="table"),
                      start={"dad": _at("by_table", holding="cap")}, prop_start=TABLE),
-                "unknown_target",
+                "bad_target",
                 'shot s1, t=1: dad cannot put_on "cap"; "target" must be a person in the cast, and "table" is a prop'),
         _dynamic("put_on", "head_full",
                  _one(_a(0, "put_on", who="dad", what="cap"),
@@ -622,7 +639,7 @@ def _props() -> list[VerbCase]:
         _static("open", "no_open_state",
                 _one(_a(1, "open", who="dad", what="lamp"), start={"dad": _at("by_table")},
                      prop_start={"lamp": {"on": "table.top"}, **TABLE}),
-                "invalid_value",
+                "unknown_state",
                 'shot s1, t=1: dad cannot open "lamp"; "lamp" has no state "open"; its states are lit, out'),
         _dynamic("open", "already_open",
                  _one(_a(1, "open", who="dad", what="suitcase"), start={"dad": _at("by_table")},
@@ -644,7 +661,7 @@ def _props() -> list[VerbCase]:
         _static("close", "no_closed_state",
                 _one(_a(1, "close", who="dad", what="lamp"), start={"dad": _at("by_table")},
                      prop_start={"lamp": {"on": "table.top"}, **TABLE}),
-                "invalid_value",
+                "unknown_state",
                 'shot s1, t=1: dad cannot close "lamp"; "lamp" has no state "closed"; its states are lit, out'),
         _dynamic("close", "already_closed",
                  _one(_a(1, "close", who="dad", what="suitcase"), start={"dad": _at("by_table")},
@@ -665,7 +682,8 @@ def _props() -> list[VerbCase]:
                                              start={"dad": _at("by_table")},
                                              prop_start={"lamp": {"on": "table.top", "state": "lit"}, **TABLE})),
         # An unknown state is caught statically (validate), before World.set_prop_state's
-        # unknown_state could raise.
+        # unknown_state could raise. invalid_value, not unknown_state as for open and close:
+        # tests/agent/test_agent_skills.py (another stream's) pins it.
         _static("set_state", "unknown_state",
                 _one(_a(1, "set_state", what="lamp", state="broken"),
                      prop_start={"lamp": {"on": "table.top"}, **TABLE}),
@@ -707,6 +725,12 @@ def _vehicles() -> list[VerbCase]:
                  "already_seated",
                  # state.py World.get_in (seat_reason)
                  'shot s1, t=1: dad cannot get_in "sedan"; dad is seated in chair.seat; use stand_up first'),
+        _dynamic("get_in", "vehicle_offstage",
+                 _one(_a(1, "get_in", who="dad", what="sedan"), start={"dad": _at("curb")},
+                      prop_start={"sedan": _at("offstage_right")}),
+                 "not_on_stage",
+                 # verb_helpers.py offstage_prop_reason (via verbs_vehicles.py _check_reachable)
+                 'shot s1, t=1: dad cannot get_in "sedan"; sedan is offstage at x=1.3; drive_to a mark on stage first'),
         _dynamic("get_in", "not_on_stage",
                  _one(_a(1, "get_in", who="dad", what="sedan"), start={"dad": _at("curb")}),
                  "not_on_stage",

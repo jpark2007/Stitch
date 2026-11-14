@@ -10,7 +10,7 @@ import pytest
 
 import schemas
 from screenplay.schema import VOCABULARY, Action, CompileError, Screenplay
-from screenplay.validate import CAMERA, VERBS, action_params, validate
+from screenplay.validate import CAMERA, MAX_SECONDS, VERBS, action_params, validate
 
 SAMPLES = Path(__file__).resolve().parents[3] / "web" / "public" / "samples"
 
@@ -350,9 +350,33 @@ def test_set_mark_shadowing_a_prop():
 def test_malformed_shot_mark():
     assert_errors(
         check(screenplay(shot(marks={"spot": [0.5], "far": [0.5, 0.0, 0.2, 1.0]}))),
-        E("invalid_value", 'shot s1: mark "spot" is [0.5], but a mark is [u, h] or [u, h, d] (numbers)'),
-        E("invalid_value", 'shot s1: mark "far" is [0.5, 0.0, 0.2, 1.0], but a mark is [u, h] or [u, h, d] (numbers)'),
+        E("bad_mark", 'shot s1: mark "spot" is [0.5], but a mark is [u, h] or [u, h, d] (numbers)'),
+        E("bad_mark", 'shot s1: mark "far" is [0.5, 0.0, 0.2, 1.0], but a mark is [u, h] or [u, h, d] (numbers)'),
     )
+
+
+def test_shot_mark_out_of_range():
+    assert_errors(
+        check(screenplay(shot(marks={"pit": [0.5, -0.3], "front": [0.3, 0.0, 4.0], "sky": [0.5, 2, -0.5]}))),
+        E("bad_mark", 'shot s1: mark "pit" has h -0.3, but h is the standing surface\'s height above the ground, '
+                      "from 0 to 1.5"),
+        E("bad_mark", 'shot s1: mark "front" has d 4, but d is a depth from 0 (back of the set) to 1'),
+        E("bad_mark", 'shot s1: mark "sky" has h 2, but h is the standing surface\'s height above the ground, '
+                      "from 0 to 1.5"),
+        E("bad_mark", 'shot s1: mark "sky" has d -0.5, but d is a depth from 0 (back of the set) to 1'),
+    )
+
+
+@pytest.mark.parametrize("mark", [[0.5, 0.0], [0.5, 0.3, 0.7], [0.5, 1.5, 1.0], [0.5, 0.0, 0.0], [-0.2, 0.0],
+                                  [1.2, 0.1]])
+def test_shot_marks_in_range_are_valid(mark):
+    # u is free: an offstage mark lies past the edge
+    assert check(screenplay(shot(marks={"spot": mark}))) == []
+
+
+def test_set_marks_are_not_range_checked():
+    sets = {**SETS, "park": SETS["park"].model_copy(update={"marks": {"lawn": [0.5, 2.0, 3.0]}})}
+    assert validate(screenplay(shot(set="park")), sets, PROPS, PEOPLE) == []
 
 
 # ---------------------------------------------------------------------- start
@@ -564,10 +588,9 @@ def test_listed_prop_missing_from_the_scene_is_reported_once():
     ("run_to", {"to": "mom"}, f'"to" must be a mark, and "mom" is a person; {MARKS_LIST}'),
     ("walk_to", {"to": "hat"}, f'"to" must be a mark, and "hat" is a prop; {MARKS_LIST}'),
     ("enter", {"to": "kid"}, f'"to" must be a mark, and "kid" is a person; {MARKS_LIST}'),
-    ("place_on", {"what": "hymn_books", "on": "mom"},
-     f'"on" must be a prop or a mark, and "mom" is a person; {PROPS_LIST}; {MARKS_LIST}'),
+    # place_on onto a person is bad_target: test_place_on_a_person_is_bad_target
     ("enter", {"to": "nowhere"}, f'"nowhere" is not a mark in this shot; {MARKS_LIST}'),
-    ("enter", {"to": "curb", "from": "curb"}, '"from" must be offstage_left or offstage_right, not "curb"'),
+    # exit's "to" stays unknown_mark: tests/agent/test_agent_skills.py pins it (validate.check_offstage)
     ("exit", {"to": "curb"}, '"to" must be offstage_left or offstage_right, not "curb"'),
     ("place_on", {"what": "hymn_books", "on": "nowhere"},
      f'"nowhere" is not a prop in the screenplay or a mark in this shot; {PROPS_LIST}; {MARKS_LIST}'),
@@ -575,6 +598,14 @@ def test_listed_prop_missing_from_the_scene_is_reported_once():
 def test_unknown_mark(verb, params, reason):
     a = act(verb, who="dad", **params)
     assert_errors(check_actions(a), E("unknown_mark", message_for(verb, a, reason), t=1.0, who="dad", do=verb))
+
+
+def test_enter_from_a_mark_on_stage_is_bad_exit():
+    a = act("enter", who="dad", to="curb", **{"from": "curb"})
+    assert_errors(check_actions(a), E(
+        "bad_exit", 'shot s1, t=1: dad cannot enter; "from" must be offstage_left or offstage_right, not "curb"',
+        t=1.0, who="dad", do="enter"))
+    assert check_actions(act("enter", who="dad", to="curb", **{"from": "offstage_right"})) == []
 
 
 @pytest.mark.parametrize("verb", ["drive_to", "ride_to"])
@@ -608,13 +639,19 @@ def test_mixed_targets(verb):
 ])
 def test_person_targets_reject_props_and_marks(verb, target, reason):
     a = act(verb, who="dad", target=target, **({"what": "hat"} if verb == "put_on" else {}))
-    assert_errors(check_actions(a), E("unknown_target", message_for(verb, a, reason), t=1.0, who="dad", do=verb))
+    assert_errors(check_actions(a), E("bad_target", message_for(verb, a, reason), t=1.0, who="dad", do=verb))
 
 
-def test_hand_to_a_prop_is_unknown_target():
+def test_a_person_target_that_is_nothing_at_all_is_unknown_person():
+    a = act("hug", who="dad", target="ghost")
+    reason = f'"ghost" is not in the cast; {CAST_LIST}'
+    assert_errors(check_actions(a), E("unknown_person", message_for("hug", a, reason), t=1.0, who="dad", do="hug"))
+
+
+def test_hand_to_a_prop_is_bad_target():
     assert_errors(
         check_actions(act("hand_to", who="dad", what="hymn_books", to="table")),
-        E("unknown_target",
+        E("bad_target",
           'shot s1, t=1: dad cannot hand_to "hymn_books"; "to" must be a person in the cast, and "table" is a prop',
           t=1.0, who="dad", do="hand_to"),
     )
@@ -675,7 +712,7 @@ def test_open_close_need_the_state(verb, state):
     assert check_actions(act(verb, who="kid", what="hymn_books")) == []  # declares no states
     assert_errors(
         check_actions(act(verb, who="kid", what="lamp")),
-        E("invalid_value",
+        E("unknown_state",
           f'shot s1, t=1: kid cannot {verb} "lamp"; "lamp" has no state "{state}"; its states are lit, out',
           t=1.0, who="kid", do=verb),
     )
@@ -698,6 +735,50 @@ def test_place_on_a_prop_with_no_sockets_is_no_socket():
     a = act("place_on", who="dad", what="hymn_books", on="piano")
     reason = '"piano" has no sockets to place on'
     assert_errors(check_actions(a), E("no_socket", message_for("place_on", a, reason), t=1.0, who="dad", do="place_on"))
+
+
+def test_place_on_itself_is_one_self_target_error():
+    # hymn_books has no sockets, but no_socket would only repeat the problem
+    a = act("place_on", who="dad", what="hymn_books", on="hymn_books")
+    assert_errors(check_actions(a), E("self_target", message_for("place_on", a, '"on" is hymn_books itself'),
+                                      t=1.0, who="dad", do="place_on"))
+    # nor does a socket the prop has (or lacks) add a second error
+    for socket in ("top", "shelf"):
+        a = act("place_on", who="dad", what="table", on="table", socket=socket)
+        assert [e.code for e in check_actions(a)] == ["self_target"], socket
+
+
+def test_place_on_a_person_is_bad_target():
+    a = act("place_on", who="dad", what="hymn_books", on="mom")
+    reason = f'"on" must be a prop or a mark, and "mom" is a person; {PROPS_LIST}; {MARKS_LIST}'
+    assert_errors(check_actions(a), E("bad_target", message_for("place_on", a, reason), t=1.0, who="dad", do="place_on"))
+
+
+def test_times_over_the_cap():
+    assert MAX_SECONDS == 600
+    errors = check_actions(act("wave", t=1e7, who="dad"), act("wave", t=1, who="mom", dur=1e9),
+                           act("rain", t=1, dur=1e12))
+    assert [(e.code, e.message) for e in errors] == [
+        ("bad_time", "shot s1, t=10000000: dad cannot wave; t must be at most 600 s, not 1e+07"),
+        ("bad_dur", "shot s1, t=1: mom cannot wave; dur must be at most 600 s, not 1e+09"),
+        ("bad_dur", "shot s1, t=1: cannot rain; dur must be at most 600 s, not 1e+12"),
+    ]
+
+
+def test_times_at_the_cap_are_valid():
+    assert check_actions(act("wave", t=600, who="dad", dur=600), act("rain", t=600, dur=600)) == []
+    assert check(screenplay(shot(camera=[{"t": 600, "move": "wide", "dur": 600}]))) == []
+    assert check(screenplay(shot(narration=[line(600, "At the end.")]))) == []
+
+
+def test_camera_and_narration_times_over_the_cap():
+    assert_errors(
+        cam({"t": 601, "move": "wide", "dur": 700}),
+        E("bad_time", "shot s1, t=601: cannot wide; t must be at most 600 s, not 601", t=601.0, do="wide"),
+        E("bad_dur", "shot s1, t=601: cannot wide; dur must be at most 600 s, not 700", t=601.0, do="wide"),
+    )
+    assert_errors(check(screenplay(shot(narration=[line(6000, "Much later.")]))), E(
+        "bad_time", "shot s1, dad's narration line 0: t must be at most 600 s, not 6000"))
 
 
 def test_bad_time():

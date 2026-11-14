@@ -11,7 +11,9 @@ What is here:
 
 - parameter and world checks that raise ``StateError`` with the exact codes and messages the
   verb modules have always used (``require_param``, ``require_value``, ``require_person``,
-  ``require_on_stage``, ``require_prop_on_stage``);
+  ``require_on_stage``, ``require_prop_on_stage``), and ``require_prop_inside_stage`` for the
+  verbs that walk up to a prop (a prop past the stage edge is ``not_on_stage``);
+- ``note_seat_when_out_of_reach``, which adds where a seated puppet sits to its out_of_reach;
 - small value helpers (``sign``, ``vec3``, ``bone_after``);
 - getting a puppet up off the floor before it moves (``stand_up_keys``);
 - the crouch that pick_up and place_on use to reach a grip too low for a standing arm: the
@@ -23,15 +25,18 @@ Everything is pure: it reads ``world`` and ``tracks`` and changes neither.
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 
 from screenplay import body as B
 from screenplay import ik
+from screenplay.effects import STAGE_EDGE
+from screenplay.errors import NotedOutOfReach
 from screenplay.locate import Locate, Vec3, body_at, bone_at, bones_at, held_arm_bones, puppet_target
 from screenplay.schema import Action
-from screenplay.state import SEATED_POSES, StateError, World
+from screenplay.state import GROUND, SEATED_POSES, StateError, World
 from screenplay.tracks import Key, TrackSet
 
 __all__ = [
@@ -52,10 +57,14 @@ __all__ = [
     "crouch_reach_keys",
     "crouch_solution",
     "crouch_tries",
+    "fmt_x",
     "kneeling_ground",
+    "note_seat_when_out_of_reach",
+    "offstage_prop_reason",
     "require_on_stage",
     "require_param",
     "require_person",
+    "require_prop_inside_stage",
     "require_prop_on_stage",
     "require_value",
     "sign",
@@ -122,11 +131,82 @@ def require_on_stage(world: World, who: str, hint: str = OFFSTAGE_HINT) -> None:
 
 def require_prop_on_stage(world: World, what: str) -> Vec3:
     """A prop's world anchor, or ``StateError("not_on_stage", "<what> is not on stage")`` when
-    it has none (not placed yet, or held)."""
+    it has none (not placed yet, or held). An anchor past the stage edge passes: drive_to brings
+    a vehicle on from offstage. See require_prop_inside_stage for the verbs that walk to it."""
     anchor = world.props[what].world_pos
     if anchor is None:
         raise StateError("not_on_stage", f"{what} is not on stage")
     return anchor
+
+
+def fmt_x(x: float) -> str:
+    """A stage coordinate for messages: at most three decimals, no trailing zeros, never ``-0``
+    (1.3, -1.25, 0.125)."""
+    return f"{round(float(x), 3) + 0.0:.3f}".rstrip("0").rstrip(".")
+
+
+def offstage_prop_reason(world: World, what: str) -> str | None:
+    """Why a prop standing past the stage edge cannot be walked to, with the fix after the
+    ``; `` (errors.HINT_VARIANTS["not_on_stage"] reads it); None when it stands on stage.
+
+    What counts is the prop at the bottom of its stack, where it meets the ground: a chair on a
+    pickup's bed that overhangs the edge stands on stage while the pickup does (as
+    verbs_body.seated_world_pos has it). A stack someone holds (or that is not on stage at all)
+    is not judged here.
+
+    - a prop on the ground: ``chair is offstage at x=1.3; place it on stage with propStart``,
+      or for a vehicle ``sedan is offstage at x=1.3; drive_to a mark on stage first``
+    - a prop resting on one: ``suitcase is on sedan, offstage at x=1.3; drive_to a mark on
+      stage first``, or ``hymn_books is on table, offstage at x=1.3; place table on stage with
+      propStart``
+
+    ``x`` is the bottom prop's anchor, at most three decimals (fmt_x).
+    """
+    base = (world.supports(what) or [what])[-1]
+    st = world.props[base]
+    if st.parent != GROUND or st.world_pos is None or abs(st.world_pos[0]) <= STAGE_EDGE:
+        return None
+    at = f"offstage at x={fmt_x(st.world_pos[0])}"
+    fix = "drive_to a mark on stage first" if world.is_vehicle(base) else None
+    if base == what:
+        return f"{what} is {at}; {fix or 'place it on stage with propStart'}"
+    return f"{what} is on {base}, {at}; {fix or f'place {base} on stage with propStart'}"
+
+
+def require_prop_inside_stage(world: World, what: str) -> Vec3:
+    """``require_prop_on_stage``, and also ``StateError("not_on_stage", offstage_prop_reason)``
+    when the prop stands past the stage edge (the bottom of its stack at |x| > STAGE_EDGE;
+    exactly on the edge is on stage).
+
+    For the verbs that walk their actor up to a prop (pick_up, sit_on): run before any walk is
+    planned, so the error names the prop, not the actor the walk would take offstage."""
+    anchor = require_prop_on_stage(world, what)
+    reason = offstage_prop_reason(world, what)
+    if reason is not None:
+        raise StateError("not_on_stage", reason)
+    return anchor
+
+
+def note_seat_when_out_of_reach(handler: Handler) -> Handler:
+    """Wrap a reaching verb's handler: an ``ik.OutOfReach`` for the arm of a puppet seated on a
+    prop gets the seat and its fix appended to the reason (errors.NotedOutOfReach), as
+    ``; mom is seated in chair.seat; use stand_up first`` (``use get_out first`` in a vehicle:
+    state.World.seat_reason). The code stays out_of_reach. Handlers are atomic, so the world
+    read here is the one the action started from."""
+
+    @functools.wraps(handler)
+    def wrapped(world: World, tracks: TrackSet, action: Action, t: float, action_start: float,
+                locate: Locate) -> float:
+        try:
+            return handler(world, tracks, action, t, action_start, locate)
+        except ik.OutOfReach as e:
+            name = e.who or action.who
+            p = world.people.get(name) if name is not None else None
+            if p is None or p.seat is None or getattr(e, "note", None):
+                raise
+            raise NotedOutOfReach(e, world.seat_reason(name), who=name) from e  # type: ignore[arg-type]
+
+    return wrapped
 
 
 # ----------------------------------------------------------------------- values

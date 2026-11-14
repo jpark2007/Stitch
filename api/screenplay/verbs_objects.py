@@ -11,6 +11,8 @@ Each handler follows the shared handler contract (see compiler.py):
 
 World rules are checked by running the World method on a scratch copy first, so the verbs and
 the state model can never disagree on what is allowed, and world errors win over reach errors.
+A reach that fails for a puppet seated on a prop names the seat and its fix
+(verb_helpers.note_seat_when_out_of_reach, on put_on, place_on, open and close).
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ from screenplay.verb_helpers import (
     bone_after,
     crouch_reach_keys,
     crouch_solution,
+    note_seat_when_out_of_reach,
     require_param,
 )
 from screenplay.verbs_core import CROUCH_DEEP_BEND, STAGE_EDGE  # verbs_core imports nothing from here: no cycle
@@ -99,6 +102,7 @@ def _geom(world: World, what: str) -> PropGeom:
 assert PUT_ON_SETTLE_SECONDS <= REACH_SECONDS, "put_on's end time would cut the settle short"
 
 
+@note_seat_when_out_of_reach
 def apply_put_on(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Wear a prop on ``target``'s head (default: who's own).
 
@@ -175,6 +179,7 @@ def _surface_off_ground(world: World, on: str) -> StateError:
     return StateError("not_on_stage", f"{on} is not on stage")
 
 
+@note_seat_when_out_of_reach
 def apply_place_on(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Set a held prop down on a prop's socket (``on`` = prop id) or on a mark (``on`` = mark).
 
@@ -444,11 +449,13 @@ def _open_close(world: World, tracks: TrackSet, action: Action, t: float, locate
     return t_touch + REACH_SECONDS
 
 
+@note_seat_when_out_of_reach
 def apply_open(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Reach the prop, its state becomes "open" as the hand arrives, and the arm returns."""
     return _open_close(world, tracks, action, t, locate, OPEN)
 
 
+@note_seat_when_out_of_reach
 def apply_close(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Reach the prop, its state becomes "closed" as the hand arrives, and the arm returns."""
     return _open_close(world, tracks, action, t, locate, CLOSED)
