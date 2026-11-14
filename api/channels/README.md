@@ -1,8 +1,9 @@
 # Channels inbox foundation
 
-This slice authenticates text and photo messages and stores durable receipts. It does **not**
-generate stories, enroll or verify contacts, send messages, schedule prompts, or
-make calls. The companion terminal bridge can exercise the transport without
+This package authenticates text and photo messages and stores durable receipts.
+An opt-in manual worker connects them to the conversation/studio and signed replies.
+It does not enroll or verify contacts, schedule prompts, or make calls. The
+companion terminal bridge can exercise the transport without
 Photon credentials. No `.env` is loaded by this package and imports start no work.
 
 ## Integration hooks (API owner)
@@ -50,7 +51,7 @@ duplicate receipts. This does not claim exactly-once processing by a future work
 A successful receipt is HTTP 202 `{"accepted":true,"duplicate":false}`. It means
 stored, **not** submitted to the studio. Private content is not echoed in errors.
 `POST /internal/channels/tick` accepts exactly `{}` with the same authentication
-and returns `{"processed":0,"scheduler":"inactive"}` until scheduling is implemented.
+and returns `{"processed":0,"scheduler":"inactive"}` unless the worker below is enabled.
 
 ## Contact boundary
 
@@ -113,4 +114,78 @@ stays `photo_pending`/`uploading` and returns 503; it is never blindly uploaded 
 An operator must reconcile those records and any orphaned GridFS chunks. A retry
 can recover a complete file after receipt persistence fails. This is not an
 exactly-once guarantee across Mongo/GridFS APIs; tests use mongomock and real-Mongo
-crash qualification remains required. No worker or outbound delivery is wired here.
+crash qualification remains required.
+
+## Manual worker (off by default)
+
+`STITCH_CHANNELS_WORKER=1` enables the existing signed tick route, returning
+`{processed, sent, blocked, scheduler:"manual"}`. Processing runs off the ASGI event
+loop; there is no scheduler or long-lived API worker task. Production also requires
+explicit `CHANNELS_CONVERSATION_MODE=real`; unset/unknown modes return 503. Scripted
+mode is available only through the isolated demo's injected conversation/studio.
+
+`CHANNELS_BRIDGE_URL` defaults to `http://127.0.0.1:3011` and accepts only numeric
+loopback HTTP origins. Signed outbound `POST /send` uses the existing exact
+`{messageId,provider,spaceId,text}` schema. No redirects, environment proxies, model
+destinations or automatic retries are allowed. An exchange has a five-second total
+deadline and a 1024-byte acknowledgement limit. `STITCH_WEB_URL` is a validated
+HTTP(S) origin (default `http://localhost:3000`); actual studio `done` produces
+`<origin>/memories/<encoded-id>?family=<encoded-family>`. Set a reachable origin
+before using phone delivery. A model response or run receipt never creates a link.
+
+Each tick selects at most five available contacts and scans at most 100 records per
+queue source. A persisted opaque cursor rotates scan windows and source priority,
+so locked records cannot permanently starve later work. It contains no story data.
+Each contact processes at most ten receipts, ten deduplicated photos and 8000 UTF-8
+text bytes from one space. Commands form separate batches. Use a tick after each
+input: story words, `YEAR 1998`, then `SUBMIT` when ready. The worker durably saves
+the teller's exact new words and parses the year; the model cannot append or submit.
+Its bounded interview question can be relayed after the save. Studio follow-ups
+accept text, prop review only `KEEP`, and person matching only `YES` or `NO`.
+Other prop edits require the web app.
+
+The interview has a 20-second cancellation deadline, 32 persisted model calls and
+a recursion bound. The tick stops starting contacts after 25 seconds. This is a
+soft batch bound: in-flight bounded model, relay, database and outbound work must
+settle. Framework tools already running cannot be forcibly undone. Cancellation
+or failure leaves a durable reservation; no uncertain operation is repeated.
+
+Family-scoped `conversations` documents with `kind:"channelWorker"` hold the
+per-contact idle→running reservation and outbox. Success releases the reservation;
+failure blocks it for reconciliation. Crashes leave running reservations that are
+never stolen. Receipts transition received→processing→processed. Intake snapshots
+`principal` and `handle`; every batch member must still match both, person and
+provider. Legacy receipts missing snapshots require operator review, not silent
+migration. Consent/ambiguity is checked before processing and immediately before
+each send. STOP revokes consent before best-effort receipts, even on ID collision.
+
+Outbox messages are persisted before pending→sending→sent transitions. A lost
+acknowledgement leaves an uncertain send, never automatically retried. Operators
+must reconcile provider delivery before recovering it. Studio cursor/pending state
+and `relayBuffer` are persisted together; the buffer is acknowledged only after
+outbox persistence, preventing silent loss of questions or book links. Database
+failures may leave queued but unsent replies; do not blindly clear reservations.
+
+This slice supports one draft/run per contact. Reset, durable production graph
+history, recovery tooling, distributed studio restart, enrollment, proactive prompts
+and voice remain deferred. Real Mongo crash behavior and live-provider delivery
+are not established by the mongomock checks.
+
+## Offline story demo
+
+From `api/`, use the shared-secret setup in `seed.channels_demo --help`, then run
+`uv run python -m seed.channels_demo --worker --port 8011`. Start the terminal
+bridge separately. Send story words, `YEAR 1998`, `SUBMIT`, ticking after each input.
+From `channels/`, a third terminal with the same secret can sign a manual tick:
+
+```sh
+node --experimental-strip-types --input-type=module -e 'import {ApiClient} from "./src/bridge.ts"; console.log(await new ApiClient("http://127.0.0.1:8011", process.env.CHANNELS_SHARED_SECRET, {attempts:1,timeoutMs:90000}).post("/internal/channels/tick", {}));'
+```
+
+Answer the studio follow-up, tick, send `KEEP`, and tick again. The existing offline
+`ScriptedRunManager` compiles and saves the repository's sample-based hymn-book
+scene; no art/model/provider service is called. The terminal bridge prints replies.
+The standalone database is disposable and separate from the main web app: its
+completion URL identifies the saved memory, but opening it in a different app
+database will not show that memory. The integration test verifies the actual saved
+telling, photo, compiled result and completion event. This is not a shared-web demo.

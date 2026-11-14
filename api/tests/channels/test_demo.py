@@ -123,3 +123,53 @@ def test_cli_binds_only_loopback_and_never_logs_secret(isolated, monkeypatch, ca
     assert "http://127.0.0.1:8011" in output
     assert "Receipts are not stories" in output
     assert SECRET not in output
+
+
+def test_scripted_worker_uses_real_offline_studio_to_save_book(isolated):
+    from tests.channels.test_inbox import sign
+    from tests.channels.test_worker import Sender
+    sender = Sender()
+    app = channels_demo.create_app(worker=True, sender=sender)
+    def tick(client):
+        path = "/internal/channels/tick"
+        response = client.post(path, content=b"{}", headers=sign(b"{}", path, secret=SECRET))
+        assert response.status_code == 200
+        assert response.json()["blocked"] == 0
+    with TestClient(app) as client:
+        import base64
+        import io
+        from PIL import Image
+        output = io.BytesIO()
+        Image.new("RGB", (2, 2), "red").save(output, format="PNG")
+        path = "/internal/channels/inbound-photo"
+        body = json.dumps({"messageId": "demo-photo", "provider": "terminal", "spaceId": "terminal",
+            "senderId": "terminal-user", "attachmentId": "photo", "mimeType": "image/png",
+            "dataBase64": base64.b64encode(output.getvalue()).decode()}).encode()
+        assert client.post(path, content=body, headers=sign(body, path, secret=SECRET)).status_code == 202
+        tick(client)
+        for text in ("We dropped the hymn books on the church steps.", "YEAR 1998", "SUBMIT"):
+            assert post(client, text).status_code == 202
+            tick(client)
+        assert "Who else was there" in sender.messages[-1]["text"]
+        assert post(client, "I was alone.").status_code == 202
+        tick(client)
+        assert "Reply KEEP" in sender.messages[-1]["text"]
+        assert post(client, "KEEP").status_code == 202
+        tick(client)
+        for _ in range(5):
+            if any("/memories/" in m["text"] for m in sender.messages):
+                break
+            tick(client)
+        assert any("/memories/" in m["text"] for m in sender.messages)
+        memory = app.state.demo_db.memories.find_one({"familyId": "terminal-family"})
+        assert memory is not None
+        assert memory["tellings"][0]["photoIds"]
+        assert all(m["provider"] == "terminal" and m["spaceId"] == "terminal" for m in sender.messages)
+
+
+def test_demo_ignores_inherited_worker_mode(isolated, monkeypatch):
+    monkeypatch.setenv("STITCH_CHANNELS_WORKER", "1")
+    monkeypatch.setenv("CHANNELS_CONVERSATION_MODE", "real")
+    with TestClient(channels_demo.create_app()):
+        assert os.environ["STITCH_CHANNELS_WORKER"] == "0"
+    assert os.environ["STITCH_CHANNELS_WORKER"] == "1"
