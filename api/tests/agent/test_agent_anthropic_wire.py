@@ -16,6 +16,7 @@ import asyncio
 import copy
 import json
 import socket
+from collections import Counter
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -566,12 +567,22 @@ def keep_all(events: list[Event]) -> schemas.AnswerRequest:
     return schemas.AnswerRequest(kind="props", props=[schemas.PropEdit(id=c.id, action="keep") for c in chips])
 
 
+PAUSES = ("question", "props_found")
+"""The pause events answer_for knows how to answer."""
+
+
 def answer_for(events: list[Event]) -> schemas.AnswerRequest:
-    """The answer to whatever the run paused on: the follow-up, or the props (keep all)."""
-    name = events[-1][0]
+    """The answer to whatever the run paused on: the follow-up, or the props (keep all).
+
+    The pause is the most recent question / props_found, not events[-1]: a run is
+    waiting as soon as its pause streams out, while a parallel sibling branch may still
+    be working (set_designer runs beside prop_master), so that sibling's subagent_end can
+    land after props_found. Later non-pause events are ignored, as in keep_all.
+    """
+    name = next((n for n, _ in reversed(events) if n in PAUSES), None)
+    assert name is not None, f"run paused without a {' or '.join(PAUSES)}: {[n for n, _ in events]}"
     if name == "question":
         return schemas.AnswerRequest(kind="answer", text=ANSWER)
-    assert name == "props_found", name
     return keep_all(events)
 
 
@@ -634,9 +645,79 @@ def resumed_results(transport: ReplayTransport, tool: str) -> list[str]:
     return texts
 
 
-def event_signature(events: list[Event]) -> list[tuple[str, Any]]:
-    """Events as comparable data: names with their payloads as JSON."""
-    return [(name, payload.model_dump(mode="json", by_alias=True)) for name, payload in events]
+def event_signature(events: list[Event]) -> list[tuple[str, str]]:
+    """Events as comparable, hashable data: names with their payloads as canonical JSON."""
+    return [(name, json.dumps(payload.model_dump(mode="json", by_alias=True), sort_keys=True))
+            for name, payload in events]
+
+
+INTERLEAVED = frozenset({"subagent_end"})
+"""Events whose position parallel branches can change from run to run.
+
+The studio starts prop_master and set_designer in one turn, so their subagent_start
+events come out of one AIMessage in a fixed order, but each sub-agent's subagent_end is
+emitted when that branch's task ToolMessage reaches the root, which depends on thread
+timing: set_designer can finish before or after prop_master pauses on confirm_props
+(props_found), and before or after it is resumed. Exact event order is therefore not
+stable between two runs of the same story; everything else streams in a fixed order.
+"""
+
+
+def event_differences(actual: list[Event], expected: list[Event]) -> list[str]:
+    """How two runs' events differ, tolerating only the interleaving parallel branches cause.
+
+    (a) The multiset of (name, payload JSON) must match: a missing, extra or changed event
+    is a difference wherever it sits. (b) The order must match once the INTERLEAVED events
+    are dropped. An empty list means the runs streamed the same events.
+    """
+    problems: list[str] = []
+    got, want = Counter(event_signature(actual)), Counter(event_signature(expected))
+    if got != want:
+        problems.append(f"only in actual: {list((got - want).elements())}")
+        problems.append(f"only in expected: {list((want - got).elements())}")
+    got_order = [n for n, _ in actual if n not in INTERLEAVED]
+    want_order = [n for n, _ in expected if n not in INTERLEAVED]
+    if got_order != want_order:
+        problems.append(f"order differs (without {sorted(INTERLEAVED)}): {got_order} != {want_order}")
+    return problems
+
+
+# --------------------------------------------------------------------------- the helpers above, on hand-made events
+
+
+CHIP = schemas.PropChip(id="prop_basket", name="picnic basket", size="carried")
+PROPS_START = ("subagent_start", schemas.SubagentStartEvent(name="prop_master", task="Find the props."))
+SETS_START = ("subagent_start", schemas.SubagentStartEvent(name="set_designer", task="Make the set."))
+PROPS_FOUND = ("props_found", schemas.PropsFoundEvent(props=[CHIP]))
+PROPS_END = ("subagent_end", schemas.SubagentEndEvent(name="prop_master", summary="props kept"))
+SETS_END = ("subagent_end", schemas.SubagentEndEvent(name="set_designer", summary="set made"))
+QUESTION = ("question", schemas.QuestionEvent(text=FOLLOWUP))
+DONE = ("done", schemas.DoneEvent(memory_id="mem_1"))
+
+
+def test_answer_for_answers_the_props_when_a_sibling_ends_after_them() -> None:
+    events: list[Event] = [QUESTION, PROPS_START, SETS_START, PROPS_FOUND, SETS_END]
+    assert answer_for(events) == schemas.AnswerRequest(
+        kind="props", props=[schemas.PropEdit(id=CHIP.id, action="keep")])
+    assert answer_for([QUESTION, PROPS_END]) == schemas.AnswerRequest(kind="answer", text=ANSWER)
+    with pytest.raises(AssertionError, match="paused without"):
+        answer_for([PROPS_START, SETS_END])
+
+
+def test_event_differences_tolerates_interleaved_ends_only() -> None:
+    one: list[Event] = [QUESTION, PROPS_START, SETS_START, SETS_END, PROPS_FOUND, PROPS_END, DONE]
+    other: list[Event] = [QUESTION, PROPS_START, SETS_START, PROPS_FOUND, SETS_END, PROPS_END, DONE]
+    assert event_differences(one, other) == []
+    assert event_differences(one, one) == []
+
+    dropped = [e for e in one if e is not SETS_END]
+    assert event_differences(dropped, other)  # a missing event, even an interleaving one
+    assert event_differences(one, [e for e in other if e is not PROPS_FOUND])
+    other_set = ("subagent_end", schemas.SubagentEndEvent(name="set_designer", summary="another set"))
+    changed = [other_set if e is SETS_END else e for e in one]
+    assert event_differences(changed, other)  # same names, different payload
+    swapped: list[Event] = [PROPS_START, QUESTION, SETS_START, SETS_END, PROPS_FOUND, PROPS_END, DONE]
+    assert event_differences(swapped, other)  # same multiset, non-interleaving events reordered
 
 
 # --------------------------------------------------------------------------- the new memory over the wire
@@ -658,11 +739,11 @@ def test_new_memory_over_the_wire(studios: list[Studio]) -> None:
     assert [t.author_id for t in memory.tellings] == ["mom"]
     assert_clean(transport)
 
-    # The same story played by ScriptedChatModel streams the same events.
+    # The same story played by ScriptedChatModel streams the same events (up to where the
+    # parallel branches' subagent_end land; see INTERLEAVED).
     baseline = scripted_studio(studios, make_fake_studio_responder(STORY))
     _, expected = baseline.drive(MOM_USER, "mom", MOM_TEXT, [answer_for, answer_for], participant_ids=["dad"])
-    assert [n for n, _ in events] == [n for n, _ in expected]
-    assert event_signature(events) == event_signature(expected)
+    assert event_differences(events, expected) == []
 
     # The studio and all eight sub-agents talked to ChatAnthropic.
     assert set(roles_called(transport)) == {"studio", *SUBAGENT_NAMES}
