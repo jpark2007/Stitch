@@ -14,9 +14,7 @@ type FormSheetProps = Common & {
 } & Omit<FormHTMLAttributes<HTMLFormElement>, "children" | "className">;
 
 const SHEET =
-  "relative block w-full min-w-0 rounded-[var(--radius-paper,2px)] border border-[var(--rule,#2f262024)] " +
-  "bg-[var(--paper-light,#fbf8f1)] p-6 text-[var(--ink,#2f2620)] sm:p-8 " +
-  "shadow-[0_2px_3px_rgb(74_47_29/0.1),0_10px_24px_-6px_rgb(74_47_29/0.22)]";
+  "relative block w-full min-w-0 rounded-paper border border-rule bg-paper-light p-6 text-ink sm:p-8 shadow-lift";
 
 /**
  * `as` picks the element: "section" (default), "div", or "form" (which then

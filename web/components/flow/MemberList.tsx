@@ -7,12 +7,10 @@
 // removal shows its message on that row.
 import { useEffect, useId, useRef, useState } from "react";
 
-import { Button } from "./Button";
+import { Button, FOCUS_RING } from "./Button";
 import { FormError } from "./FormError";
 import { PaperCard } from "./PaperCard";
 import type { MemberRow } from "./members";
-
-const FALLBACK_DOT = "#8f8173";
 
 function messageOf(err: unknown): string {
   if (err instanceof Error && err.message.trim()) return err.message;
@@ -111,13 +109,13 @@ export function MemberList(props: { rows: MemberRow[]; onRemove: (userId: string
         id={headingId}
         ref={headingRef}
         tabIndex={-1}
-        className="rounded-[var(--radius-paper,2px)] font-serif text-[1.5rem] leading-tight text-[var(--ink,#2f2620)] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--accent,#b9573d)]"
+        className={`rounded-paper font-display text-[1.5rem] leading-tight text-ink ${FOCUS_RING}`}
       >
         Who&rsquo;s here
       </h2>
 
       {rows.length === 0 ? (
-        <p className="mt-4 text-[0.9375rem] text-[var(--ink-soft,#5c4e43)] italic">No one has joined yet.</p>
+        <p className="mt-4 text-[0.9375rem] text-ink-soft italic">No one has joined yet.</p>
       ) : (
         <ul className="mt-4 list-none p-0" aria-labelledby={headingId}>
           {rows.map((row) => {
@@ -128,19 +126,19 @@ export function MemberList(props: { rows: MemberRow[]; onRemove: (userId: string
             return (
               <li
                 key={row.userId}
-                className="border-b border-dashed border-[var(--rule,#2f262024)] py-3 last:border-b-0 last:pb-0 first:pt-0"
+                className="border-b border-dashed border-rule py-3 last:border-b-0 last:pb-0 first:pt-0"
               >
                 <div className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1">
                   <span
                     aria-hidden="true"
-                    className="size-3 shrink-0 rounded-full ring-1 ring-[var(--rule,#2f262024)]"
-                    style={{ backgroundColor: row.color || FALLBACK_DOT }}
+                    className="size-3 shrink-0 rounded-full bg-ink-faint ring-1 ring-rule"
+                    style={row.color ? { backgroundColor: row.color } : undefined}
                   />
-                  <span className="min-w-0 flex-1 break-words text-base leading-snug text-[var(--ink,#2f2620)]">
-                    <span className={row.personId ? undefined : "italic text-[var(--ink-soft,#5c4e43)]"}>
+                  <span className="min-w-0 flex-1 break-words text-base leading-snug text-ink">
+                    <span className={row.personId ? undefined : "italic text-ink-soft"}>
                       {row.name}
                     </span>
-                    {row.isYou ? <span className="text-[var(--ink-soft,#5c4e43)]"> (you)</span> : null}
+                    {row.isYou ? <span className="text-ink-soft"> (you)</span> : null}
                     <span className="sr-only">, </span>
                     <RoleLabel role={row.role} />
                   </span>
@@ -174,9 +172,9 @@ export function MemberList(props: { rows: MemberRow[]; onRemove: (userId: string
                         cancelConfirm(row.userId);
                       }
                     }}
-                    className="mt-2 rounded-[var(--radius-paper,2px)] bg-[var(--paper,#f5eee1)] px-4 py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent,#b9573d)]"
+                    className={`mt-2 rounded-paper bg-paper px-4 py-3 ${FOCUS_RING}`}
                   >
-                    <p id={questionId} className="text-[0.9375rem] leading-relaxed text-[var(--ink,#2f2620)]">
+                    <p id={questionId} className="text-[0.9375rem] leading-relaxed text-ink">
                       Remove {whoOf(row)} from the family? Their place in the tree stays.
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -216,8 +214,8 @@ function RoleLabel({ role }: { role: MemberRow["role"] }) {
       className={[
         "ml-2 inline-block rounded-full border px-2 py-px align-[0.1em] text-xs font-medium tracking-wide",
         admin
-          ? "border-[var(--accent-deep,#8f3f2a)]/40 text-[var(--accent-deep,#8f3f2a)]"
-          : "border-[var(--rule,#2f262024)] text-[var(--ink-soft,#5c4e43)]",
+          ? "border-accent-deep/40 text-accent-deep"
+          : "border-rule text-ink-soft",
       ].join(" ")}
     >
       {admin ? "Admin" : "Member"}

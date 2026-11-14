@@ -9,7 +9,6 @@ import type { Question } from "@/lib/types";
 import { Button } from "./Button";
 
 const VISIBLE = 3;
-const HAND = "font-[family-name:var(--font-hand,var(--font-caveat,'Bradley_Hand'),cursive)]";
 // A hand-placed tilt per note, small enough that the row still reads tidy.
 const TILTS = [-0.6, 0.45, -0.3, 0.55, -0.45];
 
@@ -36,11 +35,11 @@ export function QuestionPrompts(props: {
     <section aria-labelledby={headingId} className="min-w-0">
       <h2
         id={headingId}
-        className="font-serif text-[1.375rem] leading-tight tracking-[-0.01em] text-[var(--ink,#2f2620)]"
+        className="font-display text-[1.375rem] leading-tight tracking-[-0.01em] text-ink"
       >
         Someone asked you
       </h2>
-      <p className="mt-1 text-[0.9375rem] text-[var(--ink-soft,#5c4e43)]">
+      <p className="mt-1 text-[0.9375rem] text-ink-soft">
         Pick one to answer, or tell any story you like below.
       </p>
 
@@ -52,12 +51,9 @@ export function QuestionPrompts(props: {
               key={q.id}
               style={{ transform: `rotate(${TILTS[i % TILTS.length]}deg)` }}
               className={[
-                "relative flex flex-col gap-3 rounded-[var(--radius-paper,2px)] border px-4 pt-4 pb-3.5 sm:flex-row sm:items-center sm:justify-between sm:gap-5 sm:px-5",
-                "shadow-[var(--shadow-paper,0_1px_1px_rgb(74_47_29/0.08),0_2px_6px_rgb(74_47_29/0.08))]",
-                "transition-colors duration-150 motion-reduce:transition-none",
-                picked
-                  ? "border-[var(--accent,#b9573d)] bg-[var(--paper-light,#fbf8f1)]"
-                  : "border-[var(--rule,#2f262024)] bg-[var(--paper-light,#fbf8f1)]",
+                "relative flex flex-col gap-3 rounded-paper border bg-paper-light px-4 pt-4 pb-3.5 shadow-paper sm:flex-row sm:items-center sm:justify-between sm:gap-5 sm:px-5",
+                "transition-colors duration-150 ease-paper motion-reduce:transition-none",
+                picked ? "border-accent" : "border-rule",
               ].join(" ")}
             >
               {/* A strip of tape holding the note to the page. */}
@@ -66,7 +62,7 @@ export function QuestionPrompts(props: {
                 className="absolute -top-2 left-6 h-3.5 w-11 -rotate-3 bg-[#e9dcbd]/80 mix-blend-multiply"
               />
               <p
-                className={`min-w-0 text-[1.5rem] leading-[1.2] text-pretty break-words text-[var(--ink,#2f2620)] ${HAND}`}
+                className="min-w-0 font-hand text-[1.5rem] leading-[1.2] text-pretty break-words text-ink"
               >
                 {q.text}
               </p>
@@ -74,7 +70,7 @@ export function QuestionPrompts(props: {
                 variant="secondary"
                 aria-pressed={picked}
                 onClick={() => onPick(q)}
-                className="shrink-0 self-start aria-pressed:border-[var(--accent-deep,#8f3f2a)] aria-pressed:bg-[var(--paper-deep,#ebe0cb)] sm:self-auto"
+                className="shrink-0 self-start aria-pressed:border-accent-deep aria-pressed:bg-paper-deep sm:self-auto"
               >
                 {picked ? <PickedMark /> : null}
                 Answer this
@@ -101,11 +97,11 @@ export function QuestionPrompts(props: {
 
 function PickedMark() {
   return (
-    <svg aria-hidden="true" viewBox="0 0 12 12" className="size-3 shrink-0">
+    <svg aria-hidden="true" viewBox="0 0 12 12" className="size-3 shrink-0 text-accent-deep">
       <path
         d="M2 6.5 4.8 9 10 3"
         fill="none"
-        stroke="var(--accent-deep, #8f3f2a)"
+        stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"

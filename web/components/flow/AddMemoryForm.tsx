@@ -12,8 +12,8 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { SubmitMemoryFields } from "@/lib/types";
 import { isApiError } from "@/lib/api";
-import { Button } from "./Button";
-import { TextAreaField, TextField } from "./Field";
+import { Button, FOCUS_RING } from "./Button";
+import { FIELD_LABEL_CLASS, FIELD_OPTIONAL_CLASS, TextAreaField, TextField } from "./Field";
 import { FormError, focusFirstError } from "./FormError";
 import {
   MEMORY_FIELDS,
@@ -38,7 +38,7 @@ const YEAR_MIN = 1850;
 /** A visible asterisk; the control's `required` tells assistive tech. */
 function RequiredMark() {
   return (
-    <span aria-hidden="true" className="ml-1 font-normal text-[var(--ink-faint,#8f8173)]">
+    <span aria-hidden="true" className="ml-1 font-normal text-ink-faint">
       *
     </span>
   );
@@ -171,11 +171,11 @@ export function AddMemoryForm(props: {
       className="space-y-8"
     >
       {secondTellingOf ? (
-        <div className="border-l-[3px] border-[var(--accent,#b9573d)] bg-[var(--paper,#f5eee1)] px-4 py-3">
-          <p className="text-[1.0625rem] leading-snug font-semibold text-pretty text-[var(--ink,#2f2620)]">
+        <div className="border-l-[3px] border-accent bg-paper px-4 py-3">
+          <p className="text-[1.0625rem] leading-snug font-semibold text-pretty text-ink">
             You&rsquo;re adding your version of &lsquo;{secondTellingOf.title}&rsquo; ({secondTellingOf.year})
           </p>
-          <p className="mt-1 text-sm leading-snug text-[var(--ink-soft,#5c4e43)]">
+          <p className="mt-1 text-sm leading-snug text-ink-soft">
             The same scene will play again, told in your words.
           </p>
         </div>
@@ -183,7 +183,7 @@ export function AddMemoryForm(props: {
 
       <fieldset disabled={locked} className="m-0 min-w-0 space-y-8 border-0 p-0">
         <div>
-          <p className="mb-5 text-sm text-[var(--ink-soft,#5c4e43)]">
+          <p className="mb-5 text-sm text-ink-soft">
             <span aria-hidden="true">* </span>
             {secondTellingOf
               ? "Only your story is needed. Everything else is optional."
@@ -202,7 +202,7 @@ export function AddMemoryForm(props: {
           />
           {prefilledQuestion ? null : (
             <div className="mt-3">
-              <p id={suggestionsId} className="text-sm text-[var(--ink-soft,#5c4e43)]">
+              <p id={suggestionsId} className="text-sm text-ink-soft">
                 Need a starting point?
               </p>
               <ul
@@ -244,10 +244,10 @@ export function AddMemoryForm(props: {
 
         {secondTellingOf ? (
           <div>
-            <p className="text-sm font-medium text-[var(--ink,#2f2620)]">Year</p>
-            <p className="mt-1.5 text-base text-[var(--ink,#2f2620)]">
+            <p className={FIELD_LABEL_CLASS}>Year</p>
+            <p className="mt-2 text-base text-ink">
               <span className="tabular-nums">{secondTellingOf.year}</span>
-              <span className="text-[var(--ink-soft,#5c4e43)]">, the same as the moment</span>
+              <span className="text-ink-soft">, the same as the moment</span>
             </p>
           </div>
         ) : (
@@ -269,7 +269,7 @@ export function AddMemoryForm(props: {
           label={
             <>
               Photos
-              <span className="ml-1.5 font-normal text-[var(--ink-soft,#5c4e43)]">(optional)</span>
+              <span className={FIELD_OPTIONAL_CLASS}>(optional)</span>
             </>
           }
           hint="Old snapshots help us draw the scene."
@@ -302,7 +302,7 @@ export function AddMemoryForm(props: {
         )}
       </fieldset>
 
-      <div className="space-y-4 border-t border-dashed border-[var(--rule,#2f262024)] pt-6">
+      <div className="space-y-4 border-t border-dashed border-rule pt-6">
         <FormError message={formError} />
         <Button
           type="submit"
@@ -333,12 +333,12 @@ function SuggestionChip(props: {
       disabled={disabled}
       className={[
         "inline-flex min-h-9 items-center rounded-full border px-3 py-1.5 text-left text-sm leading-tight",
-        "transition-colors duration-150 motion-reduce:transition-none",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent,#b9573d)]",
+        "transition-colors duration-150 ease-paper motion-reduce:transition-none",
+        FOCUS_RING,
         "disabled:cursor-not-allowed disabled:opacity-60",
         picked
-          ? "border-[var(--ink-soft,#5c4e43)] bg-[var(--paper-deep,#ebe0cb)] text-[var(--ink,#2f2620)]"
-          : "border-[var(--rule,#2f262024)] bg-[var(--paper-light,#fbf8f1)] text-[var(--ink-soft,#5c4e43)] not-disabled:hover:border-[var(--accent,#b9573d)] not-disabled:hover:text-[var(--ink,#2f2620)]",
+          ? "border-ink-soft bg-paper-deep text-ink"
+          : "border-rule bg-paper-light text-ink-soft not-disabled:hover:border-accent not-disabled:hover:text-ink",
       ].join(" ")}
     >
       {children}

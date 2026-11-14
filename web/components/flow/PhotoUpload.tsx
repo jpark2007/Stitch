@@ -13,10 +13,9 @@ import {
   type DragEvent,
   type ReactNode,
 } from "react";
+import { FOCUS_RING_WITHIN } from "./Button";
+import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS } from "./Field";
 import { MAX_PHOTOS, acceptPhotos } from "./photos";
-
-const PAPER_SHADOW =
-  "var(--shadow-paper, 0 1px 1px rgb(74 47 29 / 0.08), 0 2px 6px rgb(74 47 29 / 0.08))";
 
 // A gentle, fixed tilt per slot so the row looks hand-placed but stays tidy.
 const TILTS = [-2.5, 1.5, -1, 2.5, -1.5, 1];
@@ -125,20 +124,20 @@ export function PhotoUpload(props: {
   return (
     <div>
       <div className="flex items-baseline justify-between gap-3">
-        <span id={labelId} className="text-sm font-medium text-[var(--ink,#2f2620)]">
+        <span id={labelId} className={FIELD_LABEL_CLASS}>
           {label}
         </span>
         <span
           id={countId}
           aria-live="polite"
-          className="text-xs text-[var(--ink-faint,#8f8173)] tabular-nums"
+          className="shrink-0 text-xs text-ink-faint tabular-nums"
         >
           {files.length} of {MAX_PHOTOS}
           <span className="sr-only"> photos added</span>
         </span>
       </div>
       {hint ? (
-        <p id={hintId} className="mt-1 text-sm leading-relaxed text-[var(--ink-faint,#8f8173)]">
+        <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
           {hint}
         </p>
       ) : null}
@@ -149,16 +148,15 @@ export function PhotoUpload(props: {
         onDragEnter={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        style={{ boxShadow: PAPER_SHADOW }}
         className={[
-          "relative mt-2 flex min-h-28 flex-col items-center justify-center gap-1 rounded-[var(--radius-card,6px)] border-2 border-dashed px-4 py-5 text-center transition-colors",
-          "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[var(--accent,#b9573d)] has-[:focus-visible]:ring-offset-2 has-[:focus-visible]:ring-offset-[var(--paper,#f5eee1)]",
+          "relative mt-2 flex min-h-28 flex-col items-center justify-center gap-1 rounded-card border-2 border-dashed px-4 py-5 text-center shadow-paper transition-colors duration-150 ease-paper motion-reduce:transition-none",
+          FOCUS_RING_WITHIN,
           disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
           dragging
-            ? "border-[var(--accent,#b9573d)] bg-[var(--paper-deep,#ebe0cb)]"
+            ? "border-accent bg-paper-deep"
             : invalid
-              ? "border-[#9c3b2a] bg-[var(--paper-light,#fbf8f1)]"
-              : "border-[var(--rule,#2f262024)] bg-[var(--paper-light,#fbf8f1)] hover:border-[var(--accent,#b9573d)]",
+              ? "border-[#9c3b2a] bg-paper-light"
+              : "border-rule bg-paper-light hover:border-accent",
         ].join(" ")}
       >
         <input
@@ -175,7 +173,7 @@ export function PhotoUpload(props: {
           className="sr-only"
         />
         <PhotoIcon />
-        <span aria-hidden="true" className="text-sm text-[var(--ink-soft,#5c4e43)]">
+        <span aria-hidden="true" className="text-sm text-ink-soft">
           {dragging ? (
             "Let go to add them"
           ) : full ? (
@@ -183,28 +181,28 @@ export function PhotoUpload(props: {
           ) : (
             <>
               Drop photos here, or{" "}
-              <span className="font-medium text-[var(--accent-deep,#8f3f2a)] underline decoration-dotted underline-offset-4">
+              <span className="font-medium text-accent-deep underline decoration-dotted underline-offset-4">
                 choose from your device
               </span>
             </>
           )}
         </span>
-        <span aria-hidden="true" className="text-xs text-[var(--ink-faint,#8f8173)]">
+        <span aria-hidden="true" className="text-xs text-ink-faint">
           Up to {MAX_PHOTOS}, 10 MB each
         </span>
       </label>
 
       {problems.length > 0 ? (
-        <div id={problemsId} role="alert" className="mt-2 space-y-1">
+        <div id={problemsId} role="alert" className="mt-1.5 space-y-1">
           {problems.map((msg, i) => (
-            <p key={i} className="text-sm text-[#9c3b2a]">
+            <p key={i} className={FIELD_ERROR_CLASS}>
               {msg}
             </p>
           ))}
         </div>
       ) : null}
       {error ? (
-        <p id={errorId} className="mt-2 text-sm text-[#9c3b2a]">
+        <p id={errorId} className={`mt-1.5 ${FIELD_ERROR_CLASS}`}>
           {error}
         </p>
       ) : null}
@@ -259,8 +257,8 @@ function Thumb({
 
   return (
     <figure
-      className="relative m-0 w-24 bg-[var(--paper-light,#fbf8f1)] p-1.5 pb-5"
-      style={{ transform: `rotate(${tilt}deg)`, boxShadow: PAPER_SHADOW }}
+      className="relative m-0 w-24 bg-paper-light p-1.5 pb-5 shadow-paper"
+      style={{ transform: `rotate(${tilt}deg)` }}
     >
       {/* Masking tape holding the photo down. */}
       <span
@@ -274,9 +272,9 @@ function Thumb({
       <img
         ref={imgRef}
         alt=""
-        className="block aspect-square w-full bg-[var(--paper-deep,#ebe0cb)] object-cover text-[0px]"
+        className="block aspect-square w-full bg-paper-deep object-cover text-[0px]"
       />
-      <figcaption className="mt-1 truncate text-center text-[11px] leading-tight text-[var(--ink-faint,#8f8173)]">
+      <figcaption className="mt-1 truncate text-center text-[11px] leading-tight text-ink-faint">
         {file.name}
       </figcaption>
       <button
@@ -289,7 +287,8 @@ function Thumb({
       >
         <span
           aria-hidden="true"
-          className="flex h-6 w-6 items-center justify-center rounded-full border border-[var(--rule,#2f262024)] bg-[var(--paper-light,#fbf8f1)] text-[var(--ink-soft,#5c4e43)] shadow-[0_1px_2px_rgb(74_47_29/0.2)] transition-colors group-hover:border-[var(--accent,#b9573d)] group-hover:text-[var(--accent-deep,#8f3f2a)] group-focus-visible:ring-2 group-focus-visible:ring-[var(--accent,#b9573d)] group-focus-visible:ring-offset-1 group-disabled:opacity-60"
+          // The kit focus ring, drawn on the visible 24px circle.
+          className="flex h-6 w-6 items-center justify-center rounded-full border border-rule bg-paper-light text-ink-soft shadow-[0_1px_2px_rgb(74_47_29/0.2)] transition-colors duration-150 ease-paper group-hover:border-accent group-hover:text-accent-deep group-focus-visible:outline-2 group-focus-visible:outline-offset-3 group-focus-visible:outline-dashed group-focus-visible:outline-accent group-disabled:opacity-60 motion-reduce:transition-none"
         >
           <svg viewBox="0 0 12 12" className="h-2.5 w-2.5">
             <path
@@ -310,7 +309,7 @@ function PhotoIcon() {
     <svg
       aria-hidden="true"
       viewBox="0 0 32 32"
-      className="mb-1 h-7 w-7 text-[var(--ink-faint,#8f8173)]"
+      className="mb-1 h-7 w-7 text-ink-faint"
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"

@@ -3,6 +3,7 @@
 // A four-digit year field. A text input with a numeric keyboard (no spinner
 // arrows); the value stays a string and the page decides what is valid.
 import { useId, type ReactNode } from "react";
+import { FIELD_ERROR_CLASS, FIELD_HINT_CLASS, FIELD_LABEL_CLASS, fieldControlClass } from "./Field";
 
 export function YearInput(props: {
   label: ReactNode;
@@ -40,18 +41,17 @@ export function YearInput(props: {
 
   return (
     <div>
-      <label htmlFor={inputId} className="block text-sm font-medium text-[var(--ink,#2f2620)]">
+      <label htmlFor={inputId} className={FIELD_LABEL_CLASS}>
         {label}
         {required ? (
-          <span className="text-[var(--ink-faint,#8f8173)]">
-            {" "}
+          <span className="ml-1 font-normal text-ink-faint">
             <span aria-hidden="true">*</span>
             <span className="sr-only">(required)</span>
           </span>
         ) : null}
       </label>
       {hint ? (
-        <p id={hintId} className="mt-1 text-sm leading-relaxed text-[var(--ink-faint,#8f8173)]">
+        <p id={hintId} className={`mt-0.5 ${FIELD_HINT_CLASS}`}>
           {hint}
         </p>
       ) : null}
@@ -75,18 +75,14 @@ export function YearInput(props: {
         onChange={(e) => onChange(e.target.value.replace(/\D+/g, "").slice(0, 4))}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy || undefined}
-        className={[
-          "mt-1.5 block h-11 w-[7.5rem] rounded-[var(--radius-paper,2px)] border px-3 text-base tabular-nums tracking-[0.12em]",
-          "text-[var(--ink,#2f2620)] placeholder:tracking-normal placeholder:text-[var(--ink-faint,#8f8173)]",
-          "shadow-[inset_0_1px_2px_rgb(74_47_29/0.1)] transition-colors",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent,#b9573d)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--paper,#f5eee1)]",
-          error
-            ? "border-[#9c3b2a] bg-[#f7e4dc]"
-            : "border-[var(--rule,#2f262024)] bg-[var(--paper-light,#fbf8f1)] hover:border-[var(--ink-faint,#8f8173)]",
-        ].join(" ")}
+        // The same recessed well as TextField, just four digits wide.
+        className={fieldControlClass(
+          !!error,
+          "mt-2 w-[7.5rem] tabular-nums tracking-[0.12em] placeholder:tracking-normal",
+        )}
       />
       {error ? (
-        <p id={errorId} className="mt-1.5 text-sm text-[#9c3b2a]">
+        <p id={errorId} className={`mt-1.5 ${FIELD_ERROR_CLASS}`}>
           {error}
         </p>
       ) : null}
