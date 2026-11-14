@@ -1,25 +1,46 @@
 "use client";
 
 // The photos half of "Make a film": a big drop-or-choose well over a real
-// (visually hidden, still focusable) multiple file input, a count with a slim
-// meter that makes the 8-to-40 rule plain, and a grid of square thumbnails.
-// Each thumbnail shows its upload: waiting (dimmed), sending (a turning
-// thread), sent (a small tick) or failed (a red edge and "Try again"). Each
-// thumbnail owns its object URL and revokes it when it unmounts.
+// (visually hidden, still focusable) multiple file input that takes a whole
+// album, a calm "Looking through your photos" line with real progress while
+// Stitch narrows it down in the browser, a count (or what Stitch chose) with
+// a slim meter that makes the 8-to-40 rule plain, and a grid of square
+// thumbnails of the photos that will be sent. Each thumbnail shows its
+// upload: waiting (dimmed), sending (a turning thread), sent (a small tick)
+// or failed (a red edge and "Try again"). Thumbnails are small copies made
+// on the fly (analyze.ts makePreview); each owns its object URL and revokes
+// it when it unmounts.
 import { useEffect, useId, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 
 import { FOCUS_RING, FOCUS_RING_WITHIN } from "@/components/flow/Button";
 import { FIELD_ERROR_CLASS, FIELD_LABEL_CLASS } from "@/components/flow/Field";
 
-import { FILM_ACCEPT, MAX_FILM_PHOTOS, MIN_FILM_PHOTOS, photoCountLine, type UploadStatus } from "./filmForm";
+import { makePreview } from "./analyze";
+import {
+  FILM_ACCEPT,
+  MAX_ALBUM_PHOTOS,
+  MAX_FILM_PHOTOS,
+  MIN_FILM_PHOTOS,
+  lookingLine,
+  photoCountLine,
+  type UploadStatus,
+} from "./filmForm";
 
 export interface PickedPhoto {
   key: string;
+  /** Its place in the album (every file picked so far). */
+  index: number;
   file: File;
   status: UploadStatus;
   mediaId: string | null;
   /** Why it did not send, when it failed. */
   error: string | null;
+}
+
+/** Progress while Stitch looks through a pick. */
+export interface Looking {
+  done: number;
+  total: number;
 }
 
 function dragHasFiles(e: DragEvent): boolean {
@@ -36,8 +57,17 @@ export function FilmPhotoPicker(props: {
   /** Notes about files left out of the last pick. */
   notes: string[];
   error?: string | null;
+  /** Set while Stitch looks through the photos just picked. */
+  looking?: Looking | null;
+  onStopLooking?(): void;
+  /** What Stitch did with the pick ("Stitch looked at 846 photos and chose 40…"), in place of the count. */
+  summary?: string | null;
+  /** Offered once the person has changed Stitch's choice. */
+  onChooseAgain?: (() => void) | null;
+  /** Photos in the album so far (picked, not only chosen). */
+  albumSize?: number;
 }) {
-  const { items, onAdd, onRemove, onRetry, locked, notes, error } = props;
+  const { items, onAdd, onRemove, onRetry, locked, notes, error, looking, onStopLooking, summary, onChooseAgain } = props;
   const uid = useId();
   const inputId = `${uid}-input`;
   const countId = `${uid}-count`;
@@ -46,7 +76,8 @@ export function FilmPhotoPicker(props: {
 
   const count = items.length;
   const line = photoCountLine(count);
-  const full = count >= MAX_FILM_PHOTOS;
+  const full = (props.albumSize ?? count) >= MAX_ALBUM_PHOTOS;
+  const busy = locked || !!looking;
   const invalid = !!error;
 
   function handleInput(e: ChangeEvent<HTMLInputElement>) {
@@ -57,8 +88,13 @@ export function FilmPhotoPicker(props: {
   }
 
   function onDragOver(e: DragEvent<HTMLElement>) {
-    if (locked || !dragHasFiles(e)) return;
+    if (!dragHasFiles(e)) return;
+    // Always claimed, so a drop while busy never opens the photo in the tab.
     e.preventDefault();
+    if (busy || full) {
+      e.dataTransfer.dropEffect = "none";
+      return;
+    }
     e.dataTransfer.dropEffect = "copy";
     if (!dragging) setDragging(true);
   }
@@ -70,17 +106,31 @@ export function FilmPhotoPicker(props: {
   }
 
   function onDrop(e: DragEvent<HTMLElement>) {
-    if (locked || !dragHasFiles(e)) return;
+    if (!dragHasFiles(e)) return;
     e.preventDefault();
     setDragging(false);
+    if (busy || full) return;
     onAdd(Array.from(e.dataTransfer.files));
   }
+
+  // Keyboard focus follows the pick: from the file input to "Stop" while
+  // Stitch looks, and back to the input when it is done.
+  const inputRef = useRef<HTMLInputElement>(null);
+  const stopRef = useRef<HTMLButtonElement>(null);
+  const isLooking = !!looking;
+  useEffect(() => {
+    const active = document.activeElement;
+    const lost = !active || active === document.body;
+    if (isLooking && (lost || active === inputRef.current)) stopRef.current?.focus({ preventScroll: true });
+    if (!isLooking && lost) inputRef.current?.focus({ preventScroll: true });
+  }, [isLooking]);
 
   // The count line carries the photos' error too (see below).
   const describedBy = [countId, notes.length ? notesId : null].filter(Boolean).join(" ");
   // The meter: filled up to the count out of 40, with a notch at 8.
   const fill = Math.min(1, count / MAX_FILM_PHOTOS);
   const notch = MIN_FILM_PHOTOS / MAX_FILM_PHOTOS;
+  const lookedFill = looking && looking.total > 0 ? Math.min(1, looking.done / looking.total) : 0;
 
   return (
     <section
@@ -95,58 +145,112 @@ export function FilmPhotoPicker(props: {
         Photos
       </p>
 
-      <label
-        htmlFor={inputId}
-        className={[
-          "relative mt-2 flex w-full flex-col items-center justify-center gap-1.5 rounded-card border-[1.5px] border-dashed px-5 text-center transition-[background-color,border-color] duration-150 ease-paper motion-reduce:transition-none",
-          count === 0 ? "min-h-[12.5rem] py-10" : "min-h-[5.5rem] py-5",
-          dragging
-            ? "border-accent bg-paper-light"
-            : invalid
-              ? "border-[#9c3b2a] bg-paper-light/50"
-              : "border-ink-faint/70 bg-paper-light/45 hover:border-accent hover:bg-paper-light/80",
-          locked || full ? "cursor-not-allowed" : "cursor-pointer",
-          locked ? "opacity-60" : "",
-          FOCUS_RING_WITHIN,
-        ].join(" ")}
-      >
-        <input
-          id={inputId}
-          type="file"
-          multiple
-          accept={FILM_ACCEPT}
-          disabled={locked || full}
-          onChange={handleInput}
-          aria-describedby={describedBy}
-          aria-invalid={invalid || undefined}
-          className="sr-only"
-        />
-        {count === 0 ? <StackIcon className="mb-2 h-12 w-14 text-ink-faint" /> : null}
-        <span className="text-[1.0625rem] font-semibold text-accent-deep">
-          {dragging
-            ? "Let go to add them"
-            : full
-              ? "That’s forty: remove one to add another"
-              : count === 0
-                ? "Choose photos"
-                : "Add more photos"}
-          {dragging || full ? null : <span className="font-normal text-ink-soft"> or drop them here</span>}
-        </span>
-        {count === 0 ? (
-          <span className="text-sm text-ink-soft">
-            {MIN_FILM_PHOTOS} to {MAX_FILM_PHOTOS} from one day or trip &middot; JPEG, PNG or WebP, up to 10 MB each
+      {looking ? (
+        <div
+          className={[
+            "mt-2 flex w-full flex-col items-center justify-center gap-3 rounded-card border-[1.5px] border-dashed border-ink-faint/70 bg-paper-light/45 px-5 text-center",
+            count === 0 ? "min-h-[12.5rem] py-10" : "min-h-[5.5rem] py-6",
+          ].join(" ")}
+        >
+          <div role="status" className="flex flex-col items-center gap-3">
+            <p className="font-display text-[1.25rem] leading-tight text-ink">Looking through your photos</p>
+            <div aria-hidden="true" className="relative h-[3px] w-56 max-w-full overflow-hidden rounded-full bg-paper-deep">
+              <div
+                className="absolute inset-y-0 left-0 rounded-full bg-accent/75 transition-[width] duration-200 ease-paper motion-reduce:transition-none"
+                style={{ width: `${lookedFill * 100}%` }}
+              />
+            </div>
+            <p className="text-[0.9375rem] text-ink-soft tabular-nums">
+              {lookingLine(looking.done, looking.total)}
+              <span className="sr-only"> looked at</span>
+            </p>
+          </div>
+          <p className="max-w-[34ch] text-sm text-pretty text-ink-soft">
+            This happens on your computer. Only the photos Stitch chooses are sent.
+          </p>
+          {onStopLooking ? (
+            <button
+              ref={stopRef}
+              type="button"
+              onClick={onStopLooking}
+              className={`-my-1 inline-flex min-h-9 items-center rounded-paper px-2 text-sm font-semibold text-accent-deep underline decoration-1 underline-offset-[0.2em] ${FOCUS_RING}`}
+            >
+              Stop
+            </button>
+          ) : null}
+        </div>
+      ) : (
+        <label
+          htmlFor={inputId}
+          className={[
+            "relative mt-2 flex w-full flex-col items-center justify-center gap-1.5 rounded-card border-[1.5px] border-dashed px-5 text-center transition-[background-color,border-color] duration-150 ease-paper motion-reduce:transition-none",
+            count === 0 ? "min-h-[12.5rem] py-10" : "min-h-[5.5rem] py-5",
+            dragging
+              ? "border-accent bg-paper-light"
+              : invalid
+                ? "border-[#9c3b2a] bg-paper-light/50"
+                : "border-ink-faint/70 bg-paper-light/45 hover:border-accent hover:bg-paper-light/80",
+            locked || full ? "cursor-not-allowed" : "cursor-pointer",
+            locked ? "opacity-60" : "",
+            FOCUS_RING_WITHIN,
+          ].join(" ")}
+        >
+          <input
+            ref={inputRef}
+            id={inputId}
+            type="file"
+            multiple
+            accept={FILM_ACCEPT}
+            disabled={locked || full}
+            onChange={handleInput}
+            aria-describedby={describedBy}
+            aria-invalid={invalid || undefined}
+            className="sr-only"
+          />
+          {count === 0 ? <StackIcon className="mb-2 h-12 w-14 text-ink-faint" /> : null}
+          <span className="text-[1.0625rem] font-semibold text-accent-deep">
+            {dragging
+              ? "Let go to add them"
+              : full
+                ? `That’s ${MAX_ALBUM_PHOTOS.toLocaleString("en-US")} photos, as many as Stitch looks through at once`
+                : count === 0
+                  ? "Choose photos"
+                  : "Add more photos"}
+            {dragging || full ? null : <span className="font-normal text-ink-soft"> or drop them here</span>}
           </span>
-        ) : null}
-      </label>
+          {count === 0 ? (
+            <span className="text-sm text-ink-soft">
+              The whole album is fine &middot; JPEG, PNG or WebP, up to 10 MB each
+            </span>
+          ) : null}
+        </label>
+      )}
 
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-5">
+      {/* While the first pick is looked at, the panel says it all; an empty count would only add noise. */}
+      <div
+        className={`mt-3 flex-col gap-2 sm:flex-row sm:items-center sm:gap-5 ${looking && count === 0 && !error ? "hidden" : "flex"}`}
+      >
         {/* After a send with too few photos the error says it; the count line would only repeat it. */}
         <p
           id={countId}
           aria-live="polite"
-          className={error ? FIELD_ERROR_CLASS : `text-[0.9375rem] ${line.ready ? "text-ink" : "text-ink-soft"}`}
+          className={
+            error ? FIELD_ERROR_CLASS : `text-[0.9375rem] text-pretty ${line.ready || summary ? "text-ink" : "text-ink-soft"}`
+          }
         >
-          {error ?? line.text}
+          {error ?? (summary ? <Unbroken text={summary} /> : line.text)}
+          {!error && onChooseAgain && !busy ? (
+            <>
+              {" "}
+              <button
+                type="button"
+                onClick={onChooseAgain}
+                className={`-my-1 inline-flex min-h-8 items-center rounded-paper px-1 align-baseline text-[0.9375rem] font-semibold whitespace-nowrap text-accent-deep underline decoration-1 underline-offset-[0.2em] ${FOCUS_RING}`}
+              >
+                Choose again
+              </button>
+            </>
+          ) : null}
         </p>
         <div aria-hidden="true" className="relative h-1 w-full max-w-[12rem] shrink-0 rounded-full bg-paper-deep sm:ml-auto">
           <div
@@ -186,16 +290,26 @@ function Thumb(props: { item: PickedPhoto; index: number; locked: boolean; onRem
   const { item, index, locked, onRemove, onRetry } = props;
   const imgRef = useRef<HTMLImageElement>(null);
   const [unreadable, setUnreadable] = useState(false);
+  const [shown, setShown] = useState(false);
 
-  // The object URL lives exactly as long as this thumbnail shows this file.
+  // A small copy, made once this thumbnail shows; its object URL lives
+  // exactly as long as the thumbnail does.
   useEffect(() => {
     const img = imgRef.current;
     if (!img) return;
-    const url = URL.createObjectURL(item.file);
-    img.src = url;
+    let url: string | null = null;
+    let gone = false;
+    void makePreview(item.file).then((made) => {
+      if (gone) URL.revokeObjectURL(made);
+      else {
+        url = made;
+        img.src = made;
+      }
+    });
     return () => {
+      gone = true;
       img.removeAttribute("src");
-      URL.revokeObjectURL(url);
+      if (url) URL.revokeObjectURL(url);
     };
   }, [item.file]);
 
@@ -222,10 +336,11 @@ function Thumb(props: { item: PickedPhoto; index: number; locked: boolean; onRem
           ref={imgRef}
           alt=""
           decoding="async"
+          onLoad={() => setShown(true)}
           onError={() => setUnreadable(true)}
-          className={`h-full w-full object-cover text-[0px] transition-opacity duration-300 ${unreadable ? "hidden" : "block"} ${
-            item.status === "waiting" && locked ? "opacity-55" : ""
-          }`}
+          className={`h-full w-full object-cover text-[0px] transition-opacity duration-300 ease-paper motion-reduce:transition-none ${
+            unreadable ? "hidden" : "block"
+          } ${!shown ? "opacity-0" : item.status === "waiting" && locked ? "opacity-55" : "opacity-100"}`}
         />
         {unreadable ? (
           <span className="flex h-full w-full items-center justify-center text-xs text-ink-soft">no preview</span>
@@ -283,6 +398,19 @@ function Thumb(props: { item: PickedPhoto; index: number; locked: boolean; onRem
         </button>
       )}
     </figure>
+  );
+}
+
+/** The summary line, with "near-duplicates" never split at its hyphen on a narrow screen. */
+function Unbroken(props: { text: string }) {
+  return props.text.split(/(near-duplicates?)/).map((part, i) =>
+    i % 2 ? (
+      <span key={i} className="whitespace-nowrap">
+        {part}
+      </span>
+    ) : (
+      part
+    ),
   );
 }
 

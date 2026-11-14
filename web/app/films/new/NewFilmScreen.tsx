@@ -1,14 +1,20 @@
 "use client";
 
-// /films/new: the photos (8 to 40, dropped or chosen), the story in the
-// teller's words, the year and an optional title. Sending first uploads each
-// photo through POST /families/{fid}/media, at most three at a time, each
-// thumbnail showing its own progress; a photo that fails can be tried again
-// (or removed) and, once every photo is up, the film starts by itself. Then
-// POST /families/{fid}/films, and on to the film's page, which waits for it.
-// Photos already sent are not sent again when the form is sent a second time.
+// /films/new: the photos (as many as you like, up to a 1,000-photo album,
+// dropped or chosen), the story in the teller's words, the year and an
+// optional title. Stitch looks through the photos in the browser
+// (components/film/analyze.ts) and keeps a shortlist of at most 40, no two
+// alike, spread over the day (components/film/shortlist.ts); the person can
+// take any out (the next best takes its place) or have Stitch choose again.
+// Nothing of the album leaves the browser until the form is sent, and then
+// only the shortlist: each photo through POST /families/{fid}/media, at most
+// three at a time, each thumbnail showing its own progress; a photo that
+// fails can be tried again (or removed) and, once every photo is up, the
+// film starts by itself. Then POST /families/{fid}/films, and on to the
+// film's page, which waits for it. Photos already sent are not sent again
+// when the form is sent a second time.
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useId, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 
 import { Button, ButtonLink } from "@/components/flow/Button";
 import {
@@ -26,29 +32,38 @@ import { SessionGate, type SessionValue } from "@/components/flow/SessionGate";
 import { hrefs } from "@/components/flow/session";
 import { CHECK_FIELDS_MESSAGE, type FieldErrors } from "@/components/flow/validation";
 import { YearInput } from "@/components/flow/YearInput";
-import { FilmPhotoPicker, type PickedPhoto } from "@/components/film/FilmPhotoPicker";
+import { analyzePhotos, type PhotoLook } from "@/components/film/analyze";
+import { FilmPhotoPicker, type Looking, type PickedPhoto } from "@/components/film/FilmPhotoPicker";
 import {
   FILM_YEAR_MIN,
+  MAX_ALBUM_PHOTOS,
+  MAX_FILM_PHOTOS,
   MIN_FILM_PHOTOS,
   UPLOADS_IN_FLIGHT,
   acceptFilmPhotos,
+  albumLine,
   filmRequest,
   filmServerErrors,
   runQueue,
   sentIds,
   tallyUploads,
+  unreadableLine,
   uploadLine,
   validateFilmDraft,
   type FilmDraft,
   type FilmField,
 } from "@/components/film/filmForm";
 import { familyFromQuery, filmHref, filmsHref } from "@/components/film/filmLinks";
+import { chooseAgain, planAlbum, replaceTaken, signalsFromLooks, type AlbumPlan } from "@/components/film/shortlist";
 import { useFilmFamily } from "@/components/film/useFilmFamily";
 import { isApiError, type StitchApi } from "@/lib/api";
 
 const TITLE = "Make a film";
 const LEDE =
-  "Pick the photos from one day or trip, then tell what happened. Stitch chooses the best of them, puts them in the order of your story and reads it in your words.";
+  "Pick the photos from one day or trip, the whole album if you like, then tell what happened. Stitch chooses the best of them, puts them in the order of your story and reads it in your words.";
+const STILL_LOOKING = "Stitch is still looking through your photos. It won’t be long.";
+/** Progress redraws at most this often while Stitch looks. */
+const LOOKING_REDRAW_MS = 120;
 const STORY_PLACEHOLDER =
   "Tell it the way you would at the kitchen table: where you went, who was there, what happened first and how it ended…";
 // Large, comfortable serif for writing in, as on the add-a-memory page.
@@ -176,29 +191,132 @@ function FilmForm(props: { api: StitchApi; fid: string }) {
     [router],
   );
 
+  // The album: every file picked so far, in pick order, and how each looked
+  // (null: it could not be read). Only the shortlist is ever in `items`.
+  const album = useRef<{ files: File[]; looks: (PhotoLook | null)[]; removed: number[]; plan: AlbumPlan | null }>({
+    files: [],
+    looks: [],
+    removed: [],
+    plan: null,
+  });
+  const [looking, setLooking] = useState<Looking | null>(null);
+  const [albumSize, setAlbumSize] = useState(0);
+  const lookingRef = useRef<AbortController | null>(null);
+  const [summary, setSummary] = useState<{ considered: number; setAside: number; chose: boolean } | null>(null);
+  const [canChooseAgain, setCanChooseAgain] = useState(false);
+  // Leaving the page stops the looking.
+  useEffect(() => () => lookingRef.current?.abort(), []);
+
+  const clearPhotosError = useCallback(() => {
+    if (itemsRef.current.length < MIN_FILM_PHOTOS) return;
+    setErrors((e) => {
+      if (!e.photos) return e;
+      const next = { ...e };
+      delete next.photos;
+      return next;
+    });
+  }, []);
+
+  /** The film's photos become `chosen` (album indices); photos staying in keep their upload state. */
+  const show = useCallback(
+    (chosen: readonly number[]) => {
+      const files = album.current.files;
+      update((list) => {
+        const kept = new Map(list.map((i) => [i.index, i]));
+        return chosen.map(
+          (index) =>
+            kept.get(index) ?? { key: `p${++keySeq}`, index, file: files[index], status: "waiting" as const, mediaId: null, error: null },
+        );
+      });
+      clearPhotosError();
+    },
+    [update, clearPhotosError],
+  );
+
+  /** Choose from the whole album again (after a pick, or the "Choose again" action). */
+  const replan = useCallback(() => {
+    const a = album.current;
+    const { photos, exactTimes } = signalsFromLooks(a.looks);
+    const plan = planAlbum(photos, { exactTimes, removed: a.removed, max: MAX_FILM_PHOTOS, min: MIN_FILM_PHOTOS });
+    a.plan = plan;
+    show(plan.chosen);
+    setSummary({ considered: photos.length, setAside: plan.setAside, chose: plan.mode === "album" });
+    setCanChooseAgain(false);
+  }, [show]);
+
   const addFiles = (files: File[]) => {
-    const { accepted, errors: left } = acceptFilmPhotos(
-      itemsRef.current.map((i) => i.file),
-      files,
-    );
+    if (lookingRef.current) return;
+    const a = album.current;
+    const { accepted, errors: left } = acceptFilmPhotos(a.files, files, MAX_ALBUM_PHOTOS);
     setNotes(left);
     if (!accepted.length) return;
-    update((list) => [
-      ...list,
-      ...accepted.map((i) => ({ key: `p${++keySeq}`, file: files[i], status: "waiting" as const, mediaId: null, error: null })),
-    ]);
-    if (errors.photos && itemsRef.current.length >= MIN_FILM_PHOTOS) {
-      setErrors((e) => {
-        const next = { ...e };
-        delete next.photos;
-        return next;
+    const fresh = accepted.map((i) => files[i]);
+    const control = new AbortController();
+    lookingRef.current = control;
+    setLooking({ done: 0, total: fresh.length });
+    let drawn = 0;
+    void analyzePhotos(fresh, {
+      signal: control.signal,
+      onProgress: (done, total) => {
+        const now = performance.now();
+        if (done < total && now - drawn < LOOKING_REDRAW_MS) return;
+        drawn = now;
+        setLooking({ done, total });
+      },
+    })
+      .then((looks) => {
+        if (control.signal.aborted) return;
+        a.files = [...a.files, ...fresh];
+        a.looks = [...a.looks, ...looks];
+        const unreadable = unreadableLine(fresh.filter((_, k) => !looks[k]).map((f) => f.name));
+        if (unreadable) setNotes([...left, unreadable]);
+        replan();
+      })
+      .catch(() => {
+        // Stopped: the album stays as it was before this pick.
+      })
+      .finally(() => {
+        if (lookingRef.current !== control) return;
+        lookingRef.current = null;
+        doneLooking();
       });
-    }
+  };
+
+  /** The "still looking" line goes with the looking. */
+  const doneLooking = () => {
+    setLooking(null);
+    setAlbumSize(album.current.files.length);
+    setErrors((e) => {
+      if (e.photos !== STILL_LOOKING) return e;
+      const next = { ...e };
+      delete next.photos;
+      return next;
+    });
+  };
+
+  const stopLooking = () => {
+    lookingRef.current?.abort();
+    lookingRef.current = null;
+    doneLooking();
   };
 
   const remove = (key: string) => {
     setNotes([]);
-    update((list) => list.filter((i) => i.key !== key));
+    const a = album.current;
+    const item = itemsRef.current.find((i) => i.key === key);
+    if (item && a.plan) {
+      // Out it goes, with its look-alikes; the next best that is unlike
+      // everything else takes its place.
+      a.removed = [...a.removed, item.index];
+      const next = replaceTaken(a.plan.album, itemsRef.current.map((i) => i.index), a.removed, item.index);
+      show(next);
+      if (a.plan.mode === "album") {
+        const fresh = chooseAgain(a.plan.album, a.plan.mode, a.removed, MAX_FILM_PHOTOS, MIN_FILM_PHOTOS).chosen;
+        setCanChooseAgain(fresh.join() !== next.join());
+      }
+    } else {
+      update((list) => list.filter((i) => i.key !== key));
+    }
     // The last failure removed: the line about it goes too.
     if (tallyUploads(itemsRef.current).failed === 0) setFormError(null);
   };
@@ -275,7 +393,13 @@ function FilmForm(props: { api: StitchApi; fid: string }) {
 
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (locked || !check()) return;
+    if (locked) return;
+    if (lookingRef.current) {
+      setErrors((found) => ({ ...found, photos: STILL_LOOKING }));
+      setFormError(null);
+      return;
+    }
+    if (!check()) return;
     void send(draft);
   };
 
@@ -309,6 +433,11 @@ function FilmForm(props: { api: StitchApi; fid: string }) {
         locked={locked}
         notes={notes}
         error={errors.photos}
+        looking={looking}
+        onStopLooking={stopLooking}
+        summary={summary ? albumLine({ ...summary, chosen: items.length }) : null}
+        onChooseAgain={canChooseAgain ? replan : null}
+        albumSize={albumSize}
       />
 
       <fieldset disabled={locked} className="m-0 mt-12 min-w-0 border-0 p-0">
