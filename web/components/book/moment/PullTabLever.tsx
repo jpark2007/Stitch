@@ -100,15 +100,14 @@ function gateNow(
   controller: PlaybackController,
   shot: string | null,
   reveal: { readonly current: number },
-  s: { held: boolean; external: number | null; away: number },
+  s: { held: boolean; away: number },
 ) {
   return tabGate({
     tabShot: shot,
     frameShot: controller.frame.shot?.id,
     reveal: reveal.current,
     openAt: OPEN_TO_PLAY,
-    // A hold from the keyboard's slider brings it out too: it is pulling.
-    held: s.held || s.external !== null,
+    held: s.held,
     away: s.away,
   });
 }
