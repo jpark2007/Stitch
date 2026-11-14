@@ -10,7 +10,7 @@ import { mix, shade, tint } from "./sketch";
  * Render <PuppetDefs /> once per page; puppets reference its filters.
  */
 
-export type Build = "short" | "average" | "tall";
+export type Build = "small" | "short" | "average" | "tall";
 
 export interface PuppetProps {
   /** Unique per page (used for pattern ids). */
@@ -248,7 +248,7 @@ function itemParts(kind: ItemKind | undefined, item: string, body: string, pid: 
 
 /* ----------------------------------------------------------------- puppet */
 
-const BUILD_SCALE: Record<Build, number> = { short: 0.9, average: 0.97, tall: 1.04 };
+const BUILD_SCALE: Record<Build, number> = { small: 0.8, short: 0.9, average: 0.97, tall: 1.04 };
 
 export function Puppet({ id, color, item = "", build = "average", className, title }: PuppetProps) {
   const kind = itemKind(item);
