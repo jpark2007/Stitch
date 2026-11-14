@@ -181,5 +181,8 @@ describe("links", () => {
     assert.equal(threadsHref(null), "/threads");
     assert.equal(threadsHref(null, { demo: true }), "/threads?demo=1");
     assert.equal(personHref("grandma rosa", null, { demo: true }), "/people/grandma%20rosa?demo=1");
+    // A demo id never travels with a real family's id.
+    assert.equal(personHref("rosa", "maos", { demo: true }), "/people/rosa?demo=1");
+    assert.equal(threadsHref("maos", { demo: false }), "/threads?family=maos");
   });
 });
