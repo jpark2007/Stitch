@@ -6,16 +6,21 @@ README "Scope for the weekend": the stage demo starts with a full tree and books
 - eight people in three generations with hand-picked character sheets;
 - the hand-written hymn-book scene from web/public/samples/hymn_books.memory.json (memory,
   prop, set, screenplay and timeline), plus five more memories without scenes across the
-  eras, two placeholder photos, and two open questions.
+  eras, and two placeholder photos;
+- two open questions the real studio can answer: Sam is asked for his telling of the
+  church-steps day (the hymn-book memory, the only one with a scene, so the studio can
+  add to it), and Ana gets a general prompt about the day Lily was born, which starts a
+  new memory. A question never points at a memory without a scene, because the real
+  studio cannot add a telling to one.
 
 Run it against MONGODB_URI / MONGODB_DB from api/:
 
     uv run python -m seed.demo            # seed once; a no-op when the family exists
     uv run python -m seed.demo --reset    # delete the demo data and rebuild it
 
-Writes go through the db/ functions. The only raw collection access is the reset path
-(`_purge`), and every filter in it is scoped to the demo family id, the demo user ids, or
-the demo emails, so non-demo data is never touched.
+Every read and write, including the reset, goes through the db/ functions; the reset is
+scoped to the demo family id, the demo user ids and the demo emails, so non-demo data is
+never touched.
 """
 
 from __future__ import annotations
@@ -199,10 +204,12 @@ EXTRA_MEMORIES: tuple[_M, ...] = (
 HYMN_MEMORY_ID = "sample_hymn_books"
 DEMO_MEMORY_IDS: tuple[str, ...] = (HYMN_MEMORY_ID,) + tuple(m.id for m in EXTRA_MEMORIES)
 
+# (person id, text, memory id). A memory id must name a memory with a scene: the real
+# studio raises MemoryNotFound for one without, so answering on stage would fail.
 DEMO_QUESTIONS: tuple[tuple[str, str, str | None], ...] = (
-    ("mom", "David remembers teaching Sam to ride a bike. What do you remember about that day?",
-     "demo_sams_first_bike"),
-    ("sam", "What do you remember about Lily's graduation?", "demo_lily_graduation"),
+    ("sam", "Mom and Dad met on the church steps. What's the version of that day you grew up hearing?",
+     HYMN_MEMORY_ID),
+    ("mom", "What do you remember about the day Lily was born?", None),
 )
 
 
@@ -239,19 +246,8 @@ def _put_demo_photos(db: Database) -> list[str]:
 
 def _purge(db: Database) -> None:
     """Delete everything that belongs to the demo, and nothing else."""
-    fid = {"familyId": DEMO_FAMILY_ID}
-    db["users"].delete_many({"$or": [{"email": {"$in": list(DEMO_EMAILS)}},
-                                     {"_id": {"$in": list(DEMO_USER_IDS)}}]})
-    db["families"].delete_many({"_id": DEMO_FAMILY_ID})
-    for collection in ("people", "memories", "questions", "props", "sets"):
-        db[collection].delete_many(fid)
-
-    media_fid = {"metadata.familyId": DEMO_FAMILY_ID}
-    db[media_db.INLINE].delete_many(media_fid)  # mongomock's inline store
-    file_ids = [doc["_id"] for doc in db[media_db.FILES].find(media_fid, {"_id": 1})]
-    if file_ids:
-        db[f"{media_db.BUCKET}.chunks"].delete_many({"files_id": {"$in": file_ids}})
-        db[media_db.FILES].delete_many({"_id": {"$in": file_ids}})
+    users_db.delete_users(db, emails=list(DEMO_EMAILS), user_ids=list(DEMO_USER_IDS))
+    families_db.purge_family(db, DEMO_FAMILY_ID)  # the family, its data and its media
 
 
 # ----------------------------------------------------------------------------- build
