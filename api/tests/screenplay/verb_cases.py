@@ -782,8 +782,9 @@ def _vehicles() -> list[VerbCase]:
 
 def _effects() -> list[VerbCase]:
     # Effects run through effects.py effect_for. Its `at` is resolved with the shot's locate, so
-    # an `at` naming a prop that is not on stage fails there with locate.py's reason. Effects
-    # have no `who` and no `what`, so the message head is "cannot <effect>".
+    # an `at` naming a prop that is not on stage fails there, with locate.py's code and a reason
+    # that names the effect. Effects have no `who` and no `what`, so the message head is
+    # "cannot <effect>".
     on_stage = {"mom": _at("bench_spot")}
     return [
         # ----------------------------------------------------------------- confetti
@@ -796,8 +797,9 @@ def _effects() -> list[VerbCase]:
         _dynamic("confetti", "at_prop_not_on_stage",
                  _one(_a(1, "confetti", at="cap"), start=on_stage),
                  "not_on_stage",
-                 # locate.py Locator._prop_from_world (the locate call in effects.py effect_for)
-                 "shot s1, t=1: cannot confetti; cap is not on stage"),
+                 # effects.py _place (rewording locate.py Locator._prop_from_world's reason)
+                 ('shot s1, t=1: cannot confetti; confetti at "cap": cap is not on stage at t=1; '
+                  "place it with propStart or aim the effect at a mark")),
 
         # -------------------------------------------------------------------- steam
         _ok("steam", "ok", _one(_a(1, "steam", at="table", dur=3), start=on_stage, prop_start=TABLE)),
@@ -808,8 +810,9 @@ def _effects() -> list[VerbCase]:
         _dynamic("steam", "at_prop_not_on_stage",
                  _one(_a(1, "steam", at="lamp", dur=2), start=on_stage),
                  "not_on_stage",
-                 # locate.py Locator._prop_from_world (the locate call in effects.py effect_for)
-                 "shot s1, t=1: cannot steam; lamp is not on stage"),
+                 # effects.py _place (rewording locate.py Locator._prop_from_world's reason)
+                 ('shot s1, t=1: cannot steam; steam at "lamp": lamp is not on stage at t=1; '
+                  "place it with propStart or aim the effect at a mark")),
 
         # --------------------------------------------------------------------- rain
         _ok("rain", "ok", _one(_a(1, "rain", dur=3), start=on_stage)),
@@ -831,8 +834,9 @@ def _effects() -> list[VerbCase]:
         _dynamic("smoke", "at_prop_not_on_stage",
                  _one(_a(1, "smoke", at="suitcase"), start=on_stage),
                  "not_on_stage",
-                 # locate.py Locator._prop_from_world (the locate call in effects.py effect_for)
-                 "shot s1, t=1: cannot smoke; suitcase is not on stage"),
+                 # effects.py _place (rewording locate.py Locator._prop_from_world's reason)
+                 ('shot s1, t=1: cannot smoke; smoke at "suitcase": suitcase is not on stage at t=1; '
+                  "place it with propStart or aim the effect at a mark")),
 
         # -------------------------------------------------------------- time_of_day
         _ok("time_of_day", "ok", _one(_a(1, "time_of_day", value="dusk", dur=2), start=on_stage)),
