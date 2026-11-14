@@ -48,6 +48,11 @@ const demoThreadMoments: ThreadMoment[] = demoMoments.map((m) => ({
   participantIds: m.participantIds,
 }));
 
+/** The Book of Family Traditions: a family's own, or the demo book (which needs no sign-in). */
+function traditionsHref(familyId?: string): string {
+  return familyId ? `/traditions?family=${encodeURIComponent(familyId)}` : "/traditions?demo=1";
+}
+
 /** This page's path, to come back to after signing in. */
 function here(): string {
   if (typeof window === "undefined") return "/threads";
@@ -131,6 +136,7 @@ export default function ThreadsScreen(props: ThreadsScreenProps) {
           familyName={demoFamily.name}
           people={demoThreadPeople}
           moments={demoThreadMoments}
+          traditionsHref={traditionsHref()}
           note={<DemoNote why={source.why} onRetry={retry} />}
           {...viewSeed}
         />
@@ -188,6 +194,8 @@ function FamilyThreads(props: {
       key={fid}
       familyId={fid}
       addHref={hrefs.add({ familyId: fid })}
+      askHref={hrefs.ask({ familyId: fid })}
+      traditionsHref={traditionsHref(fid)}
       familyName={familyName}
       people={data.people}
       moments={data.moments}

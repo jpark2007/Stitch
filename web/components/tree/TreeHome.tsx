@@ -11,6 +11,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { Button, ButtonLink } from "@/components/flow/Button";
 import { PaperCard } from "@/components/flow/PaperCard";
 import { hrefs, recallFamily, rememberFamily } from "@/components/flow/session";
+import { MenuDisclosure } from "@/components/threads/MenuDisclosure";
 import { api, isMockMode } from "@/lib/api";
 import type { FamilySummary } from "@/lib/types";
 import { demoFamily, demoPeople } from "./demoFamily";
@@ -34,6 +35,15 @@ const TREE_MAX_SCALE = 1.05;
 const LOGIN_HREF = "/login";
 const SIGNUP_HREF = "/signup";
 const DEMO_HREF = "/?demo=1";
+/** A quiet text link in the top bar: padded to a 44px tap target without moving the bar. */
+const BAR_LINK =
+  "-my-3 shrink-0 items-center py-3 text-sm text-ink-faint no-underline transition-colors hover:text-ink";
+/** A line in the bar's "More" menu (phones and tablets). */
+const MENU_LINK =
+  "flex min-h-11 w-full items-center rounded-paper px-3 font-display text-[1.05rem] text-ink no-underline hover:bg-paper focus-visible:bg-paper";
+/** The Book of Family Traditions: a family's own, or the demo book (which needs no sign-in). */
+const traditionsHref = (familyId?: string | null) =>
+  familyId ? `/traditions?family=${encodeURIComponent(familyId)}` : "/traditions?demo=1";
 // Links out of the demo tree say so, so the next screen shows the demo too.
 const DEMO_SCOPE = { demo: true } as const;
 const demoPersonHref = (id: string) => personHref(id, null, DEMO_SCOPE);
@@ -155,9 +165,13 @@ function FamilyHome(props: {
       title={familyName}
       caption={people.length ? "pick anyone to open their book" : undefined}
       threads={threadsHref(familyId)}
+      ask={hrefs.ask({ familyId })}
+      traditions={traditionsHref(familyId)}
       add={hrefs.add({ familyId })}
       switcher={
-        <FamilySwitch families={view.families} currentId={familyId} busy={switching} onChange={onSwitch} />
+        view.families.length > 1 ? (
+          <FamilySwitch families={view.families} currentId={familyId} busy={switching} onChange={onSwitch} />
+        ) : undefined
       }
     >
       {people.length ? (
@@ -205,7 +219,13 @@ function DemoHome(props: { reason: "chosen" | "offline" | "mock"; onRetry?: () =
   // the real family once Stitch answers again. Demo people are always marked.
   const threads = reason === "offline" ? threadsHref(null) : threadsHref(null, DEMO_SCOPE);
   return (
-    <HomeShell title={demoFamily.name} caption="pick anyone to open their book" threads={threads} note={note}>
+    <HomeShell
+      title={demoFamily.name}
+      caption="pick anyone to open their book"
+      threads={threads}
+      traditions={traditionsHref(null)}
+      note={note}
+    >
       <FamilyTree
         people={demoPeople}
         hrefFor={demoPersonHref}
@@ -219,7 +239,7 @@ function DemoHome(props: { reason: "chosen" | "offline" | "mock"; onRetry?: () =
 
 function SignedOutHome() {
   return (
-    <HomeShell threads={threadsHref(null)}>
+    <HomeShell threads={threadsHref(null)} traditions={traditionsHref(null)}>
       <PromptCard title="Your family’s storybook" puppets>
         <p className="text-ink-soft">
           Sign in to see your family&rsquo;s tree and open anyone&rsquo;s book of moments.
@@ -238,7 +258,7 @@ function SignedOutHome() {
 
 function NoFamilyHome() {
   return (
-    <HomeShell threads={threadsHref(null)}>
+    <HomeShell threads={threadsHref(null)} traditions={traditionsHref(null)}>
       <PromptCard title="You’re not in a family yet" puppets>
         <p className="text-ink-soft">
           Start your family&rsquo;s tree, or open the invite link a relative sent you to join theirs.
@@ -289,14 +309,27 @@ function HomeShell(props: {
   caption?: ReactNode;
   threads: string;
   switcher?: ReactNode;
+  /** "Ask the family": only for a signed-in viewer on a real family. */
+  ask?: string;
+  /** The Book of Family Traditions: the family's own, or the demo book. */
+  traditions?: string;
   /** "Add a memory" link: only for a signed-in viewer on a real family. */
   add?: string;
   note?: ReactNode;
   busy?: boolean;
   children: ReactNode;
 }) {
-  const { title, caption, threads, add, switcher, note, busy, children } = props;
+  const { title, caption, threads, ask, traditions, add, switcher, note, busy, children } = props;
   const placeholder = busy === true;
+  const extras = [
+    ask ? { href: ask, label: "Ask the family" } : null,
+    traditions ? { href: traditions, label: "Traditions" } : null,
+  ].filter((x): x is { href: string; label: string } => x !== null);
+  // Two or more go under "More" until the bar has room for every word.
+  const folded = extras.length > 1;
+  // With a family picker too, phones say just "Threads" (no thread drawing), so
+  // the picker keeps at least the room it had before "More" joined the bar.
+  const tight = folded && switcher != null;
   return (
     <main className="mx-auto flex min-h-dvh max-w-6xl flex-col px-[var(--gutter)] pb-10 pt-8 sm:pt-12">
       <header className="relative flex flex-col items-center text-center">
@@ -306,9 +339,10 @@ function HomeShell(props: {
             {switcher}
             <Link
               href={threads}
-              className="group inline-flex shrink-0 items-center gap-2 text-sm text-ink-faint no-underline transition-colors hover:text-ink"
+              aria-label={tight ? "Family threads" : undefined}
+              className="group -my-3 inline-flex shrink-0 items-center gap-2 py-3 text-sm text-ink-faint no-underline transition-colors hover:text-ink"
             >
-              <svg width="26" height="10" viewBox="0 0 26 10" aria-hidden className="shrink-0">
+              <svg width="26" height="10" viewBox="0 0 26 10" aria-hidden className={`shrink-0 ${tight ? "hidden sm:block" : ""}`}>
                 <path
                   d="M1 6 Q 7 1 13 5 T 25 4"
                   fill="none"
@@ -318,13 +352,53 @@ function HomeShell(props: {
                   strokeLinecap="round"
                 />
               </svg>
-              Family threads
+              {tight ? (
+                <span aria-hidden>
+                  <span className="sm:hidden">Threads</span>
+                  <span className="hidden sm:inline">Family threads</span>
+                </span>
+              ) : (
+                "Family threads"
+              )}
             </Link>
+            {extras.map((x) => (
+              <Link key={x.label} href={x.href} className={`${BAR_LINK} ${folded ? "hidden lg:inline-flex" : "inline-flex"}`}>
+                {x.label}
+              </Link>
+            ))}
+            {folded && (
+              <MenuDisclosure
+                className="shrink-0 lg:hidden"
+                label={
+                  <>
+                    More
+                    <svg width="11" height="7" viewBox="0 0 11 7" aria-hidden className="mt-px shrink-0">
+                      <path
+                        d="M1.5 1.5 L5.5 5.5 L9.5 1.5"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.4"
+                        strokeDasharray="2.4 1.6"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </>
+                }
+                buttonClassName="-my-3 flex items-center gap-1.5 py-3 text-sm text-ink-faint transition-colors hover:text-ink aria-expanded:text-ink"
+                panelClassName="absolute right-0 top-full z-20 mt-2 w-max min-w-[12rem] rounded-paper border border-rule bg-paper-light p-1.5 text-left shadow-lift"
+              >
+                {extras.map((x) => (
+                  <Link key={x.label} href={x.href} className={MENU_LINK}>
+                    {x.label}
+                  </Link>
+                ))}
+              </MenuDisclosure>
+            )}
             {add && (
               <Link
                 href={add}
                 aria-label="Add a memory"
-                className="-my-2 inline-flex shrink-0 items-center gap-1.5 py-2 text-sm text-ink-faint no-underline transition-colors hover:text-ink"
+                className="-my-3 inline-flex shrink-0 items-center gap-1.5 py-3 text-sm text-ink-faint no-underline transition-colors hover:text-ink"
               >
                 <span aria-hidden className="text-base leading-none">
                   +
