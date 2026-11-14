@@ -1002,3 +1002,26 @@ def test_every_problem_is_reported_in_order():
         ("self_target", "s2", 0.0),
         ("duplicate_shot", "s1", None),          # third shot reuses s1
     ]
+
+
+# ------------------------------------------------------------- one message grammar
+
+def test_validate_builds_its_messages_with_errors_error_message():
+    import screenplay.validate as V
+    from screenplay.errors import error_message
+
+    assert not hasattr(V, "_message")
+    cases = [
+        (V._Site(), None, None, None, None, None),
+        (V._Site(shot="s1"), "s1", None, None, None, None),
+        (V._Site(shot="s1", who="dad"), "s1", None, "dad", None, None),
+        (V._Site(shot="s1", t=4.7449, do="pan_to", what="mom"), "s1", 4.7449, None, "pan_to", "mom"),
+        (V._Site(shot="s1", t=5, who="dad", do="hand_to", what="hymn_books"), "s1", 5, "dad", "hand_to", "hymn_books"),
+    ]
+    for site, shot, t, who, do, what in cases:
+        err = site.error("code", "the reason")
+        assert err.message == error_message(shot, t, who, do, what, "the reason")
+        assert (err.shot, err.t, err.who, err.do) == (shot, t, who, do)
+    assert V._Site(shot="s1", t=4.7449, do="pan_to", what="mom").error("c", "r").message == (
+        'shot s1, t=4.74: cannot pan_to "mom"; r'
+    )

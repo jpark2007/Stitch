@@ -34,6 +34,7 @@ from dataclasses import dataclass
 
 import schemas
 from screenplay import narration
+from screenplay.errors import error_message
 from screenplay.narration import NarrationError
 from screenplay.schema import (
     SHARED_DIR,
@@ -48,7 +49,6 @@ from screenplay.schema import (
     Shot,
     StartState,
 )
-from screenplay.state import fmt_t
 
 VERBS: dict[str, dict] = VOCABULARY["actions"]
 CAMERA: dict[str, dict] = VOCABULARY["camera"]
@@ -79,18 +79,6 @@ def action_params(action: Action) -> dict[str, object]:
     return {key: getattr(action, name) for name, key in _PARAMS if getattr(action, name) is not None}
 
 
-# ---------------------------------------------------------------------------- messages
-
-def _message(head: str, reason: str, who: str | None = None, do: str | None = None, what: str | None = None) -> str:
-    """``<head>: <who> cannot <do> "<what>"; <reason>`` and its shorter forms."""
-    if do is not None:
-        subject = f"{who} cannot {do}" if who is not None else f"cannot {do}"
-        if what:
-            subject += f' "{what}"'
-        return f"{head}: {subject}; {reason}"
-    return f"{head}: {reason}"
-
-
 def _names(items: Iterable[str]) -> str:
     return ", ".join(items)
 
@@ -106,9 +94,10 @@ def _finite(x: float) -> bool:
 
 @dataclass(frozen=True)
 class _Site:
-    """Where an error is reported: the message head and the CompileError location fields."""
+    """Where an error is reported: the CompileError location fields. The message head follows
+    from them (errors.error_message): ``screenplay`` without a shot, ``shot <id>`` without a
+    t, else ``shot <id>, t=<t>``."""
 
-    head: str
     shot: str | None = None
     t: float | None = None
     who: str | None = None
@@ -118,7 +107,7 @@ class _Site:
     def error(self, code: str, reason: str) -> CompileError:
         return CompileError(
             code=code,
-            message=_message(self.head, reason, self.who, self.do, self.what),
+            message=error_message(self.shot, self.t, self.who, self.do, self.what, reason),
             shot=self.shot,
             t=self.t,
             who=self.who,
@@ -276,7 +265,7 @@ class _Validator:
     # --------------------------------------------------------------- screenplay
 
     def screenplay_level(self) -> None:
-        site = _Site("screenplay")
+        site = _Site()
         for pid in self.cast:
             if pid not in self.people:
                 known = _names(self.people) or "none"
@@ -294,7 +283,7 @@ class _Validator:
             self.interaction(i, it)
 
     def tellings(self) -> None:
-        site = _Site("screenplay")
+        site = _Site()
         for author, by_shot in (self.sp.narrations or {}).items():
             if author == self.default_author:
                 self.add(
@@ -313,7 +302,7 @@ class _Validator:
                     )
 
     def explanations(self) -> None:
-        site = _Site("screenplay")
+        site = _Site()
         for i, ex in enumerate(self.sp.explanations or []):
             kind, sep, ident = ex.target.partition(":")
             if not sep or kind not in ("puppet", "prop") or not ident:
@@ -337,7 +326,7 @@ class _Validator:
                 )
 
     def interaction(self, i: int, it: Interaction) -> None:
-        site = _Site("screenplay")
+        site = _Site()
         label = f'interaction "{it.id}"'
         shot: Shot | None = None
         if it.shot is not None:
@@ -429,7 +418,7 @@ class _Validator:
     # -------------------------------------------------------------------- shots
 
     def shot(self, index: int, shot: Shot) -> None:
-        site = _Site(f"shot {shot.id}", shot=shot.id)
+        site = _Site(shot=shot.id)
         if shot.id in self.shot_ids[:index]:
             self.add(site, "duplicate_shot", f'another shot already has id "{shot.id}"; shot ids must be unique')
 
@@ -467,7 +456,7 @@ class _Validator:
                 self.add(site, "ambiguous_name", f'mark "{name}" has the same name as a prop; rename the mark')
 
     def start(self, shot: Shot, who: str, s: StartState, marks: Mapping[str, object] | None) -> None:
-        site = _Site(f"shot {shot.id}", shot=shot.id, who=who)
+        site = _Site(shot=shot.id, who=who)
         if who not in self.cast_set:
             self.add(site, "unknown_person", f'start names "{who}", who is not in the cast; {self.cast_list()}')
         self.check_mark(site, marks, s.at, f"{who} starts at ")
@@ -496,7 +485,7 @@ class _Validator:
             self.add(site, "invalid_value", reason)
 
     def camera(self, shot: Shot, cue: CameraCue, marks: Mapping[str, object] | None) -> None:
-        site = _Site(f"shot {shot.id}, t={fmt_t(cue.t)}", shot=shot.id, t=cue.t, do=cue.move, what=cue.target)
+        site = _Site(shot=shot.id, t=cue.t, do=cue.move, what=cue.target)
         self.check_time(site, "t", cue.t, positive=False)
         given = {k: v for k, v in (("target", cue.target), ("dur", cue.dur)) if v is not None}
         spec = CAMERA.get(cue.move)
@@ -512,7 +501,7 @@ class _Validator:
 
     def action(self, shot: Shot, a: Action, marks: Mapping[str, object] | None, seen_ids: set[str]) -> None:
         do = a.do
-        site = _Site(f"shot {shot.id}, t={fmt_t(a.t)}", shot=shot.id, t=a.t, who=a.who, do=do, what=a.what)
+        site = _Site(shot=shot.id, t=a.t, who=a.who, do=do, what=a.what)
         if a.id is not None:
             if a.id in seen_ids:
                 self.add(site, "duplicate_action_id", f'another action in this shot already has id "{a.id}"')
