@@ -18,8 +18,17 @@ export const PHOTO_TYPES = [
 ];
 
 // Some browsers report an empty type for HEIC photos, so fall back on the
-// file extension only when no type was given.
-const PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".gif"];
+// file extension only when no type was given. lib/api.ts applies the same
+// mapping when it uploads, so a typeless pick is sent with this type.
+const PHOTO_TYPES_BY_EXTENSION: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
+  ".gif": "image/gif",
+};
 
 interface PhotoLike {
   name: string;
@@ -27,11 +36,21 @@ interface PhotoLike {
   type: string;
 }
 
-function isPhotoType(file: PhotoLike): boolean {
+/**
+ * The image type a picked file will be uploaded as: its own type (trimmed,
+ * lowercased) when it has one, else the type its extension names, else null.
+ */
+export function photoTypeFor(file: { name: string; type: string }): string | null {
   const type = file.type.trim().toLowerCase();
-  if (type) return PHOTO_TYPES.includes(type);
+  if (type) return type;
   const name = file.name.toLowerCase();
-  return PHOTO_EXTENSIONS.some((ext) => name.endsWith(ext));
+  const dot = name.lastIndexOf(".");
+  return (dot >= 0 && PHOTO_TYPES_BY_EXTENSION[name.slice(dot)]) || null;
+}
+
+function isPhotoType(file: PhotoLike): boolean {
+  const type = photoTypeFor(file);
+  return type !== null && PHOTO_TYPES.includes(type);
 }
 
 function megabytes(bytes: number): string {

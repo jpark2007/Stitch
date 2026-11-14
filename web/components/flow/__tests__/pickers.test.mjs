@@ -8,7 +8,7 @@ import {
   toggleRelation,
   validateRelationships,
 } from "../relationships.ts";
-import { MAX_PHOTOS, MAX_PHOTO_BYTES, PHOTO_TYPES, acceptPhotos } from "../photos.ts";
+import { MAX_PHOTOS, MAX_PHOTO_BYTES, PHOTO_TYPES, acceptPhotos, photoTypeFor } from "../photos.ts";
 
 const empty = () => ({ parentIds: [], spouseIds: [] });
 const names = { rosa: "Rosa", luis: "Luis", ana: "Ana", bea: "Bea", tom: "Tom" };
@@ -216,6 +216,38 @@ test("acceptPhotos falls back on the extension when the browser gives no type", 
   assert.deepEqual(accepted, [0]);
   assert.equal(errors.length, 1);
   assert.match(errors[0], /mystery/);
+});
+
+test("photoTypeFor uses the file's own type, else its extension, else null", () => {
+  assert.equal(photoTypeFor({ name: "a.HEIF", type: "" }), "image/heif");
+  assert.equal(photoTypeFor({ name: "a.txt", type: "" }), null);
+  assert.equal(photoTypeFor({ name: "a.jpg", type: "image/webp" }), "image/webp");
+  assert.equal(photoTypeFor({ name: "a.jpg", type: "  IMAGE/JPEG " }), "image/jpeg");
+  assert.equal(photoTypeFor({ name: "IMG_1.JPeG", type: " " }), "image/jpeg");
+  assert.equal(photoTypeFor({ name: "noextension", type: "" }), null);
+  assert.equal(photoTypeFor({ name: "heic", type: "" }), null);
+  assert.equal(photoTypeFor({ name: "a.heic.txt", type: "" }), null);
+  for (const [ext, type] of [
+    ["jpg", "image/jpeg"],
+    ["png", "image/png"],
+    ["webp", "image/webp"],
+    ["heic", "image/heic"],
+    ["gif", "image/gif"],
+  ]) {
+    assert.equal(photoTypeFor({ name: `x.${ext}`, type: "" }), type);
+    assert.ok(PHOTO_TYPES.includes(type));
+  }
+});
+
+test("acceptPhotos keeps a typeless .heic and rejects a typeless .txt", () => {
+  const { accepted, errors } = acceptPhotos([], [
+    { name: "IMG_0002.heic", size: 10, type: "" },
+    { name: "notes.txt", size: 10, type: "" },
+  ]);
+  assert.deepEqual(accepted, [0]);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /notes\.txt/);
+  assert.match(errors[0], /isn't a photo/);
 });
 
 test("acceptPhotos rejects an oversize file and says the limit", () => {

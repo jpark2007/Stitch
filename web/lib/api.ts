@@ -419,8 +419,29 @@ const PHOTO_EXTENSIONS: Record<string, string> = {
   "image/heif": ".heif",
 };
 
+/** The image MIME type for each photo extension: the inverse of PHOTO_EXTENSIONS, plus ".jpeg". */
+const PHOTO_TYPES_BY_EXTENSION: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(PHOTO_EXTENSIONS).map(([type, ext]) => [ext, type])),
+  ".jpeg": "image/jpeg",
+};
+
 function isFile(b: Blob): b is File {
   return typeof File !== "undefined" && b instanceof File;
+}
+
+/**
+ * Some browsers give HEIC (and occasionally JPEG) picks an empty type, and
+ * FormData then labels the part application/octet-stream, which the API
+ * refuses with a 415. Re-wrap such a File with the image type its extension
+ * names. Typed blobs, and Files with no known image extension, pass through.
+ */
+function withPhotoType(photo: Blob): Blob {
+  if (photo.type.trim() || !isFile(photo)) return photo;
+  const name = photo.name.toLowerCase();
+  const dot = name.lastIndexOf(".");
+  const type = dot >= 0 ? PHOTO_TYPES_BY_EXTENSION[name.slice(dot)] : undefined;
+  if (!type) return photo;
+  return new File([photo], photo.name, { type, lastModified: photo.lastModified });
 }
 
 /** The multipart filename for a photo: its own name, else `<stem><ext from its type>`. */
@@ -590,7 +611,8 @@ export function createApiClient(opts?: {
     uploadMedia: async (fid, file) => {
       const p = path`/families/${fid}/media`;
       const form = new FormData();
-      form.append("file", file, photoFilename(file, "photo"));
+      const photo = withPhotoType(file);
+      form.append("file", photo, photoFilename(photo, "photo"));
       return request<{ id: string }>("POST", p, { form });
     },
     submitMemory: async (fid, fields, photos) => {
@@ -602,7 +624,8 @@ export function createApiClient(opts?: {
       if (fields.title != null) form.append("title", fields.title);
       if (fields.memoryId != null) form.append("memoryId", fields.memoryId);
       for (const id of fields.participantIds ?? []) form.append("participantIds", id);
-      (photos ?? []).forEach((photo, i) => {
+      (photos ?? []).forEach((picked, i) => {
+        const photo = withPhotoType(picked);
         form.append("photos", photo, photoFilename(photo, `photo-${i + 1}`));
       });
       return request<SubmitMemoryResponse>("POST", p, { form });

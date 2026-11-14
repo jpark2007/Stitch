@@ -368,6 +368,47 @@ describe("submitMemory", () => {
     );
   });
 
+  test("a typeless photo is sent with the image type its extension names", async () => {
+    const { fetch, calls } = recordingFetch(() => jsonResponse({ runId: "r3" }));
+    const client = createApiClient({ baseUrl: BASE, fetch });
+    const heic = new File(["heic bytes"], "IMG_0001.HEIC", { type: "" });
+    const png = new File(["png bytes"], "porch.png", { type: "image/png" });
+    const odd = new File(["?"], "notes.txt", { type: "" });
+    await client.submitMemory("f1", { text: "The porch.", year: 1971 }, [heic, png, odd]);
+    const photos = calls[0].init.body.getAll("photos");
+    assert.equal(photos.length, 3);
+    assert.equal(photos[0].type, "image/heic");
+    assert.equal(photos[0].name, "IMG_0001.HEIC");
+    assert.equal(await photos[0].text(), "heic bytes");
+    assert.equal(photos[1].type, "image/png");
+    assert.equal(photos[1].name, "porch.png");
+    assert.equal(await photos[1].text(), "png bytes");
+    // No known image extension: left alone (the picker never lets one through).
+    assert.equal(photos[2].type, "");
+    assert.equal(photos[2].name, "notes.txt");
+  });
+
+  test("every photo extension maps to its type, ignoring case", async () => {
+    const { fetch, calls } = recordingFetch(() => jsonResponse({ runId: "r4" }));
+    const client = createApiClient({ baseUrl: BASE, fetch });
+    const cases = [
+      ["a.jpg", "image/jpeg"],
+      ["b.JPEG", "image/jpeg"],
+      ["c.Png", "image/png"],
+      ["d.webp", "image/webp"],
+      ["e.heic", "image/heic"],
+      ["f.HEIF", "image/heif"],
+      ["g.gif", "image/gif"],
+    ];
+    const files = cases.map(([name]) => new File(["x"], name, { type: "" }));
+    await client.submitMemory("f1", { text: "Many.", year: 1980 }, files);
+    const photos = calls[0].init.body.getAll("photos");
+    assert.deepEqual(
+      photos.map((p) => [p.name, p.type]),
+      cases,
+    );
+  });
+
   test("omits null and missing optional fields", async () => {
     const { fetch, calls } = recordingFetch(() => jsonResponse({ runId: "r2" }));
     const client = createApiClient({ baseUrl: BASE, fetch });
@@ -447,6 +488,21 @@ describe("uploadMedia", () => {
       calls.map((c) => c.init.body.get("file").name),
       ["photo.png", "photo.heic", "photo"],
     );
+  });
+
+  test("a typeless 'photo.JPG' is sent as image/jpeg; a typed File is sent unchanged", async () => {
+    const { fetch, calls } = recordingFetch(() => jsonResponse({ id: "m3" }, 201));
+    const client = createApiClient({ baseUrl: BASE, fetch });
+    await client.uploadMedia("f", new File(["jpeg bytes"], "photo.JPG", { type: "" }));
+    const png = new File(["png bytes"], "kept.png", { type: "image/png" });
+    await client.uploadMedia("f", png);
+    const [jpg, kept] = calls.map((c) => c.init.body.get("file"));
+    assert.equal(jpg.type, "image/jpeg");
+    assert.equal(jpg.name, "photo.JPG");
+    assert.equal(await jpg.text(), "jpeg bytes");
+    assert.equal(kept.type, "image/png");
+    assert.equal(kept.name, "kept.png");
+    assert.equal(await kept.text(), "png bytes");
   });
 
   test("413 and 415 become ApiErrors carrying the server detail", async () => {
