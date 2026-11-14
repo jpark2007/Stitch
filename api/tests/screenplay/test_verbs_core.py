@@ -12,12 +12,14 @@ import pytest
 import schemas
 from screenplay import body as B
 from screenplay import ik
-from screenplay.locate import make_locate, puppet_socket_at
+from screenplay.compiler import compile as compile_screenplay
+from screenplay.locate import make_locate, puppet_root, puppet_socket_at
 from screenplay.motion import resolve_marks
-from screenplay.schema import Action, Shot
+from screenplay.schema import Action, Screenplay, Shot
 from screenplay.state import StateError, World
 from screenplay.tracks import TrackSet
 from screenplay.verbs_core import HANDLERS
+from verb_cases import base_scene
 
 ACTION_START = 1.2
 
@@ -482,6 +484,31 @@ def test_drop_reproduces_the_sample():
     assert world.holder("books") is None
 
 
+def test_drop_while_kneeling_on_a_raised_mark_lands_on_the_mark_not_at_the_lowered_root():
+    world, tracks = scene()  # mom on steps_top (h = 0.3), holding books
+    run(world, tracks, 0.0, who="mom", do="pose", pose="kneel")
+    root_y = puppet_root(world, tracks, "mom", ACTION_START + 2.0)[1]
+    assert root_y < 0.3 - 0.05  # the kneel lowered the root well below the mark
+    run(world, tracks, 2.0, who="mom", do="drop", what="books")
+    assert keys(tracks, "prop:books", "position")[-1][1][1] == pytest.approx(0.3)
+    assert world.props["books"].world_pos[1] == pytest.approx(0.3)
+
+
+def test_drop_while_seated_lands_on_the_ground_under_the_seat_not_at_the_hips():
+    # A chair on the raised steps_top (h = 0.3); mom sits on it with her pos at the hip root, as
+    # get_in leaves it. The books land at the chair's anchor height, not the hips.
+    world, tracks = scene(prop_start={"chair": {"at": "steps_top"}})
+    world.sit_on("mom", "chair")
+    seat = world.socket_world("chair", "seat")
+    world.people["mom"].pos = (seat[0], seat[1] + 0.05, seat[2])
+    assert world.people["mom"].pos[1] > 0.3 + 0.05
+    run(world, tracks, 1.0, who="mom", do="drop", what="books")
+    landing = keys(tracks, "prop:books", "position")[-1][1]
+    assert landing[1] == pytest.approx(0.3)
+    assert landing[0] == pytest.approx(seat[0] - B.DROP_OFFSET)  # x unchanged: in front of her feet, facing left
+    assert world.props["books"].world_pos[1] == pytest.approx(0.3)
+
+
 def test_drop_errors():
     world, tracks = scene({"dad": {"at": "steps_foot"}, "mom": {"at": "steps_top", "holding": "books"}})
     e = fails(world, tracks, "not_holding", who="dad", do="drop", what="books")
@@ -673,3 +700,105 @@ def test_pose_durations_do_not_depend_on_notes(pose, dur):
         tracks_by_notes.append([tr.model_dump() for tr in tracks.tracks()])
     assert ends[1] == ends[2] == ends[0]
     assert tracks_by_notes[1] == tracks_by_notes[2] == tracks_by_notes[0]
+
+
+# ------------------------------------------------- drop from a seat, through compile()
+
+def _compile_yard(actions, start, prop_start):
+    sp = Screenplay.model_validate({
+        "memoryId": "m", "cast": ["dad", "mom", "kid"],
+        "props": ["hymn_books", "chair", "table", "sedan"],
+        "shots": [{"id": "s1", "set": "yard", "start": start, "propStart": prop_start,
+                   "actions": actions}],
+    })
+    sc = base_scene()
+    return compile_screenplay(sp, sets=sc.sets, props=sc.props, people=sc.people)
+
+
+def _track(result, target, channel):
+    for tr in result.timeline.tracks:
+        if (tr.target, tr.channel) == (target, channel):
+            return [(k[0], k[1]) for k in tr.keys]
+    return []
+
+
+def _books_land(result):
+    """The books' last parent and their final position."""
+    parents = _track(result, "prop:hymn_books", "parent")
+    positions = _track(result, "prop:hymn_books", "position")
+    return parents[-1], positions[-1]
+
+
+def test_drop_from_inside_the_sedan_lands_on_the_ground_not_at_the_hips():
+    res = _compile_yard(
+        [{"t": 1, "do": "get_in", "who": "dad", "what": "sedan"},
+         {"t": 4, "do": "drop", "who": "dad", "what": "hymn_books"}],
+        start={"dad": {"at": "curb", "holding": "hymn_books"}},
+        prop_start={"sedan": {"at": "curb"}},
+    )
+    assert res.ok, [e.message for e in res.errors]
+    (t_parent, parent), (t_land, landing) = _books_land(res)
+    assert parent == "ground"
+    assert t_land == pytest.approx(t_parent + B.FALL_SECONDS)
+    assert landing[1] == 0.0  # the curb's ground, not the seated hip root (0.141)
+    assert landing[2] == pytest.approx(0.5)
+
+
+def test_books_dropped_in_the_sedan_stay_on_the_ground_when_it_drives_away():
+    res = _compile_yard(
+        [{"t": 1, "do": "get_in", "who": "dad", "what": "sedan"},
+         {"t": 4, "do": "drop", "who": "dad", "what": "hymn_books"},
+         {"t": 5, "do": "drive_to", "who": "dad", "what": "sedan", "to": "door"}],
+        start={"dad": {"at": "curb", "holding": "hymn_books"}},
+        prop_start={"sedan": {"at": "curb"}},
+    )
+    assert res.ok, [e.message for e in res.errors]
+    (_, parent), (_, landing) = _books_land(res)
+    assert parent == "ground"
+    assert landing[1] == 0.0
+
+
+def test_drop_from_a_chair_lands_on_the_ground_under_it():
+    res = _compile_yard(
+        [{"t": 1, "do": "sit_on", "who": "dad", "what": "chair"},
+         {"t": 4, "do": "drop", "who": "dad", "what": "hymn_books"}],
+        start={"dad": {"at": "beside_bench", "holding": "hymn_books"}},
+        prop_start={"chair": {"at": "bench_spot"}},
+    )
+    assert res.ok, [e.message for e in res.errors]
+    (_, parent), (_, landing) = _books_land(res)
+    assert parent == "ground"
+    assert landing[1] == 0.0
+
+
+def test_drop_from_a_chair_standing_on_a_table_lands_at_the_table_top():
+    res = _compile_yard(
+        [{"t": 1, "do": "sit_on", "who": "dad", "what": "chair"},
+         {"t": 4, "do": "drop", "who": "dad", "what": "hymn_books"}],
+        start={"dad": {"at": "by_table", "holding": "hymn_books"}},
+        prop_start={"table": {"at": "table_spot"}, "chair": {"on": "table.top"}},
+    )
+    assert res.ok, [e.message for e in res.errors]
+    sc = base_scene()
+    world = World(sc.people.values(), sc.props.values())
+    world.begin_shot(Shot.model_validate({"id": "s1", "set": "yard",
+                                          "propStart": {"table": {"at": "table_spot"}, "chair": {"on": "table.top"}}}),
+                     resolve_marks(sc.sets["yard"].marks, {}), False)
+    resting = world.props["chair"].world_pos[1]
+    assert resting > 0.2  # the chair's anchor is on the table top, well off the ground
+    (_, parent), (_, landing) = _books_land(res)
+    assert parent == "ground"
+    assert landing[1] == pytest.approx(resting)
+
+
+def test_drop_while_kneeling_on_the_ground_lands_on_the_ground():
+    res = _compile_yard(
+        [{"t": 1, "do": "kneel", "who": "dad"},
+         {"t": 4, "do": "drop", "who": "dad", "what": "hymn_books"}],
+        start={"dad": {"at": "curb", "holding": "hymn_books"}},
+        prop_start={},
+    )
+    assert res.ok, [e.message for e in res.errors]
+    (_, parent), (_, landing) = _books_land(res)
+    assert parent == "ground"
+    assert landing[1] == 0.0
