@@ -143,29 +143,11 @@ function RiserBinding({ set, riser, order, count }: { set: SetDef; riser: Riser;
 
 /** Every layer (and riser) of every set the timeline folds. */
 export function SetLayers() {
-  const { frame, scene, standing } = useScene();
-  const sets = useMemo(() => {
-    const byId = new Map(scene.sets.map((s) => [s.id, s]));
-    const out: { set: SetDef; layers: number[]; folds: SetLayerFrame[] }[] = [];
-    for (const lf of frame.layers) {
-      const set = byId.get(lf.setId);
-      if (!set || !set.layers[lf.layer]) continue;
-      let entry = out.find((e) => e.set.id === set.id);
-      if (!entry) {
-        entry = { set, layers: [], folds: [] };
-        out.push(entry);
-      }
-      entry.layers.push(lf.layer);
-      entry.folds.push(lf);
-    }
-    // Back layers rise first and fold on top of the front ones.
-    for (const e of out) e.layers.sort((a, b) => e.set.layers[a].depth - e.set.layers[b].depth || a - b);
-    return out;
-  }, [frame, scene.sets]);
-
+  // Back layers rise first and fold on top of the front ones (./cast).
+  const { cast, standing } = useScene();
   return (
     <>
-      {sets.map(({ set, layers, folds }) => {
+      {cast.sets.map(({ set, layers, folds }) => {
         const risers = standing.risers(set.id);
         const count = layers.length + risers.length;
         return (

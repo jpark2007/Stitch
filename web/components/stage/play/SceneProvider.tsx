@@ -53,6 +53,7 @@ import type { PlaybackController, PlaybackFrame } from "../playback";
 import type { PuppetHandle, SocketName } from "../Puppet";
 import { PropRegistry, type SocketResolver } from "../props/sockets";
 import { RIG } from "../puppet/rig";
+import { castScene, personLookup, type SceneCast } from "./cast";
 import type { SceneData } from "./scene";
 import { Standing, type Mount } from "./standing";
 
@@ -152,6 +153,8 @@ export interface SceneContextValue {
   resolveMedia(mediaId: string): string | null;
   /** A person by id (with a fallback sheet for cast missing from the data). */
   person(id: string): Person;
+  /** Who and what the timeline binds: puppets, props, sets, and any issues (./cast). */
+  cast: SceneCast;
 }
 
 const SceneContext = createContext<SceneContextValue | null>(null);
@@ -161,26 +164,6 @@ export function useScene(): SceneContextValue {
   const v = useContext(SceneContext);
   if (!v) throw new Error("useScene: no <SceneProvider> above this component");
   return v;
-}
-
-/** Warm stand-in colours for cast the scene data does not describe. */
-const FALLBACK_COLORS = ["#8b5a7c", "#5b82a6", "#7f9873", "#d3a03d", "#b9573d"];
-
-function personLookup(scene: SceneData): (id: string) => Person {
-  const people = new Map(scene.people.map((p) => [p.id, p]));
-  const fallback = new Map<string, Person>();
-  return (id) => {
-    const hit = people.get(id) ?? fallback.get(id);
-    if (hit) return hit;
-    const made: Person = {
-      id,
-      familyId: scene.familyId ?? "",
-      name: id,
-      character: { color: FALLBACK_COLORS[fallback.size % FALLBACK_COLORS.length], build: "average" },
-    };
-    fallback.set(id, made);
-    return made;
-  };
 }
 
 export interface SceneProviderProps {
@@ -252,6 +235,7 @@ export function SceneProvider({
 
   const value = useMemo<SceneContextValue>(() => {
     const familyId = scene.familyId;
+    const person = personLookup(scene);
     return {
       controller,
       frame: controller.frame,
@@ -260,9 +244,16 @@ export function SceneProvider({
       runtime,
       standing: new Standing(scene.sets, controller.frame, revealReader(reveal, controller)),
       resolveMedia: (mediaId) => (familyId ? api.mediaUrl(familyId, bareMediaId(mediaId)) : null),
-      person: personLookup(scene),
+      person,
+      cast: castScene(scene, controller.frame, person),
     };
   }, [controller, scene, runtime, reveal]);
+
+  // Scene data the timeline names but does not describe: say so once.
+  const { cast } = value;
+  useEffect(() => {
+    if (cast.issues.length) console.warn(`[stage] ${scene.id}: the scene data is missing pieces\n  ${cast.issues.join("\n  ")}`);
+  }, [cast, scene.id]);
 
   const time = useMemo(() => () => controller.time, [controller]);
   const lastVersion = useRef(-1);

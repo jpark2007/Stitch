@@ -39,7 +39,6 @@
  */
 
 import { useMemo, type ReactNode } from "react";
-import type { Prop } from "@/lib/types";
 import { DEFAULT_STAGE_SIZE, type StageSize } from "../CameraRig";
 import type { PlaybackController } from "../playback";
 import type { OpenSource } from "../SetPiece";
@@ -48,7 +47,7 @@ import { EffectBindings } from "./EffectBindings";
 import { SetLayers } from "./LayerBinding";
 import { PropBinding } from "./PropBinding";
 import { PuppetActor } from "./PuppetActor";
-import { SceneProvider } from "./SceneProvider";
+import { SceneProvider, useScene } from "./SceneProvider";
 import type { SceneData } from "./scene";
 
 /** Page width per stage width: the stage's 2 units fill 2 / 2.4 of the page. */
@@ -56,8 +55,23 @@ const PAGE_PER_STAGE = 2.4;
 /** Page depth the stage needs, in stage units (back fold to just past the front layer). */
 const STAGE_DEPTH = 1.6;
 
-function placeholderProp(id: string): Prop {
-  return { id, name: id, size: "hand", art: { body: null }, color: "#c4a37a", aspect: 1, anchor: [0.5, 1], grip: [0.5, 0.5] };
+/**
+ * One actor per puppet target and one binding per prop target (./cast); a
+ * tracked prop the scene data does not describe still plays, as a
+ * hand-sized placeholder card.
+ */
+function Cast() {
+  const { cast } = useScene();
+  return (
+    <>
+      {cast.puppets.map((p) => (
+        <PuppetActor key={p.id} id={p.id} index={p.index} person={p.person} />
+      ))}
+      {cast.props.map(({ prop }) => (
+        <PropBinding key={prop.id} prop={prop} />
+      ))}
+    </>
+  );
 }
 
 /** World units per stage unit, and where stage (0, 0, 0) sits, on a page of `size`. */
@@ -105,22 +119,10 @@ export function TimelineScene({
   children,
 }: TimelineSceneProps) {
   const { scale, origin } = useMemo(() => stageLayout(size), [size]);
-  const frame = controller.frame;
-  const props = useMemo(() => {
-    const byId = new Map<string, Prop>(scene.props.map((p) => [p.id, p]));
-    // A tracked prop the scene data does not describe still plays, as a
-    // hand-sized placeholder card.
-    return frame.props.map((pf) => byId.get(pf.id) ?? placeholderProp(pf.id));
-  }, [frame, scene.props]);
   return (
     <SceneProvider controller={controller} scene={scene} scale={scale} origin={origin} tick={tick} reveal={reveal} onReady={onReady}>
       <SetLayers />
-      {frame.puppets.map((p, i) => (
-        <PuppetActor key={p.id} id={p.id} index={i} />
-      ))}
-      {props.map((p) => (
-        <PropBinding key={p.id} prop={p} />
-      ))}
+      <Cast />
       <EffectBindings />
       {camera && <CameraBinding orbit={orbit} lift={lift} />}
       {children}

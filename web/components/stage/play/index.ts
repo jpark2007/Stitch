@@ -31,6 +31,16 @@ export {
   type SceneContextValue,
   type SceneProviderProps,
 } from "./SceneProvider";
+export {
+  castScene,
+  personLookup,
+  placeholderProp,
+  setLayersOf,
+  type CastProp,
+  type CastPuppet,
+  type CastSet,
+  type SceneCast,
+} from "./cast";
 export { PuppetActor, type PuppetActorProps } from "./PuppetActor";
 export { PropBinding, type PropBindingProps } from "./PropBinding";
 export { LayerBinding, SetLayers, sceneCutoutSpecs, type LayerBindingProps } from "./LayerBinding";
