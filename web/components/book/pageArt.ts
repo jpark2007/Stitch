@@ -46,12 +46,17 @@ export async function drawStoryPage(
 ): Promise<StoryPageArt> {
   const W = PAGE_PX_W;
   const H = PAGE_PX_H;
-  const { c, ctx } = canvas(W, H);
-  paper(ctx, W, H, { seed, gutter: "right" });
-  drawGutterStitches(ctx, W, H, "right");
+  const { c, ctx: pageCtx } = canvas(W, H);
+  paper(pageCtx, W, H, { seed, gutter: "right" });
+  drawGutterStitches(pageCtx, W, H, "right");
   const left = 96;
   const right = W - 134;
   const width = right - left;
+  const photos = spread.photos.slice(0, 2);
+  // Without photos the words sit on their own layer, to be set in the
+  // page's optical middle rather than hung from its head.
+  const layer = photos.length ? null : canvas(W, H);
+  const ctx = layer ? layer.ctx : pageCtx;
 
   // Year, handwritten in the accent ink.
   ctx.save();
@@ -84,7 +89,9 @@ export async function drawStoryPage(
 
   // Storybook text, opening on a two-line drop cap like a printed storybook.
   // A line or two is set larger, so a short page still reads as a page.
-  const text = spread.text.trim();
+  const tellings = spread.tellings ?? [];
+  const teller = tellings.find((t) => t.id === active) ?? tellings[0];
+  const text = spread.text.trim() || teller?.text?.trim() || "";
   const short = text.length < 150;
   const lead = short ? 54 : 46;
   const first = text.charAt(0);
@@ -109,9 +116,10 @@ export async function drawStoryPage(
     ctx.fillText(line, left + (i < 2 ? capW : 0), y);
     y += lead;
   });
+  // The drop cap is two lines tall, however short the text.
+  if (text && body.length < 2) y += lead * (2 - body.length);
 
   let labels: LabelRect[] = [];
-  const tellings = spread.tellings ?? [];
   if (tellings.length > 1) {
     // One taped label per telling, to hear the same scene told another way.
     y += 40;
@@ -129,8 +137,15 @@ export async function drawStoryPage(
     y += 20;
   }
 
+  if (layer) {
+    // The block runs from the year (~110) to y; centre it a little high.
+    const room = H - 150 - 100;
+    const dy = Math.max(0, Math.round(((room - (y - 110)) / 2) * 0.72));
+    pageCtx.drawImage(layer.c, 0, dy);
+    labels = labels.map((r) => ({ ...r, y: r.y + dy }));
+  }
+
   // Photos, taped into the space that is left.
-  const photos = spread.photos.slice(0, 2);
   const top = Math.max(y + 46, 700);
   if (photos.length === 1) {
     const pw = Math.min(520, (H - 150 - top) * (photos[0].aspect ?? 4 / 3) * 0.9);
@@ -145,7 +160,7 @@ export async function drawStoryPage(
     await drawPhoto(ctx, photos[1], right - w1 + 8, top + Math.min(70, room * 0.16), w1, 0.06, seed + 2, fonts, "corners");
   }
 
-  pageNumber(ctx, page, "left", fonts);
+  pageNumber(pageCtx, page, "left", fonts);
   return { canvas: c, labels };
 }
 

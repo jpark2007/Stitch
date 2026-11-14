@@ -30,6 +30,8 @@ export interface BookTeller {
   name: string;
   /** Thread colour (character.color): the puppet and the label's tape. */
   color: string;
+  /** Their telling in their own words: the page's text when the spread has none of its own. */
+  text?: string;
 }
 
 /** A pull tab printed on the stage page: a paper lever in a slit. */
@@ -48,7 +50,10 @@ export interface BookSpread {
   id: string;
   title: string;
   year: number;
-  /** Short storybook text printed on the page. */
+  /**
+   * Short storybook text printed on the page. Empty: the playing telling's
+   * own words (BookTeller.text) are printed instead.
+   */
   text: string;
   /** Names of the people who told it ("David", "Ana"). */
   tellers?: string[];

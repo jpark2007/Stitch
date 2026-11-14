@@ -878,6 +878,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
                       index: i,
                       reveal: ctl.reveals[i],
                       view: ctl.stageView,
+                      fonts: art.fonts,
                       width: STAGE_SLOT.width,
                       depth: STAGE_SLOT.depth,
                     }}

@@ -106,9 +106,9 @@ export function drawPuppetAvatar(ctx: Ctx, x: number, y: number, h: number, colo
 /* Teller labels                                                             */
 /* ------------------------------------------------------------------------ */
 
-const LABEL_H = 118;
-const LABEL_GAP = 34;
-const LABEL_MAX_W = 330;
+const LABEL_H = 150;
+const LABEL_GAP = 40;
+const LABEL_MAX_W = 345;
 
 /** Where the labels go: up to two a row from `left`, `width` wide, starting at `y`. */
 export function layoutTellerLabels(tellers: readonly BookTeller[], left: number, width: number, y: number): LabelRect[] {
@@ -209,8 +209,8 @@ export function drawTellerLabels(
     ctx.strokeStyle = on ? rgba(t.color, 0.38) : "rgba(169,192,211,0.45)";
     ctx.lineWidth = 1.4;
     ctx.beginPath();
-    ctx.moveTo(-w / 2 + 8, -h / 2 + 30);
-    ctx.lineTo(w / 2 - 8, -h / 2 + 30);
+    ctx.moveTo(-w / 2 + 8, -h / 2 + 42);
+    ctx.lineTo(w / 2 - 8, -h / 2 + 42);
     ctx.stroke();
 
     // The puppet, standing at the label's left.
@@ -239,29 +239,31 @@ export function drawTellerLabels(
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
     ctx.fillStyle = on ? INK_SOFT : INK_FAINT;
-    ctx.font = `700 15px ${fonts.sans}`;
-    setSpacing(ctx, 3);
-    ctx.fillText(on ? "NOW TELLING" : "HEAR", tx, -h / 2 + 24);
+    ctx.font = `700 17px ${fonts.sans}`;
+    setSpacing(ctx, 3.5);
+    ctx.fillText(on ? "NOW TELLING" : "HEAR", tx, -h / 2 + 32);
     setSpacing(ctx, 0);
     ctx.fillStyle = on ? INK : INK_SOFT;
-    let size = 44;
+    let size = 58;
     const name = `${t.name}’s`;
     ctx.font = `600 ${size}px ${fonts.hand}`;
     while (size > 26 && ctx.measureText(name).width > maxW) {
       size -= 2;
       ctx.font = `600 ${size}px ${fonts.hand}`;
     }
-    ctx.fillText(name, tx, -h / 2 + 30 + size * 0.95, maxW);
-    ctx.font = `500 30px ${fonts.hand}`;
+    ctx.fillText(name, tx, -h / 2 + 42 + size * 0.92, maxW);
+    ctx.font = `500 36px ${fonts.hand}`;
     ctx.fillStyle = on ? INK_SOFT : INK_FAINT;
-    ctx.fillText("version", tx + 2, h / 2 - 16, maxW);
+    ctx.fillText("version", tx + 2, h / 2 - 22, maxW);
     if (on) {
       const nameW = Math.min(maxW, ctx.measureText("version").width + 8);
-      drawStitchLine(ctx, tx, h / 2 - 7, tx + nameW, h / 2 - 7, t.color, 2.4, 9, 6);
+      drawStitchLine(ctx, tx, h / 2 - 10, tx + nameW, h / 2 - 10, t.color, 2.6, 10, 7);
     }
 
     // Tape across the top, tinted with the teller's thread.
-    drawTape(ctx, (r() - 0.5) * w * 0.3, -h / 2 + 2, Math.min(96, w * 0.34), 26, -angle * 1.6 + (r() - 0.5) * 0.12, seed + i * 7, tapeTint(t.color, on));
+    // Tape over the top corner, clear of the words.
+    const tw = Math.min(104, w * 0.32);
+    drawTape(ctx, w / 2 - tw * 0.3, -h / 2 + 8, tw, 30, 0.62 + (r() - 0.5) * 0.12, seed + i * 7, tapeTint(t.color, on));
     ctx.restore();
   });
 }
@@ -298,9 +300,9 @@ const PAGE_W_PX = 1000;
 const PAGE_H_PX = 1300;
 
 export function pullTabGeometry(tab: BookPullTab): PullTabGeometry {
-  const length = 92;
-  const travel = 64;
-  const width = 46;
+  const length = 112;
+  const travel = 70;
+  const width = 54;
   // Keep the pulled lever on the page (the deckled edge is ~24 px).
   const slitX = Math.min(Math.max(tab.at[0] * PAGE_W_PX, 160), PAGE_W_PX - 34 - length - travel * 0.55);
   const y = Math.min(Math.max(tab.at[1] * PAGE_H_PX, 140), PAGE_H_PX - 120);

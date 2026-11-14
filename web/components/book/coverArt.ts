@@ -160,8 +160,14 @@ export function drawCoverArt(cover: BookCover, fonts: PageFonts, w: number, h: n
     setSpacing(ctx, 0);
   }
   ctx.fillStyle = INK;
-  ctx.font = `600 ${Math.round(w * 0.082)}px ${fonts.display}`;
-  ctx.fillText(cover.title, 0, lh * 0.07);
+  // A long title (a moment's, say) steps down until it fits the label.
+  let size = Math.round(w * 0.082);
+  ctx.font = `600 ${size}px ${fonts.display}`;
+  while (size > w * 0.05 && ctx.measureText(cover.title).width > lw * 0.86) {
+    size -= 2;
+    ctx.font = `600 ${size}px ${fonts.display}`;
+  }
+  ctx.fillText(cover.title, 0, lh * 0.07, lw * 0.9);
   drawStitchLine(ctx, -lw * 0.16, lh * 0.19, lw * 0.16, lh * 0.19, ACCENT, 3, 14, 10);
   if (cover.subtitle) {
     ctx.fillStyle = INK_SOFT;

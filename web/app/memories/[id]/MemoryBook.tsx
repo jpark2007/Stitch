@@ -1,15 +1,41 @@
 "use client";
 
+/**
+ * /memories/<id>: one moment, opened as a pop-up book.
+ *
+ *   /memories/demo                   the hardcoded demo book (three spreads, no stages)
+ *   /memories/hymn_books             the reference sample: its scene plays as the pop-up
+ *   /memories/<id>?family=<fid>      a saved moment from the API
+ *
+ * A moment is one spread: the story page on the left (year, title, the
+ * storybook text, a taped label per telling, photos) and its scene on the
+ * right, rising from the page when the spread opens and playing once it lies
+ * still. Choosing a teller's label replays the scene from the start with
+ * their words. The mute button silences the narration with the paper sounds.
+ *
+ * Query, for deterministic views and tests: ?state=closed|open, ?spread=<n>,
+ * ?turn=<0..1>, ?focus=left|right, ?still=1, ?debug=1 (see readInitial),
+ * ?narrator=<personId> (start with that telling), ?t=<seconds> (hold the
+ * scene at that time once it opens, instead of playing).
+ */
+
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { use } from "react";
+import { use, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { demoCover, demoSpreads } from "@/components/book/demoSpreads";
+import type { StageSlotArgs } from "@/components/book/StoryPage";
+import { isMuted, subscribeMuted } from "@/components/book/sound";
+import { useTimelinePlayer } from "@/components/stage/playback";
+import { preloadScene, type SceneData } from "@/components/stage/play";
+import { api, bareMediaId } from "@/lib/api";
+import { isSampleMoment, loadMoment, type Moment } from "./moment";
 
 // three.js needs the browser: load the book on the client only.
 const Book3D = dynamic(() => import("@/components/book/Book3D").then((m) => m.Book3D), {
   ssr: false,
   loading: () => <BookLoading />,
 });
+const MomentStage = dynamic(() => import("@/components/book/moment/MomentStage").then((m) => m.MomentStage), { ssr: false });
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -40,32 +66,209 @@ function readInitial(q: Search) {
   } as const;
 }
 
+function readTime(v: string | undefined): number | null {
+  if (v === undefined || v.trim() === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 export function MemoryBook({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Search> }) {
   const { id } = use(params);
   const q = use(searchParams);
+  const initial = readInitial(q);
+  const still = one(q.still) === "1";
+  const debug = one(q.debug) === "1";
 
-  if (id !== "demo") {
-    return (
-      <div className="grid min-h-[100dvh] place-items-center px-6 text-center">
-        <div>
-          <p className="kicker">Moment</p>
-          <h1 className="mt-3 text-4xl">This page isn&rsquo;t in the book yet</h1>
-          <p className="mt-4 text-ink-soft">
-            Real moments load from the family&rsquo;s book soon. Meanwhile, <Link href="/memories/demo">open the demo book</Link>.
-          </p>
-        </div>
-      </div>
-    );
+  if (id === "demo") {
+    return <Book3D spreads={demoSpreads} cover={demoCover} initial={initial} still={still} debug={debug} />;
   }
+  const family = one(q.family)?.trim() || null;
+  if (!isSampleMoment(id) && !family) return <NotInBook />;
+  return (
+    <MomentBook
+      id={id}
+      family={family}
+      initial={initial}
+      narrator={one(q.narrator) ?? null}
+      freezeAt={readTime(one(q.t))}
+      still={still}
+      debug={debug}
+    />
+  );
+}
+
+interface MomentBookProps {
+  id: string;
+  family: string | null;
+  initial: ReturnType<typeof readInitial>;
+  narrator: string | null;
+  freezeAt: number | null;
+  still: boolean;
+  debug: boolean;
+}
+
+type Loaded = { kind: "moment"; moment: Moment } | { kind: "error"; detail: string };
+
+/** Loads the moment and gets its scene's art ready, then opens the book. */
+function MomentBook({ id, family, ...rest }: MomentBookProps) {
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
+  useEffect(() => {
+    const ctl = new AbortController();
+    loadMoment(id, family, ctl.signal)
+      .then(async (moment) => {
+        if (moment.scene) await preloadScene(moment.scene);
+        if (!ctl.signal.aborted) setLoaded({ kind: "moment", moment });
+      })
+      .catch((e: unknown) => {
+        if (ctl.signal.aborted) return;
+        console.warn(`[book] ${id}:`, e);
+        setLoaded({ kind: "error", detail: e instanceof Error ? e.message : String(e) });
+      });
+    return () => ctl.abort();
+  }, [id, family]);
+
+  if (!loaded) return <BookLoading />;
+  if (loaded.kind === "error") return <NotInBook detail={loaded.detail} />;
+  const { moment } = loaded;
+  return moment.scene ? (
+    <PlayingBook moment={moment} scene={moment.scene} {...rest} />
+  ) : (
+    <Book3D spreads={[moment.spread]} cover={moment.cover} initial={rest.initial} still={rest.still} debug={rest.debug} />
+  );
+}
+
+function PlayingBook({
+  moment,
+  scene,
+  initial,
+  narrator,
+  freezeAt,
+  still,
+  debug,
+}: Omit<MomentBookProps, "id" | "family"> & { moment: Moment; scene: SceneData }) {
+  const { spread, cover } = moment;
+  const spreads = useMemo(() => [spread], [spread]);
+  const familyId = scene.familyId;
+  const resolveAudio = useCallback(
+    (mediaId: string) => (familyId ? api.mediaUrl(familyId, bareMediaId(mediaId)) : null),
+    [familyId],
+  );
+  const start = narrator && spread.tellings?.some((t) => t.id === narrator) ? narrator : null;
+  // The book's own loop ticks the player (MomentStage), so a paused scene costs nothing.
+  const { controller } = useTimelinePlayer(scene.timeline, { narrator: start, audio: false, clock: "manual", resolveAudio });
+
+  // Narration plays through an element the page owns, so the book's mute
+  // button silences it with the paper sounds.
+  useEffect(() => {
+    if (typeof Audio === "undefined") return;
+    const el = new Audio();
+    el.preload = "auto";
+    el.muted = isMuted();
+    controller.attachAudio(el);
+    const off = subscribeMuted((m) => {
+      el.muted = m;
+    });
+    return () => {
+      off();
+      controller.attachAudio(null);
+    };
+  }, [controller]);
+
+  // The scene starts when the spread settles, not on a click, so a browser
+  // may hold the voice back: the reader's next touch lets it in, in step.
+  useEffect(() => {
+    const resume = () => {
+      const s = controller.getStatus();
+      if (s.audio === "blocked" && s.playing) controller.play();
+    };
+    window.addEventListener("pointerdown", resume, true);
+    window.addEventListener("keydown", resume, true);
+    return () => {
+      window.removeEventListener("pointerdown", resume, true);
+      window.removeEventListener("keydown", resume, true);
+    };
+  }, [controller]);
+
+  // Test hook (?debug=1): the moment's player.
+  useEffect(() => {
+    if (!debug) return;
+    const w = window as Window & { __moment?: unknown };
+    w.__moment = controller;
+    return () => {
+      delete w.__moment;
+    };
+  }, [controller, debug]);
+
+  // Only a new teller re-renders the book (to reprint the labels).
+  const playing = useSyncExternalStore(
+    controller.subscribe,
+    () => controller.getStatus().narrator,
+    () => controller.getStatus().narrator,
+  );
+  const tellings = useMemo(() => (playing ? { [spread.id]: playing } : {}), [spread.id, playing]);
+
+  const onTelling = useCallback(
+    (_spreadId: string, tellerId: string) => {
+      if (controller.getStatus().narrator === tellerId) {
+        // The telling already playing: hear it again from the start.
+        controller.seek(0);
+        controller.play();
+      } else controller.setNarrator(tellerId);
+      const url = new URL(window.location.href);
+      url.searchParams.set("narrator", tellerId);
+      window.history.replaceState(window.history.state, "", url);
+    },
+    [controller],
+  );
+
+  const renderStage = useCallback(
+    (args: StageSlotArgs) => (
+      <MomentStage
+        controller={controller}
+        scene={scene}
+        spread={args.spread}
+        fonts={args.fonts}
+        reveal={args.reveal}
+        view={args.view}
+        size={[args.width, args.depth]}
+        freezeAt={freezeAt}
+        onReady={markStageReady}
+      />
+    ),
+    [controller, scene, freezeAt],
+  );
 
   return (
     <Book3D
-      spreads={demoSpreads}
-      cover={demoCover}
-      initial={readInitial(q)}
-      still={one(q.still) === "1"}
-      debug={one(q.debug) === "1"}
+      spreads={spreads}
+      cover={cover}
+      initial={initial}
+      renderStage={renderStage}
+      tellings={tellings}
+      onTelling={onTelling}
+      still={still}
+      debug={debug}
     />
+  );
+}
+
+/** For capture scripts: the scene on the page is fully drawn. */
+function markStageReady() {
+  document.documentElement.dataset.stageReady = "1";
+}
+
+function NotInBook({ detail }: { detail?: string }) {
+  return (
+    <div className="grid min-h-[100dvh] place-items-center px-6 text-center">
+      <div>
+        <p className="kicker">Moment</p>
+        <h1 className="mt-3 text-4xl">This page isn&rsquo;t in the book yet</h1>
+        <p className="mt-4 text-ink-soft">
+          {detail ? "It could not be opened. " : "Open it from the family’s tree or threads. "}
+          Meanwhile, <Link href="/memories/hymn_books">open a moment</Link> or <Link href="/memories/demo">the demo book</Link>.
+        </p>
+      </div>
+    </div>
   );
 }
 

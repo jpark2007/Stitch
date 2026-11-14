@@ -152,6 +152,8 @@ export interface StageSlotArgs {
    * to the story page. A stage can wait for it before it plays.
    */
   view: { readonly current: number };
+  /** The page fonts, loaded: for anything the stage prints on the page. */
+  fonts: PageFonts;
   /**
    * 0..1, how far the pop-up should stand, as a live ref: read
    * `reveal.current` in useFrame (it changes every frame without a
