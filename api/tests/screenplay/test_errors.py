@@ -1,10 +1,14 @@
 """CompileError construction: every message form, and the conversions from each error type."""
 
+import math
+
+from screenplay.compiler import compile as compile_screenplay
 from screenplay.errors import (
     ERROR_CODES,
     HINT_VARIANTS,
     error,
     error_message,
+    error_t,
     from_narration_error,
     from_out_of_reach,
     from_state_error,
@@ -13,8 +17,9 @@ from screenplay.errors import (
 )
 from screenplay.ik import OutOfReach
 from screenplay.narration import NarrationError
-from screenplay.schema import Action, CompileError
+from screenplay.schema import Action, CompileError, CompileResult, Screenplay
 from screenplay.state import StateError
+from verb_cases import CAST, PROPS, base_scene
 
 
 def test_full_form_is_exact():
@@ -117,6 +122,56 @@ def test_error_helper():
     err = error("unsupported_verb", "the compiler does not support drop yet", "s1", a)
     assert err.message == 'shot s1, t=3: mom cannot drop "cup"; the compiler does not support drop yet'
     assert (err.t, err.who, err.do) == (3.0, "mom", "drop")
+
+
+def test_error_t_is_the_written_time_or_none_when_not_finite():
+    assert error_t(3) == 3.0 and isinstance(error_t(3), float)
+    assert error_t(0.0) == 0.0
+    assert error_t(-2.5) == -2.5  # negative but finite: kept, the message says why it is wrong
+    assert error_t(1e12) == 1e12
+    for bad in (None, math.inf, -math.inf, math.nan):
+        assert error_t(bad) is None
+
+
+def test_an_error_on_a_non_finite_t_has_no_t_but_says_it_in_the_message():
+    for t, shown in ((math.inf, "inf"), (-math.inf, "-inf"), (math.nan, "nan")):
+        err = error("bad_time", f"t must be a finite number >= 0, not {shown}", "s1",
+                    _action(t=t, who="dad", do="wave"))
+        assert err.model_dump() == {
+            "code": "bad_time",
+            "message": f"shot s1, t={shown}: dad cannot wave; t must be a finite number >= 0, not {shown}",
+            "shot": "s1", "t": None, "who": "dad", "do": "wave",
+        }
+        assert CompileError.model_validate_json(err.model_dump_json()) == err
+
+
+def _non_finite_result(t: float) -> CompileResult:
+    """One shot whose camera cue, action and narration line are all written at ``t``."""
+    scene = base_scene()
+    sp = Screenplay.model_validate({
+        "memoryId": "non_finite", "cast": list(CAST), "props": list(PROPS), "shots": [{
+            "id": "s1", "set": "yard", "start": {"dad": {"at": "door"}},
+            "camera": [{"t": t, "move": "wide"}],
+            "actions": [{"t": t, "do": "wave", "who": "dad"}],
+            "narration": [{"t": t, "text": "we waved"}],
+        }],
+    })
+    return compile_screenplay(sp, sets=scene.sets, props=scene.props, people=scene.people)
+
+
+def test_a_compile_result_with_a_non_finite_t_round_trips_through_json_byte_identically():
+    for t, shown in ((math.inf, "inf"), (-math.inf, "-inf"), (math.nan, "nan")):
+        result = _non_finite_result(t)
+        assert [(e.code, e.message, e.t) for e in result.errors] == [
+            ("bad_time", f"shot s1, t={shown}: cannot wide; t must be a finite number >= 0, not {shown}", None),
+            ("bad_time", f"shot s1, t={shown}: dad cannot wave; t must be a finite number >= 0, not {shown}", None),
+            ("bad_time", f"shot s1, dad's narration line 0: t must be a finite number >= 0, not {shown}", None),
+        ]
+        dumped = result.model_dump_json()
+        again = CompileResult.model_validate_json(dumped)
+        assert again == result
+        assert again.model_dump_json() == dumped
+        assert "Infinity" not in dumped and "NaN" not in dumped
 
 
 def test_who_and_do_count_when_not_none_and_what_when_not_empty():

@@ -11,12 +11,15 @@ One grammar: ``<head>: <who> cannot <do> "<what>"; <subject> <fact>; <fix>``. Li
 (``t=2.5``), and an action aimed at its own actor says ``"<field>" is <who> themselves``.
 
 For an action error, ``CompileError.t`` is the action's ``t`` as written in the screenplay (not
-the cue-retimed time), and ``who`` / ``do`` are filled in.
+the cue-retimed time), and ``who`` / ``do`` are filled in. A written t that is not finite (inf,
+nan) leaves ``CompileError.t`` None, so the result is JSON-safe; the message still says
+``t=inf`` (error_t).
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 
@@ -55,15 +58,30 @@ def error_message(
     return f"{head}: {reason}"
 
 
+def error_t(t: float | None) -> float | None:
+    """The ``CompileError.t`` for a written time: ``t`` as a float, or None when it is missing
+    or not finite. JSON has no inf or nan (pydantic writes them as null), so a non-finite t
+    would not survive the round trip to the director; the message head still prints it
+    (``shot s1, t=inf: ...``)."""
+    if t is None or isinstance(t, bool):
+        return None
+    try:
+        value = float(t)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
 def error(code: str, reason: str, shot: str | None = None, action: Action | None = None) -> CompileError:
-    """A CompileError for ``reason``, placed on ``action`` (as written) when there is one."""
+    """A CompileError for ``reason``, placed on ``action`` (as written) when there is one.
+    ``t`` is None when the action's written t is not finite (see error_t)."""
     if action is None:
         return CompileError(code=code, message=error_message(shot, None, None, None, None, reason), shot=shot)
     return CompileError(
         code=code,
         message=error_message(shot, action.t, action.who, action.do, action.what, reason),
         shot=shot,
-        t=float(action.t),
+        t=error_t(action.t),
         who=action.who,
         do=action.do,
     )

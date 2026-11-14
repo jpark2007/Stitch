@@ -44,7 +44,7 @@ from dataclasses import dataclass
 
 import schemas
 from screenplay import narration
-from screenplay.errors import error_message, from_narration_error
+from screenplay.errors import error_message, error_t, from_narration_error
 from screenplay.narration import NarrationError
 from screenplay.schema import (
     SHARED_DIR,
@@ -120,7 +120,7 @@ class _Site:
             code=code,
             message=error_message(self.shot, self.t, self.who, self.do, self.what, reason),
             shot=self.shot,
-            t=self.t,
+            t=error_t(self.t),  # None when not finite: JSON-safe (the message still says t=inf)
             who=self.who,
             do=self.do,
         )
