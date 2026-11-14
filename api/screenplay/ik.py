@@ -129,20 +129,35 @@ def arm_reach(build: str, arm: str = "arm_r") -> float:
     return 2 * _bone_length(arm) * scale(build)
 
 
-def solve_arm(arm: str, target: Vec2, ground: Vec2, facing: int, build: str) -> tuple[float, float]:
+def solve_arm(
+    arm: str, target: Vec2, ground: Vec2, facing: int, build: str, *, clamp: bool = False
+) -> tuple[float, float]:
     """Two-bone IK: (upper, lower) rotations that put the arm's hand socket on ``target``.
 
     Contract formula: v = shoulder-to-target in local rig units, theta = atan2(v.x, -v.y),
-    a = acos(|v| / 2L), upper = theta - a, lower = 2a. Raises OutOfReach when |v| > 2L.
+    a = acos(|v| / 2L), upper = theta - a, lower = 2a. Rotations are in the puppet's local,
+    unmirrored frame (``facing`` flips v.x).
+
+    When |v| > 2L it raises OutOfReach, or with ``clamp=True`` returns the arm at full
+    extension aimed at the target, ``(theta, 0.0)``. The result is always finite.
     """
+    if facing not in (1, -1):
+        raise ValueError(f"facing must be 1 or -1, got {facing!r}")
+    if not all(math.isfinite(v) for v in (*target, *ground)):
+        raise ValueError(f"IK target and ground must be finite, got target={target!r} ground={ground!r}")
     s = scale(build)
     sh = shoulder_world(arm, ground, facing, build)
     vx, vy = facing * (target[0] - sh[0]) / s, (target[1] - sh[1]) / s
+    # A mirrored zero is -0.0; atan2(-0.0, -y) is -pi, not pi. Normalize so a target straight
+    # above the shoulder gives the same rotation for either facing (no 2*pi jump between keys).
+    vx += 0.0
     length = _bone_length(arm)
     d = math.hypot(vx, vy)
-    if d > 2 * length + REACH_EPS:
-        raise OutOfReach(arm, d * s, 2 * length * s)
     theta = math.atan2(vx, -vy)
+    if d > 2 * length + REACH_EPS:
+        if clamp:
+            return theta, 0.0
+        raise OutOfReach(arm, d * s, 2 * length * s)
     a = math.acos(min(1.0, d / (2 * length)))
     return theta - a, 2 * a
 
@@ -156,10 +171,10 @@ def can_reach(arm: str, target: Vec2, ground: Vec2, facing: int, build: str) -> 
     return True
 
 
-def solve_body_arm(body: Body, arm: str, target: Vec2) -> tuple[float, float]:
+def solve_body_arm(body: Body, arm: str, target: Vec2, *, clamp: bool = False) -> tuple[float, float]:
     """``solve_arm`` for a Body; an OutOfReach names the puppet."""
     try:
-        return solve_arm(arm, target, body.ground, body.facing, body.build)
+        return solve_arm(arm, target, body.ground, body.facing, body.build, clamp=clamp)
     except OutOfReach as e:
         raise e.with_who(body.id) from None
 

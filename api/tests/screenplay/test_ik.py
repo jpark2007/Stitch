@@ -19,6 +19,7 @@ from screenplay.ik import (
     shoulder_world,
     socket_world,
     solve_arm,
+    solve_body_arm,
 )
 
 BUILDS = ["small", "average", "tall"]
@@ -227,3 +228,146 @@ def test_handover_point_coincident_shoulders():
     a = Body("a", (0.0, 0.0), 1, "average")
     meet = handover_point(a, Body("b", (0.0, 0.0), 1, "average"))
     assert meet == shoulder_world("arm_r", a.ground, a.facing, a.build)
+
+
+# --------------------------------------------- agreement with the reference generator
+
+def _reference_helpers() -> dict:
+    """The IK/FK helpers of api/tests/gen_hymn_books_sample.py, loaded without running the script.
+
+    Importing the generator would rewrite web/public/samples/, so only its imports, constants
+    and function definitions are executed.
+    """
+    import ast
+    import json
+    from pathlib import Path
+
+    src_path = Path(__file__).resolve().parents[1] / "gen_hymn_books_sample.py"
+    tree = ast.parse(src_path.read_text())
+    keep = {"REPO", "RIG", "POSES", "VOC", "Z", "R"}
+    body = []
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef)):
+            body.append(node)
+        elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) and t.id in keep for t in node.targets):
+            body.append(node)
+    ns: dict = {"__file__": str(src_path), "json": json, "math": math}
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(src_path), "exec"), ns)
+    return ns
+
+
+REF = _reference_helpers()
+SIZES_HAND = REF["VOC"]["sizes"]["hand"]
+STEPS_FOOT = (2 * 0.5 - 1, 0.0)   # marks from the reference scene
+STEPS_TOP = (2 * 0.6 - 1, 0.3)
+
+
+def test_pick_up_reach_agrees_with_reference_generator():
+    land = (STEPS_TOP[0] - 0.08, STEPS_TOP[1])
+    grip = (land[0], land[1] + SIZES_HAND)
+    want = REF["ik"]("arm_r", grip, STEPS_FOOT, 1, "tall")
+    got = solve_arm("arm_r", grip, STEPS_FOOT, 1, "tall")
+    assert abs(got[0] - want[0]) < 1e-6 and abs(got[1] - want[1]) < 1e-6, (got, want)
+
+
+def test_handover_reaches_agree_with_reference_generator():
+    dad = Body("dad", STEPS_FOOT, 1, "tall")
+    mom = Body("mom", STEPS_TOP, -1, "average")
+    sd = REF["shoulder_world"]("arm_r", dad.ground, 1, "tall")
+    sm = REF["shoulder_world"]("arm_r", mom.ground, -1, "average")
+    reach_d = 2 * REF["RIG"]["bones"]["arm_r.upper"]["length"] * REF["scale"]("tall")
+    f = reach_d * 0.83 / math.hypot(sm[0] - sd[0], sm[1] - sd[1])
+    ref_meet = (sd[0] + (sm[0] - sd[0]) * f, sd[1] + (sm[1] - sd[1]) * f)
+    meet = handover_point(dad, mom)
+    assert abs(meet[0] - ref_meet[0]) < 1e-6 and abs(meet[1] - ref_meet[1]) < 1e-6
+    for body in (dad, mom):   # mom is the mirrored puppet (facing -1)
+        want = REF["ik"]("arm_r", ref_meet, body.ground, body.facing, body.build)
+        got = solve_arm("arm_r", meet, body.ground, body.facing, body.build)
+        assert abs(got[0] - want[0]) < 1e-6 and abs(got[1] - want[1]) < 1e-6, (body.id, got, want)
+
+
+@pytest.mark.parametrize("facing", FACINGS)
+@pytest.mark.parametrize("build", BUILDS)
+def test_reference_fk_agrees(build, facing):
+    rots = {"arm_r.upper": 0.7, "arm_r.lower": 1.1, "torso": -0.2}
+    for socket in ("hand_r", "hand_l", "head"):
+        want = REF["socket_world"](socket, rots, (0.3, 0.1), facing, build)
+        got = socket_world(socket, rots, (0.3, 0.1), facing, build)
+        assert got == pytest.approx(want, abs=1e-12)
+
+
+# ------------------------------------------------------------- clamping and mirroring
+
+@pytest.mark.parametrize("facing", FACINGS)
+@pytest.mark.parametrize("arm", ARMS)
+def test_unreachable_target_clamps_to_full_extension(facing, arm):
+    ground, build = (0.1, 0.0), "average"
+    sh = shoulder_world(arm, ground, facing, build)
+    for target in ((sh[0] + 5.0, sh[1] + 0.2), (sh[0] - 3.0, sh[1] - 1.0), (sh[0], sh[1] + 10.0), (sh[0] + 1e9, sh[1])):
+        with pytest.raises(OutOfReach):
+            solve_arm(arm, target, ground, facing, build)
+        up, lo = solve_arm(arm, target, ground, facing, build, clamp=True)
+        assert math.isfinite(up) and math.isfinite(lo)
+        assert lo == 0.0
+        upper, lower = arm_bones(arm)
+        hand = socket_world(arm_socket(arm), {upper: up, lower: lo}, ground, facing, build)
+        # Full stretch, pointing straight at the target.
+        assert math.hypot(hand[0] - sh[0], hand[1] - sh[1]) == pytest.approx(arm_reach(build, arm))
+        to_t = math.atan2(target[1] - sh[1], target[0] - sh[0])
+        to_h = math.atan2(hand[1] - sh[1], hand[0] - sh[0])
+        assert math.cos(to_t - to_h) == pytest.approx(1.0)
+
+
+def test_clamp_does_not_change_reachable_solutions():
+    target = (0.15, 0.3)
+    assert solve_arm("arm_r", target, (0.0, 0.0), 1, "tall", clamp=True) == solve_arm("arm_r", target, (0.0, 0.0), 1, "tall")
+
+
+def test_solve_body_arm_clamps():
+    body = Body("dad", (0.0, 0.0), -1, "tall")
+    with pytest.raises(OutOfReach):
+        solve_body_arm(body, "arm_r", (-3.0, 0.4))
+    up, lo = solve_body_arm(body, "arm_r", (-3.0, 0.4), clamp=True)
+    assert math.isfinite(up) and lo == 0.0
+
+
+def test_non_finite_or_bad_inputs_raise_instead_of_nan():
+    with pytest.raises(ValueError):
+        solve_arm("arm_r", (math.nan, 0.3), (0.0, 0.0), 1, "average", clamp=True)
+    with pytest.raises(ValueError):
+        solve_arm("arm_r", (math.inf, 0.3), (0.0, 0.0), 1, "average", clamp=True)
+    with pytest.raises(ValueError):
+        solve_arm("arm_r", (0.1, 0.3), (0.0, 0.0), 0, "average")
+
+
+@pytest.mark.parametrize("arm", ARMS)
+def test_mirrored_puppet_uses_the_same_local_rotations(arm):
+    # A target mirrored about the puppet's vertical axis gives identical (unmirrored) rotations.
+    # Offsets are from the shoulder, which itself mirrors with the puppet.
+    ground, build = (0.25, 0.1), "tall"
+    sr, sl = shoulder_world(arm, ground, 1, build), shoulder_world(arm, ground, -1, build)
+    assert sl[0] - ground[0] == pytest.approx(-(sr[0] - ground[0]))
+    for dx, dy in ((0.12, 0.05), (-0.05, -0.1), (0.0, 0.15), (0.15, -0.08)):
+        right = solve_arm(arm, (sr[0] + dx, sr[1] + dy), ground, 1, build)
+        left = solve_arm(arm, (sl[0] - dx, sl[1] + dy), ground, -1, build)
+        assert left == pytest.approx(right, abs=1e-12)
+        upper, lower = arm_bones(arm)
+        hand = socket_world(arm_socket(arm), {upper: left[0], lower: left[1]}, ground, -1, build)
+        assert hand == pytest.approx((sl[0] - dx, sl[1] + dy), abs=1e-9)
+
+
+def test_mirrored_puppet_reaches_forward_with_positive_upper():
+    # Facing left, a target in front (smaller x) at shoulder height swings the arm forward (+).
+    ground = (0.5, 0.0)
+    sh = shoulder_world("arm_r", ground, -1, "average")
+    up, lo = solve_arm("arm_r", (sh[0] - 0.1, sh[1]), ground, -1, "average")
+    assert up > 0 and 0 < lo < math.pi
+
+
+def test_target_straight_above_the_shoulder_is_pi_for_both_facings():
+    for facing in FACINGS:
+        sh = shoulder_world("arm_r", (0.0, 0.0), facing, "average")
+        up, lo = solve_arm("arm_r", (sh[0], sh[1] + 0.17), (0.0, 0.0), facing, "average")
+        assert up + lo / 2 == pytest.approx(math.pi)
+        up, lo = solve_arm("arm_r", (sh[0], sh[1] + 5.0), (0.0, 0.0), facing, "average", clamp=True)
+        assert (up, lo) == (pytest.approx(math.pi), 0.0)
