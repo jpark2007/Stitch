@@ -431,8 +431,17 @@ def test_pick_up_below_the_floor_is_out_of_reach_even_crouching():
 # a grip on the floor right under the hips is behind a forward bend's reach.
 
 def low_cup(world, x, grip_y=0.03):
-    """The cup on the floor with its grip at (x, grip_y), as low as base_scene's cap."""
-    geom = B.PropGeom.from_prop(world.catalog["cup"])
+    """The cup on the floor with its grip at (x, grip_y), as low as base_scene's cap.
+
+    A grip no higher than the cup is re-gripped that far up from its bottom, so the cup rests on
+    the floor (anchor y = 0) the puppet stands on: pick_up's spots are on the surface a prop
+    rests on (verbs_core._approach_ys), and a cup sunk below the floor would read as a lower
+    surface to step down to. A higher grip keeps the cup gripped at its top, lifted that high."""
+    cup = world.catalog["cup"]
+    geom = B.PropGeom.from_prop(cup)
+    if 0.0 <= grip_y <= geom.height:
+        world.catalog["cup"] = cup = cup.model_copy(update={"grip": [cup.grip[0], 1.0 - grip_y / geom.height]})
+        geom = B.PropGeom.from_prop(cup)
     world._to_ground("cup", (*B.anchor_from_grip(geom, (x, grip_y)), 0.5))
     return (x, grip_y)
 

@@ -86,8 +86,8 @@ SPOT_WALK_COST = 5.0  # crouch effort (radians) a stage unit of walking costs: 0
 STAGE_EDGE = 1.0   # spots stay on stage: |x| at most this (World.on_stage)
 
 # pick_up of a prop resting on a surface at another height than the puppet's (the floor below
-# the church steps, a raised mark from the floor): the spots it walks or steps to are on the
-# prop's surface (see _approach_y), when that surface is at most this many of the puppet's own
+# the church steps, a raised mark from the floor): the spots it walks or steps to may be on the
+# prop's surface (see _approach_ys), when that surface is at most this many of the puppet's own
 # heights (ik.scale) above or below the one it stands on. Further off (a shelf 0.9 up), it stays
 # on its own surface and reaches from there or not at all.
 CLIMB_LIMIT = 1.0
@@ -145,20 +145,26 @@ def resting_surface_y(world: World, what: str) -> float | None:
     return float(st.world_pos[1])
 
 
-def _approach_y(world: World, who: str, surface_y: float | None) -> float:
-    """The height of a spot ``who`` walks or steps to beside something resting on a surface at
-    ``surface_y`` (resting_surface_y): that surface, so a puppet on a raised mark steps down to
-    the floor for a prop lying there and stands on the floor, not in mid-air at its mark's height,
-    and one on the floor steps up to a raised mark. Its own height (``pos[1]``, exactly) when the
-    two are the same surface, when there is no surface (None), or when the other surface is more
-    than CLIMB_LIMIT of its own height above or below (a shelf)."""
-    p = world.people[who]
+def _approach_ys(world: World, who: str, surface_y: float | None) -> list[float]:
+    """The heights, in the order tried, of the spots ``who`` may walk or step to beside
+    something resting on a surface at ``surface_y`` (resting_surface_y).
+
+    - Below its own (a prop on the floor below the stage it stands on): only that surface. It
+      steps down and stands on the floor beside the prop, never in mid-air at its mark's height
+      out over the floor.
+    - Above its own (a prop on a raised mark, the puppet on the floor): its own surface first, so
+      a prop it can reach up to from the floor is taken from where it stands (nobody leaves the
+      floor for it); only when nothing reaches from there does it climb onto the prop's surface.
+    - Its own height alone (``pos[1]``, exactly, so the keys are the ones it always had) when
+      the two are the same surface, when there is no surface (None: a held stack), or when the
+      other surface is more than CLIMB_LIMIT of its own height away (a shelf 0.9 up)."""
+    own = world.people[who].pos[1]
     if surface_y is None:
-        return p.pos[1]
-    rise = abs(surface_y - p.pos[1])
-    if rise <= _SAME_SURFACE or rise > CLIMB_LIMIT * ik.scale(p.build) + _SAME_SURFACE:
-        return p.pos[1]
-    return surface_y
+        return [own]
+    rise = surface_y - own
+    if abs(rise) <= _SAME_SURFACE or abs(rise) > CLIMB_LIMIT * ik.scale(world.people[who].build) + _SAME_SURFACE:
+        return [own]
+    return [surface_y] if rise < 0 else [own, surface_y]
 
 
 def _travel_keys(world: World, tracks: TrackSet, who: str, t: float, dest: Vec3, gait: str) -> tuple[list[Key], float, int]:
@@ -310,11 +316,13 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
     3. Raises ik.OutOfReach, with the closest miss, only when no spot reaches. A seated puppet
        never moves: it reaches from the seat or fails. On any failure the world is untouched.
 
-    The walk-up's end and every spot of step 2 are on the surface the prop rests on
-    (_approach_y over resting_surface_y), not at the puppet's own height: from a raised mark it
-    walks down to a prop on the floor below in one walk (and stands on the floor), from the floor
-    up onto a raised mark. A surface more than CLIMB_LIMIT of the puppet's height away keeps it
-    on its own surface; a prop on its own surface gives exactly the keys it always did."""
+    Steps 1 and 2 run at each height _approach_ys gives, in order, until one reaches (the
+    closest miss over all of them is raised): from a raised mark the walk-up and the spots are
+    on the floor below for a prop lying there (one walk down; it stands on the floor, not in
+    mid-air), and from the floor a prop on a raised mark is reached from the floor when it can
+    be, else from the mark's surface (one walk up). A surface more than CLIMB_LIMIT of the
+    puppet's height away keeps it on its own surface; a prop on its own surface gives exactly
+    the keys it always did."""
     who = _who(world, action)
     what = _what(world, action)
     hand = world.copy().pick_up(who, what)  # validation only: the real world is untouched
@@ -323,15 +331,26 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
 
     arm = arm_of_hand(hand)
     geom = B.PropGeom.from_prop(world.catalog[what])
-    spot_y = _approach_y(world, who, resting_surface_y(world, what))
-    try:
-        keys, end, walk_to, facing = _pick_up_in_place(world, tracks, who, what, arm, geom, anchor, t, spot_y)
-    except ik.OutOfReach as missed:
-        if world.people[who].seat is not None:
-            raise
-        keys, end, walk_to, facing = _pick_up_from_a_spot(
-            world, tracks, who, what, arm, geom, anchor, t, missed, spot_y
-        )
+    closest: ik.OutOfReach | None = None
+    for spot_y in _approach_ys(world, who, resting_surface_y(world, what)):
+        try:
+            try:
+                keys, end, walk_to, facing = _pick_up_in_place(world, tracks, who, what, arm, geom, anchor, t, spot_y)
+            except ik.OutOfReach as missed:
+                if world.people[who].seat is not None:
+                    raise
+                keys, end, walk_to, facing = _pick_up_from_a_spot(
+                    world, tracks, who, what, arm, geom, anchor, t, missed, spot_y
+                )
+            break
+        except ik.OutOfReach as missed:
+            if world.people[who].seat is not None:
+                raise
+            if closest is None or missed.distance < closest.distance:
+                closest = missed
+    else:
+        assert closest is not None
+        raise closest
 
     # Atomic: the move and the take are tried on a copy first, so a failure (StateError from
     # World.pick_up at the new spot) leaves the real world as it was.
@@ -350,7 +369,7 @@ def _pick_up_in_place(
     spot_y: float,
 ) -> tuple[list[Key], float, Vec3 | None, int]:
     """pick_up from where the puppet is, or after the plain walk-up toward the grip (step 1 of
-    apply_pick_up). The walk-up ends at height ``spot_y`` (_approach_y: the prop's surface), in
+    apply_pick_up). The walk-up ends at height ``spot_y`` (one of _approach_ys), in
     one walk from the puppet's own height. Returns (keys, end, where it walked to or None,
     facing). Raises ik.OutOfReach, or StateError("seated") when a seated puppet would have to
     walk."""
@@ -413,8 +432,8 @@ def _reach_spot(
     ik.OutOfReach with the closest miss over every spot tried and ``missed`` (the miss from
     where it is) when none reaches.
 
-    Candidates stand at height ``y`` (_approach_y: the surface the prop rests on, which may be
-    above or below the puppet's own), face the grip, keep the torso the walk leaves the puppet
+    Candidates stand at height ``y`` (one of _approach_ys: the puppet's own surface or the one
+    the prop rests on), face the grip, keep the torso the walk leaves the puppet
     with, and lie every
     SPOT_STEP from the grip outward (see _spot_offsets), on the stage only (World.on_stage:
     |x| <= STAGE_EDGE). Each is tried from the shoulder pivot of the arm actually used

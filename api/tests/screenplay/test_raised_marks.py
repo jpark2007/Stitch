@@ -3,11 +3,14 @@
 pick_up of a prop on another surface than the puppet's (fuzz bug B5): verbs_core's walk-up and
 every candidate spot of _reach_spot used to keep the puppet's own height, so from the church
 steps or a stage a prop on the floor below was never reached, and where it was reached the puppet
-stood off its mark in mid-air. Now the spot is on the surface the prop rests on
+stood off its mark in mid-air. Now the spots may be on the surface the prop rests on
 (verbs_core.resting_surface_y: its anchor y on the ground, the ground y of the prop at the bottom
-of its stack on a socket), reached in one walk from the puppet's own height, when that surface
-is within CLIMB_LIMIT of the puppet's own height up or down; a shelf further up is still out of
-reach. A prop on the puppet's own surface compiles to exactly the keys it did before.
+of its stack on a socket), reached in one walk from the puppet's own height
+(verbs_core._approach_ys): a prop below is approached on its own surface (the puppet steps down
+and stands on the floor); a prop above is reached from the puppet's own surface when it can be,
+else from the prop's surface. Either only within CLIMB_LIMIT of the puppet's own height up or
+down: a shelf further up is still out of reach. A prop on the puppet's own surface compiles to
+exactly the keys it did before.
 
 Then the bug hunt over verbs_core and verbs_motion on raised marks: enter, exit, follow, drop,
 walk_to holding a prop, and turn_to toward a target straight above or below.
@@ -209,14 +212,29 @@ def test_on_the_church_steps_a_hymn_book_dropped_at_the_foot():
 
 # ------------------------------------------------ a prop on a raised mark, from the floor
 
-def test_a_prop_on_a_raised_mark_picked_up_from_the_floor_steps_up_onto_it():
-    """Too far to reach from the curb: the walk-up climbs onto the mark's surface in one walk."""
+def test_a_prop_on_a_raised_mark_picked_up_from_the_floor_is_reached_from_the_floor():
+    """Too far to reach from the curb: the walk-up stays on the floor (its own surface) and the
+    arm reaches up to the stage, as it always did: nobody climbs for a prop it can reach."""
     sp = _sp(_shot("s1", "yard", {"mom": {"at": "curb"}}, [{"t": 1, "do": "pick_up", "who": "mom", "what": "cap"}],
                    prop_start={"cap": {"at": "stage"}}, marks=STAGE))
     tl = _clean(sp)
-    _takes_it(tl, "mom", "cap", (-0.2, 0.3), 0.3)
-    walk = [p for _, p in _keys(tl, "puppet:mom", "root.position")]
-    assert walk[0] == [0.8, 0.0, 0.5]
+    _takes_it(tl, "mom", "cap", (-0.2, 0.3), 0.0)
+    assert all(p[1] == 0.0 for _, p in _keys(tl, "puppet:mom", "root.position"))
+
+
+def test_a_prop_on_a_raised_mark_out_of_reach_from_the_floor_is_climbed_to():
+    """The small kid cannot reach the books on a mark 0.38 up from the floor (its shoulder is
+    0.30 up): it walks up onto the mark's surface in one walk and bends down to them there."""
+    scene = base_scene()
+    sp = _sp(_shot("s1", "yard", {"kid": {"at": "curb"}},
+                   [{"t": 1, "do": "pick_up", "who": "kid", "what": "hymn_books"}],
+                   prop_start={"hymn_books": {"at": "s"}}, marks={"s": [0.4, 0.38]}))
+    tl = _clean(sp, scene)
+    t, _ = _grab(tl, "hymn_books", "kid")
+    assert _hand(tl, "kid", "hand_r", t, "small") == pytest.approx(_grip("hymn_books", (-0.2, 0.38)), abs=POS_TOL)
+    walk = [p for _, p in _keys(tl, "puppet:kid", "root.position")]
+    assert walk[0] == [0.8, 0.0, 0.5] and walk[2] == [-0.118, 0.38, 0.5]  # one walk, floor to mark
+    _ends_on(tl, "kid", 0.38)
 
 
 def test_a_prop_on_a_raised_mark_within_reach_from_the_floor_is_taken_without_moving():
@@ -228,15 +246,26 @@ def test_a_prop_on_a_raised_mark_within_reach_from_the_floor_is_taken_without_mo
     assert _hand(tl, "mom", "hand_r", t, "average") == pytest.approx(_grip("cap", (-0.2, 0.3)), abs=POS_TOL)
 
 
-@pytest.mark.parametrize("height,climbs", [(0.5, True), (0.55, True), (0.56, False)])
-def test_the_climb_is_at_most_the_puppets_own_height(height, climbs):
-    """dad is tall: 0.55 units. Up to that he steps onto the prop's surface; above it he stays
-    on the floor and reaches from there (a cap gripped low on a 0.56 mark is still in reach)."""
-    sp = _sp(_shot("s1", "yard", {"dad": {"at": "curb"}}, [{"t": 1, "do": "pick_up", "who": "dad", "what": "cap"}],
-                   prop_start={"cap": {"at": "shelf"}}, marks={"shelf": [0.5, height]}))
+@pytest.mark.parametrize("who,height,outcome", [
+    ("kid", 0.38, "climbs"), ("kid", 0.4, "climbs"), ("kid", 0.45, "out_of_reach"),
+    ("mom", 0.45, "floor"), ("mom", 0.5, "climbs"), ("mom", 0.55, "out_of_reach"),
+    ("dad", 0.5, "floor"), ("dad", 0.55, "climbs"),
+])
+def test_the_climb_is_at_most_the_puppets_own_height(who, height, outcome):
+    """The books on a mark ``height`` up, the puppet at the curb. Reached from the floor when the
+    arm gets there; else climbed to when the mark is at most the puppet's own height up
+    (ik.scale: kid 0.4, mom 0.5, dad 0.55); else out of reach, with the miss from the floor."""
+    sp = _sp(_shot("s1", "yard", {who: {"at": "curb"}}, [{"t": 1, "do": "pick_up", "who": who, "what": "hymn_books"}],
+                   prop_start={"hymn_books": {"at": "s"}}, marks={"s": [0.4, height]}))
+    if outcome == "out_of_reach":
+        result = _compile(sp)
+        assert [e.code for e in result.errors] == ["out_of_reach"]
+        assert height > ik.scale(BUILDS[who])
+        return
     tl = _clean(sp)
-    assert ik.scale("tall") == pytest.approx(0.55)
-    _takes_it(tl, "dad", "cap", (0.0, height), height if climbs else 0.0)
+    t, _ = _grab(tl, "hymn_books", who)
+    assert _hand(tl, who, "hand_r", t, BUILDS[who]) == pytest.approx(_grip("hymn_books", (-0.2, height)), abs=POS_TOL)
+    _ends_on(tl, who, height if outcome == "climbs" else 0.0)
 
 
 def test_a_shelf_above_the_climb_limit_is_still_out_of_reach():
@@ -290,7 +319,7 @@ def test_resting_surface_y_follows_the_stack_to_the_ground():
 # --------------------------------------------- same surface: exactly the keys of before
 
 def _today(world, who, surface_y):  # noqa: ARG001: the rule before the fix, for the comparison
-    return world.people[who].pos[1]
+    return [world.people[who].pos[1]]
 
 
 def _same_surface_cases() -> list[tuple[str, Screenplay, Scene]]:
@@ -321,7 +350,7 @@ def test_a_prop_on_the_puppets_own_surface_compiles_byte_identical_to_before(nam
     """With the spot height forced back to the puppet's own (the rule before the fix), every
     verb case and story compiles to the same bytes: nothing on one surface goes another way."""
     now = _compile(sp, scene).model_dump_json()
-    monkeypatch.setattr(verbs_core, "_approach_y", _today)
+    monkeypatch.setattr(verbs_core, "_approach_ys", _today)
     before = _compile(sp, scene).model_dump_json()
     assert now == before, name
 
@@ -382,12 +411,13 @@ def test_drop_seated_on_a_chair_on_a_raised_mark_lands_on_the_mark():
 
 
 def test_a_cap_dropped_on_a_raised_mark_is_picked_up_there_from_the_floor():
-    """The drop and the pick_up agree on where the cap is: the floor-standing kid climbs to it."""
+    """The drop and the pick_up agree on where the cap is: on the stage, 0.3 up, where the kid
+    on the floor reaches up to it."""
     tl = _clean(_sp(_shot("s1", "yard", {"mom": {"at": "stage", "holding": "cap"}, "kid": {"at": "curb"}},
                           [{"t": 1, "do": "drop", "who": "mom", "what": "cap"},
                            {"t": 3, "do": "walk_to", "who": "mom", "to": "door"},
                            {"t": 9, "do": "pick_up", "who": "kid", "what": "cap"}], marks=STAGE)))
-    _takes_it(tl, "kid", "cap", (-0.12, 0.3), 0.3)
+    _takes_it(tl, "kid", "cap", (-0.12, 0.3), 0.0)
 
 
 def test_walk_to_holding_a_prop_across_a_height_change_keeps_it_in_hand():
