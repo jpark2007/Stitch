@@ -2,13 +2,27 @@
 
 // Live agent plan and sub-agent steps (ARCHITECTURE.md section 2).
 // Renders a RunState built by runReducer; the page owns the stream and the
-// pending-input cards, which it passes in as children.
+// pending-input cards, which it passes in as children. Which lines show and
+// what they say is decided in feedView.ts; this file only lays them out.
 import { useId, useState, type ReactNode } from "react";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 
 import { Button, ButtonLink } from "@/components/flow/Button";
 import { Photo } from "@/components/paper/Photo";
 import type { PlanItem } from "@/lib/types";
+import {
+  answeredLine,
+  compileNote,
+  finishedHeading,
+  finishedNote,
+  hiddenEntryCount,
+  pauseLine,
+  phaseLine,
+  stepDetail,
+  toggleLabel,
+  visibleEntries,
+  type FeedSubject,
+} from "./feedView";
 import type { FeedEntry, FeedStep, RunPhase, RunState } from "./runState";
 
 // The feed is one sheet of light paper (the flow kit's PaperCard look). Colours,
@@ -50,50 +64,90 @@ function stepLabel(name: string): string {
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Working";
 }
 
-const PHASE_LINE: Record<RunPhase, string> = {
-  connecting: "Opening the studio…",
-  running: "The studio is working on your moment.",
-  waiting: "The studio has a question for you.",
-  scene_ready: "Your page is ready.",
-  done: "All finished.",
-  error: "Something went wrong.",
-};
-
 /** Frame time for alt text: at most one decimal place ("3.3", "4"). */
 function formatSeconds(t: number): string {
   return Number.isFinite(t) ? String(Math.round(t * 10) / 10) : "?";
 }
-
-/** How many of the latest steps stay visible before the rest fold away. */
-const VISIBLE_STEPS = 4;
 
 export default function AgentFeed(props: {
   state: RunState;
   mediaUrl: (mediaId: string) => string;
   sceneHref?: string;
   onRetry?: () => void;
+  /** What the run adds, for the finished heading (default "memory"). */
+  subject?: FeedSubject;
   children?: ReactNode;
 }) {
-  const { state, mediaUrl, sceneHref, onRetry, children } = props;
+  const { state, mediaUrl, sceneHref, onRetry, subject = "memory", children } = props;
   const headingId = useId();
   const feedId = useId();
   const [showAll, setShowAll] = useState(false);
 
   const stepsByKey = new Map<string, FeedStep>(state.steps.map((s) => [s.key, s]));
-
-  // Collapse finished steps that are older than the latest few.
-  const stepEntries = state.log.filter((e) => e.kind === "step");
-  const recentStepKeys = new Set(stepEntries.slice(-VISIBLE_STEPS).map((e) => e.stepKey));
-  const isFolded = (e: FeedEntry) =>
-    e.kind === "step" && !recentStepKeys.has(e.stepKey) && stepsByKey.get(e.stepKey)?.status === "done";
-  const hiddenCount = state.log.filter(isFolded).length;
-  // The error box below repeats the latest error, so it is not logged twice.
-  const lastEntry = state.log.at(-1);
-  const isRepeatedError = (e: FeedEntry) => state.phase === "error" && e === lastEntry && e.kind === "error";
-  const visibleLog = state.log.filter((e) => !isRepeatedError(e) && (showAll || !isFolded(e)));
+  const visibleLog = visibleEntries(state, showAll);
+  const hiddenCount = hiddenEntryCount(state);
 
   const finished = state.phase === "done";
   const sceneReady = state.phase === "scene_ready" || (finished && state.memoryId !== null);
+  const line = phaseLine(state);
+  const hasLog = visibleLog.length > 0 || hiddenCount > 0;
+
+  const openButton = sceneHref ? (
+    <ButtonLink href={sceneHref} className="gap-1.5">
+      Open your page <span aria-hidden="true">&rarr;</span>
+    </ButtonLink>
+  ) : null;
+
+  const log = (
+    <div
+      id={feedId}
+      role="log"
+      aria-live="polite"
+      aria-relevant="additions text"
+      aria-label="What the studio is doing"
+      className={hasLog && (finished || state.todos.length > 0) ? `mt-6 pt-5 ${STITCH_TOP}` : "mt-6"}
+    >
+      {state.phase === "connecting" && state.log.length === 0 && (
+        <p className="font-hand text-xl leading-snug text-ink-soft">Threading the needle. This takes a moment.</p>
+      )}
+
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          aria-expanded={showAll}
+          aria-controls={feedId}
+          onClick={() => setShowAll((v) => !v)}
+          className={`mb-1 -ml-1 inline-flex min-h-11 items-center rounded-paper px-1 text-sm font-semibold text-accent-deep underline-offset-[0.2em] transition-colors duration-150 ease-paper hover:underline ${FOCUS_RING}`}
+        >
+          {toggleLabel(state, showAll, hiddenCount)}
+        </button>
+      )}
+
+      {visibleLog.length > 0 && (
+        <ol className="space-y-3.5">
+          <AnimatePresence initial={false}>
+            {visibleLog.map((entry) => (
+              <motion.li
+                key={entry.seq}
+                layout="position"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.32, ease: PAPER_EASE }}
+              >
+                <Entry
+                  entry={entry}
+                  step={entry.kind === "step" ? stepsByKey.get(entry.stepKey) : undefined}
+                  state={state}
+                  mediaUrl={mediaUrl}
+                />
+              </motion.li>
+            ))}
+          </AnimatePresence>
+        </ol>
+      )}
+    </div>
+  );
 
   return (
     <MotionConfig reducedMotion="user">
@@ -103,117 +157,67 @@ export default function AgentFeed(props: {
       >
         <header>
           <h2 id={headingId} className="font-display text-[1.625rem] leading-tight sm:text-[1.875rem]">
-            {finished ? "Your moment is stitched in" : "Making your page"}
+            {finished ? finishedHeading(subject) : "Making your page"}
           </h2>
-          <p className="mt-2 flex items-center gap-2 text-sm text-ink-soft">
-            <PhaseMark phase={state.phase} />
-            <span>{PHASE_LINE[state.phase]}</span>
-          </p>
+          {line !== null && (
+            <p className="mt-2 flex items-center gap-2 text-sm text-ink-soft">
+              <PhaseMark phase={state.phase} />
+              <span>{line}</span>
+            </p>
+          )}
         </header>
 
-        {state.todos.length > 0 && (
-          <PlanList todos={state.todos} done={finished} still={state.phase === "waiting" || state.phase === "error"} />
-        )}
-
-        <div
-          id={feedId}
-          role="log"
-          aria-live="polite"
-          aria-relevant="additions text"
-          aria-label="What the studio is doing"
-          className={state.todos.length > 0 ? `mt-6 pt-5 ${STITCH_TOP}` : "mt-6"}
-        >
-          {state.phase === "connecting" && state.log.length === 0 && (
-            <p className="font-hand text-xl leading-snug text-ink-soft">Threading the needle. This takes a moment.</p>
-          )}
-
-          {hiddenCount > 0 && (
-            <button
-              type="button"
-              aria-expanded={showAll}
-              aria-controls={feedId}
-              onClick={() => setShowAll((v) => !v)}
-              className={`mb-1 ml-6 inline-flex min-h-11 items-center rounded-paper px-1 text-sm font-semibold text-accent-deep underline-offset-[0.2em] transition-colors duration-150 ease-paper hover:underline ${FOCUS_RING}`}
-            >
-              {showAll ? "Hide earlier steps" : `Show all steps (${hiddenCount} earlier)`}
-            </button>
-          )}
-
-          {visibleLog.length > 0 && (
-            <ol className="space-y-3.5">
-              <AnimatePresence initial={false}>
-                {visibleLog.map((entry) => (
-                  <motion.li
-                    key={entry.seq}
-                    layout="position"
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.32, ease: PAPER_EASE }}
-                  >
-                    <Entry
-                      entry={entry}
-                      step={entry.kind === "step" ? stepsByKey.get(entry.stepKey) : undefined}
-                      mediaUrl={mediaUrl}
-                      phase={state.phase}
-                    />
-                  </motion.li>
-                ))}
-              </AnimatePresence>
-            </ol>
-          )}
-        </div>
-
-        {children != null && children !== false && (
-          <motion.div
-            className={`mt-7 pt-7 ${STITCH_TOP}`}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4, ease: PAPER_EASE }}
-          >
-            {children}
-          </motion.div>
-        )}
-
-        {sceneReady && (
-          <div className={`mt-7 pt-6 ${STITCH_TOP}`}>
-            <p className="flex items-start gap-2.5 font-display text-xl leading-snug">
-              <CheckIcon className={`mt-1.5 size-4 shrink-0 ${DONE_TEXT}`} />
-              <span>{finished ? "Your page is ready, and it’s in everyone’s books." : "Your page is ready"}</span>
-            </p>
-            {!finished && (
-              <p className="mt-1 pl-[1.625rem] text-sm text-ink-soft">
-                You can open it now. The studio is finishing a few last touches.
-              </p>
+        {finished ? (
+          // One heading, one sentence, the way in; the steps fold away below.
+          <>
+            <p className="mt-3 text-[1.0625rem] leading-relaxed text-pretty text-ink-soft">{finishedNote(state)}</p>
+            {sceneReady && openButton && <div className="mt-5">{openButton}</div>}
+            {log}
+          </>
+        ) : (
+          <>
+            {state.todos.length > 0 && (
+              <PlanList todos={state.todos} still={state.phase === "waiting" || state.phase === "error"} />
             )}
-            {sceneHref && (
-              <div className="mt-4 pl-[1.625rem]">
-                <ButtonLink href={sceneHref} className="gap-1.5">
-                  Open your page <span aria-hidden="true">&rarr;</span>
-                </ButtonLink>
+
+            {log}
+
+            {children != null && children !== false && (
+              <motion.div
+                className={`mt-7 pt-7 ${STITCH_TOP}`}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4, ease: PAPER_EASE }}
+              >
+                {children}
+              </motion.div>
+            )}
+
+            {sceneReady && (
+              <div className={`mt-7 pt-6 ${STITCH_TOP}`}>
+                <p className="flex items-start gap-2.5 font-display text-xl leading-snug">
+                  <CheckIcon className={`mt-1.5 size-4 shrink-0 ${DONE_TEXT}`} />
+                  <span>Your page is ready</span>
+                </p>
+                <p className="mt-1 pl-[1.625rem] text-sm text-ink-soft">You can open it now.</p>
+                {openButton && <div className="mt-4 pl-[1.625rem]">{openButton}</div>}
               </div>
             )}
-          </div>
-        )}
 
-        {finished && !sceneReady && (
-          <p className={`mt-7 pt-6 font-display text-xl leading-snug ${STITCH_TOP}`}>
-            All done. Thank you for sharing this one.
-          </p>
-        )}
-
-        {state.phase === "error" && (
-          <div
-            role="alert"
-            className="mt-7 rounded-card border border-accent/30 border-l-[3px] border-l-accent bg-accent/8 px-4 py-3.5 text-accent-deep"
-          >
-            <p className="font-semibold leading-snug">{state.error ?? "The studio stopped unexpectedly."}</p>
-            {onRetry && (
-              <Button variant="secondary" onClick={onRetry} className="mt-3">
-                Retry
-              </Button>
+            {state.phase === "error" && (
+              <div
+                role="alert"
+                className="mt-7 rounded-card border border-accent/30 border-l-[3px] border-l-accent bg-accent/8 px-4 py-3.5 text-accent-deep"
+              >
+                <p className="font-semibold leading-snug">{state.error ?? "The studio stopped unexpectedly."}</p>
+                {onRetry && (
+                  <Button variant="secondary" onClick={onRetry} className="mt-3">
+                    Retry
+                  </Button>
+                )}
+              </div>
             )}
-          </div>
+          </>
         )}
       </section>
     </MotionConfig>
@@ -248,8 +252,12 @@ function CheckIcon({ className }: { className?: string }) {
   );
 }
 
-/** The plan as a short checklist, its boxes stitched together by a dashed thread. */
-function PlanList({ todos, done, still }: { todos: PlanItem[]; done: boolean; still: boolean }) {
+/**
+ * The plan: the run's one progress list, its marks strung on a dashed thread.
+ * Marks are not form controls: a small hollow dot to do, the stitch spinner in
+ * progress, a plain check when done.
+ */
+function PlanList({ todos, still }: { todos: PlanItem[]; still: boolean }) {
   const headingId = useId();
   return (
     <div className="mt-6">
@@ -261,18 +269,18 @@ function PlanList({ todos, done, still }: { todos: PlanItem[]; done: boolean; st
         className="relative mt-3 space-y-2 before:absolute before:top-2.5 before:bottom-2.5 before:left-[7px] before:border-l-[1.5px] before:border-dashed before:border-rule before:content-['']"
       >
         {todos.map((todo, i) => {
-          const status = done ? "completed" : (todo.status ?? "pending");
+          const status = todo.status ?? "pending";
           return (
             <li key={`${i}-${todo.text}`} className="relative flex items-start gap-3 text-[0.9375rem] leading-snug">
               <span className="flex h-[1.3rem] w-4 shrink-0 items-center justify-center">
                 {status === "completed" ? (
-                  <span className={`flex size-4 items-center justify-center rounded-[3px] text-paper-light ${DONE_FILL}`}>
-                    <CheckIcon className="size-3" />
+                  <span className="flex size-4 items-center justify-center rounded-full bg-paper-light">
+                    <CheckIcon className={`size-3.5 ${DONE_TEXT}`} />
                   </span>
                 ) : status === "in_progress" ? (
                   <StitchSpinner still={still} />
                 ) : (
-                  <span aria-hidden="true" className="size-3.5 rounded-[3px] border-[1.5px] border-ink-faint bg-paper-light" />
+                  <span aria-hidden="true" className="size-2 rounded-full border-[1.5px] border-ink-faint bg-paper-light" />
                 )}
               </span>
               <span className={status === "completed" ? "text-ink-soft" : status === "in_progress" ? "font-semibold text-ink" : "text-ink"}>
@@ -292,21 +300,22 @@ function PlanList({ todos, done, still }: { todos: PlanItem[]; done: boolean; st
 function Entry({
   entry,
   step,
+  state,
   mediaUrl,
-  phase,
 }: {
   entry: FeedEntry;
   step: FeedStep | undefined;
+  state: RunState;
   mediaUrl: (mediaId: string) => string;
-  phase: RunPhase;
 }) {
+  const { phase } = state;
   switch (entry.kind) {
     case "step": {
       if (!step) return null;
       // A finished run closes every step; a paused or failed run stops the spinners.
       const done = step.status === "done" || phase === "done";
       const moving = !done && phase !== "waiting" && phase !== "error";
-      const detail = done ? (step.summary ?? step.task) : step.task;
+      const detail = stepDetail(state, step);
       return (
         <div className="flex items-start gap-3">
           <span className="flex h-6 w-4 shrink-0 items-center justify-center">
@@ -329,39 +338,8 @@ function Entry({
       );
     }
 
-    case "compile_error": {
-      const n = entry.event.errors.length;
-      const things = `${n} ${n === 1 ? "thing" : "things"}`;
-      return (
-        <Note>
-          <p>
-            The director is fixing {things}
-            {entry.event.round != null ? `, round ${entry.event.round}` : ""}.
-          </p>
-          {n > 0 && (
-            <details className="group">
-              <summary
-                className={`-ml-1 inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-paper px-1 text-sm font-semibold text-accent-deep underline-offset-[0.2em] hover:underline ${FOCUS_RING}`}
-              >
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 16 16"
-                  className="size-3 shrink-0 transition-transform duration-200 ease-paper group-open:rotate-90"
-                >
-                  <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                What needs fixing
-              </summary>
-              <ul className="mb-1 list-disc space-y-1 pl-5 text-sm leading-relaxed text-ink-soft marker:text-ink-faint">
-                {entry.event.errors.map((err, i) => (
-                  <li key={`${i}-${err.code}`}>{err.message}</li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </Note>
-      );
-    }
+    case "compile_error":
+      return <Note>{compileNote(entry.event)}</Note>;
 
     case "frames":
       return (
@@ -389,6 +367,8 @@ function Entry({
       );
 
     case "asked":
+      // Shown only while the question is unanswered and its card is not up
+      // (the connection dropped mid-pause, say).
       return (
         <Note>
           <span className="text-ink-soft">The studio asked: </span>
@@ -396,23 +376,29 @@ function Entry({
         </Note>
       );
 
-    case "answered":
+    case "answered": {
+      const { prompt, text } = answeredLine(entry);
       return (
         <Note>
-          <span className="text-ink-soft">You answered: </span>
-          {entry.summary}
+          {prompt && (
+            <span className="block text-ink-soft">
+              {entry.answer === "answer" ? (
+                <>
+                  The studio asked: <span className="font-hand text-xl leading-tight text-ink">“{prompt}”</span>
+                </>
+              ) : (
+                prompt
+              )}
+            </span>
+          )}
+          <span className={prompt ? "mt-0.5 block" : undefined}>{text}</span>
         </Note>
       );
+    }
 
     case "props":
-      return (
-        <Note>
-          Found {entry.count} {entry.count === 1 ? "prop" : "props"} for you to look over.
-        </Note>
-      );
-
     case "merge":
-      return <Note>{entry.text}</Note>;
+      return <Note>{pauseLine(entry)}</Note>;
 
     case "scene_ready":
       return <Note tone="good">The scene is stitched together.</Note>;

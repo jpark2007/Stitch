@@ -75,10 +75,12 @@ export function MemoryRun(props: {
   const cardRef = useRef<HTMLDivElement>(null);
   const lastShownKey = useRef<string | null>(null);
 
-  // A new card takes focus and scrolls into view. The feed's own log already
-  // announces the pause ("The studio asked: ..."), so no extra live region.
-  // When an answered card goes away, focus would fall to <body>: hand it to
-  // the feed's heading instead, without moving the page.
+  // A new card takes focus and scrolls into view, which is how the pause is
+  // announced: while the card is up the feed hides its own line for it, and
+  // the phase line under the heading names the kind of pause. When the card
+  // goes away (answered here, or found already answered after a reload),
+  // focus would fall to <body>: hand it to the feed's heading instead,
+  // without moving the page.
   useEffect(() => {
     const previous = lastShownKey.current;
     lastShownKey.current = shownKey;
@@ -126,6 +128,8 @@ export function MemoryRun(props: {
           mediaUrl={mediaUrl}
           onRetry={retry}
           sceneHref={sceneHrefFor(state, sceneHref)}
+          // After a reload the telling is unknown (null): call it a memory.
+          subject={telling?.secondTellingOf ? "telling" : "memory"}
         >
           {cardNode}
         </AgentFeed>
