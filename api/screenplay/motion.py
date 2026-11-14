@@ -1,9 +1,11 @@
-"""Marks to stage positions and puppet locomotion (walk / run / enter / exit / turn / follow).
+"""Marks to stage positions, puppet locomotion (walk / run / enter / exit / turn / follow)
+and vehicles (drive_to / ride_to: the vehicle path, wheel spin, seat positions).
 
 Pure, deterministic functions. Everything is in stage units and timeline seconds
-(see shared/CONTRACTS.md 'Marks' and 'The puppet'). The walk arithmetic matches
+(see shared/CONTRACTS.md 'Marks', 'The puppet' and 'Props'). The walk arithmetic matches
 api/tests/gen_hymn_books_sample.py walk() exactly, so the compiler reproduces the
-reference sample.
+reference sample. This module does not track state or parent anything: the compiler
+decides who is seated where and uses these helpers to place them.
 
 Keys are (target, channel, t, value) tuples. Positions are emitted as [x, y, z]
 lists, rotations as floats, facing as the int 1 or -1. Values are not rounded;
@@ -13,19 +15,25 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from .schema import SHARED_DIR, VOCABULARY
 
 Vec3 = tuple[float, float, float]
 Key = tuple[str, str, float, object]
+Waypoints = list[tuple[float, Vec3]]  # (timeline t, position), sorted by t
 
 RIG: dict = json.loads((SHARED_DIR / "rig" / "puppet.json").read_text())
 POSES: dict = json.loads((SHARED_DIR / "rig" / "poses.json").read_text())
 SPEEDS: dict[str, float] = VOCABULARY["speeds"]
 BUILDS: dict[str, float] = VOCABULARY["builds"]
+SIZES: dict[str, float] = VOCABULARY["sizes"]
 
 ACTING_Z = 0.5
+
+# Used only if shared/vocabulary.json ever stops listing speeds.drive (stage units / s).
+DEFAULT_DRIVE_SPEED = 0.9
+DRIVE_SPEED: float = float(SPEEDS.get("drive", DEFAULT_DRIVE_SPEED))
 
 # Same order as gen_hymn_books_sample.LIMBS.
 LIMBS: tuple[str, ...] = (
@@ -302,3 +310,186 @@ def follow_keys(
         if end_t is not None and cur_t >= end_t - _EPS:
             break
     return keys, cur_t, facing
+
+
+# ------------------------------------------------------------------------- vehicles
+#
+# A vehicle is a prop on the ground: its `position` track is the world position of its
+# anchor (shared/CONTRACTS.md 'Props'). Props are never mirrored (there is no facing
+# channel for props), so socket and part offsets do not flip when a vehicle drives left.
+# drive_to and ride_to move the vehicle the same way; they differ only in who the
+# compiler requires to be seated where.
+
+def _field(obj: Any, name: str, default: Any = None) -> Any:
+    """Read a field from a pydantic model (snake_case attribute) or a JSON-style mapping."""
+    if isinstance(obj, Mapping):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _vec3(p: Sequence[float]) -> Vec3:
+    if len(p) != 3:
+        raise ValueError(f"a position is [x, y, z], got {list(p)!r}")
+    return (float(p[0]), float(p[1]), float(p[2]))
+
+
+def _waypoints(path: Iterable[tuple[float, Sequence[float]]]) -> Waypoints:
+    """Normalise to (float t, Vec3) pairs sorted by t (stable, so equal-t steps keep order)."""
+    return sorted(((float(t), _vec3(p)) for t, p in path), key=lambda k: k[0])
+
+
+def prop_dimensions(size: str, aspect: float = 1.0) -> tuple[float, float]:
+    """(width, height) in stage units: height = sizes[size], width = height * aspect."""
+    if size not in SIZES:
+        raise ValueError(f"unknown prop size {size!r}")
+    if aspect <= 0:
+        raise ValueError(f"aspect must be positive, got {aspect}")
+    h = SIZES[size]
+    return (h * aspect, h)
+
+
+def position_at(path: Iterable[tuple[float, Sequence[float]]], t: float) -> Vec3:
+    """Linear interpolation of position keys at time t; holds the first/last value outside."""
+    pts = _waypoints(path)
+    if not pts:
+        raise ValueError("position_at needs at least one key")
+    return _leader_at(pts, float(t))
+
+
+def path_from_keys(keys: Iterable[Key], target: str, channel: str = "position") -> Waypoints:
+    """The (t, [x, y, z]) keys of one target + channel, as a sorted path."""
+    return _waypoints((k[2], k[3]) for k in keys if k[0] == target and k[1] == channel)  # type: ignore[misc]
+
+
+def drive_keys(
+    prop_id: str,
+    t0: float,
+    start: Vec3,
+    end: Vec3,
+    speed: float | None = None,
+) -> tuple[list[Key], float]:
+    """Move a vehicle's anchor from start (its current position) to end (the target mark).
+
+    Duration = ground distance (x and z) / speed, with speed defaulting to the vocabulary's
+    speeds.drive (DRIVE_SPEED). A height-only move (a ramp up to a raised mark) takes
+    |dy| / speed so the vehicle still reaches the new height. Emits two linear `position`
+    keys on `prop:<id>`, at t0 and at arrival. Returns (keys, arrival time); no keys and
+    arrival t0 when start == end.
+    """
+    v = DRIVE_SPEED if speed is None else float(speed)
+    if v <= 0:
+        raise ValueError(f"drive speed must be positive, got {v}")
+    start, end = _vec3(start), _vec3(end)
+    dist = math.hypot(end[0] - start[0], end[2] - start[2])
+    if dist <= _EPS:
+        dist = abs(end[1] - start[1])
+        if dist <= _EPS:
+            return [], t0
+    t1 = t0 + dist / v
+    target = f"prop:{prop_id}"
+    return [
+        (target, "position", t0, [start[0], start[1], start[2]]),
+        (target, "position", t1, [end[0], end[1], end[2]]),
+    ], t1
+
+
+def spinning_parts(parts: Mapping[str, Any] | None) -> list[str]:
+    """Names of the parts with spin=true (PropPart models or {"spin": true} mappings), sorted."""
+    return sorted(name for name, part in (parts or {}).items() if _field(part, "spin", False))
+
+
+def wheel_rotation(distance: float, radius: float, direction: int) -> float:
+    """Rolling-without-slipping angle (radians, CCW positive) after `distance` of travel.
+
+    Travel toward +x (direction 1) turns a wheel clockwise seen from the front, so the
+    angle is -distance / radius; toward -x (direction -1) it is +distance / radius.
+    """
+    if radius <= 0:
+        raise ValueError(f"wheel radius must be positive, got {radius}")
+    if direction not in (1, -1):
+        raise ValueError(f"direction must be 1 or -1, got {direction}")
+    return -direction * distance / radius
+
+
+def wheel_spin_keys(
+    prop_id: str,
+    parts: Mapping[str, Any] | None,
+    path: Iterable[tuple[float, Sequence[float]]],
+    radius: float,
+    start_rot: float = 0.0,
+    heading: int = 1,
+) -> list[Key]:
+    """`part.<name>.rot` keys for every spinning part, following the vehicle's path.
+
+    `path` is the vehicle's anchor positions over time (e.g. drive_keys' keys via
+    path_from_keys); `radius` is the wheel radius in stage units. Each segment adds
+    wheel_rotation(ground distance, radius, sign of its x travel) to the angle, starting
+    from `start_rot` at the first key (pass the last angle to continue from an earlier
+    drive). A segment with no x travel (a pure depth move) rolls in the last x direction,
+    `heading` before any. One key per path key per part (holds included, so the wheels
+    stay still while the vehicle does); linear; sorted by time, then part name.
+    """
+    if radius <= 0:
+        raise ValueError(f"wheel radius must be positive, got {radius}")
+    if heading not in (1, -1):
+        raise ValueError(f"heading must be 1 or -1, got {heading}")
+    names = spinning_parts(parts)
+    pts = _waypoints(path)
+    if not names or not pts:
+        return []
+    angles = [float(start_rot)]
+    direction = heading
+    for (_, a), (_, b) in zip(pts, pts[1:]):
+        direction = _sign(b[0] - a[0]) or direction
+        dist = math.hypot(b[0] - a[0], b[2] - a[2])
+        angles.append(angles[-1] + wheel_rotation(dist, radius, direction))
+    target = f"prop:{prop_id}"
+    return [(target, f"part.{name}.rot", t, rot)
+            for (t, _), rot in zip(pts, angles) for name in names]
+
+
+def socket_offset(socket_at: Sequence[float], anchor: Sequence[float],
+                  size: str, aspect: float = 1.0) -> Vec3:
+    """Offset in stage units from a prop's anchor to a socket, both [u, v] image fractions
+    ([0, 0] top-left): ((u - anchor_u) * width, (anchor_v - v) * height, 0)."""
+    w, h = prop_dimensions(size, aspect)
+    return ((float(socket_at[0]) - float(anchor[0])) * w, (float(anchor[1]) - float(socket_at[1])) * h, 0.0)
+
+
+def prop_socket_offset(prop: Any, socket: str) -> Vec3:
+    """socket_offset for a Prop (api/schemas.Prop model, or its JSON as a dict)."""
+    sockets = _field(prop, "sockets") or {}
+    if socket not in sockets:
+        raise KeyError(f"prop {_field(prop, 'id')!r} has no socket {socket!r}")
+    anchor = _field(prop, "anchor") or [0.5, 1.0]
+    return socket_offset(sockets[socket], anchor, _field(prop, "size"), float(_field(prop, "aspect", 1.0) or 1.0))
+
+
+def socket_position_at(path: Iterable[tuple[float, Sequence[float]]], t: float, offset: Vec3) -> Vec3:
+    """World position of a socket on a moving prop at time t: anchor(t) + offset."""
+    a = position_at(path, t)
+    return (a[0] + offset[0], a[1] + offset[1], a[2] + offset[2])
+
+
+def vehicle_socket_position(prop: Any, socket: str,
+                            path: Iterable[tuple[float, Sequence[float]]], t: float) -> Vec3:
+    """World position of a named socket of a Prop whose anchor follows `path`, at time t."""
+    return socket_position_at(path, t, prop_socket_offset(prop, socket))
+
+
+def seated_root_keys(
+    who: str,
+    path: Iterable[tuple[float, Sequence[float]]],
+    offset: Vec3,
+    root_offset: Sequence[float] = (0.0, 0.0, 0.0),
+) -> list[Key]:
+    """`root.position` keys for a puppet riding in a socket: one key per path key at
+    anchor + socket offset + root_offset (e.g. a sit pose's baked rootOffset, in stage
+    units). The vehicle moves linearly between its keys and the offset is constant, so
+    these keys keep the puppet exactly on the socket at every t."""
+    ro = _vec3(root_offset)
+    out: list[Key] = []
+    for t, a in _waypoints(path):
+        out.append((_target(who), "root.position", t,
+                    [a[0] + offset[0] + ro[0], a[1] + offset[1] + ro[1], a[2] + offset[2] + ro[2]]))
+    return out

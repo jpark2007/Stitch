@@ -404,3 +404,194 @@ def test_data_loaded():
     assert motion.SPEEDS["run"] == 0.8 and motion.ACTING_Z == 0.5
     assert "walk" in motion.POSES["cycles"] and "bones" in motion.RIG
     assert math.isclose(motion.SPEEDS["walk"], 0.35)
+
+
+# ------------------------------------------------- hymn_books walk = generator arithmetic
+
+SCREENPLAY = json.loads((REPO_DIR / "web/public/samples/hymn_books.screenplay.json").read_text())
+RISE = 1.2  # gen_hymn_books_sample.RISE: screenplay t=0 is timeline t=1.2
+
+
+@pytest.mark.parametrize("t_shot,frm,to", [(0.0, "offstage_left", "steps_left"), (3.6, "steps_left", "steps_foot")])
+def test_hymn_books_walk_timing_matches_generator_arithmetic(t_shot, frm, to):
+    shot = SCREENPLAY["shots"][0]
+    marks = resolve_marks(shot["marks"], None)
+    x0, x1 = marks[frm][0], marks[to][0]
+    # gen_hymn_books_sample.walk(): t1 = t0 + |x1 - x0| / WALK, n = max(1, round(dist / stride * 4))
+    # and keys at A(t0 + (t1 - t0) * i / n), all in shot time then shifted by RISE.
+    dist = abs(x1 - x0)
+    shot_t1 = t_shot + dist / motion.VOCABULARY["speeds"]["walk"]
+    stride = motion.POSES["cycles"]["walk"]["strideLength"] * motion.RIG["stageHeight"] * motion.BUILDS["tall"]
+    n = max(1, round(dist / stride * 4))
+    keys, t1, _ = locomotion_keys("dad", "tall", RISE + t_shot, marks[frm], marks[to], 1)
+    assert t1 == pytest.approx(RISE + shot_t1, abs=1e-12)
+    leg = [k for k in keys if k[1] == "leg_l.upper.rot"]
+    assert len(leg) == n + 1
+    want = [RISE + (t_shot + (shot_t1 - t_shot) * i / n) for i in range(n + 1)]
+    assert [k[2] for k in leg] == pytest.approx(want, abs=1e-12)
+    pos = [k for k in keys if k[1] == "root.position"]
+    assert [p[3][0] for p in pos] == [x0, x1]
+
+
+# --------------------------------------------------------------------------- vehicles
+
+CAR = {
+    "id": "green_sedan_1985", "name": "green sedan", "size": "vehicle", "aspect": 2.0,
+    "art": {"body": None, "wheel": None}, "anchor": [0.5, 1.0], "grip": None,
+    "sockets": {"driver": [0.35, 0.55], "passenger": [0.6, 0.55]},
+    "parts": {"wheel_front": {"art": "wheel", "at": [0.22, 0.9], "spin": True},
+              "wheel_back": {"art": "wheel", "at": [0.8, 0.9], "spin": True},
+              "door": {"art": "door", "at": [0.4, 0.5], "spin": False}},
+    "states": {"parked": {}, "driving": {}},
+}
+
+
+def test_drive_speed_from_vocabulary():
+    assert motion.DRIVE_SPEED == motion.VOCABULARY["speeds"]["drive"] == 0.9
+    assert motion.DEFAULT_DRIVE_SPEED == 0.9
+
+
+def test_drive_keys_path_and_timing():
+    keys, t1 = motion.drive_keys("car", 2.0, (-0.9, 0.0, 0.5), (0.9, 0.0, 0.5))
+    assert t1 == pytest.approx(2.0 + 1.8 / 0.9)
+    assert keys == [("prop:car", "position", 2.0, [-0.9, 0.0, 0.5]),
+                    ("prop:car", "position", t1, [0.9, 0.0, 0.5])]
+    _, t_fast = motion.drive_keys("car", 2.0, (-0.9, 0.0, 0.5), (0.9, 0.0, 0.5), speed=1.8)
+    assert t_fast == pytest.approx(3.0)
+
+
+def test_drive_keys_degenerate_and_bad_speed():
+    assert motion.drive_keys("car", 1.0, (0.2, 0, 0.5), (0.2, 0, 0.5)) == ([], 1.0)
+    keys, t1 = motion.drive_keys("car", 1.0, (0.2, 0, 0.5), (0.2, 0.09, 0.5))
+    assert t1 == pytest.approx(1.1) and keys[-1][3] == [0.2, 0.09, 0.5]
+    with pytest.raises(ValueError):
+        motion.drive_keys("car", 0, (0, 0, 0.5), (1, 0, 0.5), speed=0)
+
+
+def test_drive_to_mark_uses_mark_position():
+    marks = resolve_marks({"garage": [0.1, 0.0], "curb": [0.9, 0.0]}, None)
+    keys, t1 = motion.drive_keys("car", 0.0, marks["garage"], marks["curb"])
+    assert keys[-1][3] == pytest.approx([0.8, 0.0, 0.5])
+    assert t1 == pytest.approx(1.6 / 0.9)
+
+
+@pytest.mark.parametrize("x0,x1", [(-0.9, 0.9), (0.9, -0.9), (-1.3, 0.25), (0.6, -0.05)])
+@pytest.mark.parametrize("radius", [0.05, 0.11, 0.3])
+def test_wheel_spin_final_rotation_is_minus_d_over_r(x0, x1, radius):
+    t0 = 1.7
+    keys, t1 = motion.drive_keys("car", t0, (x0, 0.0, 0.5), (x1, 0.0, 0.5))
+    path = motion.path_from_keys(keys, "prop:car")
+    spin = motion.wheel_spin_keys("car", CAR["parts"], path, radius)
+    d = abs(x1 - x0)
+    want = -d / radius if x1 > x0 else d / radius
+    assert {k[1] for k in spin} == {"part.wheel_front.rot", "part.wheel_back.rot"}  # not the door
+    for ch in ("part.wheel_front.rot", "part.wheel_back.rot"):
+        track = [k for k in spin if k[1] == ch]
+        assert all(k[0] == "prop:car" for k in track)
+        assert track[0][2] == t0 and track[0][3] == 0.0
+        assert track[-1][2] == pytest.approx(t1)
+        assert abs(track[-1][3] - want) <= 1e-9
+    ts = [k[2] for k in spin]
+    assert ts == sorted(ts) and ts[0] == t0
+
+
+def test_wheel_spin_accumulates_over_path_with_holds_and_start_rot():
+    path = [(0.0, (-1.0, 0, 0.5)), (2.0, (0.0, 0, 0.5)), (3.0, (0.0, 0, 0.5)), (4.0, (-0.5, 0, 0.5))]
+    spin = motion.wheel_spin_keys("car", {"w": {"spin": True}}, path, 0.1, start_rot=0.5)
+    assert [k[2] for k in spin] == [0.0, 2.0, 3.0, 4.0]
+    assert [k[3] for k in spin] == pytest.approx([0.5, 0.5 - 10.0, 0.5 - 10.0, 0.5 - 10.0 + 5.0])
+
+
+def test_wheel_spin_depth_move_rolls_in_last_direction():
+    path = [(0.0, (0.0, 0, 0.5)), (1.0, (-0.3, 0, 0.5)), (2.0, (-0.3, 0, 0.9))]
+    spin = motion.wheel_spin_keys("car", {"w": {"spin": True}}, path, 0.1)
+    assert spin[-1][3] == pytest.approx(3.0 + 4.0)
+    first_depth = motion.wheel_spin_keys("car", {"w": {"spin": True}}, path[1:], 0.1, heading=-1)
+    assert first_depth[-1][3] == pytest.approx(4.0)
+
+
+def test_wheel_spin_with_schema_models_and_edge_cases():
+    from schemas import Prop
+
+    car = Prop.model_validate(CAR)
+    assert motion.spinning_parts(car.parts) == ["wheel_back", "wheel_front"]
+    path = [(0.0, (0.0, 0, 0.5)), (1.0, (0.4, 0, 0.5))]
+    assert len(motion.wheel_spin_keys("car", car.parts, path, 0.1)) == 4
+    assert motion.wheel_spin_keys("car", {}, path, 0.1) == []
+    assert motion.wheel_spin_keys("car", None, path, 0.1) == []
+    assert motion.wheel_spin_keys("car", car.parts, [], 0.1) == []
+    with pytest.raises(ValueError):
+        motion.wheel_spin_keys("car", car.parts, path, 0.0)
+    with pytest.raises(ValueError):
+        motion.wheel_spin_keys("car", car.parts, path, 0.1, heading=0)
+
+
+def test_wheel_rotation_sign_convention():
+    assert motion.wheel_rotation(1.0, 0.25, 1) == -4.0
+    assert motion.wheel_rotation(1.0, 0.25, -1) == 4.0
+    with pytest.raises(ValueError):
+        motion.wheel_rotation(1.0, -0.1, 1)
+
+
+def test_prop_dimensions_and_socket_offset():
+    assert motion.prop_dimensions("vehicle", 2.0) == pytest.approx((1.8, 0.9))
+    off = motion.socket_offset([0.35, 0.55], [0.5, 1.0], "vehicle", 2.0)
+    assert off == pytest.approx(((0.35 - 0.5) * 1.8, (1.0 - 0.55) * 0.9, 0.0))
+    assert motion.prop_socket_offset(CAR, "driver") == pytest.approx(off)
+    with pytest.raises(KeyError):
+        motion.prop_socket_offset(CAR, "trunk")
+    with pytest.raises(ValueError):
+        motion.prop_dimensions("planet")
+
+
+def test_socket_follows_vehicle_through_drive():
+    from schemas import Prop
+
+    t0, start, end = 1.0, (-0.8, 0.0, 0.5), (0.7, 0.0, 0.5)
+    keys, t1 = motion.drive_keys("car", t0, start, end)
+    path = motion.path_from_keys(keys, "prop:car")
+    off = motion.prop_socket_offset(CAR, "driver")
+    tm = (t0 + t1) / 2
+    for car in (CAR, Prop.model_validate(CAR)):
+        for t, anchor in ((t0, start), (tm, (-0.05, 0.0, 0.5)), (t1, end)):
+            got = motion.vehicle_socket_position(car, "driver", path, t)
+            assert got == pytest.approx((anchor[0] + off[0], anchor[1] + off[1], anchor[2] + off[2]), abs=1e-12)
+    # held before and after the drive
+    assert motion.vehicle_socket_position(CAR, "driver", path, 0.0) == pytest.approx(
+        motion.vehicle_socket_position(CAR, "driver", path, t0))
+    assert motion.vehicle_socket_position(CAR, "driver", path, t1 + 5) == pytest.approx(
+        motion.vehicle_socket_position(CAR, "driver", path, t1))
+    # passenger and driver keep their spacing all the way
+    for t in (t0, tm, t1):
+        p = motion.vehicle_socket_position(CAR, "passenger", path, t)
+        d = motion.vehicle_socket_position(CAR, "driver", path, t)
+        assert p[0] - d[0] == pytest.approx(0.25 * 1.8)
+
+
+def test_seated_root_keys_track_the_socket():
+    keys, t1 = motion.drive_keys("car", 0.0, (-0.8, 0.0, 0.5), (0.7, 0.0, 0.5))
+    path = motion.path_from_keys(keys, "prop:car")
+    off = motion.prop_socket_offset(CAR, "driver")
+    seat = motion.seated_root_keys("dad", path, off, root_offset=(0.0, -0.1, 0.0))
+    assert [k[:3] for k in seat] == [("puppet:dad", "root.position", 0.0), ("puppet:dad", "root.position", t1)]
+    for t in (0.0, t1 / 3, t1):
+        got = motion.position_at([(k[2], k[3]) for k in seat], t)
+        want = motion.socket_position_at(path, t, off)
+        assert got == pytest.approx((want[0], want[1] - 0.1, want[2]))
+
+
+def test_position_at_and_path_from_keys():
+    with pytest.raises(ValueError):
+        motion.position_at([], 0.0)
+    assert motion.position_at([(1.0, [0, 0, 0]), (0.0, [1, 0, 0])], 0.5) == pytest.approx((0.5, 0, 0))
+    keys = [("prop:a", "position", 2.0, [1, 0, 0]), ("prop:b", "position", 0.0, [9, 9, 9]),
+            ("prop:a", "position", 0.0, [0, 0, 0]), ("prop:a", "rotation", 1.0, 0.3)]
+    assert motion.path_from_keys(keys, "prop:a") == [(0.0, (0.0, 0.0, 0.0)), (2.0, (1.0, 0.0, 0.0))]
+
+
+def test_vehicle_helpers_deterministic():
+    a = motion.drive_keys("car", 0.3, (-1, 0, 0.5), (0.7, 0, 0.6))
+    b = motion.drive_keys("car", 0.3, (-1, 0, 0.5), (0.7, 0, 0.6))
+    assert a == b
+    p = motion.path_from_keys(a[0], "prop:car")
+    assert motion.wheel_spin_keys("car", CAR["parts"], p, 0.1) == motion.wheel_spin_keys("car", CAR["parts"], p, 0.1)
