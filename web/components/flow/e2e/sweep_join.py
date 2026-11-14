@@ -16,8 +16,14 @@ Real mode starts `python -m seed.serve` (in-memory database) and makes its invit
 people through the API as the demo admin, david@demo.stitch. Mock mode
 (NEXT_PUBLIC_API_MOCK=1) uses the mock's open invite (DEMO_INVITE_CODE, "riveras-demo") and
 its accounts (david@example.com / ana@example.com, password stitch-demo). Server errors are
-made with page.route in real mode; in mock mode only when the mock exposes
-window.__stitchMock.inject / window.__stitchMockFaults, otherwise each is a recorded skip.
+made with page.route in real mode, and with the mock's fault injection in mock mode
+(window.__stitchMock.inject / window.__stitchMockFaults, on main since #194; a mock without it
+fails those steps). The one recorded skip is a real limit: in mock mode a claim made in another
+browser cannot reach an open page (each page load has its own mock state), so the 409 race is
+real mode only.
+
+After "Not you? Sign out", the sign-out step follows "I already have one" to /login: the
+signed-in hint must be gone, so the form shows at once and the page never asks GET /me.
 
 Every check is one seam in seams.json with a screenshot of the state at 1280x900 and at
 390x844. Exit 1 when a 'pages' or 'api' seam failed, else 0. Without Chromium it prints the
@@ -55,6 +61,7 @@ from harness import (  # noqa: E402
     run_stack,
     shot,
     shots_taken,
+    wait_port_free,
 )
 
 DESKTOP = {"width": 1280, "height": 900}
@@ -73,6 +80,16 @@ MOCK_STORAGE_KEY = "stitch.mock.v1"
 SERVER_TROUBLE = "Something went wrong on our side. Please try again in a moment."
 NETWORK_ERROR = "We can't reach Stitch right now. Check your connection and try again."
 OPENING = "Opening your invitation"
+
+# Each choice card's border colour, by the first line of its text.
+CARD_BORDERS_JS = """els => els.map(e => e.closest('label')).filter(Boolean)
+  .map(l => [l.innerText.trim().split('\\n')[0], getComputedStyle(l).borderTopColor])"""
+
+# components/flow/session.ts: the "probably signed in" hint the log in page reads.
+SIGNED_IN_KEY = "stitch.signedIn"
+SIGNED_IN_HINT_JS = f"""() => {{
+  try {{ return localStorage.getItem({json.dumps(SIGNED_IN_KEY)}); }} catch {{ return 'unreadable'; }}
+}}"""
 
 # Flow pages own these routes; anything else on the web app is Ethan's (/, people, memories...).
 FLOW_PATHS = re.compile(r"^/(join|login|signup|add|families)(/|$)")
@@ -498,9 +515,9 @@ class JoinSweep:
 
     def need_mock_faults(self) -> None:
         if not self.faults_supported:
-            raise Skip(
-                "the mock has no window.__stitchMock.inject / __stitchMockFaults on this branch "
-                "(PR #194 not on main yet), so mock mode cannot fail a request; real mode covers it"
+            raise AssertionError(
+                "the mock backend has no window.__stitchMock.inject (on main since #194), so this step "
+                "cannot fail a request in mock mode"
             )
 
     # ------------------------------------------------------------------ the walk
@@ -588,7 +605,7 @@ class JoinSweep:
             ctx.close()
             self.contexts.remove(ctx)
             return (f"mock invite {self.code}; fault injection "
-                    f"{'available' if self.faults_supported else 'not on this branch (PR #194)'}")
+                    f"{'available' if self.faults_supported else 'MISSING (the fault steps will fail)'}")
         ctx, page = self.new_page("admin")
         self.api_call(ctx, "POST", "/auth/login", {"email": REAL_ADMIN[0], "password": REAL_ADMIN[1]})
         me = self.api_call(ctx, "GET", "/me")
@@ -646,7 +663,8 @@ class JoinSweep:
             page.unroute(pattern)
             self.expect(page.get_by_role("heading", level=1, name=re.compile("invited to"))).to_be_visible()
             notes.append("with the invite held, the sheet stays until it answers, then the invitation shows")
-        elif self.faults_supported:
+        else:
+            self.need_mock_faults()
             ctx, page = self.new_page(
                 "loading",
                 init_script=self.mock_faults_script(
@@ -659,8 +677,6 @@ class JoinSweep:
             self.snap(page, "loading-delayed")
             self.expect(page.get_by_role("heading", level=1, name=re.compile("invited to"))).to_be_visible()
             notes.append("with a 4 s mock delay, the sheet shows, then the invitation")
-        else:
-            notes.append("client-side wait not slowed (mock has no fault injection on this branch)")
         return "; ".join(notes)
 
     def s_preview(self) -> str:
@@ -729,11 +745,19 @@ class JoinSweep:
             raise Skip("nobody is left to claim, so there is no choice to leave empty")
         page.reload()
         expect(self.choose_group(page)).to_be_visible()
+        radios = self.choose_group(page).get_by_role("radio")
+        borders = radios.evaluate_all(CARD_BORDERS_JS)
         page.get_by_role("button", name="Join the family").click()
         expect(self.vis(page.get_by_text("Pick which one is you."))).to_be_visible()
         focused = page.evaluate("() => document.activeElement?.type || ''")
         if focused != "radio":
             raise AssertionError(f"focus went to a {focused or 'non-input'}, not the choices")
+        # The error marks the group once (a rule down its left edge); no card changes colour.
+        page.wait_for_timeout(250)  # past the border transition
+        changed = [(a[0], a[1], b[1]) for a, b in zip(borders, radios.evaluate_all(CARD_BORDERS_JS), strict=True)
+                   if a != b]
+        if changed:
+            raise AssertionError(f"choice cards changed border with the error (card, before, after): {changed}")
         self.snap(page, "validation-nothing-picked")
 
         self.pick_add_self(page)
@@ -818,7 +842,35 @@ class JoinSweep:
         expect(page.get_by_role("link", name="Create an account")).to_be_visible()
         expect(page).to_have_url(self.join_url_re())
         self.snap(page, "signed-out-again")
-        return f"signed out, back at {page.url}"
+        # The signed-in hint must go with the session: with it left behind, /login would ask
+        # GET /me and hold its form back behind a blank sheet until the 401 came.
+        hint = page.evaluate(SIGNED_IN_HINT_JS)
+        if hint is not None:
+            raise AssertionError(f"localStorage {SIGNED_IN_KEY!r} is still {hint!r} after signing out")
+        me_url = f"{self.api}/me"
+        asked: list[str] = []
+
+        def on_request(req: Any) -> None:
+            if req.method == "GET" and req.url.split("?")[0] == me_url:
+                asked.append(req.url)
+
+        page.on("request", on_request)
+        try:
+            started = time.monotonic()
+            page.get_by_role("link", name="I already have one").click()
+            expect(page).to_have_url(re.compile(r"/login\?next=%2Fjoin%2F"))
+            expect(self.vis(page.get_by_label("Email"))).to_be_visible()
+            expect(page.get_by_role("button", name="Log in", exact=True)).to_be_enabled()
+            took = time.monotonic() - started
+            page.wait_for_timeout(1_000)  # room for a late /me, if one were coming
+        finally:
+            page.remove_listener("request", on_request)
+        if asked:
+            raise AssertionError(f"/login asked GET /me {len(asked)} time(s) after signing out")
+        self.snap(page, "signed-out-login")
+        how = "no GET /me" if self.real else "no signed-in check (the mock answers in-page)"
+        return (f"signed out, back at the invite; hint cleared; 'I already have one' -> /login form in "
+                f"{took:.1f}s, {how}")
 
     def s_already_member(self) -> str:
         expect = self.expect
@@ -1143,11 +1195,17 @@ def run_mode(mode: str, args: argparse.Namespace, out: Path, seams: SeamLog) -> 
     from playwright.sync_api import sync_playwright
 
     print(f"\n######## {mode} mode", flush=True)
+    api_port = None if mode == "mock" else args.api_port
+    # --mode both runs the second stack on the first one's ports: wait for them to free up.
+    if not (wait_port_free(args.web_port) and wait_port_free(api_port)):
+        seams.record(f"[{mode}] start the stack", False,
+                     f"port {args.web_port} or {api_port} is still busy after the previous stack", "pages")
+        return
     try:
         with run_stack(
             mock=mode == "mock",
             web_port=args.web_port,
-            api_port=None if mode == "mock" else args.api_port,
+            api_port=api_port,
             out_dir=out / mode,
         ) as stack, sync_playwright() as pw:
             browser = pw.chromium.launch(headless=not args.headed)
