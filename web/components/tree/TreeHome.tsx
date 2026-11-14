@@ -34,6 +34,9 @@ const TREE_MAX_SCALE = 1.05;
 const LOGIN_HREF = "/login";
 const SIGNUP_HREF = "/signup";
 const DEMO_HREF = "/?demo=1";
+// Links out of the demo tree say so, so the next screen shows the demo too.
+const DEMO_SCOPE = { demo: true } as const;
+const demoPersonHref = (id: string) => personHref(id, null, DEMO_SCOPE);
 
 export function TreeHome() {
   const wantsDemo = useSearchParams().has("demo");
@@ -212,9 +215,6 @@ function DemoHome(props: { reason: "chosen" | "offline" | "mock"; onRetry?: () =
     </HomeShell>
   );
 }
-
-const DEMO_SCOPE = { demo: true } as const;
-const demoPersonHref = (id: string) => personHref(id, null, DEMO_SCOPE);
 
 function SignedOutHome() {
   return (

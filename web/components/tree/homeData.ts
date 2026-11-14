@@ -4,7 +4,7 @@
  * a view (signed out, offline, an error sentence), never a throw.
  *
  * Type-only imports, so `node --test` loads this file directly.
- * Tests: components/tree/homeData.test.ts.
+ * Tests: components/tree/treeData.test.ts.
  */
 
 import type { StitchApi } from "@/lib/api";
