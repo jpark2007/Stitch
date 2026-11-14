@@ -108,13 +108,19 @@ def _close_answered_questions(
     """Mark the author's open questions that this telling answers as 'answered'.
 
     A question is answered when it points at this memory, or when the telling was given in
-    reply to it (its text equals `telling.question` after strip()). Only the author's own
-    questions in this family are touched. Returns how many were closed.
+    reply to it: its text equals `telling.question` after strip() AND it is a free question
+    (memoryId None or absent) or one bound to this same memory. A question bound to a
+    DIFFERENT memory stays open even when its text is identical (two moments both titled
+    "Christmas" get the same linker question text). Only the author's own questions in this
+    family are touched. Returns how many were closed.
+
+    `{"memoryId": {"$in": [None, memory_id]}}` matches a null and a missing memoryId alike,
+    on mongomock and on real MongoDB.
     """
     matches: list[dict[str, Any]] = [{"memoryId": memory_id}]
     question = (telling.question or "").strip()
     if question:
-        matches.append({"text": question})
+        matches.append({"text": question, "memoryId": {"$in": [None, memory_id]}})
     result = db["questions"].update_many(
         {"familyId": family_id, "personId": telling.author_id, "status": "open", "$or": matches},
         {"$set": {"status": "answered"}},
@@ -165,7 +171,8 @@ def create_memory(
 
     After the insert, the telling's author's open questions that it answers are closed (see
     `_close_answered_questions`: the question points at this memory, or its text is the
-    telling's `question` after strip()), and the memory's embedding is refreshed when an
+    telling's `question` after strip() and it is not bound to another memory), and the
+    memory's embedding is refreshed when an
     embedder is installed (`_refresh_embedding`, which never raises).
     """
     if not title or not title.strip():
@@ -231,8 +238,8 @@ def add_telling(
 
     None when the memory is not in this family; nothing else is touched then. After a
     successful write, the author's open questions that this telling answers are closed (the
-    question points at this memory, or its text is the telling's `question` after strip());
-    other people's and other families' questions are never touched. The memory's embedding
+    question points at this memory, or its text is the telling's `question` after strip()
+    and it is not bound to another memory); other people's and other families' questions are never touched. The memory's embedding
     is then refreshed when an embedder is installed (never raises).
     """
     memories = db["memories"]

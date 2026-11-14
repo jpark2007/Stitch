@@ -206,6 +206,81 @@ def test_plural_stripping_and_stopwords(seeded):
     assert search_memories(seeded, FAMILY_A, "") == []
 
 
+@pytest.fixture
+def worldly(mdb):
+    """Tellings beyond ASCII English: plural '-ie' words, Korean, accented names."""
+    mdb.memories.insert_many([
+        {"_id": "cookie_jar", "familyId": FAMILY_A, "title": "The blue tin", "year": 1979,
+         "tellings": [{"authorId": "mom", "text": "Every Saturday we baked cookies. The tin was always empty by Monday."}]},
+        {"_id": "kimchi_day", "familyId": FAMILY_A, "title": "김치 담그는 날", "year": 1992,
+         "tellings": [{"authorId": "halmeoni",
+                       "text": "아침부터 배추를 씻었다. 할머니 손이 빨갛게 물들었다. 김치 냄새가 집에 가득했다."}]},
+        {"_id": "jose_wedding", "familyId": FAMILY_A, "title": "The wedding in Oaxaca", "year": 2019,
+         "tellings": [{"authorId": "maria", "text": "We danced until two. José played the guitar for everyone."}]},
+        {"_id": "green_sedan", "familyId": FAMILY_A, "title": "The green sedan", "year": 1985,
+         "tellings": [{"authorId": "dad", "text": "It was a green sedan with a broken radio."}]},
+    ])
+    return mdb
+
+
+@pytest.mark.parametrize("query", ["cookie", "cookies", "Cookies", "the cookie jar"])
+def test_singular_and_plural_hit_the_same_telling(worldly, query):
+    quotes = ask_quotes(worldly, FAMILY_A, query)
+    assert [q.memory_id for q in quotes] == ["cookie_jar"]
+    assert quotes[0].text == "Every Saturday we baked cookies."
+
+
+@pytest.mark.parametrize("query", ["할머니", "김치", "할머니 김치"])
+def test_korean_words_hit_the_korean_memory(worldly, query):
+    hits = search_memories(worldly, FAMILY_A, query)
+    assert [h.memory_id for h in hits] == ["kimchi_day"]
+    quotes = ask_quotes(worldly, FAMILY_A, query)
+    assert quotes[0].memory_id == "kimchi_day" and quotes[0].author_id == "halmeoni"
+    # The quote is the Korean sentence that holds the word, not the first one.
+    assert quotes[0].text in {"할머니 손이 빨갛게 물들었다.", "김치 냄새가 집에 가득했다."}
+    assert query.split()[0] in quotes[0].text
+
+
+def test_korean_title_outranks_body_only_match(worldly):
+    hits = search_memories(worldly, FAMILY_A, "김치")
+    assert hits[0].memory_id == "kimchi_day" and hits[0].score == 1.0
+
+
+@pytest.mark.parametrize("query", ["José", "josé", "JOSÉ", "who is José?"])
+def test_accented_name_matches(worldly, query):
+    quotes = ask_quotes(worldly, FAMILY_A, query)
+    assert [q.memory_id for q in quotes] == ["jose_wedding"]
+    assert quotes[0].text == "José played the guitar for everyone."
+
+
+def test_unaccented_name_does_not_match_accented_one(worldly):
+    # NFKC keeps the accent, so "jose" and "josé" stay distinct words.
+    assert search_memories(worldly, FAMILY_A, "jose") == []
+
+
+def test_stem_folds_singular_and_plural():
+    pairs = [("cookies", "cookie"), ("stories", "story"), ("books", "book"),
+             ("churches", "church"), ("glasses", "glass"), ("boxes", "box"), ("keys", "key"),
+             ("movies", "movie"), ("hymns", "hymn")]
+    for plural, singular in pairs:
+        assert search._stem(plural) == search._stem(singular), (plural, singular)
+    assert search._stem("cookies") == "cooky"
+    assert search._stem("stories") == "story"
+    assert search._stem("books") == "book"
+    assert search._stem("churches") == "church"
+    for word in ("bus", "gas", "fly", "pie", "class", "census", "basis", "할머니", "josé"):
+        assert search._stem(word) == word
+
+
+def test_tokens_any_script_and_apostrophes():
+    assert search._tokens("Grandma's cookies") == ["grandma", "cooky"]
+    assert search._tokens("Grandma’s COOKIES") == ["grandma", "cooky"]
+    assert search._tokens("We didn't, it's") == []
+    assert search._tokens("할머니의 김치, 정말!") == ["할머니의", "김치", "정말"]
+    assert search._tokens("José_Ｔｒｕｍｐｅｔ ﬁsh") == ["josé", "trumpet", "fish"]
+    assert search._tokens(None) == [] and search._tokens("") == []
+
+
 def test_ties_go_to_earlier_year(mdb):
     for year, mid in [(2001, "late"), (1950, "early"), (1980, "middle")]:
         mdb.memories.insert_one({
@@ -482,6 +557,22 @@ def test_best_sentences():
     assert best_sentences("One sentence without a stop", "stop") == ["One sentence without a stop"]
     assert best_sentences('He said "go." Then we went.', "went") == ["Then we went."]
     assert best_sentences("Line one\nLine two about hymns", "hymn") == ["Line two about hymns"]
+
+
+def test_best_sentences_non_latin():
+    korean = "아침부터 배추를 씻었다. 할머니 손이 빨갛게 물들었다! 김치 냄새가 가득했다?"
+    assert search._sentences(korean) == [
+        "아침부터 배추를 씻었다.", "할머니 손이 빨갛게 물들었다!", "김치 냄새가 가득했다?",
+    ]
+    assert best_sentences(korean, "할머니") == ["할머니 손이 빨갛게 물들었다!"]
+    assert best_sentences(korean, "김치") == ["김치 냄새가 가득했다?"]
+    assert best_sentences(korean, "no overlap") == ["아침부터 배추를 씻었다."]
+    # Full-width stops need no space after them; a closing bracket stays with its sentence.
+    japanese = "祖母は台所にいた。「おいしい。」と言った。最後だった！"
+    assert search._sentences(japanese) == ["祖母は台所にいた。", "「おいしい。」と言った。", "最後だった！"]
+    assert search._sentences("他说：“好。” 然后走了。") == ["他说：“好。”", "然后走了。"]
+    russian = "Бабушка пекла пироги. Дедушка играл на гармошке."
+    assert best_sentences(russian, "дедушка") == ["Дедушка играл на гармошке."]
 
 
 def test_ask_quotes(seeded):

@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -105,36 +106,56 @@ _STOPWORDS = frozenset(
     """.split()
 )
 
-_WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
+# Letters and digits in any script (Hangul, accented Latin, Cyrillic, ...); underscores,
+# punctuation and spaces separate words. Same approach as db/props.py.
+_WORD = re.compile(r"[^\W_]+")
+# A possessive 's at the end of a word: grandma's -> grandma, James's -> James.
+_POSSESSIVE = re.compile(r"(?<=[^\W_])'s\b")
 _SENTENCE_END = re.compile(
-    r"(?<=[.!?…])\s+|(?<=[.!?…][\"'”’)])\s+|\s*\n+\s*"
+    r"(?<=[.!?…])\s+|(?<=[.!?…][\"'”’)])\s+"
+    # Full-width and Devanagari sentence ends need no space after them. A closing quote
+    # or bracket right after one stays with its sentence, which ends there only when
+    # whitespace follows (「おいしい。」と言った。 is one sentence).
+    r"|(?<=[。！？।])(?![」』”’)）\"'])\s*|(?<=[。！？।][」』”’)）\"'])\s+"
+    r"|\s*\n+\s*"
 )
+
+_VOWELS = frozenset("aeiou")
 
 
 def _stem(word: str) -> str:
-    """Light plural stripping: books->book, churches->church, stories->story."""
-    if len(word) > 4 and word.endswith("ies"):
-        return word[:-3] + "y"
-    if len(word) > 4 and word.endswith(("ches", "shes", "sses", "xes", "zes")):
+    """Small plural stripper; singular and plural map to the same stem (as db/props.py).
+
+    books/book -> book, churches/church -> church, stories/story -> story. '-ies' plurals
+    come from '-y' (stories, flies) or from '-ie' (cookies, cookie), so '-ies' and '-ie'
+    both fold to '-y' (story, fly, cooky); the stem need not be a word. Short words and
+    words in other scripts pass through unchanged.
+    """
+    if word.endswith("ies") and len(word) > 4 and word[-4] not in _VOWELS:
+        return word[:-3] + "y"  # stories, cookies -> story, cooky
+    if len(word) <= 3:
+        return word  # fly, pie, gas
+    if word.endswith("ie") and word[-3] not in _VOWELS:
+        return word[:-2] + "y"  # cookie, movie -> cooky, movy
+    if word.endswith(("sses", "xes", "zes", "ches", "shes")):
         return word[:-2]
-    if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
+    if word.endswith("s") and not word.endswith(("ss", "us", "is")):
         return word[:-1]
     return word
 
 
 def _tokens(text: str | None) -> list[str]:
-    """Lower-cased, stopword-free, lightly stemmed tokens, in order."""
+    """Word tokens in any script, in order: NFKC, casefolded, stopwords dropped, stemmed.
+
+    Possessive 's is dropped and other apostrophes are removed (didn't -> didnt). Scripts
+    written without spaces (Chinese, Japanese) come out as one token per run, and Korean
+    words keep their attached particles (할머니가), so those match on whole words only.
+    """
     if not text:
         return []
-    out: list[str] = []
-    for raw in _WORD.findall(text.lower().replace("’", "'")):
-        word = raw.replace("'", "")
-        if raw.endswith("'s"):
-            word = raw[:-2]
-        if not word or word in _STOPWORDS or raw in _STOPWORDS:
-            continue
-        out.append(_stem(word))
-    return out
+    text = unicodedata.normalize("NFKC", text).casefold().replace("’", "'")
+    text = _POSSESSIVE.sub("", text).replace("'", "")
+    return [_stem(word) for word in _WORD.findall(text) if word not in _STOPWORDS]
 
 
 def _sentences(text: str) -> list[str]:

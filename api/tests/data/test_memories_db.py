@@ -448,6 +448,47 @@ def test_close_answered_questions_returns_the_count(two_families):
     assert m._close_answered_questions(db, FA, m1.id, telling("mom", question="Q2")) == 0
 
 
+def test_identical_question_bound_to_another_memory_stays_open(two_families):
+    """Two moments titled 'Christmas' get the same linker text; answering one closes only it."""
+    db = two_families
+    xmas1 = m.create_memory(db, FA, title="Christmas", year=1970, participant_ids=["dad", "mom"], memory_id="x1")
+    xmas2 = m.create_memory(db, FA, title="Christmas", year=1995, participant_ids=["dad", "mom"], memory_id="x2")
+    text = 'Dad told the story of "Christmas". What do you remember?'
+    q1 = m.create_question(db, FA, person_id="mom", text=text, memory_id=xmas1.id)
+    q2 = m.create_question(db, FA, person_id="mom", text=text, memory_id=xmas2.id)
+
+    assert m.add_telling(db, FA, xmas1.id, telling("mom", "The tree fell over.", question=text)) is not None
+
+    statuses = _statuses(db)
+    assert statuses[q1.id] == "answered"
+    assert statuses[q2.id] == "open"
+    assert [q.id for q in m.open_questions(db, FA, "mom")] == [q2.id]
+
+    # Answering the second Christmas closes the second question.
+    assert m.add_telling(db, FA, xmas2.id, telling("mom", "Snow at last.", question=text)) is not None
+    assert _statuses(db)[q2.id] == "answered"
+    assert m.open_questions(db, FA, "mom") == []
+
+
+def test_free_question_with_the_same_text_is_closed_by_the_telling(two_families):
+    db = two_families
+    mem = m.create_memory(db, FA, title="Christmas", year=1970, participant_ids=["mom"], memory_id="x1")
+    other = m.create_memory(db, FA, title="Christmas", year=1995, participant_ids=["mom"], memory_id="x2")
+    text = "What do you remember about Christmas?"
+    free = m.create_question(db, FA, person_id="mom", text=text)
+    bound_elsewhere = m.create_question(db, FA, person_id="mom", text=text, memory_id=other.id)
+    # A question document with no memoryId field at all counts as free too.
+    db["questions"].insert_one({"_id": "legacy", "familyId": FA, "personId": "mom", "text": text,
+                                "status": "open", "createdAt": T0})
+    assert free.memory_id is None
+
+    assert m._close_answered_questions(db, FA, mem.id, telling("mom", question=f"  {text} ")) == 2
+    statuses = _statuses(db)
+    assert statuses[free.id] == "answered"
+    assert statuses["legacy"] == "answered"
+    assert statuses[bound_elsewhere.id] == "open"
+
+
 def test_add_telling_on_unknown_memory_closes_nothing(two_families):
     db = two_families
     b_mem = m.create_memory(db, FB, title="War years", year=1944, participant_ids=["b_grandma"])
