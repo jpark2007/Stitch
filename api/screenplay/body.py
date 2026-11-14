@@ -170,7 +170,10 @@ def _for_arm(values: Mapping[str, float], arm: str) -> dict[str, float]:
 
 
 def hold_pose(arm: str = "arm_r") -> Vec2:
-    """(upper, lower) of the hold pose for ``arm`` (arm_l mirrors arm_r's values)."""
+    """(upper, lower) of the hold pose for ``arm`` (arm_l mirrors arm_r's values).
+
+    Raises ValueError for an unknown arm."""
+    arm_bones(arm)  # validates the arm name
     values = _pose_values("hold")
     return values["arm_r.upper"], values["arm_r.lower"]
 

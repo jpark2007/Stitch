@@ -594,3 +594,65 @@ def test_generators_are_deterministic():
     b = hand_to_keys(DAD, HOLD, MOM, (0.0, 0.0), "hymn_books", 7.8)
     assert a == b
     assert FALL_SECONDS == 0.3 and REACH_SECONDS == 0.4
+
+
+# ------------------------------------------------------------------ bug hunt: edge cases
+
+def test_hold_pose_rejects_an_unknown_arm():
+    """Bug: hold_pose ignored its arm, so a typo ("arm_x", "hand_r") silently got arm_r's values."""
+    for bad in ("arm_x", "hand_r", ""):
+        with pytest.raises(ValueError, match="unknown arm"):
+            hold_pose(bad)
+
+
+@pytest.mark.parametrize("build", ["small", "short", "average", "tall"])
+@pytest.mark.parametrize("facing", [1, -1])
+def test_hold_pose_holds_in_front_with_either_arm(build, facing):
+    """Both arms raise the prop in front of the body, the same height (mirrored by facing)."""
+    body = Body("b", (0.1, 0.2), facing, build)
+    hands = {}
+    for arm, socket in (("arm_r", "hand_r"), ("arm_l", "hand_l")):
+        up, lo = hold_pose(arm)
+        hands[arm] = body_socket(body, socket, {f"{arm}.upper": up, f"{arm}.lower": lo})
+        assert facing * (hands[arm][0] - body.ground[0]) > 0  # in front
+    assert hands["arm_r"][1] == pytest.approx(hands["arm_l"][1])
+
+
+def test_last_values_with_no_keys_is_empty():
+    assert last_values([]) == {}
+
+
+def test_last_values_breaks_same_time_ties_by_order():
+    keys = [("puppet:a", "torso.rot", 1.0, 0.1), ("puppet:a", "torso.rot", 1.0, 0.2), ("puppet:a", "torso.rot", 0.5, 0.9)]
+    assert last_values(keys) == {("puppet:a", "torso.rot"): 0.2}
+
+
+@pytest.mark.parametrize("build", ["small", "short", "average", "tall"])
+@pytest.mark.parametrize("facing", [1, -1])
+def test_sit_stand_and_kneel_timing_and_roots(build, facing):
+    body = Body("b", (0.3, 0.1), facing, build)
+    s = scale(build)
+    sit = sit_keys(body, 2.0, {}, None)
+    roots = [(k[2], k[3]) for k in sit if k[1] == "root.position"]
+    assert roots == [(2.0, [0.3, 0.1, 0.5]), (2.0 + POSE_SECONDS, [0.3, pytest.approx(0.1 - 0.24 * s), 0.5])]
+    on_seat = sit_keys(body, 2.0, {}, (0.35, 0.4), dur=0.7)
+    assert [k[2] for k in on_seat if k[1] == "root.position"] == [2.0, pytest.approx(2.7)]
+    assert last_values(on_seat)[("puppet:b", "root.position")] == [0.35, pytest.approx(0.4 - RIG["hipHeight"] * s), 0.5]
+    sat = {k[1][: -len(".rot")]: v for k, v in last_values(sit).items() if k[1].endswith(".rot")}
+    low = Body("b", (0.3, 0.1 - 0.24 * s), facing, build)
+    stand = stand_keys(low, 5.0, sat, (0.3, 0.1))
+    after = last_values(stand)
+    assert all(v == 0.0 for (_, ch), v in after.items() if ch.endswith(".rot"))
+    assert after[("puppet:b", "root.position")] == [0.3, 0.1, 0.5]
+    assert max(k[2] for k in stand) == pytest.approx(5.0 + POSE_SECONDS)
+    kneel = kneel_keys(body, 1.0, {}, dur=0.25)
+    assert last_values(kneel)[("puppet:b", "root.position")] == [0.3, pytest.approx(0.1 - 0.24 * s), 0.5]
+    assert max(k[2] for k in kneel) == pytest.approx(1.25)
+
+
+def test_hug_with_both_at_the_same_x_keeps_facings_and_is_finite():
+    a, b = Body("a", (0.0, 0.0), 1, "average"), Body("b", (0.0, 0.0), -1, "small")
+    keys = hug_keys(a, b, 1.0, {}, {})
+    assert not [k for k in keys if k[1] == "root.facing"]
+    assert all(math.isfinite(k[3]) for k in keys)
+    assert max(k[2] for k in keys) == pytest.approx(2.5)
