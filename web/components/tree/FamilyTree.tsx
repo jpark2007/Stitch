@@ -164,9 +164,13 @@ const defaultHref = (id: string) => `/people/${encodeURIComponent(id)}`;
 export function FamilyTree({ people, maxHeight, minScale, hrefFor = defaultHref, ghost = false, className }: FamilyTreeProps) {
   const layout = layoutFamily(people, DEFAULT_LAYOUT);
   if (!layout.people.length) return null;
-  const W = layout.width;
-  const H = layout.height + NODE_H - DEFAULT_LAYOUT.margin;
   const byId = new Map(people.map((p) => [p.id, p]));
+  const W = layout.width;
+  // Room under the bottom row for a name that takes two lines.
+  const bottomExtra = ghost
+    ? 0
+    : Math.max(0, ...layout.people.filter((p) => p.gen === layout.rows - 1).map((p) => nameExtra(byId.get(p.id)!.name)));
+  const H = layout.height + NODE_H - DEFAULT_LAYOUT.margin + bottomExtra;
   const { threads, knots } = buildThreads(layout, byId, ghost);
   // Mask ids must be unique on the page and valid inside url(#...).
   const maskId = (key: string, i: number) => `tree-draw-${i}-${SAFE_ID.test(key) ? key : hashSeed(key)}`;

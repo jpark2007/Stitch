@@ -24,8 +24,10 @@ const TREE_MAX_HEIGHT = "calc(100dvh - 17rem)";
 /** Below this scale (px per layout unit) names get too small; wide trees scroll instead. */
 const TREE_MIN_SCALE = 0.42;
 
-const LOGIN_HREF = "/login?next=%2F";
-const SIGNUP_HREF = "/signup?next=%2F";
+// No ?next=: the sign-in pages already come home, or go on to start a family
+// for someone who has none yet (a next of "/" would skip that step).
+const LOGIN_HREF = "/login";
+const SIGNUP_HREF = "/signup";
 const DEMO_HREF = "/?demo=1";
 
 export function TreeHome() {
