@@ -623,6 +623,11 @@ export function getWoodTextures(repeat?: number | [number, number]): PaperTextur
 /* Deckled / torn edge masks                                                 */
 /* ------------------------------------------------------------------------ */
 
+function maskKeyOf(o: DeckledMaskOptions): string {
+  const { aspect = 1, style = "deckled", amount = 1, seed = 1, resolution = 512, cornerRadius = 0.015 } = o;
+  return `${aspect.toFixed(3)}|${style}|${amount}|${seed}|${resolution}|${cornerRadius}`;
+}
+
 /**
  * An alpha mask for a cutout with a hand-made edge. The shape fills the UV
  * square (so put it on a plane whose width/height equals `aspect`), inset just
@@ -638,7 +643,7 @@ export function getDeckledMask(options: DeckledMaskOptions = {}): DeckledMask {
     resolution = 512,
     cornerRadius = 0.015,
   } = options;
-  const key = `${aspect.toFixed(3)}|${style}|${amount}|${seed}|${resolution}|${cornerRadius}`;
+  const key = maskKeyOf(options);
   const hit = maskCache.get(key);
   if (hit) return hit;
 
@@ -902,17 +907,29 @@ function idleTask(label: string, fn: () => void): Promise<void> {
   });
 }
 
+/** In-flight preload jobs by cache key, so overlapping calls share work. */
+const pending = new Map<string, Promise<void>>();
+
 /**
  * Build textures ahead of time, one set per idle task, so no single task is
- * long. Already-cached sets are skipped. Safe to call repeatedly and during
- * SSR (resolves immediately).
+ * long. Already-cached sets are skipped and overlapping calls share in-flight
+ * jobs. Safe to call repeatedly and during SSR (resolves immediately).
  */
 export async function preloadPaperTextures(options: PreloadOptions = {}): Promise<void> {
   if (typeof document === "undefined") return;
   const { kinds = ["paper", "card"], wood = true, masks = [] } = options;
-  const jobs: [string, () => void][] = [];
-  for (const k of kinds) if (!baseCache.has(k)) jobs.push([k, () => getPaperTextures(k)]);
-  if (wood && !baseCache.has("wood")) jobs.push(["wood", () => getWoodTextures()]);
-  masks.forEach((m, i) => jobs.push([`mask${i}`, () => getDeckledMask(m)]));
-  for (const [label, job] of jobs) await idleTask(label, job);
+  const jobs: [key: string, label: string, run: () => void][] = [];
+  for (const k of kinds) jobs.push([`base:${k}`, k, () => getPaperTextures(k)]);
+  if (wood) jobs.push(["base:wood", "wood", () => getWoodTextures()]);
+  masks.forEach((m, i) => jobs.push([`mask:${maskKeyOf(m)}`, `mask${i}`, () => getDeckledMask(m)]));
+  for (const [key, label, run] of jobs) {
+    const cached = key.startsWith("mask:") ? maskCache.has(key.slice(5)) : baseCache.has(key.slice(5));
+    if (cached) continue;
+    let job = pending.get(key);
+    if (!job) {
+      job = idleTask(label, run).finally(() => pending.delete(key));
+      pending.set(key, job);
+    }
+    await job;
+  }
 }
