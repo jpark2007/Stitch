@@ -39,5 +39,13 @@ export { CameraBinding, type CameraBindingProps } from "./CameraBinding";
 export { EffectBindings } from "./EffectBindings";
 export { CaptionStrip, type CaptionStripProps, type Teller } from "./CaptionStrip";
 export { PlayerControls, SoundHint, TellerTabs, type PlayerControlsProps, type TellerTabsProps } from "./PlayerControls";
-export { SAMPLE_SCENES, loadSampleScene, personName, sceneFromMemory, type SceneData } from "./scene";
+export {
+  SAMPLE_SCENES,
+  loadSampleScene,
+  personName,
+  sceneFromMemory,
+  shotPageText,
+  withPageText,
+  type SceneData,
+} from "./scene";
 export { preloadScene, sceneTellers } from "./preload";

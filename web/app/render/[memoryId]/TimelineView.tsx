@@ -21,11 +21,11 @@
  * Keys: Space play / pause, R restart, ← → step half a second.
  */
 
-import { motion } from "framer-motion";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { api, bareMediaId } from "@/lib/api";
 import type { MemoryResponse } from "@/lib/types";
-import { useTimelinePlayer } from "@/components/stage/playback";
+import { useTimelinePlayer, type PlaybackController } from "@/components/stage/playback";
 import {
   CaptionStrip,
   PlayerControls,
@@ -37,6 +37,7 @@ import {
   preloadScene,
   sceneFromMemory,
   sceneTellers,
+  shotPageText,
   type SceneData,
 } from "@/components/stage/play";
 
@@ -108,6 +109,32 @@ export function TimelineView({ memoryId, fallback = null, ...rest }: TimelineVie
 }
 
 const IDLE_MS = 2600;
+
+/**
+ * The shot's storybook line under the title while the set rises, before the
+ * teller's first caption; it fades as the narration takes over (and comes
+ * back when a new telling replays the scene).
+ */
+function ShotLine({ controller, scene }: { controller: PlaybackController; scene: SceneData }) {
+  const status = useSyncExternalStore(controller.subscribe, controller.getStatus, controller.getStatus);
+  const text = status.captionIndex < 0 ? shotPageText(scene, status.shotIndex) : null;
+  return (
+    <AnimatePresence>
+      {text && (
+        <motion.p
+          key={`${status.shotIndex}:${status.narrator}`}
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, transition: { duration: 0.45 } }}
+          transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+          className="mt-1.5 max-w-[min(30rem,80vw)] font-serif text-[0.98rem] italic leading-snug text-[#f4ecdd]/80 [text-shadow:0_1px_10px_rgb(20_10_4/0.7)]"
+        >
+          {text}
+        </motion.p>
+      )}
+    </AnimatePresence>
+  );
+}
 
 function Player({
   scene,
@@ -233,6 +260,7 @@ function Player({
           <h1 className="font-display text-[clamp(1.35rem,2.1vw,1.9rem)] leading-tight text-[#f7f0e1] [text-shadow:0_2px_12px_rgb(20_10_4/0.6)]">
             {scene.title}
           </h1>
+          {captions && <ShotLine controller={controller} scene={scene} />}
         </header>
       )}
 
