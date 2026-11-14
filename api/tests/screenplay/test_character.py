@@ -37,7 +37,9 @@ def prop(pid: str, size: str = "hand") -> schemas.Prop:
     ("brisk with a cane", 0.6),  # the smallest slow factor wins too
     ("limping, stiffly", 0.6),
     ("a cane-user", 0.6),  # punctuation splits words
-    ("canes", 1.0),  # plurals are not in the lists; whole words only
+    ("canes", 0.6),  # every form of a listed word counts (was 1.0 before the inflections fix)
+    ("cane-ish", 0.6),
+    ("canesugar", 1.0),  # still whole words only
     ("never slow", 0.75),  # negation is not handled (documented)
     ("tall and cheerful", 1.0),
 ])
@@ -46,14 +48,16 @@ def test_speed_scale(notes, expected):
 
 
 def test_keyword_tables():
-    assert set(SLOW) == {"cane", "walker", "limp", "limps", "limping", "shuffle", "shuffles", "shuffling",
-                         "slowly", "slow", "frail", "elderly", "stiff", "stiffly", "carefully"}
-    assert {w for w, f in SLOW.items() if f == 0.6} == {
-        "cane", "walker", "limp", "limps", "limping", "shuffle", "shuffles", "shuffling"}
-    assert {w for w, f in SLOW.items() if f == 0.75} == {
-        "slowly", "slow", "frail", "elderly", "stiff", "stiffly", "carefully"}
+    hobbled = {"cane", "canes", "walker", "walkers", "limp", "limps", "limped", "limping",
+               "shuffle", "shuffles", "shuffled", "shuffling"}
+    slow = {"slowly", "slow", "slower", "slowest", "frail", "frailer", "elderly", "stiff", "stiffer", "stiffly",
+            "carefully"}
+    assert set(SLOW) == hobbled | slow
+    assert {w for w, f in SLOW.items() if f == 0.6} == hobbled
+    assert {w for w, f in SLOW.items() if f == 0.75} == slow
     assert FAST == dict.fromkeys(
-        ("quickly", "quick", "fast", "briskly", "brisk", "hurries", "hurried", "spry", "energetic"), 1.25)
+        ("quickly", "quick", "quicker", "quickest", "fast", "faster", "fastest", "briskly", "brisk", "brisker",
+         "hurry", "hurries", "hurried", "hurrying", "spry", "sprier", "spryer", "energetic"), 1.25)
     for word in (*SLOW, *FAST):  # every keyword matches on its own, in any case
         assert speed_scale(word) == speed_scale(word.upper()) == (SLOW.get(word) or FAST[word])
     assert WEARABLE_SIZES == ("tiny", "hand", "carried")
@@ -126,3 +130,56 @@ def test_module_is_pure():
     assert worn_item_keys(w, "dad", 0.0) == worn_item_keys(w, "dad", 0.0)
     assert w == before
     assert character.speed_scale("walks slowly with a cane") == 0.6
+
+
+# ------------------------------------------------------- bug hunt: odd phrasing in notes
+
+@pytest.mark.parametrize(("notes", "expected"), [
+    ("walks slower than everyone else", 0.75),
+    ("the slowest walker in the family", 0.6),  # "walker" (0.6) beats "slowest" (0.75)
+    ("limped ever since the war", 0.6),
+    ("shuffled along in slippers", 0.6),
+    ("has two canes, one for Sundays", 0.6),
+    ("got stiffer every winter", 0.75),
+    ("always in a hurry", 1.25),
+    ("hurrying everywhere", 1.25),
+    ("faster than any of the grandkids", 1.25),
+    ("quicker on her feet than you'd think", 1.25),
+    ("spryer than his brother", 1.25),
+    ("faster than you'd think, for a man with a cane", 0.6),  # slow still wins
+    ("Slower. Much slower.", 0.75),
+])
+def test_inflected_speed_words_count(notes, expected):
+    """Bug: only the exact listed forms matched, so 'walks slower', 'limped' or 'faster than
+    the grandkids' left the puppet at full speed (1.0)."""
+    assert speed_scale(notes) == expected
+
+
+@pytest.mark.parametrize("notes", ["slowcoach", "fastidious", "quickstep", "hurricane", "breakfast", "steadfast"])
+def test_words_that_merely_contain_a_keyword_do_not_count(notes):
+    assert speed_scale(notes) == 1.0
+
+
+def test_speed_scale_reaches_the_walk():
+    """A note's factor stretches the walk it times: 'limped' takes 1 / 0.6 as long."""
+    from screenplay.motion import locomotion_keys
+
+    _, plain, _ = locomotion_keys("gran", "average", 0.0, (0.0, 0.0, 0.5), (0.6, 0.0, 0.5), 1)
+    _, slow, _ = locomotion_keys("gran", "average", 0.0, (0.0, 0.0, 0.5), (0.6, 0.0, 0.5), 1,
+                                 speed_scale=speed_scale("limped"))
+    assert slow == pytest.approx(plain / 0.6)
+
+
+# ------------------------------------------------- out of scope (motion.py), for wave 2
+
+@pytest.mark.xfail(strict=True, reason=(
+    "motion.locomotion_keys times a walk by its ground distance alone (hypot(dx, dz)), so a walk with "
+    "a small sideways step and a large climb (a hug that walks dad 0.02 across and 0.3 up the church "
+    "steps) takes 0.057 s, while the same climb straight up takes 0.86 s (wave 2: motion.py)"))
+def test_a_walk_that_climbs_takes_at_least_as_long_as_the_climb():
+    from screenplay.motion import SPEEDS, locomotion_keys
+
+    _, straight_up, _ = locomotion_keys("dad", "average", 0.0, (0.0, 0.0, 0.5), (0.0, 0.3, 0.5), 1)
+    _, almost_up, _ = locomotion_keys("dad", "average", 0.0, (0.0, 0.0, 0.5), (0.02, 0.3, 0.5), 1)
+    assert straight_up == pytest.approx(0.3 / SPEEDS["walk"])
+    assert almost_up >= straight_up

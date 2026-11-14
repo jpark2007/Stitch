@@ -249,3 +249,40 @@ def test_deterministic_across_calls():
         assert ar.autorig(img.copy(), "furniture", "top-right") == first
         assert ar.anchor_from_alpha(img) == tuple(first["anchor"])
         assert ar.snap_grip(img, ar.named_grip_hint("top-right")) == tuple(first["grip"])
+
+
+# --- bug hunt: degenerate cutouts and hints -----------------------------
+
+
+@pytest.mark.parametrize("hint", [(float("inf"), 0.5), (0.5, float("-inf")), (float("inf"), float("inf"))])
+def test_infinite_hint_is_rejected_like_nan(hint):
+    """Bug: an infinite hint made every edge pixel infinitely far, so the tie-break silently
+    snapped the grip to the shape's top-left edge pixel instead of rejecting the hint."""
+    img = rgba(3, 3, [(0, 0, 2, 2)])
+    with pytest.raises(ValueError, match="grip hint must be a pair of fractions"):
+        ar.snap_grip(img, hint)
+    with pytest.raises(ValueError, match="grip hint must be a pair of fractions"):
+        ar.autorig(img, "hand", hint)
+
+
+def test_hint_far_outside_the_image_still_snaps_to_the_nearest_edge():
+    img = rgba(3, 3, [(0, 0, 2, 2)])
+    assert approx(ar.snap_grip(img, (40.0, 0.5)), (2.5 / 3, 1.5 / 3))
+    assert approx(ar.snap_grip(img, (-5.0, -5.0)), (0.5 / 3, 0.5 / 3))
+
+
+@pytest.mark.parametrize("size", [(0, 0), (1, 1), (5, 0), (0, 5)])
+def test_empty_and_one_pixel_transparent_cutouts_raise(size):
+    with pytest.raises(ValueError, match="no opaque pixels"):
+        ar.autorig(Image.new("RGBA", size, (0, 0, 0, 0)), "hand", "top")
+
+
+@pytest.mark.parametrize("w,h", [(1, 1), (1, 400), (400, 1), (2, 300), (300, 2)])
+@pytest.mark.parametrize("hint", ["top", "bottom-right", "left", (0.0, 0.0), (1.0, 1.0), (-3.0, 7.0)])
+def test_extreme_aspects_keep_anchor_and_grip_inside_the_image(w, h, hint):
+    """One pixel, very tall and very wide all-opaque cutouts (RGBA and no-alpha RGB)."""
+    for img in (Image.new("RGBA", (w, h), (9, 9, 9, 255)), Image.new("RGB", (w, h))):
+        rig = ar.autorig(img, "carried", hint)
+        for v in (*rig["anchor"], *rig["grip"]):
+            assert 0.0 < v < 1.0
+        assert approx(rig["anchor"], [0.5, (h - 0.5) / h])

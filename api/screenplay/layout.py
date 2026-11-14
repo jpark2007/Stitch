@@ -49,7 +49,10 @@ def rise_keys(set_id: str, n_layers: int, start: float, transition: str) -> list
 
 
 def fold_out_seconds(n_layers: int) -> float:
-    return LAYER_FOLD + FOLD_STAGGER * (max(n_layers, 1) - 1)
+    """Seconds a set of ``n_layers`` takes to fold flat; a set with no layers takes none."""
+    if n_layers <= 0:
+        return 0.0
+    return LAYER_FOLD + FOLD_STAGGER * (n_layers - 1)
 
 
 def fold_keys(set_id: str, n_layers: int, t: float, transition: str) -> tuple[list[Key], float]:
@@ -102,9 +105,16 @@ def effect_entry(
     value: str | None,
     shot_end: float,
 ) -> TimelineEffect:
-    """One Timeline.effects entry with the default duration for its kind."""
+    """One Timeline.effects entry with the default duration for its kind.
+
+    Rain with no ``dur`` lasts until ``shot_end``, measured from its rounded start so the
+    rounded ``t + dur`` never passes the shot's end (and is never negative from rounding alone:
+    rain at the shot's very end lasts 0)."""
     if dur is None:
-        dur = shot_end - t if do == "rain" else EFFECT_SECONDS.get(do)
+        if do == "rain":
+            dur = shot_end - t if shot_end < t else max(shot_end - _R(t), 0.0)
+        else:
+            dur = EFFECT_SECONDS.get(do)
     if dur is not None and dur < 0:
         raise ValueError(f"effect {do!r} at t={t} has a negative duration")
     return TimelineEffect(

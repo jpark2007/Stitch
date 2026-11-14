@@ -33,6 +33,10 @@ Vec2 = tuple[float, float]
 # Slack on the reach test so a target placed exactly at full stretch still solves.
 REACH_EPS = 1e-9
 
+# A handover's hands meet at most this fraction of the way from the giver's shoulder to the
+# taker's (handover_point), so a taker standing close never reaches back behind itself.
+HANDOVER_MAX_ACROSS = 2 / 3
+
 
 @dataclass(frozen=True)
 class Body:
@@ -216,8 +220,12 @@ def handover_point(giver: Body, taker: Body, giver_arm: str = "arm_r", taker_arm
 
     The point lies on the line from the giver's shoulder to the taker's, 0.83 of the giver's
     reach out from the giver: shoulder_g + (shoulder_t - shoulder_g) * (0.83 * reach_g / gap).
-    Each shoulder is where that body's torso puts it. Raises OutOfReach (naming the puppet) if
-    either hand cannot get there.
+    Two puppets standing close would put that beyond the taker's shoulder (the taker reaching
+    back behind itself), so the fraction is capped at HANDOVER_MAX_ACROSS: the hands meet at
+    most two thirds of the way across and the taker always reaches out for the last third.
+    The cap is continuous and leaves every handover at arm's length (the reference sample's
+    included) unchanged. Each shoulder is where that body's torso puts it. Raises OutOfReach
+    (naming the puppet) if either hand cannot get there.
     """
     sg = shoulder_world(giver_arm, giver.ground, giver.facing, giver.build, torso=giver.torso)
     st = shoulder_world(taker_arm, taker.ground, taker.facing, taker.build, torso=taker.torso)
@@ -225,7 +233,7 @@ def handover_point(giver: Body, taker: Body, giver_arm: str = "arm_r", taker_arm
     if gap == 0.0:
         meet = sg
     else:
-        f = 0.83 * arm_reach(giver.build, giver_arm) / gap
+        f = min(0.83 * arm_reach(giver.build, giver_arm) / gap, HANDOVER_MAX_ACROSS)
         meet = (sg[0] + (st[0] - sg[0]) * f, sg[1] + (st[1] - sg[1]) * f)
     solve_body_arm(giver, giver_arm, meet)
     solve_body_arm(taker, taker_arm, meet)
