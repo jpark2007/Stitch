@@ -1,0 +1,265 @@
+/**
+ * Prop rig maths: sizes, image-fraction points and placement matrices.
+ *
+ * Pure and allocation-free on the hot path (everything writes into `out`), so
+ * it is safe to call from useFrame. No React, no DOM, no path aliases: Node's
+ * type stripping runs it directly in the unit tests.
+ *
+ * Conventions (shared/CONTRACTS.md, "Props"):
+ * - World height is `sizes[size]` stage units; width is `height * aspect`.
+ * - `anchor`, `grip`, `sockets` and part `at` are fractions of the prop image,
+ *   [0, 0] top-left, [1, 1] bottom-right.
+ * - The prop's local frame has its origin at the image centre, +x right, +y up,
+ *   in stage units. It is a flat card in its local XY plane.
+ *
+ * Placement (the prop's transform in stage space):
+ *   ground:  M = T(position) * Rz(rotation) * T(-anchor)
+ *            The anchor sits on `position`; rotation pivots about the anchor.
+ *   held:    M = S * T(offset) * Rz(rotation) * T(-grip)
+ *            The grip sits on the socket (plus `offset`, normally 0, in the
+ *            socket's space); rotation pivots about the grip. S is the socket
+ *            frame with its scale removed (a prop keeps its world size no
+ *            matter how big the puppet is) but its mirror kept (a prop held
+ *            by a puppet facing left is mirrored with it).
+ */
+
+import { Matrix4, Quaternion, Vector3 } from "three";
+import type { Prop } from "@/lib/types";
+
+export type Vec3 = [number, number, number];
+export type PropSize = Prop["size"];
+
+/** Mutable per-frame placement of one prop, as the timeline player writes it
+ *  (CONTRACTS.md "Timeline", target `prop:<id>`). */
+export interface PropPose {
+  /** "ground", "puppet:<id>.<socket>" or "prop:<id>.<socket>". */
+  parent: string;
+  /** Anchor in stage space (ground), or offset in the socket's space (held). */
+  position: Vec3;
+  /** Radians about z, counter-clockwise positive. */
+  rotation: number;
+  /** Current state name, or null for the base art. */
+  state: string | null;
+  /** Part name -> radians about z (`part.<name>.rot`). Missing = 0. */
+  parts: Record<string, number>;
+}
+
+export function createPropPose(init: Partial<PropPose> = {}): PropPose {
+  return {
+    parent: init.parent ?? "ground",
+    position: init.position ? [init.position[0], init.position[1], init.position[2]] : [0, 0, 0.5],
+    rotation: init.rotation ?? 0,
+    state: init.state ?? null,
+    parts: { ...(init.parts ?? {}) },
+  };
+}
+
+/* ------------------------------------------------------------------------ */
+/* Sizes and points                                                          */
+/* ------------------------------------------------------------------------ */
+
+export const DEFAULT_ANCHOR: readonly [number, number] = [0.5, 1];
+/** Where a prop with `grip: null` is held: its centre. */
+export const DEFAULT_GRIP: readonly [number, number] = [0.5, 0.5];
+
+export interface PropDims {
+  height: number;
+  width: number;
+  aspect: number;
+}
+
+/** World size of a prop. `sizes` is `vocabulary.sizes`; an unknown size class
+ *  falls back to "carried". `aspect` falls back to `fallbackAspect` (e.g. the
+ *  loaded image's), then 1. */
+export function propDims(
+  prop: Pick<Prop, "size" | "aspect">,
+  sizes: Readonly<Record<string, number>>,
+  fallbackAspect?: number,
+): PropDims {
+  const height = sizes[prop.size] ?? sizes.carried ?? 0.2;
+  const raw = prop.aspect ?? fallbackAspect ?? 1;
+  const aspect = Number.isFinite(raw) && raw > 0 ? raw : 1;
+  return { height, width: height * aspect, aspect };
+}
+
+/** A 2-number image fraction, or the fallback when missing or malformed. */
+export function fractionOr(
+  value: readonly number[] | null | undefined,
+  fallback: readonly [number, number],
+): readonly [number, number] {
+  if (!value || value.length < 2 || !Number.isFinite(value[0]) || !Number.isFinite(value[1])) return fallback;
+  return value as unknown as readonly [number, number];
+}
+
+/** Image fraction [u, v] (v down) -> prop-local point (origin at the image
+ *  centre, y up) in stage units. Writes x, y into `out` and returns it. */
+export function imageToLocal(
+  out: { x: number; y: number },
+  u: number,
+  v: number,
+  width: number,
+  height: number,
+): { x: number; y: number } {
+  out.x = (u - 0.5) * width;
+  out.y = (0.5 - v) * height;
+  return out;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Parents                                                                   */
+/* ------------------------------------------------------------------------ */
+
+export interface ParsedParent {
+  kind: "ground" | "puppet" | "prop" | "invalid";
+  /** Target id as used by tracks: "puppet:mom", "prop:car". Empty for ground. */
+  target: string;
+  /** The bare id ("mom", "car"). */
+  id: string;
+  /** The socket name ("hand_r", "driver"). */
+  socket: string;
+}
+
+const parentCache = new Map<string, ParsedParent>();
+
+/** Parse a `parent` value. Cached: parents come from a small fixed set, so the
+ *  per-frame call allocates nothing after the first sight of each value. */
+export function parseParent(parent: string): ParsedParent {
+  const hit = parentCache.get(parent);
+  if (hit) return hit;
+  let parsed: ParsedParent;
+  if (parent === "ground") {
+    parsed = { kind: "ground", target: "", id: "", socket: "" };
+  } else {
+    const m = /^(puppet|prop):([^.]+)\.(.+)$/.exec(parent);
+    parsed = m
+      ? { kind: m[1] as "puppet" | "prop", target: `${m[1]}:${m[2]}`, id: m[2], socket: m[3] }
+      : { kind: "invalid", target: "", id: "", socket: "" };
+  }
+  if (parentCache.size > 512) parentCache.clear();
+  parentCache.set(parent, parsed);
+  return parsed;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Placement matrices                                                        */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * out = T(t) * Rz(rot) * T(-pivot). The prop-local point `pivot` lands on `t`
+ * and the card turns about it.
+ */
+export function pivotMatrix(
+  out: Matrix4,
+  tx: number,
+  ty: number,
+  tz: number,
+  rot: number,
+  pivotX: number,
+  pivotY: number,
+): Matrix4 {
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  // Rz * (-pivot) = (-(c*px - s*py), -(s*px + c*py))
+  const ox = tx - (c * pivotX - s * pivotY);
+  const oy = ty - (s * pivotX + c * pivotY);
+  // Matrix4.set takes row-major arguments.
+  out.set(c, -s, 0, ox, s, c, 0, oy, 0, 0, 1, tz, 0, 0, 0, 1);
+  return out;
+}
+
+/** Placement on the ground: the anchor sits on `position`. */
+export function groundMatrix(
+  out: Matrix4,
+  position: Readonly<Vec3>,
+  rotation: number,
+  anchorX: number,
+  anchorY: number,
+): Matrix4 {
+  return pivotMatrix(out, position[0], position[1], position[2], rotation, anchorX, anchorY);
+}
+
+/** How a held prop is oriented: "upright" keeps it level with the stage
+ *  (only the socket's position and mirror apply), "socket" turns it with the
+ *  socket (a prop pinned to the forearm). */
+export type HeldOrientation = "upright" | "socket";
+
+const _pos = new Vector3();
+const _quat = new Quaternion();
+const _scale = new Vector3();
+const _one = new Vector3();
+const _local = new Matrix4();
+
+/**
+ * Normalise a socket's frame: keep its position, keep (or drop) its rotation,
+ * drop its scale but keep its mirror. Writes into `out`.
+ */
+export function socketFrame(out: Matrix4, socket: Matrix4, orientation: HeldOrientation): Matrix4 {
+  // decompose() reports a mirrored matrix as a negative scale.x.
+  socket.decompose(_pos, _quat, _scale);
+  const mirror = _scale.x * _scale.y * _scale.z < 0 ? -1 : 1;
+  if (orientation === "upright") _quat.identity();
+  _one.set(mirror, 1, 1);
+  return out.compose(_pos, _quat, _one);
+}
+
+/**
+ * Placement in a socket: the grip sits on the socket, plus `offset` in the
+ * (normalised) socket space. `socket` is the socket's raw matrix in stage
+ * space, as a SocketResolver returns it.
+ */
+export function heldMatrix(
+  out: Matrix4,
+  socket: Matrix4,
+  orientation: HeldOrientation,
+  offset: Readonly<Vec3>,
+  rotation: number,
+  gripX: number,
+  gripY: number,
+): Matrix4 {
+  socketFrame(out, socket, orientation);
+  pivotMatrix(_local, offset[0], offset[1], offset[2], rotation, gripX, gripY);
+  return out.multiply(_local);
+}
+
+/** A socket on a prop: the prop's matrix, translated to the socket point. */
+export function propSocketMatrix(out: Matrix4, propMatrix: Matrix4, localX: number, localY: number): Matrix4 {
+  _local.makeTranslation(localX, localY, 0);
+  return out.multiplyMatrices(propMatrix, _local);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Art and states                                                            */
+/* ------------------------------------------------------------------------ */
+
+/** The art key drawn as the main card: "body" if present, else the first key
+ *  no part uses, else the first key. Null when the prop has no art keys. */
+export function bodyArtKey(prop: Pick<Prop, "art" | "parts">): string | null {
+  const keys = Object.keys(prop.art ?? {});
+  if (keys.includes("body")) return "body";
+  const used = new Set(Object.values(prop.parts ?? {}).map((p) => p.art));
+  return keys.find((k) => !used.has(k)) ?? keys[0] ?? null;
+}
+
+/** The media id drawn for an art key in a state: the state's override if it
+ *  has one, else the base art. null = placeholder. */
+export function artFor(prop: Pick<Prop, "art" | "states">, key: string, state: string | null): string | null {
+  if (state) {
+    const override = prop.states?.[state]?.[key];
+    if (override) return override;
+  }
+  return prop.art?.[key] ?? null;
+}
+
+/** Every media id a prop may show, across all states (to preload). */
+export function allArtIds(prop: Pick<Prop, "art" | "states">): string[] {
+  const ids = new Set<string>();
+  for (const v of Object.values(prop.art ?? {})) if (v) ids.add(v);
+  for (const s of Object.values(prop.states ?? {})) for (const v of Object.values(s)) if (v) ids.add(v);
+  return [...ids];
+}
+
+/** Wheel rotation for rolling `distance` stage units (positive = to the
+ *  right) on a wheel of `radius`: clockwise seen from the front, so negative. */
+export function rollAngle(distance: number, radius: number): number {
+  return radius > 0 ? -distance / radius : 0;
+}
