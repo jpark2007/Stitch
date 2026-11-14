@@ -109,6 +109,28 @@ def test_one_sided_legacy_link_to_the_patched_person_is_rejected(mdb):
     assert stored(mdb, a.id)["parentIds"] == []
 
 
+def test_one_sided_legacy_link_is_rejected_even_when_the_patch_clears_spouses(mdb):
+    """A never listed W, so clearing A's spouses unlinks nothing: W still lists A."""
+    a = add(mdb, "A")
+    w = add(mdb, "W")
+    mdb[P.COLLECTION].update_one({"_id": w.id}, {"$set": {"spouseIds": [a.id]}})
+
+    with pytest.raises(P.InvalidRelation, match="married to their own ancestor"):
+        P.update_person(mdb, FAM, a.id, schemas.PersonPatch(parent_ids=[w.id], spouse_ids=[]))
+    assert stored(mdb, a.id)["parentIds"] == []
+    assert stored(mdb, w.id)["spouseIds"] == [a.id]
+
+
+def test_rejection_names_the_two_people(mdb):
+    a = add(mdb, "Ada")
+    z = add(mdb, "Zoe", parents=[a.id])
+    add(mdb, "Walt", spouses=[z.id])
+    walt = mdb[P.COLLECTION].find_one({"name": "Walt"})["_id"]
+
+    with pytest.raises(P.InvalidRelation, match=r"\(Walt and Zoe\)"):
+        reparent(mdb, a.id, [walt])
+
+
 # ------------------------------------------------------------------------- still accepted
 
 
@@ -151,6 +173,41 @@ def test_keeping_the_same_parents_is_accepted(mdb):
 
     person = reparent(mdb, a.id, [mom.id])
     assert person is not None and person.parent_ids == [mom.id]
+
+
+def test_spouse_corrected_to_parent_in_one_patch_is_accepted(mdb):
+    """'I picked W as my spouse by mistake, W is my parent': the same patch unlinks W."""
+    a = add(mdb, "A")
+    w = add(mdb, "W", spouses=[a.id])
+    assert stored(mdb, a.id)["spouseIds"] == [w.id]
+
+    person = P.update_person(mdb, FAM, a.id, schemas.PersonPatch(parent_ids=[w.id], spouse_ids=[]))
+    assert person is not None and person.parent_ids == [w.id] and person.spouse_ids == []
+    assert stored(mdb, w.id)["spouseIds"] == []
+
+
+def test_spouse_corrected_to_parent_with_a_child_below_is_accepted(mdb):
+    a = add(mdb, "A")
+    z = add(mdb, "Z", parents=[a.id])
+    w = add(mdb, "W", spouses=[a.id])
+
+    person = P.update_person(mdb, FAM, a.id, schemas.PersonPatch(parent_ids=[w.id], spouse_ids=[]))
+    assert person is not None and person.parent_ids == [w.id]
+    assert stored(mdb, w.id)["spouseIds"] == []
+    assert stored(mdb, z.id)["parentIds"] == [a.id]
+
+
+def test_spouse_corrected_to_parent_keeps_other_spouses_checked(mdb):
+    """Dropping W unlinks W only; a descendant still married to W's side is rejected."""
+    a = add(mdb, "A")
+    z = add(mdb, "Z", parents=[a.id])
+    w = add(mdb, "W", spouses=[a.id])
+    mdb[P.COLLECTION].update_one({"_id": w.id}, {"$addToSet": {"spouseIds": z.id}})
+    mdb[P.COLLECTION].update_one({"_id": z.id}, {"$addToSet": {"spouseIds": w.id}})
+
+    with pytest.raises(P.InvalidRelation, match="married to their own ancestor"):
+        P.update_person(mdb, FAM, a.id, schemas.PersonPatch(parent_ids=[w.id], spouse_ids=[]))
+    assert stored(mdb, a.id)["parentIds"] == []
 
 
 def test_spouse_only_patch_is_unchanged(mdb):
@@ -232,3 +289,15 @@ def test_route_rejects_with_the_same_status_as_other_invalid_relations(api, mdb)
     assert res.status_code == direct.status_code, res.text
     assert "married to their own ancestor" in res.text
     assert stored(mdb, a)["parentIds"] == []
+
+
+def test_route_accepts_spouse_corrected_to_parent_in_one_patch(api, mdb):
+    """The join screen sends parentIds and spouseIds together in one PATCH."""
+    tc, fid = api
+    a = _post_person(tc, fid, "A")
+    w = _post_person(tc, fid, "W", spouseIds=[a])
+
+    res = tc.patch(f"/families/{fid}/people/{a}", json={"parentIds": [w], "spouseIds": []})
+    assert res.status_code == 200, res.text
+    assert res.json()["parentIds"] == [w]
+    assert stored(mdb, w)["spouseIds"] == []
