@@ -27,6 +27,7 @@ const {
   storyBudget,
   storyText,
   traditionBook,
+  traditionSpread,
   traditionsCover,
   traditionsTitle,
   whenLine,
@@ -260,6 +261,23 @@ describe("the story fits the page", () => {
     const plain = traditionBook([tradition({ description: long })], people);
     assert.equal(plain.spreads[0].photos.length, 0);
     assert.ok(plain.spreads[0].text.length <= STORY_MAX_ALONE, `${plain.spreads[0].text.length}`);
-    assert.ok(plain.spreads[0].text.endsWith("…"));
+    assert.ok(plain.spreads[0].text.endsWith("… Kept since 1962."), plain.spreads[0].text.slice(-40));
+  });
+});
+
+describe("since, on the left page", () => {
+  it("closes the story on the year when there is no print to caption", () => {
+    const t = tradition({ participantIds: [], photoIds: [], startedYear: 2001 });
+    const spread = traditionSpread(t, [], {});
+    assert.deepEqual(spread.photos, []);
+    assert.equal(spread.text, "Every Christmas Eve the kitchen turns into an assembly line. Kept since 2001.");
+  });
+
+  it("captions the print instead when there is one, and says nothing without a year", () => {
+    const withPhoto = traditionSpread(tradition({ photoIds: ["m1"] }), [], { photoUrl: (id) => `blob:${id}` });
+    assert.equal(withPhoto.photos[0].caption, "since 1962");
+    assert.ok(!withPhoto.text.includes("since"));
+    const undated = traditionSpread(tradition({ participantIds: [], startedYear: null }), [], {});
+    assert.ok(!undated.text.includes("since"));
   });
 });

@@ -8,7 +8,8 @@
  * The story page of a tradition prints, top to bottom: when it happens, in
  * hand ("Every Christmas Eve", whenLine), its title, its story, and taped in
  * below a snapshot of the people who keep it (their paper puppets and names,
- * captioned "since 1962" when it is known), beside its first photo. The
+ * captioned "since 1962" when it is known; with no print to caption, the
+ * story closes on "Kept since 1962."), beside its first photo. The
  * right page is the category's paper kit (TraditionStage.tsx).
  *
  * Pure, with type-only imports, so `node --test` loads it directly
@@ -298,13 +299,16 @@ export function traditionSpread(tradition: Tradition, keepers: readonly Traditio
     const last = photos[photos.length - 1];
     photos[photos.length - 1] = { ...last, caption: since };
   }
+  // With no print to caption, the year closes the story instead ("Kept since 2001.").
+  const closing = since && !photos.length ? ` Kept ${since}.` : "";
   const title = tradition.title.trim() || "A family tradition";
+  const budget = storyBudget(title, photos.length > 0) - closing.length;
   return {
     id: tradition.id,
     title,
     year: printedLine(whenLine(tradition.when)),
     // Cut to what the page holds: the printer has no overflow of its own.
-    text: fitStory(storyText(tradition, keepers), storyBudget(title, photos.length > 0)),
+    text: fitStory(storyText(tradition, keepers), budget) + closing,
     photos,
     // The kit stands on the right page: printed plain, no "the pop-up rises here".
     stage: {},

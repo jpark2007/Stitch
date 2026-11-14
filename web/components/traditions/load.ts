@@ -3,9 +3,10 @@
  * as the person and moment books decide it (components/book/bookSource.ts),
  * and the book bound from it (traditionBook.ts).
  *
- *   ?demo=1                    the demo family's five traditions (the
- *                              mock seed's, web/components/flow/mock/
- *                              demoTraditions.ts) with its people, read-only
+ *   ?demo=1                    the mock seed's five traditions (web/
+ *                              components/flow/mock/demoTraditions.ts) on
+ *                              the demo tree's family and people
+ *                              (demoBook.ts), read-only
  *   otherwise                  GET /families/{fid}/traditions and the tree
  *                              (for the people who keep them), from
  *                              ?family=<fid>, else the family remembered in
@@ -21,11 +22,12 @@
 import { resolveBook, type BookSession } from "@/components/book/bookSource";
 import { loadPageFonts, type PageFonts } from "@/components/book/paperArt";
 import { pickFamily, recallFamily, rememberFamily } from "@/components/flow/session";
-import { buildDemoSeed } from "@/components/flow/mock/demoSeed";
-import { buildDemoTraditions } from "@/components/flow/mock/demoTraditions";
+import { DEMO_TRADITIONS } from "@/components/flow/mock/demoTraditions";
+import { demoFamily, demoPeople } from "@/components/tree/demoFamily";
 import { getApi } from "@/components/flow/client";
 import { bareMediaId } from "@/lib/api";
-import type { FamilySummary, MemoryResponse, Person, Tradition } from "@/lib/types";
+import type { FamilySummary, Person, Tradition } from "@/lib/types";
+import { demoTraditionsBook } from "./demoBook";
 import { drawKeepersSnapshot } from "./snapshot";
 import { traditionBook, type TraditionBook } from "./traditionBook";
 
@@ -63,8 +65,6 @@ const session: BookSession = {
   recallFamily: () => recallFamily(),
   rememberFamily: (fid) => rememberFamily(fid),
 };
-
-const SAMPLE_URL = "/samples/hymn_books.memory.json";
 
 /** A short, stable fingerprint of what the pages print, for the book's key. */
 function fingerprint(parts: readonly string[]): string {
@@ -122,27 +122,18 @@ function bind(
 }
 
 /**
- * The demo family's traditions and people. The people come from the mock
- * seed (which the traditions name), built from the hymn books sample; when
- * that cannot load, from the seed's own stand-ins.
+ * The demo family's traditions and people: the mock seed's five traditions
+ * on the demo tree's family (demoBook.ts), so a visitor coming from the
+ * demo tree meets the same people here.
  */
 async function demoBook(why: TraditionsDemo, signal: AbortSignal): Promise<TraditionsShown> {
-  let sample: MemoryResponse | null = null;
-  try {
-    const res = await fetch(SAMPLE_URL, { signal });
-    if (res.ok) sample = (await res.json()) as MemoryResponse;
-  } catch (e) {
-    if (signal.aborted) throw e;
-  }
-  const seed = buildDemoSeed(sample ?? ({ memory: { familyId: "sample_family" }, people: [] } as unknown as MemoryResponse));
-  const family = seed.families[0];
-  const traditions = buildDemoTraditions(family.id);
+  const { familyName, people, traditions } = demoTraditionsBook(DEMO_TRADITIONS, demoFamily, demoPeople);
   const fonts = await loadPageFonts();
   if (signal.aborted) throw new DOMException("aborted", "AbortError");
   return {
     kind: "book",
-    key: bookKey(`demo-${why}`, traditions, seed.people),
-    book: bind(traditions, seed.people, family.name, fonts),
+    key: bookKey(`demo-${why}`, traditions, people),
+    book: bind(traditions, people, familyName, fonts),
     familyId: null,
     families: [],
     canAdd: false,
