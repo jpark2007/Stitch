@@ -44,6 +44,13 @@ No agent step can make startup fail: on any error it logs, and the run routes an
 Validation errors (422) never echo the request input back, so a rejected signup or login
 does not send its password back in the response.
 
+Request bodies are capped before any route reads them (BodySizeLimitMiddleware): a POST,
+PUT or PATCH body over MAX_MULTIPART_BODY_BYTES (multipart/form-data) or
+MAX_JSON_BODY_BYTES (anything else) is a 413 {"detail": "That request is too large"},
+by Content-Length up front or by counting a chunked body as it streams in. It sits inside
+CORSMiddleware, so the 413 carries the CORS headers and the web app can show it. GET
+requests, the run event streams among them, pass straight through.
+
 This module never imports `agent/` at import time. Memory submission reaches the agent
 lazily inside routes/memories.py, and startup imports agent.runs only when STITCH_AGENT is
 fake or real, so read routes and STITCH_AGENT=off work without it. Under off the run
@@ -103,6 +110,8 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 from pymongo.errors import ConnectionFailure  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
+from starlette.datastructures import Headers  # noqa: E402
+from starlette.types import ASGIApp, Message, Receive, Scope, Send  # noqa: E402
 
 import routes.ask  # noqa: E402
 import routes.auth  # noqa: E402
@@ -112,6 +121,8 @@ import routes.props  # noqa: E402
 import routes.tree  # noqa: E402
 from db import client, search  # noqa: E402
 from db.embeddings import embedder_from_env  # noqa: E402
+from db.media import MAX_BYTES  # noqa: E402
+from routes.memories import MAX_PHOTOS  # noqa: E402
 
 # A child of uvicorn's error logger, so startup lines show in the uvicorn console.
 log = logging.getLogger("uvicorn.error").getChild("stitch")
@@ -129,6 +140,13 @@ DEFAULT_CORS_ORIGINS: tuple[str, ...] = ("http://localhost:3000", "http://127.0.
 
 AGENT_MODES: tuple[str, ...] = ("off", "fake", "real")
 DEFAULT_FAKE_RUN_STEP = 0.6
+
+# Request body caps (BodySizeLimitMiddleware). A multipart body may carry MAX_PHOTOS photos
+# of up to db.media.MAX_BYTES each, plus room for the form fields and part headers.
+MAX_JSON_BODY_BYTES = 1_000_000
+MAX_MULTIPART_BODY_BYTES = MAX_PHOTOS * MAX_BYTES + 1_000_000
+BODY_TOO_LARGE = "That request is too large"
+BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
 
 def cors_origins() -> list[str]:
@@ -340,6 +358,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     else:
         await run_in_threadpool(_ensure_indexes)
         _configure_embeddings()
+    # The dummy login hash now, so the first login with an unknown email is not the one
+    # request that pays for computing it (a timing tell that the account does not exist).
+    try:
+        await run_in_threadpool(routes.auth.warm_login_hash)
+    except Exception as exc:  # noqa: BLE001 - login computes it lazily anyway
+        log.warning("Login timing hash not precomputed (%s)", type(exc).__name__)
     mode = agent_mode()
     # The run routes refuse with 503 when this is "off" (routes.memories._agent_off).
     setattr(application.state, routes.memories.AGENT_OFF_STATE, mode)
@@ -368,12 +392,99 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     return JSONResponse(status_code=422, content={"detail": detail})
 
 
+# ----------------------------------------------------------------------------- body size
+
+
+class _BodyTooLarge(Exception):
+    """Raised from the wrapped `receive` once a streamed body passes its limit."""
+
+
+async def _send_too_large(scope: Scope, receive: Receive, send: Send) -> None:
+    await JSONResponse({"detail": BODY_TOO_LARGE}, status_code=413)(scope, receive, send)
+
+
+class BodySizeLimitMiddleware:
+    """Pure ASGI: 413 for a POST, PUT or PATCH body over its limit, never buffering it.
+
+    multipart/form-data gets `multipart_limit`, any other content type `json_limit`. A
+    Content-Length over the limit is refused before the app runs. Every body is also
+    counted as it streams through `receive` (a chunked body has no Content-Length): once
+    the count passes the limit, `receive` raises, whatever the app sends after that is
+    dropped (FastAPI turns a failed body read into a 400), and the 413 goes out instead.
+    Other methods and non-HTTP scopes are passed through untouched, so the SSE run
+    streams never go through a wrapper.
+    """
+
+    def __init__(self, app: ASGIApp, *, json_limit: int, multipart_limit: int) -> None:
+        self.app = app
+        self.json_limit = json_limit
+        self.multipart_limit = multipart_limit
+
+    def limit_for(self, headers: Headers) -> int:
+        content_type = (headers.get("content-type") or "").strip().lower()
+        return self.multipart_limit if content_type.startswith("multipart/form-data") else self.json_limit
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("method") not in BODY_METHODS:
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        limit = self.limit_for(headers)
+        declared = (headers.get("content-length") or "").strip()
+        # A malformed Content-Length is left to the server; the streamed count still applies.
+        if declared.isdigit() and int(declared) > limit:
+            await _send_too_large(scope, receive, send)
+            return
+
+        received = 0
+        too_large = False
+        started = False
+
+        async def limited_receive() -> Message:
+            nonlocal received, too_large
+            if too_large:
+                raise _BodyTooLarge
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body") or b"")
+                if received > limit:
+                    too_large = True
+                    raise _BodyTooLarge
+            return message
+
+        async def guarded_send(message: Message) -> None:
+            nonlocal started
+            if too_large:
+                return  # the app's answer to a cut-off body; the 413 below replaces it
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, guarded_send)
+        except Exception:
+            if not too_large:
+                raise
+        if too_large and not started:
+            await _send_too_large(scope, receive, send)
+
+
 # ----------------------------------------------------------------------------- app
 
 
 def create_app() -> FastAPI:
-    """Build the app. Reads STITCH_CORS_ORIGINS now; STITCH_FAKE_DB and STITCH_AGENT when it starts."""
+    """Build the app. Reads STITCH_CORS_ORIGINS now; STITCH_FAKE_DB and STITCH_AGENT when it starts.
+
+    Middleware runs outermost first: CORSMiddleware, then BodySizeLimitMiddleware, so a
+    413 for an oversized body still carries the CORS headers. (Starlette's add_middleware
+    puts each new middleware outside the ones added before it.)
+    """
     app = FastAPI(title="Stitch API", lifespan=lifespan)
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        json_limit=MAX_JSON_BODY_BYTES,
+        multipart_limit=MAX_MULTIPART_BODY_BYTES,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins(),
