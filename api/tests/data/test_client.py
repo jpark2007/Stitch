@@ -17,6 +17,7 @@ EXPECTED = {
     },
     "people": {
         "people_familyId_userId": [("familyId", 1), ("userId", 1)],
+        "people_userId_familyId_unique": [("userId", 1), ("familyId", 1)],
         "people_familyId_parentIds": [("familyId", 1), ("parentIds", 1)],
     },
     "memories": {
@@ -45,6 +46,11 @@ def _assert_all_indexes(db) -> None:
     invites = db.families.index_information()["families_invites_code_unique"]
     assert invites.get("unique") is True
     assert invites.get("partialFilterExpression") == {"invites.code": {"$exists": True}}
+    people = db.people.index_information()
+    assert not people["people_familyId_userId"].get("unique")
+    one_per_user = people["people_userId_familyId_unique"]
+    assert one_per_user.get("unique") is True
+    assert one_per_user.get("partialFilterExpression") == {"userId": {"$type": "string"}}
     ttl = db.revoked_sessions.index_information()["revoked_sessions_expiresAt_ttl"]
     assert ttl.get("expireAfterSeconds") == 0
     assert not ttl.get("unique")
@@ -121,6 +127,57 @@ def test_families_without_invites_coexist(mdb):
     assert mdb.families.count_documents({}) == 4
 
 
+def test_people_unique_index_is_seen_as_present_on_rerun(mdb):
+    """_same_spec must match it (partialFilterExpression included), so a rerun is a no-op."""
+    client.ensure_indexes(mdb)
+    name, keys, options = next(s for s in client.INDEXES["people"] if s[0] == "people_userId_familyId_unique")
+    assert client._same_spec(mdb.people.index_information()[name], keys, options)
+    client.ensure_indexes(mdb)
+
+
+def test_people_unique_index_added_beside_the_old_non_unique_one(mdb):
+    """A database from before this index (old index plus linked people) upgrades cleanly."""
+    mdb.people.create_index([("familyId", 1), ("userId", 1)], name="people_familyId_userId")
+    mdb.people.insert_many([
+        {"_id": "p1", "familyId": "f1", "userId": "u1"},
+        {"_id": "p2", "familyId": "f1", "userId": None},
+        {"_id": "p3", "familyId": "f1", "userId": None},
+        {"_id": "p4", "familyId": "f2", "userId": "u1"},
+    ])
+    client.ensure_indexes(mdb)
+    client.ensure_indexes(mdb)
+    _assert_all_indexes(mdb)
+
+
+def test_people_unique_index_refuses_real_duplicates(mdb):
+    """The mongomock creation workaround never hides a user already linked twice."""
+    mdb.people.insert_many([
+        {"_id": "p1", "familyId": "f1", "userId": "u1"},
+        {"_id": "p2", "familyId": "f1", "userId": "u1"},
+    ])
+    with pytest.raises(DuplicateKeyError):
+        client.ensure_indexes(mdb)
+    assert "people_userId_familyId_unique" not in mdb.people.index_information()
+
+
+def test_one_person_per_user_per_family_enforced(mdb):
+    client.ensure_indexes(mdb)
+    mdb.people.insert_one({"_id": "p1", "familyId": "f1", "userId": "u1"})
+    with pytest.raises(DuplicateKeyError):
+        mdb.people.insert_one({"_id": "p2", "familyId": "f1", "userId": "u1"})
+    # Unclaimed people (null or absent userId) never collide; other families are separate.
+    mdb.people.insert_many([
+        {"_id": "p3", "familyId": "f1", "userId": None},
+        {"_id": "p4", "familyId": "f1", "userId": None},
+        {"_id": "p5", "familyId": "f1"},
+        {"_id": "p6", "familyId": "f2", "userId": "u1"},
+    ])
+    # Claiming a second person by update is rejected too.
+    with pytest.raises(DuplicateKeyError):
+        mdb.people.update_one({"_id": "p3"}, {"$set": {"userId": "u1"}})
+    assert mdb.people.count_documents({"familyId": "f1", "userId": "u1"}) == 1
+
+
 def test_ensure_search_indexes_is_best_effort_on_mongomock(mdb):
     assert client.ensure_search_indexes(mdb) == []
 
@@ -176,6 +233,17 @@ def test_real_ensure_indexes(real_db):
     real_db.users.insert_one({"_id": "u1", "email": "a@x.com"})
     with pytest.raises(DuplicateKeyError):
         real_db.users.insert_one({"_id": "u2", "email": "a@x.com"})
+
+    real_db.people.insert_many([
+        {"_id": "p1", "familyId": "f1", "userId": "u1"},
+        {"_id": "p2", "familyId": "f1", "userId": None},
+        {"_id": "p3", "familyId": "f1", "userId": None},
+        {"_id": "p4", "familyId": "f2", "userId": "u1"},
+    ])
+    with pytest.raises(DuplicateKeyError):
+        real_db.people.insert_one({"_id": "p5", "familyId": "f1", "userId": "u1"})
+    with pytest.raises(DuplicateKeyError):
+        real_db.people.update_one({"_id": "p2"}, {"$set": {"userId": "u1"}})
 
     # Plain MongoDB has no search indexes; Atlas may. Either way, no exception.
     created = client.ensure_search_indexes(real_db)
