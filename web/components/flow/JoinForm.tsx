@@ -24,6 +24,7 @@ import {
   type JoinChoice,
   type JoinField,
 } from "./join";
+import { friendlyError } from "./joinFlow";
 import { PaperCard } from "./PaperCard";
 import { sortPeopleForPicking } from "./relationships";
 import { mergeServerErrors, type FieldErrors } from "./validation";
@@ -94,10 +95,13 @@ export function JoinForm(props: {
   const anyoneToClaim = unclaimed.length > 0;
   // With nobody to claim, adding yourself is the only way in.
   const effectiveMode = anyoneToClaim ? mode : "add";
+  // A pick that left the list (claimed by someone else, then the list was
+  // reloaded) counts as no pick, so nothing shows as chosen that can't be.
+  const livePersonId = unclaimed.some((p) => p.id === personId) ? personId : "";
   const choice: JoinChoice =
-    effectiveMode === "claim" ? { mode: "claim", personId } : { mode: "add", name, born };
+    effectiveMode === "claim" ? { mode: "claim", personId: livePersonId } : { mode: "add", name, born };
   const people = sortPeopleForPicking(unclaimed);
-  const picked = effectiveMode === "claim" ? unclaimed.find((p) => p.id === personId) : undefined;
+  const picked = effectiveMode === "claim" ? unclaimed.find((p) => p.id === livePersonId) : undefined;
 
   function clearError(key: JoinField) {
     if (!(key in errors)) return;
@@ -155,7 +159,7 @@ export function JoinForm(props: {
         const { fields, rest } = splitHidden(merged.fields, merged.rest);
         const anyField = Object.keys(fields).length > 0;
         setErrors(fields);
-        setFormError(rest ?? (anyField ? null : err.detail));
+        setFormError(rest ?? (anyField ? null : friendlyError(err, GENERIC_ERROR)));
       } else {
         setErrors({});
         setFormError(GENERIC_ERROR);
@@ -236,7 +240,7 @@ export function JoinForm(props: {
                   <ChoiceCard
                     name={groupName}
                     value={p.id}
-                    checked={effectiveMode === "claim" && personId === p.id}
+                    checked={effectiveMode === "claim" && livePersonId === p.id}
                     invalid={Boolean(errors.personId)}
                     onPick={pick}
                   >

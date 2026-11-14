@@ -11,6 +11,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { isApiError } from "@/lib/api";
 import { Button } from "./Button";
 import { FormError, focusFirstError } from "./FormError";
+import { SERVER_TROUBLE, firstName as firstNameOf } from "./joinFlow";
 import { PaperCard } from "./PaperCard";
 import { RelationshipPicker } from "./RelationshipPicker";
 import { sortPeopleForPicking, validateRelationships, type Relationships } from "./relationships";
@@ -19,8 +20,9 @@ const GENERIC_ERROR = "That didn't save. Check your connection and try again.";
 
 type PickablePerson = { id: string; name: string; born?: number | null; color?: string | null };
 
-/** Server messages, field ones first, each once; null when there are none. */
-function serverMessage(fieldErrors: Record<string, string>, detail: string): string {
+/** Server messages, field ones first, each once; a calm line for a 5xx. */
+function serverMessage(status: number, fieldErrors: Record<string, string>, detail: string): string {
+  if (status >= 500) return SERVER_TROUBLE;
   const out: string[] = [];
   for (const msg of Object.values(fieldErrors)) {
     if (typeof msg === "string" && msg.trim() && !out.includes(msg.trim())) out.push(msg.trim());
@@ -50,7 +52,7 @@ export function JoinRelationships(props: {
 
   const others = sortPeopleForPicking(props.people.filter((p) => p.id !== selfId));
   const nobodyToPick = others.length === 0;
-  const firstName = selfName.trim();
+  const firstName = firstNameOf(selfName);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -72,7 +74,7 @@ export function JoinRelationships(props: {
     try {
       await onSave({ parentIds: [...value.parentIds], spouseIds: [...value.spouseIds] });
     } catch (err) {
-      setFormError(isApiError(err) ? serverMessage(err.fieldErrors, err.detail) : GENERIC_ERROR);
+      setFormError(isApiError(err) ? serverMessage(err.status, err.fieldErrors, err.detail) : GENERIC_ERROR);
       setFocusTick((n) => n + 1);
     } finally {
       setPending(false);

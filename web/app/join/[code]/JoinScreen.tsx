@@ -6,7 +6,6 @@
 // is you?" when signed in, the relationships step after adding yourself, and
 // a welcome at the end. Being signed out is a normal state here, so this page
 // does not use SessionGate.
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { Button, ButtonLink } from "@/components/flow/Button";
@@ -17,19 +16,26 @@ import { JoinForm } from "@/components/flow/JoinForm";
 import { JoinRelationships } from "@/components/flow/JoinRelationships";
 import {
   addedSelf,
+  classifyJoinFailure,
   familyPhrase,
+  friendlyError,
+  goneCopy,
+  goneReason,
+  goneWayOut,
+  isGoneError,
   joinView,
   relationshipPeople,
   stepAfterJoin,
+  takenMessage,
   type JoinInputs,
   type JoinStep,
   type JoinView,
   type RelationshipPerson,
 } from "@/components/flow/joinFlow";
 import { PaperCard } from "@/components/flow/PaperCard";
-import { hrefs, rememberFamily } from "@/components/flow/session";
+import { forgetFamily, hrefs, rememberFamily } from "@/components/flow/session";
 import { signedInLabel } from "@/components/flow/settingsPage";
-import { isApiError } from "@/lib/api";
+import { ApiError, isApiError } from "@/lib/api";
 import type { InvitePreview, JoinRequest, JoinResponse, MeResponse } from "@/lib/types";
 
 import { JoinPlaceholder, JoinShell } from "./JoinShell";
@@ -42,10 +48,7 @@ type MeState =
   | { status: "signed-out" }
   | { status: "error"; error: unknown };
 
-/** A sentence safe to show: the API's own message, or a friendly fallback. */
-function loadErrorMessage(err: unknown): string {
-  return isApiError(err) && err.detail ? err.detail : LOAD_ERROR;
-}
+const SIGN_OUT_ERROR = "We couldn't sign you out. Check your connection and try again.";
 
 export function JoinScreen(props: { code: string }) {
   const { code } = props;
@@ -102,11 +105,41 @@ export function JoinScreen(props: { code: string }) {
     setAttempt((n) => n + 1);
   }, []);
 
-  /** POST the join; ApiErrors reject so JoinForm shows them, and nothing here changes. */
+  /**
+   * POST the join; ApiErrors reject so JoinForm shows them. Two failures look
+   * again first: a claim someone else made since the preview (409) reloads
+   * the list and asks again under the choices; a 404 or 410 asks for the
+   * preview again, which either turns the page into the "link no longer
+   * works" card or shows that the person picked has gone.
+   */
   const handleJoin = useCallback(
     async (body: JoinRequest) => {
       const api = getApi();
-      const res = await api.joinInvite(code, body);
+      let res: JoinResponse;
+      try {
+        res = await api.joinInvite(code, body);
+      } catch (err) {
+        const failure = classifyJoinFailure(err, body);
+        if (failure === "show") throw err;
+        const pickedName =
+          body.personId != null ? preview?.unclaimedPeople.find((p) => p.id === body.personId)?.name : null;
+        let fresh: InvitePreview;
+        try {
+          fresh = await api.previewInvite(code);
+        } catch (again) {
+          if (isGoneError(again)) {
+            setPreviewError(again);
+            return;
+          }
+          throw err;
+        }
+        setPreview(fresh);
+        if (body.personId == null) throw err;
+        const stillThere = fresh.unclaimedPeople.some((p) => p.id === body.personId);
+        if (failure === "recheck" && stillThere) throw err;
+        const message = takenMessage(pickedName, failure === "recheck");
+        throw new ApiError(isApiError(err) ? err.status : 409, message, { personId: message });
+      }
       rememberFamily(res.family.id);
       let people: RelationshipPerson[] = [];
       if (addedSelf(body)) {
@@ -121,7 +154,7 @@ export function JoinScreen(props: { code: string }) {
       setJoined(res);
       setStep(stepAfterJoin(body, people));
     },
-    [code],
+    [code, preview],
   );
 
   const handleSaveRelationships = useCallback(
@@ -138,6 +171,27 @@ export function JoinScreen(props: { code: string }) {
 
   const skipRelationships = useCallback(() => setStep("done"), []);
 
+  // "Not you?": sign out and come back to this invite, signed out, so the
+  // right person can log in or make an account from here.
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
+  const signOut = useCallback(async () => {
+    setSignOutError(null);
+    setSigningOut(true);
+    try {
+      await getApi().logout();
+    } catch (e) {
+      if (!(isApiError(e) && e.status === 401)) {
+        setSignOutError(friendlyError(e, SIGN_OUT_ERROR));
+        setSigningOut(false);
+        return;
+      }
+    }
+    forgetFamily();
+    // A full load drops the hidden pages this session kept mounted.
+    window.location.replace(hrefs.join(code));
+  }, [code]);
+
   return (
     <ViewFocus view={view}>
       {renderView(view, {
@@ -145,9 +199,13 @@ export function JoinScreen(props: { code: string }) {
         preview,
         previewError,
         me,
+        meStatus: meState.status,
         meError: meState.status === "error" ? meState.error : null,
         joined,
         others,
+        signingOut,
+        signOutError,
+        onSignOut: signOut,
         onRetry: retry,
         onJoin: handleJoin,
         onSaveRelationships: handleSaveRelationships,
@@ -162,9 +220,13 @@ interface ViewProps {
   preview: InvitePreview | null;
   previewError: unknown;
   me: MeResponse | null;
+  meStatus: JoinInputs["meStatus"];
   meError: unknown;
   joined: JoinResponse | null;
   others: RelationshipPerson[];
+  signingOut: boolean;
+  signOutError: string | null;
+  onSignOut: () => void;
   onRetry: () => void;
   onJoin: (body: JoinRequest) => Promise<void>;
   onSaveRelationships: (r: { parentIds: string[]; spouseIds: string[] }) => Promise<void>;
@@ -177,40 +239,46 @@ function renderView(view: JoinView, p: ViewProps): ReactNode {
     case "loading":
       return <JoinPlaceholder />;
 
-    case "gone":
+    case "gone": {
+      const copy = goneCopy(goneReason(p.previewError));
+      const out = goneWayOut(p.me, p.meStatus);
       return (
         <JoinShell>
           <PaperCard className="text-center">
             <p className="kicker">An invitation</p>
-            <h1 data-view-heading="" tabIndex={-1} className="focus:outline-none mt-3 text-[1.875rem] break-words text-ink sm:text-[2.25rem]">
-              This invite link no longer works
+            <h1 data-view-heading="" tabIndex={-1} className="focus:outline-none mt-3 text-[1.875rem] text-balance break-words text-ink sm:text-[2.25rem]">
+              {copy.title}
             </h1>
             <p className="mx-auto mt-4 max-w-[24rem] text-[1.0625rem] leading-relaxed text-ink-soft">
-              Ask whoever sent it for a new one. Invite links last two weeks, and a family&rsquo;s admin
-              can turn one off.
+              {copy.body}
             </p>
             <hr aria-hidden="true" className="stitch-rule mx-auto mt-7 w-24" />
             <div className="mt-7">
-              <ButtonLink href={hrefs.home()} variant="secondary">
-                Go to Stitch
+              <ButtonLink href={out.href} variant="secondary">
+                {out.label}
               </ButtonLink>
             </div>
           </PaperCard>
         </JoinShell>
       );
+    }
 
     case "error":
       return (
         <JoinShell>
-          <PaperCard className="flex flex-col gap-5">
-            <h1 data-view-heading="" tabIndex={-1} className="focus:outline-none text-[1.75rem] break-words text-ink sm:text-[2rem]">
+          <PaperCard className="text-center">
+            <p className="kicker">An invitation</p>
+            <h1 data-view-heading="" tabIndex={-1} className="focus:outline-none mt-3 text-[1.875rem] text-balance break-words text-ink sm:text-[2.25rem]">
               We couldn&rsquo;t open this invitation
             </h1>
-            <FormError message={loadErrorMessage(p.meError ?? p.previewError)} />
-            <div>
-              <Button onClick={p.onRetry}>
-                Try again
-              </Button>
+            <div className="mx-auto mt-5 max-w-[24rem] text-left">
+              <FormError message={friendlyError(p.meError ?? p.previewError, LOAD_ERROR)} />
+            </div>
+            <div className="mt-7 flex flex-col items-stretch justify-center gap-2 sm:flex-row sm:items-center sm:gap-4">
+              <Button onClick={p.onRetry}>Try again</Button>
+              <ButtonLink href={hrefs.home()} variant="quiet">
+                Go to Stitch
+              </ButtonLink>
             </div>
           </PaperCard>
         </JoinShell>
@@ -221,6 +289,7 @@ function renderView(view: JoinView, p: ViewProps): ReactNode {
         <JoinShell width="wide">
           <InviteWelcome
             familyName={p.preview?.familyName ?? ""}
+            waiting={p.preview?.unclaimedPeople ?? []}
             signedIn={false}
             loginHref={hrefs.login(backHere)}
             signupHref={hrefs.signup(backHere)}
@@ -270,12 +339,24 @@ function renderView(view: JoinView, p: ViewProps): ReactNode {
               onJoin={p.onJoin}
             />
             {p.me ? (
-              <p className="mt-5 text-center text-[0.875rem] leading-snug break-words text-ink-soft">
-                Signed in as {signedInLabel(p.me.user)}.{" "}
-                <Link href={hrefs.login(backHere)} className="font-semibold">
-                  Not you?
-                </Link>
-              </p>
+              <div className="mt-5 text-center text-[0.875rem] leading-snug break-words text-ink-soft">
+                <p>
+                  Signed in as {signedInLabel(p.me.user)}.{" "}
+                  <button
+                    type="button"
+                    onClick={p.onSignOut}
+                    disabled={p.signingOut}
+                    className="cursor-pointer font-semibold text-accent-deep underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-deep disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {p.signingOut ? "Signing out…" : "Not you? Sign out"}
+                  </button>
+                </p>
+                {p.signOutError ? (
+                  <div className="mx-auto mt-3 max-w-[24rem] text-left">
+                    <FormError message={p.signOutError} />
+                  </div>
+                ) : null}
+              </div>
             ) : null}
           </InviteWelcome>
         </JoinShell>
@@ -323,7 +404,7 @@ function renderView(view: JoinView, p: ViewProps): ReactNode {
             <div className="mt-7 flex flex-col items-stretch justify-center gap-2 sm:flex-row sm:items-center sm:gap-4">
               <ButtonLink href={hrefs.add({ familyId: fid })}>Add your first memory</ButtonLink>
               <ButtonLink href={hrefs.home()} variant="quiet">
-                See the family tree
+                Open the family tree
               </ButtonLink>
             </div>
           </PaperCard>
