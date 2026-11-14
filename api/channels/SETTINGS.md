@@ -12,9 +12,15 @@ offline tests do not establish that a live line is configured.
 
 All routes below use the existing `family_member`/session-cookie authentication.
 The family must exist for the caller (404 otherwise). A member can manage only
-their linked person; an admin can prepare a relative's contact (403 for an
+their linked person; an admin can prepare an unlinked relative's contact (403 for an
 unauthorized person in the caller's family). Missing people return 404.
 Membership and person authorization are checked on every operation.
+For a person linked to an account, only that account may create or redeem the
+enrollment; admin status never permits texting as another linked member. Unlinked
+relatives retain a `contact:<id>` principal. Every active intake/service/worker
+lookup rechecks the person's account mapping, account existence and current family
+membership. Lifecycle STOP hooks additionally prevent old consent reviving after
+removal and rejoining; lookup denial does not depend on those hooks having run.
 
 - `GET /families/{fid}/channels/contacts` → `{contacts:[contact]}`. Admins see
   contacts belonging to current family people; members see only their own.
@@ -58,9 +64,10 @@ five failed guesses. Creation is capped at five attempts per initiating user per
 UTC hour, including conflicts. Limit rows have a TTL; code expiry is enforced in
 the atomic query, not by eventual TTL deletion. An unexpired pending request
 cannot rotate its code; after expiry the same identity may explicitly request a
-new one. An active contact cannot be rebound. A stopped contact may explicitly
-request **new consent for the same handle/person/user/family only**: it becomes
-pending, loses its old verification, and needs a fresh recipient proof. Old codes
+new one. An active contact cannot be rebound. An expired pending or stopped handle
+slot may be reclaimed, including by another family, using an atomic replacement
+that compares the prior identity and consent proof. It becomes pending, loses all
+old verification/destination fields, and needs a fresh recipient proof. Old codes
 remain invalid. There is no direct admin "activate" or "resume" operation.
 
 The separate signed endpoint is:
@@ -102,10 +109,22 @@ safely restore an arbitrary stored destination by itself. Unknown spaces fail
 closed until a new inbound event. No automatic new-chat creation or uncertain
 delivery replay is implemented.
 
-Cross-family handle reuse is a generic 409 until explicit family selection is
-implemented. Deterministic managed-contact IDs serialize concurrent creation for
+Active or unexpired pending handle reuse returns the same generic 409, without
+disclosing family, person or status. Successful creation/reclamation returns 201;
+this still exposes a rate-limited availability bit. Both successful requests and
+conflicts count toward five attempts per actor per UTC hour. A challenge-first
+flow that hides availability is deferred until after the hackathon; this is not
+claimed to provide full enrollment enumeration resistance.
+
+Deterministic managed-contact IDs serialize concurrent creation for
 one handle; a partial unique family/person index prevents managed duplicates.
-Legacy ambiguous contact rows are not migrated or silently chosen. Preferences
+Legacy ambiguous contact rows are not migrated or silently chosen. Reclamation
+preserves the contact slot ID. Cross-family conversation keys remain isolated.
+Reassigning a stopped contact to a different person **in the same family** after
+story activity can therefore encounter the old conversation identity and fail
+closed after LINK. Operator reconciliation is required before that reassignment
+can be used; no old draft is reset, transferred or exposed. Generation-scoped
+conversation identity is deferred. Preferences
 do not change the enrollment's identity, and list responses never reveal hashes.
 
 ## Checks
