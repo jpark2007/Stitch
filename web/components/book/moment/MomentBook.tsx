@@ -434,6 +434,7 @@ function SpreadStage({
       size={[args.width, args.depth]}
       freezeAt={freezeAt}
       onReady={ready}
+      index={args.index}
     />
   );
 }
