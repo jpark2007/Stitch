@@ -6,10 +6,9 @@
  * <LayerBinding> binds one layer's frame slot once and hands its fold to the
  * pieces below it through a RiseProvider, so the existing <SetPiece> (and
  * <FloatingLayer>) hinge it every frame: 0 flat on the page, 1 risen. The
- * linear fold is eased into a hinge angle with a small pop past upright near
- * the top (foldToRise), so cards spring up like paper rather than swing like
- * doors, and any fold value is still exactly one pose (scrubbing and ?t are
- * exact).
+ * fold maps straight onto the hinge, (1 − fold)·90° from upright, as
+ * CONTRACTS.md defines it: the stage plays the rise the compiler wrote, and
+ * any fold value is exactly one pose (scrubbing and ?t are exact).
  *
  * Placement (CONTRACTS.md "Stage space"): every layer spans the full stage
  * width (2 units), centred, standing at z = depth × 0.35, `height` tall.

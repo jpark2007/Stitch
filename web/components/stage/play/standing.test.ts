@@ -8,7 +8,7 @@ import type * as StandingModule from "./standing";
 import type { MemoryResponse } from "@/lib/types";
 import type { PlaybackFrame, SetLayerFrame } from "../playback";
 
-const { Standing, foldToRise, risersFor, RISER_THICK } = (await import(new URL("./standing.ts", import.meta.url).href)) as typeof StandingModule;
+const { Standing, foldToRise, riseAngle, risersFor, RISER_THICK } = (await import(new URL("./standing.ts", import.meta.url).href)) as typeof StandingModule;
 
 const memory = JSON.parse(
   readFileSync(new URL("../../../public/samples/hymn_books.memory.json", import.meta.url), "utf8"),
@@ -27,13 +27,27 @@ function frameAt(fold: number) {
 
 const m = () => ({ angle: NaN, dy: NaN, dz: NaN });
 
-test("foldToRise: flat at 0, upright at 1, a small pop past upright on the way", () => {
+test("foldToRise: the contract's fold, linear and clamped, never past upright", () => {
   assert.equal(foldToRise(0), 0);
   assert.equal(foldToRise(1), 1);
   assert.equal(foldToRise(-1), 0);
-  let peak = 0;
-  for (let f = 0; f <= 1; f += 0.01) peak = Math.max(peak, foldToRise(f));
-  assert.ok(peak > 1.01 && peak < 1.04, `peak ${peak}`);
+  assert.equal(foldToRise(2), 1);
+  for (let f = 0; f <= 1; f += 0.05) assert.equal(foldToRise(f), f);
+});
+
+test("riseAngle: (1 − fold)·90° from upright (the reviewer's repro points)", () => {
+  const deg = (f: number) => (riseAngle(foldToRise(f)) * 180) / Math.PI;
+  assert.ok(Math.abs(deg(0.5) - 45) < 1e-9);
+  assert.ok(Math.abs(deg(0.75) - 22.5) < 1e-9);
+  assert.ok(Math.abs(deg(0.8) - 18) < 1e-9);
+  assert.equal(deg(1), 0);
+  assert.ok(Math.abs(deg(0) - 90) < 1e-9);
+});
+
+test("mounts follow the fold linearly: a puppet on the page at fold 0.5 leans 45°", () => {
+  const s = new Standing(memory.sets!, frameAt(0.5));
+  assert.ok(Math.abs(s.mount(0, 0, 0.5, m()).angle - Math.PI / 4) < 1e-9);
+  assert.ok(Math.abs(s.mount(0.2, 0.3, 0.5, m()).angle - Math.PI / 4) < 1e-9);
 });
 
 test("hymn_books: one riser under steps_top, clear of Dad at steps_foot", () => {

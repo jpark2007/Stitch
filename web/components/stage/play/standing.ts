@@ -25,17 +25,16 @@ import type { PlaybackFrame, SetLayerFrame } from "../playback";
 export const layerZ = (depth: number) => depth * 0.35;
 
 /**
- * Fold (0..1, linear in time) to hinge rise: eased, with a soft ~2% pop past
- * upright near the top that settles exactly at 1.
+ * Fold to hinge rise. CONTRACTS.md: `fold` is 0 flat .. 1 risen and the stage
+ * plays it, it does not decide it, so this is the fold itself (clamped). Any
+ * easing or spring in a rise is the compiler's, authored as fold keys.
  */
 export function foldToRise(fold: number): number {
-  const f = fold <= 0 ? 0 : fold >= 1 ? 1 : fold;
-  const s = f * f * (3 - 2 * f);
-  return s + 1.5 * s * s * (1 - s);
+  return fold <= 0 ? 0 : fold >= 1 ? 1 : fold;
 }
 
-/** Hinge angle for a rise: 0 upright, π/2 flat towards the reader (slightly negative on the pop). */
-export const riseAngle = (rise: number) => Math.min(1, 1 - rise) * (Math.PI / 2);
+/** Hinge angle for a rise: 0 upright, π/2 flat towards the reader. */
+export const riseAngle = (rise: number) => (1 - rise) * (Math.PI / 2);
 
 /** A paper platform under a raised mark. */
 export interface Riser {
