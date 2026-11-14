@@ -133,6 +133,77 @@ describe("printEats", () => {
     assert.ok(two.y1 - two.y0 >= one.y1 - one.y0 + 30);
     assert.ok(two.x1 - two.x0 <= 360 + 40 + 12 + 48);
   });
+
+  it("follows the label wrapped clear of the gutter, given the slit's page x", () => {
+    // The umbrella tab: its slit at 180 px, a label one line would run off the page.
+    const [, near] = g.printRects(150, 76, "Pull to ring the bell", 180);
+    assert.ok(180 + near.x0 >= 0, "on the page");
+    const [, far] = g.printRects(150, 76, "Pull to ring the bell");
+    const [, farGiven] = g.printRects(150, 76, "Pull to ring the bell", 600);
+    assert.deepEqual(farGiven, far, "far from the gutter: as before");
+  });
+});
+
+/** The pencilled hand, about 10.6 px a letter at 35 px (labelArt.drawPullTabPrint). */
+const hand = (s: string) => s.length * 10.6;
+
+describe("layoutPullLabel (the label never runs into the gutter)", () => {
+  it("the umbrella tab's label, one line ending under a grip near the gutter, wraps in two on the page", () => {
+    // slitX 180 + length 150 + 4: one line of ~318 px would start at ~16 px, under the gutter's dip ("Dull to open...").
+    const lay = g.layoutPullLabel("Pull to open Joseph's umbrella", 334, hand);
+    assert.deepEqual(lay.lines, ["Pull to open", "Joseph's umbrella"]);
+    assert.equal(lay.right, 334, "still ends under the grip");
+    for (const l of lay.lines) assert.ok(lay.right - hand(l) >= g.LABEL_MIN_X, `"${l}" starts on the page`);
+  });
+
+  it("is one line, right-aligned under the grip, where it fits (desktop's other tabs unchanged)", () => {
+    const lay = g.layoutPullLabel("Pull to see Joseph's soggy socks", 724 + 154, hand);
+    assert.deepEqual(lay.lines, ["Pull to see Joseph's soggy socks"]);
+    assert.equal(lay.right, 878);
+  });
+
+  it("wraps a label over the widest line wherever it is", () => {
+    assert.equal(g.layoutPullLabel("Pull to push Sam all the way off down the long street", 900, hand).lines.length, 2);
+  });
+
+  it("slides right when even its widest line would start off the page", () => {
+    const lay = g.layoutPullLabel("Pull to unfurl grandmother's", 200, hand);
+    const widest = Math.max(...lay.lines.map(hand));
+    assert.ok(lay.right > 200);
+    assert.ok(Math.abs(lay.right - widest - g.LABEL_MIN_X) < 1e-9, "starts at the margin");
+  });
+
+  it("splits at a space into even halves; one word stays one line", () => {
+    assert.deepEqual(g.splitInTwo("Pull to open Joseph's umbrella"), ["Pull to open", "Joseph's umbrella"]);
+    assert.deepEqual(g.splitInTwo("Pull"), ["Pull"]);
+    assert.deepEqual(g.layoutPullLabel("Supercalifragilisticexpialidocious", 120, hand).lines, ["Supercalifragilisticexpialidocious"]);
+  });
+});
+
+describe("cardFold (a waiting tab's grip peeks from its slit)", () => {
+  const card = { length: 0.15, travel: 0.096, peek: 0.02 };
+
+  it("out on the open page: nothing folded back", () => {
+    assert.equal(g.cardFold({ ...card, reveal: 1, away: 0 }), 0);
+  });
+
+  it("home on the open page: all but the grip's end, so the slit is never empty", () => {
+    const f = g.cardFold({ ...card, reveal: 1, away: 1 });
+    assert.ok(Math.abs(card.length - f - card.peek) < 1e-12, `${card.length - f} of the card shows`);
+  });
+
+  it("slides between the two as its shot comes on", () => {
+    let last = Infinity;
+    for (let a = 1; a >= 0; a -= 0.125) {
+      const f = g.cardFold({ ...card, reveal: 1, away: a });
+      assert.ok(f <= last);
+      last = f;
+    }
+  });
+
+  it("all of it, travel too, as the page turns away, home or out", () => {
+    for (const away of [0, 1]) assert.ok(Math.abs(g.cardFold({ ...card, reveal: 0, away }) - (card.length + card.travel)) < 1e-12);
+  });
 });
 
 describe("hitPad", () => {

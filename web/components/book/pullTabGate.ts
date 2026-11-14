@@ -7,8 +7,9 @@
  *   if (g.grabbable) // take presses, hover, the grab cursor
  *   if (endNudge({ ended, grabbable: g.grabbable, pulled, held, nudged })) // wiggle once
  *
- * The rule: a tab is shown out of its slit only when it can be pulled; the
- * scene is never seeked by a tab (CONTRACTS 7).
+ * The rule: a tab is shown out of its slit only when it can be pulled (home,
+ * only its grip's end peeks out: cardFold); the scene is never seeked by a
+ * tab (CONTRACTS 7).
  *
  *   - a tab bound to a shot is out only while that shot is on stage; after
  *     the telling the frame keeps the last shot, so the last shot's tabs stay
@@ -86,25 +87,85 @@ export interface PrintRect {
 const LABEL = { size: 35, gap: 46, letter: 14, wrap: 360 } as const;
 
 /**
+ * The leftmost page px a pencilled label may start at: clear of the deckled
+ * edge (~24 px) and of the gutter's dip, where the page curls away from the
+ * camera (a label right-aligned under a tab near the gutter ran off the
+ * page: "Pull" read "Dull" on a laptop, and a phone's shot lost "Pull to").
+ */
+export const LABEL_MIN_X = 72;
+
+export interface PullLabelLayout {
+  /** One line, or two. */
+  lines: string[];
+  /** Where the lines end (right-aligned), page px: under the grip, or further right if the label would start off the page. */
+  right: number;
+}
+
+/** A label split in two lines of about even length, at a space; one word stays one line. */
+export function splitInTwo(text: string): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < 2) return [words.join(" ")];
+  let best = 1;
+  let bestDiff = Infinity;
+  for (let i = 1; i < words.length; i++) {
+    const a = words.slice(0, i).join(" ").length;
+    const b = words.slice(i).join(" ").length;
+    if (Math.abs(a - b) < bestDiff) {
+      bestDiff = Math.abs(a - b);
+      best = i;
+    }
+  }
+  return [words.slice(0, best).join(" "), words.slice(best).join(" ")];
+}
+
+/**
+ * A pull tab's pencilled label, right-aligned to end at `endX` (page px)
+ * under the grip, its widths from `measure`: one line up to LABEL.wrap,
+ * else two; two as well if one would start left of LABEL_MIN_X. If even its
+ * widest line would, the label slides right to start there.
+ */
+export function layoutPullLabel(label: string, endX: number, measure: (s: string) => number): PullLabelLayout {
+  const words = label.trim();
+  const full = measure(words);
+  const lines = full > LABEL.wrap || endX - full < LABEL_MIN_X ? splitInTwo(words) : [words];
+  const widest = Math.max(0, ...lines.map(measure));
+  return { lines, right: Math.max(endX, LABEL_MIN_X + widest) };
+}
+
+/**
  * The printed slit and label, in page px about the slit's middle (x along
  * the tab, y down the page), for a card `length` × `width` and its `label`:
  * the slit's cut and the strip's footprint, and the pencilled label under
  * it, right-aligned under the grip, up to its arrow. Nothing above the
  * slit's top, so the stage and its caption stay clear. The label's width is
  * estimated from its letters (it is drawn on the page canvas, not here),
- * generously, as labelArt wraps it: one line up to 360 px, else two.
+ * generously, laid out as labelArt lays it (layoutPullLabel); `slitX`, the
+ * slit's page x, places it against the gutter (unknown: far from it).
  */
-export function printRects(length: number, width: number, label: string): PrintRect[] {
+export function printRects(length: number, width: number, label: string, slitX = Infinity): PrintRect[] {
   const end = length + 4;
   const words = label.trim();
-  const full = words.length * LABEL.letter;
-  const lines = full > LABEL.wrap ? 2 : 1;
-  const wide = Math.min(LABEL.wrap + 40, lines === 2 ? Math.ceil(words.length / 2 + 3) * LABEL.letter : full);
+  const estimate = (s: string) => s.length * LABEL.letter;
+  const lay = Number.isFinite(slitX) ? layoutPullLabel(words, slitX + end, estimate) : layoutPullLabel(words, Infinity, estimate);
+  const lines = lay.lines.length;
+  const right = Number.isFinite(slitX) ? lay.right - slitX : end;
+  const wide = Math.min(LABEL.wrap + 40, lines === 2 ? Math.ceil(words.length / 2 + 3) * LABEL.letter : estimate(words));
   const base = width / 2 + LABEL.gap;
   return [
     { x0: -24, x1: end + 44, y0: -(width / 2 + 9), y1: width / 2 + 8 },
-    { x0: end - wide - 12, x1: end + 48, y0: base - LABEL.size - 4, y1: base + (lines - 1) * LABEL.size + 14 },
+    { x0: right - wide - 12, x1: right + 48, y0: base - LABEL.size - 4, y1: base + (lines - 1) * LABEL.size + 14 },
   ];
+}
+
+/**
+ * How far (world) the card is drawn back through its slit, for a card
+ * `length` out at rest that pulls `travel` more: all of it, and its travel,
+ * as the page turns away (reveal 0); home in its slit (away 1), all but its
+ * grip's last `peek`, which shows its tab is there, waiting for its shot.
+ */
+export function cardFold(i: { reveal: number; away: number; length: number; travel: number; peek: number }): number {
+  const turned = i.reveal < 1 ? (1 - i.reveal) * (i.length + i.travel) : 0;
+  return Math.max(turned, i.away * (i.length - i.peek));
 }
 
 /**

@@ -1,7 +1,11 @@
 /**
  * Placeholder art for props with no art yet (`art: null`, CONTRACTS.md
- * decision 8): a cut-paper card in the prop's colour with a simple silhouette
- * for its size class, so it still reads as an object.
+ * decision 8): a cut-paper card in the prop's colour with a simple silhouette,
+ * so it still reads as an object.
+ *
+ * The shape the prop's own words name comes first (./silhouette.ts): a
+ * bicycle (with its bell, if it has one), car, truck, boat, train, plane,
+ * wagon or stroller. Otherwise its size class picks:
  *
  *   tiny       a button or coin
  *   hand       a little stack (books, boxes)
@@ -20,6 +24,7 @@
 
 import { CanvasTexture, ClampToEdgeWrapping, Color, NoColorSpace, SRGBColorSpace, type Texture } from "three";
 import type { PropSize } from "./rig";
+import type { Silhouette } from "./silhouette";
 
 export interface PlaceholderSpec {
   /** A whole prop's card, or one of its parts. */
@@ -32,6 +37,13 @@ export interface PlaceholderSpec {
   seed: string;
   /** Vehicles: draw the wheels into the body (false when wheel parts exist). */
   wheels?: boolean;
+  /** The shape the prop's words name (./silhouette.ts); none: by size. */
+  shape?: Silhouette | null;
+  /** A bicycle's bell. */
+  bell?: boolean;
+  /** Wheel centres (image fractions, back to front) where the prop's wheel
+   *  parts turn, so a frame meets them; default the shape's own. */
+  hubs?: readonly (readonly [number, number])[];
 }
 
 export interface PlaceholderArt {
@@ -50,7 +62,8 @@ const CREAM = new Color("#fbf3e4");
 const cache = new Map<string, { art: PlaceholderArt; refs: number }>();
 
 export function placeholderKey(s: PlaceholderSpec): string {
-  return [s.kind, s.size, s.color, s.aspect.toFixed(3), s.seed, s.wheels ? 1 : 0].join("|");
+  const hubs = (s.hubs ?? []).map(([u, v]) => `${u.toFixed(3)},${v.toFixed(3)}`).join(";");
+  return [s.kind, s.size, s.color, s.aspect.toFixed(3), s.seed, s.wheels ? 1 : 0, s.shape ?? "", s.bell ? 1 : 0, hubs].join("|");
 }
 
 /** Get (and hold a reference to) the placeholder textures for a spec. */
@@ -456,6 +469,200 @@ const paintPiece: Painter = ({ W, H, S, cut, base, layer, sw }) => {
   layer(cut(rrect(W * 0.14, H * 0.14, W * 0.72, H * 0.3, S * 0.08)), sw.base, 0.4);
 };
 
+/* ------------------------------------------------------------------------ */
+/* Shapes the prop's words name (./silhouette.ts)                            */
+/* ------------------------------------------------------------------------ */
+
+/** A bar of paper from (x0, y0) to (x1, y1), `w` wide, with round ends. */
+function capsule(x0: number, y0: number, x1: number, y1: number, w: number): Pts {
+  const a = Math.atan2(y1 - y0, x1 - x0);
+  const r = w / 2;
+  const pts: Pts = [];
+  const cap = (cx: number, cy: number, from: number) => {
+    for (let i = 0; i <= 8; i++) {
+      const t = from + (i / 8) * Math.PI;
+      pts.push(cx + Math.cos(t) * r, cy + Math.sin(t) * r);
+    }
+  };
+  cap(x1, y1, a - Math.PI / 2);
+  cap(x0, y0, a + Math.PI / 2);
+  return pts;
+}
+
+/** Pixel wheel centres, back to front: the prop's wheel parts, else `fallback`. */
+function hubsPx(k: Kit, spec: PlaceholderSpec, fallback: readonly (readonly [number, number])[]): [number, number][] {
+  const src = spec.hubs && spec.hubs.length > 0 ? spec.hubs : fallback;
+  return [...src].sort((a, b) => a[0] - b[0]).map(([u, v]) => [k.W * u, k.H * v]);
+}
+
+/** Tyres drawn into the body (a prop without wheel parts). */
+function paintTyres(k: Kit, hubs: readonly (readonly [number, number])[], r: number) {
+  for (const [cx, cy] of hubs) {
+    k.base(k.cut(ellipse(cx, cy, r, r)), "#3b322b");
+    k.layer(k.cut(ellipse(cx, cy, r * 0.62, r * 0.62)), k.sw.lighter, 0.4);
+    k.layer(k.cut(ellipse(cx, cy, r * 0.18, r * 0.18, 24)), k.sw.deep, 0.4);
+  }
+}
+
+const BIKE_HUBS = [
+  [0.2, 0.82],
+  [0.8, 0.82],
+] as const;
+
+/** A bicycle, facing right: diamond frame between the wheels, saddle,
+ *  handlebars, and a bell on the bars when it has one. */
+const paintBicycle: Painter = (k, spec) => {
+  const { W, H, cut, base, layer, sw } = k;
+  const [[rx, ry], [fx, fy]] = hubsPx(k, spec, BIKE_HUBS);
+  const r = H * VEHICLE_WHEEL_RADIUS;
+  const at = (u: number, dv: number): [number, number] => [rx + (fx - rx) * u, (ry + fy) / 2 + H * dv];
+  const tube = Math.max(3, H * 0.036);
+  const [bx, by] = at(0.46, 0.01); // bottom bracket
+  const [cx, cy] = at(0.36, -0.21); // seat cluster
+  const [sx, sy] = at(0.33, -0.28); // under the saddle
+  const [tx, ty] = at(0.84, -0.25); // head tube, top
+  const [hx, hy] = at(0.87, -0.14); // head tube, bottom
+  const [gx, gy] = at(0.82, -0.4); // handlebar
+  const bar = (x0: number, y0: number, x1: number, y1: number, w = tube, fill = sw.base) =>
+    base(cut(capsule(x0, y0, x1, y1, w), 0.6), fill);
+  if (spec.wheels) paintTyres(k, [[rx, ry], [fx, fy]], r);
+  bar(bx, by, rx, ry); // chain stay
+  bar(cx, cy, rx, ry); // seat stay
+  bar(bx, by, sx, sy); // seat tube
+  bar(cx, cy, tx, ty); // top tube
+  bar(bx, by, hx, hy); // down tube
+  bar(tx, ty, hx, hy, tube * 1.25); // head tube
+  bar(hx, hy, fx, fy, tube * 0.9, sw.dark); // fork
+  bar(tx, ty, gx, gy, tube * 0.8, sw.dark); // stem
+  bar(gx, gy, gx - W * 0.1, gy + H * 0.04, tube * 0.8, sw.dark); // bars
+  layer(cut(capsule(gx - W * 0.1, gy + H * 0.04, gx - W * 0.06, gy + H * 0.025, tube * 1.3), 0.5), sw.deep, 0.4); // grip
+  // Saddle on its post.
+  base(cut(rrect(sx - W * 0.085, sy - H * 0.045, W * 0.15, H * 0.05, H * 0.025, H * 0.025, H * 0.012, H * 0.02, H * 0.012)), sw.deep);
+  // Chainring and crank.
+  base(cut(ellipse(bx, by, H * 0.06, H * 0.06, 32)), sw.dark);
+  layer(cut(ellipse(bx, by, H * 0.03, H * 0.03, 24)), sw.core, 0.4);
+  layer(cut(capsule(bx, by, bx + H * 0.05, by + H * 0.07, tube * 0.7), 0.4), sw.deep, 0.3);
+  // Mudguard over the back wheel.
+  layer(cut(densify(arc(rx, ry, r * 1.12, r * 1.28, Math.PI * 1.05, Math.PI * 1.6), 4), 0.5), sw.light, 0.4);
+  if (spec.bell) {
+    const bellX = gx - W * 0.035;
+    const bellY = gy - H * 0.035;
+    const br = H * 0.04;
+    base(cut(ellipse(bellX, bellY, br, br * 0.85, 32)), "#c9c6bd"); // silver
+    layer(cut(ellipse(bellX - br * 0.3, bellY - br * 0.3, br * 0.35, br * 0.25, 16), 0.3), "#f1efe8", 0.3);
+  }
+};
+
+/** A ring segment from angle a0 to a1 (radians), inner and outer radius. */
+function arc(cx: number, cy: number, r0: number, r1: number, a0: number, a1: number, n = 16): Pts {
+  const pts: Pts = [];
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + ((a1 - a0) * i) / n;
+    pts.push(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
+  }
+  for (let i = n; i >= 0; i--) {
+    const a = a0 + ((a1 - a0) * i) / n;
+    pts.push(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+  }
+  return pts;
+}
+
+/** Wheel arches and, without wheel parts, tyres, for the boxy shapes. */
+function wheelsFor(k: Kit, spec: PlaceholderSpec, scale = 1) {
+  const hubs = hubsPx(k, spec, VEHICLE_WHEELS);
+  const r = k.H * VEHICLE_WHEEL_RADIUS * scale;
+  for (const [cx, cy] of hubs) k.layer(k.cut(ellipse(cx, cy, r * 1.18, r * 1.18)), k.sw.deep, 0.3);
+  if (spec.wheels) paintTyres(k, hubs, r);
+}
+
+/** A pickup truck, facing right: cab and an open bed. */
+const paintTruck: Painter = (k, spec) => {
+  const { W, H, cut, base, layer, sw } = k;
+  base(cut(rrect(W * 0.03, H * 0.42, W * 0.6, H * 0.4, H * 0.04)), sw.base);
+  base(cut(rrect(W * 0.6, H * 0.12, W * 0.26, H * 0.7, H * 0.08, H * 0.08, H * 0.02, H * 0.04, H * 0.02)), sw.base);
+  base(cut(rrect(W * 0.8, H * 0.4, W * 0.18, H * 0.42, H * 0.1, H * 0.02, H * 0.06, H * 0.06, H * 0.02)), sw.base);
+  layer(cut(rrect(W * 0.64, H * 0.18, W * 0.18, H * 0.2, H * 0.03)), sw.pane, 0.6);
+  layer(cut(rrect(W * 0.06, H * 0.44, W * 0.54, H * 0.06, 2)), sw.dark, 0.4); // bed rail
+  layer(cut(rrect(W * 0.02, H * 0.74, W * 0.96, H * 0.06, H * 0.03)), sw.deep, 0.5);
+  layer(cut(rrect(W * 0.93, H * 0.46, W * 0.05, H * 0.07, H * 0.03)), sw.core, 0.4);
+  wheelsFor(k, spec);
+};
+
+/** A sailing boat: hull, mast and sail. */
+const paintBoat: Painter = ({ W, H, S, cut, base, layer, sw }) => {
+  base(cut(rrect(W * 0.46, H * 0.05, S * 0.035, H * 0.55, 2)), sw.deep);
+  base(cut(densify([W * 0.5, H * 0.08, W * 0.86, H * 0.52, W * 0.5, H * 0.52], 6)), sw.lighter);
+  base(cut(densify([W * 0.02, H * 0.56, W * 0.98, H * 0.52, W * 0.84, H * 0.94, W * 0.14, H * 0.94], 6)), sw.base);
+  layer(cut(densify([W * 0.04, H * 0.6, W * 0.96, H * 0.56, W * 0.94, H * 0.63, W * 0.06, H * 0.67], 6)), sw.light, 0.4);
+  for (const u of [0.3, 0.46, 0.62]) layer(cut(ellipse(W * u, H * 0.76, S * 0.035, S * 0.035, 20)), sw.pane, 0.5);
+};
+
+/** A steam locomotive, facing right: cab, boiler, chimney. */
+const paintTrain: Painter = (k, spec) => {
+  const { W, H, cut, base, layer, sw } = k;
+  base(cut(rrect(W * 0.7, H * 0.12, W * 0.1, H * 0.3, 2)), sw.deep);
+  base(cut(rrect(W * 0.3, H * 0.36, W * 0.6, H * 0.4, H * 0.18, H * 0.04, H * 0.18, H * 0.18, H * 0.04)), sw.base);
+  base(cut(rrect(W * 0.04, H * 0.1, W * 0.32, H * 0.68, H * 0.03)), sw.dark);
+  base(cut(densify([W * 0.88, H * 0.6, W * 0.99, H * 0.84, W * 0.86, H * 0.84], 4)), sw.deep);
+  layer(cut(rrect(W * 0.02, H * 0.06, W * 0.36, H * 0.07, H * 0.03)), sw.deep, 0.5); // roof
+  layer(cut(rrect(W * 0.1, H * 0.2, W * 0.18, H * 0.2, H * 0.02)), sw.pane, 0.6);
+  for (const u of [0.48, 0.66]) layer(cut(rrect(W * u, H * 0.36, W * 0.03, H * 0.4, 1)), sw.light, 0.3);
+  layer(cut(rrect(W * 0.02, H * 0.74, W * 0.9, H * 0.06, H * 0.03)), sw.deep, 0.5);
+  wheelsFor(k, spec);
+};
+
+/** An aeroplane, facing right: fuselage, wing, tail fin and windows. */
+const paintPlane: Painter = ({ W, H, cut, base, layer, sw }) => {
+  base(cut(densify([W * 0.04, H * 0.46, W * 0.17, H * 0.46, W * 0.13, H * 0.12, W * 0.04, H * 0.12], 4)), sw.dark);
+  base(cut(capsule(W * 0.1, H * 0.5, W * 0.9, H * 0.5, H * 0.22)), sw.base);
+  base(cut(densify([W * 0.4, H * 0.54, W * 0.6, H * 0.54, W * 0.5, H * 0.9, W * 0.4, H * 0.9], 4)), sw.dark);
+  layer(cut(rrect(W * 0.84, H * 0.42, W * 0.08, H * 0.08, H * 0.04)), sw.pane, 0.6); // cockpit
+  for (let i = 0; i < 6; i++) layer(cut(ellipse(W * (0.26 + i * 0.09), H * 0.46, H * 0.03, H * 0.035, 16), 0.3), sw.pane, 0.4);
+  layer(cut(rrect(W * 0.12, H * 0.54, W * 0.76, H * 0.04, 2)), sw.light, 0.3);
+};
+
+/** A little pull-wagon: open box, wheels and a long handle. */
+const paintWagon: Painter = (k, spec) => {
+  const { W, H, cut, base, layer, sw } = k;
+  base(cut(capsule(W * 0.8, H * 0.6, W * 0.97, H * 0.1, Math.max(3, H * 0.04))), sw.deep);
+  base(cut(rrect(W * 0.93, H * 0.06, W * 0.06, H * 0.08, H * 0.03)), sw.deep);
+  base(cut(rrect(W * 0.04, H * 0.36, W * 0.78, H * 0.38, H * 0.04)), sw.base);
+  layer(cut(rrect(W * 0.04, H * 0.36, W * 0.78, H * 0.07, H * 0.03)), sw.light, 0.4);
+  for (const u of [0.24, 0.43, 0.62]) layer(cut(rrect(W * u, H * 0.46, W * 0.02, H * 0.22, 1)), sw.dark, 0.25);
+  wheelsFor(k, spec, 0.85);
+};
+
+/** A pram: deep basket, folding hood, push handle behind. */
+const paintStroller: Painter = (k, spec) => {
+  const { W, H, cut, base, layer, sw } = k;
+  base(cut(capsule(W * 0.24, H * 0.46, W * 0.06, H * 0.12, Math.max(3, H * 0.035))), sw.deep);
+  base(cut(capsule(W * 0.02, H * 0.12, W * 0.12, H * 0.1, Math.max(4, H * 0.06))), sw.deep);
+  base(cut(ellipse(W * 0.52, H * 0.5, W * 0.32, H * 0.24)), sw.base);
+  const hood: Pts = [W * 0.52, H * 0.5];
+  for (let i = 0; i <= 16; i++) {
+    const a = Math.PI + (i / 16) * Math.PI * 0.62;
+    hood.push(W * 0.52 + Math.cos(a) * W * 0.33, H * 0.5 + Math.sin(a) * H * 0.42);
+  }
+  base(cut(densify(hood, 6)), sw.dark);
+  for (const f of [0.25, 0.5]) {
+    const a = Math.PI + f * Math.PI * 0.62;
+    layer(cut(capsule(W * 0.52, H * 0.5, W * 0.52 + Math.cos(a) * W * 0.32, H * 0.5 + Math.sin(a) * H * 0.41, H * 0.02), 0.4), sw.deep, 0.3);
+  }
+  layer(cut(rrect(W * 0.22, H * 0.5, W * 0.62, H * 0.05, 2)), sw.light, 0.4);
+  wheelsFor(k, spec, 0.8);
+};
+
+const SHAPE_PAINTERS: Record<Silhouette, Painter> = {
+  bicycle: paintBicycle,
+  car: paintVehicle,
+  truck: paintTruck,
+  boat: paintBoat,
+  train: paintTrain,
+  plane: paintPlane,
+  wagon: paintWagon,
+  stroller: paintStroller,
+};
+
 const PAINTERS: Record<PropSize, Painter> = {
   tiny: paintTiny,
   hand: paintHand,
@@ -498,7 +705,12 @@ function paint(spec: PlaceholderSpec): PlaceholderArt {
   alpha.fillRect(0, 0, W, H);
 
   const kit = makeKit(color, alpha, W, H, sw, rng(hashString(spec.seed)));
-  const painter = spec.kind === "wheel" ? paintWheel : spec.kind === "piece" ? paintPiece : PAINTERS[spec.size] ?? paintCarried;
+  const painter =
+    spec.kind === "wheel"
+      ? paintWheel
+      : spec.kind === "piece"
+        ? paintPiece
+        : (spec.shape ? SHAPE_PAINTERS[spec.shape] : PAINTERS[spec.size]) ?? paintCarried;
   painter(kit, spec);
 
   return { map: toTexture(colorCanvas, true), alphaMap: toTexture(alphaCanvas, false) };

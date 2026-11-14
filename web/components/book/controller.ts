@@ -557,6 +557,22 @@ export class BookController {
     return slots[k].children.length > 0;
   }
 
+  /**
+   * setHover chooses curl or tilt only as a hover starts. On a cold load the
+   * stage's chunk can mount its pop-up under a curl begun before it, which
+   * would then rise inside the curled page: once the hovered page's pop-up
+   * stands, its forward curl gives way to the tilt (or, leaned into a shot,
+   * to nothing). Called each frame; returns whether it changed the hover.
+   */
+  private retakeHover(): boolean {
+    const i = this.hoverLeaf;
+    const l = this.rt.leaves[i];
+    if (!l || l.mode !== "hover" || l.tilt || l.dir < 0 || !this.popUp(i - 1)) return false;
+    this.clearHover();
+    this.setHover(i, 1, l.corner);
+    return true;
+  }
+
   private clearHover() {
     if (this.hoverLeaf < 0) return;
     const l = this.rt.leaves[this.hoverLeaf];
@@ -904,6 +920,7 @@ export class BookController {
       else moving = true;
     }
     this.stageGroup = parts.stage;
+    if (this.retakeHover()) moving = true;
     if (parts.stage) {
       const y0 = rt.hinge + pageProfile(PAGE_W / 2, rt.depthR, rt.bow) + LEAF_REST_GAP;
       const [sx, sy] = tiltAbout(0, y0, 0, rt.hinge, this.stageTilt);

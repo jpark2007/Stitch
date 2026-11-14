@@ -136,6 +136,19 @@ export function bookOf(name: string | null | undefined): string {
   return `${first || "Your"}${first ? "’s" : ""} book`;
 }
 
+/**
+ * The teller's own book: `/people/<personId>?family=<fid>`, and once the
+ * run has saved its moment, `&memory=<memoryId>` so the book opens at the
+ * page just made (the book routes' ?memory=). Every part is encoded.
+ */
+export function personBookHref(personId: string, familyId: string | null, memoryId: string | null = null): string {
+  const query = [
+    familyId ? `family=${encodeURIComponent(familyId)}` : null,
+    memoryId ? `memory=${encodeURIComponent(memoryId)}` : null,
+  ].filter(Boolean);
+  return `/people/${encodeURIComponent(personId)}${query.length ? `?${query.join("&")}` : ""}`;
+}
+
 const WORD_NUMBERS: Record<string, number> = {
   one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
 };
