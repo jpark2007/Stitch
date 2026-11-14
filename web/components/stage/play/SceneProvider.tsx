@@ -85,6 +85,22 @@ export class StageRuntime {
   readonly registry: PropRegistry;
   /** World-space clipping planes at the wings, kept current every frame. */
   readonly wings: readonly Plane[] = [new Plane(new Vector3(-1, 0, 0), WING_X), new Plane(new Vector3(1, 0, 0), WING_X)];
+  /**
+   * Opt-in lifts, by target ("puppet:<id>" / "prop:<id>"): the offset (stage
+   * units) a cutout stands off its place, for a host that picks one up (the
+   * book's click-to-explain lifts it toward its camera, so the cutout stays
+   * under the pointer and its shadow lengthens). The host owns the vectors
+   * and may change them in place. Empty by default, so a stage no one lifts
+   * plays exactly as authored. The host invalidates while it changes a lift.
+   */
+  readonly lifts = new Map<string, Readonly<Vector3>>();
+  /**
+   * How each cutout stands up with the page now, by target: the mount its
+   * binding writes every frame (angle 0 upright .. π/2 lying flat with a
+   * folded layer). For a host to read (the book's click-to-explain leaves a
+   * cutout lying flat be); the stage never reads it.
+   */
+  readonly mounts = new Map<string, Readonly<Mount>>();
 
   private readonly localWings = this.wings.map((p) => p.clone());
   private readonly puppets = new Map<string, RefObject<PuppetHandle | null>>();
@@ -400,6 +416,14 @@ export function standUp(standing: Standing, outer: Group | null, inner: Group | 
   outer.position.set(x, y + m.dy, z + m.dz);
   outer.rotation.x = m.angle;
   inner.position.set(-x, -y, -z);
+}
+
+/** Lists a cutout's mount on the runtime (StageRuntime.mounts). Returns the unregister. */
+export function registerMount(runtime: StageRuntime, target: string, m: Readonly<Mount>): () => void {
+  runtime.mounts.set(target, m);
+  return () => {
+    if (runtime.mounts.get(target) === m) runtime.mounts.delete(target);
+  };
 }
 
 /** Turns the two stand-up groups into a tilt of `angle` (about x) around stage point (x, y, z). */

@@ -199,6 +199,11 @@ test("art: body key, state overrides and preload list", () => {
   assert.equal(artFor(car, "body", "parked"), "media/a1");
   assert.equal(artFor(car, "body", "wrecked"), "media/a3");
   assert.equal(artFor(car, "wheel", "wrecked"), "media/a2");
+  // An override naming one of the prop's art keys means that key's art, not a media id.
+  const bike = { art: { body: null, ringing: null, bell: "media/b1" }, states: { quiet: {}, ringing: { body: "ringing" }, bell: { body: "bell" } } };
+  assert.equal(artFor(bike, "body", "ringing"), null);
+  assert.equal(artFor(bike, "body", "bell"), "media/b1");
+  assert.deepEqual(allArtIds(bike), ["media/b1"]);
   assert.equal(artFor({ art: { body: null } }, "body", null), null);
   assert.deepEqual(allArtIds(car).sort(), ["media/a1", "media/a2", "media/a3"]);
 });
