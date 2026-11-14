@@ -9,8 +9,7 @@ import { preloadCutouts } from "@/components/stage/cutout";
 import { EFFECT_KINDS, type EffectKind } from "@/components/stage/Effects";
 import { COVER_SPAN, Stage } from "@/components/stage/Stage";
 import { smootherstep } from "@/components/stage/timeline";
-import { DEMO_CUTOUTS } from "@/components/stage/art";
-import { DemoDiorama, demoCamera, DEMO_OPEN_AT } from "./demo";
+import { DEMO_CUTOUTS, DemoDiorama, demoCamera, DEMO_OPEN_AT } from "./demo";
 
 export interface RenderViewProps {
   memoryId: string;
