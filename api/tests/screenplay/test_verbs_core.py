@@ -11,7 +11,7 @@ import pytest
 
 import schemas
 from screenplay import body as B
-from screenplay import ik
+from screenplay import ik, verbs_core
 from screenplay.compiler import compile as compile_screenplay
 from screenplay.locate import make_locate, puppet_root, puppet_socket_at
 from screenplay.motion import resolve_marks
@@ -425,6 +425,100 @@ def test_pick_up_below_the_floor_is_out_of_reach_even_crouching():
     world._to_ground("cup", (0.05, -1.0, 0.5))
     e = fails(world, tracks, "out_of_reach", who="mom", do="pick_up", what="cup")
     assert e.who == "mom" and e.distance > e.reach
+
+
+# pick_up steps to a spot when the arm cannot take the grip where the puppet is (finding F3):
+# a grip on the floor right under the hips is behind a forward bend's reach.
+
+def low_cup(world, x, grip_y=0.03):
+    """The cup on the floor with its grip at (x, grip_y), as low as base_scene's cap."""
+    geom = B.PropGeom.from_prop(world.catalog["cup"])
+    world._to_ground("cup", (*B.anchor_from_grip(geom, (x, grip_y)), 0.5))
+    return (x, grip_y)
+
+
+def test_pick_up_of_a_grip_under_the_hips_steps_back_first():
+    world, tracks = scene({"mom": {"at": "steps_foot", "facing": "right"}})
+    grip = low_cup(world, 0.0)
+    end = run(world, tracks, 0, who="mom", do="pick_up", what="cup")
+    x = world.people["mom"].pos[0]
+    assert x <= -0.01  # facing right, so it steps back to the left
+    arrive = round(1.2 + -x / 0.35, 3)
+    pos = keys(tracks, "puppet:mom", "root.position")
+    assert pos[:2] == [(1.2, [0.0, 0.0, 0.5]), (arrive, [x, 0.0, 0.5])]
+    # The walk turns it away from the cup; it turns back on arrival, before it reaches.
+    assert keys(tracks, "puppet:mom", "root.facing") == [(1.2, -1), (arrive, 1)]
+    t_grab = round(arrive + B.POSE_SECONDS + B.REACH_SECONDS, 3)  # down, then reach
+    assert keys(tracks, "prop:cup", "parent") == [(t_grab, "puppet:mom.hand_r")]
+    assert hand_at(world, tracks, "mom", t_grab) == pytest.approx(grip, abs=2e-3)
+    assert end == pytest.approx(arrive + 2 * B.POSE_SECONDS + B.REACH_SECONDS, abs=1e-3)
+    assert world.people["mom"].facing == 1 and world.people["mom"].pose == "stand"
+    assert world.holder("cup") == ("mom", "hand_r")
+
+
+def test_pick_up_from_kneeling_over_the_grip_stands_steps_back_and_kneels_again():
+    world, tracks = scene({"mom": {"at": "steps_foot", "facing": "left", "pose": "kneel"}})
+    low = round(-0.24 * ik.scale("average"), 3)
+    tracks.add("puppet:mom", "root.position", 0.0, [0.0, low, 0.5])  # as the start keys put it
+    grip = low_cup(world, 0.0)
+    run(world, tracks, 0, who="mom", do="pick_up", what="cup")
+    x = world.people["mom"].pos[0]
+    assert x >= 0.01  # facing left, so the step back is to the right
+    pos = keys(tracks, "puppet:mom", "root.position")
+    assert pos[1:3] == [(1.2, [0.0, low, 0.5]), (1.6, [0.0, 0.0, 0.5])]  # gets up first
+    assert pos[3][1] == [x, 0.0, 0.5]
+    t_grab = keys(tracks, "prop:cup", "parent")[0][0]
+    assert hand_at(world, tracks, "mom", t_grab) == pytest.approx(grip, abs=2e-3)
+    assert world.people["mom"].facing == -1 and world.people["mom"].pose == "stand"
+
+
+def test_pick_up_with_the_right_hand_full_stops_where_the_left_shoulder_reaches():
+    world, tracks = scene({"dad": {"at": "curb", "facing": "left", "holding": "hat"}})
+    grip = low_cup(world, 0.0)
+    run(world, tracks, 0, who="dad", do="pick_up", what="cup")
+    t_grab, hand = keys(tracks, "prop:cup", "parent")[0]
+    assert hand == "puppet:dad.hand_l"
+    assert hand_at(world, tracks, "dad", t_grab, "hand_l") == pytest.approx(grip, abs=2e-3)
+    assert keys(tracks, "prop:hat", "parent") == []  # still in hand_r, untouched
+    x = world.people["dad"].pos[0]
+    assert x > 0.0  # it walked up from the curb's side
+    # The plain walk-up stop (0.6 of the reach from the root) is where main failed: the left
+    # shoulder sits behind the hip, and kneeling at CROUCH_MAX_BEND the arm misses the floor.
+    plain = ik.Body("dad", (0.6 * ik.arm_reach("tall"), 0.0), -1, "tall")
+    assert verbs_core._crouch_pick(verbs_core._crouch_tries(plain, "arm_l", grip, True), 0.17) is None
+    # The spot it took reaches with the least effort the search found: kneeling, deeply bent.
+    torso = keys(tracks, "puppet:dad", "torso.rot")
+    assert torso[1][1] == pytest.approx(-1.4)
+    assert tracks.value_at("puppet:dad", "leg_r.lower.rot", t_grab) == -1.5  # kneeling at the grab
+
+
+def test_pick_up_step_search_failure_is_atomic_and_reports_the_closest_miss():
+    world, tracks = scene({"dad": {"at": "steps_foot", "facing": "right"}})
+    grip = low_cup(world, 0.3, grip_y=1.5)  # far above every standing shoulder
+    e = fails(world, tracks, "out_of_reach", who="dad", do="pick_up", what="cup")
+    # The closest spot puts the shoulder right under the grip (spots are SPOT_STEP apart).
+    shoulder_y = ik.shoulder_world("arm_r", (0.0, 0.0), 1, "tall")[1]
+    assert e.distance == pytest.approx(grip[1] - shoulder_y, abs=1e-4)
+    assert (e.who, e.arm, e.reach) == ("dad", "arm_r", pytest.approx(ik.arm_reach("tall")))
+
+
+def test_pick_up_from_a_seat_never_steps():
+    world, tracks = scene({"mom": {"at": "steps_foot", "in": "chair.seat", "facing": "right"}},
+                          prop_start={"chair": {"at": "steps_foot"}})
+    low_cup(world, 0.0)
+    e = fails(world, tracks, "out_of_reach", who="mom", do="pick_up", what="cup")
+    assert e.who == "mom" and e.distance > e.reach
+
+
+def test_the_deep_bend_is_only_tried_by_a_stepped_to_spot():
+    body = ik.Body("dad", (0.15, 0.0), -1, "tall")
+    plain = verbs_core._crouch_tries(body, "arm_l", (0.0, 0.03), True)
+    deep = verbs_core._crouch_tries(body, "arm_l", (0.0, 0.03), True, verbs_core.CROUCH_DEEP_BEND)
+    assert min(tr[2] for tr in plain) == pytest.approx(-verbs_core.CROUCH_MAX_BEND)
+    assert min(tr[2] for tr in deep) == pytest.approx(-verbs_core.CROUCH_DEEP_BEND)
+    # arm_l cannot reach the floor kneeling at CROUCH_MAX_BEND, from anywhere: the deep bend can.
+    assert verbs_core._crouch_pick(plain, 0.17) is None
+    assert verbs_core._crouch_pick(deep, 0.17) is not None
 
 
 def test_pick_up_errors():
