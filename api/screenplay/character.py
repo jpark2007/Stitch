@@ -69,9 +69,13 @@ def signature_item(person: schemas.Person) -> str | None:
 def worn_item_keys(world: World, who: str, t: float) -> list[Key]:
     """The parent and position keys that put whatever ``who`` wears in the head socket there at ``t``.
 
-    Exactly the attach keys verbs_objects.apply_put_on emits for a head item (via
-    body.put_on_keys): ``('prop:<item>', 'parent', t, 'puppet:<who>.head')`` then
-    ``('prop:<item>', 'position', t, [0.0, 0.0, 0.0])``. Returns [] when nothing is worn.
+    ``('prop:<item>', 'parent', t, 'puppet:<who>.head')`` then
+    ``('prop:<item>', 'position', t, [0.0, 0.0, 0.0])``: the anchor sits on the head socket.
+    These are exactly the attach keys verbs_objects.apply_put_on emits (via body.put_on_keys)
+    when the hand carries the grip all the way to the head. When it cannot (a grip above the
+    anchor), put_on_keys instead swaps the parent with the offset where the hand let go and adds
+    a [0, 0, 0] position key PUT_ON_SETTLE_SECONDS later, ending in the same place.
+    Returns [] when nothing is worn.
     """
     from screenplay.state import HEAD, StateError  # runtime import: state.py imports this module
 

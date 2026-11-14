@@ -20,6 +20,7 @@ from collections.abc import Callable
 from screenplay import ik
 from screenplay.body import (
     POSE_SECONDS,
+    PUT_ON_SETTLE_SECONDS,
     REACH_SECONDS,
     REST_ARM,
     PropGeom,
@@ -96,11 +97,19 @@ def _geom(world: World, what: str) -> PropGeom:
 
 # ------------------------------------------------------------------------ put_on
 
+# put_on_keys swaps the parent at (start + REACH_SECONDS) and, when the hand could not carry the
+# grip all the way, settles the prop onto the head PUT_ON_SETTLE_SECONDS later. apply_put_on's end
+# time is start + 2 * REACH_SECONDS, so the settle must finish within one more REACH_SECONDS.
+assert PUT_ON_SETTLE_SECONDS <= REACH_SECONDS, "put_on's end time would cut the settle short"
+
+
 def apply_put_on(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Wear a prop on ``target``'s head (default: who's own).
 
     From a hand: the hand carries it to the wearer's head socket and returns to rest. Straight
-    off the ground: the free hand reaches its grip first and takes it, then does the same.
+    off the ground: the free hand reaches its grip first and takes it, then does the same. When
+    the grip cannot reach the head exactly, the hand goes as far as it can and the prop settles
+    onto the head (body.put_on_keys); the end time covers that settle.
     """
     who, what = action.who, action.what
     world.copy().put_on(who, what, action.target)  # every world rule, no mutation
@@ -121,6 +130,8 @@ def apply_put_on(world: World, tracks: TrackSet, action: Action, t: float, actio
         assert hand is not None  # world.put_on checked it
         arm = _arm_of(hand)
         grip = grip_from_anchor(geom, world.props[what].world_pos)
+        # TODO(put_on off the floor): a prop on the floor with a low grip is below a standing
+        # hand's reach and fails here with OutOfReach; pick_up crouches for that, put_on does not.
         reach = solve_body_arm(me, arm, grip)
         t_take = t + REACH_SECONDS
         keys = _arm_keys(who, arm, t, _arm_now(tracks, who, arm, t)) + _arm_keys(who, arm, t_take, reach)
