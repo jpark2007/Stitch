@@ -9,10 +9,19 @@
       "marks": {},
       "start": {"sam": {"at": "garage", "facing": "right"}, "dad": {"at": "beside_bike", "facing": "left"}},
       "propStart": {"red_bike": {"at": "bike_spot", "state": "quiet"}},
-      "camera": [{"t": 0, "move": "wide"}, {"t": 5.5, "move": "dolly_to", "target": "red_bike", "dur": 1.5}],
+      "camera": [
+        {"t": 0, "move": "wide"},
+        {"t": 2.4, "move": "close_up", "target": "sam", "dur": 1.2},
+        {"t": 6.0, "move": "dolly_to", "target": "dad", "dur": 1.2},
+        {"t": 7.8, "move": "pan_to", "target": "red_bike", "dur": 1.5},
+        {"t": 10.0, "move": "pull_back", "dur": 1.2}
+      ],
       "actions": [
-        {"t": 0.5, "who": "sam", "do": "sit_on", "what": "red_bike", "id": "on_bike"},
-        {"t": 6.0, "who": "dad", "do": "kneel", "dur": 2.4, "id": "steady"}
+        {"t": 0.5, "who": "sam", "do": "get_in", "what": "red_bike", "socket": "driver", "id": "on_bike"},
+        {"t": 3.8, "who": "dad", "do": "walk_to", "to": "behind_bike", "id": "round_back"},
+        {"t": 6.4, "who": "dad", "do": "pose", "pose": "reach", "dur": 0.8, "id": "steady"},
+        {"t": 7.8, "who": "sam", "do": "drive_to", "what": "red_bike", "to": "street_end", "id": "ride"},
+        {"t": 7.8, "who": "dad", "do": "run_to", "to": "sidewalk", "id": "run_behind"}
       ],
       "narration": [
         {
@@ -31,26 +40,34 @@
         }
       ],
       "transition": "fold",
-      "pageText": "Spring 1997. A red bike with a silver bell, two sizes too big, and Dad holding the seat."
+      "pageText": "Spring 1997. A red bike two sizes too big, and Dad running behind, holding the seat."
     },
     {
       "id": "s2",
       "set": "maple_corner_1997",
-      "marks": {},
-      "start": {"sam": {"at": "corner", "in": "red_bike.seat", "facing": "left"}},
-      "propStart": {"red_bike": {"at": "corner", "state": "quiet"}},
+      "marks": {"chase_in": [0.0, 0.0]},
+      "start": {
+        "sam": {"at": "street_in", "in": "red_bike.driver", "facing": "right"},
+        "dad": {"at": "chase_in", "facing": "right"}
+      },
+      "propStart": {"red_bike": {"at": "street_in", "state": "quiet"}},
       "camera": [
         {"t": 0, "move": "wide"},
-        {"t": 4.5, "move": "close_up", "target": "sam", "dur": 1.2},
-        {"t": 8.0, "move": "pull_back", "dur": 1.5}
+        {"t": 2.0, "move": "dolly_to", "target": "dad", "dur": 1.2},
+        {"t": 4.2, "move": "close_up", "target": "sam", "dur": 1.2},
+        {"t": 8.5, "move": "pull_back", "dur": 1.5}
       ],
       "actions": [
-        {"t": 0.5, "who": "dad", "do": "enter", "from": "offstage_left", "to": "halfway", "id": "let_go"},
-        {"t": 4.0, "who": "sam", "do": "set_state", "what": "red_bike", "state": "ringing", "id": "bell"},
-        {"t": 4.2, "who": "dad", "do": "run_to", "to": "near_corner", "id": "run"},
-        {"t": 5.0, "who": "sam", "do": "wave", "target": "dad", "id": "wave"},
-        {"t": 6.6, "who": "sam", "do": "stand_up"},
-        {"t": 7.4, "who": "dad", "do": "hug", "target": "sam", "id": "hug"}
+        {"t": 0.3, "who": "sam", "do": "drive_to", "what": "red_bike", "to": "halfway", "id": "wobble"},
+        {"t": 0.3, "who": "dad", "do": "run_to", "to": "let_go", "id": "chase"},
+        {"t": 1.6, "who": "dad", "do": "pose", "pose": "arms_raised", "dur": 1.2, "id": "let_go"},
+        {"t": 2.2, "do": "set_state", "what": "red_bike", "state": "ringing", "id": "bell"},
+        {"t": 2.2, "who": "sam", "do": "drive_to", "what": "red_bike", "to": "corner", "id": "half_block"},
+        {"t": 3.4, "who": "dad", "do": "follow", "target": "sam", "id": "catch_up"},
+        {"t": 4.4, "do": "set_state", "what": "red_bike", "state": "quiet"},
+        {"t": 4.6, "who": "sam", "do": "get_out", "what": "red_bike", "id": "hop_off"},
+        {"t": 5.4, "who": "sam", "do": "wave", "target": "dad", "dur": 1.2, "id": "wave"},
+        {"t": 8.4, "who": "dad", "do": "hug", "target": "sam", "dur": 1.8, "id": "hug"}
       ],
       "narration": [
         {
@@ -62,24 +79,24 @@
         }
       ],
       "transition": "fold",
-      "pageText": "Half a block later, Sam was still going, ringing the bell all the way to the corner."
+      "pageText": "Dad let go. Sam didn't notice for half a block, and rang the bell all the way to the corner."
     }
   ],
   "narrations": {
     "sam": {
       "s1": [
         {
-          "t": 4.5,
+          "t": 5.6,
           "text": "I just didn't want to stop, because stopping meant falling.",
           "source": "telling:sam:s2",
-          "cue": "steady",
+          "cue": "ride",
           "cueWord": "stop"
         }
       ],
       "s2": [
-        {"t": 0, "text": "I noticed.", "source": "telling:sam:s1"},
+        {"t": 0, "text": "I noticed.", "source": "telling:sam:s1", "cue": "let_go", "cueWord": "noticed"},
         {
-          "t": 3.5,
+          "t": 2.0,
           "text": "I rang the bell the whole way to the corner so he would know I was fine.",
           "source": "telling:sam:s3",
           "cue": "bell",
@@ -89,6 +106,15 @@
     }
   },
   "interactions": [
+    {
+      "id": "ride_tab",
+      "kind": "pull_tab",
+      "label": "Pull to push Sam off down the street",
+      "shot": "s1",
+      "page": "stage",
+      "at": [0.2, 0.82],
+      "drives": {"type": "scrub", "from": 7.8, "to": 9.8, "targets": ["prop:red_bike", "puppet:sam", "puppet:dad"]}
+    },
     {
       "id": "bell_tab",
       "kind": "pull_tab",
@@ -111,10 +137,19 @@
   "explanations": [
     {
       "target": "puppet:dad",
-      "text": "David was thirty-five and had bought the bike a size up on purpose, so it would last."
+      "text": "David was thirty-five. He bought the bike a size up on purpose, then ran the whole street behind it."
     },
-    {"target": "puppet:sam", "text": "Sam was seven. He wore his cap backwards so it would not blow off."},
-    {"target": "prop:red_bike", "text": "Sam's first bike: red, with a silver bell, two sizes too big."},
-    {"target": "prop:sam_cap", "text": "Sam's teal baseball cap, his signature from first grade on."}
+    {
+      "target": "puppet:sam",
+      "text": "Sam was seven and could barely reach the pedals. He would not admit he was scared."
+    },
+    {
+      "target": "prop:red_bike",
+      "text": "Sam's first bike: red, with a silver bell, two sizes too big. He rode it until he really did grow into it."
+    },
+    {
+      "target": "prop:sam_cap",
+      "text": "Sam's teal baseball cap, worn backwards so it would not blow off. It became his signature."
+    }
   ]
 }
