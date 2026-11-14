@@ -12,7 +12,7 @@ import pytest
 import schemas
 from screenplay import body as B
 from screenplay import ik
-from screenplay.locate import make_locate
+from screenplay.locate import make_locate, puppet_socket_at
 from screenplay.motion import resolve_marks
 from screenplay.schema import Action, Shot
 from screenplay.state import StateError, World
@@ -180,6 +180,13 @@ def test_run_to_errors():
     fails(world, tracks, "seated", who="mom", do="run_to", to="curb")
 
 
+def test_walk_run_and_pose_need_the_puppet_on_stage():
+    world, tracks = scene()  # dad waits at offstage_left
+    for action in ({"do": "walk_to", "to": "curb"}, {"do": "run_to", "to": "curb"}, {"do": "pose", "pose": "wave"}):
+        e = fails(world, tracks, "offstage", who="dad", **action)
+        assert e.reason == "dad is offstage; use enter first"
+
+
 # ----------------------------------------------------------------------------- pose
 
 def test_pose_bow_head_reproduces_the_sample():
@@ -222,6 +229,47 @@ def test_pose_stand_keeps_a_held_prop_in_the_hold_pose():
     run(world, tracks, 1, who="mom", do="pose", pose="stand")
     assert keys(tracks, "puppet:mom", "head.rot")[-1] == (2.6, 0.0)
     assert keys(tracks, "puppet:mom", "arm_r.upper.rot") == [(0.0, 0.3)]
+
+
+def test_an_upper_body_pose_keeps_a_kneeling_puppet_down_and_stand_raises_it():
+    world, tracks = scene({"dad": {"at": "steps_foot", "facing": "right"}})
+    low = round(-0.24 * ik.scale("tall"), 3)
+    run(world, tracks, 0, who="dad", do="pose", pose="kneel")
+    run(world, tracks, 1, who="dad", do="pose", pose="wave")
+    assert world.people["dad"].pose == "kneel"  # wave moves only the arm: still down
+    assert keys(tracks, "puppet:dad", "root.position")[-1] == (1.6, [0.0, low, 0.5])
+    end = run(world, tracks, 2, who="dad", do="pose", pose="stand")
+    assert end == pytest.approx(3.6)
+    assert keys(tracks, "puppet:dad", "root.position")[-2:] == [(3.2, [0.0, low, 0.5]), (3.6, [0.0, 0.0, 0.5])]
+    assert keys(tracks, "puppet:dad", "leg_r.lower.rot")[-1] == (3.6, 0.0)
+    assert keys(tracks, "puppet:dad", "arm_r.upper.rot")[-1] == (3.6, 0.0)
+    assert world.people["dad"].pose == "stand"
+
+
+def test_walk_after_an_upper_body_pose_on_the_floor_stands_up_first():
+    world, tracks = scene({"dad": {"at": "steps_foot", "facing": "right"}})
+    low = round(-0.24 * ik.scale("tall"), 3)
+    run(world, tracks, 0, who="dad", do="pose", pose="sit")
+    run(world, tracks, 2, who="dad", do="pose", pose="bow_head")
+    assert world.people["dad"].pose == "sit"
+    run(world, tracks, 4, who="dad", do="walk_to", to="curb")
+    pos = keys(tracks, "puppet:dad", "root.position")
+    assert pos[-3:] == [(5.2, [0.0, low, 0.5]), (5.6, [0.0, 0.0, 0.5]), (round(5.6 + 0.8 / 0.35, 3), [0.8, 0.0, 0.5])]
+    assert keys(tracks, "puppet:dad", "leg_r.upper.rot")[1:4] == [(1.6, 1.5), (5.2, 1.5), (5.6, 0.0)]
+    assert world.people["dad"].pose == "stand"
+
+
+def test_an_upper_body_pose_keeps_a_seated_puppet_seated():
+    world, tracks = scene({"mom": {"at": "steps_foot", "in": "chair.seat"}}, {"chair": {"at": "steps_foot"}})
+    run(world, tracks, 0, who="mom", do="pose", pose="wave")
+    assert world.people["mom"].pose == "sit" and world.people["mom"].seat == ("chair", "seat")
+
+
+def test_a_leg_pose_replaces_a_floor_posture():
+    world, tracks = scene({"dad": {"at": "steps_foot", "facing": "right"}})
+    run(world, tracks, 0, who="dad", do="pose", pose="sit")
+    run(world, tracks, 1, who="dad", do="pose", pose="kneel")
+    assert world.people["dad"].pose == "kneel"
 
 
 def test_pose_errors():
@@ -287,6 +335,90 @@ def test_pick_up_uses_the_free_hand():
     assert keys(tracks, "puppet:dad", "arm_l.upper.rot")
 
 
+def grip_of(world, what):
+    return B.grip_from_anchor(B.PropGeom.from_prop(world.catalog[what]), world.props[what].world_pos)
+
+
+def hand_at(world, tracks, who, t, arm_socket="hand_r"):
+    x, y, _ = puppet_socket_at(world, tracks, who, arm_socket, t)
+    return x, y
+
+
+def test_pick_up_from_the_floor_kneels_and_bends_to_the_grip():
+    world, tracks = scene({"mom": {"at": "steps_foot", "facing": "right"}})
+    world._to_ground("cup", (0.08, 0.0, 0.5))  # on the floor just in front of her feet
+    grip = grip_of(world, "cup")
+    assert not ik.can_reach("arm_r", grip, (0.0, 0.0), 1, "average")  # a standing arm is too short
+    end = run(world, tracks, 0, who="mom", do="pick_up", what="cup")
+    t_down, t_grab, t_up = 1.6, 2.0, 2.4
+    assert end == pytest.approx(t_up)
+    low = round(-0.24 * ik.scale("average"), 3)
+    assert keys(tracks, "puppet:mom", "root.position") == [
+        (1.2, [0.0, 0.0, 0.5]), (t_down, [0.0, low, 0.5]), (t_grab, [0.0, low, 0.5]), (t_up, [0.0, 0.0, 0.5]),
+    ]
+    torso = keys(tracks, "puppet:mom", "torso.rot")
+    assert [k[0] for k in torso] == [1.2, t_down, t_grab, t_up]
+    assert torso[0][1] == 0.0 and torso[-1][1] == 0.0 and torso[1][1] < 0  # bends forward, then back up
+    assert keys(tracks, "puppet:mom", "leg_r.lower.rot") == [(1.2, 0.0), (t_down, -1.5), (t_grab, -1.5), (t_up, 0.0)]
+    assert keys(tracks, "prop:cup", "parent") == [(t_grab, "puppet:mom.hand_r")]
+    assert hand_at(world, tracks, "mom", t_grab) == pytest.approx(grip, abs=2e-3)  # the hand is on the grip
+    assert keys(tracks, "puppet:mom", "arm_r.upper.rot")[-1] == (t_up, 0.3)  # then into the hold pose
+    assert world.holder("cup") == ("mom", "hand_r")
+    assert world.people["mom"].pose == "stand"
+
+
+def test_pick_up_just_below_reach_only_stoops():
+    world, tracks = scene({"dad": {"at": "steps_foot", "facing": "right"}})
+    shoulder = ik.shoulder_world("arm_r", (0.0, 0.0), 1, "tall")
+    reach = ik.arm_reach("tall")
+    geom = B.PropGeom.from_prop(world.catalog["cup"])
+    grip = (shoulder[0] + 0.02, shoulder[1] - reach - 0.01)
+    world._to_ground("cup", (*B.anchor_from_grip(geom, grip), 0.5))
+    run(world, tracks, 0, who="dad", do="pick_up", what="cup")
+    assert keys(tracks, "puppet:dad", "root.position") == []  # no kneel
+    bend = keys(tracks, "puppet:dad", "torso.rot")[1][1]
+    assert -0.5 < bend < 0
+    assert hand_at(world, tracks, "dad", 2.0) == pytest.approx(grip, abs=2e-3)
+
+
+def test_pick_up_from_the_floor_while_kneeling_only_bends():
+    world, tracks = scene({"mom": {"at": "steps_foot", "facing": "right", "pose": "kneel"}})
+    low = round(-0.24 * ik.scale("average"), 3)
+    tracks.add("puppet:mom", "root.position", 0.0, [0.0, low, 0.5])  # as the start keys put it
+    world._to_ground("cup", (0.1, 0.0, 0.5))
+    grip = grip_of(world, "cup")
+    end = run(world, tracks, 0, who="mom", do="pick_up", what="cup")
+    assert end == pytest.approx(2.4)
+    assert keys(tracks, "puppet:mom", "root.position") == [(0.0, [0.0, low, 0.5])]  # stays down
+    assert keys(tracks, "puppet:mom", "leg_r.lower.rot") == []
+    assert hand_at(world, tracks, "mom", 2.0) == pytest.approx(grip, abs=2e-3)
+    assert world.people["mom"].pose == "kneel"
+
+
+def test_pick_up_from_the_floor_after_the_auto_walk():
+    world, tracks = scene({"kid": {"at": "curb", "facing": "left"}})
+    world._to_ground("cup", (0.1, 0.0, 0.5))
+    grip = grip_of(world, "cup")
+    end = run(world, tracks, 0, who="kid", do="pick_up", what="cup")
+    stop = grip[0] + 0.6 * ik.arm_reach("small")
+    arrive = 1.2 + (0.8 - stop) / 0.35
+    pos = keys(tracks, "puppet:kid", "root.position")
+    assert pos[1] == (pytest.approx(arrive, abs=1e-3), [round(stop, 3), 0.0, 0.5])
+    assert pos[-1] == (pytest.approx(arrive + 1.2, abs=1e-3), [round(stop, 3), 0.0, 0.5])
+    assert end == pytest.approx(arrive + 1.2)
+    t_grab = round(arrive + 0.8, 3)
+    assert keys(tracks, "prop:cup", "parent") == [(t_grab, "puppet:kid.hand_r")]
+    assert hand_at(world, tracks, "kid", t_grab) == pytest.approx(grip, abs=2e-3)
+    assert world.people["kid"].pos == pytest.approx((stop, 0.0, 0.5))
+
+
+def test_pick_up_below_the_floor_is_out_of_reach_even_crouching():
+    world, tracks = scene({"mom": {"at": "steps_foot", "facing": "right"}})
+    world._to_ground("cup", (0.05, -1.0, 0.5))
+    e = fails(world, tracks, "out_of_reach", who="mom", do="pick_up", what="cup")
+    assert e.who == "mom" and e.distance > e.reach
+
+
 def test_pick_up_errors():
     world, tracks = scene({"dad": {"at": "steps_foot"}, "mom": {"at": "steps_top", "holding": "books"}})
     e = fails(world, tracks, "already_held", who="dad", do="pick_up", what="books")
@@ -326,7 +458,7 @@ def test_hold_errors():
     e = fails(world, tracks, "not_holding", who="dad", do="hold", what="books")
     assert e.reason == "mom is holding it"
     e = fails(world, tracks, "not_holding", who="dad", do="hold", what="cup")
-    assert e.reason == "nobody is holding it"
+    assert e.reason == "it is not on stage"
 
 
 # ----------------------------------------------------------------------------- drop

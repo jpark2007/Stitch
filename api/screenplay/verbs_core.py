@@ -15,6 +15,7 @@ Handler contract (shared with the other ``verbs_*`` modules):
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 from screenplay import body as B
@@ -24,6 +25,7 @@ from screenplay.locate import (
     arm_at,
     arm_of_hand,
     body_at,
+    bone_at,
     bones_at,
     held_arm_bones,
     mark_of,
@@ -38,6 +40,19 @@ Handler = Callable[[World, TrackSet, Action, float, float, Locate], float]
 
 AUTO_WALK_REACH = 0.6  # pick_up walks to this fraction of the arm's reach short of the grip
 POSES: dict[str, dict] = ik.POSES["poses"]
+
+# pick_up of a grip below the shoulder that a standing arm cannot reach (a prop on the floor):
+# the puppet bends forward at the torso, kneeling first if a bend alone is not enough.
+CROUCH_BEND_STEP = 0.05  # radians between the torso bends tried
+CROUCH_MAX_BEND = 1.2    # deepest forward bend (applied as a negative torso rotation)
+CROUCH_COMFORT = 0.95    # prefer a bend that leaves the arm at most this fraction of full stretch
+CROUCH_KNEEL_COST = 0.5  # kneeling counts as this much extra bend when choosing how to get down
+
+
+def _changes_legs(pose: str) -> bool:
+    """True when a library pose moves the legs or the root (sit, kneel), so it ends a floor posture."""
+    values = POSES[pose]
+    return "rootOffset" in values or any(b.startswith("leg_") for b in values)
 
 
 # ------------------------------------------------------------------------- helpers
@@ -66,6 +81,12 @@ def _not_seated(world: World, who: str) -> None:
     seat = world.people[who].seat
     if seat is not None:
         raise StateError("seated", f"{who} is seated in {seat[0]}.{seat[1]}")
+
+
+def _on_stage(world: World, who: str) -> None:
+    """walk_to, run_to and pose need the puppet on stage; ``enter`` brings it on."""
+    if not world.on_stage(who):
+        raise StateError("offstage", f"{who} is offstage; use enter first")
 
 
 def _sign(v: float) -> int:
@@ -135,6 +156,7 @@ def apply_enter(world: World, tracks: TrackSet, action: Action, t: float, action
 def _locomote(world: World, tracks: TrackSet, action: Action, t: float, locate: Locate, gait: str) -> float:
     who = _who(world, action)
     dest = mark_of(locate, _require(action.to, "to", action), t)
+    _on_stage(world, who)
     _not_seated(world, who)
     keys, t1, facing = _travel_keys(world, tracks, who, t, dest, gait)
     world.move(who, dest, facing)
@@ -163,6 +185,7 @@ def apply_pose(world: World, tracks: TrackSet, action: Action, t: float, action_
     dur = action.dur
     if dur is not None and dur <= 0:
         raise StateError("bad_dur", f"dur must be positive, not {fmt_t(dur)}")
+    _on_stage(world, who)
     p = world.people[who]
     if pose in (*SEATED_POSES, "stand"):
         _not_seated(world, who)
@@ -188,7 +211,11 @@ def apply_pose(world: World, tracks: TrackSet, action: Action, t: float, action_
         keys = B.pose_keys(who, t, current, pose)
 
     if dur is None:
-        world.set_pose(who, pose)
+        # An upper-body pose (wave, bow_head, ...) does not move the legs or the root, so a
+        # puppet sitting or kneeling stays down: the world keeps its floor posture, and a
+        # later stand or walk gets it up first.
+        if not (p.pose in SEATED_POSES and pose != "stand" and not _changes_legs(pose)):
+            world.set_pose(who, pose)
         end = t + B.POSE_SECONDS
     else:  # the pose is held for dur, then the puppet goes back to what it was doing
         keys += _blend_back(keys, t, t + dur)
@@ -201,7 +228,10 @@ def apply_pose(world: World, tracks: TrackSet, action: Action, t: float, action_
 
 def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:
     """Reach the prop's grip and take it into the free hand (hand_r first), then raise it into
-    the hold pose. Out of reach: walk toward it first, to AUTO_WALK_REACH of the arm's reach."""
+    the hold pose. Out of reach: walk toward it first, to AUTO_WALK_REACH of the arm's reach.
+    A grip still too low for a standing arm (a prop on the floor) is reached by bending forward,
+    kneeling first if needed, and the puppet comes back up holding it (see _crouch_solution).
+    A puppet already sitting or kneeling only bends, and stays down."""
     who = _who(world, action)
     what = _what(world, action)
     hand = world.copy().pick_up(who, what)  # validation only: the real world is untouched
@@ -234,7 +264,17 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
             current = (0.0, 0.0)  # the walk cycle ends with the free arm at rest
     if walk_to is None and facing != p.facing:
         keys += [(f"puppet:{who}", "root.facing", t, facing)]
-    keys += B.pick_up_keys(ik.Body(who, ground, facing, p.build), t_reach, current, geom, anchor, arm)
+    body_now = ik.Body(who, ground, facing, p.build)
+    if ik.can_reach(arm, grip, ground, facing, p.build) or grip[1] >= ik.shoulder_world(arm, ground, facing, p.build)[1]:
+        keys += B.pick_up_keys(body_now, t_reach, current, geom, anchor, arm)
+        end = t_reach + 2 * B.REACH_SECONDS
+    else:  # too low for a standing arm: bend down (kneeling if needed) to the grip
+        on_floor = walk_to is None and (p.seat is not None or p.pose in SEATED_POSES)
+        z = here[2] if walk_to is None else walk_to[2]
+        crouch, end = _crouch_pick_up_keys(
+            tracks, keys, body_now, t_reach, current, what, grip, arm, z, can_kneel=not on_floor
+        )
+        keys += crouch
 
     if walk_to is not None:
         world.move(who, walk_to, facing)
@@ -242,7 +282,119 @@ def apply_pick_up(world: World, tracks: TrackSet, action: Action, t: float, acti
         world.set_facing(who, facing)
     world.pick_up(who, what, hand)
     tracks.extend(keys)
-    return t_reach + 2 * B.REACH_SECONDS
+    return end
+
+
+def _kneeling_ground(body: ik.Body) -> tuple[float, float]:
+    """The root of a puppet that kneels where ``body`` stands (body.kneel_keys' arithmetic)."""
+    s = ik.scale(body.build)
+    off = POSES["kneel"]["rootOffset"]
+    return (body.ground[0] + body.facing * off[0] * s, body.ground[1] + off[1] * s)
+
+
+def _bent_shoulder(arm: str, ground: tuple[float, float], facing: int, build: str, bend: float) -> tuple[float, float]:
+    """World position of an arm's shoulder pivot with the torso rotated by ``bend``."""
+    s = ik.scale(build)
+    (px, py), _ = ik.bone_frame(ik.arm_bones(arm)[0], {"torso": bend})
+    return (ground[0] + facing * px * s, ground[1] + (py + ik.RIG["hipHeight"]) * s)
+
+
+def _solve_bent_arm(
+    arm: str, target: tuple[float, float], ground: tuple[float, float], facing: int, build: str, bend: float
+) -> tuple[float, tuple[float, float] | None]:
+    """Two-bone IK (ik.solve_arm's formula) from a bent torso. The upper arm's rotation is
+    relative to the torso, so the bend is taken off it. Returns (shoulder-to-target distance in
+    rig units, (upper, lower) or None when out of reach)."""
+    s = ik.scale(build)
+    sh = _bent_shoulder(arm, ground, facing, build, bend)
+    vx, vy = facing * (target[0] - sh[0]) / s + 0.0, (target[1] - sh[1]) / s
+    length = ik.RIG["bones"][ik.arm_bones(arm)[0]]["length"]
+    dist = math.hypot(vx, vy)
+    if dist > 2 * length + ik.REACH_EPS:
+        return dist, None
+    a = math.acos(min(1.0, dist / (2 * length)))
+    return dist, (math.atan2(vx, -vy) - a - bend, 2 * a)
+
+
+def _crouch_solution(
+    body: ik.Body, arm: str, grip: tuple[float, float], can_kneel: bool
+) -> tuple[bool, float, tuple[float, float]]:
+    """The gentlest way down to a low grip: (kneel, torso bend, arm angles).
+
+    Candidates are a bend where it stands or a bend while kneeling, ranked by effort: the bend
+    in radians, plus CROUCH_KNEEL_COST for kneeling (so a slight stoop beats kneeling, and
+    kneeling beats a deep stoop). The least effort that leaves the arm within CROUCH_COMFORT of
+    full stretch wins; failing that, the least effort that reaches at all. Raises ik.OutOfReach
+    with the closest miss when nothing reaches."""
+    s = ik.scale(body.build)
+    length = ik.RIG["bones"][ik.arm_bones(arm)[0]]["length"]
+    postures = [(False, body.ground)]
+    if can_kneel:
+        postures.append((True, _kneeling_ground(body)))
+    steps = int(round(CROUCH_MAX_BEND / CROUCH_BEND_STEP))
+    bends = [-i * CROUCH_BEND_STEP for i in range(steps + 1)]
+    tries: list[tuple[float, bool, float, tuple[float, float] | None]] = []
+    for kneel, ground in postures:
+        for bend in bends:
+            dist, angles = _solve_bent_arm(arm, grip, ground, body.facing, body.build, bend)
+            tries.append((dist, kneel, bend, angles))
+    tries.sort(key=lambda tr: (-tr[2] + (CROUCH_KNEEL_COST if tr[1] else 0.0), tr[1]))
+    for limit in (CROUCH_COMFORT * 2 * length, math.inf):
+        for dist, kneel, bend, angles in tries:
+            if angles is not None and dist <= limit:
+                return kneel, bend, angles
+    closest = min(dist for dist, *_ in tries)
+    raise ik.OutOfReach(arm, closest * s, 2 * length * s, body.id)
+
+
+def _crouch_pick_up_keys(
+    tracks: TrackSet,
+    before: list[Key],
+    body: ik.Body,
+    t: float,
+    current_arm: tuple[float, float],
+    what: str,
+    grip: tuple[float, float],
+    arm: str,
+    z: float,
+    *,
+    can_kneel: bool,
+) -> tuple[list[Key], float]:
+    """pick_up of a low grip: bend (and kneel, if needed) over POSE_SECONDS, reach the grip over
+    REACH_SECONDS and take the prop, then come back up over POSE_SECONDS with the prop raised
+    into the hold pose. ``before`` are keys this action already emits (an auto-walk), whose last
+    values are the puppet's bones at ``t``. Returns (keys, end)."""
+    kneel, bend, reach = _crouch_solution(body, arm, grip, can_kneel)
+    who = body.id
+    target = f"puppet:{who}"
+    emitted = B.last_values(before)
+
+    def now(bone: str) -> float:
+        v = emitted.get((target, f"{bone}.rot"))
+        return float(v) if v is not None else bone_at(tracks, who, bone, t)
+
+    t_down = t + B.POSE_SECONDS
+    t_grab = t_down + B.REACH_SECONDS
+    t_up = t_grab + B.POSE_SECONDS
+    upper, lower = ik.arm_bones(arm)
+    torso = now("torso")
+    keys: list[Key] = [
+        (target, "torso.rot", t, torso), (target, "torso.rot", t_down, bend),
+        (target, "torso.rot", t_grab, bend), (target, "torso.rot", t_up, torso),
+    ]
+    for bone, values in ((upper, (current_arm[0], reach[0], B.hold_pose(arm)[0])),
+                         (lower, (current_arm[1], reach[1], B.hold_pose(arm)[1]))):
+        keys += [(target, f"{bone}.rot", t, float(values[0])), (target, f"{bone}.rot", t_down, float(values[0])),
+                 (target, f"{bone}.rot", t_grab, float(values[1])), (target, f"{bone}.rot", t_up, float(values[2]))]
+    if kneel:  # down over POSE_SECONDS, held kneeling while reaching, then up again
+        legs = {b: now(b) for b in POSES["kneel"] if b.startswith("leg_")}
+        keys += B.kneel_keys(body, t, legs, z=z)
+        low = ik.Body(who, _kneeling_ground(body), body.facing, body.build)
+        kneeling = {b: float(v) for b, v in POSES["kneel"].items() if b.startswith("leg_")}
+        keys += B.stand_keys(low, t_grab, kneeling, body.ground, z=z)
+    keys += [(f"prop:{what}", "parent", t_grab, f"{target}.{ik.arm_socket(arm)}"),
+             (f"prop:{what}", "position", t_grab, [0.0, 0.0, 0.0])]
+    return keys, t_up
 
 
 def apply_hold(world: World, tracks: TrackSet, action: Action, t: float, action_start: float, locate: Locate) -> float:

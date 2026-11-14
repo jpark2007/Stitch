@@ -197,7 +197,7 @@ def test_starting_in_a_seat_that_is_not_on_stage():
     data["shots"][0]["start"]["kid"] = {"at": "curb", "in": "chair.seat"}
     res = run(data)
     assert [(e.code, e.message, e.shot) for e in res.errors] == [
-        ("bad_start", "shot s1: kid starts in chair.seat, but chair is not on stage", "s1"),
+        ("not_on_stage", "shot s1: chair is not on stage in shot s1; place it with propStart", "s1"),
     ]
 
 
@@ -449,16 +449,41 @@ def test_core_verbs_compile(verb):
     assert res.ok, messages(res)
 
 
+@pytest.mark.parametrize("taker", ["mom", "dad", "kid"])
+def test_a_prop_dropped_on_the_floor_can_be_picked_up_again(taker):
+    data = {
+        "memoryId": "m", "cast": ["dad", "mom", "kid"], "props": ["hymn_books"],
+        "shots": [{"id": "s1", "set": "church_steps_1988",
+                   "start": {"mom": {"at": "steps_foot", "holding": "hymn_books", "facing": "right"},
+                             "dad": {"at": "curb", "facing": "left"}, "kid": {"at": "steps_left"}},
+                   "actions": [{"t": 0, "who": "mom", "do": "drop", "what": "hymn_books"},
+                               {"t": 2, "who": taker, "do": "pick_up", "what": "hymn_books"}]}],
+    }
+    res = run(data)
+    assert res.ok, messages(res)
+    assert track(res, "prop:hymn_books", "parent")[-1][1] == f"puppet:{taker}.hand_r"
+
+
+def test_walking_a_puppet_that_never_entered_is_an_error():
+    data = sample()
+    data["cast"].append("kid")
+    data["shots"][0]["actions"].append({"t": 0, "who": "kid", "do": "walk_to", "to": "curb"})
+    res = run(data)
+    assert [(e.code, e.message) for e in res.errors] == [
+        ("offstage", "shot s1, t=0: kid cannot walk_to; kid is offstage; use enter first"),
+    ]
+
+
 def test_handlers_are_discovered_from_verbs_modules(monkeypatch):
     import pkgutil
     import sys
     import types
 
-    def apply_wave(world, tracks, action, t, action_start, locate):
+    def apply_zz(world, tracks, action, t, action_start, locate):
         return t + 1.0
 
     fake = types.ModuleType("screenplay.verbs_zz_fake")
-    fake.HANDLERS = {"wave": apply_wave}
+    fake.HANDLERS = {"zz_verb": apply_zz}
     monkeypatch.setitem(sys.modules, "screenplay.verbs_zz_fake", fake)
     real_iter = pkgutil.iter_modules
 
@@ -467,13 +492,44 @@ def test_handlers_are_discovered_from_verbs_modules(monkeypatch):
         yield pkgutil.ModuleInfo(None, "verbs_zz_fake", False)
 
     monkeypatch.setattr(pkgutil, "iter_modules", iter_modules)
-    found = C._discover_handlers()
-    assert found["wave"] is apply_wave
+    found, problems = C._discover_handlers()
+    assert problems == []
+    assert found["zz_verb"] is apply_zz
     assert found["walk_to"] is C.verbs_core.apply_walk_to
 
-    fake.HANDLERS = {"walk_to": apply_wave}
-    with pytest.raises(RuntimeError, match="walk_to"):
-        C._discover_handlers()
+    # A verb two modules claim keeps its first owner and is reported, without raising.
+    fake.HANDLERS = {"walk_to": apply_zz}
+    found, problems = C._discover_handlers()
+    assert found["walk_to"] is C.verbs_core.apply_walk_to
+    assert problems == ["verb 'walk_to' has handlers in both verbs_core and verbs_zz_fake; using verbs_core"]
+
+
+def test_a_verbs_module_that_fails_to_import_is_skipped_not_fatal(monkeypatch):
+    import importlib
+    import pkgutil
+
+    real_iter, real_import = pkgutil.iter_modules, importlib.import_module
+
+    def iter_modules(path=None, prefix=""):
+        yield from real_iter(path, prefix)
+        yield pkgutil.ModuleInfo(None, "verbs_zz_broken", False)
+
+    def import_module(name, package=None):
+        if name == "screenplay.verbs_zz_broken":
+            raise SyntaxError("invalid syntax")
+        return real_import(name, package)
+
+    monkeypatch.setattr(pkgutil, "iter_modules", iter_modules)
+    monkeypatch.setattr(importlib, "import_module", import_module)
+    found, problems = C._discover_handlers()
+    assert problems == ["screenplay.verbs_zz_broken failed to import: SyntaxError: invalid syntax"]
+    assert found["walk_to"] is C.verbs_core.apply_walk_to
+
+
+def test_the_real_verb_modules_have_no_discovery_problems():
+    assert C.HANDLER_PROBLEMS == []
+    assert set(C.verbs_core.HANDLERS) <= set(C.HANDLERS)
+    assert set(C.HANDLERS) <= set(VOCABULARY["actions"])
 
 
 def test_a_discovered_handler_is_used_and_occupies_its_puppet(monkeypatch):

@@ -17,12 +17,15 @@ It never raises for a bad screenplay, and the same input gives byte-identical JS
 
 Verb handlers come from every ``screenplay.verbs_*`` module's ``HANDLERS`` dict (verbs_core
 first, then the rest by module name), so a new verb module only has to exist to be used.
-A verb with no handler is reported as ``unsupported_verb``.
+A verb with no handler is reported as ``unsupported_verb``. Discovery never raises: a module
+that fails to import, or a verb two modules both claim, is logged and listed in
+``HANDLER_PROBLEMS`` (the tests require it to be empty).
 """
 
 from __future__ import annotations
 
 import importlib
+import logging
 import pkgutil
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -49,6 +52,7 @@ from screenplay.tracks import Key, TrackSet, round_value
 from screenplay.validate import validate
 
 Vec3 = tuple[float, float, float]
+log = logging.getLogger(__name__)
 
 # An -ing word for every verb, for "dad is still walking until t=3.2".
 ACTIVITY: dict[str, str] = {
@@ -87,24 +91,40 @@ ACTIVITY: dict[str, str] = {
 }
 
 
-def _discover_handlers() -> dict[str, verbs_core.Handler]:
-    """verbs_core.HANDLERS, then every other ``screenplay.verbs_*`` module's, by module name."""
+def _discover_handlers() -> tuple[dict[str, verbs_core.Handler], list[str]]:
+    """verbs_core.HANDLERS, then every other ``screenplay.verbs_*`` module's, by module name.
+
+    Never raises, so a broken verb module cannot stop the agent's compile tool from loading:
+    a module that fails to import is skipped (its verbs then compile as ``unsupported_verb``),
+    and a verb claimed by two modules keeps the first owner. Each problem is logged and
+    returned; tests/screenplay/test_compiler.py asserts there are none in the real package.
+    """
     handlers: dict[str, verbs_core.Handler] = dict(verbs_core.HANDLERS)
     owner = dict.fromkeys(handlers, "verbs_core")
+    problems: list[str] = []
     names = sorted(m.name for m in pkgutil.iter_modules(_pkg.__path__) if m.name.startswith("verbs_"))
     for name in names:
         if name == "verbs_core":
             continue
-        module = importlib.import_module(f"screenplay.{name}")
+        try:
+            module = importlib.import_module(f"screenplay.{name}")
+        except Exception as e:  # noqa: BLE001 - any import failure in another stream's module
+            problems.append(f"screenplay.{name} failed to import: {type(e).__name__}: {e}")
+            continue
         for verb, fn in getattr(module, "HANDLERS", {}).items():
             if verb in handlers:
-                raise RuntimeError(f"verb {verb!r} has handlers in both {owner[verb]} and {name}")
+                problems.append(f"verb {verb!r} has handlers in both {owner[verb]} and {name}; using {owner[verb]}")
+                continue
             handlers[verb] = fn
             owner[verb] = name
-    return handlers
+    for problem in problems:
+        log.warning("screenplay.compiler: %s", problem)
+    return handlers, problems
 
 
-HANDLERS: dict[str, verbs_core.Handler] = _discover_handlers()
+HANDLERS: dict[str, verbs_core.Handler]
+HANDLER_PROBLEMS: list[str]
+HANDLERS, HANDLER_PROBLEMS = _discover_handlers()
 
 _POSES: dict[str, dict] = ik.POSES["poses"]
 
