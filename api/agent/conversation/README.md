@@ -55,7 +55,7 @@ callbacks count nested/subagent and summarization calls too. Consent is checked
 before each model call and again before returning output. The model receives no
 tools for changing family/person/principal/run IDs or for direct outbound delivery.
 
-`worker_managed=True` exposes only the two open-question tools. The worker saves
+`worker_managed=True` exposes only the read-only `get_open_questions` tool. The worker saves
 raw words/year, and handles SUBMIT/KEEP/YES/NO and actual studio events itself.
 `await ainvoke(text, timeout=20)` supports cancellation and supplies the persisted
 draft as context; its pending worker reservation remains held if an outcome is
@@ -73,8 +73,15 @@ draft appends are intentionally not a replacement for the durable inbox worker.
 
 ## Recovery boundary
 
-There is currently one draft/run per family/contact. New-story/reset lifecycle is
-future work. A durable compare-and-set prevents concurrent duplicate submissions.
+There is one active draft/run per family/contact. Trusted worker
+`start_new_story(worker_token)` requires an actual persisted terminal studio event,
+fully drained outbox/relay, no pending/uncertain answer or submission, and the
+current durable worker reservation. It archives the last ten run summaries, clears
+the completed draft/run, and increments the thread generation. It never resets
+the lifetime model-call budget and is not exposed to the model. Typed NEW and the
+eligible manual scheduler use the same gate. Question selection is immutable within
+a draft, preserving a scheduled second-telling target. A durable compare-and-set
+prevents concurrent duplicate submissions.
 If studio start or saving its returned ID fails, the state is `submission_uncertain`
 (or remains `submitting` if the database is unavailable). **Do not automatically
 retry or clear that reservation:** an operator must reconcile whether a run was
@@ -82,8 +89,9 @@ created. A failed answer similarly records an uncertain `sending` state with no
 pending answer, preventing blind repeat side effects. This favors avoiding
 duplicate stories over claiming exactly-once recovery across independent systems.
 
-No audio/channel schema fields, question-bank selection, settings UI,
-scheduling, or cloud delivery are added by this slice. Jonah's hooks and auth
+No shared audio/channel schema fields or settings UI are added here. The separately
+flagged manual worker scheduler selects public neutral or person-bound open questions
+and sends through its signed outbox. Jonah's hooks and auth
 review remain separate prerequisites for mounting Channels in the main app.
 
 ## Tests

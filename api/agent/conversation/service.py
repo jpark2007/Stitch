@@ -47,7 +47,9 @@ class ConversationService:
 
     @property
     def thread_id(self) -> str:
-        return "channels:" + conversations.conversation_key(self.context.family_id, self.context.contact_id)
+        base = "channels:" + conversations.conversation_key(self.context.family_id, self.context.contact_id)
+        generation = self._state().get("generation", 0)
+        return base if generation == 0 else f"{base}:{generation}"
 
     def _state(self) -> dict:
         c = self.context
@@ -84,6 +86,8 @@ class ConversationService:
 
     def select_question(self, question_id: str) -> dict:
         row = self._state()
+        if row["draft"].get("questionId") not in {None, question_id}:
+            raise ValueError("This draft is already bound to another question")
         question = self._question(question_id)
         draft = dict(row["draft"], questionId=question.id)
         self._update(row, {"draft": draft}, status="draft")
@@ -181,6 +185,7 @@ class ConversationService:
             raise ValueError("No submitted run")
         stream = await asyncio.to_thread(self.runs.stream_run, self.context.family_id, row["runId"])
         events, cursor, pending = [], row["cursor"], row.get("pending")
+        terminal = row.get("terminalEvent")
         index, byte_count = 0, 0
         try:
             async with asyncio.timeout(timeout):
@@ -201,6 +206,8 @@ class ConversationService:
                                    "data": data}
                     if name in {"done", "error"}:
                         pending = None
+                        terminal = {"event": name, "memoryId": data.get("memoryId"),
+                                    "endedAt": datetime.now(timezone.utc)}
                     if len(events) >= max_events or name in {"done", "error"}:
                         break
         except TimeoutError:
@@ -208,7 +215,7 @@ class ConversationService:
         finally:
             await asyncio.wait_for(stream.aclose(), timeout=1.0)
         await asyncio.to_thread(self._state)  # A STOP during polling prevents disclosure.
-        fields = {"cursor": cursor, "pending": pending}
+        fields = {"cursor": cursor, "pending": pending, "terminalEvent": terminal}
         if durable:
             fields["relayBuffer"] = events
         await asyncio.to_thread(self._update, row, fields)
@@ -220,6 +227,34 @@ class ConversationService:
         if row.get("relayBuffer", []) != events:
             raise RuntimeError("Relay batch changed")
         self._update(row, {"relayBuffer": []})
+
+    def can_start_new_story(self, worker: dict) -> bool:
+        row = self._state()
+        return (worker.get("familyId") == self.context.family_id
+            and worker.get("contactId") == self.context.contact_id
+            and worker.get("status") == "running" and worker.get("runFinished") is True
+            and not worker.get("pollRun")
+            and all(x["status"] in {"sent", "cancelled"} for x in worker.get("outbox", []))
+            and row["status"] == "submitted" and bool(row.get("runId"))
+            and (row.get("terminalEvent") or {}).get("event") in {"done", "error"}
+            and not row.get("relayBuffer") and not row.get("pending")
+            and row.get("answerStatus") != "sending")
+
+    def start_new_story(self, worker_token: str) -> dict:
+        """Trusted worker only; never a model tool or a reset of uncertain work."""
+        _worker_only()
+        c = self.context
+        worker = conversations.locked_worker(self.db, c.family_id, c.contact_id, worker_token)
+        if not self.can_start_new_story(worker):
+            raise ValueError("Finish the current studio run and settle its replies before NEW")
+        row = self._state()
+        archive = [*row.get("archive", []), {"runId": row["runId"], **row["terminalEvent"]}][-10:]
+        generation = row.get("generation", 0) + 1
+        self._update(row, {"status": "draft", "draft": {"text": ""}, "runId": None, "cursor": 0,
+            "pending": None, "relayBuffer": [], "terminalEvent": None, "answerStatus": None,
+            "generation": generation, "archive": archive}, status="submitted")
+        # modelCalls is deliberately lifetime-scoped and never reset here.
+        return {"started": True, "generation": generation}
 
     def answer_run_question(self, kind: str, text: str | None = None,
                             approve: bool | None = None) -> dict:
