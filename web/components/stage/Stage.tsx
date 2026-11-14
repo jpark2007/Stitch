@@ -19,7 +19,7 @@
 import { PerformanceMonitor } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Object3D, PlaneGeometry } from "three";
+import { CanvasTexture, Object3D, PlaneGeometry, SRGBColorSpace } from "three";
 import { useCardBoxMaterials, usePaperMaterial, useWoodMaterial } from "@/components/paper/usePaper";
 import { createCardEdgeMaterial } from "@/components/paper/materials";
 import { StageClock, StaticShadows } from "./clock";
@@ -31,45 +31,51 @@ export const STAGE_COLORS = {
   pageEdge: "#e6dac4",
   cover: "#6f3a2a",
   backdrop: "#24180f",
+  fog: "#2c1e14",
 } as const;
 
 /* ------------------------------------------------------------------------ */
 /* Lights                                                                    */
 /* ------------------------------------------------------------------------ */
 
-/** Warm key from the reader's upper left (soft shadows fall back into the
- *  set, so each layer shades the one behind), a cool-neutral fill from the
- *  right, and a sky/bounce hemisphere. */
+/** A reading lamp up and to the reader's left (a soft-edged warm pool, so
+ *  the set glows and the book falls off into the room), a cool-neutral fill
+ *  from the right, a warm rim from behind that makes cut card edges glow, and
+ *  a sky/bounce hemisphere. The lamp is a spotlight so tall pieces throw
+ *  crisp, readable silhouettes (the spire) onto the layers behind them. */
 export function StageLights({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize }) {
-  const r = Math.max(size[0], size[1]) * 0.85;
-  // Aim the key at the stage's own origin, so it still lands on the set when
+  const s = Math.max(size[0] / 2.4, size[1] / 3.2);
+  // Aim at the stage's own origin, so the lights still land on the set when
   // the stage is mounted inside a moved group (the book's right page).
-  const target = useMemo(() => new Object3D(), []);
+  const target = useMemo(() => {
+    const o = new Object3D();
+    o.position.set(0, 0.35 * s, -0.2 * s);
+    return o;
+  }, [s]);
   return (
     <>
       <primitive object={target} />
-      <hemisphereLight args={["#fff2df", "#b08866", 0.72]} />
-      <directionalLight
+      <hemisphereLight args={["#fff0da", "#a07a5a", 0.62]} />
+      <spotLight
         castShadow
         target={target}
-        color="#ffd9a8"
-        intensity={2.9}
-        position={[-2.8, 3.9, 3.1]}
+        color="#ffd6a0"
+        intensity={3.3}
+        decay={0}
+        angle={0.44}
+        penumbra={0.8}
+        position={[-3.1 * s, 5.6 * s, 4.4 * s]}
         shadow-mapSize={[2048, 2048]}
-        shadow-bias={-0.0003}
-        shadow-normalBias={0.012}
+        shadow-bias={-0.0002}
+        shadow-normalBias={0.014}
         shadow-radius={5}
-        shadow-intensity={0.72}
-        shadow-camera-left={-r}
-        shadow-camera-right={r}
-        shadow-camera-top={r}
-        shadow-camera-bottom={-r}
-        shadow-camera-near={1}
-        shadow-camera-far={14}
+        shadow-intensity={0.78}
+        shadow-camera-near={3 * s}
+        shadow-camera-far={14 * s}
       />
-      <directionalLight color="#f2ebe0" intensity={0.55} position={[3, 2, 4.5]} />
-      {/* A low back light catches the top edges of the cards. */}
-      <directionalLight color="#ffe6c4" intensity={0.45} position={[0.8, 2.4, -4]} />
+      <directionalLight target={target} color="#ece6ee" intensity={0.5} position={[4.2, 2.2, 4.6]} />
+      {/* Rim from behind: catches the top edges of the cards. */}
+      <directionalLight target={target} color="#ffc68e" intensity={0.85} position={[1.6, 3, -4.5]} />
     </>
   );
 }
@@ -153,6 +159,35 @@ export function OpenBook({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize }) {
         <boxGeometry args={[w * 2 + 0.16, 0.03, d + 0.14]} />
       </mesh>
     </group>
+  );
+}
+
+/** A lamp-lit wall behind the table: a warm glow above the book, falling off
+ *  into dark corners. Screen-space background, so it never moves. */
+function Room() {
+  const tex = useMemo(() => {
+    const c = document.createElement("canvas");
+    c.width = 256;
+    c.height = 256;
+    const g = c.getContext("2d");
+    if (g) {
+      const grad = g.createRadialGradient(128, 64, 8, 128, 96, 200);
+      grad.addColorStop(0, "#5a3d27");
+      grad.addColorStop(0.5, "#352418");
+      grad.addColorStop(1, STAGE_COLORS.backdrop);
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 256, 256);
+    }
+    const t = new CanvasTexture(c);
+    t.colorSpace = SRGBColorSpace;
+    return t;
+  }, []);
+  useEffect(() => () => tex.dispose(), [tex]);
+  return (
+    <>
+      <primitive attach="background" object={tex} />
+      <fog attach="fog" args={[STAGE_COLORS.fog, 9, 20]} />
+    </>
   );
 }
 
@@ -242,8 +277,7 @@ export function Stage({
       camera={{ position: initial.position, fov: initial.fov ?? 30, near: 0.1, far: 40 }}
       gl={{ antialias: true }}
     >
-      <color attach="background" args={[STAGE_COLORS.backdrop]} />
-      <fog attach="fog" args={[STAGE_COLORS.backdrop, 9, 19]} />
+      <Room />
       <PerformanceMonitor
         flipflops={3}
         onDecline={() => setDpr((d) => Math.max(1, d - 0.25))}
