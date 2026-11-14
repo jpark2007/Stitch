@@ -507,7 +507,8 @@ function WaitNote({ reveal }: { reveal: { readonly current: number } }) {
     [clock, reveal],
   );
   return (
-    <group position={[0, 0, 1.12]}>
+    // Off to the side, clear of the props and of the pencil laid down by the fore-edge.
+    <group position={[-0.95, 0, 1.12]} rotation-y={0.3}>
       <RiseProvider value={rise}>
         <SetPiece cutout={cutout} height={0.42} />
       </RiseProvider>
