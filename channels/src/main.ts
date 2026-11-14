@@ -18,7 +18,7 @@ await new Promise<void>((resolve, reject) => {
 });
 
 // Terminal is the default. Only explicit imessage configuration can connect a cloud line.
-// Flattening preserves SDK child IDs for combined text/photo and multi-photo messages.
+// Flattening preserves SDK child IDs for combined text, photo and voice messages.
 const app = provider === "terminal"
   ? await Spectrum({ providers: [terminal.config()], options: { flattenGroups: true } })
   : await Spectrum({ providers: [imessage.config()], options: { flattenGroups: true } });

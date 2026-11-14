@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { Authenticator, MAX_BODY_BYTES, MAX_PHOTO_BODY_BYTES, ProtocolError, parseAuthorization, parseMessage, parsePhoto, signedHeaders, validateSecret, type Authorization, type Inbound, type InboundPhoto, type Outbound, type Provider } from "./protocol.ts";
+import { MAX_VOICE_BODY_BYTES, parseVoice, type InboundVoice } from "./protocol.ts";
 
 export type Receipt = { status: number; body: unknown };
 type ClientOptions = { timeoutMs?: number; attempts?: number; fetch?: typeof fetch; delay?: (ms: number) => Promise<void> };
@@ -20,13 +21,15 @@ export class ApiClient {
   constructor(origin: string, secret: string, options: ClientOptions = {}) {
     this.origin = localApiUrl(origin); this.secret = validateSecret(secret); this.options = options;
   }
-  async post(path: "/internal/channels/inbound" | "/internal/channels/tick" | "/internal/channels/authorize" | "/internal/channels/inbound-photo", value: Inbound | InboundPhoto | Authorization | Record<string, never>): Promise<Receipt> {
+  async post(path: "/internal/channels/inbound" | "/internal/channels/tick" | "/internal/channels/authorize" | "/internal/channels/inbound-photo" | "/internal/channels/inbound-voice", value: Inbound | InboundPhoto | InboundVoice | Authorization | Record<string, never>): Promise<Receipt> {
     if (path === "/internal/channels/inbound") parseMessage(value, true);
     else if (path === "/internal/channels/inbound-photo") parsePhoto(value);
+    else if (path === "/internal/channels/inbound-voice") parseVoice(value);
     else if (path === "/internal/channels/authorize") parseAuthorization(value);
     else if (path !== "/internal/channels/tick" || !value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 0) throw new ProtocolError(422, "Invalid request");
     const body = Buffer.from(JSON.stringify(value));
-    if (body.length > (path === "/internal/channels/inbound-photo" ? MAX_PHOTO_BODY_BYTES : MAX_BODY_BYTES)) throw new ProtocolError(413, "Request too large");
+    const bodyLimit = path === "/internal/channels/inbound-photo" ? MAX_PHOTO_BODY_BYTES : path === "/internal/channels/inbound-voice" ? MAX_VOICE_BODY_BYTES : MAX_BODY_BYTES;
+    if (body.length > bodyLimit) throw new ProtocolError(413, "Request too large");
     const attempts = this.options.attempts ?? 3;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {

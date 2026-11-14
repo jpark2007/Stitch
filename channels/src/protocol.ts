@@ -4,6 +4,9 @@ export const MAX_BODY_BYTES = 16_384;
 export const MAX_TEXT_BYTES = 8_000;
 export const MAX_PHOTO_BYTES = 20_971_520;
 export const MAX_PHOTO_BODY_BYTES = 27_978_412;
+export const MAX_VOICE_BYTES = 20_971_520;
+export const MAX_VOICE_BODY_BYTES = 27_978_412;
+export const VOICE_TYPES = new Set(["audio/mpeg", "audio/mp3", "audio/mpga", "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/wav", "audio/x-wav", "audio/webm", "audio/ogg", "audio/flac", "audio/x-flac"]);
 export const PHOTO_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"]);
 export const CLOCK_WINDOW_SECONDS = 300;
 export type Provider = "terminal" | "imessage";
@@ -11,6 +14,7 @@ export type Outbound = { messageId: string; provider: Provider; spaceId: string;
 export type Inbound = Outbound & { senderId: string };
 export type Authorization = { provider: Provider; senderId: string };
 export type InboundPhoto = Omit<Inbound, "text"> & { attachmentId: string; mimeType: string; dataBase64: string; caption?: string };
+export type InboundVoice = Omit<Inbound, "text"> & { attachmentId: string; mimeType: string; dataBase64: string };
 
 export class ProtocolError extends Error {
   status: number;
@@ -61,6 +65,19 @@ export function parsePhoto(value: unknown): InboundPhoto {
   const decoded = Buffer.from(record.dataBase64, "base64");
   if (decoded.length === 0 || decoded.length > MAX_PHOTO_BYTES || decoded.toString("base64") !== record.dataBase64) throw new ProtocolError(422, "Invalid photo encoding");
   return record as InboundPhoto;
+}
+
+export function parseVoice(value: unknown): InboundVoice {
+  const record = recordWithKeys(value, ["messageId", "provider", "spaceId", "senderId", "attachmentId", "mimeType", "dataBase64"]);
+  parseAuthorization({ provider: record.provider, senderId: record.senderId });
+  if (![record.messageId, record.spaceId, record.attachmentId].every((id) => bounded(id, 256)) ||
+      typeof record.mimeType !== "string" || !VOICE_TYPES.has(record.mimeType)) throw new ProtocolError(422, "Invalid voice metadata");
+  if (typeof record.dataBase64 !== "string" || record.dataBase64.length === 0 ||
+      record.dataBase64.length > 4 * Math.ceil(MAX_VOICE_BYTES / 3) || record.dataBase64.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(record.dataBase64)) throw new ProtocolError(422, "Invalid voice encoding");
+  const decoded = Buffer.from(record.dataBase64, "base64");
+  if (decoded.length === 0 || decoded.length > MAX_VOICE_BYTES || decoded.toString("base64") !== record.dataBase64) throw new ProtocolError(422, "Invalid voice encoding");
+  return record as InboundVoice;
 }
 
 /** Explicit opt-in only; terminal mode cannot inherit Spectrum cloud credentials. */
