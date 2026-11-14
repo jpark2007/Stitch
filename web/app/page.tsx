@@ -31,7 +31,7 @@ export default function HomePage() {
         <p className="caption mt-2">pick anyone to open their book</p>
       </header>
 
-      <section aria-label="Family tree" className="mt-6 flex flex-1 items-start justify-center sm:mt-10">
+      <section aria-label="Family tree" className="mt-6 flex flex-1 items-center justify-center pb-[6vh] sm:mt-10 sm:pb-0">
         <div className="w-full max-w-[62rem]">
           <FamilyTree people={demoPeople} maxHeight="calc(100dvh - 15rem)" />
         </div>
