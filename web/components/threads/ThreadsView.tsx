@@ -115,6 +115,8 @@ export default function ThreadsView(props: ThreadsViewProps) {
   const linkRefs = useRef<(HTMLAnchorElement | null)[]>([]);
   const titleRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const ringRefs = useRef<(HTMLSpanElement | null)[]>([]);
+  const zoomOutRef = useRef<HTMLButtonElement>(null);
+  const zoomInRef = useRef<HTMLButtonElement>(null);
 
   const initialHighlight = model.strands.findIndex((s) => s.person.id === props.highlight);
   const [highlight, setHighlight] = useState(initialHighlight);
@@ -276,6 +278,12 @@ export default function ThreadsView(props: ThreadsViewProps) {
         });
         e.drawMs = performance.now() - t0;
         placeOverlay(e);
+        // The zoom buttons rest at the zoom limits.
+        const sGoal = e.target ? e.target.s : e.cam.s;
+        const outOff = sGoal <= minScale(e.bounds) * 1.001;
+        const inOff = sGoal >= maxScale(e.bounds) * 0.999;
+        if (zoomOutRef.current && zoomOutRef.current.disabled !== outOff) zoomOutRef.current.disabled = outOff;
+        if (zoomInRef.current && zoomInRef.current.disabled !== inOff) zoomInRef.current.disabled = inOff;
       }
       if (moving) e.raf = requestAnimationFrame(frame);
     };
@@ -821,10 +829,10 @@ export default function ThreadsView(props: ThreadsViewProps) {
 
       {/* Zoom: two small paper buttons (top right on wide screens, under the axis on phones). */}
       <div className="absolute bottom-6 right-[var(--gutter)] flex gap-2 sm:bottom-auto sm:top-9">
-        <button type="button" onClick={() => zoomButton(-1)} className="threads-zoom" aria-label="Zoom out towards decades">
+        <button ref={zoomOutRef} type="button" onClick={() => zoomButton(-1)} className="threads-zoom" aria-label="Zoom out towards decades">
           <span aria-hidden>&minus;</span>
         </button>
-        <button type="button" onClick={() => zoomButton(1)} className="threads-zoom" aria-label="Zoom in towards single years">
+        <button ref={zoomInRef} type="button" onClick={() => zoomButton(1)} className="threads-zoom" aria-label="Zoom in towards single years">
           <span aria-hidden>+</span>
         </button>
       </div>
