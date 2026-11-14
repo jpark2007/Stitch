@@ -18,7 +18,7 @@
 
 import { Canvas } from "@react-three/fiber";
 import { useEffect, useMemo, type ReactNode } from "react";
-import { PlaneGeometry } from "three";
+import { Object3D, PlaneGeometry } from "three";
 import { useCardBoxMaterials, usePaperMaterial, useWoodMaterial } from "@/components/paper/usePaper";
 import { createCardEdgeMaterial } from "@/components/paper/materials";
 import { StageClock } from "./clock";
@@ -41,11 +41,16 @@ export const STAGE_COLORS = {
  *  right, and a sky/bounce hemisphere. */
 export function StageLights({ size = DEFAULT_STAGE_SIZE }: { size?: StageSize }) {
   const r = Math.max(size[0], size[1]) * 0.85;
+  // Aim the key at the stage's own origin, so it still lands on the set when
+  // the stage is mounted inside a moved group (the book's right page).
+  const target = useMemo(() => new Object3D(), []);
   return (
     <>
+      <primitive object={target} />
       <hemisphereLight args={["#fff2df", "#6b4a32", 0.7]} />
       <directionalLight
         castShadow
+        target={target}
         color="#ffd9a8"
         intensity={2.9}
         position={[-2.8, 3.9, 3.1]}
