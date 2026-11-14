@@ -941,3 +941,213 @@ def test_cannot_take_a_prop_someone_sits_on_through_a_stacked_prop(world: World)
     raises("occupied", "kid is sitting on chair, which rests on it", world.put_on, "mom", "crate")
     # the sitter is told the same way about what is under their own seat
     raises("occupied", "kid is sitting on chair, which rests on it", world.pick_up, "kid", "crate")
+
+
+# --------------------------------------------- character traits (character.py)
+
+def sheet_person(pid: str, notes: str | None = None, item: str | None = None, build: str = "average") -> schemas.Person:
+    return schemas.Person(id=pid, family_id="f", name=pid.title(),
+                          character={"color": "#123456", "build": build, "notes": notes, "item_prop_id": item})
+
+
+TRAIT_PROPS = PROPS + [prop("flat_cap"), prop("bonnet", "tiny"), prop("crown", "carried"), prop("house", "building")]
+
+
+def cast_with_cap() -> World:
+    """Grandpa wears his flat cap; mom and kid have no item."""
+    return World([sheet_person("grandpa", "walks slowly with a cane", "flat_cap"), sheet_person("mom"),
+                  sheet_person("kid", "spry")], TRAIT_PROPS)
+
+
+def wears(w: World, who: str, item: str) -> None:
+    assert w.people[who].holding.get("head") == item
+    assert w.holder(item) == (who, "head")
+    st = w.props[item]
+    assert st.parent == f"puppet:{who}.head" and st.pos == (0.0, 0.0, 0.0) and st.world_pos is None
+
+
+def test_speed_scale_from_notes():
+    w = cast_with_cap()
+    assert w.people["grandpa"].speed_scale == 0.6
+    assert w.people["mom"].speed_scale == 1.0
+    assert w.people["kid"].speed_scale == 1.25
+    assert World([sheet_person("a", "Moves SLOWLY")], []).people["a"].speed_scale == 0.75
+    # the plain fixtures have no notes
+    assert all(p.speed_scale == 1.0 and p.item is None for p in World(PEOPLE, PROPS).people.values())
+
+
+def test_signature_item_starts_worn():
+    w = cast_with_cap()
+    g = w.people["grandpa"]
+    assert g.item == "flat_cap" and g.holding == {"head": "flat_cap"}
+    wears(w, "grandpa", "flat_cap")
+    assert w.people["mom"].item is None and w.people["mom"].holding == {}
+    # tiny and carried props are wearable too
+    w2 = World([sheet_person("a", item="bonnet"), sheet_person("b", item="crown")], TRAIT_PROPS)
+    wears(w2, "a", "bonnet")
+    wears(w2, "b", "crown")
+    assert w2.people["a"].item == "bonnet" and w2.people["b"].item == "crown"
+
+
+@pytest.mark.parametrize("item", ["sedan", "chair", "house", "anvil"])
+def test_signature_item_only_when_passed_in_and_wearable(item: str):
+    """A vehicle, furniture or a building is never worn, nor is a prop the scene does not have."""
+    w = World([sheet_person("a", item=item)], TRAIT_PROPS)
+    assert w.people["a"].item is None and w.people["a"].holding == {}
+    if item in w.props:
+        assert w.props[item] == PropState(id=item)
+    # the same person with the prop missing from the scene's props
+    w = World([sheet_person("a", item="flat_cap")], PROPS)
+    assert w.people["a"].item is None and w.people["a"].holding == {}
+
+
+def test_shared_signature_item_first_in_cast_wins():
+    w = World([sheet_person("mom", item="flat_cap"), sheet_person("dad", item="flat_cap")], TRAIT_PROPS)
+    wears(w, "mom", "flat_cap")
+    assert w.people["mom"].item == "flat_cap"
+    assert w.people["dad"].item is None and w.people["dad"].holding == {}
+    w = World([sheet_person("dad", item="flat_cap"), sheet_person("mom", item="flat_cap")], TRAIT_PROPS)
+    wears(w, "dad", "flat_cap")
+    assert w.people["mom"].item is None
+
+
+def test_copy_eq_and_snapshot_include_traits():
+    w = cast_with_cap()
+    c = w.copy()
+    assert c == w
+    c.people["grandpa"].speed_scale = 1.0
+    assert c != w
+    c = w.copy()
+    c.people["grandpa"].item = None
+    assert c != w
+    snap = w.snapshot()
+    assert snap["people"]["grandpa"]["speed_scale"] == 0.6 and snap["people"]["grandpa"]["item"] == "flat_cap"
+    assert snap["people"]["grandpa"]["holding"] == {"head": "flat_cap"}
+    assert snap["props"]["flat_cap"]["parent"] == "puppet:grandpa.head"
+    assert snap["people"]["mom"]["speed_scale"] == 1.0 and snap["people"]["mom"]["item"] is None
+    assert cast_with_cap().snapshot() == snap  # deterministic
+
+
+def test_signature_item_blocks_a_second_hat_and_reports_who_wears_it():
+    w = cast_with_cap()
+    w.begin_shot(shot(start={"grandpa": {"at": "home"}, "mom": {"at": "home"}}, propStart=LOOSE), MARKS, False)
+    raises("head_full", "grandpa is already wearing flat_cap", w.put_on, "grandpa", "hat")
+    raises("already_held", "grandpa is wearing it", w.pick_up, "mom", "flat_cap")
+    raises("already_held", "grandpa is already wearing it", w.put_on, "grandpa", "flat_cap")
+
+
+# Rule (1): the head item stays on across shots, for listed and unlisted cast alike.
+
+def test_signature_item_stays_on_across_same_set_shots():
+    w = cast_with_cap()
+    w.begin_shot(shot(start={"grandpa": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    wears(w, "grandpa", "flat_cap")
+    w.begin_shot(shot(id="s2", start={"grandpa": {"at": "curb"}}), MARKS, same_set_as_previous=True)
+    wears(w, "grandpa", "flat_cap")
+    w.begin_shot(shot(id="s3", start={"mom": {"at": "curb"}}), MARKS, same_set_as_previous=True)  # grandpa unlisted
+    wears(w, "grandpa", "flat_cap")
+
+
+def test_signature_item_stays_on_across_set_changes():
+    w = cast_with_cap()
+    w.begin_shot(shot(start={"grandpa": {"at": "home", "holding": "cup"}, "mom": {"at": "home"}}),
+                 MARKS, same_set_as_previous=False)
+    # listed on the new set: carries both the cup and the cap in
+    w.begin_shot(shot(id="s2", set="kitchen", start={"grandpa": {"at": "curb"}}), MARKS, same_set_as_previous=False)
+    wears(w, "grandpa", "flat_cap")
+    assert w.holder("cup") == ("grandpa", "hand_r")
+    # unlisted on the next set: waits offstage, loses the hand-held cup (#50) but keeps the cap
+    w.begin_shot(shot(id="s3", set="porch", start={"mom": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    g = w.people["grandpa"]
+    assert g.pos == pytest.approx(OFFSTAGE_LEFT) and not w.on_stage("grandpa")
+    assert g.holding == {"head": "flat_cap"}
+    wears(w, "grandpa", "flat_cap")
+    assert w.holder("cup") is None and w.is_unplaced("cup")
+    # and walks into a later set still wearing it
+    w.begin_shot(shot(id="s4", set="yard", start={"grandpa": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    wears(w, "grandpa", "flat_cap")
+    assert g.item == "flat_cap"
+
+
+def test_hat_put_on_stays_on_for_unlisted_cast_too():
+    """The signature item is treated like a hat put on with put_on: same rule for both."""
+    w = World(PEOPLE, PROPS)
+    opening(w)
+    w.move("dad", MARKS["home"])
+    w.put_on("dad", "hat")
+    w.pick_up("dad", "cup")
+    w.begin_shot(shot(id="s2", set="kitchen", start={"mom": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    assert w.people["dad"].holding == {"head": "hat"}
+    assert w.holder("hat") == ("dad", "head") and w.is_unplaced("cup")
+
+
+# Rule (2): someone else's start `holding`, or prop_start, takes it off the head silently.
+
+def test_someone_elses_start_holding_takes_the_item_off_the_head():
+    w = cast_with_cap()
+    w.begin_shot(shot(start={"grandpa": {"at": "home"}, "mom": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    w.begin_shot(shot(id="s2", start={"grandpa": {"at": "home"}, "kid": {"at": "curb", "holding": "flat_cap"}}),
+                 MARKS, same_set_as_previous=True)
+    assert w.holder("flat_cap") == ("kid", "hand_r") and w.props["flat_cap"].parent == "puppet:kid.hand_r"
+    assert w.people["grandpa"].holding == {}
+    assert w.people["grandpa"].item == "flat_cap"  # still his signature item, just not on his head
+
+
+def test_someone_elses_start_holding_takes_it_on_a_set_change_from_unlisted_wearer():
+    w = cast_with_cap()
+    w.begin_shot(shot(start={"grandpa": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    # grandpa is not in s2 (he waits offstage); mom starts the new set with his cap
+    w.begin_shot(shot(id="s2", set="kitchen", start={"mom": {"at": "curb", "holding": "flat_cap"}}),
+                 MARKS, same_set_as_previous=False)
+    assert w.holder("flat_cap") == ("mom", "hand_r")
+    assert w.people["grandpa"].holding == {}
+
+
+def test_no_hands_full_or_conflict_from_the_head_alone():
+    w = cast_with_cap()
+    w.begin_shot(shot(start={"grandpa": {"at": "home", "holding": "cup"}, "mom": {"at": "home", "holding": "lamp"}},
+                      propStart={"scarf": {"at": "home"}}),
+                 MARKS, same_set_as_previous=False)
+    w.pick_up("grandpa", "scarf")  # both hands full and the head worn
+    w.begin_shot(shot(id="s2", start={"grandpa": {"at": "home"}, "kid": {"at": "home", "holding": "flat_cap"}}),
+                 MARKS, same_set_as_previous=True)
+    assert w.holder("flat_cap") == ("kid", "hand_r")
+    assert w.people["grandpa"].holding == {"hand_r": "cup", "hand_l": "scarf"}
+
+
+def test_prop_start_takes_the_item_off_the_head():
+    w = cast_with_cap()
+    w.begin_shot(shot(start={"grandpa": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    w.begin_shot(shot(id="s2", start={"grandpa": {"at": "home"}}, propStart={"flat_cap": {"at": "curb"}}),
+                 MARKS, same_set_as_previous=True)
+    assert w.holder("flat_cap") is None and w.people["grandpa"].holding == {}
+    assert w.props["flat_cap"].parent == "ground" and w.props["flat_cap"].world_pos == MARKS["curb"]
+    # onto a surface, from an unlisted wearer, on a set change
+    w = cast_with_cap()
+    w.begin_shot(shot(start={"grandpa": {"at": "home"}}), MARKS, same_set_as_previous=False)
+    w.begin_shot(shot(id="s2", set="kitchen", start={"mom": {"at": "home"}},
+                      propStart={"table": {"at": "curb"}, "flat_cap": {"on": "table.top"}}),
+                 MARKS, same_set_as_previous=False)
+    assert w.props["flat_cap"].parent == "prop:table.top" and w.props["table"].occupants == {"top": "prop:flat_cap"}
+    assert w.people["grandpa"].holding == {}
+
+
+# Rule (3): the wearer's own start `holding` moves it from head to hand.
+
+def test_wearers_own_start_holding_moves_it_to_a_hand():
+    w = cast_with_cap()
+    w.begin_shot(shot(start={"grandpa": {"at": "home", "holding": "flat_cap"}}), MARKS, same_set_as_previous=False)
+    assert w.holder("flat_cap") == ("grandpa", "hand_r")
+    assert w.people["grandpa"].holding == {"hand_r": "flat_cap"}
+    assert w.props["flat_cap"].parent == "puppet:grandpa.hand_r"
+    # once in hand it can be put back on with put_on
+    w.put_on("grandpa", "flat_cap")
+    wears(w, "grandpa", "flat_cap")
+
+
+def test_wearers_own_start_holding_uses_the_free_hand():
+    w = cast_with_cap()
+    w.begin_shot(shot(start={"grandpa": {"at": "home", "holding": "cup"}}), MARKS, same_set_as_previous=False)
+    w.begin_shot(shot(id="s2", start={"grandpa": {"at": "home", "holding": "flat_cap"}}),
+                 MARKS, same_set_as_previous=True)
+    assert w.people["grandpa"].holding == {"hand_r": "cup", "hand_l": "flat_cap"}
