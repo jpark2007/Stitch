@@ -11,10 +11,14 @@ import { initialRunState, runReducer, type RunEventMessage, type RunState } from
 import {
   DEFAULT_MAX_RETRIES,
   answerBody,
+  answersStorageKey,
   defaultRetryDelay,
   followRun,
   newRunBook,
+  parseAnswers,
   sendAnswer,
+  serializeAnswers,
+  type AnsweredRecord,
   type RunBook,
 } from "./runConnection";
 
@@ -36,6 +40,33 @@ export interface UseAgentRunOptions {
   maxRetries?: number;
   /** Wait before reconnect `attempt` (1-based); default 1s doubling to 8s. */
   retryDelayMs?: (attempt: number) => number;
+  /**
+   * Names the run (family and run id). With it, the answers given in this tab
+   * are kept in sessionStorage, so after a reload the replay closes each
+   * answered pause where it was answered instead of showing its card again.
+   */
+  runKey?: string;
+}
+
+/** Answers saved for `runKey` in this tab; empty when storage is unavailable. */
+function loadAnswers(runKey: string | undefined): AnsweredRecord[] {
+  if (!runKey) return [];
+  try {
+    return parseAnswers(window.sessionStorage.getItem(answersStorageKey(runKey)));
+  } catch {
+    return [];
+  }
+}
+
+/** Saves the book's answers for `runKey`; a full or blocked storage just skips it. */
+function saveAnswers(runKey: string | undefined, book: RunBook): void {
+  if (!runKey) return;
+  try {
+    window.sessionStorage.setItem(answersStorageKey(runKey), serializeAnswers(book.answers));
+  } catch {
+    // Without storage a reload shows the card again; answering it then gets
+    // a 409, which closes it quietly.
+  }
 }
 
 interface Session {
@@ -43,6 +74,8 @@ interface Session {
   /** The retry() count this session last connected for. */
   nonce: number;
   book: RunBook;
+  /** UseAgentRunOptions.runKey when the session started. */
+  runKey: string | undefined;
 }
 
 /**
@@ -89,7 +122,8 @@ export function useAgentRun(
 
     let session = sessionRef.current;
     if (!session || session.source !== source) {
-      session = { source, nonce, book: newRunBook() };
+      const runKey = o?.runKey;
+      session = { source, nonce, book: newRunBook(loadAnswers(runKey)), runKey };
       sessionRef.current = session;
       dispatch({ type: "reset" });
     } else if (session.nonce !== nonce) {
@@ -144,6 +178,7 @@ export function useAgentRun(
           return mountedRef.current && session?.source === source ? session.book : null;
         },
         dispatch,
+        onRecorded: (book) => saveAnswers(sessionRef.current?.runKey, book),
       });
     },
     [source, pendingKind],

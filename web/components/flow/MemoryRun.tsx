@@ -4,7 +4,7 @@
 // live agent run making its page. When the run pauses on the family, the
 // matching card (follow-up question, prop review or merge) sits inside the
 // feed; answers go back through useAgentRun to the run's answer route.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import AgentFeed from "@/components/agent/AgentFeed";
 import FollowUpCard from "@/components/agent/FollowUpCard";
@@ -28,9 +28,6 @@ export interface MemoryRunTelling {
 
 const HEADINGS = "h1, h2, h3, h4, h5, h6";
 
-/** How long a pause must hold before its card shows (see settledKey). A replay lands well within it. */
-const CARD_SETTLE_MS = 250;
-
 /**
  * Focus `root`'s first heading (made focusable for script only), or `root`
  * itself when it has none. Never scrolls; the caller decides that.
@@ -49,14 +46,21 @@ function prefersReducedMotion(): boolean {
 export function MemoryRun(props: {
   source: RunSource | null;
   options?: UseAgentRunOptions;
+  /**
+   * Names the run (family and run id), so the answers given in this tab
+   * survive a reload and an answered card does not come back (see
+   * UseAgentRunOptions.runKey).
+   */
+  runKey?: string;
   telling?: MemoryRunTelling | null;
   mediaUrl: (mediaId: string) => string;
   sceneHref?: (memoryId: string) => string;
   onUploadPhoto?: (file: File) => Promise<string>;
   addAnotherHref?: string;
 }) {
-  const { source, options, telling, mediaUrl, sceneHref, onUploadPhoto, addAnotherHref } = props;
-  const { state, answerQuestion, reviewProps, decideMerge, retry } = useAgentRun(source, options);
+  const { source, options, runKey, telling, mediaUrl, sceneHref, onUploadPhoto, addAnotherHref } = props;
+  const runOptions = useMemo(() => (runKey ? { ...options, runKey } : options), [options, runKey]);
+  const { state, answerQuestion, reviewProps, decideMerge, retry } = useAgentRun(source, runOptions);
 
   // The card's key is read once per pending input (the reducer keeps the same
   // object for the whole pause), so nothing logged mid-pause can remount the
@@ -72,20 +76,7 @@ export function MemoryRun(props: {
   }
 
   const card = pendingCard(state);
-  const pauseKey = card ? cardKey : null;
-
-  // A reload replays the run from its first event, so a pause the family
-  // already answered streams in and is closed again by the events right
-  // behind it. The card waits for its pause to hold for a moment before it
-  // shows, so such a pause never flashes a card or moves focus. A pause shown
-  // once shows again at once (a reconnect replaying the same pause).
-  const [settledKey, setSettledKey] = useState<string | null>(null);
-  useEffect(() => {
-    if (pauseKey === null) return;
-    const timer = setTimeout(() => setSettledKey(pauseKey), CARD_SETTLE_MS);
-    return () => clearTimeout(timer);
-  }, [pauseKey]);
-  const shownKey = pauseKey !== null && pauseKey === settledKey ? pauseKey : null;
+  const shownKey = card ? cardKey : null;
 
   const feedRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -115,7 +106,7 @@ export function MemoryRun(props: {
 
   const pending = state.phase === "waiting" ? state.pending : null;
   let cardNode = null;
-  if (shownKey !== null && pending) {
+  if (card && pending) {
     cardNode = (
       <div key={cardKey} ref={cardRef} className="scroll-mt-6">
         {pending.kind === "answer" ? (

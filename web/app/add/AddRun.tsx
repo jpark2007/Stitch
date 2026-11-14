@@ -81,6 +81,7 @@ export function AddRun(props: {
           <MemoryRun
             source={source}
             options={RUN_OPTIONS}
+            runKey={`${fid}/${runId}`}
             telling={telling}
             mediaUrl={mediaUrl}
             onUploadPhoto={onUploadPhoto}
