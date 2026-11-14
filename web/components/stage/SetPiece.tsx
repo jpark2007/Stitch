@@ -38,7 +38,7 @@ import {
   type Group,
 } from "three";
 import { createCardEdgeMaterial, createPaperMaterial, getPaperTextures } from "@/components/paper/materials";
-import { useStageTime } from "./clock";
+import { markShadowsDirty, useStageTime } from "./clock";
 import type { Cutout } from "./cutout";
 import { clamp, followAt, linearAt, smootherstep, smoothstep, type LinearKeys } from "./timeline";
 
@@ -283,10 +283,13 @@ export function SetPiece({
   // never intersect, and let each sink to the page as it stands up.
   const stackY = thickness / 2 + 0.0012 + (count - 1 - order) * (thickness + 0.0018);
 
+  const lastRise = useRef(NaN);
   useFrame((state) => {
     const r = rise(order, count, now(state), motion);
     const g = hinge.current;
     if (!g) return;
+    if (Math.abs(r - lastRise.current) > 1e-5 || Number.isNaN(lastRise.current)) markShadowsDirty(state);
+    lastRise.current = r;
     g.rotation.x = Math.min(1, 1 - r) * (Math.PI / 2);
     g.position.y = stackY * (1 - smoothstep(r));
     if (vfold > 0) {

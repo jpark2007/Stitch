@@ -23,7 +23,7 @@ import {
   type InstancedMesh,
 } from "three";
 import { createPaperMaterial } from "@/components/paper/materials";
-import { useStageTime } from "./clock";
+import { markShadowsDirty, useStageTime } from "./clock";
 import { clamp, easeOutCubic, hash01, smoothstep, type Vec3 } from "./timeline";
 
 export type EffectKind = "confetti" | "steam" | "rain" | "smoke";
@@ -213,6 +213,7 @@ export function PaperEffect({
       m.setMatrixAt(i, dummy.matrix);
     }
     m.instanceMatrix.needsUpdate = true;
+    if (kind !== "rain" && t >= 0 && t <= end - start + 6) markShadowsDirty(state);
   });
 
   return (

@@ -22,7 +22,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Object3D, PlaneGeometry } from "three";
 import { useCardBoxMaterials, usePaperMaterial, useWoodMaterial } from "@/components/paper/usePaper";
 import { createCardEdgeMaterial } from "@/components/paper/materials";
-import { StageClock } from "./clock";
+import { StageClock, StaticShadows } from "./clock";
 import { CameraRig, DEFAULT_STAGE_SIZE, stagePoses, type CameraPath, type CameraPose, type StageSize } from "./CameraRig";
 import { PopUp, type PopUpTiming } from "./SetPiece";
 
@@ -215,9 +215,20 @@ export interface StageProps extends Omit<StageSceneProps, "surface"> {
   className?: string;
   /** Extra things in the Canvas outside the stage (helpers, frame probes). */
   overlay?: ReactNode;
+  /** Redraw shadow maps only while something moves (see StaticShadows). Default true. */
+  staticShadows?: boolean;
 }
 
-export function Stage({ time, camera, orbit = true, className, overlay, size = DEFAULT_STAGE_SIZE, ...scene }: StageProps) {
+export function Stage({
+  time,
+  camera,
+  orbit = true,
+  className,
+  overlay,
+  staticShadows = true,
+  size = DEFAULT_STAGE_SIZE,
+  ...scene
+}: StageProps) {
   const pose = camera ?? stagePoses(size).reading;
   const initial = typeof pose === "function" ? pose(time ?? 0) : pose;
   // Render at up to 1.5x on retina screens and step down if frames run long:
@@ -239,6 +250,7 @@ export function Stage({ time, camera, orbit = true, className, overlay, size = D
         onIncline={() => setDpr((d) => Math.min(1.5, d + 0.25))}
         onFallback={() => setDpr(1)}
       />
+      {staticShadows && <StaticShadows />}
       <StageClock time={time}>
         <Table />
         <OpenBook size={size} />
