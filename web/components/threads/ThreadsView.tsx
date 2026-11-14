@@ -47,6 +47,10 @@ export interface ThreadsViewProps {
    * family the viewer belongs to; left out for the demo family.
    */
   addHref?: string;
+  /** Where "Ask the family" goes, in the crumb line. Only for a real family the viewer belongs to. */
+  askHref?: string;
+  /** Where "Traditions" goes, in the crumb line: the family's book, or the demo book for the demo family. */
+  traditionsHref?: string;
   /** Raw query params: ?zoom=decade|year|<multiple>, ?focus=<year>, ?highlight=<personId>. */
   zoom?: string;
   focus?: string;
@@ -57,6 +61,25 @@ const NOW = new Date().getFullYear();
 
 const TITLE_CLASS = "mt-1 text-[1.6rem] leading-tight sm:text-[2rem]";
 const TITLE_STYLE = { fontVariationSettings: '"SOFT" 100, "WONK" 1' } as const;
+
+/*
+ * The crumb line's links are padded to a 44px tap target, mostly upwards
+ * (into the empty top margin) so they never reach over the title below.
+ * The padding is on inline boxes, so the line itself keeps its height.
+ */
+const CRUMB_TAP = "-mt-6 pt-6 -mb-1 pb-1";
+const CRUMB_LINK = `${CRUMB_TAP} rounded-sm no-underline transition-colors focus-visible:outline-1 focus-visible:outline-offset-4 focus-visible:outline-accent`;
+/** A line in the crumb's "More" menu; the crumb's small caps stop at the menu. */
+const CRUMB_MENU_LINK =
+  "flex min-h-11 w-full items-center rounded-paper px-3 font-display text-[1.05rem] font-normal normal-case tracking-normal text-ink no-underline hover:bg-paper focus-visible:bg-paper";
+
+function CrumbDot({ className = "" }: { className?: string }) {
+  return (
+    <span aria-hidden className={`mx-2 opacity-60 ${className}`}>
+      &middot;
+    </span>
+  );
+}
 
 export default function ThreadsView(props: ThreadsViewProps) {
   const { people, moments, familyName, familyId, families, onSwitchFamily, note } = props;
@@ -239,6 +262,11 @@ export default function ThreadsView(props: ThreadsViewProps) {
 
   const followed = highlight >= 0 ? model.strands[highlight] : null;
   const followedCount = followed ? followed.momentIds.length : 0;
+  const extras = [
+    props.askHref ? { href: props.askHref, label: "Ask the family" } : null,
+    props.traditionsHref ? { href: props.traditionsHref, label: "Traditions" } : null,
+  ].filter((x): x is { href: string; label: string } => x !== null);
+  const folded = extras.length > 1;
 
   return (
     <main className="fixed inset-0 overflow-clip select-none">
@@ -295,29 +323,63 @@ export default function ThreadsView(props: ThreadsViewProps) {
       {/* Quiet header: where you are, and whose thread you are following. */}
       <header className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between px-[var(--gutter)] pt-6 sm:pt-8">
         <div className="pointer-events-auto min-w-0 max-w-full sm:max-w-[min(44rem,calc(100%-7rem))]">
-          <p className="kicker">
-            <Link href={treeHref(scope)} className="text-ink-faint no-underline transition-colors hover:text-ink-soft">
+          {/* One line at every width: below lg, two or more extra links fold into "More". */}
+          <div className="kicker">
+            <Link href={treeHref(scope)} className={`${CRUMB_LINK} text-ink-faint hover:text-ink-soft`}>
               Family tree
             </Link>
             <span aria-hidden className="mx-2 opacity-60">
               /
             </span>
             <span className="text-ink-soft">Threads</span>
+            {extras.map((x) => (
+              <span key={x.label} className={folded ? "hidden lg:inline" : undefined}>
+                <CrumbDot />
+                <Link href={x.href} className={`${CRUMB_LINK} text-ink-faint hover:text-ink-soft`}>
+                  {x.label}
+                </Link>
+              </span>
+            ))}
+            {folded ? (
+              <>
+                <CrumbDot className="lg:hidden" />
+                <MenuDisclosure
+                  className="inline-block lg:hidden"
+                  label={
+                    <>
+                      More
+                      <svg width="10" height="7" viewBox="0 0 10 7" aria-hidden className="shrink-0">
+                        <path d="M1.5 1.5 L5 5 L8.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeDasharray="2.2 1.5" strokeLinecap="round" />
+                      </svg>
+                    </>
+                  }
+                  buttonClassName={`${CRUMB_TAP} inline-flex items-center gap-1.5 uppercase text-ink-faint transition-colors hover:text-ink-soft aria-expanded:text-ink-soft`}
+                  panelClassName="threads-menu right-0 top-full mt-2"
+                >
+                  {extras.map((x) => (
+                    <Link key={x.label} href={x.href} className={CRUMB_MENU_LINK}>
+                      {x.label}
+                    </Link>
+                  ))}
+                </MenuDisclosure>
+              </>
+            ) : null}
             {props.addHref ? (
               <>
-                <span aria-hidden className="mx-2 opacity-60">
-                  &middot;
-                </span>
+                <CrumbDot />
                 <Link
                   href={props.addHref}
-                  className="rounded-sm text-accent-deep no-underline transition-colors hover:text-accent focus-visible:outline-1 focus-visible:outline-offset-4 focus-visible:outline-accent"
+                  aria-label="Add a memory"
+                  className={`${CRUMB_LINK} text-accent-deep hover:text-accent`}
                 >
                   <span aria-hidden className="mr-1 opacity-70">+</span>
-                  Add a memory
+                  <span aria-hidden>
+                    Add<span className="hidden sm:inline"> a memory</span>
+                  </span>
                 </Link>
               </>
             ) : null}
-          </p>
+          </div>
           {families && families.length > 1 && onSwitchFamily ? (
             <MenuDisclosure
               className="block"

@@ -27,11 +27,28 @@ export function YearInput(props: {
   name?: string;
   /**
    * "row": the label in a left column beside the field (the add-a-memory
-   * details), rather than above it. Default "stacked".
+   * details), rather than above it. "bare": the label is for assistive tech
+   * only and the caller draws the visible one; the input keeps the row's
+   * look. Default "stacked".
    */
-  layout?: "stacked" | "row";
+  layout?: "stacked" | "row" | "bare";
+  /** Classes added to the input (after the kit's own), for a page that sets the year in its own type. */
+  inputClassName?: string;
 }) {
-  const { label, value, onChange, hint, error, required, min, max, name, layout = "stacked" } = props;
+  const {
+    label,
+    value,
+    onChange,
+    hint,
+    error,
+    required,
+    min,
+    max,
+    name,
+    layout = "stacked",
+    inputClassName,
+  } = props;
+  const bare = layout === "bare";
   const uid = useId();
   const inputId = props.id ?? `${uid}-year`;
   const hintId = `${inputId}-hint`;
@@ -51,13 +68,15 @@ export function YearInput(props: {
     .filter(Boolean)
     .join(" ");
 
-  const row = layout === "row";
+  const row = layout === "row" || bare;
   // No asterisk: the input's `required` tells assistive tech, and a missing
   // year is said beside the field when someone sends without it.
   const labelEl = (
     <label
       htmlFor={inputId}
-      className={row ? `${FIELD_ROW_LABEL_CLASS} flex min-h-11 shrink-0 items-center` : FIELD_LABEL_CLASS}
+      className={
+        bare ? "sr-only" : row ? `${FIELD_ROW_LABEL_CLASS} flex min-h-11 shrink-0 items-center` : FIELD_LABEL_CLASS
+      }
     >
       {label}
       {required ? <span className="sr-only"> (required)</span> : null}
@@ -82,7 +101,9 @@ export function YearInput(props: {
         // The same underlined line as TextField, just four digits wide.
         className={fieldControlClass(
           !!error,
-          `${row ? "" : "mt-1 "}w-[5.5rem] tabular-nums tracking-[0.08em] placeholder:tracking-normal`,
+          `${row ? "" : "mt-1 "}w-[5.5rem] tabular-nums tracking-[0.08em] placeholder:tracking-normal${
+            inputClassName ? ` ${inputClassName}` : ""
+          }`,
         )}
       />
   );
@@ -101,6 +122,18 @@ export function YearInput(props: {
       {error}
     </p>
   ) : null;
+
+  if (bare) {
+    return (
+      <div className="min-w-0">
+        {labelEl}
+        {input}
+        {hintEl}
+        {rangeEl}
+        {errorEl}
+      </div>
+    );
+  }
 
   if (row) {
     // Four digits fit beside the label even on a phone, so this row stays

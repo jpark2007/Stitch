@@ -42,12 +42,19 @@ async function demoPerson(id: string, why: DemoWhy, signal: AbortSignal): Promis
   };
 }
 
+/**
+ * What /people/<id> shows. `ownFamilyId` is set when the book is the
+ * signed-in viewer's own person in a real family (their FamilySummary's
+ * personId, from /me): the page then offers "Add a memory" beside it.
+ */
+export type PersonPage = BookShown & { ownFamilyId?: string };
+
 /** What /people/<id> shows, for its query. Rejects only when aborted. */
 export async function loadPersonPage(
   id: string,
   scope: { family: string | null; demo: boolean },
   signal: AbortSignal,
-): Promise<BookShown> {
+): Promise<PersonPage> {
   const r = await resolveBook<BookResponse>(
     { demo: scope.demo, family: scope.family, mock: isMockMode() },
     { api, session: browserSession, load: (fid) => api.getBook(fid, id) },
@@ -70,7 +77,16 @@ export async function loadPersonPage(
         const scene = slice && spread.stage ? sceneFromMemory(slice) : null;
         if (scene) scenes[spread.id] = scene;
       }
-      return { kind: "book", key: `${fid}:${id}`, spreads: book.spreads, cover: book.cover, scenes, demo: null };
+      const own = r.family?.personId === id;
+      return {
+        kind: "book",
+        key: `${fid}:${id}`,
+        spreads: book.spreads,
+        cover: book.cover,
+        scenes,
+        demo: null,
+        ...(own ? { ownFamilyId: fid } : {}),
+      };
     }
     default:
       return r;

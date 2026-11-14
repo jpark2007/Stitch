@@ -308,12 +308,22 @@ export function bodyArtKey(prop: Pick<Prop, "art" | "parts">): string | null {
   return keys.find((k) => !used.has(k)) ?? keys[0] ?? null;
 }
 
+/**
+ * A state override's media id. The contract says it is a media id; an
+ * override naming one of the prop's own art keys instead ({"ringing":
+ * {"body": "ringing"}}, as seeded data has it) means that key's art (null:
+ * the placeholder), never a fetch of media "ringing".
+ */
+function overrideArt(prop: Pick<Prop, "art">, value: string): string | null {
+  return prop.art && Object.hasOwn(prop.art, value) ? (prop.art[value] ?? null) : value;
+}
+
 /** The media id drawn for an art key in a state: the state's override if it
  *  has one, else the base art. null = placeholder. */
 export function artFor(prop: Pick<Prop, "art" | "states">, key: string, state: string | null): string | null {
   if (state) {
     const override = prop.states?.[state]?.[key];
-    if (override) return override;
+    if (override) return overrideArt(prop, override);
   }
   return prop.art?.[key] ?? null;
 }
@@ -322,7 +332,11 @@ export function artFor(prop: Pick<Prop, "art" | "states">, key: string, state: s
 export function allArtIds(prop: Pick<Prop, "art" | "states">): string[] {
   const ids = new Set<string>();
   for (const v of Object.values(prop.art ?? {})) if (v) ids.add(v);
-  for (const s of Object.values(prop.states ?? {})) for (const v of Object.values(s)) if (v) ids.add(v);
+  for (const s of Object.values(prop.states ?? {}))
+    for (const v of Object.values(s)) {
+      const id = v ? overrideArt(prop, v) : null;
+      if (id) ids.add(id);
+    }
   return [...ids];
 }
 

@@ -40,6 +40,10 @@ export const hrefs = {
     if (q) params.push(`q=${enc(q)}`);
     return params.length ? `/ask?${params.join("&")}` : "/ask";
   },
+  /** The Book of Family Traditions; with a family id, `?family=` tells it which family to open. */
+  traditions: (o?: { familyId?: string | null }): string => `/traditions${familyQuery(o?.familyId)}`,
+  /** The "Add a tradition" form; it goes back to hrefs.traditions for the same family after saving. */
+  newTradition: (o?: { familyId?: string | null }): string => `/traditions/new${familyQuery(o?.familyId)}`,
   /** A moment's book page; with a family id, `?family=` tells it which family to load. */
   memory: (id: string, familyId?: string | null): string => `/memories/${enc(id)}${familyQuery(familyId)}`,
   /** A person's book; with a family id, `?family=` tells it which family to load. */

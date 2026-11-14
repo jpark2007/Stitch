@@ -27,7 +27,7 @@ import { Puppet, scaleForBuild, type PuppetHandle, type PuppetInputs } from "../
 import { BONES, RIG } from "../puppet/rig";
 import type { Rotations } from "../puppet/kinematics";
 import { FootPlanter } from "./planting";
-import { PRIORITY, standUp, useScene, useWingClip } from "./SceneProvider";
+import { PRIORITY, registerMount, standUp, useScene, useWingClip } from "./SceneProvider";
 import type { Mount } from "./standing";
 
 /**
@@ -77,6 +77,7 @@ export function PuppetActor({ id, person: given, index = 0 }: PuppetActorProps) 
   const inner = useRef<Group>(null);
   const mount = useMemo<Mount>(() => ({ angle: 0, dy: 0, dz: 0 }), []);
   useEffect(() => runtime.registerPuppet(id, handle), [runtime, id]);
+  useEffect(() => registerMount(runtime, `puppet:${id}`, mount), [runtime, id, mount]);
 
   const readRot = useMemo(() => (bone: string) => driver.current.rot[bone] ?? 0, []);
 
@@ -94,6 +95,13 @@ export function PuppetActor({ id, person: given, index = 0 }: PuppetActorProps) 
     d.position[0] = p[0];
     d.position[1] = p[1];
     d.position[2] = p[2] + dz;
+    // Picked up off its layer by the host (runtime.lifts; none by default).
+    const lift = runtime.lifts.size > 0 ? runtime.lifts.get(pf.target) : undefined;
+    if (lift) {
+      d.position[0] += lift.x;
+      d.position[1] += lift.y;
+      d.position[2] += lift.z;
+    }
     d.facing = pf.facing;
     if (planter) d.position[1] -= planter.drop(frame.t, readRot, scale);
     // Hinge about the surface the timeline stands it on (not the planted hip).

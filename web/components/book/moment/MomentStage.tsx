@@ -32,6 +32,13 @@
  * eases back out to the spread a beat after the telling ends (its tellers
  * there to choose again), as the page turns, or when the reader taps to step
  * back; choosing a telling leans back in.
+ *
+ * And it explains (./ExplainNote.tsx): click a cast member or prop that has
+ * an explanation (Timeline.explanations) and a paper note rises beside it,
+ * tied on by a stitched thread. The telling pauses while a note is open and
+ * plays on, in place, when it is put away; the play gate holds off its own
+ * resume meanwhile. On by default; `explain={false}` leaves the stage as
+ * it was.
  */
 
 import { useFrame, useThree } from "@react-three/fiber";
@@ -44,10 +51,11 @@ import { pullTabGeometry } from "../labelArt";
 import { PAGE_H, PAGE_W } from "../leafShape";
 import { PAGE_PX_W } from "../pageArt";
 import type { PageFonts } from "../paperArt";
-import { createPlayGate, stepPlayGate, type PlayGate } from "../playGate";
+import { OPEN_TO_PLAY, createPlayGate, stepPlayGate, type PlayGate } from "../playGate";
 import type { StageShot } from "../shot";
 import { STAGE_SLOT } from "../StoryPage";
 import type { BookSpread, BookTeller } from "../types";
+import { ExplainLayer, ExplainSession } from "./ExplainNote";
 import { PrintedCaption } from "./PrintedCaption";
 import { PullTabLever } from "./PullTabLever";
 
@@ -67,6 +75,8 @@ export interface MomentStageProps {
   freezeAt?: number | null;
   /** Called once the scene is fully drawn. */
   onReady?: () => void;
+  /** Click-to-explain on the stage's cast and props. Default true. */
+  explain?: boolean;
 }
 
 /** The page's centre line in slot space. */
@@ -97,9 +107,31 @@ function ShotFeed({ shot, keep }: { shot: StageShot; keep: RefObject<Group | nul
   return null;
 }
 
-export function MomentStage({ controller, scene, spread, fonts, reveal, view, shot, size, freezeAt = null, onReady }: MomentStageProps) {
+export function MomentStage({
+  controller,
+  scene,
+  spread,
+  fonts,
+  reveal,
+  view,
+  shot,
+  size,
+  freezeAt = null,
+  onReady,
+  explain = true,
+}: MomentStageProps) {
   const tellers: BookTeller[] = useMemo(() => spread.tellings ?? [], [spread]);
   const gate = useRef<PlayGate>(null);
+  // The open note, and the pause it holds on the telling.
+  const notes = useMemo(() => new ExplainSession(controller), [controller]);
+  useEffect(() => {
+    // The telling plays on after a note only on an open page, in view, mid-telling.
+    notes.setMayResume(() => {
+      const g = gate.current;
+      return !!g && !g.armed && !g.awayPaused && reveal.current >= OPEN_TO_PLAY;
+    });
+    return notes.attach();
+  }, [notes, reveal]);
   const [ready, setReady] = useState(false);
   const readyRef = useRef(onReady);
   useEffect(() => {
@@ -162,6 +194,7 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
     switch (step.action) {
       case "rearm":
         // Folded away: next time the page opens, the set rises from the start.
+        notes.dispatch({ type: "turn" });
         controller.pause();
         if (freezeAt === null) controller.seek(0);
         break;
@@ -178,7 +211,9 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
         controller.pause();
         break;
       case "resume":
-        controller.play();
+        // Back on the stage page with a note open: play on once it is put away.
+        if (notes.open !== null) notes.resumeLater();
+        else controller.play();
         break;
     }
   });
@@ -206,6 +241,8 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
     return z;
   }, [layout, tabs]);
   const keep = useRef<Group>(null);
+  const captionAt = useRef<Group>(null);
+  const caption = useMemo(() => ({ at: captionAt, width: layout.width, depth: layout.depth }), [layout]);
   const shots = useMemo(
     () => new Map((scene.timeline.interactions ?? []).map((i) => [i.id, i.shot ?? null])),
     [scene],
@@ -217,9 +254,11 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
       <group position-x={CENTRE_X}>
         <TimelineScene controller={controller} scene={scene} size={layout.stage} reveal={reveal} onReady={onSceneReady}>
           <ShotFeed shot={shot} keep={keep} />
+          {explain && <ExplainLayer session={notes} fonts={fonts} reveal={reveal} caption={caption} enabled={ready} gate={gate} />}
         </TimelineScene>
       </group>
       <group ref={keep} position={[CENTRE_X, 0, keepZ]} />
+      <group ref={captionAt} position={[CENTRE_X, 0, layout.z]} />
       {ready && (
         <PrintedCaption
           controller={controller}

@@ -427,7 +427,7 @@ Each new person gets a character sheet picked from an unused color and a signatu
 
 - **Tree:** `$graphLookup` over `parentIds`, restricted to `{ familyId }`, starting from the oldest ancestors.
 - **A person's book:** `memories.find({ familyId, participantIds: id }).sort({ year: 1 })`
-- **"Ask the family":** Atlas Vector Search over `memories.embedding` with a `familyId` pre-filter, with answers quoted from the tellings.
+- **"Ask the family":** keyword search merged with Atlas Vector Search over `memories.embedding` (a `familyId` pre-filter), ranked with the people the question names (kinship words resolved for whoever asks), returning quotes from the tellings and the single best memory to open. When `ANTHROPIC_API_KEY` is set, a small Claude model (`asking.py`, `STITCH_ASK_MODEL`) picks among the top candidates and writes a short answer from the quotes; any failure falls back to the search result.
 
 ## 6. API routes
 

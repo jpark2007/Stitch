@@ -126,10 +126,12 @@ describe("hrefs", () => {
       "login",
       "memory",
       "newFamily",
+      "newTradition",
       "person",
       "render",
       "settings",
       "signup",
+      "traditions",
     ]);
   });
 
@@ -167,6 +169,18 @@ describe("hrefs", () => {
     assert.equal(hrefs.add({ familyId: "f1" }), "/add?family=f1");
     assert.equal(hrefs.add({ memoryId: "m1" }), "/add?memoryId=m1");
     assert.equal(hrefs.add({ familyId: "f 1", memoryId: "m&1" }), "/add?family=f%201&memoryId=m%261");
+  });
+
+  test("traditions and newTradition take an optional family as ?family=", () => {
+    assert.equal(hrefs.traditions(), "/traditions");
+    assert.equal(hrefs.traditions({}), "/traditions");
+    assert.equal(hrefs.traditions({ familyId: null }), "/traditions");
+    assert.equal(hrefs.traditions({ familyId: "" }), "/traditions");
+    assert.equal(hrefs.traditions({ familyId: "f1" }), "/traditions?family=f1");
+    assert.equal(hrefs.traditions({ familyId: "a&b=c" }), "/traditions?family=a%26b%3Dc");
+    assert.equal(hrefs.newTradition(), "/traditions/new");
+    assert.equal(hrefs.newTradition({ familyId: null }), "/traditions/new");
+    assert.equal(hrefs.newTradition({ familyId: "f 1" }), "/traditions/new?family=f%201");
   });
 
   test("memory and person take an optional family as ?family=", () => {
