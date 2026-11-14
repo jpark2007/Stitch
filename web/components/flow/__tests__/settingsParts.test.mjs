@@ -4,7 +4,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { describeExpiry, inviteUrl, pickActiveInvite } from "../invites.ts";
-import { UNKNOWN_MEMBER_NAME, memberRows } from "../members.ts";
+import {
+  UNKNOWN_MEMBER_NAME,
+  memberRows,
+  roleAfter,
+  roleChangeCopy,
+  roleChangeError,
+} from "../members.ts";
 
 // ---- inviteUrl ------------------------------------------------------------
 
@@ -131,6 +137,8 @@ test("memberRows: joins each member to the person they claimed", () => {
       joinedAt: "2026-11-01T10:00:00Z",
       isYou: false,
       removable: true,
+      canChangeRole: true,
+      roleAction: "promote",
     },
   ]);
 });
@@ -223,4 +231,144 @@ test("memberRows: an admin viewer is first even though other admins sort above t
   ];
   const rows = memberRows(members, PEOPLE, "u-rosa", true);
   assert.deepEqual(rows.map((r) => r.userId), ["u-rosa", "u-ana"]);
+});
+
+// ---- memberRows: role changes ---------------------------------------------
+
+const byUser = (rows) => Object.fromEntries(rows.map((r) => [r.userId, r]));
+const actionsOf = (rows) =>
+  Object.fromEntries(rows.map((r) => [r.userId, [r.canChangeRole, r.roleAction]]));
+
+test("memberRows: a non-admin viewer gets no role actions", () => {
+  const members = [
+    { userId: "u-rosa", role: "admin" },
+    { userId: "u-luis", role: "admin" },
+    { userId: "u-ana", role: "member" },
+    { userId: "u-ghost", role: "member" },
+  ];
+  const rows = memberRows(members, PEOPLE, "u-ana", false);
+  for (const r of rows) {
+    assert.equal(r.canChangeRole, false, r.userId);
+    assert.equal(r.roleAction, null, r.userId);
+  }
+});
+
+test("memberRows: an admin sees promote on members and demote on other admins", () => {
+  const members = [
+    { userId: "u-rosa", role: "admin" },
+    { userId: "u-luis", role: "admin" },
+    { userId: "u-ana", role: "member" },
+    { userId: "u-ghost", role: "member" },
+  ];
+  const rows = memberRows(members, PEOPLE, "u-rosa", true);
+  assert.deepEqual(actionsOf(rows), {
+    "u-rosa": [true, "demote"], // stepping down: Luis is still an admin
+    "u-luis": [true, "demote"],
+    "u-ana": [true, "promote"],
+    "u-ghost": [true, "promote"],
+  });
+});
+
+test("memberRows: the sole admin's own row cannot step down", () => {
+  const members = [
+    { userId: "u-rosa", role: "admin" },
+    { userId: "u-ana", role: "member" },
+  ];
+  const rows = byUser(memberRows(members, PEOPLE, "u-rosa", true));
+  assert.equal(rows["u-rosa"].canChangeRole, false);
+  assert.equal(rows["u-rosa"].roleAction, null);
+  assert.equal(rows["u-ana"].roleAction, "promote");
+});
+
+test("memberRows: with two admins, the viewer's own row can step down", () => {
+  const members = [
+    { userId: "u-rosa", role: "admin" },
+    { userId: "u-luis", role: "admin" },
+  ];
+  const rows = byUser(memberRows(members, PEOPLE, "u-luis", true));
+  assert.equal(rows["u-luis"].isYou, true);
+  assert.equal(rows["u-luis"].canChangeRole, true);
+  assert.equal(rows["u-luis"].roleAction, "demote");
+  assert.equal(rows["u-luis"].removable, false, "stepping down is not removing yourself");
+});
+
+test("memberRows: the last admin is never demoted, even from another admin's view", () => {
+  // Can't happen for real (the viewer would be an admin too), but the last
+  // admin must still be protected.
+  const members = [
+    { userId: "u-rosa", role: "admin" },
+    { userId: "u-ana", role: "member" },
+  ];
+  const rows = byUser(memberRows(members, PEOPLE, "u-luis", true));
+  assert.equal(rows["u-rosa"].canChangeRole, false);
+  assert.equal(rows["u-rosa"].roleAction, null);
+});
+
+test("memberRows: a viewer who is a member in the list can't promote themselves", () => {
+  // The session still says admin while the family already says member (just
+  // after stepping down): no control on the viewer's own row.
+  const members = [
+    { userId: "u-rosa", role: "member" },
+    { userId: "u-luis", role: "admin" },
+  ];
+  const rows = byUser(memberRows(members, PEOPLE, "u-rosa", true));
+  assert.equal(rows["u-rosa"].roleAction, null);
+  assert.equal(rows["u-rosa"].canChangeRole, false);
+});
+
+test("memberRows: role actions keep the remove and sort rules", () => {
+  const members = [
+    { userId: "u-ana", role: "member" },
+    { userId: "u-luis", role: "admin" },
+    { userId: "u-rosa", role: "admin" },
+  ];
+  const rows = memberRows(members, PEOPLE, "u-rosa", true);
+  assert.deepEqual(rows.map((r) => r.userId), ["u-rosa", "u-luis", "u-ana"]);
+  assert.deepEqual(rows.map((r) => r.removable), [false, true, true]);
+});
+
+// ---- role change words ----------------------------------------------------
+
+test("roleAfter: promote makes an admin, demote a member", () => {
+  assert.equal(roleAfter("promote"), "admin");
+  assert.equal(roleAfter("demote"), "member");
+});
+
+/** The button's accessible name: visible words with the hidden name between. */
+const nameOf = (copy) => copy.labelBefore + copy.labelHidden + copy.labelAfter;
+/** What the button shows. */
+const shownOf = (copy) => copy.labelBefore + copy.labelAfter;
+
+test("roleChangeCopy: names the person for screen readers, shows short labels", () => {
+  const ana = { name: "Ana", personId: "p-ana", isYou: false };
+  const promote = roleChangeCopy(ana, "promote");
+  assert.equal(shownOf(promote), "Make admin");
+  assert.equal(nameOf(promote), "Make Ana an admin");
+  assert.equal(promote.question, "Make Ana an admin?");
+  assert.equal(promote.done, "Ana is now an admin.");
+
+  const demote = roleChangeCopy(ana, "demote");
+  assert.equal(shownOf(demote), "Make member");
+  assert.equal(nameOf(demote), "Make Ana a member");
+  assert.equal(demote.done, "Ana is now a member.");
+
+  const self = roleChangeCopy({ name: "Rosa", personId: "p-rosa", isYou: true }, "demote");
+  assert.equal(shownOf(self), "Step down as admin");
+  assert.equal(nameOf(self), "Step down as admin");
+  assert.equal(self.confirm, "Step down");
+
+  const ghost = roleChangeCopy({ name: UNKNOWN_MEMBER_NAME, personId: null, isYou: false }, "promote");
+  assert.equal(nameOf(ghost), "Make this family member an admin");
+  assert.equal(ghost.done, "The family member is now an admin.");
+});
+
+test("roleChangeError: a 409 is the last-admin rule in plain words; others keep their message", () => {
+  const conflict = Object.assign(new Error("A family needs at least one admin"), { status: 409 });
+  assert.match(roleChangeError(conflict, { name: "Rosa", personId: "p-rosa", isYou: true }), /only admin/);
+  assert.match(roleChangeError(conflict, { name: "Luis", personId: "p-luis", isYou: false }), /^Luis is the only admin/);
+  const gone = Object.assign(new Error("Member not found"), { status: 404 });
+  assert.equal(roleChangeError(gone, { name: "Sam", personId: "p-sam", isYou: false }), "Sam isn’t in the family any more.");
+  const other = Object.assign(new Error("Only a family admin can do that."), { status: 403 });
+  assert.equal(roleChangeError(other, { name: "Ana", personId: "p-ana", isYou: false }), "Only a family admin can do that.");
+  assert.equal(roleChangeError("boom", { name: "Ana", personId: "p-ana", isYou: false }), "Something went wrong. Please try again.");
 });

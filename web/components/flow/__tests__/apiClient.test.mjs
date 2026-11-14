@@ -135,6 +135,7 @@ describe("module surface", () => {
       "previewInvite",
       "removeMember",
       "revokeInvite",
+      "setMemberRole",
       "signup",
       "streamRun",
       "submitMemory",
@@ -201,6 +202,8 @@ const ROUTES = [
   ["updatePerson", [F, "p3", { name: "Rosa M." }], "PATCH", `/families/${FE}/people/p3`,
     { name: "Rosa M." }, { id: "p3" }],
   ["removeMember", [F, "u9"], "DELETE", `/families/${FE}/members/u9`, undefined, null],
+  ["setMemberRole", [F, "u9", { role: "admin" }], "PATCH", `/families/${FE}/members/u9`, { role: "admin" },
+    { id: "fam 1", name: "The Maos", members: [{ userId: "u9", role: "admin" }], invites: [] }],
   ["getTree", [F], "GET", `/families/${FE}/tree`, undefined, { people: [] }],
   ["getBook", [F, "p1"], "GET", `/families/${FE}/people/p1/book`, undefined, { memories: [] }],
   ["getMemory", [F, "m1"], "GET", `/families/${FE}/memories/m1`, undefined, { memory: { id: "m1" } }],
@@ -455,6 +458,54 @@ describe("getFamily", () => {
       await rejectsWith(client.getFamily(bad), (e) => assert.equal(e.status, 404));
     }
     assert.equal(calls.length, 0);
+  });
+});
+
+describe("setMemberRole", () => {
+  test("sends PATCH /families/<fid>/members/<uid> with JSON {role} and resolves the Family", async () => {
+    const family = {
+      id: "f1",
+      name: "The Maos",
+      members: [
+        { userId: "u1", role: "admin", joinedAt: null },
+        { userId: "user 2", role: "member", joinedAt: null },
+      ],
+      invites: [],
+    };
+    const { fetch, calls } = recordingFetch(() => jsonResponse(family));
+    const client = createApiClient({ baseUrl: BASE, fetch });
+    const result = await client.setMemberRole("f1", "user 2", { role: "member" });
+    assert.deepEqual(result, family);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, `${BASE}/families/f1/members/user%202`);
+    assert.equal(calls[0].init.method, "PATCH");
+    assert.equal(calls[0].init.credentials, "include");
+    assert.equal(headersOf(calls[0].init).get("content-type"), "application/json");
+    assert.deepEqual(JSON.parse(calls[0].init.body), { role: "member" });
+  });
+
+  test("a 409 LAST_ADMIN rejects with an ApiError carrying the status and the server detail", async () => {
+    const { fetch } = recordingFetch(() => jsonResponse({ detail: "A family needs at least one admin" }, 409));
+    const client = createApiClient({ baseUrl: BASE, fetch });
+    await rejectsWith(client.setMemberRole("f1", "u1", { role: "member" }), (e) => {
+      assert.ok(isApiError(e));
+      assert.ok(e instanceof ApiError);
+      assert.equal(e.status, 409);
+      assert.equal(e.detail, "A family needs at least one admin");
+      assert.equal(e.message, "A family needs at least one admin");
+    });
+  });
+
+  test("403 and 404 keep the server detail", async () => {
+    for (const [status, detail] of [[403, "Admins only"], [404, "Member not found"]]) {
+      const { fetch } = recordingFetch(() => jsonResponse({ detail }, status));
+      const client = createApiClient({ baseUrl: BASE, fetch });
+      await rejectsWith(client.setMemberRole("f1", "u9", { role: "admin" }), (e) => {
+        assert.ok(isApiError(e));
+        assert.equal(e.status, status);
+        assert.equal(e.detail, detail);
+      });
+    }
   });
 });
 

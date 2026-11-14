@@ -27,6 +27,7 @@ import type {
   JoinResponse,
   LoginRequest,
   MeResponse,
+  MemberRolePatch,
   MemoryResponse,
   NewPerson,
   Person,
@@ -347,6 +348,14 @@ export interface StitchApi {
   addPerson(fid: string, body: NewPerson): Promise<Person>;
   updatePerson(fid: string, personId: string, body: PersonPatch): Promise<Person>;
   removeMember(fid: string, userId: string): Promise<void>;
+  /**
+   * Admin only: make a member an admin or a member, and get the family back as
+   * getFamily returns it. Setting the role a member already has is a no-op.
+   * Rejects 403 for a non-admin, 404 for someone not in the family, and 409
+   * when it would demote the family's last admin. An admin who steps down gets
+   * the member's view back (no invites).
+   */
+  setMemberRole(fid: string, userId: string, body: MemberRolePatch): Promise<Family>;
 
   // Family content
   getTree(fid: string): Promise<TreeResponse>;
@@ -590,6 +599,8 @@ export function createApiClient(opts?: {
       request<Person>("PATCH", path`/families/${fid}/people/${personId}`, { json: body }),
     removeMember: async (fid, userId) =>
       requestVoid("DELETE", path`/families/${fid}/members/${userId}`),
+    setMemberRole: async (fid, userId, body) =>
+      request<Family>("PATCH", path`/families/${fid}/members/${userId}`, { json: body }),
 
     getTree: async (fid) => request<TreeResponse>("GET", path`/families/${fid}/tree`),
     getBook: async (fid, personId) =>
