@@ -483,6 +483,12 @@ export interface Screenplay {
   explanations?: Explanation[] | null;
 }
 
+/** GET /session: who is signed in. Always 200; `user` is null when nobody is. */
+export interface SessionResponse {
+  user?: User | null;
+  families?: FamilySummary[];
+}
+
 /** A saved place: paper layers plus named marks. */
 export interface SetDef {
   id: string;

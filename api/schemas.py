@@ -232,6 +232,13 @@ class MeResponse(Model):
     families: list[FamilySummary]
 
 
+class SessionResponse(Model):
+    """GET /session: who is signed in. Always 200; `user` is null when nobody is."""
+
+    user: User | None = None
+    families: list[FamilySummary] = Field(default_factory=list)
+
+
 # --------------------------------------------------------------------- family routes
 
 class CreateFamilyRequest(Model):
