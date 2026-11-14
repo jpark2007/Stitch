@@ -1,18 +1,27 @@
 "use client";
 
 // Sign up: your name, email and a password. Presentational: the page owns the
-// API call and passes it in as onSubmit, then navigates away when it resolves
-// (so nothing is reset here). A rejected ApiError comes back as field
-// messages and its detail in the form-level alert; anything else gets a plain
-// message. What was typed is never cleared by an error.
+// API call and passes it in as onSubmit, then navigates away when it resolves.
+// A rejected ApiError comes back as field messages and its detail in the
+// form-level alert; anything else gets a plain message. What was typed is
+// never cleared by an error.
+//
+// With cacheComponents on, a page left behind stays mounted, hidden by React
+// Activity, with its state and DOM. So the password is cleared whenever this
+// form is hidden (a layout effect cleanup, which runs as Activity hides it and
+// before anything paints, so the visible form never flashes empty), and a sent
+// form is swapped for signupDraftAfterSuccess, which empties name and email
+// too. A half-typed name and email survive a detour to /login and back; a
+// password never does, and nothing survives a successful sign up.
 import Link from "next/link";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import type { SignupRequest } from "@/lib/types";
 import { isApiError } from "@/lib/api";
 import {
   PASSWORD_HINT,
   SIGNUP_FIELDS,
   serverErrorState,
+  signupDraftAfterSuccess,
   toSignupRequest,
   validateSignup,
   withoutError,
@@ -44,10 +53,23 @@ export function SignupForm(props: {
   // Bumped after a failed submit; the effect moves focus once errors render.
   const [focusTick, setFocusTick] = useState(0);
   const formRef = useRef<HTMLFormElement>(null);
+  // True from sending until onSubmit rejects: the page is navigating away.
+  // Set before the call so a navigation that hides this form first still
+  // finds it set.
+  const sentRef = useRef(false);
 
   useEffect(() => {
     if (focusTick > 0) focusFirstError(formRef.current);
   }, [focusTick]);
+
+  // Runs when Activity hides this form (and on unmount, where it is a no-op).
+  useLayoutEffect(() => {
+    return () => {
+      const sent = sentRef.current;
+      sentRef.current = false;
+      setDraft((d) => (sent ? signupDraftAfterSuccess() : { ...d, password: "" }));
+    };
+  }, []);
 
   function update(key: SignupField, value: string) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -69,9 +91,11 @@ export function SignupForm(props: {
     setErrors({});
     setFormError(null);
     setPending(true);
+    sentRef.current = true;
     try {
       await onSubmit(toSignupRequest(draft));
     } catch (err) {
+      sentRef.current = false;
       if (isApiError(err)) {
         const next = serverErrorState(err, SIGNUP_FIELDS);
         setErrors(next.fields);

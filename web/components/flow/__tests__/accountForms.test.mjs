@@ -23,9 +23,11 @@ const {
   PASSWORD_HINT,
   SIGNUP_FIELDS,
   familyServerErrors,
+  loginDraftAfterSuccess,
   roleLabel,
   serverErrorState,
   shouldShowSwitcher,
+  signupDraftAfterSuccess,
   toCreateFamilyRequest,
   toLoginRequest,
   toSignupRequest,
@@ -266,4 +268,31 @@ test("shouldShowSwitcher: shown for two or more", () => {
 test("roleLabel: admin and member", () => {
   assert.equal(roleLabel("admin"), "Admin");
   assert.equal(roleLabel("member"), "Member");
+});
+
+// ---- after a successful submit -------------------------------------------
+
+test("loginDraftAfterSuccess: the password is gone, the email is kept", () => {
+  const draft = { email: "a@b.c", password: "secret" };
+  const after = loginDraftAfterSuccess(draft);
+  assert.equal(after.password, "");
+  assert.equal(after.email, "a@b.c");
+  assert.deepEqual(Object.keys(after).sort(), ["email", "password"]);
+  assert.deepEqual(draft, { email: "a@b.c", password: "secret" }, "input not mutated");
+});
+
+test("loginDraftAfterSuccess: no password survives, whatever was typed", () => {
+  for (const password of ["x", "  spaced  ", "correct horse battery staple"]) {
+    assert.equal(loginDraftAfterSuccess({ email: "", password }).password, "");
+  }
+});
+
+test("signupDraftAfterSuccess: empty name, email and password", () => {
+  assert.deepEqual(signupDraftAfterSuccess(), { name: "", email: "", password: "" });
+});
+
+test("signupDraftAfterSuccess: a fresh object each time", () => {
+  const a = signupDraftAfterSuccess();
+  a.password = "leaked";
+  assert.equal(signupDraftAfterSuccess().password, "");
 });

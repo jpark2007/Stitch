@@ -100,6 +100,28 @@ export function toSignupRequest(d: SignupDraft): SignupRequest {
   return { name: d.name.trim(), email: d.email.trim(), password: d.password };
 }
 
+// ---------------------------------------------------------------------------
+// After a successful submit
+//
+// With cacheComponents on, a page left behind stays mounted (hidden by React
+// Activity) with its state and DOM. The log in and sign up forms swap in
+// these drafts once they are sent, so a hidden form never holds a password.
+
+/**
+ * The log in draft once it has been sent: the password is gone, the email is
+ * kept. The email is not a secret, the hidden form only lives as long as this
+ * signed-in session (signing out reloads the whole document), and coming back
+ * to /login in the same session finds your email ready.
+ */
+export function loginDraftAfterSuccess(d: LoginDraft): LoginDraft {
+  return { email: d.email, password: "" };
+}
+
+/** The sign up draft once it has been sent: empty, ready for nobody in particular. */
+export function signupDraftAfterSuccess(): SignupDraft {
+  return { name: "", email: "", password: "" };
+}
+
 /** The family and its first person: you. A blank year is sent as null. */
 export function toCreateFamilyRequest(d: FamilyDraft): CreateFamilyRequest {
   const born = d.born.trim();
