@@ -9,8 +9,10 @@ the tool and by runs.py.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from deepagents.backends.utils import create_file_data, file_data_to_string
 from langchain_core.messages import ToolMessage
@@ -25,6 +27,7 @@ from agent.repo import AgentRepo
 from agent.run_info import RunInfo
 from agent.tools.compile import ERRORS_PATH
 from schemas import Memory, Telling
+from screenplay.narration import NarrationError, default_author
 from screenplay.schema import VOCABULARY, NarrationLine, Screenplay, Timeline
 
 SCREENPLAY_PATH = "/screenplay.json"
@@ -33,8 +36,17 @@ TIMELINE_PATH = "/timeline.json"
 # tools being rebuilt when a run resumes. The prompts never name these files.
 SAVED_MEMORY_PATH = "/saved_memory.json"
 """{"memoryId", "runId"}: the memory this new-memory run saved, so a later save updates it."""
-ASKED_QUESTIONS_PATH = "/asked_questions.json"
-"""{memoryId: [personId, ...]}: who link_participants already asked, per memory."""
+ASKED_QUESTIONS_DIR = "/asked_questions/"
+"""Who link_participants already asked: one file per (memory, person), at
+`asked_question_path(memoryId, personId)`. A file per pair, not one shared record, so
+parallel calls in one message (or parallel linker sub-agents) never overwrite each
+other: the files reducer merges per path."""
+
+
+def asked_question_path(memory_id: str, person_id: str) -> str:
+    """The state file that records link_participants asked `person_id` about `memory_id`."""
+    return f"{ASKED_QUESTIONS_DIR}{quote(memory_id, safe='')}/{quote(person_id, safe='')}"
+
 TELLING_PREVIEW_CHARS = 200
 
 
@@ -87,8 +99,10 @@ def save_scene(
     Second telling (run.fields.memory_id set): the existing action (screenplay shots and
     timeline tracks) is kept untouched. The teller's Telling is appended, or replaces
     their own earlier telling in place; the teller's lines must be in
-    screenplay.narrations[author]. They become screenplay.narrations[author], or each
-    shot's `narration` when the teller is the default narrator, and the draft's
+    screenplay.narrations[author] (or, for the default narrator only, in the draft's shot
+    `narration` when the draft's default teller is that author, which is the form the
+    compiler accepts). They become screenplay.narrations[author], or each shot's
+    `narration` when the teller is the default narrator, and the draft's
     timeline.narrations[author] is stored; the duration grows when the new narration
     outlasts the action; version goes up by one.
     """
@@ -119,6 +133,14 @@ def _require_compiled_from(screenplay: Screenplay, timeline: Timeline) -> None:
             f"the timeline's shots ({', '.join(tl_ids) or 'none'}) are not the screenplay's "
             f"({', '.join(sp_ids) or 'none'}); compile {SCREENPLAY_PATH} again before saving"
         )
+
+
+def _draft_default_teller(screenplay: Screenplay) -> str | None:
+    """Who tells the draft's shot `narration`, by the compiler's rule; None when it cannot tell."""
+    try:
+        return default_author(screenplay)
+    except NarrationError:
+        return None
 
 
 def _with_telling(tellings: list[Telling], telling: Telling) -> list[Telling]:
@@ -223,19 +245,28 @@ def _add_telling(
     if draft_track is None:
         raise ValueError(f"the draft timeline has no narrations[{author!r}] for this telling")
 
-    # The teller's lines, keyed by shot. They come only from narrations[author]: each
-    # shot's `narration` is the default telling, which may be another teller's words.
-    if not screenplay.narrations or author not in screenplay.narrations:
+    default_narrator = existing.timeline.default_narrator or (
+        existing.tellings[0].author_id if existing.tellings else None
+    )
+
+    # The teller's lines, keyed by shot. They come from narrations[author]: each shot's
+    # `narration` is the default telling, which may be another teller's words. The one
+    # exception is the default narrator retelling: the compiler refuses a default teller
+    # who also has narrations[author] (duplicate_telling), so a draft that compiles carries
+    # the retold lines in each shot's `narration`. Those are read only when the draft's
+    # own default teller, by the compiler's rule, is this author.
+    drafted: dict[str, list[NarrationLine]]
+    if screenplay.narrations and author in screenplay.narrations:
+        drafted = dict(screenplay.narrations[author])
+    elif author == default_narrator and _draft_default_teller(screenplay) == author:
+        drafted = {shot.id: shot.narration for shot in screenplay.shots}
+    else:
         raise ValueError(f"the draft has no narrations[{author!r}] for this telling")
-    drafted: dict[str, list[NarrationLine]] = dict(screenplay.narrations[author])
     # Only shots the saved action has can carry them.
     shot_ids = {shot.id for shot in existing.screenplay.shots}
     lines_by_shot = {sid: lines for sid, lines in drafted.items() if sid in shot_ids}
     ignored = _dedup([sid for sid, lines in drafted.items() if sid not in shot_ids and lines])
 
-    default_narrator = existing.timeline.default_narrator or (
-        existing.tellings[0].author_id if existing.tellings else None
-    )
     new_screenplay = existing.screenplay.model_copy(deep=True)
     if author == default_narrator:
         # The default narrator retold it: the new lines are the default telling, which
@@ -341,27 +372,15 @@ def _saved_memory_id(files: dict[str, Any], run: RunInfo) -> tuple[str | None, s
     return memory_id, None
 
 
-def _asked_record(files: dict[str, Any]) -> dict[str, list[str]]:
-    """{memoryId: [personId, ...]} from ASKED_QUESTIONS_PATH; empty when absent or unreadable."""
-    text = _file_text(files, ASKED_QUESTIONS_PATH)
-    if not text:
-        return {}
-    try:
-        raw = json.loads(text)
-    except ValueError:
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {
-        str(mid): [str(pid) for pid in pids if isinstance(pid, str)]
-        for mid, pids in raw.items()
-        if isinstance(pids, list)
-    }
-
-
 def make_family_tools(repo: AgentRepo, run: RunInfo) -> list[BaseTool]:
     """The family tools for one run, bound to run.family_id."""
     family_id = run.family_id
+    # Parallel link_participants calls run on separate threads of one tool node and each
+    # sees the same earlier state. The lock makes each call's read-check-ask-save atomic
+    # in this process, and `asked_here` covers pairs a parallel sibling asked before its
+    # files update lands in state. The state files stay the durable record (resume).
+    link_lock = threading.Lock()
+    asked_here: set[tuple[str, str]] = set()
 
     @tool(parse_docstring=True)
     def get_person(person_id: str) -> str:
@@ -398,31 +417,32 @@ def make_family_tools(repo: AgentRepo, run: RunInfo) -> list[BaseTool]:
             person_ids: People in this family who were there.
             question: What to ask them, e.g. "Dad says you met on the church steps. What do you remember?"
         """
-        memory = repo.get_memory(family_id, memory_id)
-        if memory is None:
-            return f"not found: memory {memory_id!r}"
-        known: list[str] = []
-        unknown: list[str] = []
-        for pid in _dedup(person_ids):
-            (known if repo.get_person(family_id, pid) is not None else unknown).append(pid)
-        if known:
-            memory = memory.model_copy(update={"participant_ids": _dedup([*memory.participant_ids, *known])})
-            repo.save_memory(family_id, memory)
-        # Who this run already asked about this memory, from the run's state files, so a
-        # repeated call (or a second linker pass) never asks anyone twice.
-        record = _asked_record(_state_files(runtime.state)) if runtime is not None else {}
-        asked_before = set(record.get(memory_id, []))
-        told = {t.author_id for t in memory.tellings}
-        asked: list[str] = []
-        already: list[str] = []
-        for pid in known:
-            if pid == run.author_id or pid in told:
-                continue
-            if pid in asked_before:
-                already.append(pid)
-                continue
-            repo.create_question(family_id, person_id=pid, text=question, memory_id=memory_id)
-            asked.append(pid)
+        # Who this run already asked, from the run's state files, so a repeated call (or a
+        # second linker pass) never asks anyone twice about one memory.
+        files = _state_files(runtime.state) if runtime is not None else {}
+        with link_lock:
+            memory = repo.get_memory(family_id, memory_id)
+            if memory is None:
+                return f"not found: memory {memory_id!r}"
+            known: list[str] = []
+            unknown: list[str] = []
+            for pid in _dedup(person_ids):
+                (known if repo.get_person(family_id, pid) is not None else unknown).append(pid)
+            if known:
+                memory = memory.model_copy(update={"participant_ids": _dedup([*memory.participant_ids, *known])})
+                repo.save_memory(family_id, memory)
+            told = {t.author_id for t in memory.tellings}
+            asked: list[str] = []
+            already: list[str] = []
+            for pid in known:
+                if pid == run.author_id or pid in told:
+                    continue
+                if asked_question_path(memory_id, pid) in files or (memory_id, pid) in asked_here:
+                    already.append(pid)
+                    continue
+                repo.create_question(family_id, person_id=pid, text=question, memory_id=memory_id)
+                asked_here.add((memory_id, pid))
+                asked.append(pid)
         parts = [f"linked {', '.join(known) or 'nobody'} to {memory_id}"]
         parts.append(f"asked {', '.join(asked)}" if asked else "no one new to ask")
         if already:
@@ -432,10 +452,14 @@ def make_family_tools(repo: AgentRepo, run: RunInfo) -> list[BaseTool]:
         content = "; ".join(parts)
         if runtime is None or not asked:
             return content
-        record[memory_id] = _dedup([*record.get(memory_id, []), *asked])
         return Command(
             update={
-                "files": {ASKED_QUESTIONS_PATH: create_file_data(json.dumps(record, ensure_ascii=False))},
+                "files": {
+                    asked_question_path(memory_id, pid): create_file_data(
+                        json.dumps({"memoryId": memory_id, "personId": pid}, ensure_ascii=False)
+                    )
+                    for pid in asked
+                },
                 "messages": [ToolMessage(content=content, tool_call_id=runtime.tool_call_id, name="link_participants")],
             }
         )

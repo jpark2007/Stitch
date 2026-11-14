@@ -17,8 +17,15 @@ import schemas
 from agent.fake_compiler import FakeCompiler
 from agent.repo import SAMPLE_MEMORY_PATH, InMemoryRepo, load_sample_family
 from agent.run_info import RunInfo
-from agent.tools.compile import ERRORS_PATH, SceneInputs, make_compile_tool
-from agent.tools.family import era_for_year, make_family_tools, save_scene, save_scene_with_report
+from agent.tools.compile import ERRORS_PATH, Compiler, SceneInputs, load_compiler, make_compile_tool
+from agent.tools.family import (
+    ASKED_QUESTIONS_DIR,
+    asked_question_path,
+    era_for_year,
+    make_family_tools,
+    save_scene,
+    save_scene_with_report,
+)
 from schemas import Memory, MemoryResponse, SubmitMemoryFields
 from screenplay.schema import Caption, NarrationLine, Screenplay, Timeline
 
@@ -477,6 +484,33 @@ def _call_tool(tools: list[BaseTool], files: dict[str, Any], name: str, args: di
     return str(message.content), events, dict(final.get("files") or {})
 
 
+def _call_tools_in_parallel(tools: list[BaseTool], files: dict[str, Any], name: str,
+                            many_args: list[dict[str, Any]]) -> tuple[list[str], dict[str, Any]]:
+    """Run several calls of one tool from ONE AI message (the tool node runs them in parallel).
+
+    Returns (each tool message text in call order, the state's files afterwards).
+    """
+    graph = StateGraph(FilesystemState)
+    graph.add_node("tools", ToolNode(tools))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    calls = [{"name": name, "args": args, "id": f"call_{i}", "type": "tool_call"} for i, args in enumerate(many_args)]
+    final = graph.compile().invoke({"messages": [AIMessage(content="", tool_calls=calls)], "files": files})
+    by_id = {m.tool_call_id: str(m.content) for m in final["messages"] if isinstance(m, ToolMessage)}
+    return [by_id[c["id"]] for c in calls], dict(final.get("files") or {})
+
+
+def _asked_pairs(files: dict[str, Any]) -> list[tuple[str, str]]:
+    """The (memoryId, personId) pairs link_participants recorded in the state files."""
+    pairs = []
+    for path, data in files.items():
+        if path.startswith(ASKED_QUESTIONS_DIR):
+            record = json.loads(file_data_to_string(data))
+            assert path == asked_question_path(record["memoryId"], record["personId"])
+            pairs.append((record["memoryId"], record["personId"]))
+    return sorted(pairs)
+
+
 def _run_save_memory(repo: InMemoryRepo, run: RunInfo, files: dict[str, Any]) -> tuple[str, list[dict]]:
     content, events, _ = _call_tool(make_family_tools(repo, run), files, "save_memory", SAVE_ARGS)
     return content, events
@@ -790,6 +824,67 @@ def test_another_teller_still_goes_under_narrations() -> None:
     assert [s.narration for s in memory.screenplay.shots] == [s.narration for s in existing.screenplay.shots]
 
 
+RETOLD_TEXT = "It rained. I saw her."
+
+
+def _dads_compilable_retelling(existing: Memory) -> Screenplay:
+    """Dad's retelling as the compiler accepts it: his new words in each shot's `narration`.
+
+    narrations['dad'] beside a shot narration sourced to dad is refused (duplicate_telling),
+    so this is the only form a compiled default-narrator retelling can take.
+    """
+    assert existing.screenplay is not None
+    draft = existing.screenplay.model_copy(deep=True)
+    draft.shots[0].narration[0] = draft.shots[0].narration[0].model_copy(update={"text": RETOLD_TEXT})
+    return draft
+
+
+@pytest.mark.parametrize("compiler_name", ["fake", "real"])
+def test_a_compiled_default_narrator_retelling_saves(compiler_name: str) -> None:
+    """Reviewer finding: the default-narrator retelling must be reachable through compile + save_memory."""
+    compiler: Compiler = FakeCompiler() if compiler_name == "fake" else load_compiler()
+    repo = make_repo()
+    existing = _sample_memory(repo)
+    assert existing.screenplay is not None and existing.timeline is not None
+    run = dad_retell_run(existing.id)
+    scene = _scene_inputs()
+    tools = [make_compile_tool(compiler, lambda _: scene), *make_family_tools(repo, run)]
+
+    files = {"/screenplay.json": create_file_data(_dads_compilable_retelling(existing).model_dump_json(by_alias=True))}
+    content, _, files = _call_tool(tools, files, "compile_screenplay", {})
+    assert content.startswith("ok:"), content
+    content, events, _ = _call_tool(tools, files, "save_memory", SAVE_ARGS, call_id="call_2")
+
+    assert content == f"saved {existing.id} v{existing.version + 1}"
+    assert [e["event"] for e in events] == ["scene_ready"]
+    saved = repo.get_memory(FAM, existing.id)
+    assert saved is not None and saved.screenplay is not None and saved.timeline is not None
+    assert [line.text for line in saved.screenplay.shots[0].narration] == [
+        RETOLD_TEXT, *[line.text for line in existing.screenplay.shots[0].narration[1:]]
+    ]
+    assert saved.screenplay.narrations is not None and "dad" not in saved.screenplay.narrations
+    assert saved.screenplay.narrations["mom"] == existing.screenplay.narrations["mom"]  # type: ignore[index]
+    assert saved.timeline.captions[0].text == RETOLD_TEXT
+    assert saved.timeline.narrations is not None
+    assert saved.timeline.narrations["mom"] == existing.timeline.narrations["mom"]  # type: ignore[index]
+    assert [t.author_id for t in saved.tellings] == ["dad", "mom"]
+    assert [m.id for m in repo.find_memories(FAM)] == [existing.id]
+
+
+def test_shot_narration_is_never_read_as_the_default_narrators_when_another_teller_owns_it() -> None:
+    """The shot-narration form counts as dad's retelling only when the draft's default teller is dad."""
+    repo = make_repo()
+    existing = _sample_memory(repo)
+    draft_sp, draft_tl = _dads_retelling()
+    draft_sp.narrations = None
+    for shot in draft_sp.shots:
+        shot.narration = [line.model_copy(update={"source": "telling:mom:x"}) for line in shot.narration]
+    with pytest.raises(ValueError, match=r"no narrations\['dad'\]"):
+        save_scene(repo, dad_retell_run(existing.id), title="x", participant_ids=[], screenplay=draft_sp,
+                   timeline=draft_tl)
+    assert repo.get_memory(FAM, existing.id) == existing
+
+
 # ------------------------------------------------- link_participants asks once (finding 14)
 
 
@@ -810,7 +905,7 @@ def test_linking_the_same_person_twice_asks_once(rebuild_tools: bool) -> None:
     assert second == "linked mom to m1; no one new to ask; already asked: mom"
     questions = repo.list_questions(FAM)
     assert [(q.person_id, q.memory_id, q.status) for q in questions] == [("mom", "m1", "open")]
-    assert json.loads(_text(files, "/asked_questions.json")) == {"m1": ["mom"]}
+    assert _asked_pairs(files) == [("m1", "mom")]
 
 
 def test_the_asked_record_is_per_memory() -> None:
@@ -825,11 +920,57 @@ def test_the_asked_record_is_per_memory() -> None:
                                    {"memory_id": "m2", "person_ids": ["mom", "dad"], "question": "?"})
     assert content == "linked mom, dad to m2; asked mom"
     assert sorted((q.person_id, q.memory_id) for q in repo.list_questions(FAM)) == [("mom", "m1"), ("mom", "m2")]
-    assert json.loads(_text(files, "/asked_questions.json")) == {"m1": ["mom"], "m2": ["mom"]}
+    assert _asked_pairs(files) == [("m1", "mom"), ("m2", "mom")]
+
+
+def _repo_with_aunt_and_m1() -> InMemoryRepo:
+    repo = make_repo()
+    repo.add_person(FAM, schemas.Person(id="aunt", family_id=FAM, name="Aunt May",
+                                        character=schemas.CharacterSheet(color="#00aa00")))
+    repo.save_memory(FAM, Memory(id="m1", family_id=FAM, title="Church", year=1988, participant_ids=["dad"],
+                                 tellings=[schemas.Telling(author_id="dad", text=DAD_TEXT)]))
+    return repo
+
+
+@pytest.mark.parametrize("rebuild_tools", [False, True])
+def test_parallel_link_calls_record_everyone_they_asked(rebuild_tools: bool) -> None:
+    """Reviewer finding: one message with a call per person (the linker's pattern) loses no record."""
+    repo = _repo_with_aunt_and_m1()
+    tools = make_family_tools(repo, dad_run())
+    replies, files = _call_tools_in_parallel(tools, {}, "link_participants", [
+        {"memory_id": "m1", "person_ids": ["mom"], "question": "What do you remember?"},
+        {"memory_id": "m1", "person_ids": ["aunt"], "question": "What do you remember?"},
+    ])
+    assert replies == ["linked mom to m1; asked mom", "linked aunt to m1; asked aunt"]
+    assert _asked_pairs(files) == [("m1", "aunt"), ("m1", "mom")]
+    memory = repo.get_memory(FAM, "m1")
+    assert memory is not None and sorted(memory.participant_ids) == ["aunt", "dad", "mom"]
+
+    if rebuild_tools:
+        tools = make_family_tools(repo, dad_run())
+    again, _, _ = _call_tool(tools, files, "link_participants",
+                             {"memory_id": "m1", "person_ids": ["mom", "aunt"], "question": "?"}, call_id="call_9")
+    assert again == "linked mom, aunt to m1; no one new to ask; already asked: mom, aunt"
+    assert sorted((q.person_id, q.memory_id) for q in repo.list_questions(FAM)) == [("aunt", "m1"), ("mom", "m1")]
+
+
+def test_parallel_link_calls_for_the_same_person_ask_once() -> None:
+    repo = _repo_with_aunt_and_m1()
+    args = {"memory_id": "m1", "person_ids": ["mom"], "question": "What do you remember?"}
+    replies, files = _call_tools_in_parallel(make_family_tools(repo, dad_run()), {}, "link_participants",
+                                             [args, args, args])
+    assert sorted(replies) == ["linked mom to m1; asked mom", *["linked mom to m1; no one new to ask; already asked: mom"] * 2]
+    assert [(q.person_id, q.memory_id) for q in repo.list_questions(FAM)] == [("mom", "m1")]
+    assert _asked_pairs(files) == [("m1", "mom")]
+
+
+def test_asked_record_paths_escape_ids() -> None:
+    assert asked_question_path("m/1", "mom") == f"{ASKED_QUESTIONS_DIR}m%2F1/mom"
+    assert asked_question_path("m1", "a/b") != asked_question_path("m1/a", "b")
 
 
 def test_two_linker_passes_through_deepagents_task_ask_once() -> None:
-    """The linker runs as a sub-agent: its /asked_questions.json reaches the studio's state
+    """The linker runs as a sub-agent: its asked-question files reach the studio's state
     through deepagents' `task`, so a second linker pass in the same run sees it."""
     from deepagents import create_deep_agent
     from langchain_core.messages import HumanMessage
@@ -865,4 +1006,4 @@ def test_two_linker_passes_through_deepagents_task_ask_once() -> None:
     replies = [str(m.content) for m in final["messages"] if isinstance(m, ToolMessage) and m.name == "task"]
     assert replies == ["linked mom to m1; asked mom", "linked mom to m1; no one new to ask; already asked: mom"]
     assert [(q.person_id, q.memory_id) for q in repo.list_questions(FAM)] == [("mom", "m1")]
-    assert json.loads(_text(final["files"], "/asked_questions.json")) == {"m1": ["mom"]}
+    assert _asked_pairs(final["files"]) == [("m1", "mom")]
