@@ -1,9 +1,52 @@
-// Pure logic behind the add-a-memory form: the draft it edits, its checks,
-// and the fields it hands to api.submitMemory. Erasable TypeScript only.
+// Pure logic behind the add-a-memory form: which question area it shows, the
+// draft it edits, its checks, and the fields it hands to api.submitMemory.
+// Erasable TypeScript only.
 // The one runtime import (validateYear) is extensionless for the Next build;
 // __tests__/memoryForm.test.mjs adds a resolve hook so `node --test` finds it.
 import type { Question, SubmitMemoryFields } from "@/lib/types";
 import { validateYear, type FieldErrors } from "./validation";
+
+/** Which way the add page is telling: a new moment, or a second telling of one. */
+export type QuestionAreaMode = "new" | "second";
+
+/** What the page shows for picking a question. At most one of these sits above the story. */
+export interface QuestionArea {
+  /** The questions family members asked, as notes above the story. */
+  showFamilyQuestions: boolean;
+  /** The generic starting points, inside the question field's disclosure. */
+  showStarters: boolean;
+  /** The optional, typed "What question are you answering?" field below the story. */
+  showQuestionField: boolean;
+}
+
+/**
+ * The one quiet question area of the add page.
+ *
+ * - A second telling (from `?memoryId=`) is about its moment: no family
+ *   questions, no starters and no question field, so nothing can switch the
+ *   moment. The moment's own question is read-only context.
+ * - A new memory shows the family's open questions when there are any. The
+ *   typed question field sits below the story, collapsed, and holds the
+ *   generic starters only when nobody asked anything.
+ * - Once a question is filled in by a pick (`prefilledQuestion`), the picked
+ *   note carries it, so the typed field and starters step aside.
+ */
+export function questionAreaFor(input: {
+  mode: QuestionAreaMode;
+  openQuestions: number;
+  prefilledQuestion: boolean;
+}): QuestionArea {
+  if (input.mode === "second") {
+    return { showFamilyQuestions: false, showStarters: false, showQuestionField: false };
+  }
+  const asked = Number.isFinite(input.openQuestions) && input.openQuestions > 0;
+  const typed = !input.prefilledQuestion;
+  return {
+    showFamilyQuestions: asked,
+    showStarters: typed && !asked,
+    showQuestionField: typed,
+  };
+}
 
 /** Warm starting points, shown as chips when no question was asked. */
 export const SUGGESTED_QUESTIONS: readonly string[] = [
