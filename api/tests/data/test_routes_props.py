@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from PIL import Image
 
 import auth
 import schemas
@@ -209,6 +211,89 @@ def test_library_other_family_or_unknown_prop_is_404(env, prop_id):
     # Nothing changed anywhere.
     assert props_db.get_prop(env["db"], FAM_B, "b_lamp").name == "brass lamp"
     assert props_db.library_props()["chair"].name == "chair"
+
+
+# --------------------------------------------------------------------- photo aspect
+
+
+def _image(width: int, height: int, fmt: str = "PNG", orientation: int | None = None) -> bytes:
+    """A real image made in memory, optionally with an EXIF orientation tag."""
+    buf = io.BytesIO()
+    img = Image.new("RGB", (width, height), (180, 90, 40))
+    if orientation is None:
+        img.save(buf, format=fmt)
+    else:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        img.save(buf, format=fmt, exif=exif.tobytes())
+    return buf.getvalue()
+
+
+def _listed(tc: TestClient, prop_id: str) -> dict:
+    return next(p for p in tc.get(f"/families/{FAM_A}/props").json()["props"] if p["id"] == prop_id)
+
+
+def test_photo_sets_the_aspect_from_its_pixel_size(env):
+    tc = env["tc"]
+    before = _listed(tc, "hymn_books")
+    upload = _upload(tc, FAM_A, data=_image(800, 200), filename="wide.png")
+    assert upload.status_code == 201
+    media_id = upload.json()["id"]
+    resp = tc.patch(f"/families/{FAM_A}/props/hymn_books", json={"photoId": media_id})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aspect"] == 4.0
+    assert body["art"] == {"body": f"media/{media_id}"}
+    assert body["source"] == "photo"
+    # The rig is kept.
+    for key in ("size", "anchor", "grip", "sockets", "color"):
+        assert body[key] == before[key], key
+    assert _listed(tc, "hymn_books")["aspect"] == 4.0
+
+
+@pytest.mark.parametrize(("data", "content_type", "expected"), [
+    (_image(300, 600), "image/png", 0.5),
+    # 400x200 pixels, EXIF orientation 6: a phone portrait, shown rotated 90 degrees.
+    (_image(400, 200, fmt="JPEG", orientation=6), "image/jpeg", 0.5),
+    (_image(400, 200, fmt="JPEG"), "image/jpeg", 2.0),
+])
+def test_photo_aspect_follows_the_displayed_image(env, data, content_type, expected):
+    tc = env["tc"]
+    media_id = _upload(tc, FAM_A, data=data, content_type=content_type).json()["id"]
+    resp = tc.patch(f"/families/{FAM_A}/props/trumpet_case", json={"photoId": f"media/{media_id}"})
+    assert resp.status_code == 200
+    assert resp.json()["aspect"] == expected
+    assert _listed(tc, "trumpet_case")["aspect"] == expected
+
+
+def test_rename_leaves_the_aspect_alone(env):
+    tc = env["tc"]
+    media_id = _upload(tc, FAM_A, data=_image(800, 200)).json()["id"]
+    assert tc.patch(f"/families/{FAM_A}/props/hymn_books", json={"photoId": media_id}).json()["aspect"] == 4.0
+    resp = tc.patch(f"/families/{FAM_A}/props/hymn_books", json={"name": "hymnals"})
+    assert resp.status_code == 200
+    assert resp.json()["aspect"] == 4.0 and resp.json()["name"] == "hymnals"
+
+
+def test_photo_that_cannot_be_decoded_keeps_the_aspect(env):
+    tc = env["tc"]
+    before = _listed(tc, "hymn_books")["aspect"]
+    media_id = _upload(tc, FAM_A, data=b"not an image").json()["id"]  # stored as image/png
+    resp = tc.patch(f"/families/{FAM_A}/props/hymn_books", json={"photoId": media_id})
+    assert resp.status_code == 200
+    assert resp.json()["aspect"] == before
+    assert resp.json()["source"] == "photo"
+
+
+def test_same_prop_id_in_two_families_stays_separate(env):
+    """Family B saves a prop under A's slug; each family sees and patches only its own."""
+    db = env["db"]
+    props_db.insert_prop(db, FAM_B, _prop("trumpet_case", "B's trumpet case"), prop_id="trumpet_case")
+    resp = env["tc"].patch(f"/families/{FAM_A}/props/trumpet_case", json={"name": "A's case"})
+    assert resp.status_code == 200 and resp.json()["familyId"] == FAM_A
+    assert props_db.get_prop(db, FAM_B, "trumpet_case").name == "B's trumpet case"
+    assert [p["name"] for p in env["tc"].get(f"/families/{FAM_A}/props").json()["props"]
+            if p["id"] == "trumpet_case"] == ["A's case"]
 
 
 # --------------------------------------------------------------------- upload

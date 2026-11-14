@@ -462,8 +462,9 @@ def test_world_is_not_empty(env):
     assert len(snap["invites"]) == 1
     assert len(snap["people"]) == 3
     assert len(snap["memories"]) == 1 and snap["memories"][0]["tellings"]
-    assert [p["_id"] for p in snap["props"]] == [env.b.prop_id]
-    assert [s["_id"] for s in snap["sets"]] == [env.b.set_id]
+    # Stored under the family-scoped key, with the API id as a plain field.
+    assert [(p["_id"], p["id"]) for p in snap["props"]] == [(f"{env.b.fid}:{env.b.prop_id}", env.b.prop_id)]
+    assert [(s["_id"], s["id"]) for s in snap["sets"]] == [(f"{env.b.fid}:{env.b.set_id}", env.b.set_id)]
     assert snap["media"] == [env.b.media_id]
     assert len(snap["questions"]) == 1
     assert env.fake.runs[env.b.run_id] == (env.b.fid, env.b.admin.id)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
@@ -15,7 +16,10 @@ from pymongo.errors import OperationFailure
 # `uv run --with 'mongomock>=4.3.0' pytest tests/data/test_props_db.py`.
 mongomock = pytest.importorskip("mongomock")
 
+import bson
 import schemas
+from db import client as db_client
+from db import media
 from db import props as P
 
 REPO = Path(__file__).resolve().parents[3]
@@ -108,10 +112,11 @@ def test_round_trip_hymn_sample_prop_and_set(mdb):
     assert P.list_props(mdb, FAM_A) == [expected]
     assert P.get_props(mdb, FAM_A, ["hymn_books"]) == [expected]
 
-    stored = mdb.props.find_one({"_id": "hymn_books"})
+    stored = mdb.props.find_one({"_id": f"{FAM_A}:hymn_books"})
     assert stored["familyId"] == FAM_A
-    assert "id" not in stored and "family_id" not in stored
+    assert stored["id"] == "hymn_books" and "family_id" not in stored
     assert stored["embedding"] == [0.1, 0.2, 0.3]
+    assert mdb.props.find_one({"_id": "hymn_books"}) is None  # never the bare id
 
     set_def = sample_set()
     saved_set = P.insert_set(mdb, FAM_A, set_def, set_id="church_steps_1988")
@@ -120,7 +125,8 @@ def test_round_trip_hymn_sample_prop_and_set(mdb):
     assert P.get_set(mdb, FAM_A, "church_steps_1988") == expected_set
     assert P.list_sets(mdb, FAM_A) == [expected_set]
     assert P.get_sets(mdb, FAM_A, ["church_steps_1988"]) == [expected_set]
-    assert mdb.sets.find_one({"_id": "church_steps_1988"})["familyId"] == FAM_A
+    stored_set = mdb.sets.find_one({"_id": f"{FAM_A}:church_steps_1988"})
+    assert stored_set["familyId"] == FAM_A and stored_set["id"] == "church_steps_1988"
 
 
 def test_insert_ignores_incoming_id_and_family_and_generates_objectid(mdb):
@@ -128,7 +134,8 @@ def test_insert_ignores_incoming_id_and_family_and_generates_objectid(mdb):
     saved = P.insert_prop(mdb, FAM_A, prop)
     assert saved.id != "ignored" and len(saved.id) == 24
     assert saved.family_id == FAM_A
-    assert mdb.props.find_one({"_id": saved.id})["familyId"] == FAM_A
+    stored = mdb.props.find_one({"_id": f"{FAM_A}:{saved.id}"})
+    assert stored["familyId"] == FAM_A and stored["id"] == saved.id
     s = P.insert_set(mdb, FAM_A, make_set("Kitchen"))
     assert s.id != "ignored" and len(s.id) == 24
 
@@ -192,18 +199,18 @@ def test_replace_prop_and_set(mdb):
     assert out.color == "#ffcc00" and out.grip == [0.2, 0.5] and out.family_id == FAM_A
     assert P.get_prop(mdb, FAM_A, p.id) == out
     # Same description: the stored vector survives a replace without one.
-    assert mdb.props.find_one({"_id": p.id})["embedding"] == [1.0, 0.0]
+    assert mdb.props.find_one({"_id": f"{FAM_A}:{p.id}"})["embedding"] == [1.0, 0.0]
     # A rename alone keeps it too (the vector is computed from the description), as
     # update_prop does.
     new = P.replace_prop(mdb, FAM_A, new.model_copy(update={"name": "Horn"}))
     assert new.name == "Horn"
-    assert mdb.props.find_one({"_id": p.id})["embedding"] == [1.0, 0.0]
+    assert mdb.props.find_one({"_id": f"{FAM_A}:{p.id}"})["embedding"] == [1.0, 0.0]
     # New description: the old vector is stale and dropped.
     P.replace_prop(mdb, FAM_A, new.model_copy(update={"description": "a silver cornet"}))
-    assert "embedding" not in mdb.props.find_one({"_id": p.id})
+    assert "embedding" not in mdb.props.find_one({"_id": f"{FAM_A}:{p.id}"})
     # An explicit embedding is stored.
     P.replace_prop(mdb, FAM_A, new, embedding=[0.0, 1.0])
-    assert mdb.props.find_one({"_id": p.id})["embedding"] == [0.0, 1.0]
+    assert mdb.props.find_one({"_id": f"{FAM_A}:{p.id}"})["embedding"] == [0.0, 1.0]
 
     assert P.replace_prop(mdb, FAM_A, new.model_copy(update={"id": "missing"})) is None
 
@@ -222,7 +229,7 @@ def test_update_prop_rename(mdb):
     assert out.name == "Hymnals"
     assert out.model_copy(update={"name": p.name}) == p
     assert P.get_prop(mdb, FAM_A, "hymn_books").name == "Hymnals"
-    assert mdb.props.find_one({"_id": "hymn_books"})["embedding"] == [1.0]
+    assert mdb.props.find_one({"_id": f"{FAM_A}:hymn_books"})["embedding"] == [1.0]
 
 
 def test_update_prop_photo_replaces_art_and_keeps_rig(mdb):
@@ -355,10 +362,210 @@ def test_cross_family_isolation_for_every_read_and_update(mdb):
     # Family B's data is untouched.
     assert P.get_prop(mdb, FAM_B, b_prop.id) == b_prop
     assert P.get_set(mdb, FAM_B, b_set.id) == b_set
-    # A same-id insert in another family is a duplicate (ids are global), not a takeover.
-    with pytest.raises(ValueError):
-        P.insert_prop(mdb, FAM_A, make_prop("x"), prop_id=b_prop.id)
+    # A same-id insert in another family is that family's own prop (ids are per family),
+    # not a takeover: family B's prop is untouched and A now sees only its own.
+    mine = P.insert_prop(mdb, FAM_A, make_prop("x"), prop_id=b_prop.id)
+    assert mine.id == b_prop.id and mine.family_id == FAM_A
     assert P.get_prop(mdb, FAM_B, b_prop.id) == b_prop
+    assert P.get_prop(mdb, FAM_A, b_prop.id) == mine
+
+
+# ------------------------------------------------- family-scoped storage keys
+
+
+def _piano() -> schemas.Prop:
+    return make_prop("Upright piano", "an old upright piano", size="furniture")
+
+
+def _steps() -> schemas.SetDef:
+    return make_set("Church steps", "stone steps outside the church")
+
+
+def test_same_slug_in_two_families_is_two_separate_documents(mdb):
+    db_client.ensure_indexes(mdb)
+    a_prop = P.insert_prop(mdb, FAM_A, _piano(), prop_id="upright_piano")
+    a_set = P.insert_set(mdb, FAM_A, _steps(), set_id="church_steps")
+    a_prop_raw = mdb.props.find_one({"_id": f"{FAM_A}:upright_piano"})
+    a_set_raw = mdb.sets.find_one({"_id": f"{FAM_A}:church_steps"})
+
+    # Family A's ids look unknown to family B.
+    assert P.get_prop(mdb, FAM_B, "upright_piano") is None
+    assert P.get_set(mdb, FAM_B, "church_steps") is None
+    assert P.replace_prop(mdb, FAM_B, a_prop.model_copy(update={"name": "Mine"})) is None
+    assert P.replace_set(mdb, FAM_B, a_set.model_copy(update={"name": "Mine"})) is None
+
+    # ...and do not block family B from using the same slugs.
+    b_prop = P.insert_prop(mdb, FAM_B, make_prop("B piano", "a grand piano", size="furniture"),
+                           prop_id="upright_piano")
+    b_set = P.insert_set(mdb, FAM_B, make_set("B steps", "the town hall steps"), set_id="church_steps")
+    assert (b_prop.id, b_prop.family_id) == ("upright_piano", FAM_B)
+    assert (b_set.id, b_set.family_id) == ("church_steps", FAM_B)
+
+    for fid, prop, set_def in ((FAM_A, a_prop, a_set), (FAM_B, b_prop, b_set)):
+        for got in (P.get_prop(mdb, fid, "upright_piano"), *P.get_props(mdb, fid, ["upright_piano"]),
+                    *P.list_props(mdb, fid)):
+            assert got == prop
+            assert (got.id, got.family_id) == ("upright_piano", fid)
+        for got in (P.get_set(mdb, fid, "church_steps"), *P.get_sets(mdb, fid, ["church_steps"]),
+                    *P.list_sets(mdb, fid)):
+            assert got == set_def
+            assert (got.id, got.family_id) == ("church_steps", fid)
+        assert len(P.list_props(mdb, fid)) == 1 and len(P.list_sets(mdb, fid)) == 1
+
+    # Family A's stored documents are byte-for-byte what they were before B's writes.
+    assert mdb.props.find_one({"_id": f"{FAM_A}:upright_piano"}) == a_prop_raw
+    assert mdb.sets.find_one({"_id": f"{FAM_A}:church_steps"}) == a_set_raw
+    assert a_prop_raw["name"] == "Upright piano" and a_set_raw["name"] == "Church steps"
+    assert mdb.props.count_documents({}) == 2 and mdb.sets.count_documents({}) == 2
+
+
+def test_duplicate_slug_within_one_family_still_raises(mdb):
+    db_client.ensure_indexes(mdb)
+    P.insert_prop(mdb, FAM_A, _piano(), prop_id="upright_piano")
+    P.insert_set(mdb, FAM_A, _steps(), set_id="church_steps")
+    with pytest.raises(ValueError, match="already exists"):
+        P.insert_prop(mdb, FAM_A, make_prop("Another"), prop_id="upright_piano")
+    with pytest.raises(ValueError, match="already exists"):
+        P.insert_set(mdb, FAM_A, make_set("Another"), set_id="church_steps")
+    assert P.get_prop(mdb, FAM_A, "upright_piano").name == "Upright piano"
+    assert P.get_set(mdb, FAM_A, "church_steps").name == "Church steps"
+
+
+def test_update_prop_in_one_family_leaves_the_same_slug_in_another_alone(mdb):
+    db_client.ensure_indexes(mdb)
+    a_prop = P.insert_prop(mdb, FAM_A, _piano(), prop_id="upright_piano")
+    P.insert_prop(mdb, FAM_B, make_prop("Upright piano", "family B's upright piano"),
+                  prop_id="upright_piano")
+    a_raw = mdb.props.find_one({"_id": f"{FAM_A}:upright_piano"})
+
+    out = P.update_prop(mdb, FAM_B, "upright_piano", schemas.PropPatch(name="B's piano",
+                                                                       photo_id="media/x"))
+    assert (out.id, out.family_id, out.name, out.source) == ("upright_piano", FAM_B, "B's piano", "photo")
+    assert mdb.props.find_one({"_id": f"{FAM_A}:upright_piano"}) == a_raw
+    assert P.get_prop(mdb, FAM_A, "upright_piano") == a_prop
+    assert P.find_props(mdb, FAM_A, "upright piano") == [a_prop]
+
+
+def test_generated_ids_are_bare_objectids_under_a_compound_key(mdb):
+    p = P.insert_prop(mdb, FAM_A, make_prop("Trumpet"))
+    s = P.insert_set(mdb, FAM_A, make_set("Kitchen"))
+    for coll, item in ((mdb.props, p), (mdb.sets, s)):
+        assert bson.ObjectId.is_valid(item.id) and ":" not in item.id
+        stored = coll.find_one({"id": item.id})
+        assert stored["_id"] == f"{FAM_A}:{item.id}" and stored["familyId"] == FAM_A
+
+
+def test_a_family_prop_with_a_library_id_shadows_it_only_in_that_family(mdb, library_dir):
+    write_library_prop(library_dir, "chair", "Chair")
+    db_client.ensure_indexes(mdb)
+    a = P.insert_prop(mdb, FAM_A, make_prop("A's chair"), prop_id="chair")
+    b = P.insert_prop(mdb, FAM_B, make_prop("B's chair"), prop_id="chair")
+    assert P.get_prop(mdb, FAM_A, "chair") == a
+    assert P.get_prop(mdb, FAM_B, "chair") == b
+    assert P.get_prop(mdb, "fam_c", "chair").family_id is None
+
+
+# -------------------------------------------------------------- legacy migration
+
+
+def _legacy(mdb):
+    """Raw documents in the layout before family-scoped keys: `_id` = slug, no `id`."""
+    prop = _to_legacy(sample_prop(), FAM_A, "hymn_books")
+    prop["embedding"] = [0.1, 0.2, 0.3]
+    mdb.props.insert_one(prop)
+    mdb.props.insert_one(_to_legacy(make_prop("Trumpet"), FAM_B, "trumpet"))
+    mdb.sets.insert_one(_to_legacy(sample_set(), FAM_A, "church_steps_1988"))
+    return prop
+
+
+def _to_legacy(model, fid: str, slug: str) -> dict:
+    doc = model.model_dump(by_alias=True, mode="json")
+    doc.pop("id")
+    doc.update({"_id": slug, "familyId": fid})
+    return doc
+
+
+def test_legacy_documents_are_listed_with_their_bare_ids_before_migration(mdb):
+    _legacy(mdb)
+    assert [p.id for p in P.list_props(mdb, FAM_A)] == ["hymn_books"]
+    assert [s.id for s in P.list_sets(mdb, FAM_A)] == ["church_steps_1988"]
+    # A legacy-looking key that already carries the family prefix is stripped too.
+    assert P._api_id({"_id": f"{FAM_A}:x", "familyId": FAM_A}) == "x"
+    assert P._api_id({"_id": f"{FAM_A}:x", "id": "x", "familyId": FAM_A}) == "x"
+
+
+def test_migrate_legacy_ids(mdb):
+    legacy_prop = _legacy(mdb)
+    assert P.migrate_legacy_ids(mdb) == 3
+
+    hymn = P.get_prop(mdb, FAM_A, "hymn_books")
+    assert hymn == sample_prop().model_copy(update={"family_id": FAM_A})
+    assert P.get_set(mdb, FAM_A, "church_steps_1988").id == "church_steps_1988"
+    assert P.get_prop(mdb, FAM_B, "trumpet").family_id == FAM_B
+    assert P.get_prop(mdb, FAM_B, "hymn_books") is None
+
+    stored = mdb.props.find_one({"_id": f"{FAM_A}:hymn_books"})
+    assert stored["embedding"] == [0.1, 0.2, 0.3] and stored["id"] == "hymn_books"
+    assert {k: v for k, v in stored.items() if k not in ("_id", "id")} == {
+        k: v for k, v in legacy_prop.items() if k != "_id"}
+    for coll in (mdb.props, mdb.sets):
+        assert coll.count_documents({"id": {"$exists": False}}) == 0
+        assert coll.find_one({"_id": "hymn_books"}) is None
+    assert mdb.props.count_documents({}) == 2 and mdb.sets.count_documents({}) == 1
+
+    assert P.migrate_legacy_ids(mdb) == 0
+    assert mdb.props.count_documents({}) == 2
+
+
+def test_migrate_skips_the_copy_when_the_new_key_exists_but_drops_the_old(mdb):
+    current = P.insert_prop(mdb, FAM_A, make_prop("Current"), prop_id="hymn_books")
+    mdb.props.insert_one(_to_legacy(make_prop("Stale"), FAM_A, "hymn_books"))
+    assert P.migrate_legacy_ids(mdb) == 1
+    assert P.get_prop(mdb, FAM_A, "hymn_books") == current
+    assert mdb.props.count_documents({}) == 1
+
+
+def test_migrate_on_an_empty_database_and_through_ensure_indexes(mdb):
+    assert P.migrate_legacy_ids(mdb) == 0
+    _legacy(mdb)
+    db_client.ensure_indexes(mdb)
+    assert P.get_prop(mdb, FAM_A, "hymn_books") is not None
+    assert P.get_set(mdb, FAM_A, "church_steps_1988") is not None
+    assert mdb.props.count_documents({"id": {"$exists": False}}) == 0
+    db_client.ensure_indexes(mdb)  # idempotent
+    assert mdb.props.count_documents({}) == 2
+
+
+# ------------------------------------------------------- photo sets the aspect
+
+
+def _png(width: int, height: int) -> bytes:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (200, 120, 40)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_update_prop_photo_sets_aspect_from_the_image(mdb):
+    p = P.insert_prop(mdb, FAM_A, make_prop("Accordion", aspect=1.0, size="carried",
+                                            grip=[0.3, 0.2], color="#123456"))
+    wide = media.put_media(mdb, FAM_A, _png(800, 200), content_type="image/png")
+    out = P.update_prop(mdb, FAM_A, p.id, schemas.PropPatch(photo_id=f"media/{wide}"))
+    assert out.aspect == 4.0
+    assert (out.size, out.grip, out.color) == ("carried", [0.3, 0.2], "#123456")
+    assert P.get_prop(mdb, FAM_A, p.id).aspect == 4.0
+    # A rename alone leaves it.
+    assert P.update_prop(mdb, FAM_A, p.id, schemas.PropPatch(name="Squeezebox")).aspect == 4.0
+
+
+def test_update_prop_photo_that_cannot_be_read_keeps_the_aspect(mdb):
+    p = P.insert_prop(mdb, FAM_A, make_prop("Accordion", aspect=1.5))
+    junk = media.put_media(mdb, FAM_A, b"not an image", content_type="image/png")
+    other = media.put_media(mdb, FAM_B, _png(800, 200), content_type="image/png")
+    for photo in (junk, f"media/{junk}", other, "media/photo9"):
+        out = P.update_prop(mdb, FAM_A, p.id, schemas.PropPatch(photo_id=photo))
+        assert out is not None and out.aspect == 1.5 and out.source == "photo"
 
 
 # --------------------------------------------------------------- keyword scoring
@@ -570,7 +777,7 @@ def test_find_props_vector_path_never_hides_props_without_embedding(mdb):
     # still matches by name, ahead of the unrelated neighbour.
     case = P.insert_prop(mdb, FAM_A, make_prop("Trumpet case", "black case"), embedding=[1.0, 0.0])
     P.replace_prop(mdb, FAM_A, case.model_copy(update={"description": "velvet lined case"}))
-    assert "embedding" not in mdb.props.find_one({"_id": case.id})
+    assert "embedding" not in mdb.props.find_one({"_id": f"{FAM_A}:{case.id}"})
     found = P.find_props(fake, FAM_A, "trumpet case", vector=[1.0, 0.0])
     assert [p.id for p in found][:2] == [case.id, banjo.id]
 

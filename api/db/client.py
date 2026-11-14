@@ -132,6 +132,9 @@ def ensure_indexes(db: Database) -> None:
     An index that already exists with the same name and spec is left alone (mongomock
     re-validates uniqueness on re-creation and cannot evaluate multikey partial indexes).
     A name collision with a different spec is passed to the server, which raises the conflict.
+
+    Afterwards, props and sets saved before the family-scoped storage key are migrated to
+    it (db.props.migrate_legacy_ids, a no-op once done).
     """
     for collection, specs in INDEXES.items():
         existing = db[collection].index_information()
@@ -139,6 +142,12 @@ def ensure_indexes(db: Database) -> None:
             if name in existing and _same_spec(existing[name], keys, options):
                 continue
             _create_index(db[collection], name, keys, options)
+
+    from db import props  # here, not at the top: db.props must stay free to import db.client
+
+    migrated = props.migrate_legacy_ids(db)
+    if migrated:
+        log.info("Migrated %d props/sets to family-scoped storage keys", migrated)
 
 
 def _create_index(
