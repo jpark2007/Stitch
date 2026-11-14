@@ -57,7 +57,7 @@ const DEMOS: { id: DemoName; label: string; note: string; shot: Shot }[] = [
   {
     id: "held",
     label: "Held",
-    note: "Drag the hand. The suitcase hangs from its grip; drop it and it lands on its anchor.",
+    note: "Drag the hand. The suitcase hangs from its grip and never mirrors when the hand turns; drop it and it lands on its anchor.",
     shot: { position: [0, 0.48, 2.3], lookAt: [0, 0.26, 0.5], fov: 30 },
   },
   {

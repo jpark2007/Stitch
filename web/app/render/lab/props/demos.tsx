@@ -167,7 +167,8 @@ const HAND_PARENT = `${HAND_TARGET}.hand_r`;
 export class HeldHand {
   readonly hand = new Vector3(0.08, 0.36, 0.5);
   readonly pose = createPropPose({ parent: HAND_PARENT, position: [0, 0, 0] });
-  private facing: 1 | -1;
+  /** Which way the stand-in puppet faces: 1 right, -1 left. */
+  facing: 1 | -1;
   private request: "drop" | "pickUp" | null;
   private fall: { t0: number; y0: number } | null = null;
   private readonly flip = new Matrix4();
@@ -191,7 +192,10 @@ export class HeldHand {
     this.hand.set(Math.max(-1.2, Math.min(1.2, x)), Math.max(0.03, Math.min(1.0, y)), 0.5);
   }
 
-  /** The stand-in puppet's sockets: the hand, mirrored when facing left. */
+  /** The stand-in puppet's sockets: the hand. Facing left, it returns the
+   *  mirrored matrix a real puppet's socket would; PropActor ignores the
+   *  mirror, so the suitcase keeps its own orientation when the hand turns
+   *  (the compiler's grip/anchor maths assumes an unmirrored prop). */
   readonly resolve: SocketResolver = (target, socket, out) => {
     if (target !== HAND_TARGET || socket !== "hand_r") return false;
     out.makeTranslation(this.hand.x, this.hand.y, this.hand.z);
@@ -240,7 +244,11 @@ export function HeldDemo({ ready, control, fixedT }: { ready: ReadyList; control
   const marker = useRef<Group>(null);
 
   useFrame((s) => {
-    marker.current?.position.copy(control.hand);
+    if (marker.current) {
+      marker.current.position.copy(control.hand);
+      // The hand turns; the prop it holds does not.
+      marker.current.scale.x = control.facing;
+    }
     control.step(clockOf(fixedT, s.clock.elapsedTime), fixedT !== null, handle.current);
   }, -1);
 
@@ -286,6 +294,10 @@ function HandMarker({ control }: { control: HeldHand }) {
       </mesh>
       <mesh position={[0, 0, 0.001]} material={dot}>
         <circleGeometry args={[0.007, 24]} />
+      </mesh>
+      {/* A thumb on the side the hand faces, so turning it shows. */}
+      <mesh position={[0.024, 0.008, 0]} material={paper} castShadow>
+        <circleGeometry args={[0.009, 24]} />
       </mesh>
       {/* A generous invisible hit area so the hand is easy to grab. */}
       <mesh
