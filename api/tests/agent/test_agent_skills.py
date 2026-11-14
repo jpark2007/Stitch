@@ -120,6 +120,42 @@ def test_directing_covers_the_contract_conventions():
     assert re.search(r"at most 3\s+rounds", text, re.IGNORECASE)
 
 
+def test_directing_teaches_what_the_compiler_simulates():
+    """The rules the real compiler checks beyond the vocabulary: one action at a time, on/off
+    stage, reach, mark names, cue retiming and narration spacing, with the codes it reports."""
+    text = body("directing")
+    for code in ("busy", "offstage", "already_on_stage", "out_of_reach", "not_holding", "already_held",
+                 "hands_full", "ambiguous_name", "lines_overlap", "cue_before_start", "cue_conflict",
+                 "cue_word_missing", "duplicate_telling", "explanation_unknown_target", "unsupported_verb"):
+        assert f"`{code}`" in text, code
+    durations = text.split("### How long actions take", 1)[1].split("\n## ", 1)[0]
+    timed = {verb for line in durations.splitlines() if line.startswith("| `")
+             for verb in re.findall(r"`([a-z_]+)`", line.split("|")[1])}
+    assert set(VOCAB["actions"]) - set(VOCAB["effects"]) <= timed, "every non-effect verb has a duration"
+    assert "0.25 s per word" in text
+    assert "0.15 in u" in text
+
+
+def test_director_prompt_states_the_compiler_rules():
+    text = (REPO / "api" / "agent" / "prompts" / "director.md").read_text()
+    for word in ("get_person", "compile_screenplay", "/screenplay.json", "busy", "out_of_reach",
+                 "`enter`", "snake_case", "0.25 s per word", "Stop after round 3"):
+        assert word in text, word
+    assert '"prop": "<' not in text and '"part": "<' not in text  # drives examples are concrete
+
+
+def test_open_and_close_are_never_taught_on_a_held_prop():
+    """The real compiler rejects open/close of a held prop (out_of_reach: the free arm cannot reach
+    the holding hand), so both docs say so and give the place_on fix, and neither recommends it."""
+    prompt = (REPO / "api" / "agent" / "prompts" / "director.md").read_text()
+    skill = body("directing")
+    for text in (prompt, skill):
+        flat = " ".join(text.split())
+        assert re.search(r"never `open` or `close` a prop someone is holding", flat, re.IGNORECASE)
+        assert "`place_on` it at hand height" in flat
+        assert not re.search(r"the prop is held or|open a prop the person holds|have the person hold the prop", flat)
+
+
 # ------------------------------------------------------------- directing: worked example
 
 def test_worked_example_is_a_byte_identical_copy_of_the_sample():

@@ -226,13 +226,14 @@ BASE = {
             "id": "s1",
             "set": "church_steps_1988",
             "start": {
-                "dad": {"at": "steps_left", "facing": "right"},
+                "dad": {"at": "steps_foot", "facing": "right"},
                 "mom": {"at": "steps_top", "holding": "hymn_books", "facing": "left"},
             },
             "actions": [],
         }
     ],
 }
+MARKS_LIST = "the marks are offstage_left, offstage_right, steps_left, steps_foot, steps_top, curb"
 
 
 def _compile(scene, actions=None, **shot_overrides) -> CompileResult:
@@ -297,7 +298,7 @@ def test_pick_up_of_a_held_prop(scene):
 def test_unknown_mark(scene):
     err = _only_error(_compile(scene, [{"t": 1, "who": "dad", "do": "walk_to", "to": "the_moon"}]))
     assert err.code == "unknown_mark"
-    assert err.message == 'shot s1, t=1: unknown mark "the_moon"'
+    assert err.message == f'shot s1, t=1: dad cannot walk_to; "the_moon" is not a mark in this shot; {MARKS_LIST}'
 
 
 def test_shot_marks_and_builtin_marks_are_known(scene):
@@ -312,15 +313,17 @@ def test_shot_marks_and_builtin_marks_are_known(scene):
 def test_unknown_person(scene):
     err = _only_error(_compile(scene, [{"t": 2, "who": "grandpa", "do": "wave"}]))
     assert err.code == "unknown_person"
-    assert err.message == 'shot s1, t=2: unknown person "grandpa"'
+    assert err.message == 'shot s1, t=2: grandpa cannot wave; "grandpa" is not in the cast; the cast is dad, mom'
     err = _only_error(_compile(scene, [{"t": 2, "who": "mom", "do": "hand_to", "what": "hymn_books", "to": "grandpa"}]))
-    assert err.message == 'shot s1, t=2: unknown person "grandpa"'
+    assert err.message == ('shot s1, t=2: mom cannot hand_to "hymn_books"; "grandpa" is not in the cast; '
+                           "the cast is dad, mom")
 
 
 def test_unknown_prop(scene):
     err = _only_error(_compile(scene, [{"t": 3, "who": "dad", "do": "pick_up", "what": "umbrella"}]))
     assert err.code == "unknown_prop"
-    assert err.message == 'shot s1, t=3: unknown prop "umbrella"'
+    assert err.message == ('shot s1, t=3: dad cannot pick_up "umbrella"; "umbrella" is not in the '
+                           "screenplay's props; the props are hymn_books")
 
 
 def test_prop_must_be_in_scene_props(scene):
@@ -334,32 +337,34 @@ def test_prop_must_be_in_scene_props(scene):
 def test_unknown_pose(scene):
     err = _only_error(_compile(scene, [{"t": 7.7, "who": "mom", "do": "pose", "pose": "dab"}]))
     assert err.code == "unknown_pose"
-    assert err.message == 'shot s1, t=7.7: unknown pose "dab"'
+    assert err.message.startswith('shot s1, t=7.7: mom cannot pose; "dab" is not a pose; poses are stand, hold,')
 
 
 def test_missing_required_param(scene):
     err = _only_error(_compile(scene, [{"t": 1, "who": "mom", "do": "hand_to", "what": "hymn_books"}]))
     assert err.code == "missing_param"
-    assert err.message == 'shot s1, t=1: hand_to needs "to"'
+    assert err.message == 'shot s1, t=1: mom cannot hand_to "hymn_books"; hand_to requires who, what, to; "to" is missing'
 
 
 def test_unexpected_param(scene):
-    err = _only_error(_compile(scene, [{"t": 1, "who": "dad", "do": "walk_to", "to": "steps_foot", "what": "hymn_books"}]))
+    err = _only_error(_compile(scene, [{"t": 1, "who": "dad", "do": "walk_to", "to": "steps_left", "what": "hymn_books"}]))
     assert err.code == "unexpected_param"
-    assert err.message == 'shot s1, t=1: walk_to does not take "what"'
+    assert err.message == 'shot s1, t=1: dad cannot walk_to "hymn_books"; walk_to takes who, to; "what" is not one of them'
     assert (err.who, err.do) == ("dad", "walk_to")
 
 
 def test_unknown_set(scene):
     err = _only_error(_compile(scene, set="the_moon", marks={"steps_left": [0.2, 0], "steps_top": [0.6, 0.3]}))
     assert err.code == "unknown_set"
-    assert err.message == 'shot s1, t=0: unknown set "the_moon"'
+    assert err.message == 'shot s1: set "the_moon" is not a known set; known sets: church_steps_1988'
+    assert (err.shot, err.t) == ("s1", None)
 
 
 def test_unknown_cue(scene):
-    res = _compile(scene, narration=[{"t": 0, "text": "She dropped them.", "cue": "fumble"}])
+    res = _compile(scene, narration=[{"t": 0, "text": "She dropped them.", "source": "telling:dad:s1", "cue": "fumble"}])
     err = _only_error(res)
-    assert err.code == "unknown_cue"
+    assert err.code == "cue_unknown_action"
+    assert err.message.startswith("shot s1, dad's narration line 0: cue \"fumble\" matches no action")
 
 
 def test_holding_carries_between_shots(scene):
@@ -386,3 +391,208 @@ def test_all_errors_are_reported_together(scene):
         ],
     )
     assert [e.code for e in res.errors] == ["unknown_mark", "unknown_pose"]
+
+
+# ------------------------------------------------------- what the real compiler enforces
+
+
+def test_one_action_at_a_time_per_puppet(scene):
+    """busy: an action that starts before the same puppet's previous one ends (walks take
+    distance / 0.35 s; steps_foot -> curb is 0.8 units, so 2.29 s)."""
+    err = _only_error(_compile(scene, [
+        {"t": 0, "who": "dad", "do": "walk_to", "to": "curb"},
+        {"t": 1, "who": "dad", "do": "wave"},
+    ]))
+    assert err.code == "busy"
+    assert err.message == "shot s1, t=1: dad cannot wave; dad is still walking until t=2.29"
+    ok = _compile(scene, [
+        {"t": 0, "who": "dad", "do": "walk_to", "to": "curb"},
+        {"t": 2.3, "who": "dad", "do": "wave"},
+    ])
+    assert ok.ok, [e.message for e in ok.errors]
+
+
+def test_hand_to_occupies_the_receiver_too(scene):
+    err = _only_error(_compile(scene, [
+        {"t": 0, "who": "mom", "do": "hand_to", "what": "hymn_books", "to": "dad"},
+        {"t": 0.5, "who": "dad", "do": "wave"},
+    ]))
+    assert err.code == "busy"
+    assert err.message == "shot s1, t=0.5: dad cannot wave; dad is still taking hymn_books until t=0.9"
+
+
+def test_hand_to_needs_the_hands_to_meet(scene):
+    """No auto-walk for hand_to: out_of_reach when the giver and receiver stand too far apart."""
+    data = copy.deepcopy(BASE)
+    data["shots"][0]["start"]["dad"]["at"] = "steps_left"
+    data["shots"][0]["actions"] = [{"t": 1, "who": "mom", "do": "hand_to", "what": "hymn_books", "to": "dad"}]
+    err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
+    assert err.code == "out_of_reach"
+    assert err.message == ('shot s1, t=1: mom cannot hand_to "hymn_books"; dad\'s arm_r cannot reach: '
+                           "target is 0.61 from the shoulder, reach is 0.19")
+    # side by side on the same ground, 0.4 apart (0.2 in u), is still within reach
+    data["shots"][0]["start"] = {"dad": {"at": "a", "facing": "right"},
+                                 "mom": {"at": "b", "holding": "hymn_books", "facing": "left"}}
+    data["shots"][0]["marks"] = {"a": [0.3, 0.0], "b": [0.5, 0.0]}
+    assert FakeCompiler()(Screenplay.model_validate(data), scene).ok
+
+
+def test_pick_up_and_hug_walk_up_first(scene):
+    res = _compile(scene, [
+        {"t": 0, "who": "mom", "do": "drop", "what": "hymn_books"},
+        {"t": 0.5, "who": "dad", "do": "walk_to", "to": "curb"},
+        {"t": 3, "who": "dad", "do": "pick_up", "what": "hymn_books"},
+        {"t": 7, "who": "mom", "do": "hug", "target": "dad"},
+    ])
+    assert res.ok, [e.message for e in res.errors]
+
+
+def test_enter_and_offstage(scene):
+    err = _only_error(_compile(scene, [{"t": 0, "who": "dad", "do": "enter", "to": "steps_left"}]))
+    assert (err.code, err.message) == ("already_on_stage",
+                                       "shot s1, t=0: dad cannot enter; dad is already on stage; use walk_to")
+    data = copy.deepcopy(BASE)
+    data["shots"][0]["start"]["dad"]["at"] = "offstage_left"
+    data["shots"][0]["actions"] = [{"t": 0, "who": "dad", "do": "walk_to", "to": "steps_left"}]
+    err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
+    assert (err.code, err.message) == ("offstage", "shot s1, t=0: dad cannot walk_to; dad is offstage; use enter first")
+    data["shots"][0]["actions"] = [{"t": 0, "who": "dad", "do": "enter", "to": "steps_left"}]
+    assert FakeCompiler()(Screenplay.model_validate(data), scene).ok
+
+
+def test_cast_left_out_of_start_waits_offstage(scene):
+    data = copy.deepcopy(BASE)
+    del data["shots"][0]["start"]["dad"]
+    data["shots"][0]["actions"] = [{"t": 0, "who": "dad", "do": "wave"}]
+    err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
+    assert err.code == "offstage"
+
+
+def test_cued_actions_move_onto_their_words(scene, sample):
+    """Cue retiming happens before the busy and holding checks (narration.retime_actions): moving
+    the "dropped" line 0.75 s later moves the drop, and the uncued actions after it, 0.75 s later,
+    so dad is still busy when the hand_to, still cued on "handed", comes round."""
+    data = sample.model_dump(mode="json", by_alias=True)
+    data["shots"][0]["narration"][1]["t"] = 3.25  # "dropped" now lands at 4.0, not 3.25
+    err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
+    assert err.code == "busy" and err.t == 6.6 and "dad is still" in err.message
+
+
+def test_camera_target_must_be_on_stage(scene):
+    data = copy.deepcopy(BASE)
+    data["shots"][0]["camera"] = [{"t": 0, "move": "wide"}, {"t": 1, "move": "close_up", "target": "hymn_books"}]
+    assert FakeCompiler()(Screenplay.model_validate(data), scene).ok
+    del data["shots"][0]["start"]["mom"]["holding"]  # the books are nowhere on stage now
+    err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
+    assert (err.code, err.message) == ("bad_camera",
+                                       'shot s1, t=1: cannot close_up "hymn_books"; hymn_books is not on stage')
+
+
+def test_not_holding_on_the_ground_keeps_its_old_wording(scene):
+    """The real compiler says "it is on the ground"; the fake keeps "nobody is holding it" (see
+    LEGACY_REASONS) because tests/agent/test_agent_compile_tool.py pins that text."""
+    err = _only_error(_compile(scene, [
+        {"t": 0, "who": "mom", "do": "drop", "what": "hymn_books"},
+        {"t": 1, "who": "mom", "do": "hold", "what": "hymn_books"},
+    ]))
+    assert err.message == 'shot s1, t=1: mom cannot hold "hymn_books"; nobody is holding it'
+
+
+def test_static_errors_stop_before_the_simulation(scene):
+    """As in the real compiler: fix the static errors first; no knock-on world errors."""
+    res = _compile(scene, [
+        {"t": 0, "who": "dad", "do": "walk_to", "to": "the_moon"},
+        {"t": 0.1, "who": "dad", "do": "wave"},
+    ])
+    assert [e.code for e in res.errors] == ["unknown_mark"]
+
+
+def test_unused_prop_missing_from_the_scene_passes(scene):
+    """Documented gap: a listed prop the scene lacks and nothing uses passes in the fake (the
+    studio's scene_for reports it first); a used one is unknown_prop, as in the real compiler."""
+    data = copy.deepcopy(BASE)
+    data["props"].append("car")
+    assert FakeCompiler()(Screenplay.model_validate(data), scene).ok
+    data["shots"][0]["camera"] = [{"t": 0, "move": "close_up", "target": "car"}]
+    err = _only_error(FakeCompiler()(Screenplay.model_validate(data), scene))
+    assert err.code == "unknown_prop" and err.message.startswith('screenplay: prop "car" is not a known prop')
+
+
+def test_effects_occupy_nobody(scene):
+    res = _compile(scene, [
+        {"t": 0, "do": "rain", "dur": 3},
+        {"t": 0, "do": "time_of_day", "value": "dusk"},
+        {"t": 0, "who": "dad", "do": "wave"},
+    ])
+    assert res.ok, [e.message for e in res.errors]
+    assert [fx.kind for fx in res.timeline.effects] == ["rain", "time_of_day"]
+
+
+@pytest.mark.parametrize("who, verb, reason", [
+    ("mom", "open", "mom's arm_l cannot reach: target is 0.22 from the shoulder, reach is 0.17"),
+    ("mom", "close", "mom's arm_l cannot reach: target is 0.22 from the shoulder, reach is 0.17"),
+])
+def test_open_or_close_of_a_held_prop_is_out_of_reach(scene, who, verb, reason):
+    """As in the real compiler (verbs_objects._open_close): the free arm reaches for the hand that
+    holds the prop, in the hold pose, and comes up short. The directing skill says never to."""
+    err = _only_error(_compile(scene, [{"t": 0.5, "who": who, "do": verb, "what": "hymn_books"}]))
+    assert err.code == "out_of_reach"
+    assert err.message == f'shot s1, t=0.5: {who} cannot {verb} "hymn_books"; {reason}'
+    # raised into the hold pose first: the same
+    err = _only_error(_compile(scene, [{"t": 0.5, "who": who, "do": "hold", "what": "hymn_books"},
+                                       {"t": 2, "who": who, "do": verb, "what": "hymn_books"}]))
+    assert err.code == "out_of_reach" and err.t == 2
+
+
+def test_open_a_held_prop_after_setting_it_down_at_hand_height(scene):
+    """The skill's fix for the above: place_on it at hand height (a mark one step up, from the
+    foot of the steps), then open it there."""
+    res = _compile(scene, [{"t": 0.5, "who": "mom", "do": "place_on", "what": "hymn_books", "on": "steps_top"},
+                           {"t": 1.5, "who": "mom", "do": "open", "what": "hymn_books"}],
+                   marks={"by_steps": [0.53, 0.0]},
+                   start={"dad": {"at": "steps_foot", "facing": "right"},
+                          "mom": {"at": "by_steps", "holding": "hymn_books", "facing": "right"}})
+    assert res.ok, [e.message for e in res.errors]
+
+
+def test_kneeling_lowers_the_shoulders(scene):
+    """A kneeling puppet's root (and so its shoulders) is lowered by the kneel rootOffset, as in
+    the real tracks: a handle at standing hand height can go out of reach."""
+    start = {"dad": {"at": "steps_foot", "facing": "right"},
+             "mom": {"at": "steps_top", "holding": "hymn_books", "facing": "left"}}
+    standing = _compile(scene, [{"t": 0.5, "who": "dad", "do": "close", "what": "hymn_books"}], start=start)
+    assert standing.ok, [e.message for e in standing.errors]
+    err = _only_error(_compile(scene, [{"t": 0, "who": "dad", "do": "kneel"},
+                                       {"t": 2, "who": "dad", "do": "close", "what": "hymn_books"}], start=start))
+    assert err.code == "out_of_reach" and err.t == 2
+
+
+def test_hug_threshold_uses_rounded_positions(scene):
+    """steps_foot and steps_top are 0.2 apart in x, exactly HUG_GAP + HUG_SLACK. The real
+    compiler reads roots back rounded to 3 dp, so the hugger walks over first (and a kneeling
+    hugger cannot): the fake decides the same way."""
+    err = _only_error(_compile(scene, [{"t": 0, "who": "mom", "do": "kneel"},
+                                       {"t": 3, "who": "mom", "do": "hug", "target": "dad"}]))
+    assert (err.code, err.message) == ("not_standing", "shot s1, t=3: mom cannot hug; mom is kneeling; stand_up first")
+
+
+def test_follow_counts_kneeling_as_the_leader_moving(scene):
+    """The real follow reads the leader's root.position track, where kneeling lowers the root."""
+    res = _compile(scene, [{"t": 4, "who": "mom", "do": "kneel"},
+                           {"t": 4, "who": "dad", "do": "follow", "target": "mom"}])
+    assert res.ok, [e.message for e in res.errors]
+    err = _only_error(_compile(scene, [{"t": 4, "who": "dad", "do": "follow", "target": "mom"}]))
+    assert err.code == "nothing_to_follow"
+
+
+def test_pick_up_above_the_shoulder_still_needs_reach(scene):
+    """A grip level with or above the shoulder is a standing reach (no crouch helps): out of reach
+    when the arm cannot get there, as in the real pick_up_keys."""
+    start = {"dad": {"at": "steps_foot", "facing": "right"}, "mom": {"at": "curb", "facing": "left"}}
+    for height, ok in ((0.5, True), (0.9, False)):
+        res = _compile(scene, [{"t": 0.5, "who": "dad", "do": "pick_up", "what": "hymn_books"}], start=start,
+                       marks={"shelf": [0.0, height]}, propStart={"hymn_books": {"at": "shelf"}})
+        assert res.ok == ok, [e.message for e in res.errors]
+    assert (res.errors[0].code, res.errors[0].message) == (
+        "out_of_reach", 'shot s1, t=0.5: dad cannot pick_up "hymn_books"; dad\'s arm_r cannot reach: '
+                        "target is 0.57 from the shoulder, reach is 0.19")

@@ -65,18 +65,24 @@ NarrationLine { t, text, source, cue?, cueWord? }      never write `words`; TTS 
 - Marks come from the set (`SetDef.marks`); add or override per shot in `Shot.marks`. Two are
   built in: **`offstage_left`** (x = −1.3) and **`offstage_right`** (x = 1.3). Use them for
   `enter`, `exit` and `start.at` of someone who walks on.
-- On-stage marks keep u between 0.05 and 0.95. A puppet of build `average` is 0.5 tall; arm
-  reach is about 0.17 stage units (0.085 in u).
+- **Mark names**: plain snake_case words (`steps_top`, `by_the_car`), never the same as a cast
+  member's or a prop's id (`ambiguous_name`). A mark is two or three numbers, nothing else.
+- On-stage marks keep u between 0.05 and 0.95. A puppet of build `average` is 0.5 tall; its
+  arm reaches about 0.17 stage units from the shoulder, which is about 0.38 above its feet
+  (`tall` 0.19 and 0.42, `small` 0.14 and 0.30).
 - **Times are seconds from the shot's start.** A shot's t = 0 happens **1.2 s after its set
-  starts rising**, so the set is up before anything moves. Every shot restarts at t = 0.
+  starts rising**, so the set is up before anything moves. Every shot restarts at t = 0. Every
+  `t` is 0 or more; every `dur` is more than 0.
 - Walk speed is 0.35 stage units/s, run 0.8, drive 0.9. Arrival time = t + |Δx| / speed, with
   Δx = 2 × Δu. Example: `offstage_left` (x = −1.3) to u = 0.2 (x = −0.6) walking: 0.7 / 0.35 =
   2.0 s.
-- Give each action time to finish before the same person's next one. Rough durations from the
-  reference scene: `pick_up` 0.8 s (reach 0.4, then raise), `drop` 0.3 s fall, `hand_to` 0.9 s
-  (hands meet at +0.5), `pose` 0.4 s unless `dur` is given.
-- A narration line that runs longer than the actions extends the shot. Estimate about
-  0.25 to 0.35 s per spoken word when spacing lines (the worked example uses 0.25).
+- **One action at a time per person.** An action may start only when the same person's
+  previous one has ended; otherwise the compiler reports `busy`
+  (`shot s1, t=4: dad cannot pick_up "hymn_books"; dad is still walking until t=5.31`).
+  Actions at the same `t` for different people are fine. Durations are in "How long actions
+  take" below.
+- A narration line that runs longer than the actions extends the shot. The compiler times
+  narration at **0.25 s per word** until the voice is recorded; leave a little slack.
 
 ## Action vocabulary
 
@@ -163,22 +169,69 @@ A `CameraCue` is `{ "t", "move", "target"?, "dur"? }`, nothing else. Start every
 
 `Shot.transition` is `fold` (the set folds down and the next rises; default) or `none`.
 
+### How long actions take
+
+The person (and, where noted, the other person) is busy from `t` until `t` + this:
+
+| Verbs | Busy for |
+|---|---|
+| `enter`, `walk_to`, `run_to`, `exit` | distance / 0.35 (running: / 0.8); 0.4 more first if sitting or kneeling on the floor |
+| `pose` | 0.4 (with `dur`: `dur` + 0.4, then back to the previous pose) |
+| `wave`, `point_at`, `lean_toward` | `dur`, default 1.2 for `wave` and 1.0 for the others |
+| `hug` | walks up first if more than 0.2 apart, then `dur` (default 1.5); **the other person too** |
+| `kneel` | 0.4 (with `dur`: `dur` + 0.4, then stands) |
+| `sit_on`, `get_in` | walks to the seat first, then 0.4 |
+| `stand_up`, `get_out`, `hold` | 0.4 |
+| `pick_up` | walks up first if out of reach, then 0.8 (1.2 bending down to the floor) |
+| `drop` | 0.3 (the fall) |
+| `hand_to` | 0.9 (hands meet at +0.5); **the receiver too** |
+| `put_on`, `place_on`, `open`, `close` | 0.8 |
+| `drive_to`, `ride_to` | distance / 0.9; **everyone in the vehicle** |
+| `turn_to`, `set_state`, `follow` | no time / no time / until it stops behind the person it follows |
+
 ## Rules the compiler enforces
 
-- **Movement**: `Action.to` is a **mark** for `walk_to`, `run_to`, `enter`, `exit`,
-  `drive_to`, `ride_to`. For `hand_to` it is a **person**.
-- **Holding**: a held prop sits on the holder's **`hand_r`** by default. You cannot `drop`,
-  `hand_to` or `hold` a prop the person is not holding, and you cannot `pick_up` a prop someone
-  else holds. The receiver of `hand_to` must have a free hand and be within reach.
+- **Movement**: `Action.to` is a **mark** for `walk_to`, `run_to`, `enter`, `drive_to`,
+  `ride_to`; for `exit` it is `offstage_left` or `offstage_right`; `enter`'s `from` is one of
+  those too. For `hand_to` it is a **person**.
+- **On and off stage**: anyone at `offstage_left`/`offstage_right`, and anyone left out of a
+  shot's `start` when the set changes, is offstage. Offstage, a person can only `enter`; any
+  other action is `offstage` ("use enter first"). `enter` only works from offstage
+  (`already_on_stage`: use `walk_to`), and `exit` only from on stage.
+- **Holding**: a held prop sits on the holder's **`hand_r`** by default; a person has two
+  hands (`hand_r` first, then `hand_l`) and a third prop is `hands_full`. You cannot `drop`,
+  `hand_to` or `hold` a prop the person is not holding (`not_holding`), and you cannot
+  `pick_up` a prop someone holds (`already_held`). `furniture`, `vehicle` and `building` props
+  are too big to carry. A prop is either in a `start.holding` or in `propStart`, never both, and
+  only one person starts holding it.
 - **Dropping**: a dropped prop **lands beside the dropper's feet**, 0.08 units in the
-  direction they face, on the surface they stand on. Plan the `pick_up` from there.
-- **Reach**: to `pick_up`, `hand_to` or `hug`, first walk the person to a mark within about
-  0.1 in u (0.2 stage units) of the prop or person. Out of reach is a compile error.
+  direction they face, on the surface they stand on. Plan the `pick_up` from there. To put
+  something down on the floor, `drop` it: `place_on` cannot reach down to the floor.
+- **Reach**: `pick_up`, `hug` and `sit_on` walk up to the prop or person by themselves.
+  `hand_to` does not: the two hands must meet. On the same surface keep giver and receiver at
+  most **0.3 stage units apart (0.15 in u)**. Across a step (0.3 up) it often fails, so walk
+  them onto the same surface first (the worked example's tall Dad only just reaches Mom on the
+  step from 0.2 away; two average puppets need to be within 0.15). `open`, `close` and
+  `place_on` do not bend or walk either: the handle (or the spot) must be within the arm's
+  0.17, so open a prop standing at hand height (on a step or a table, placed there by
+  `propStart` or `place_on`), and set things on a surface, not the floor. **Never `open` or
+  `close` a prop someone is holding**, not even the holder: the free hand reaches for the
+  holding hand and comes up short (0.22 against 0.17). To open something a person carries,
+  `place_on` it at hand height first (a mark on a step), then `open` it. Too far is
+  `out_of_reach` (`dad's arm_r cannot reach: target is 0.61 from the shoulder, reach is 0.19`).
+- **Seats**: a seated person must `stand_up` (or `get_out` of a vehicle) before walking; a
+  person kneeling or sitting on the floor stands up by themselves before walking (0.4 s), but
+  must `stand_up` before `kneel` or `sit_on`. `drive_to` needs the person in the `driver`
+  socket (`get_in` first).
+- **follow** needs the other person to be moving at that moment: give it the same `t` as their
+  walk and list it after the walk.
 - **State carries between shots** (who holds what, prop states), but each shot's `start`
-  places people again. Make `holding` agree with what happened in the previous shot.
+  places people again. Make `holding` agree with what happened in the previous shot. On a new
+  set, a prop nobody carries in and not placed by `propStart` is not on stage.
 - Every person in `start`, `who`, `to` (hand_to) and `target` must be in `cast`; every prop
   in `holding`, `what` and `propStart` must be in `props`; every mark must exist in the set,
-  in `Shot.marks`, or be built in.
+  in `Shot.marks`, or be built in. Action `id`s are unique within a shot.
+- **Camera** targets (`dolly_to`, `pan_to`, `close_up`) must be on stage when the move happens.
 
 ## Narration, cue and cueWord
 
@@ -190,8 +243,15 @@ A `CameraCue` is `{ "t", "move", "target"?, "dur"? }`, nothing else. Start every
   actions an `id` to be unambiguous.
 - **`cueWord`** is the word in `text` the action should land on. Default: the line's last
   word. The compiler uses the TTS word timings to move the cued action so that it **starts on
-  the cue word**. Write `t` so that word falls roughly where the action is anyway.
-- `cueWord` must be one word, exactly as it appears in `text`, without punctuation.
+  the cue word**, and moves every later action that has no cue of its own by the same amount.
+  Write `t` so that word falls where the action already is (word time = line `t` + 0.25 × the
+  words before it), so nothing moves and no one becomes `busy`.
+- `cueWord` must be one word, exactly as it appears in `text`, without punctuation
+  (`cue_word_missing`). An action takes one cue per telling (`cue_conflict`), and a cue word
+  must land at or after the shot's t = 0 (`cue_before_start`).
+- **Lines of one telling never overlap**: a line of N words lasts N × 0.25 s, and the next line
+  starts after that (`lines_overlap`). Line 2 of the worked example starts at 2.5, just as
+  line 1 (10 words from t 0) has been said.
 
 ### Other tellings: `narrations`
 
@@ -204,6 +264,9 @@ shot's `narration`; every other teller goes in
 
 - Same shot ids, same actions, a different voice. Never add or move actions for a second
   telling; cue the **same action ids** so both tellings land their words on the same moments.
+- The compiler shifts each cued line of another telling so its cue word lands on the action.
+  After that shift its lines still must not overlap, and none may start more than 1.2 s before
+  the shot's t = 0. The default teller never also appears in `narrations` (`duplicate_telling`).
 - For a second telling of an existing memory, load the existing screenplay, add
   `narrations.<newAuthorId>` and leave everything else as it was.
 
@@ -230,17 +293,20 @@ Interaction { id, kind: "pull_tab"|"slider", label, shot?, page?: "stage"|"story
 - `drives` has exactly one `type`:
   - `scrub`: `{ "type": "scrub", "from": 3.25, "to": 3.55, "targets": ["prop:hymn_books", "puppet:mom"] }`.
     Dragging plays shot time `from`..`to` for those targets only (shot time; default targets:
-    all). Choose a range that covers one action, e.g. a drop and its 0.3 s fall.
+    all). Choose a range that covers one action, e.g. a drop and its 0.3 s fall. `from` is
+    before `to`, both 0 or more. A target is `puppet:<personId>` (in `cast`), `prop:<propId>`
+    (in `props`), `set:<the shot's setId>.layer<n>` or `camera`.
   - `prop_state`: `{ "type": "prop_state", "prop": "suitcase", "states": ["closed", "open"] }`.
-    Steps the prop through states it has.
+    Steps the prop through states it has (a suitcase with `closed` and `open` states).
   - `prop_part`: `{ "type": "prop_part", "prop": "green_sedan_1985", "part": "wheel_front", "channel": "rot", "range": [0, 6.28] }`.
     Drives one moving part (`channel` `rot` or `offset`) across `[min, max]`.
-- Only reference props, parts and states that exist on the prop.
+- Only reference props in `props`, and parts and states that exist on the prop.
 
 ## explanations (click-to-explain)
 
-**Exactly one per cast member and one per prop.** `target` is `"puppet:<personId>"` or
-`"prop:<propId>"`. `text` is one or two sentences on why that person or thing matters in this
+**Exactly one per cast member and one per prop.** `target` is `"puppet:<personId>"` (someone
+in `cast`) or `"prop:<propId>"` (a prop in `props`); nothing else (`explanation_unknown_target`).
+`text` is one or two sentences on why that person or thing matters in this
 story, from the tellings and person records only. No invented ages, names or facts.
 
 ```json
@@ -254,9 +320,20 @@ story, from the tellings and person records only. No invented ages, names or fac
    `message`, and where known `shot`, `t`, `who`, `do`. Example:
    `shot s1, t=5: dad cannot hand_to "hymn_books"; mom is holding it`.
 3. **Fix exactly what each error names**, at that shot and time. Do not rewrite the scene,
-   rename ids or change things that compiled. Typical fixes: wrong mark name → use one that
-   exists; not holding → add the `pick_up` or fix `start.holding`; out of reach → walk closer
-   first; unknown field → delete it; too early → move `t` after the previous action ends.
+   rename ids or change things that compiled. Typical fixes, by `code`:
+   - `unknown_mark`, `unknown_prop`, `unknown_person`, `unknown_target`: use a name from the
+     list the message gives (or add the mark to `Shot.marks`).
+   - `missing_param`, `unexpected_param`: give the verb exactly its row's parameters.
+   - `busy`: move `t` to the "until" time the message names, or later.
+   - `not_holding`, `already_held`, `hands_full`: add the `pick_up` or fix `start.holding`.
+   - `out_of_reach`: put the two marks closer (same surface, at most 0.15 apart in u). For
+     `open`/`close` of a held prop, `place_on` it at hand height first and open it there.
+   - `offstage`: add an `enter` first; `already_on_stage`: use `walk_to` instead of `enter`.
+   - `lines_overlap`, `cue_before_start`, `cue_conflict`: move the line's `t`, not the action.
+   - `unsupported_verb`: the compiler cannot do that verb yet. Delete an effect; replace `exit`
+     with `walk_to` `offstage_left`/`offstage_right`, `follow` with a `walk_to` a beat later;
+     delete a `turn_to`. Keep everything else.
+   - an unknown field (`invalid_screenplay`): delete it.
 4. Compile again. **At most 3 rounds** (3 calls to `compile_screenplay`). If the third still
    fails, stop and report the remaining errors exactly as returned. Never loop further.
 
@@ -300,10 +377,11 @@ up. (s4)"
 4. `{ "t": 5.5, "who": "dad", "do": "pick_up", "what": "hymn_books" }`: after he arrives; the
    books lie 0.12 to his right and 0.3 up, inside his reach. In hand at 5.9, raised by 6.3.
 5. `{ "t": 6.6, "who": "dad", "do": "hand_to", "what": "hymn_books", "to": "mom", "id": "hand_back" }`:
-   `to` is a person here. Dad is holding the books, Mom's hand is free and in reach; hands meet
-   at 7.1 and the books move to Mom's `hand_r`.
-6. `{ "t": 7.7, "who": "mom", "do": "pose", "pose": "bow_head" }`: she can't look at him. No
-   face needed; the head bow says it.
+   `to` is a person here. Dad is holding the books (busy picking up until 6.3), Mom's hand is
+   free and in reach; hands meet at 7.1, the books move to Mom's `hand_r`, and both are busy
+   until 7.5.
+6. `{ "t": 7.7, "who": "mom", "do": "pose", "pose": "bow_head" }`: after she has taken the
+   books. She can't look at him. No face needed; the head bow says it.
 
 **Narration (Dad's telling, the default)**
 
