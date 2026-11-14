@@ -184,7 +184,9 @@ export class ExplainSession {
       this.narrator = s.narrator;
       if (s.playing) this.hush(() => c.pause());
     } else if (step.open === null) {
-      const resume = this.wasPlaying && step.closed !== null && resumesAfter(step.closed) && this.mayResume();
+      // (A note opened just as the telling reached its end: playing on would start it over.)
+      const atEnd = c.time >= c.duration - 1e-3;
+      const resume = this.wasPlaying && !atEnd && step.closed !== null && resumesAfter(step.closed) && this.mayResume();
       this.wasPlaying = false;
       if (resume && !c.getStatus().playing) this.hush(() => c.play());
     }
