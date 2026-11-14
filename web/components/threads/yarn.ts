@@ -34,6 +34,8 @@ export interface YarnInk {
   sheen: string;
   shadow: string;
   hole: string;
+  /** Text in the thread's colour, deepened so it reads on paper. */
+  label: string;
 }
 
 const inkCache = new Map<string, YarnInk>();
@@ -50,7 +52,8 @@ export function yarnInk(hex: string, dim = 0): YarnInk {
     ply: rgba(mix(base, BLACK, 0.42), 0.55 * (1 - q * 0.5)),
     sheen: rgba(mix(base, WHITE, 0.55), 0.6 * (1 - q * 0.6)),
     shadow: `rgba(74,47,29,${0.26 * (1 - q * 0.75)})`,
-    hole: `rgba(58,38,24,${0.5 * (1 - q * 0.7)})`,
+    hole: `rgba(58,38,24,${0.55 * (1 - q * 0.7)})`,
+    label: rgba(mix(mix(hexToRgb(hex), BLACK, 0.22), PAPER, q * 0.75)),
   };
   inkCache.set(key, ink);
   return ink;

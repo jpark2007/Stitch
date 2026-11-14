@@ -3,13 +3,13 @@
  * screen geometry the UI needs for hit-testing and for placing DOM labels.
  *
  * Level of detail by zoom:
- *  - far:   threads as plain yarn, knots, decade labels
- *  - mid:   + ply twist, needle holes, yearly ticks
+ *  - far:   laid yarn (continuous), knots, decade labels
+ *  - mid:   + ply twist; the yarn opens into a running stitch with needle holes
  *  - close: + sheen, loose fibres, moment titles (placed by the UI)
  */
 
 import { toX, type Camera } from "./camera";
-import { relax, strandY, type Knot, type Strand, type ThreadsModel } from "./model";
+import { relax, strandAt, type Knot, type Shape, type Strand, type ThreadsModel } from "./model";
 import { drawFrenchKnot, drawHoles, drawTiedKnot, drawYarn, hashSeed, yarnInk, type Polyline } from "./yarn";
 
 export interface Layout {
@@ -25,14 +25,14 @@ export interface Layout {
 
 export function makeLayout(width: number, height: number, lanes: number): Layout {
   const compact = width < 640;
-  const top = compact ? 132 : 150;
-  const axisY = height - (compact ? 64 : 70);
-  const avail = axisY - 48 - top;
-  const gap = lanes > 1 ? Math.min(compact ? 72 : 82, avail / (lanes - 1)) : 0;
+  const top = compact ? 168 : 182;
+  // On phones the zoom buttons sit below the axis.
+  const axisY = height - (compact ? 104 : 74);
+  const avail = axisY - 44 - top;
+  const gap = lanes > 1 ? Math.min(compact ? 70 : 80, avail / (lanes - 1)) : 0;
   // Centre the lane block in the space between header and axis.
   const block = gap * (lanes - 1);
-  const top2 = top + Math.max(0, (avail - block) / 2);
-  return { width, height, top: top2, gap, axisY };
+  return { width, height, top: top + Math.max(0, (avail - block) / 2), gap, axisY };
 }
 
 export interface FrameState {
@@ -64,26 +64,38 @@ export interface FrameGeometry {
   strands: Float32Array[];
   strandLens: number[];
   knots: KnotHit[];
+  /** Name label boxes, so titles can avoid them. */
+  names: { x0: number; y0: number; x1: number; y1: number }[];
   lod: number;
 }
 
-export function sigmaFor(s: number): number {
-  return Math.min(6, Math.max(0.9, 78 / s));
-}
-
 export function threadWidth(s: number): number {
-  return Math.min(4.6, Math.max(2.5, 2.2 + s * 0.012));
+  return Math.min(4.4, Math.max(2.6, 2.3 + s * 0.011));
 }
 
 export function knotRadius(s: number, people: number): number {
-  const base = Math.min(12, Math.max(5.5, 4.2 + s * 0.045));
-  return people > 1 ? base * (1 + Math.min(0.45, (people - 2) * 0.12)) : base * 0.78;
+  const base = Math.min(12.5, Math.max(7, 5.6 + s * 0.04));
+  return people > 1 ? base * (1 + Math.min(0.4, (people - 2) * 0.13)) : base * 0.72;
 }
 
 function lodFor(s: number): number {
   if (s >= 60) return 2;
-  if (s >= 14) return 1;
+  if (s >= 12) return 1;
   return 0;
+}
+
+/** How open the running stitch is: 0 (laid yarn) far out, ~0.14 close in. */
+function stitchGap(s: number): number {
+  const u = Math.min(1, Math.max(0, (s - 20) / 50));
+  return u * u * (3 - 2 * u) * 0.14;
+}
+
+function rand(i: number, seed: number): number {
+  let h = Math.imul(i ^ Math.floor(seed * 4294967296), 2654435761) >>> 0;
+  h ^= h >>> 15;
+  h = Math.imul(h, 2246822519) >>> 0;
+  h ^= h >>> 13;
+  return (h >>> 0) / 4294967296;
 }
 
 const scratch: Float32Array[] = [];
@@ -93,8 +105,8 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
   const { width: W, height: H } = layout;
   const s = cam.s;
   const lod = lodFor(s);
-  const sigma = sigmaFor(s);
-  relax(model, sigma);
+  const shape: Shape = { s, gap: layout.gap };
+  relax(model, shape);
 
   ctx.clearRect(0, 0, W, H);
   const laneY = (l: number) => layout.top + l * layout.gap;
@@ -106,25 +118,25 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
 
   /* ---------------- threads ---------------- */
   const w0 = threadWidth(s);
-  const dt = 3 / s; // sample every ~3px
-  // Running stitch: period in years is a power of two so stitches only
-  // ever split or merge while zooming, never slide.
-  const periodPx = 24;
-  const period = Math.pow(2, Math.ceil(Math.log2(periodPx / s)));
-  const gapFrac = 0.16;
+  const dt = 2.5 / s; // sample every ~2.5px
+  // Running stitch: the period in years is a power of two, so while zooming
+  // stitches only ever split or merge in place, they never slide.
+  const period = Math.pow(2, Math.ceil(Math.log2(26 / s)));
+  const gapFrac = stitchGap(s);
+  const knotT = model.knots.map((k) => k.t);
+  const knotClear = (knotRadius(s, 3) * 1.3) / s; // years either side of a knot left unbroken
 
-  const geom: FrameGeometry = { strands: [], strandLens: [], knots: [], lod };
+  const geom: FrameGeometry = { strands: [], strandLens: [], knots: [], names: [], lod };
 
   // Faded strands first so highlighted ones sit on top.
-  const order = model.strands.map((_, i) => i).sort((a, b) => st.dim[b] - st.dim[a]);
-  const knotT = model.knots.map((k) => k.t);
+  const order = model.strands.map((_, i) => i).sort((a, b) => st.dim[b] - st.dim[a] || st.lift[a] - st.lift[b]);
 
   for (const i of order) {
     const strand = model.strands[i];
     const ink = yarnInk(strand.person.color, st.dim[i]);
-    const width = w0 + st.lift[i] * 1.1;
-    const t0 = Math.max(strand.start.t, tLeft - 2 / s * 20);
-    const t1 = Math.min(model.tNow, tRight + 40 / s, st.reveal);
+    const width = w0 + st.lift[i] * 1.2;
+    const t0 = Math.max(strand.start.t, tLeft - 30 / s);
+    const t1 = Math.min(model.tNow, tRight + 30 / s, st.reveal);
     if (t1 <= t0) {
       geom.strands[i] = new Float32Array(0);
       geom.strandLens[i] = 0;
@@ -132,72 +144,95 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
     }
     const nSamples = Math.ceil((t1 - t0) / dt) + 1;
     let buf = scratch[i];
-    if (!buf || buf.length < nSamples * 2) buf = scratch[i] = new Float32Array(nSamples * 2 + 64);
+    if (!buf || buf.length < nSamples * 3) buf = scratch[i] = new Float32Array(nSamples * 3 + 384);
+    // Stitch phase: years along, plus vertical travel converted to years at
+    // this zoom, so steep swings get as many stitches as their length needs.
+    const travelToYears = layout.gap / s;
+    const seed = hashSeed(strand.person.id);
+    const off = seed * 10;
+    const phase = buf.subarray(nSamples * 2, nSamples * 3);
     for (let k = 0; k < nSamples; k++) {
       const t = Math.min(t1, t0 + k * dt);
+      const smp = strandAt(strand, t, shape);
       buf[k * 2] = X(t);
-      buf[k * 2 + 1] = laneY(strandY(strand, t, sigma));
+      buf[k * 2 + 1] = laneY(smp.y);
+      phase[k] = t + smp.travel * travelToYears + off;
     }
     geom.strands[i] = buf.subarray(0, nSamples * 2);
     geom.strandLens[i] = nSamples;
 
-    // Cut into stitches.
+    // Cut into stitches (each slightly irregular, as if sewn by hand).
     const runs: Polyline[] = [];
     const holes: number[] = [];
-    const knotClear = knotRadius(s, 2) * 1.4 / s; // years either side of a knot left unbroken
     let run: Polyline = [];
+    const holeOut = width * 0.75;
+    const pushHole = (k: number, dir: number) => {
+      // Just past the stitch end, into the gap: where the needle went in.
+      const ka = Math.max(0, Math.min(nSamples - 1, k - dir));
+      const dx = buf[k * 2] - buf[ka * 2];
+      const dy = buf[k * 2 + 1] - buf[ka * 2 + 1];
+      const len = Math.hypot(dx, dy) || 1;
+      holes.push(buf[k * 2] + (dx / len) * holeOut, buf[k * 2 + 1] + (dy / len) * holeOut);
+    };
     for (let k = 0; k < nSamples; k++) {
-      const t = t0 + k * dt;
-      const ph = ((t / period) % 1 + 1) % 1;
-      const nearKnot = lod > 0 && nearAny(knotT, t, knotClear);
-      const inGap = lod > 0 && !nearKnot && ph > 1 - gapFrac;
+      let inGap = false;
+      if (gapFrac > 0.004) {
+        const p = phase[k] / period;
+        const cell = Math.floor(p);
+        const g = gapFrac * (0.75 + rand(cell, seed) * 0.5);
+        inGap = p - cell > 1 - g && !nearAny(knotT, Math.min(t1, t0 + k * dt), knotClear);
+      }
       if (inGap) {
         if (run.length >= 4) {
           runs.push(run);
-          holes.push(run[run.length - 2] + 0, run[run.length - 1]);
+          pushHole(k - 1, 1);
         }
         run = [];
       } else {
-        if (run.length === 0 && runs.length > 0) holes.push(buf[k * 2], buf[k * 2 + 1]);
+        if (run.length === 0 && runs.length > 0) pushHole(k, -1);
         run.push(buf[k * 2], buf[k * 2 + 1]);
       }
     }
     if (run.length >= 4) runs.push(run);
 
-    if (lod > 0) drawHoles(ctx, holes, Math.max(0.9, width * 0.32), ink);
+    if (holes.length) drawHoles(ctx, holes, Math.max(0.8, width * 0.3) * Math.min(1, gapFrac * 9), ink);
     // Where the thread comes up through the paper at its start.
-    drawHoles(ctx, [buf[0], buf[1]], Math.max(1.1, width * 0.38), ink);
+    if (strand.start.t >= tLeft - 1 && strand.start.t <= st.reveal) drawHoles(ctx, [buf[0], buf[1]], Math.max(1.3, width * 0.45), ink);
     drawYarn(ctx, runs, ink, width, lod);
-    if (lod >= 2) drawFibres(ctx, runs, ink.body, width, hashSeed(strand.person.id));
+    if (lod >= 2) drawFibres(ctx, runs, ink.body, width, seed);
   }
 
   /* ---------------- knots ---------------- */
-  const knotOrder = model.knots.map((_, i) => i);
   const involvement = model.knots.map((k) => knotInvolvement(k, model.strands, st.dim));
-  knotOrder.sort((a, b) => involvement[a] - involvement[b] || (a === st.hoverKnot ? 1 : b === st.hoverKnot ? -1 : 0));
+  const knotOrder = model.knots.map((_, i) => i);
+  knotOrder.sort((a, b) => involvement[b] - involvement[a] || (a === st.hoverKnot ? 1 : b === st.hoverKnot ? -1 : 0));
   for (const ki of knotOrder) {
     const k = model.knots[ki];
     const x = X(k.t);
     const y = laneY(k.y);
     const r0 = knotRadius(s, k.people.length);
-    const appear = Math.min(1, Math.max(0, (st.reveal - k.t) * 1.6));
+    const appear = Math.min(1, Math.max(0, (st.reveal - k.t) * 1.4));
     const pop = appear < 1 ? easeBack(appear) : 1;
-    const r = r0 * pop * (1 + st.swell[ki] * 0.22);
+    let lifted = 0;
+    for (const p of k.people) lifted = Math.max(lifted, st.lift[model.strands.findIndex((q) => q.person.id === p.id)] ?? 0);
+    const rHit = r0 * (1 + st.swell[ki] * 0.25 + lifted * 0.16);
+    const r = rHit * pop;
     const visible = x > -r0 * 3 && x < W + r0 * 3 && appear > 0;
-    geom.knots[ki] = { index: ki, x, y, r: r0 * (1 + st.swell[ki] * 0.22), visible };
+    geom.knots[ki] = { index: ki, x, y, r: rHit, visible };
     if (!visible || r < 0.5) continue;
-    const fade = 1 - involvement[ki];
-    const width = Math.max(1.6, w0 * 0.82) + (1 - fade) * 0.4;
+    const fade = involvement[ki];
+    const width = Math.max(1.9, w0 * 0.85);
     const seed = hashSeed(k.moment.id);
     if (k.people.length === 1) {
       const idx = model.strands.findIndex((q) => q.person.id === k.people[0].id);
-      drawFrenchKnot(ctx, x, y, r, yarnInk(k.people[0].color, st.dim[idx] ?? 0), width, seed, Math.max(1, lod), 1 - fade * 0.7);
+      drawFrenchKnot(ctx, x, y, r, yarnInk(k.people[0].color, st.dim[idx] ?? 0), width * 1.05, seed, Math.max(1, lod), 1 - fade * 0.75);
     } else {
+      // A knot keeps everyone's colour; it fades only when none of its people is lit.
       const inks = k.people.map((p) => {
         const idx = model.strands.findIndex((q) => q.person.id === p.id);
-        return yarnInk(p.color, Math.max(st.dim[idx] ?? 0, fade * 0.85));
+        return yarnInk(p.color, Math.max(fade, (st.dim[idx] ?? 0) * 0.45));
       });
-      drawTiedKnot(ctx, x, y, r, inks, width, seed, Math.max(1, lod), 1 - fade * 0.7);
+      drawTiedKnot(ctx, x, y, r, inks, width, seed, Math.max(1, lod), 1 - fade * 0.75);
     }
   }
 
@@ -207,7 +242,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, model: ThreadsModel, st
   return geom;
 }
 
-/** How "lit" a knot is: 0 when any of its people is fully lit. */
+/** How faded a knot is: 0 as soon as any one of its people is lit. */
 function knotInvolvement(k: Knot, strands: Strand[], dim: number[]): number {
   let best = 1;
   for (const p of k.people) {
@@ -232,26 +267,28 @@ function drawFibres(ctx: CanvasRenderingContext2D, runs: Polyline[], color: stri
   ctx.beginPath();
   let n = Math.floor(seed * 1000);
   for (const r of runs) {
-    for (let i = 4; i < r.length - 4; i += 14) {
+    for (let i = 4; i < r.length - 4; i += 12) {
       n = (n * 1103515245 + 12345) & 0x7fffffff;
       const u = n / 0x7fffffff;
-      if (u > 0.45) continue;
+      if (u > 0.4) continue;
       const dx = r[i + 2] - r[i - 2];
       const dy = r[i + 3] - r[i - 1];
       const len = Math.hypot(dx, dy) || 1;
-      const side = u < 0.22 ? 1 : -1;
+      const side = u < 0.2 ? 1 : -1;
       const nx = (-dy / len) * side;
       const ny = (dx / len) * side;
-      const x = r[i] + nx * width * 0.45;
-      const y = r[i + 1] + ny * width * 0.45;
-      const L = width * (0.6 + u * 1.6);
+      const tx = dx / len;
+      const ty = dy / len;
+      const x = r[i] + nx * width * 0.42;
+      const y = r[i + 1] + ny * width * 0.42;
+      const L = width * (0.5 + u * 1.5);
       ctx.moveTo(x, y);
-      ctx.quadraticCurveTo(x + nx * L * 0.6 + (dx / len) * L * 0.5, y + ny * L * 0.6 + (dy / len) * L * 0.5, x + nx * L + (dx / len) * L * 0.2, y + ny * L + (dy / len) * L * 0.2);
+      ctx.quadraticCurveTo(x + nx * L * 0.6 + tx * L * 0.5, y + ny * L * 0.6 + ty * L * 0.5, x + nx * L + tx * L * 0.15, y + ny * L + ty * L * 0.15);
     }
   }
   ctx.strokeStyle = color;
-  ctx.globalAlpha = 0.55;
-  ctx.lineWidth = 0.6;
+  ctx.globalAlpha = 0.5;
+  ctx.lineWidth = 0.55;
   ctx.stroke();
   ctx.globalAlpha = 1;
 }
@@ -265,20 +302,22 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
   const s = cam.s;
   const W = layout.width;
   const minor = STEPS.find((d) => d * s >= 9) ?? 50;
-  const major = STEPS.find((d) => d * s >= 64 && d % minor === 0) ?? 50;
+  const major = STEPS.find((d) => d * s >= (W < 640 ? 56 : 62) && d % minor === 0) ?? 50;
   const y = layout.axisY;
   const lo = Math.max(Math.ceil(tLeft / minor) * minor, Math.ceil(model.tMin / minor) * minor);
   const hi = Math.min(tRight, model.tMax);
+  const xL = Math.max(0, toX(model.tMin, cam, W));
+  const xR = Math.min(W, toX(model.tMax, cam, W));
 
   // Faint pencil guides at major years, behind everything.
   ctx.beginPath();
   for (let t = Math.ceil(lo / major) * major; t <= hi; t += major) {
     const x = Math.round(toX(t, cam, W)) + 0.5;
-    ctx.moveTo(x, layout.top - 40);
+    ctx.moveTo(x, layout.top - 30);
     ctx.lineTo(x, y - 14);
   }
-  ctx.setLineDash([2, 6]);
-  ctx.strokeStyle = "rgba(47,38,32,0.075)";
+  ctx.setLineDash([1.5, 7]);
+  ctx.strokeStyle = "rgba(47,38,32,0.09)";
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.setLineDash([]);
@@ -288,63 +327,77 @@ function drawAxis(ctx: CanvasRenderingContext2D, st: FrameState, tLeft: number, 
   for (let t = lo; t <= hi; t += minor) {
     const x = Math.round(toX(t, cam, W)) + 0.5;
     const isMajor = t % major === 0;
-    ctx.moveTo(x, y - (isMajor ? 9 : 4));
+    ctx.moveTo(x, y - (isMajor ? 8 : 4));
     ctx.lineTo(x, y);
   }
-  ctx.strokeStyle = "rgba(47,38,32,0.28)";
+  ctx.strokeStyle = "rgba(47,38,32,0.26)";
   ctx.lineWidth = 1;
   ctx.stroke();
 
   // A stitched baseline.
   ctx.beginPath();
-  ctx.moveTo(Math.max(0, toX(model.tMin, cam, W)), y + 0.5);
-  ctx.lineTo(Math.min(W, toX(model.tMax, cam, W)), y + 0.5);
-  ctx.setLineDash([5, 4]);
-  ctx.strokeStyle = "rgba(47,38,32,0.2)";
+  ctx.moveTo(xL, y + 0.5);
+  ctx.lineTo(xR, y + 0.5);
+  ctx.setLineDash([6, 4]);
+  ctx.strokeStyle = "rgba(47,38,32,0.22)";
+  ctx.lineWidth = 1.2;
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Labels. With single-year spacing the label sits in the middle of its year.
-  ctx.fillStyle = "rgba(92,78,67,0.9)";
+  // Labels. At single-year spacing the label sits in the middle of its year.
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
-  const decadeFont = `600 13px ${st.fonts.sans}`;
-  const yearFont = `500 12px ${st.fonts.sans}`;
+  const decadeFont = `700 12.5px ${st.fonts.sans}`;
+  const yearFont = `600 12px ${st.fonts.sans}`;
   for (let t = Math.ceil(lo / major) * major; t <= hi; t += major) {
     const mid = major === 1 && s > 70 ? 0.5 : 0;
     const x = toX(t + mid, cam, W);
     const isDecade = t % 10 === 0;
     ctx.font = isDecade ? decadeFont : yearFont;
-    ctx.fillStyle = isDecade ? "rgba(92,78,67,0.92)" : "rgba(143,129,115,0.95)";
+    ctx.fillStyle = isDecade ? "rgba(92,78,67,0.95)" : "rgba(143,129,115,0.95)";
     const label = isDecade && major >= 10 ? `${t}s` : String(t);
-    ctx.fillText(label, x, y + 10);
+    ctx.fillText(label, x, y + 11);
   }
 }
 
 /* ---------------- names ---------------- */
 
+/**
+ * Each thread is signed with its person's name, written just above it
+ * where it first settles on its own lane (past the knot it may be born
+ * into). When that point scrolls off the left, the name rides the margin.
+ */
 function drawNames(ctx: CanvasRenderingContext2D, model: ThreadsModel, st: FrameState, geom: FrameGeometry, w0: number) {
   const { layout } = st;
   ctx.textBaseline = "alphabetic";
   ctx.textAlign = "left";
   const size = layout.width < 640 ? 19 : 21;
   ctx.font = `600 ${size}px ${st.fonts.hand}`;
+  const margin = 16;
   for (let i = 0; i < model.strands.length; i++) {
     const pts = geom.strands[i];
     const n = geom.strandLens[i];
     if (!pts || n < 2) continue;
     const strand = model.strands[i];
-    // Sit just after where the thread starts, or ride the left margin.
-    const startX = pts[0];
-    const x = Math.max(startX + 12, 14);
-    // y of the thread at x.
+    const lanePx = layout.top + strand.lane * layout.gap;
+    // First sample that sits on the lane and is clear of knots.
     let k = 0;
-    while (k < n - 1 && pts[k * 2] < x + 18) k++;
-    const y = pts[k * 2 + 1] - w0 - 7;
-    const ink = yarnInk(strand.person.color, st.dim[i]);
-    const riding = startX + 12 < 14;
-    ctx.globalAlpha = riding ? 0.78 : 1;
-    ctx.fillStyle = ink.body;
+    const startX = pts[0];
+    for (; k < n; k++) {
+      const x = pts[k * 2];
+      if (x < margin) continue;
+      if (Math.abs(pts[k * 2 + 1] - lanePx) > 2) continue;
+      if (geom.knots.some((h) => h && h.visible && Math.abs(h.x - x) < h.r + 14 && Math.abs(h.y - lanePx) < h.r + 20)) continue;
+      break;
+    }
+    if (k >= n) continue;
+    const x = Math.max(margin, pts[k * 2] + (startX >= margin ? 6 : 0));
+    const y = pts[k * 2 + 1] - w0 - 8;
+    const riding = startX < margin;
+    const w = ctx.measureText(strand.person.name).width;
+    geom.names.push({ x0: x, y0: y - size, x1: x + w, y1: y + 4 });
+    ctx.globalAlpha = riding ? 0.85 : 1;
+    ctx.fillStyle = yarnInk(strand.person.color, st.dim[i]).label;
     ctx.fillText(strand.person.name, x, y);
   }
   ctx.globalAlpha = 1;
