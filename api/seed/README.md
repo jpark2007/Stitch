@@ -51,10 +51,12 @@ mongomock database with the indexes created and the demo family seeded.
 cd api && uv sync && STITCH_FAKE_DB=1 uv run uvicorn main:app --reload --port 8000
 ```
 
-Startup logs one line confirming it, with the demo accounts and password:
+Startup logs two lines confirming it: the demo accounts and password, and the agent mode
+(scripted runs, see [Agent runs](#agent-runs-stitch_agent)):
 
 ```text
 INFO:     STITCH_FAKE_DB: in-memory database with demo family 'demo_family'; sign in as david@demo.stitch, ana@demo.stitch, sam@demo.stitch, password 'stitch-demo'
+INFO:     STITCH_AGENT=fake: scripted agent runs, no model calls (step 0.6s)
 ```
 
 `STITCH_FAKE_DB` accepts `1`, `true` or `yes`. mongomock is a dev dependency, which
@@ -113,15 +115,115 @@ curl -s -b /tmp/stitch-cookies.txt localhost:8000/families/demo_family/people/da
 ```
 
 Without the cookie, family routes return 401; with another family's id they return 404.
+A request the API rejects as malformed (422) lists each error's `type`, `loc` and `msg` but
+never echoes what was sent, so a too-short signup password is not sent back.
+
+### Add a memory without keys
+
+With `STITCH_FAKE_DB=1` and no `ANTHROPIC_API_KEY`, "add a memory" runs end to end on
+scripted runs (`seed/fake_runs.py`): no model calls, no network. In the web app, sign in as
+`sam@demo.stitch` (password `stitch-demo`), open the add page, write the memory, pick a
+year and attach photos, and submit. The live feed then shows, one step every
+`STITCH_FAKE_RUN_STEP` seconds (0.6 by default):
+
+1. a plan (Read the telling, Ask one follow-up, Find the props, Stage the scene, Narrate)
+   and the interviewer sub-agent;
+2. the follow-up question **"Who else was there that day?"**. The run waits for the
+   answer, which is added to the telling as a new paragraph;
+3. the prop master, and a prop review with one chip, the family's **hymn books**. The run
+   waits for the review: keep it, rename it, replace its photo, or remove it (removed props
+   are left out of the memory and the scene);
+4. the director, then the memory is saved with the hand-written hymn-book scene (its
+   screenplay and timeline, the `hymn_books` prop and the `church_steps_1988` set), recast
+   with this run's people: the teller plays the sample's Ana, and the first participant
+   who is not the teller plays David (else the teller's spouse, else someone else in the
+   family);
+5. `scene_ready`, then `done` with the new memory's id.
+
+The memory, with its photos, the answer and the scene, then opens in the **teller's book
+and in each participant's book** (`GET /families/demo_family/people/{id}/book`). The scene
+is always the hymn-book one, whatever the telling says: it shows the flow, not the agent.
+Adding to an existing memory (`memoryId` in the form) only adds a second telling and links
+the people to it: no question, no prop review, no new scene.
+
+The same flow with curl (the server above on port 8000; `steps.png` is any PNG, JPEG,
+WebP, GIF or HEIC file):
+
+```sh
+J=/tmp/stitch-sam.txt; B=localhost:8000/families/demo_family
+curl -s -c $J -H 'Content-Type: application/json' \
+  -d '{"email":"sam@demo.stitch","password":"stitch-demo"}' localhost:8000/auth/login
+
+curl -s -b $J -F 'text=We sang from the green hymn books on the church steps.' \
+  -F year=1998 -F participantIds=lily -F photos=@steps.png $B/memories
+# 202 {"runId":"9aef11b519204c80a678f1f8e23e512a","memoryId":null}
+RUN=9aef11b519204c80a678f1f8e23e512a      # the runId from the line above
+
+curl -s -N -b $J $B/runs/$RUN/stream      # Server-Sent Events; stays open while it waits
+# event: plan / subagent_start / subagent_end, then
+# event: question
+# data: {"text":"Who else was there that day?"}
+
+curl -s -b $J -H 'Content-Type: application/json' \
+  -d '{"kind":"answer","text":"Lily held the umbrella."}' $B/runs/$RUN/answer     # 204
+# the stream goes on to
+# event: props_found
+# data: {"props":[{"id":"hymn_books","name":"hymn books",...,"reused":true}]}
+
+curl -s -b $J -H 'Content-Type: application/json' \
+  -d '{"kind":"props","props":[{"id":"hymn_books","action":"keep"}]}' $B/runs/$RUN/answer   # 204
+# ... event: scene_ready, then
+# event: done
+# data: {"memoryId":"6af7c0a09c3bec5caec51c25"}
+
+curl -s -b $J $B/people/sam/book          # the new memory, with its timeline
+curl -s -b $J $B/people/lily/book         # the same memory, in the participant's book
+```
+
+The stream can be opened at any time: it replays the run from its first event, then
+follows it live until `done` or `error`. `STITCH_FAKE_RUN_STEP=0` makes a run finish as
+soon as it is answered.
 
 ### What does not work in this mode
 
-- **Adding a memory needs the agent.** `POST /families/{fid}/memories` returns
-  `503 {"detail":"Could not start the studio"}` until agent runs (`agent/runs.py`) are
-  wired; everything else, including reading the seeded books and scenes, works.
+- The scene of a new memory is always the hand-written hymn-book scene (see above); no
+  props, sets or art are generated.
 - Vector search is unavailable, so "ask the family" and prop matching use their keyword
   fallbacks.
 - Media is kept in an in-memory store instead of GridFS.
+
+## Agent runs (STITCH_AGENT)
+
+`STITCH_AGENT` picks who runs "add a memory" (`POST /families/{fid}/memories` and its
+`stream` and `answer` routes). It is read when the app starts:
+
+| Value | What runs |
+|---|---|
+| `off` | Nothing. `agent/` is never imported; adding a memory answers `503 {"detail":"Could not start the studio"}`. Everything else works. |
+| `fake` | Scripted runs from `seed/fake_runs.py` (see [above](#add-a-memory-without-keys)): no keys, no network. Works on the in-memory database and on a real MongoDB. |
+| `real` | The model studio, built by `agent.runs.configure_from_env(db)`. |
+
+Unset or empty (or unknown, which also logs a warning), the default is `fake` when
+`STITCH_FAKE_DB` is on or `ANTHROPIC_API_KEY` is unset or blank, and `real` otherwise. So
+`STITCH_FAKE_DB=1` always gets scripted runs unless `STITCH_AGENT=real` says otherwise, and
+a `.env` with an Anthropic key on a real MongoDB gets the model studio.
+
+`STITCH_FAKE_RUN_STEP` is the pause between the steps of a scripted run, in seconds (a
+number >= 0, default `0.6`; anything else logs a warning and uses `0.6`).
+
+Real mode needs `configure_from_env` in `agent/runs.py`, which the agent stream provides.
+Until it exists, or if it fails (a bad key, a missing adapter) or configures nothing,
+startup logs a warning naming the reason and falls back to scripted runs, so the demo still
+works:
+
+```text
+WARNING:  STITCH_AGENT=real: agent.runs has no configure_from_env() yet; falling back to scripted runs (no model calls)
+INFO:     STITCH_AGENT=fake: scripted agent runs, no model calls (step 0.6s)
+```
+
+No agent step can stop the API from starting: if even the scripted runs cannot be
+installed, startup logs a warning and the run routes answer 503. On shutdown the API stops
+the run manager it installed (runs in flight end with an error event) and clears it.
 
 ## Run the API on a real MongoDB
 
@@ -137,3 +239,8 @@ uv run uvicorn main:app --env-file ../.env
 On startup the API creates its indexes, then tries the Atlas Vector Search indexes. Neither
 can stop it from starting: if MongoDB is unreachable or is not Atlas, it logs a warning and
 serves anyway (`/health` still answers), and data routes fail until the database is back.
+
+With `ANTHROPIC_API_KEY` in that `.env`, adding a memory uses the model studio
+(`STITCH_AGENT` defaults to `real`, with the fallback described in
+[Agent runs](#agent-runs-stitch_agent)); without it, or with `STITCH_AGENT=fake`, runs are
+scripted on the real database too.
