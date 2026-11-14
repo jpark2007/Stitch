@@ -5,17 +5,19 @@
  * like turning spreads, the book's own mute, a narration duck, the book
  * open/closed switch and a level meter.
  *
- * It drives the engine exactly as the book will, through useEraMusic. The
+ * It drives the engine exactly as the book will, through useEraMusic, and
+ * prefetches the next era as the book will prefetch the next spread's. The
  * meter and stats read the engine in their own loops and write straight to
- * the DOM, so playing music never re-renders React.
+ * the DOM, so playing music never re-renders React. The probe for the
+ * verification scripts lives in probe.ts.
  */
 
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { ERAS, PALETTES, eraForYear, eraMidYear, useEraMusic, type EraId, type EraMusic } from "@/components/audio";
-import type { OfflineCue } from "@/components/audio/offline";
 import { isMuted, setMuted, subscribeMuted } from "@/components/book/sound";
 import { Tape } from "@/components/paper/Tape";
+import { useMusicProbe } from "./probe";
 
 const MIN_YEAR = 1925;
 const MAX_YEAR = 2026;
@@ -32,6 +34,20 @@ const ERA_COLOR: Record<EraId, string> = {
   "2000s": "#9aae7c",
   "2010s": "#c4a37a",
   "2020s": "#8fa7bd",
+};
+
+/** What each era sounds like, in a sentence (the now-playing note). */
+const ERA_NOTE: Record<EraId, string> = {
+  pre1940: "A music box picks out a waltz over a parlour piano’s oom-pah-pah.",
+  "1940s": "Brushes and a walking bass keep a slow swing while the vibraphone hums.",
+  "1950s": "A soft ‘ooh’ choir drifts over triplet piano and the old I–vi–IV–V.",
+  "1960s": "One acoustic guitar, fingerpicked, the thumb walking the bass.",
+  "1970s": "Warm electric-piano chords, a round bass and a rim that barely clicks.",
+  "1980s": "A detuned synth pad breathes under a quiet square-wave arpeggio.",
+  "1990s": "A lazy drum machine, chorused clean guitar and a sub bass felt more than heard.",
+  "2000s": "Strummed acoustic guitar with a glockenspiel line and a shaker.",
+  "2010s": "A wobbly jazz piano on a dusty beat, with vinyl crackle underneath.",
+  "2020s": "An airy pad, an echoing pluck and a half-time beat, soft as a bedroom demo.",
 };
 
 const KEYS = ["C", "D♭", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"];
@@ -66,8 +82,9 @@ export function MusicLab() {
   }, []);
   const era = eraForYear(year);
   const probe = params.get("probe") === "1";
+  const touched = useFirstGesture();
 
-  useProbe(probe, music, setMounted);
+  useMusicProbe(probe, music, setMounted);
 
   const step = (dir: 1 | -1) => {
     const i = era ? ERAS.findIndex((e) => e.id === era) : dir === 1 ? -1 : ERAS.length;
@@ -84,9 +101,7 @@ export function MusicLab() {
             <p className="kicker">Stitch · lab</p>
             <h1 className="mt-1 text-[1.85rem] sm:text-[2.75rem]">Era music</h1>
           </div>
-          <p className="caption max-w-[30ch] text-[1.15rem] sm:text-right sm:text-[1.2rem]">
-            {era ? `${eraLabel(era)} · ${PALETTES[era].name.toLowerCase()}` : "tap an era to start the music"}
-          </p>
+          <NowPlaying era={era} muted={muted} active={active} ducked={ducked} touched={touched} />
         </header>
 
         <ol aria-label="Eras" className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-5">
@@ -103,10 +118,10 @@ export function MusicLab() {
         >
           <YearSlider year={year} onYear={setYear} onStep={step} />
           <div className="flex min-w-0 flex-col gap-4">
-            <div className="flex flex-wrap gap-2">
-              <Toggle on={!muted} onClick={() => setMuted(!muted)} label="Sound" title="The book's mute button" />
-              <Toggle on={ducked} onClick={() => setDucked((d) => !d)} label="Narrating" title="Duck the music 10 dB under a voice" />
-              <Toggle on={active} onClick={() => setActive((a) => !a)} label="Book open" title="Closed, the music ebbs away and sleeps" />
+            <div className="flex flex-wrap gap-x-2 gap-y-2">
+              <Toggle on={!muted} onClick={() => setMuted(!muted)} label="Sound" hint="the book’s mute" />
+              <Toggle on={ducked} onClick={() => setDucked((d) => !d)} label="Narrating" hint="duck 10 dB" />
+              <Toggle on={active} onClick={() => setActive((a) => !a)} label="Book open" hint="shut, it ebbs away" />
             </div>
             <LevelMeter music={music} />
           </div>
@@ -133,7 +148,75 @@ function Player({
     onEngine(music.engine());
     return () => onEngine(null);
   }, [music, onEngine]);
+  // Warm the next era up, as the book will warm the next spread's.
+  const era = eraForYear(year);
+  useEffect(() => {
+    const i = ERAS.findIndex((e) => e.id === era);
+    if (i >= 0 && i + 1 < ERAS.length) music.prefetchYear(eraMidYear(ERAS[i + 1].id));
+  }, [music, era]);
   return null;
+}
+
+/** Whether the reader has pressed anything yet (the music waits for that). */
+function useFirstGesture() {
+  const [touched, setTouched] = useState(false);
+  useEffect(() => {
+    if (touched) return;
+    const on = () => setTouched(true);
+    window.addEventListener("pointerdown", on, { capture: true, once: true });
+    window.addEventListener("keydown", on, { capture: true, once: true });
+    return () => {
+      window.removeEventListener("pointerdown", on, { capture: true });
+      window.removeEventListener("keydown", on, { capture: true });
+    };
+  }, [touched]);
+  return touched;
+}
+
+type Status = "waiting" | "muted" | "closed" | "ready" | "playing" | "ducked";
+
+const STATUS_WORDS: Record<Status, string> = {
+  waiting: "Waiting for a tap",
+  muted: "Muted",
+  closed: "Book closed",
+  ready: "Ready",
+  playing: "Now playing",
+  ducked: "Under narration",
+};
+
+/**
+ * The engine's state in words, and what the playing era sounds like. Derived
+ * from the lab's own controls (and the reader's first press), never from the
+ * audio, so it re-renders only when a control changes.
+ */
+function NowPlaying({
+  era,
+  muted,
+  active,
+  ducked,
+  touched,
+}: {
+  era: EraId | null;
+  muted: boolean;
+  active: boolean;
+  ducked: boolean;
+  touched: boolean;
+}) {
+  const status: Status = muted ? "muted" : !active ? "closed" : !era ? "ready" : !touched ? "waiting" : ducked ? "ducked" : "playing";
+  const sounding = status === "playing" || status === "ducked";
+  const note = !touched && !muted ? "Tap anywhere to let the music start." : era ? ERA_NOTE[era] : "Pick an era, or slide through the years.";
+  return (
+    <div className="flex min-w-0 max-w-[34ch] flex-col gap-0.5 sm:items-end sm:text-right" aria-live="polite">
+      <p className="kicker flex items-center gap-1.5">
+        <span aria-hidden className={`size-1.5 rounded-full transition-colors duration-500 ${sounding ? "bg-accent" : "bg-ink-faint/50"}`} />
+        {STATUS_WORDS[status]}
+        {era && <span className="text-ink-faint">· {eraLabel(era)}</span>}
+      </p>
+      <p className={`caption text-[1.1rem] leading-snug transition-opacity duration-500 sm:text-[1.2rem] ${era && !sounding && touched ? "opacity-55" : ""}`}>
+        {note}
+      </p>
+    </div>
+  );
 }
 
 function EraCard({ id, index, playing, onPick }: { id: EraId; index: number; playing: boolean; onPick: () => void }) {
@@ -242,20 +325,26 @@ function TurnButton({ dir, onClick, disabled }: { dir: 1 | -1; onClick: () => vo
   );
 }
 
-function Toggle({ on, onClick, label, title }: { on: boolean; onClick: () => void; label: string; title: string }) {
+function Toggle({ on, onClick, label, hint }: { on: boolean; onClick: () => void; label: string; hint: string }) {
+  const id = useId();
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={on}
-      title={title}
-      className={`flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm transition-colors duration-200 ${
-        on ? "border-accent/40 bg-accent text-paper-light shadow-paper" : "border-rule bg-paper text-ink-soft hover:text-ink"
-      }`}
-    >
-      <span aria-hidden className={`size-1.5 rounded-full ${on ? "bg-paper-light" : "bg-ink-faint/60"}`} />
-      {label}
-    </button>
+    <span className="flex flex-col items-center gap-1">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-pressed={on}
+        aria-describedby={id}
+        className={`flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm transition-colors duration-200 ${
+          on ? "border-accent/40 bg-accent text-paper-light shadow-paper" : "border-rule bg-paper text-ink-soft hover:text-ink"
+        }`}
+      >
+        <span aria-hidden className={`size-1.5 rounded-full ${on ? "bg-paper-light" : "bg-ink-faint/60"}`} />
+        {label}
+      </button>
+      <span id={id} className="text-[0.68rem] leading-none text-ink-faint">
+        {hint}
+      </span>
+    </span>
   );
 }
 
@@ -313,7 +402,8 @@ function LevelMeter({ music }: { music: RefObject<EraMusic | null> }) {
       const now = performance.now();
       const perSec = ((s.busyMs - last.busyMs) / (now - last.at)) * 1000;
       last = { ticks: s.ticks, busyMs: s.busyMs, at: now };
-      const state = s.context === "none" ? "waiting for a tap" : s.phase === "asleep" ? `asleep (${s.context})` : s.context;
+      const state =
+        (s.context === "none" ? "no context yet" : s.phase === "asleep" ? `asleep (${s.context})` : s.context) + (s.warming ? " · warming the next era" : "");
       stats.current.textContent = `scheduler ${perSec.toFixed(2)} ms/s · worst pass ${s.maxTickMs.toFixed(1)} ms (first ${s.firstTickMs.toFixed(1)}) · ${s.voices} voice${s.voices === 1 ? "" : "s"} · ${state}`;
     }, 1000);
     return () => {
@@ -350,47 +440,4 @@ function LevelMeter({ music }: { music: RefObject<EraMusic | null> }) {
       </p>
     </div>
   );
-}
-
-/* ------------------------------------------------------------------------ */
-/* Probe (?probe=1): offline renders for the verification script             */
-/* ------------------------------------------------------------------------ */
-
-declare global {
-  interface Window {
-    __eraMusic?: {
-      render(cues: OfflineCue[], seconds: number): Promise<{ wav: string; notes: number; busyMs: number; maxTickMs: number }>;
-      stats(): ReturnType<EraMusic["stats"]> | null;
-      /** Mount or unmount the engine's component (teardown check). */
-      mount(on: boolean): void;
-      /** The shared context's state and whether any engine holds it awake. */
-      hub(): { context: AudioContextState | "none"; awake: boolean };
-    };
-  }
-}
-
-function useProbe(on: boolean, music: RefObject<EraMusic | null>, setMounted: (on: boolean) => void) {
-  useEffect(() => {
-    if (!on) return;
-    let live = true;
-    void Promise.all([import("@/components/audio/offline"), import("@/components/audio/hub")]).then(([{ renderEraMusic, encodeWav }, hub]) => {
-      if (!live) return;
-      window.__eraMusic = {
-        mount: setMounted,
-        hub: () => ({ context: hub.musicContext()?.state ?? "none", awake: hub.musicAwake() }),
-        async render(cues, seconds) {
-          const r = await renderEraMusic(cues, seconds);
-          const bytes = new Uint8Array(encodeWav(r.buffer));
-          let bin = "";
-          for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-          return { wav: btoa(bin), notes: r.notes, busyMs: r.busyMs, maxTickMs: r.maxTickMs };
-        },
-        stats: () => music.current?.stats() ?? null,
-      };
-    });
-    return () => {
-      live = false;
-      delete window.__eraMusic;
-    };
-  }, [on, music, setMounted]);
 }
