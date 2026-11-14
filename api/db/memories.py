@@ -17,6 +17,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, get_args
 
+import bson
 from bson import ObjectId
 from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.database import Database
@@ -32,6 +33,12 @@ log = logging.getLogger(__name__)
 _STORAGE_ONLY = ("embedding", "createdAt")
 _SCENE_FIELDS = ("screenplay", "timeline")
 _QUESTION_STATUSES = frozenset(get_args(schemas.QuestionStatus))
+
+# The most a save_scene update may carry (screenplay, timeline and the rest of its $set).
+# MongoDB refuses any document over 16 MB (BSONObjectTooLarge, or pymongo's
+# DocumentTooLarge); mongomock stores it. Checking here makes both refuse the same scene
+# the same way, with room left in the memory document for its tellings and embedding.
+MAX_SCENE_BYTES = 12 * 1024 * 1024
 
 
 class VersionConflict(Exception):
@@ -56,7 +63,17 @@ def _new_id() -> str:
 
 
 def _now(now: datetime | None = None) -> datetime:
-    return now if now is not None else datetime.now(UTC)
+    return _bson_ms(now if now is not None else datetime.now(UTC))
+
+
+def _bson_ms(value: datetime) -> datetime:
+    """Aware UTC, truncated to the millisecond a BSON date keeps.
+
+    What a write returns then equals what every later read returns, on mongomock and real
+    MongoDB alike (both drop the microseconds). A naive value is UTC, as pymongo stores it.
+    """
+    value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return value.replace(microsecond=value.microsecond // 1000 * 1000)
 
 
 def _dedupe(ids: list[str]) -> list[str]:
@@ -79,7 +96,8 @@ def _require_people(db: Database, family_id: str, person_ids: list[str]) -> None
 
 def _telling_doc(telling: schemas.Telling, now: datetime | None = None) -> dict[str, Any]:
     doc = telling.model_dump(by_alias=True, exclude_none=True)
-    doc.setdefault("createdAt", _now(now))
+    created = doc.get("createdAt")
+    doc["createdAt"] = _bson_ms(created) if isinstance(created, datetime) else _now(now)
     return doc
 
 
@@ -325,6 +343,9 @@ def save_scene(
     when the new scene was built from a read of the memory, so a scene saved in between
     (another teller's narration track) is never silently overwritten. With None (the
     default) the save is unconditional, as it always was.
+
+    ValueError, before anything is written, when the scene is larger than MAX_SCENE_BYTES
+    as BSON: real MongoDB would refuse the document (16 MB limit) where mongomock keeps it.
     """
     to_set: dict[str, Any] = {"propIds": _dedupe(prop_ids), "setIds": _dedupe(set_ids)}
     to_unset: dict[str, Any] = {}
@@ -338,6 +359,12 @@ def save_scene(
             raise ValueError("title must not be empty")
         to_set["title"] = title
 
+    size = len(bson.encode(to_set))
+    if size > MAX_SCENE_BYTES:
+        raise ValueError(
+            f"scene is too large to store ({size} bytes, at most {MAX_SCENE_BYTES}); "
+            "MongoDB documents are limited to 16 MB"
+        )
     update: dict[str, Any] = {"$set": to_set}
     if to_unset:
         update["$unset"] = to_unset

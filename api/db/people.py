@@ -10,6 +10,7 @@ Stored documents use camelCase fields and a string ``_id``; the API ``id`` is ``
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from typing import Any
 
@@ -19,6 +20,8 @@ from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
 import schemas
+
+log = logging.getLogger(__name__)
 
 COLLECTION = "people"
 
@@ -717,7 +720,12 @@ def _tree_docs(db: Database, family_id: str) -> list[dict[str, Any]]:
     docs = list(people.find({"familyId": family_id}))
     try:
         results = list(people.aggregate(_tree_pipeline(family_id)))
-    except (OperationFailure, NotImplementedError):
+    except NotImplementedError:
+        return _tree_from_docs(docs)  # a fake without $graphLookup: expected, not logged
+    except OperationFailure as exc:
+        # Every MongoDB server supports $graphLookup, so a real server refusing it is worth
+        # a line in the log (the answer is still right: the pure walk computes the same).
+        log.warning("$graphLookup failed for the family tree (%s); using the pure fallback", exc)
         return _tree_from_docs(docs)
     return _order_tree(docs, _reached_from_aggregation(results))
 
