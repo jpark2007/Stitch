@@ -75,6 +75,10 @@ export function safeNext(raw: string | null | undefined): string | null {
   }
   // Belt and braces: whatever the parser makes of it must stay on this origin.
   if (url.origin !== PROBE_ORIGIN) return null;
+  // Dot segments can collapse to a path that starts "//" ("/.//evil.example",
+  // "/%2e//evil.example", "/x/..//evil.example"). The router would hand that
+  // path to history as a protocol-relative URL, so it is refused too.
+  if (url.pathname.startsWith("//")) return null;
   const path = url.pathname.replace(/\/+$/, "").toLowerCase() || "/";
   if (AUTH_PATHS.includes(path)) return null;
   return raw;

@@ -89,6 +89,28 @@ describe("safeNext", () => {
   test("refuses absurdly long values", () => {
     assert.equal(safeNext(`/${"a".repeat(5000)}`), null);
   });
+
+  test("refuses dot segments that collapse to a protocol-relative path", () => {
+    // new URL resolves these to the pathname "//evil.example": the router
+    // would then hand "//evil.example" to history, which reads it as a host.
+    for (const bad of [
+      "/.//evil.example",
+      "/.//evil.example/x",
+      "/%2e//evil.example",
+      "/%2E//evil.example",
+      "/x/..//evil.example",
+      "/x/%2e%2e//evil.example",
+      "/././/evil.example",
+    ]) {
+      assert.equal(safeNext(bad), null, bad);
+    }
+  });
+
+  test("keeps paths with a doubled slash further in, and harmless dot segments", () => {
+    for (const ok of ["/people/p1//x", "/./add", "/families/../add?family=f1", "/a/.//b"]) {
+      assert.equal(safeNext(ok), ok, ok);
+    }
+  });
 });
 
 // ---- hrefs ------------------------------------------------------------------
