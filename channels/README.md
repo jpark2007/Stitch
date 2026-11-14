@@ -1,11 +1,13 @@
-# Channels text and photo bridge
+# Channels text, photo and voice bridge
 
 This bridge uses **Stable Spectrum**, pinned as `spectrum-ts` 12.16.0. Its default
-provider is the credential-free terminal. It forwards text and photo attachments
+provider is the credential-free terminal. It forwards text, photo attachments and voice notes
 to the Channels inbox and reports HTTP receipts. A receipt is **not** a generated
 story or proof that the conversation worker completed. Cloud iMessage mode is
-explicitly enabled as described below. Calls, voice notes and models are not part
-of this bridge. This remains a local rehearsal tool, not a production service.
+explicitly enabled as described below. Calls and transcription models are not part
+of this bridge. Voice transport requires a separate backend route that is not yet
+available in this slice; it does not make voice transcription ready end to end.
+This remains a local rehearsal tool, not a production service.
 
 ## Run locally
 
@@ -65,6 +67,15 @@ exception of 27,978,412 bytes for exactly `/internal/channels/inbound-photo` whe
 existing JSON limit. All other API request limits must remain unchanged. The
 bridge does not edit API mounting, shared contracts, or the studio save path.
 
+Voice notes additionally require `/internal/channels/inbound-voice` and its exact
+27,978,412-byte middleware allowance. This bridge does not install either backend
+hook. Until those exist, voice delivery fails explicitly. Backend ingestion must
+validate audio bytes, check current consent, and reserve durable processing before
+any transcription call; retries must not duplicate transcription or stories.
+No OpenAI credential belongs in the bridge. The server-side transcription adapter
+and its explicit opt-in are documented separately in `api/channels/TRANSCRIPTION.md`
+on the transcription branch.
+
 Photo authorization happens before download and is checked again by the
 backend before storage. Unknown, ambiguous, or nonconsenting contacts do not
 cause a download. JPEG, PNG, WEBP, GIF, HEIC and HEIF are allowed; the API must
@@ -76,10 +87,23 @@ Combined text/photo and multi-photo messages retain each SDK child's own message
 ID and order; photos keep their distinct attachment IDs. Text arrives separately
 from the photo, so the worker owns combining it into a story draft.
 
+Voice content uses the actual SDK `Voice.stream()` API, never `read()`, a filename,
+or a user-supplied URL. Sender preauthorization happens before opening the stream.
+Allowed MIME types match the transcription adapter: `audio/mpeg`, `audio/mp3`,
+`audio/mpga`, `audio/mp4`, `audio/m4a`, `audio/x-m4a`, `audio/wav`, `audio/x-wav`,
+`audio/webm`, `audio/ogg`, `audio/flac`, `audio/x-flac`. CAF and other unsupported
+containers are rejected; this bridge performs no conversion and does not trust
+MIME as proof of file contents. Voice downloads share the 20 MiB limit and one
+absolute 15-second deadline covering stream opening and all reads; stalled or
+oversized streams cancel, including streams that open after the timeout. Grouped
+text/voice messages retain child IDs and order. A missing optional SDK voice ID
+uses the exact child message ID as its deterministic attachment ID. Redelivery
+keeps these identifiers unchanged. Receipts are not transcripts or saved stories.
+
 ## Internal protocol
 
 All endpoints use `POST` and UTF-8 JSON. Unknown fields are rejected. The body
-limit is 16,384 bytes except for the exact photo endpoint below. IDs are nonblank strings of at most 256 UTF-8 bytes; text
+limit is 16,384 bytes except for the exact photo and voice endpoints below. IDs are nonblank strings of at most 256 UTF-8 bytes; text
 is nonblank and at most 8,000 UTF-8 bytes. Unpaired Unicode surrogates are invalid.
 Blank detection uses the union of Python/JavaScript whitespace: U+0009–000D,
 U+001C–0020, U+0085, U+00A0, U+1680, U+2000–200A, U+2028–2029, U+202F, U+205F,
@@ -87,13 +111,19 @@ U+3000, U+FEFF. Strings are not normalized or trimmed in transit.
 
 - `/internal/channels/inbound`: `{messageId, provider, spaceId, senderId, text}`.
 - `/internal/channels/authorize`: `{provider, senderId}`; must return `{allowed:true}`
-  before any photo bytes are downloaded. It does not reveal family or person IDs.
+  before any photo or voice bytes are downloaded. It does not reveal family or person IDs.
 - `/internal/channels/inbound-photo`: `{messageId, provider, spaceId, senderId,
   attachmentId, mimeType, dataBase64, caption?}`. Caption defaults to empty and is
   at most 8,000 UTF-8 bytes. Strict base64 decodes to at most 20,971,520 bytes;
   raw JSON is at most 27,978,412 bytes. The HMAC covers this entire raw body.
   The API's `202 {accepted:true, duplicate:boolean}` acknowledges the photo receipt,
   not a completed story. Photo IDs for the story are assigned by the backend.
+- `/internal/channels/inbound-voice`: `{messageId, provider, spaceId, senderId,
+  attachmentId, mimeType, dataBase64}`. No caption or URL field is accepted.
+  Strict base64 decodes to at most 20,971,520 bytes and raw JSON is at most
+  27,978,412 bytes. Same raw-body HMAC and stable retry identity as photos.
+  Backend route/processing integration remains pending; a transport receipt alone
+  never confirms a transcript or saved story.
 - `/internal/channels/tick`: `{}`, sent every 60 seconds without overlapping
   requests. This slice's backend reports readiness, not scheduled prompts.
 - Bridge `/send`: `{messageId, provider, spaceId, text}`. Only the explicitly
