@@ -1,38 +1,56 @@
 "use client";
 
 /**
- * /render/<sample>: a compiled timeline played end to end as a pop-up scene,
- * with narration captions, a tab per teller and the transport.
+ * /render/<memoryId>: a compiled timeline played end to end as a pop-up
+ * scene, with narration captions, a tab per teller and the transport.
  *
- * Loads the sample's three JSON files from web/public/samples (screenplay,
- * timeline and the MemoryResponse with its sets, props and people), builds
- * the paper and cutouts in idle time, then mounts the stage. Media
- * references resolve through the API for real memories; the samples have
- * none, so their narration plays as silent timing.
+ * Where the scene comes from, first match wins:
+ *   1. `window.__STITCH_RENDER__`: a MemoryResponse the checker injected
+ *      before any script ran (api/agent/tools/frames.py; the memory may be an
+ *      unsaved draft, so nothing is fetched). Shown with no chrome and no
+ *      captions, paused at ?t, filling the viewport.
+ *   2. A local sample (web/public/samples/<id>.{screenplay,timeline,memory}.json).
+ *   3. Nothing: the host's fallback (the empty stage).
+ * Paper, puppet kit and cutouts are built in idle time before mounting.
+ * Media references resolve through the API (samples have none, so their
+ * narration plays as silent timing).
+ *
+ * Ready: once every piece of art is in and a few frames are drawn, the page
+ * sets `window.__STITCH_READY__ = true` and `<html data-stage-ready="1">`.
  *
  * Keys: Space play / pause, R restart, ← → step half a second.
  */
 
-import { useFrame } from "@react-three/fiber";
 import { motion } from "framer-motion";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, bareMediaId } from "@/lib/api";
+import type { MemoryResponse } from "@/lib/types";
 import { useTimelinePlayer } from "@/components/stage/playback";
 import {
   CaptionStrip,
   PlayerControls,
+  SAMPLE_SCENES,
   SoundHint,
   TellerTabs,
   TimelineStage,
   loadSampleScene,
   preloadScene,
+  sceneFromMemory,
   sceneTellers,
   type SceneData,
 } from "@/components/stage/play";
 
+declare global {
+  interface Window {
+    /** The scene to draw, injected by the checker's frame renderer. */
+    __STITCH_RENDER__?: MemoryResponse;
+    /** Set once the frame is fully drawn. */
+    __STITCH_READY__?: boolean;
+  }
+}
+
 export interface TimelineViewProps {
-  /** Sample name under web/public/samples ("hymn_books") */
-  sample: string;
+  memoryId: string;
   /** Frozen scene time (?t), or null to play. */
   time: number | null;
   /** Starting teller (?narrator), or null for the default. */
@@ -41,49 +59,64 @@ export interface TimelineViewProps {
   autoplay: boolean;
   /** Show the transport and tabs (?ui=0 hides them for frame captures). */
   ui: boolean;
+  /** Shown when there is no scene for this id. */
+  fallback?: ReactNode;
 }
 
-/** Marks the document once a few frames have actually been drawn (for capture scripts). */
-function ReadyProbe() {
-  const frames = useRef(0);
-  useFrame(() => {
-    frames.current += 1;
-    if (frames.current === 3) document.documentElement.dataset.stageReady = "1";
-  });
-  return null;
+type Source = { kind: "scene"; scene: SceneData; checker: boolean } | { kind: "missing" } | { kind: "error" };
+
+function markReady() {
+  document.documentElement.dataset.stageReady = "1";
+  window.__STITCH_READY__ = true;
 }
 
-export function TimelineView({ sample, ...rest }: TimelineViewProps) {
-  const [scene, setScene] = useState<SceneData | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export function TimelineView({ memoryId, fallback = null, ...rest }: TimelineViewProps) {
+  const [source, setSource] = useState<Source | null>(null);
 
   useEffect(() => {
     const ctl = new AbortController();
-    loadSampleScene(sample, ctl.signal)
-      .then(async (s) => {
-        await preloadScene(s);
-        if (!ctl.signal.aborted) setScene(s);
-      })
-      .catch((e: unknown) => {
-        if (!ctl.signal.aborted) setError(e instanceof Error ? e.message : String(e));
-      });
+    const done = (s: Source) => {
+      if (!ctl.signal.aborted) setSource(s);
+    };
+    const ready = async (scene: SceneData, checker: boolean) => {
+      await preloadScene(scene);
+      done({ kind: "scene", scene, checker });
+    };
+    const injected = window.__STITCH_RENDER__;
+    const fromChecker = injected ? sceneFromMemory(injected) : null;
+    if (fromChecker) ready(fromChecker, true).catch(() => done({ kind: "error" }));
+    else if (Object.hasOwn(SAMPLE_SCENES, memoryId))
+      loadSampleScene(memoryId, ctl.signal)
+        .then((s) => ready(s, false))
+        .catch(() => done({ kind: "error" }));
+    else done({ kind: "missing" });
     return () => ctl.abort();
-  }, [sample]);
+  }, [memoryId]);
 
-  if (error) {
+  if (!source) return null;
+  if (source.kind === "missing") return <>{fallback}</>;
+  if (source.kind === "error") {
     return (
       <div className="grid h-full place-items-center font-hand text-2xl text-[#e9dcbd]/80">
         This moment could not be opened.
       </div>
     );
   }
-  if (!scene) return null;
-  return <Player scene={scene} {...rest} />;
+  const { scene, checker } = source;
+  // The checker's frames: the bare stage, no chrome, no captions over it.
+  return checker ? <Player scene={scene} {...rest} ui={false} captions={false} /> : <Player scene={scene} {...rest} />;
 }
 
 const IDLE_MS = 2600;
 
-function Player({ scene, time, narrator, autoplay, ui }: Omit<TimelineViewProps, "sample"> & { scene: SceneData }) {
+function Player({
+  scene,
+  time,
+  narrator,
+  autoplay,
+  ui,
+  captions = true,
+}: Omit<TimelineViewProps, "memoryId" | "fallback"> & { scene: SceneData; captions?: boolean }) {
   const familyId = scene.familyId;
   const resolveAudio = useCallback(
     (mediaId: string) => (familyId ? api.mediaUrl(familyId, bareMediaId(mediaId)) : null),
@@ -168,8 +201,6 @@ function Player({ scene, time, narrator, autoplay, ui }: Omit<TimelineViewProps,
     window.history.replaceState(null, "", url);
   }, []);
 
-  const overlay = useMemo(() => <ReadyProbe />, []);
-
   return (
     <motion.div
       className="absolute inset-0"
@@ -178,7 +209,13 @@ function Player({ scene, time, narrator, autoplay, ui }: Omit<TimelineViewProps,
       transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
     >
       {/* Lifted so the caption strip sits under the action, not over it. */}
-      <TimelineStage className="absolute inset-0" controller={controller} scene={scene} overlay={overlay} lift={0.065} />
+      <TimelineStage
+        className="absolute inset-0"
+        controller={controller}
+        scene={scene}
+        onReady={markReady}
+        lift={captions ? 0.065 : 0}
+      />
       {/* Soft lens vignette: the lamp's pool, falling off into the room. */}
       <div
         aria-hidden
@@ -210,8 +247,8 @@ function Player({ scene, time, narrator, autoplay, ui }: Omit<TimelineViewProps,
       )}
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center gap-4 pb-[clamp(14px,3.4vh,34px)]">
-        <SoundHint controller={controller} className="pointer-events-auto" />
-        <CaptionStrip controller={controller} tellers={tellers} className="w-full" />
+        {ui && <SoundHint controller={controller} className="pointer-events-auto" />}
+        {captions && <CaptionStrip controller={controller} tellers={tellers} className="w-full" />}
         {ui && (
           <div
             className={`pointer-events-auto transition-all duration-500 [transition-timing-function:var(--ease-paper)] ${

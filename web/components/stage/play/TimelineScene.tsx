@@ -82,6 +82,8 @@ export interface TimelineSceneProps {
    * ref): pass the book's `reveal` so the scene folds with the page turn.
    */
   reveal?: OpenSource;
+  /** Called once the scene is fully drawn (all art in, shadows settled). */
+  onReady?: () => void;
   /** Extra things in stage space (debug markers, probes). */
   children?: ReactNode;
 }
@@ -95,6 +97,7 @@ export function TimelineScene({
   lift = 0,
   tick = true,
   reveal,
+  onReady,
   children,
 }: TimelineSceneProps) {
   const { scale, origin } = useMemo(() => stageLayout(size), [size]);
@@ -104,7 +107,7 @@ export function TimelineScene({
     return frame.props.map((pf) => byId.get(pf.id)).filter((p): p is Prop => p !== undefined);
   }, [frame, scene.props]);
   return (
-    <SceneProvider controller={controller} scene={scene} scale={scale} origin={origin} tick={tick} reveal={reveal}>
+    <SceneProvider controller={controller} scene={scene} scale={scale} origin={origin} tick={tick} reveal={reveal} onReady={onReady}>
       <SetLayers />
       {frame.puppets.map((p, i) => (
         <PuppetActor key={p.id} id={p.id} index={i} />

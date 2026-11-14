@@ -12,7 +12,7 @@
  */
 
 import { useFrame } from "@react-three/fiber";
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Matrix4, Vector3, type Group } from "three";
 import type { Prop } from "@/lib/types";
 import {
@@ -77,6 +77,8 @@ export function PropBinding({ prop }: PropBindingProps) {
   }, PRIORITY.pose);
 
   useWingClip(() => actor.current?.object);
+  // Its art (or placeholder) must be drawable before the scene is ready.
+  useEffect(() => (pf ? runtime.addReadyCheck(() => actor.current?.ready ?? false) : undefined), [runtime, pf]);
 
   if (!pf) return null;
   return (

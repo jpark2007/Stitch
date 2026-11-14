@@ -9,7 +9,6 @@ import { preloadCutouts } from "@/components/stage/cutout";
 import { EFFECT_KINDS, type EffectKind } from "@/components/stage/Effects";
 import { COVER_SPAN, Stage } from "@/components/stage/Stage";
 import { smootherstep } from "@/components/stage/timeline";
-import { SAMPLE_SCENES } from "@/components/stage/play/scene";
 import { DEMO_CUTOUTS, DemoDiorama, demoCamera, DEMO_OPEN_AT } from "./demo";
 import { TimelineView } from "./TimelineView";
 
@@ -41,24 +40,27 @@ function ReadyProbe() {
   const frames = useRef(0);
   useFrame(() => {
     frames.current += 1;
-    if (frames.current === 3) document.documentElement.dataset.stageReady = "1";
+    if (frames.current === 3) {
+      document.documentElement.dataset.stageReady = "1";
+      window.__STITCH_READY__ = true;
+    }
   });
   return null;
 }
 
 export function RenderView(props: RenderViewProps) {
-  if (Object.hasOwn(SAMPLE_SCENES, props.memoryId)) {
-    return (
-      <TimelineView
-        sample={props.memoryId}
-        time={props.time}
-        narrator={props.narrator ?? null}
-        autoplay={props.autoplay ?? true}
-        ui={props.ui ?? true}
-      />
-    );
-  }
-  return <DioramaView {...props} />;
+  if (props.memoryId === "demo") return <DioramaView {...props} />;
+  // A timeline scene (checker-injected or a local sample), else the empty stage.
+  return (
+    <TimelineView
+      memoryId={props.memoryId}
+      time={props.time}
+      narrator={props.narrator ?? null}
+      autoplay={props.autoplay ?? true}
+      ui={props.ui ?? true}
+      fallback={<DioramaView {...props} />}
+    />
+  );
 }
 
 function DioramaView({ memoryId, time, open, effect, closeAt, dof = false }: RenderViewProps) {

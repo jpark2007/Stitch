@@ -27,6 +27,8 @@ export interface TimelineStageProps {
   lift?: number;
   /** Soft depth of field focused on the camera target. Default false. */
   dof?: boolean;
+  /** Called once the scene is fully drawn (all art in, shadows settled). Keep it stable. */
+  onReady?: () => void;
   /** Extra things in the Canvas outside the stage (frame probes). */
   overlay?: ReactNode;
 }
@@ -38,11 +40,12 @@ export const TimelineStage = memo(function TimelineStage({
   orbit = true,
   lift = 0,
   dof = false,
+  onReady,
   overlay,
 }: TimelineStageProps) {
   return (
     <Stage className={className} camera={null} dof={dof} overlay={overlay}>
-      <TimelineScene controller={controller} scene={scene} camera orbit={orbit} lift={lift} />
+      <TimelineScene controller={controller} scene={scene} camera orbit={orbit} lift={lift} onReady={onReady} />
     </Stage>
   );
 });

@@ -76,6 +76,7 @@ export class StageRuntime {
 
   private readonly localWings = this.wings.map((p) => p.clone());
   private readonly puppets = new Map<string, RefObject<PuppetHandle | null>>();
+  private readonly readyChecks = new Set<() => boolean>();
   private readonly tmp = new Matrix4();
   private readonly inv = new Matrix4();
 
@@ -107,6 +108,21 @@ export class StageRuntime {
     out.multiplyMatrices(this.inv, this.tmp);
     return true;
   };
+
+  /**
+   * Something still loading (layer art, prop art) registers a check that
+   * returns true once it is drawable (or has given up). Returns the unregister.
+   */
+  addReadyCheck(check: () => boolean): () => void {
+    this.readyChecks.add(check);
+    return () => this.readyChecks.delete(check);
+  }
+
+  /** Every registered check passes. */
+  get loaded(): boolean {
+    for (const c of this.readyChecks) if (!c()) return false;
+    return true;
+  }
 
   /** A stage-space point into world space, in place. */
   toWorld(v: Vector3): Vector3 {
@@ -186,8 +202,19 @@ export interface SceneProviderProps {
    * flat as a leaf turns over it and rises again when it lies open).
    */
   reveal?: OpenSource;
+  /**
+   * Called once, when the scene is fully drawn: every piece of art has loaded
+   * (or given up) and a few frames have rendered, so shadows have settled.
+   * Headless captures wait for it.
+   */
+  onReady?: () => void;
   children?: ReactNode;
 }
+
+/** Frames to draw before calling a scene ready (shadow maps and first uploads settle). */
+const READY_FRAMES = 4;
+/** Give up waiting for slow art after this long (ms) and call it ready anyway. */
+const READY_TIMEOUT = 10000;
 
 const ORIGIN = [0, 0, 0] as const;
 
@@ -204,6 +231,7 @@ export function SceneProvider({
   origin = ORIGIN,
   tick = true,
   reveal,
+  onReady,
   children,
 }: SceneProviderProps) {
   const [runtime] = useState(() => new StageRuntime());
@@ -242,6 +270,25 @@ export function SceneProvider({
   const time = useMemo(() => () => controller.time, [controller]);
   const lastVersion = useRef(-1);
   const lastReveal = useRef(Number.NaN);
+  const readyRef = useRef(onReady);
+  useEffect(() => {
+    readyRef.current = onReady;
+  }, [onReady]);
+  const ready = useRef({ frames: 0, since: 0, done: false });
+
+  // Readiness: a few frames drawn with every piece of art in.
+  useFrame(() => {
+    const r = ready.current;
+    if (r.done) return;
+    if (r.since === 0) r.since = performance.now();
+    if (!runtime.loaded && performance.now() - r.since < READY_TIMEOUT) {
+      r.frames = 0;
+      return;
+    }
+    if (++r.frames < READY_FRAMES) return;
+    r.done = true;
+    readyRef.current?.();
+  });
 
   useFrame((state) => {
     if (tick) controller.tick(performance.now());

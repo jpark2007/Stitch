@@ -13,10 +13,14 @@
 //   /render/hymn_books?narrator=mom   start with Mom's telling (a tab per teller switches)
 //   /render/hymn_books?autoplay=0     wait for play (default 1)
 //   /render/hymn_books?ui=0      hide the tabs and transport (captions stay)
+//   /render/<id> with window.__STITCH_RENDER__ = <MemoryResponse> injected before any
+//                                script runs (the checker, api/agent/tools/frames.py): that
+//                                scene, paused at ?t, bare (no chrome, no captions); the
+//                                memory may be an unsaved draft, so nothing is fetched
 //   /render/<anything else>      an empty stage
 //
-// Once the first frames have rendered, <html data-stage-ready="1"> is set so a
-// capture script can wait for it.
+// Once the frame is fully drawn (art loaded, shadows settled) the page sets
+// window.__STITCH_READY__ = true and <html data-stage-ready="1"> for capture scripts.
 
 import { Suspense } from "react";
 import { RenderView } from "./RenderView";

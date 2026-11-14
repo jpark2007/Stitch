@@ -56,13 +56,16 @@ function SetVisibility({ setId, folds, children }: { setId: string; folds: reado
 
 /** The cutout for a layer: its image when it has one and it loads, else the placeholder card. */
 function useLayerCutout(set: SetDef, index: number, layer: SetLayer): Cutout {
-  const { resolveMedia } = useScene();
+  const { resolveMedia, runtime } = useScene();
   const placeholder = useMemo(() => getCutout(placeholderLayerSpec(set.id, index, layer)), [set.id, index, layer]);
   const url = layer.art ? resolveMedia(layer.art) : null;
   const [art, setArt] = useState<{ url: string; cutout: Cutout } | null>(null);
+  const settled = useRef<string | null>(null);
   useEffect(() => {
     if (!url) return;
     let live = true;
+    // Not ready until this url's art is in (or has failed): the next render sets it.
+    const off = runtime.addReadyCheck(() => settled.current === url);
     loadImage(url)
       .then((img) => {
         if (!live) return;
@@ -71,11 +74,16 @@ function useLayerCutout(set: SetDef, index: number, layer: SetLayer): Cutout {
       })
       .catch(() => {
         // Art that will not load keeps the placeholder card.
+        settled.current = url;
       });
     return () => {
       live = false;
+      off();
     };
-  }, [url, layer.height, layer.color]);
+  }, [url, layer.height, layer.color, runtime]);
+  useEffect(() => {
+    if (art) settled.current = art.url;
+  }, [art]);
   return art && art.url === url ? art.cutout : placeholder;
 }
 
