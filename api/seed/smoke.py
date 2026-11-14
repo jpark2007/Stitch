@@ -7,7 +7,8 @@ multipart submit, the run's Server-Sent Events, answers), so it needs a server r
 Start the API first, in one terminal (from api/):
 
     # Offline: in-memory database with the demo family, scripted runs (no keys, no MongoDB).
-    STITCH_FAKE_DB=1 uv run uvicorn main:app --port 8000
+    uv run python -m seed.serve
+    # (the same thing by hand: STITCH_FAKE_DB=1 uv run uvicorn main:app --port 8000)
 
     # Real model studio: MongoDB and ANTHROPIC_API_KEY (and the other model keys) in the
     # repo-root .env. Seed the demo family once, then start the server with that file.
@@ -20,6 +21,15 @@ Then, in a second terminal (from api/):
 
     # A second telling ("hear Sam's version"): Sam adds his telling to Lily's graduation.
     uv run python -m seed.smoke --email sam@demo.stitch --memory-id demo_lily_graduation
+
+    # Rehearse the merge pause too: on the scripted studio a reply that calls someone by a
+    # family title and a near-miss name asks "Is Grandpa Joe the Joseph in your family tree?".
+    uv run python -m seed.smoke --answer "Grandpa Joe was there too."
+
+Every check prints one line as it finishes, "PASS <step>: <what was seen>", and the first
+one that fails prints "FAIL <step>: <why>" and ends the smoke. Between them, each run event
+is logged on an indented "  event ..." line. Then one summary line ("smoke OK: ..." or
+"smoke FAILED: ..."); --quiet prints only that summary.
 
 Options (all optional):
 
@@ -59,7 +69,8 @@ What each check means, in order (the first one that fails is the summary's messa
                   "props": [{"id": ..., "action": "keep"}, ...]}).
                 - `merge`: answered with {"kind": "merge", "approve": false}, so a smoke
                   run never merges two people.
-                Every answer must get 204. An `error` event, or no `done` before --timeout,
+                Every answer must get 204, and prints its own PASS line (step `question`,
+                `props_found` or `merge`). The stream's last check is step `done`. An `error` event, or no `done` before --timeout,
                 fails the smoke. If the connection drops, the stream is reopened (it
                 replays the run from its first event) and the events already seen are
                 skipped. With --memory-id, `done.memoryId` must be M.
@@ -67,6 +78,8 @@ What each check means, in order (the first one that fails is the summary's messa
                 the scene was staged and saved. With --memory-id, also: the memory has a
                 telling by the teller, `timeline.narrations[teller]` has at least one
                 line (their version can be heard), and the version went up.
+                (Steps 2, 3 and 4 print as `membership`, `teller` and `submit`; 3b as
+                `moment`.)
 7. book         GET /families/{fid}/people/{tellerId}/book lists the memory: it opens in
                 the teller's book (a second telling makes the teller a participant).
 
