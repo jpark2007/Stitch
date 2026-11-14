@@ -451,48 +451,111 @@ def test_compile_rounds_stop_at_the_cap(studios: list[Studio]) -> None:
 # --------------------------------------------------------------------------- (f) the voice pass
 
 
-class FlakyTTS:
-    """FakeTTS that fails its first call, as a TTS provider answering HTTP 503 would."""
+FAKE_KEY = "sk_live_0123456789abcdefFAKEKEY"
 
-    def __init__(self) -> None:
+
+class FlakyTTS:
+    """FakeTTS that fails its first `fail_first` calls, as a TTS provider answering HTTP 503
+    would (`fail_first=None`: every call fails, as with a missing or revoked key)."""
+
+    def __init__(self, fail_first: int | None = 1) -> None:
         self.inner = FakeTTS()
+        self.fail_first = fail_first
         self.failures = 0
 
     def synthesize(self, text: str, *, voice: str | None = None) -> Speech:
-        if self.failures == 0:
+        if self.fail_first is None or self.failures < self.fail_first:
             self.failures += 1
-            raise RuntimeError("TTS provider returned HTTP 503")
+            raise RuntimeError(f"TTS provider returned HTTP 503 (key {FAKE_KEY})")
         return self.inner.synthesize(text, voice=voice)
 
 
-def test_a_tts_failure_is_retried_and_the_run_still_finishes(studios: list[Studio]) -> None:
-    s = new_studio(studios)
-    tts = FlakyTTS()
+def _with_tts(s: Studio, tts: Any) -> None:
     s.manager.shutdown(wait=True)
     s.services = wiring.Services(**{**s.services.__dict__, "tts": tts})
     s.manager = wiring.make_manager(s.services)
 
+
+def _voice_replies(s: Studio) -> list[str]:
+    """Every synthesize_narration answer the studio model saw, in call order."""
+    replies: dict[str, str] = {}
+    for _, messages in s.services.model.calls:  # type: ignore[attr-defined]
+        for m in messages:
+            if isinstance(m, ToolMessage) and m.name == "synthesize_narration":
+                replies[m.tool_call_id] = str(m.content)
+    return list(replies.values())
+
+
+def _drive_mom(s: Studio) -> list[Event]:
     _, events = s.drive(MOM_USER, "mom", MOM_TEXT, [schemas.AnswerRequest(kind="answer", text=ANSWER),
                                                     rename_first_prop], participant_ids=["dad"])
     names = [n for n, _ in events]
     assert names[-1] == "done" and "error" not in names, names
+    return events
+
+
+def test_a_tts_failure_is_retried_in_the_tool_and_the_run_still_finishes(studios: list[Studio]) -> None:
+    s = new_studio(studios)
+    tts = FlakyTTS()
+    _with_tts(s, tts)
+    events = _drive_mom(s)
     assert tts.failures == 1
 
-    # The narrator voiced twice: the first answer was the error, the second the narration.
-    model = s.services.model
-    replies: dict[str, str] = {}
-    for _, messages in model.calls:  # type: ignore[attr-defined]
-        for m in messages:
-            if isinstance(m, ToolMessage) and m.name == "synthesize_narration":
-                replies[m.tool_call_id] = str(m.content)
-    assert len(replies) == 2, replies
-    first, second = replies.values()
-    assert first.startswith("Error: could not voice the narration (RuntimeError: TTS provider returned HTTP 503)")
-    assert second.startswith("Narrated")
+    # The voice tool retried the failed call itself: one voice pass, a real voice, no warning.
+    (reply,) = _voice_replies(s)
+    assert reply.startswith("Narrated") and "warning" not in reply, reply
 
     memory = s.memory(events[-1][1].memory_id)  # type: ignore[attr-defined]
     assert memory.timeline is not None
     track = (memory.timeline.narrations or {})["mom"]
+    assert track.audio and s.repo.get_media(FAMILY, track.audio) is not None
+
+
+def test_a_dead_tts_still_saves_a_silently_narrated_memory(studios: list[Studio]) -> None:
+    """Degrade, don't fail: with every TTS call failing the run ends in done, and the saved
+    memory has mom's narration with word timings (silent audio, estimated timings)."""
+    s = new_studio(studios)
+    tts = FlakyTTS(fail_first=None)
+    _with_tts(s, tts)
+    events = _drive_mom(s)
+    assert tts.failures == 2  # one call and one retry, then the silent voice
+
+    (reply,) = _voice_replies(s)  # a warning is not a reason to voice again
+    assert reply.startswith("Narrated"), reply
+    assert "warning: the speech service failed (RuntimeError); narrated silently with estimated word timings" in reply
+    assert FAKE_KEY not in reply and "HTTP 503" not in reply
+
+    memory = s.memory(events[-1][1].memory_id)  # type: ignore[attr-defined]
+    assert memory.timeline is not None and memory.screenplay is not None
+    assert memory.timeline.default_narrator == "mom"
+    track = (memory.timeline.narrations or {})["mom"]
+    assert track.lines and all(line.words for line in track.lines)
+    assert track.audio and s.repo.get_media(FAMILY, track.audio) is not None
+    assert all(line.words for shot in memory.screenplay.shots for line in shot.narration if line.text.strip())
+    for event in events:
+        assert FAKE_KEY not in event[1].model_dump_json()
+
+
+def test_a_media_store_failure_is_voiced_again(studios: list[Studio]) -> None:
+    """The one voice-pass failure left is the media store: the narrator voices once more."""
+    s = new_studio(studios)
+    put_media = s.repo.put_media
+    failed: list[str] = []
+
+    def flaky_put(family_id: str, data: bytes, content_type: str, *, kind: str) -> str:
+        if kind == "audio" and not failed:
+            failed.append(kind)
+            raise ConnectionError("media store unreachable")
+        return put_media(family_id, data, content_type, kind=kind)
+
+    s.repo.put_media = flaky_put  # type: ignore[method-assign]
+    events = _drive_mom(s)
+    assert failed == ["audio"]
+    first, second = _voice_replies(s)
+    assert first.startswith("Error: could not voice the narration (ConnectionError)"), first
+    assert second.startswith("Narrated"), second
+    memory = s.memory(events[-1][1].memory_id)  # type: ignore[attr-defined]
+    track = (memory.timeline.narrations or {})["mom"]  # type: ignore[union-attr]
     assert track.audio and s.repo.get_media(FAMILY, track.audio) is not None
 
 
