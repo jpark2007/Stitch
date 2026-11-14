@@ -334,6 +334,8 @@ function renderView(view: JoinView, p: ViewProps): ReactNode {
                 </ButtonLink>
               ) : null}
             </div>
+            {/* On a shared laptop, the next person signs out here and lands on this invite. */}
+            <SignedInAs me={p.me} signingOut={p.signingOut} signOutError={p.signOutError} onSignOut={p.onSignOut} />
           </PaperCard>
         </JoinShell>
       );
@@ -353,26 +355,7 @@ function renderView(view: JoinView, p: ViewProps): ReactNode {
               suggestedName={p.me?.user.name}
               onJoin={p.onJoin}
             />
-            {p.me ? (
-              <div className="mt-5 text-center text-[0.875rem] leading-snug break-words text-ink-soft">
-                <p>
-                  Signed in as {signedInLabel(p.me.user)}.{" "}
-                  <button
-                    type="button"
-                    onClick={p.onSignOut}
-                    disabled={p.signingOut}
-                    className="cursor-pointer font-semibold text-accent-deep underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-deep disabled:cursor-wait disabled:opacity-60"
-                  >
-                    {p.signingOut ? "Signing out…" : "Not you? Sign out"}
-                  </button>
-                </p>
-                {p.signOutError ? (
-                  <div className="mx-auto mt-3 max-w-[24rem] text-left">
-                    <FormError message={p.signOutError} />
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
+            <SignedInAs me={p.me} signingOut={p.signingOut} signOutError={p.signOutError} onSignOut={p.onSignOut} />
           </InviteWelcome>
         </JoinShell>
       );
@@ -431,6 +414,35 @@ function renderView(view: JoinView, p: ViewProps): ReactNode {
       );
     }
   }
+}
+
+/**
+ * "Signed in as Ana (ana@example.com). Not you? Sign out", with the sign-out
+ * error under it. One component for every signed-in view, so they say the
+ * same thing. Signing out comes back to this invite, signed out.
+ */
+function SignedInAs(p: Pick<ViewProps, "me" | "signingOut" | "signOutError" | "onSignOut">) {
+  if (!p.me) return null;
+  return (
+    <div className="mt-6 text-center text-[0.875rem] leading-snug break-words text-ink-soft">
+      <p>
+        Signed in as {signedInLabel(p.me.user)}.{" "}
+        <button
+          type="button"
+          onClick={p.onSignOut}
+          disabled={p.signingOut}
+          className="cursor-pointer font-semibold text-accent-deep underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-deep disabled:cursor-wait disabled:opacity-60"
+        >
+          {p.signingOut ? "Signing out…" : "Not you? Sign out"}
+        </button>
+      </p>
+      {p.signOutError ? (
+        <div className="mx-auto mt-3 max-w-[24rem] text-left">
+          <FormError message={p.signOutError} />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
