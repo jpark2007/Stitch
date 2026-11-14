@@ -120,6 +120,8 @@ describe("module surface", () => {
       "ask",
       "createFamily",
       "createInvite",
+      "createTradition",
+      "deleteTradition",
       "getBook",
       "getFamily",
       "getMemory",
@@ -127,8 +129,10 @@ describe("module surface", () => {
       "getQuestions",
       "getSets",
       "getThreads",
+      "getTradition",
       "getTree",
       "joinInvite",
+      "listTraditions",
       "login",
       "logout",
       "me",
@@ -142,6 +146,7 @@ describe("module surface", () => {
       "submitMemory",
       "updatePerson",
       "updateProp",
+      "updateTradition",
       "uploadMedia",
     ]);
     assert.deepEqual(Object.keys(api).sort(), Object.keys(client).sort());
@@ -182,6 +187,7 @@ const signup = { email: "a@b.c", password: "secret12", name: "Ana" };
 const login = { email: "a@b.c", password: "secret12" };
 const newPerson = { name: "Rosa", born: 1931, parentIds: [], spouseIds: [] };
 const answer = { kind: "answer", text: "It was blue." };
+const tradition = { title: "Sunday pancakes", category: "food", when: { kind: "weekly", label: "every Sunday" } };
 
 /** [method name, args, HTTP method, path, JSON body (undefined = none), response] */
 const ROUTES = [
@@ -221,6 +227,12 @@ const ROUTES = [
   ["getQuestions", [F], "GET", `/families/${FE}/questions`, undefined, { questions: [] }],
   ["ask", [F, { query: "who sang?" }], "POST", `/families/${FE}/ask`, { query: "who sang?" },
     { answer: "Rosa", quotes: [] }],
+  ["listTraditions", [F], "GET", `/families/${FE}/traditions`, undefined, { traditions: [] }],
+  ["getTradition", [F, "t 1"], "GET", `/families/${FE}/traditions/t%201`, undefined, { id: "t 1" }],
+  ["createTradition", [F, tradition], "POST", `/families/${FE}/traditions`, tradition, { id: "t2" }],
+  ["updateTradition", [F, "t2", { title: "Saturday pancakes" }], "PATCH", `/families/${FE}/traditions/t2`,
+    { title: "Saturday pancakes" }, { id: "t2" }],
+  ["deleteTradition", [F, "t2"], "DELETE", `/families/${FE}/traditions/t2`, undefined, null],
 ];
 
 describe("routes", () => {

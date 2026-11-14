@@ -1,7 +1,7 @@
 // The demo family for mock mode (NEXT_PUBLIC_API_MOCK=1): the Riveras, built
 // around the hymn books sample memory. No runtime imports and only erasable
 // TypeScript, so `node --test` can load this file directly.
-import type { Memory, MemoryResponse, Person, Prop, Question, SetDef } from "@/lib/types";
+import type { Memory, MemoryResponse, Person, Prop, Question, SetDef, Tradition } from "@/lib/types";
 
 export interface MockSeed {
   users: Array<{ id: string; email: string; name: string; password: string }>;
@@ -17,6 +17,8 @@ export interface MockSeed {
   /** The family's saved props and places (buildDemoSeed copies the sample's) */
   props?: Prop[];
   sets?: SetDef[];
+  /** The Book of Family Traditions (./index.ts adds demoTraditions.ts's) */
+  traditions?: Tradition[];
 }
 
 /** Password of both demo accounts. */

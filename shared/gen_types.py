@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import get_args
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "api"))
@@ -118,6 +119,11 @@ def generate() -> str:
         ("InteractionKind", vocab["interactionKinds"]),
     ):
         out.append(f"export type {ts_name} = " + " | ".join(_lit(v) for v in values) + ";")
+    out.append("")
+    out.append("// From api/schemas.py")
+    for alias in ("TraditionCategory", "TraditionWhenKind"):
+        values = get_args(getattr(schemas, alias))
+        out.append(f"export type {alias} = " + " | ".join(_lit(v) for v in values) + ";")
     out.append("")
     out.append("/** A mark is [u, h] or [u, h, d]. See shared/CONTRACTS.md. */")
     out.append("export type Mark = number[];")

@@ -129,6 +129,17 @@ export interface CreateFamilyResponse {
   person: Person;
 }
 
+/** POST /families/{fid}/traditions. Bounds (422 when broken): title 1-200 characters after trimming; description at most 5,000 (may be empty); when.label at most 100; when.month 1-12; at most 100 participantIds and 10 photoIds; startedYear from 1800 to this year. */
+export interface CreateTraditionRequest {
+  title: string;
+  description?: string;
+  category: "food" | "holiday" | "trip" | "music" | "game" | "faith" | "craft" | "other";
+  when: TraditionWhen;
+  participantIds?: string[];
+  photoIds?: string[];
+  startedYear?: number | null;
+}
+
 export interface DoneEvent {
   memoryId: string;
 }
@@ -641,10 +652,56 @@ export interface Track {
   keys: ([number, number | number[] | string | null])[];
 }
 
+/** Something the family does again and again: one page in the Book of Family Traditions. */
+export interface Tradition {
+  id: string;
+  familyId: string;
+  title: string;
+  /** May be empty */
+  description: string;
+  category: "food" | "holiday" | "trip" | "music" | "game" | "faith" | "craft" | "other";
+  when: TraditionWhen;
+  /** Person ids of the people who keep it */
+  participantIds: string[];
+  /** Media ids (as returned by POST /families/{fid}/media) */
+  photoIds: string[];
+  /** The year it began, when known */
+  startedYear?: number | null;
+  /** User id of whoever added it */
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** When a tradition happens. `label` is free text ("Christmas Eve", "every Sunday"), at most 100 characters after trimming; `month` is 1-12 for the month it happens in, if any. */
+export interface TraditionWhen {
+  kind: "yearly" | "seasonal" | "monthly" | "weekly" | "occasional";
+  /** e.g. "Christmas Eve", "every Sunday" */
+  label?: string | null;
+  /** 1 = January ... 12 = December */
+  month?: number | null;
+}
+
+/** GET /families/{fid}/traditions: every tradition in the family. */
+export interface TraditionsResponse {
+  traditions: Tradition[];
+}
+
 export interface TreeResponse {
   familyId: string;
   familyName: string;
   people: Person[];
+}
+
+/** PATCH /families/{fid}/traditions/{id}. Every field is optional; an omitted field is left as it is and `when` is replaced whole. Send `startedYear: null` to clear it (the route tells null from omitted with `model_fields_set`). Same bounds as CreateTraditionRequest. */
+export interface UpdateTraditionRequest {
+  title?: string | null;
+  description?: string | null;
+  category?: "food" | "holiday" | "trip" | "music" | "game" | "faith" | "craft" | "other" | null;
+  when?: TraditionWhen | null;
+  participantIds?: string[] | null;
+  photoIds?: string[] | null;
+  startedYear?: number | null;
 }
 
 /** A login. Safe to return: there is deliberately no password field. */
@@ -669,6 +726,10 @@ export type Transition = "fold" | "none";
 export type PropSize = "tiny" | "hand" | "carried" | "furniture" | "vehicle" | "building";
 export type Build = "small" | "short" | "average" | "tall";
 export type InteractionKind = "pull_tab" | "slider";
+
+// From api/schemas.py
+export type TraditionCategory = "food" | "holiday" | "trip" | "music" | "game" | "faith" | "craft" | "other";
+export type TraditionWhenKind = "yearly" | "seasonal" | "monthly" | "weekly" | "occasional";
 
 /** A mark is [u, h] or [u, h, d]. See shared/CONTRACTS.md. */
 export type Mark = number[];

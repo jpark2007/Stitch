@@ -1,5 +1,6 @@
 // Typed client for the FastAPI backend: every route in ARCHITECTURE.md
-// section 6, plus GET /families/{fid}/threads.
+// section 6, plus GET /families/{fid}/threads and the traditions routes
+// (/families/{fid}/traditions[/{id}]).
 //
 // Request and response types come from ./types (generated from
 // api/schemas.py). `api` here always talks to the real server. The mock is
@@ -19,6 +20,7 @@ import type {
   BookResponse,
   CreateFamilyRequest,
   CreateFamilyResponse,
+  CreateTraditionRequest,
   ErrorResponse,
   Family,
   InvitePreview,
@@ -42,7 +44,10 @@ import type {
   SubmitMemoryFields,
   SubmitMemoryResponse,
   ThreadsResponse,
+  Tradition,
+  TraditionsResponse,
   TreeResponse,
+  UpdateTraditionRequest,
 } from "./types";
 
 /** API origin, from NEXT_PUBLIC_API_URL (inlined by Next at build time). */
@@ -401,6 +406,17 @@ export interface StitchApi {
   answerRun(fid: string, runId: string, body: AnswerRequest): Promise<void>;
   getQuestions(fid: string): Promise<QuestionsResponse>;
   ask(fid: string, body: AskRequest): Promise<AskResponse>;
+
+  // The Book of Family Traditions
+  /** Every tradition in the family. */
+  listTraditions(fid: string): Promise<TraditionsResponse>;
+  /** Rejects 404 for a tradition that is not this family's. */
+  getTradition(fid: string, id: string): Promise<Tradition>;
+  /** Rejects 422 (fieldErrors by field name) when a bound in CreateTraditionRequest is broken. */
+  createTradition(fid: string, body: CreateTraditionRequest): Promise<Tradition>;
+  /** PATCH: only the fields sent change. Resolves to the whole updated tradition. */
+  updateTradition(fid: string, id: string, body: UpdateTraditionRequest): Promise<Tradition>;
+  deleteTradition(fid: string, id: string): Promise<void>;
 }
 
 /**
@@ -655,6 +671,17 @@ export function createApiClient(opts?: {
       request<QuestionsResponse>("GET", path`/families/${fid}/questions`),
     ask: async (fid, body) =>
       request<AskResponse>("POST", path`/families/${fid}/ask`, { json: body }),
+
+    listTraditions: async (fid) =>
+      request<TraditionsResponse>("GET", path`/families/${fid}/traditions`),
+    getTradition: async (fid, id) =>
+      request<Tradition>("GET", path`/families/${fid}/traditions/${id}`),
+    createTradition: async (fid, body) =>
+      request<Tradition>("POST", path`/families/${fid}/traditions`, { json: body }),
+    updateTradition: async (fid, id, body) =>
+      request<Tradition>("PATCH", path`/families/${fid}/traditions/${id}`, { json: body }),
+    deleteTradition: async (fid, id) =>
+      requestVoid("DELETE", path`/families/${fid}/traditions/${id}`),
   };
 }
 
