@@ -23,7 +23,7 @@ def consume_nonce(db, nonce: str, timestamp: int) -> bool:
             "_id": "auth:" + nonce,
             "kind": "auth",
             # Keep until beyond the latest instant this timestamp could pass auth.
-            "expireAt": datetime.fromtimestamp(timestamp + 301, timezone.utc),
+            "expireAt": datetime.fromtimestamp(timestamp + 900, timezone.utc),
         })
     except DuplicateKeyError:
         return False
