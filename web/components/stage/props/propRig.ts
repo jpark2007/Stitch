@@ -82,6 +82,8 @@ export class PropRig {
   resolver: SocketResolver | null = null;
   orientation: HeldOrientation = "upright";
   depthBias = 0.012;
+  /** Which point of the prop sits on a "prop:<id>.<socket>" parent. */
+  propSocketPivot: "anchor" | "grip" = "anchor";
 
   private readonly anchor = { x: 0, y: 0 };
   private readonly grip = { x: 0, y: 0 };
@@ -182,8 +184,8 @@ export class PropRig {
     const art = acquireArt(url);
     const { width, height } = this.dims;
     return {
-      face: createCardMaterial({ map: art.texture, width, height }),
-      edge: createCardMaterial({ map: art.texture, width, height, tint: "#6f5d4c", grain: 0.4 }),
+      face: createCardMaterial({ map: art.texture, alphaMap: art.alpha, width, height }),
+      edge: createCardMaterial({ map: art.texture, alphaMap: art.alpha, width, height, tint: "#6f5d4c", grain: 0.4 }),
       art,
       spec: null,
       url,
@@ -269,9 +271,13 @@ export class PropRig {
       groundMatrix(this.matrix, pose.position, pose.rotation, this.anchor.x, this.anchor.y);
       ok = true;
     } else if (parent.kind !== "invalid" && this.resolver?.(parent.target, parent.socket, this.socket)) {
-      heldMatrix(this.matrix, this.socket, this.orientation, pose.position, pose.rotation, this.grip.x, this.grip.y);
-      // In front of the hand that holds it, not inside the puppet.
-      this.matrix.elements[14] += this.depthBias;
+      // Held by a puppet: by the grip. Resting on a prop's socket (a seat, a
+      // tabletop, a roof): by the anchor, unless told otherwise.
+      const resting = parent.kind === "prop" && this.propSocketPivot === "anchor";
+      const pivot = resting ? this.anchor : this.grip;
+      heldMatrix(this.matrix, this.socket, this.orientation, pose.position, pose.rotation, pivot.x, pivot.y);
+      // In front of the hand (or the surface) it is on, not inside it.
+      this.matrix.elements[14] += resting ? this.depthBias * 0.5 : this.depthBias;
       ok = true;
     }
     if (ok) {

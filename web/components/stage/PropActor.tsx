@@ -43,7 +43,15 @@ import type { PropRegistry, SocketResolver } from "./props/sockets";
 
 export type { PropPose, HeldOrientation } from "./props/rig";
 export type { SocketResolver } from "./props/sockets";
-export { createPropPose } from "./props/rig";
+export {
+  createPropPose,
+  setParent,
+  setPartRotation,
+  setPosition,
+  setRotation,
+  setState,
+} from "./props/rig";
+export { compilePropTracks, samplePropTracks, type PropTracks } from "./props/poseTrack";
 export { PropRegistry, toStageSpace } from "./props/sockets";
 
 const SIZES: Readonly<Record<string, number>> = vocabulary.sizes;
@@ -80,6 +88,10 @@ export interface PropActorProps {
   /** Held props sit this far toward the viewer from the socket, so they are in
    *  front of the hand. Default 0.012 stage units. */
   heldDepthBias?: number;
+  /** On a "prop:<id>.<socket>" parent (a seat, a tabletop, a roof) the prop
+   *  rests on the socket by its anchor (default), or hangs by its grip. A
+   *  puppet's socket always takes the grip. */
+  propSocketPivot?: "anchor" | "grip";
   castShadow?: boolean;
   receiveShadow?: boolean;
   /** useFrame priority; keep it <= 0 (positive takes over rendering). Puppets
@@ -96,6 +108,7 @@ export function PropActor({
   resolveArt,
   heldOrientation = "upright",
   heldDepthBias = 0.012,
+  propSocketPivot = "anchor",
   castShadow = true,
   receiveShadow = false,
   priority = 0,
@@ -139,6 +152,7 @@ export function PropActor({
     rig.pose = pose;
     rig.orientation = heldOrientation;
     rig.depthBias = heldDepthBias;
+    rig.propSocketPivot = propSocketPivot;
   });
 
   // Prop sockets come from the registry; everything else from resolveSocket
