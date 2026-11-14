@@ -165,14 +165,18 @@ export function ContentsTab({ spreads, view, onPick }: ContentsProps) {
     const away = (e: PointerEvent) => {
       if (!box.current?.contains(e.target as Node)) setOpen(false);
     };
+    // Before the book's own Escape (capture), so one Escape folds the list and nothing else.
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      e.preventDefault();
+      setOpen(false);
     };
     window.addEventListener("pointerdown", away, true);
-    window.addEventListener("keydown", key);
+    window.addEventListener("keydown", key, true);
     return () => {
       window.removeEventListener("pointerdown", away, true);
-      window.removeEventListener("keydown", key);
+      window.removeEventListener("keydown", key, true);
     };
   }, [open]);
 
