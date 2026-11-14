@@ -25,6 +25,14 @@ Locate = Callable[[str, float], Vec3]
 BONES: tuple[str, ...] = tuple(ik.RIG["bones"])
 ARM_OF_HAND: dict[str, str] = {chain["socket"]: arm for arm, chain in ik.RIG["ik"].items()}
 
+NOT_ON_STAGE = "{what} is not on stage"
+"""The not_on_stage reason, worded as state.World's (a prop nothing has placed or carried in)."""
+
+
+def _names(items) -> str:
+    """A list for messages: ``a, b, c``."""
+    return ", ".join(items)
+
 
 def _v3(v) -> Vec3:
     return (float(v[0]), float(v[1]), float(v[2]))
@@ -132,7 +140,11 @@ class Locator:
             return self.prop(name, t)
         if name in self.marks:
             return self.marks[name]
-        raise StateError("unknown_target", f"{name} is not a person, prop or mark in shot {self.shot_id}")
+        raise StateError(
+            "unknown_target",
+            f"{name} is not a person, prop or mark in this shot; the cast is {_names(self.world.people)}; "
+            f"the props are {_names(self.world.props)}; the marks are {_names(self.marks)}",
+        )
 
     def mark(self, name: str) -> Vec3:
         if name not in self.marks:
@@ -142,10 +154,10 @@ class Locator:
     def prop(self, what: str, t: float, _seen: frozenset[str] = frozenset()) -> Vec3:
         """A prop's world anchor at ``t`` (its holder's socket when held)."""
         if what in _seen:
-            raise StateError("cycle", f"{what} rests on itself")
+            raise StateError("cycle", f"{what} cannot rest on itself")
         seen = _seen | {what}
         if what in self._unplaced_at_start and self.world.is_unplaced(what):
-            raise StateError("not_on_stage", f"{what} is not on stage")
+            raise StateError("not_on_stage", NOT_ON_STAGE.format(what=what))
         target = f"prop:{what}"
         parent = self.tracks.value_at(target, "parent", t)
         if parent is None:
@@ -159,14 +171,16 @@ class Locator:
             return puppet_socket_at(self.world, self.tracks, pid, socket, t)
         if kind == "prop" and pid in self.world.props:
             return self._on_prop(pid, socket, _v3(pos), t, seen)
-        raise StateError("not_on_stage", f"{what} is not on stage")
+        raise StateError("not_on_stage", NOT_ON_STAGE.format(what=what))
 
     def _on_prop(self, base: str, socket: str, offset: Vec3, t: float, seen: frozenset[str]) -> Vec3:
         bx, by, bz = self.prop(base, t, seen)
         try:
             ox, oy, oz = prop_socket_offset(self.world.catalog[base], socket)
         except KeyError:
-            raise StateError("unknown_socket", f"{base} has no socket {socket}") from None
+            sockets = self.world.catalog[base].sockets
+            known = f"its sockets are {_names(sockets)}" if sockets else "it has no sockets"
+            raise StateError("unknown_socket", f"{base} has no socket {socket}; {known}") from None
         return (bx + ox + offset[0], by + oy + offset[1], bz + oz + offset[2])
 
     def _prop_from_world(self, what: str, t: float, seen: frozenset[str]) -> Vec3:
@@ -177,7 +191,7 @@ class Locator:
         if parsed is not None and parsed[0] == "prop" and parsed[1] in self.world.props:
             return self._on_prop(parsed[1], parsed[2], _v3(st.pos), t, seen)
         if st.world_pos is None:
-            raise StateError("not_on_stage", f"{what} is not on stage")
+            raise StateError("not_on_stage", NOT_ON_STAGE.format(what=what))
         return _v3(st.world_pos)
 
 

@@ -166,6 +166,10 @@ def test_default_author_no_cast_no_source_is_an_error():
     with pytest.raises(NarrationError) as e:
         default_author(sp)
     assert e.value.code == "no_narrator"
+    assert e.value.message == (
+        "screenplay: nobody narrates: no narration source names a teller and the cast is empty; "
+        "add someone to the cast"
+    )
 
 
 def test_cue_action_index_prefers_id_then_first_verb(sp):
@@ -289,8 +293,26 @@ def test_error_cue_unknown_action(sp):
     shot.narration[2].cue = "hug"
     e = _err(retime_actions, shot, ACTION_START, author="dad")
     assert (e.code, e.shot, e.line_index, e.author) == ("cue_unknown_action", "s1", 2, "dad")
-    assert '"hug"' in e.reason and "'drop'" in e.reason and "'hand_back'" in e.reason
+    assert e.reason == (
+        'cue "hug" matches no action id and no action verb in this shot; the action ids in this shot are '
+        "drop, hand_back; its verbs are enter, drop, walk_to, pick_up, hand_to, pose"
+    )
     assert str(e).startswith("shot s1, dad's narration line 2: ")
+
+
+def test_error_cue_unknown_action_without_ids_or_actions(sp):
+    shot = sp.shots[0].model_copy(deep=True)
+    for a in shot.actions:
+        a.id = None
+    shot.narration[2].cue = "hug"
+    e = _err(retime_actions, shot, ACTION_START, author="dad")
+    assert e.reason == (
+        'cue "hug" matches no action id and no action verb in this shot; '
+        "its verbs are enter, drop, walk_to, pick_up, hand_to, pose"
+    )
+    empty = shot.model_copy(update={"actions": []})
+    e = _err(cue_action_index, empty, "hug", author="dad", line_index=0)
+    assert e.reason == 'cue "hug" matches no action id and no action verb in this shot; this shot has no actions'
 
 
 def test_error_cue_word_missing(sp):
@@ -298,7 +320,7 @@ def test_error_cue_word_missing(sp):
     shot.narration[1].cue_word = "fell"
     e = _err(retime_actions, shot, ACTION_START)
     assert (e.code, e.shot, e.line_index) == ("cue_word_missing", "s1", 1)
-    assert '"fell"' in e.reason and '"dropped"' in e.reason and '"book"' in e.reason
+    assert e.reason.endswith("; its words are and, then, she, dropped, every, single, hymn, book")
 
 
 def test_error_cue_word_missing_on_empty_line():
@@ -312,6 +334,11 @@ def test_error_cue_before_start(sp):
     shot.narration[1].t = -1.0  # "dropped" at shot t = -0.25
     e = _err(retime_actions, shot, ACTION_START)
     assert (e.code, e.shot, e.line_index) == ("cue_before_start", "s1", 1)
+    # the time is formatted like every other message time (state.fmt_t)
+    assert e.reason == (
+        'cue word of "…and then she dropped every single hymn book." is at shot t=-0.25, before the shot '
+        "starts; start the line later"
+    )
 
 
 def test_cue_exactly_at_start_is_fine():
@@ -330,7 +357,9 @@ def test_error_cue_conflict(sp):
     shot.narration[2].cue_word = "handed"
     e = _err(retime_actions, shot, ACTION_START)
     assert (e.code, e.shot, e.line_index) == ("cue_conflict", "s1", 2)
-    assert "line 1" in e.reason
+    assert e.reason == (
+        "action 1 (drop) is already cued by narration line 1; an action can land on only one word"
+    )
 
 
 def test_other_telling_errors_carry_author_shot_and_line(sp):
@@ -352,6 +381,9 @@ def test_other_telling_errors_carry_author_shot_and_line(sp):
     bad[2].cue = "drop"
     e = _err(build_shot_narration, shot, ACTION_START, retimed, {"mom": bad}, "dad")
     assert (e.code, e.author, e.shot, e.line_index) == ("cue_conflict", "mom", "s1", 2)
+    assert e.reason == (
+        "action 1 (drop) is already cued by mom's narration line 1; an action can land on only one word per telling"
+    )
 
     # "everywhere" is the 6th word (1.25 s in): landing it on drop at shot t=0.0 needs a start of
     # -1.25, before the set starts rising at -1.2.
@@ -361,6 +393,10 @@ def test_other_telling_errors_carry_author_shot_and_line(sp):
     assert retimed_early[1] == 0.0
     e = _err(build_shot_narration, early, ACTION_START, retimed_early, {"mom": base}, "dad")
     assert (e.code, e.author, e.shot, e.line_index) == ("cue_before_start", "mom", "s1", 1)
+    assert e.reason.endswith(
+        "would start at shot t=-1.25, before the shot starts; "
+        "shorten the words before the cue word or move the action later"
+    )
 
     e = _err(build_shot_narration, shot, ACTION_START, retimed, {"dad": base}, "dad")
     assert (e.code, e.author, e.shot) == ("duplicate_telling", "dad", "s1")
@@ -481,8 +517,13 @@ def test_convert_interactions_unknown_shot():
         {"id": "a", "kind": "pull_tab", "label": "Pull", "shot": "s9", "at": [0.5, 0.5],
          "drives": {"type": "scrub", "from": 1.0, "to": 2.0}}
     )
-    e = _err(convert_interactions, [scrub], {"s1": 1.2}, "s1")
-    assert (e.code, e.shot, e.line_index) == ("interaction_unknown_shot", "s9", 0)
+    e = _err(convert_interactions, [scrub], {"s1": 1.2, "s2": 9.0}, "s1")
+    # the shot does not exist, so the error is placed on the screenplay, at the interaction
+    assert (e.code, e.shot, e.line_index) == ("interaction_unknown_shot", "", 0)
+    assert str(e) == (
+        'screenplay, interaction 0: interaction "a" belongs to shot "s9", which is not in the screenplay; '
+        "the shots are s1, s2"
+    )
 
 
 # ---------------------------------------------------------------------- retime_point
@@ -583,7 +624,7 @@ def test_scrub_output_without_retimed_by_shot_is_unchanged(sp, tl):
     for kwargs in ({}, {"end_by_shot": {"s2": 20.0}}):
         e = _err(convert_interactions, scrubs, starts, "s1", **kwargs)
         assert (e.code, e.shot, e.line_index) == ("interaction_missing_to", "s1", 3)
-        assert e.reason == 'interaction "d" in shot "s1" needs to: the shot time its scrub ends'
+        assert str(e) == 'shot s1, interaction 3: interaction "d" needs "to", the shot time its scrub ends'
     # Identity retiming, or retiming for another shot only, changes nothing for s1's scrubs.
     shot = sp.shots[0]
     same = [a.t for a in shot.actions]
@@ -680,7 +721,7 @@ def test_scrub_range_turned_around_by_cues_is_an_error():
         'interaction "pull" would scrub from shot t=3.50 back to t=2.50 once its actions move onto '
         "their cue words; widen the range or cue the actions in order"
     )
-    assert str(e) == f"shot s1, narration line 1: {e.reason}"
+    assert str(e) == f"shot s1, interaction 1: {e.reason}"
     # Without the retiming the same range converts as written.
     out = convert_interactions([ok, bad], {"s1": 1.2}, "s1")
     assert (out[1].drives.from_, out[1].drives.to) == (2.7, 3.7)
@@ -703,7 +744,7 @@ def test_cue_word_missing_exact_message(sp):
     assert str(e) == e.message == (
         "shot s1, dad's narration line 1: "
         'cueWord "fell" is not a word of "…and then she dropped every single hymn book."; '
-        'its words are: "and", "then", "she", "dropped", "every", "single", "hymn", "book"'
+        "its words are and, then, she, dropped, every, single, hymn, book"
     )
 
 

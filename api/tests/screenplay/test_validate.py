@@ -683,11 +683,17 @@ def test_open_close_need_the_state(verb, state):
     ("place_on", {"what": "hymn_books", "on": "table", "socket": "shelf"}, '"table" has no socket "shelf"; its sockets are top'),
     ("place_on", {"what": "hymn_books", "on": "curb", "socket": "top"},
      'socket only applies when placing on a prop, and "curb" is a mark'),
-    ("place_on", {"what": "hymn_books", "on": "piano"}, '"piano" has no sockets to place things on'),
 ])
 def test_bad_sockets(verb, params, reason):
     a = act(verb, who="dad", **params)
     assert_errors(check_actions(a), E("invalid_value", message_for(verb, a, reason), t=1.0, who="dad", do=verb))
+
+
+def test_place_on_a_prop_with_no_sockets_is_no_socket():
+    # The same code and words as verbs_objects' runtime check.
+    a = act("place_on", who="dad", what="hymn_books", on="piano")
+    reason = '"piano" has no sockets to place on'
+    assert_errors(check_actions(a), E("no_socket", message_for("place_on", a, reason), t=1.0, who="dad", do="place_on"))
 
 
 def test_bad_time():
@@ -776,7 +782,7 @@ def test_default_telling_unknown_cue():
     assert_errors(check(sp), E(
         "cue_unknown_action",
         "shot s1, dad's narration line 1: cue \"jump\" matches no action id and no action verb in this shot; "
-        "action ids in this shot: 'drop'"))
+        "the action ids in this shot are drop; its verbs are drop, wave"))
 
 
 def test_other_telling_unknown_cue():
@@ -788,10 +794,10 @@ def test_other_telling_unknown_cue():
         check(sp),
         E("cue_unknown_action",
           "shot s1, mom's narration line 0: cue \"fall\" matches no action id and no action verb in this shot; "
-          "action ids in this shot: 'drop'"),
+          "the action ids in this shot are drop; its verbs are drop, wave"),
         E("cue_unknown_action",
           "shot s1, mom's narration line 1: cue \"hug\" matches no action id and no action verb in this shot; "
-          "action ids in this shot: 'drop'"),
+          "the action ids in this shot are drop; its verbs are drop, wave"),
     )
 
 
@@ -804,9 +810,9 @@ def test_cue_word_missing_in_any_telling():
         check(sp),
         E("cue_word_missing",
           'shot s1, dad\'s narration line 0: cueWord "dropped" is not a word of "She let go."; '
-          'its words are: "She", "let", "go"'),
+          "its words are She, let, go"),
         E("cue_word_missing",
-          'shot s1, mom\'s narration line 0: cueWord "fell" is not a word of "Oops."; its words are: "Oops"'),
+          'shot s1, mom\'s narration line 0: cueWord "fell" is not a word of "Oops."; its words are Oops'),
     )
 
 
@@ -941,7 +947,7 @@ def test_telling_unknown_shot():
     sp = screenplay(shot(), shot(id="s2", set="park"), narrations={"mom": {"s1": [], "s9": [line(0, "Hi.")]}})
     assert_errors(check(sp), E(
         "telling_unknown_shot",
-        'screenplay: mom\'s telling has lines for shot "s9", which is not in the screenplay; shots are: s1, s2',
+        'screenplay: mom\'s telling has lines for shot "s9", which is not in the screenplay; the shots are s1, s2',
         shot=None))
 
 
@@ -1003,7 +1009,7 @@ def test_interaction_unknown_shot():
     sp = screenplay(interactions=[tab({"type": "scrub", "from": 1, "to": 2}, shot_id="s7", iid="pull")])
     assert_errors(check(sp), E(
         "interaction_unknown_shot",
-        'screenplay: interaction "pull" belongs to shot "s7", which is not in the screenplay; shots are: s1',
+        'screenplay: interaction "pull" belongs to shot "s7", which is not in the screenplay; the shots are s1',
         shot=None))
 
 
@@ -1059,8 +1065,10 @@ def test_interaction_prop_drives():
           shot=None),
         E("interaction_unknown_part", 'screenplay: interaction "d" drives part "brim" of "hat"; it has no moving parts',
           shot=None),
-        E("missing_param", 'screenplay: interaction "e" drives prop_part and needs "part"', shot=None),
-        E("missing_param", 'screenplay: interaction "f" drives prop_state and needs "prop"', shot=None),
+        E("missing_param", 'screenplay: interaction "e" drives prop_part, which requires prop, part; "part" is missing',
+          shot=None),
+        E("missing_param", 'screenplay: interaction "f" drives prop_state, which requires prop; "prop" is missing',
+          shot=None),
     )
 
 

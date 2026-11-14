@@ -209,7 +209,7 @@ def test_not_holding_reasons(world: World):
 
 def test_hand_to_other_errors(world: World):
     opening(world)
-    raises("self_hand_to", "mom cannot hand hymn_books to themselves", world.hand_to, "mom", "hymn_books", "mom")
+    raises("self_hand_to", '"to" is mom themselves', world.hand_to, "mom", "hymn_books", "mom")
     raises("offstage", "dad is offstage", world.hand_to, "mom", "hymn_books", "dad")
     world.move("dad", MARKS["steps_foot"])
     world.pick_up("dad", "cup")
@@ -248,7 +248,7 @@ def test_pick_up_socket_choice(world: World):
     world.drop("mom", "cup", (0.1, 0.3, 0.5))
     assert world.pick_up("mom", "cup", "hand_l") == "hand_l"
     raises("hands_full", "mom's hand_r is holding hymn_books", world.pick_up, "mom", "lamp", "hand_r")
-    raises("bad_socket", "head is not a hand", world.pick_up, "mom", "lamp", "head")
+    raises("bad_socket", "head is not a hand; use hand_r or hand_l", world.pick_up, "mom", "lamp", "head")
 
 
 def test_pick_up_from_a_surface_frees_the_socket(world: World):
@@ -379,7 +379,7 @@ def test_seated_cannot_move_and_vehicle_carries_occupants(world: World):
     world.get_in("dad", "sedan")
     raises("seated", "mom is seated in sedan.driver", world.move, "mom", MARKS["curb"])
     raises("seated", "dad is seated in sedan.passenger", world.exit, "dad")
-    raises("seated_vehicle", "dad is seated in sedan", world.pick_up, "dad", "cup")
+    raises("seated_vehicle", "dad is seated in sedan; use get_out first", world.pick_up, "dad", "cup")
     raises("seated_vehicle", "mom is in sedan; use get_out", world.stand_up, "mom")
     world.put_on("kid", "hat")  # sanity: others unaffected
     world.move_vehicle("sedan", (-0.2, 0.0, 0.5))
@@ -503,7 +503,7 @@ def test_place_on_socket_and_ground(world: World):
     raises("socket_taken", "table.top is taken by hymn_books", world.place_on, "dad", "cup", "prop:table.top", (0, 0, 0))
     raises("unknown_socket", "table has no socket shelf", world.place_on, "dad", "cup", "prop:table.shelf", (0, 0, 0))
     raises("not_holding", "it is on table.top", world.place_on, "mom", "hymn_books", "ground", (0, 0, 0.5))
-    raises("bad_parent", "cannot place cup on puppet:mom.hand_r", world.place_on, "dad", "cup", "puppet:mom.hand_r", (0, 0, 0))
+    raises("bad_parent", "puppet:mom.hand_r is not the ground or a prop socket", world.place_on, "dad", "cup", "puppet:mom.hand_r", (0, 0, 0))
     world.place_on("dad", "cup", "ground", (-0.45, 0.0, 0.5))
     cup = world.props["cup"]
     assert cup.parent == "ground" and cup.pos == (-0.45, 0.0, 0.5) and cup.world_pos == (-0.45, 0.0, 0.5)
@@ -628,20 +628,29 @@ def test_begin_shot_prop_start_takes_prop_from_hand(world: World):
 
 def test_begin_shot_errors_leave_world_unchanged(world: World):
     opening(world)
-    raises("double_hold", "dad and mom both start holding hymn_books", world.begin_shot,
+    raises("double_hold", "dad and mom both start holding hymn_books; give it to one of them", world.begin_shot,
            shot(id="s2", start={"dad": {"at": "home", "holding": "hymn_books"},
                                 "mom": {"at": "curb", "holding": "hymn_books"}}),
            MARKS, False)
     raises("unknown_mark", "nowhere is not a mark in shot s2", world.begin_shot,
            shot(id="s2", start={"dad": {"at": "nowhere"}}), MARKS, False)
-    raises("prop_conflict", "hymn_books is held by dad and also placed in prop_start", world.begin_shot,
+    raises("prop_conflict", "dad starts holding hymn_books, and propStart also places it; give one", world.begin_shot,
            shot(id="s2", start={"dad": {"at": "home", "holding": "hymn_books"}},
                 propStart={"hymn_books": {"at": "curb"}}), MARKS, True)
-    raises("socket_taken", "dad and mom both start in sedan.driver", world.begin_shot,
+    raises("socket_taken", "dad and mom both start in sedan.driver; seat one elsewhere", world.begin_shot,
            shot(id="s2", start={"dad": {"at": "home", "in": "sedan.driver"}, "mom": {"at": "home", "in": "sedan.driver"}}),
            MARKS, True)
-    raises("unknown_socket", "sedan has no socket roof", world.begin_shot,
+    raises("unknown_socket", "sedan has no socket roof; its sockets are driver, passenger, back_seat", world.begin_shot,
            shot(id="s2", start={"dad": {"at": "home", "in": "sedan.roof"}}), MARKS, True)
+    raises("unknown_socket", "dad starts in sedan with no socket; its sockets are driver, passenger, back_seat",
+           world.begin_shot, shot(id="s2", start={"dad": {"at": "home", "in": "sedan"}}), MARKS, True)
+    raises("unknown_socket", "dad starts in cup with no socket; it has no sockets", world.begin_shot,
+           shot(id="s2", start={"dad": {"at": "home", "in": "cup"}}), MARKS, True)
+    raises("cycle", "crate cannot rest on table, which rests on crate", world.begin_shot,
+           shot(id="s2", propStart={"table": {"on": "crate.top"}, "crate": {"on": "table.top"}}), MARKS, True)
+    raises("socket_taken", "every socket on table is taken", world.begin_shot,
+           shot(id="s2", propStart={"table": {"at": "curb"}, "cup": {"on": "table.top"}, "lamp": {"on": "table"}}),
+           MARKS, True)
     raises("unknown_id", "ghost is not in the cast", world.begin_shot,
            shot(id="s2", start={"ghost": {"at": "home"}}), MARKS, True)
     raises("socket_taken", "table.top is taken by cup", world.begin_shot,
@@ -853,14 +862,14 @@ def test_prop_start_on_a_prop_that_is_not_on_stage(world: World):
 
 def test_prop_start_state_must_exist(world: World):
     opening(world)
-    raises("unknown_state", "lamp has no state broken", world.begin_shot,
+    raises("unknown_state", "lamp has no state broken; its states are lit, out", world.begin_shot,
            shot(id="s2", propStart={"lamp": {"state": "broken"}}), MARKS, True)
 
 
 def test_start_holding_a_prop_someone_sits_on(world: World):
     parked(world)
     world.sit_on("mom", "chair")
-    raises("occupied", "mom is sitting on chair", world.begin_shot,
+    raises("occupied", "mom is sitting on chair; start mom somewhere else", world.begin_shot,
            shot(id="s2", start={"dad": {"at": "home", "holding": "chair"}}), MARKS, True)
 
 
@@ -941,8 +950,8 @@ def test_put_on_a_prop_someone_sits_on(world: World):
 def test_put_on_from_the_ground_while_seated_in_a_vehicle(world: World):
     parked(world)
     world.get_in("dad", "sedan")
-    raises("seated_vehicle", "dad is seated in sedan", world.put_on, "dad", "hat")
-    raises("seated_vehicle", "dad is seated in sedan", world.pick_up, "dad", "hat")
+    raises("seated_vehicle", "dad is seated in sedan; use get_out first", world.put_on, "dad", "hat")
+    raises("seated_vehicle", "dad is seated in sedan; use get_out first", world.pick_up, "dad", "hat")
 
 
 def test_cannot_take_a_prop_someone_sits_on_through_a_stacked_prop(world: World):
