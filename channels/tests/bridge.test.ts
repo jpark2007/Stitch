@@ -3,13 +3,28 @@ import { test } from "node:test";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { ApiClient, TerminalOutbox, createSendServer, localApiUrl } from "../src/bridge.ts";
-import { Authenticator, MAX_BODY_BYTES, parseMessage, signature, signedHeaders } from "../src/protocol.ts";
+import { Authenticator, MAX_BODY_BYTES, parseMessage, signature, signedHeaders, validateSecret } from "../src/protocol.ts";
 
 const secret = "0123456789abcdef0123456789abcdef";
 const now = 1_700_000_000_000;
 const nonce = "12345678-1234-1234-1234-123456789abc";
 const inbound = { messageId: "message-1", provider: "terminal" as const, spaceId: "chat-1", senderId: "person-1", text: "A childhood memory" };
 const outbound = { messageId: "reply-1", provider: "terminal" as const, spaceId: "chat-1", text: "Receipt recorded" };
+
+test("shared secrets reject blank, edge whitespace and invalid Unicode without normalizing", () => {
+  const invalid = ["", "short", "x".repeat(31), "é".repeat(15) + "x", " ".repeat(32), "\t".repeat(40), "\n".repeat(40), "\u2003".repeat(32),
+    " " + secret, secret + " ", "\t" + secret, secret + "\n", secret + "\r\n", "\u00a0" + secret,
+    "\uFEFF" + secret, secret + "\uFEFF", "\u0085" + secret, secret + "\u001C", secret + "\uD800"];
+  for (const value of invalid) {
+    assert.throws(() => validateSecret(value), { message: "CHANNELS_SHARED_SECRET requires at least 32 UTF-8 bytes and no edge whitespace" });
+    assert.throws(() => new Authenticator(value));
+  }
+  for (const value of ["x".repeat(32), "é".repeat(16), "x".repeat(16) + " " + "y".repeat(16)]) {
+    assert.equal(validateSecret(value), value);
+    const raw = Buffer.from("{}");
+    new Authenticator(value).verify("POST", "/send", new Headers(signedHeaders(value, "/send", raw)), raw);
+  }
+});
 
 test("HMAC known vector covers method, exact path and raw bytes", () => {
   const raw = Buffer.from("{}");
