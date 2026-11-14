@@ -93,7 +93,10 @@ class Demo:
 @pytest.fixture
 def demo_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[Demo]:
     monkeypatch.setenv("STITCH_FAKE_DB", "1")
-    monkeypatch.setenv("STITCH_AGENT", "off")
+    # fake, not off: off makes every run route answer 503. The lifespan's own scripted
+    # manager is swapped for this test's below (step 0, and the test holds a handle on it).
+    monkeypatch.setenv("STITCH_AGENT", "fake")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("STITCH_CORS_ORIGINS", raising=False)
     monkeypatch.setattr(routes.memories, "HEARTBEAT_SECONDS", HEARTBEAT_SECONDS)
     db_client.set_db(None)
@@ -106,6 +109,9 @@ def demo_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[Demo]:
         # one shares the app and its db but keeps its own cookie jar.
         with _guarded(TestClient(app), guard) as alice:
             assert db_client.get_db().name, "the lifespan should have installed the fake db"
+            auto = agent.runs._manager  # the lifespan's scripted manager (STITCH_AGENT=fake)
+            assert isinstance(auto, ScriptedRunManager), auto
+            auto.shutdown()
             manager = ScriptedRunManager(step_seconds=0.0)
             agent.runs.configure(manager)
             bob = _guarded(TestClient(app), guard)
