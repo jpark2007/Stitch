@@ -4,8 +4,9 @@ This slice exports two **unmounted** routers: `channels.settings.router` and
 `channels.enrollment.router`. The API owner must mount them and run the existing
 `ensure_channel_indexes(db)` hook before use. No `main.py`, shared schema, studio,
 provider or frontend file is changed here. `STITCH_CHANNELS=1` gates both routers.
-Bridge dispatch of `LINK <code>` is separate work; until that dispatch and mounting
-exist, this is an independently tested backend, not a live enrollment feature.
+The companion bridge intercepts `LINK <code>` before ordinary story intake.
+Actual deployment still requires router mounting and explicit provider setup;
+offline tests do not establish that a live line is configured.
 
 ## Cookie-authenticated settings
 
@@ -67,13 +68,18 @@ The separate signed endpoint is:
 `POST /internal/channels/enroll`
 
 ```json
-{"messageId":"sdk-child-id","provider":"imessage","senderId":"+15555550123","spaceId":"sdk-space-id","code":"43-character-url-safe-code"}
+{"messageId":"sdk-child-id","provider":"imessage","senderId":"+15555550123","spaceId":"sdk-space-id","spaceKind":"direct","code":"43-character-url-safe-code"}
 ```
 
 It uses the existing exact-body HMAC, nonce replay guard, timestamp window and
 16,384-byte body cap. Query strings and unknown fields are refused. IDs are
 nonblank valid Unicode of at most 256 UTF-8 bytes. The recipient's signed sender
 handle must match the pending contact after documented email canonicalization.
+`spaceKind:"direct"` is mandatory and asserted only by the server-side bridge
+after checking actual inbound Stable SDK metadata: `space.__platform` is
+`imessage`, `space.type` is `dm`, the message is inbound iMessage, and its resolved
+space matches. Group/unknown contexts fail closed. Web preferences cannot assert
+this field. It is part of the signed raw body, never an unsigned query hint.
 Only successful one-use proof returns `{status:"active"}`. Invalid, expired,
 locked-out, stopped, already-used or missing proof returns the same generic 400
 without exposing family/person identity. Authentication failures retain their
@@ -83,10 +89,18 @@ new activation; the cookie-authenticated settings read reveals current status.
 Redemption rechecks the initiating user's existence, current family membership
 and authority over the person, plus the person's original user mapping. It
 atomically consumes the hash while activating the pending row and recording
-`verifiedAt`, `optInAt` and the signed `spaceId`. Concurrent consumption succeeds
+`verifiedAt`, `optInAt`, the signed `spaceId` and `spaceKind:"direct"`. Concurrent consumption succeeds
 once. STOP changes the compare-and-set predicate and deletes pending proof.
-The proof binds the observed destination; a future scheduler must apply its
-own delivery/privacy rules rather than assuming every SDK space is a private DM.
+The proof binds the observed direct destination. Proactive scheduling must require
+this evidence; legacy contacts without it are not grandfathered in. New pending
+enrollment clears both space fields until fresh proof succeeds.
+
+Restart recovery is deliberately incomplete: the bridge registers only spaces
+seen in this process's incoming SDK events. Stable SDK `space.get(id)` merely
+reconstructs metadata and does not independently verify the recipient; it cannot
+safely restore an arbitrary stored destination by itself. Unknown spaces fail
+closed until a new inbound event. No automatic new-chat creation or uncertain
+delivery replay is implemented.
 
 Cross-family handle reuse is a generic 409 until explicit family selection is
 implemented. Deterministic managed-contact IDs serialize concurrent creation for

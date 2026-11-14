@@ -53,7 +53,7 @@ def create(client, person=PERSON, **changes):
 
 def proof(client, code, **changes):
     data = {"messageId": "proof-message", "provider": "imessage", "senderId": BODY["handle"],
-            "spaceId": "verified-room", "code": code, **changes}
+            "spaceId": "verified-room", "spaceKind": "direct", "code": code, **changes}
     raw = json.dumps(data).encode()
     path = "/internal/channels/enroll"
     return client.post(path, content=raw, headers=sign(raw, path, secret=SECRET))
@@ -81,6 +81,7 @@ def test_pending_proof_preferences_stop_and_sanitized_reads(stack):
     assert proof(client, created["code"]).json() == {"status": "active"}
     active = contacts.resolve_contact(db, "imessage", BODY["handle"])
     assert active["spaceId"] == "verified-room" and active["userId"] == "demo_user_david"
+    assert active["spaceKind"] == "direct"
     assert "enrollmentHash" not in active
     assert proof(client, created["code"]).status_code == 400
     assert create(client).status_code == 409
@@ -91,6 +92,7 @@ def test_pending_proof_preferences_stop_and_sanitized_reads(stack):
         contacts.resolve_contact(db, "imessage", BODY["handle"])
     renewed = create(client)
     assert renewed.status_code == 201 and renewed.json()["contact"]["status"] == "pending"
+    assert db.contacts.find_one({})["spaceKind"] is None
     assert proof(client, created["code"]).status_code == 400
     assert proof(client, renewed.json()["code"]).status_code == 200
 
@@ -193,7 +195,7 @@ def test_concurrent_redemption_consumes_once(stack):
     login(client)
     code = create(client).json()["code"]
     def redeem(_):
-        return contacts.redeem_enrollment(db, "imessage", BODY["handle"], code, "space")
+        return contacts.redeem_enrollment(db, "imessage", BODY["handle"], code, "space", space_kind="direct")
     with ThreadPoolExecutor(max_workers=8) as pool:
         assert sum(pool.map(redeem, range(8))) == 1
 
@@ -217,7 +219,7 @@ def test_proof_hmac_queries_unknown_fields_and_nonce_replay(stack):
     assert client.post("/internal/channels/enroll", json={}).status_code == 401
     assert proof(client, code, familyId="spoof").status_code == 400
     path = "/internal/channels/enroll"
-    raw = json.dumps({"messageId": "m", "provider": "imessage", "senderId": BODY["handle"], "spaceId": "s", "code": code}).encode()
+    raw = json.dumps({"messageId": "m", "provider": "imessage", "senderId": BODY["handle"], "spaceId": "s", "spaceKind": "direct", "code": code}).encode()
     headers = sign(raw, path, secret=SECRET)
     assert client.post(path + "?family=spoof", content=raw, headers=headers).status_code == 400
     assert client.post(path, content=raw, headers=headers).status_code == 200
@@ -240,6 +242,30 @@ def test_settings_feature_gate(stack, monkeypatch):
     login(client)
     monkeypatch.setenv("STITCH_CHANNELS", "0")
     assert client.get(BASE + "/contacts").status_code == 404
+
+
+@pytest.mark.parametrize("kind", [None, "group", "dm", "unknown", True])
+def test_signed_enrollment_requires_exact_direct_space_proof(stack, kind):
+    client, db = stack
+    login(client)
+    code = create(client).json()["code"]
+    assert proof(client, code, spaceKind=kind).status_code == 400
+    assert db.contacts.find_one({})["status"] == "pending"
+    assert contacts.redeem_enrollment(db, "imessage", BODY["handle"], code, "room", space_kind=kind) is False
+    assert proof(client, code).status_code == 200
+
+
+def test_unsigned_or_missing_direct_proof_cannot_activate_contact(stack):
+    client, db = stack
+    login(client)
+    code = create(client).json()["code"]
+    data = {"messageId": "m", "provider": "imessage", "senderId": BODY["handle"], "spaceId": "s", "code": code}
+    raw = json.dumps(data).encode()
+    path = "/internal/channels/enroll"
+    assert client.post(path, content=raw, headers=sign(raw, path, secret=SECRET)).status_code == 400
+    assert client.post(path, json={**data, "spaceKind": "direct"}).status_code == 401
+    assert client.patch(PERSON + "/contact", json={"spaceKind": "direct"}).status_code == 422
+    assert db.contacts.find_one({})["status"] == "pending"
 
 
 @pytest.mark.parametrize("same_handle", [False, True])

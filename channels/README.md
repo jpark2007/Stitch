@@ -105,6 +105,40 @@ keeps these identifiers unchanged. Receipts are not transcripts or saved stories
 
 ## Internal protocol
 
+### Recipient LINK commands
+
+Before ordinary text intake, the main loop intercepts `LINK <code>` (case-insensitive
+command, exactly one 43-character URL-safe code). All LINK-prefixed malformed
+commands are rejected with a generic error; they never enter the story inbox and
+the bridge never logs their code. Grouped SDK children pass through this dispatch
+individually, retaining child message IDs.
+
+Enrollment requires an actual inbound iMessage SDK space with
+`__platform === "imessage"` and `type === "dm"`; its resolved message space must
+match. Unknown metadata, groups, terminal mode and outbound events are rejected.
+This uses Stable SDK 12.16.0's iMessage space schema (`id`, `type: "dm" | "group"`,
+`phone`) and incoming provider metadata. It never guesses privacy from an ID's
+spelling, a text field or a web request. The installed provider implements member
+listing for groups only, so no fictitious DM member lookup is used.
+
+The signed request is `POST /internal/channels/enroll` with
+`{messageId,provider:"imessage",senderId,spaceId,spaceKind:"direct",code}` under
+the normal 16,384-byte limit. The backend must mount the separate enrollment
+router. It atomically consumes pending proof and stores the observed direct
+destination. There is exactly one HTTP attempt for enrollment; after a lost
+response, inspect the authenticated settings page instead of automatically
+replaying a one-use code. No verification message is sent by creating a pending
+enrollment, and terminal-only rehearsals cannot activate iMessage contacts.
+
+Bridge restart recovery remains deferred. Unknown destinations still fail
+closed until another incoming SDK event registers them. The installed
+`space.get(id)` reconstructs type from the supplied ID and does not revalidate
+the recipient; using it alone would not establish safe hydration. The bridge
+does not create arbitrary new chats or replay uncertain prior sends. This is
+not production recovery support.
+
+### Signed requests
+
 All endpoints use `POST` and UTF-8 JSON. Unknown fields are rejected. The body
 limit is 16,384 bytes except for the exact photo and voice endpoints below. IDs are nonblank strings of at most 256 UTF-8 bytes; text
 is nonblank and at most 8,000 UTF-8 bytes. Unpaired Unicode surrogates are invalid.
@@ -138,7 +172,7 @@ lowercase UUID), and `X-Channels-Signature` (lowercase hex HMAC-SHA256). Sign th
 exact bytes `METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce + "\n" + rawBody`
 using `CHANNELS_SHARED_SECRET`. Verification is constant-time and accepts clocks
 within 300 seconds. Query strings are not supported. API calls use a five-second
-timeout, at most three attempts, and no redirects. Retries retain the message ID
+timeout, at most three attempts (one for enrollment), and no redirects. Retries retain the message ID
 but get a new nonce. Permanent HTTP errors are not retried.
 
 The bridge's replay cache and outbound delivery records are **process-local**.

@@ -1,9 +1,8 @@
 import { Spectrum } from "spectrum-ts";
 import { terminal } from "spectrum-ts/providers/terminal";
 import { imessage } from "spectrum-ts/providers/imessage";
-import { ApiClient, TerminalOutbox, createSendServer } from "./bridge.ts";
+import { ApiClient, TerminalOutbox, createSendServer, forwardIncoming } from "./bridge.ts";
 import { configureProviderEnvironment, validateSecret } from "./protocol.ts";
-import { forwardProviderMessage } from "./photos.ts";
 
 const secret = validateSecret(process.env.CHANNELS_SHARED_SECRET ?? "");
 const client = new ApiClient(process.env.CHANNELS_API_URL ?? "http://127.0.0.1:8000", secret);
@@ -50,7 +49,7 @@ try {
     }
     try {
       outbox.register(space.id, (text) => space.send(text), provider);
-      for (const receipt of await forwardProviderMessage(client, space.id, message)) {
+      for (const receipt of await forwardIncoming(client, space, message)) {
         console.log(`Inbox receipt HTTP ${receipt.status}; this does not mean a story was generated.`);
       }
     } catch (error) {
