@@ -4,7 +4,7 @@
 // live agent run making its page. When the run pauses on the family, the
 // matching card (follow-up question, prop review or merge) sits inside the
 // feed; answers go back through useAgentRun to the run's answer route.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import AgentFeed from "@/components/agent/AgentFeed";
 import FollowUpCard from "@/components/agent/FollowUpCard";
@@ -114,14 +114,18 @@ export function MemoryRun(props: {
   } = props;
   const runOptions = useMemo(() => (runKey ? { ...options, runKey } : options), [options, runKey]);
   const { state, answerQuestion, reviewProps, decideMerge, retry } = useAgentRun(source, runOptions);
+
+  // In the commit that shows it, before it is painted: a page that says the
+  // run is stitched in has already let go of its open-run record, so leaving
+  // at once (a link, a reload) can never find the run still open.
+  const progress = openRunProgress(state);
+  useLayoutEffect(() => {
+    if (progress !== null) onProgress?.(progress);
+  }, [progress, onProgress]);
+  // Then whatever draws from the run's state (the crafting book).
   useEffect(() => {
     onState?.(state);
   }, [state, onState]);
-
-  const progress = openRunProgress(state);
-  useEffect(() => {
-    if (progress !== null) onProgress?.(progress);
-  }, [progress, onProgress]);
 
   // The card's key is read once per pending input (the reducer keeps the same
   // object for the whole pause), so nothing logged mid-pause can remount the

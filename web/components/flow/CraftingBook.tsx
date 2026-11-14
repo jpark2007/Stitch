@@ -40,6 +40,7 @@ import {
   inkedLines,
   namesLine,
   openingLines,
+  personBookHref,
   sentences,
   type CastMember,
   type CraftProp,
@@ -93,7 +94,7 @@ export interface CraftInput {
 
 export interface CraftingBookProps {
   /** Whose book it is: "Ana's book", and where their book opens. */
-  owner: { title: string; href: string };
+  owner: { title: string; personId: string | null; familyId: string | null };
   page: Watch<DraftPage>;
   /** The run, once the story is sent; null while writing. */
   run: {
@@ -375,7 +376,10 @@ export function CraftingBook({ owner, page: pageWatch, run, placement }: Craftin
     [scene, page.cast, run?.fresh, reduced, ready],
   );
 
-  const back = useMemo(() => ({ href: owner.href, label: owner.title }), [owner.href, owner.title]);
+  // The teller's book: plain while there is no moment yet; once the run has
+  // saved it, opened at the page just made.
+  const bookHref = owner.personId ? personBookHref(owner.personId, owner.familyId, memoryId) : "/";
+  const back = useMemo(() => ({ href: bookHref, label: owner.title }), [bookHref, owner.title]);
 
   // Where the book's camera looks: the whole spread while writing; once the
   // story is sent, the story page while the studio reads it (and later while
@@ -509,7 +513,7 @@ export function CraftingBook({ owner, page: pageWatch, run, placement }: Craftin
         {/* The way into the page is the feed's one button; under the book, only the way back to the teller's book. */}
         {done && run ? (
           <Link
-            href={owner.href}
+            href={bookHref}
             className={`mt-2 inline-flex min-h-11 items-center rounded-paper px-1 text-[0.95rem] font-medium text-[#f3e6cf]/85 underline decoration-1 underline-offset-[0.25em] hover:decoration-2 ${FOCUS_RING}`}
           >
             Back to your book
