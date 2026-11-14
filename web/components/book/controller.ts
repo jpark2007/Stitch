@@ -49,6 +49,8 @@ const now = () => performance.now() / 1000;
 
 export interface BookView {
   opened: boolean;
+  /** The cover has finished opening. */
+  ready: boolean;
   /** 1-based. */
   spread: number;
 }
@@ -674,8 +676,8 @@ export class BookController {
     }
 
     // React hears about spread changes only.
-    const view = { opened: this.isOpen, spread: Math.max(1, this.pos) };
-    const vk = `${view.opened}|${view.spread}`;
+    const view = { opened: this.isOpen, ready: this.open >= 1 && !this.opening, spread: Math.max(1, this.pos) };
+    const vk = `${view.opened}|${view.ready}|${view.spread}`;
     if (vk !== this.viewKey) {
       this.viewKey = vk;
       this.onView(view);

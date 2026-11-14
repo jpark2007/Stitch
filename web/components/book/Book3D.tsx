@@ -111,7 +111,7 @@ export function Book3D({ spreads, cover, initial, renderStage, still = false, de
   // The starting view is read once; later prop changes do not reset the book.
   const [start] = useState(() => resolveStart(initial, spreads.length));
   const [art, setArt] = useState<BookArt | null>(null);
-  const [view, setView] = useState<BookView>({ opened: start.opened, spread: start.spread });
+  const [view, setView] = useState<BookView>({ opened: start.opened, ready: start.opened, spread: start.spread });
   const controls = useRef<BookControls | null>(null);
   const onControls = useCallback((api: BookControls | null) => {
     controls.current = api;
@@ -238,7 +238,57 @@ export function Book3D({ spreads, cover, initial, renderStage, still = false, de
       >
         tap the book to open it
       </motion.p>
+
+      {/* Once, after the reader opens the book themselves. */}
+      <TurnHint view={view} enabled={!start.opened && !still} />
     </div>
+  );
+}
+
+const HINT_KEY = "stitch:turn-hint-seen";
+
+function hintSeen() {
+  try {
+    return localStorage.getItem(HINT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+const subscribeCoarse = (cb: () => void) => {
+  const m = window.matchMedia("(pointer: coarse)");
+  m.addEventListener("change", cb);
+  return () => m.removeEventListener("change", cb);
+};
+const isCoarse = () => window.matchMedia("(pointer: coarse)").matches;
+
+/** A brief line on how to turn, shown once the cover has opened, then never again. */
+function TurnHint({ view, enabled }: { view: BookView; enabled: boolean }) {
+  const [done, setDone] = useState(hintSeen);
+  const coarse = useSyncExternalStore(subscribeCoarse, isCoarse, () => false);
+  const show = enabled && !done && view.ready && view.spread === 1;
+  useEffect(() => {
+    if (!show) return;
+    const t = window.setTimeout(() => {
+      setDone(true);
+      try {
+        localStorage.setItem(HINT_KEY, "1");
+      } catch {
+        // Private mode: it shows again next visit.
+      }
+    }, 5200);
+    return () => window.clearTimeout(t);
+  }, [show]);
+  return (
+    <motion.p
+      aria-hidden={!show}
+      className="pointer-events-none absolute inset-x-0 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] text-center font-hand text-xl text-[#f3e6cf]/80 sm:text-2xl"
+      initial={false}
+      animate={{ opacity: show ? 1 : 0, y: show ? 0 : 6 }}
+      transition={{ duration: 0.7, delay: show ? 0.35 : 0, ease: [0.22, 1, 0.36, 1] }}
+    >
+      {coarse ? "swipe, or tap the page edge, to turn" : "click or drag a page corner to turn"}
+    </motion.p>
   );
 }
 
