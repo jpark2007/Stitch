@@ -145,6 +145,12 @@ describe("scores", () => {
     }
   });
 
+  it("keeps out of the shrill register: no note above C6", () => {
+    for (const id of ERA_IDS) {
+      for (const evs of s.scoreLoop(PALETTES[id]).bars) for (const e of evs) assert.ok(e.midi <= 84, `${id} midi ${e.midi}`);
+    }
+  });
+
   it("is never busy: few melodic onsets per second, a gentle tempo", () => {
     for (const id of ERA_IDS) {
       const p = PALETTES[id];
@@ -167,6 +173,9 @@ describe("scores", () => {
       const b = PALETTES[ERA_IDS[i]];
       const sig = (p: typeof a) => [p.bpm, p.beatsPerBar, p.tonic % 12, p.mode, p.progression.join(" "), p.parts.map((x) => x.inst).sort().join()].join("|");
       assert.notEqual(sig(a), sig(b));
+      // Neighbours never share a scale (D dorian is C major's notes, so pitch sets, not names).
+      const scaleOf = (p: typeof a) => s.scalePitchClasses(p.tonic, p.mode).slice().sort((x, y) => x - y).join();
+      assert.notEqual(scaleOf(a), scaleOf(b), `${a.id} and ${b.id} share a scale`);
       const instA = new Set(a.parts.map((x) => x.inst));
       const shared = b.parts.filter((x) => instA.has(x.inst)).length;
       assert.ok(shared < b.parts.length, `${b.id} has an instrument ${a.id} lacks`);
