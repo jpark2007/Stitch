@@ -33,7 +33,7 @@ export default function HomePage() {
 
       <section aria-label="Family tree" className="mt-6 flex flex-1 items-center justify-center pb-[6vh] sm:mt-10 sm:pb-0">
         <div className="w-full max-w-[62rem]">
-          <FamilyTree people={demoPeople} maxHeight="calc(100dvh - 15rem)" />
+          <FamilyTree people={demoPeople} maxHeight="calc(100dvh - 17rem)" />
         </div>
       </section>
     </main>
