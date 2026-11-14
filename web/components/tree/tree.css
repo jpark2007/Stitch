@@ -2,6 +2,20 @@
  * rule compiles every *.css as global, so CSS modules are not available.
  * Scales as one piece with its container (1 --u = 1 layout unit). */
 
+/* A tree wider than its minimum scale allows scrolls sideways here, so the
+ * page itself never does. Padding keeps hover lifts and focus rings clear of
+ * the clip edge. */
+.ft-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(74 47 29 / 0.22) transparent;
+  padding-block: 0.75rem;
+  margin-block: -0.75rem;
+}
+
 .ft-frame {
   container-type: inline-size;
   width: 100%;
@@ -99,6 +113,69 @@
   transition: color 0.3s var(--ease-paper);
 }
 
+/* Longer names step down a size (inline, from nameFit); long ones take two
+ * lines, and a line that still will not fit ends in an ellipsis. */
+.ft-name {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.ft-name-line {
+  display: block;
+}
+
+/* Only a name already at the smallest size can still be too long. Clip
+ * sideways only, so descenders and swashes are never cut. */
+.ft-name[data-tight] .ft-name-line {
+  max-width: calc(var(--u) * 124);
+  overflow-x: clip;
+  overflow-clip-margin: calc(var(--u) * 4);
+  text-overflow: ellipsis;
+}
+
+.ft-name[data-lines="2"] {
+  line-height: 1;
+}
+
+/* ---- Loading placeholder: blank paper figures that breathe. ---- */
+
+.ft-ghost {
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.ft-ghost .ft-tree {
+  opacity: 0.55;
+  animation: ft-breathe 2.4s ease-in-out infinite;
+}
+
+.ft-ghost .ft-draw {
+  animation: none;
+  stroke-dashoffset: 0;
+}
+
+.ft-ghost .ft-node,
+.ft-ghost .ft-knot {
+  animation: none;
+}
+
+.ft-name-ghost {
+  display: block;
+  width: calc(var(--u) * 58);
+  height: calc(var(--u) * 13);
+  margin-top: calc(var(--u) * 10);
+  border-radius: calc(var(--u) * 7);
+  background: var(--paper-deep);
+}
+
+@keyframes ft-breathe {
+  50% {
+    opacity: 0.32;
+  }
+}
+
 @media (hover: hover) {
   .ft-node:hover .ft-figure {
     transform: translateY(calc(var(--u) * -7)) rotate(-2deg);
@@ -136,4 +213,137 @@
 
 .ft-thread {
   transition: opacity 0.35s var(--ease-paper);
+}
+
+/* ======================================================================
+ * The home screen around the tree (TreeHome.tsx).
+ * ==================================================================== */
+
+.ft-title {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 4.4vw, 3.4rem);
+  line-height: 1.12;
+}
+
+/* Paper strips standing in for the title and caption while loading. */
+.ft-bar {
+  display: inline-block;
+  height: 0.62em;
+  border-radius: 999px;
+  background: var(--paper-deep);
+  vertical-align: middle;
+  animation: ft-breathe 2.4s ease-in-out infinite;
+}
+
+.ft-bar-title {
+  width: min(6.5em, 70vw);
+}
+
+.ft-bar-caption {
+  width: 11em;
+  height: 0.5em;
+}
+
+/* While another family loads, the current tree steps back a little. */
+.ft-home-tree {
+  transition: opacity 0.3s var(--ease-paper);
+}
+
+/* A tree too wide for the screen scrolls edge to edge, through the gutter,
+ * so the cut-off threads at the sides say there is more. */
+.ft-home-tree .ft-scroll {
+  width: auto;
+  margin-inline: calc(-1 * var(--gutter));
+  padding-inline: var(--gutter);
+  scroll-padding-inline: var(--gutter);
+}
+
+.ft-home-tree.is-switching {
+  opacity: 0.45;
+}
+
+/* The one quiet line under a demo tree. */
+.ft-note {
+  margin-top: 1.25rem;
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--ink-faint);
+}
+
+.ft-note-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent-deep);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+}
+
+/* Family picker: reads as a nav label until you use it. */
+.ft-switch {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.ft-switch select {
+  field-sizing: content;
+  min-width: 0;
+  max-width: 13rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  appearance: none;
+  border: 0;
+  border-bottom: 1.5px dashed var(--rule);
+  border-radius: 0;
+  background: transparent
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238f8173' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    no-repeat right 0.1rem center;
+  padding: 0.15rem 1.1rem 0.1rem 0;
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition:
+    color 0.2s var(--ease-paper),
+    border-color 0.2s var(--ease-paper);
+}
+
+.ft-switch select:hover,
+.ft-switch select:focus-visible {
+  color: var(--ink);
+  border-bottom-color: var(--ink-faint);
+}
+
+.ft-switch select:disabled {
+  cursor: progress;
+}
+
+/* Three demo puppets standing on the prompt card's top edge. */
+.ft-prompt-cast {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 0.25rem;
+  margin-bottom: -0.9rem;
+}
+
+.ft-prompt-puppet {
+  width: 3.6rem;
+  height: auto;
+  aspect-ratio: 100 / 130;
+  filter: drop-shadow(0 1.5px 1.5px rgb(74 47 29 / 0.16));
+}
+
+.ft-prompt-puppet:nth-child(2) {
+  transform: rotate(-3deg);
+}
+
+.ft-prompt-puppet:nth-child(4) {
+  transform: rotate(3deg);
 }

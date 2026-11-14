@@ -86,12 +86,33 @@ interface Unit {
 }
 
 export function layoutFamily(
-  input: readonly LayoutPerson[],
+  given: readonly LayoutPerson[],
   opts: LayoutOptions = DEFAULT_LAYOUT,
 ): TreeLayout {
-  const people = new Map(input.map((p) => [p.id, p]));
-  const parentsOf = (id: string) => (people.get(id)?.parentIds ?? []).filter((p) => people.has(p));
-  const spousesOf = (id: string) => (people.get(id)?.spouseIds ?? []).filter((s) => people.has(s));
+  // One entry per id (the first wins), so duplicates never place a person twice.
+  const people = new Map<string, LayoutPerson>();
+  for (const p of given) if (!people.has(p.id)) people.set(p.id, p);
+  const input = [...people.values()];
+  if (!input.length) {
+    return { width: 0, height: 0, rows: 0, people: [], byId: new Map(), couples: [], families: [] };
+  }
+  const dataIndex = new Map(input.map((p, i) => [p.id, i]));
+
+  // Links to people outside the tree, or to oneself, are ignored. Spouse links
+  // count from either side, so a one-sided link still pairs the two.
+  const parentMap = new Map(
+    input.map((p) => [p.id, [...new Set(p.parentIds ?? [])].filter((q) => q !== p.id && people.has(q))]),
+  );
+  const parentsOf = (id: string): string[] => parentMap.get(id) ?? [];
+  const spouseMap = new Map<string, string[]>(input.map((p) => [p.id, []]));
+  for (const p of input) {
+    for (const s of p.spouseIds ?? []) {
+      if (s === p.id || !people.has(s)) continue;
+      if (!spouseMap.get(p.id)!.includes(s)) spouseMap.get(p.id)!.push(s);
+      if (!spouseMap.get(s)!.includes(p.id)) spouseMap.get(s)!.push(p.id);
+    }
+  }
+  const spousesOf = (id: string) => spouseMap.get(id) ?? [];
 
   const childrenOf = new Map<string, string[]>();
   for (const p of input) {
@@ -131,7 +152,11 @@ export function layoutFamily(
       }
     }
   }
-  const rows = input.length ? Math.max(...gen.values()) + 1 : 0;
+  // Close any empty rows (only bad links can leave them), keeping the order.
+  const used = [...new Set(gen.values())].sort((a, b) => a - b);
+  const dense = new Map(used.map((g, i) => [g, i]));
+  for (const [id, g] of gen) gen.set(id, dense.get(g)!);
+  const rows = used.length;
 
   // --- 2. Units (spouse groups within one row) -------------------------------
   const unitOf = new Map<string, Unit>();
@@ -147,9 +172,7 @@ export function layoutFamily(
       members.push(id);
       for (const s of spousesOf(id)) if (gen.get(s) === g && !members.includes(s)) stack.push(s);
     }
-    // Keep data order inside a unit until ordering refines it.
-    members.sort((a, b) => input.findIndex((q) => q.id === a) - input.findIndex((q) => q.id === b));
-    const unit: Unit = { members, x: 0 };
+    const unit: Unit = { members: chainOrder(members, spousesOf, dataIndex), x: 0 };
     members.forEach((m) => unitOf.set(m, unit));
     rowUnits[g].push(unit);
   }
@@ -161,7 +184,14 @@ export function layoutFamily(
     return u.x + (i - (u.members.length - 1) / 2) * opts.spouseStep;
   };
 
-  const familyKey = (id: string) => [...parentsOf(id)].sort().join("+");
+  const keyOf = new Map(input.map((p) => [p.id, [...parentsOf(p.id)].sort().join("+")]));
+  const familyKey = (id: string) => keyOf.get(id) ?? "";
+  /** Everyone sharing a set of parents, by family key. */
+  const siblingsByKey = new Map<string, string[]>();
+  for (const p of input) {
+    const k = familyKey(p.id);
+    if (k) siblingsByKey.set(k, [...(siblingsByKey.get(k) ?? []), p.id]);
+  }
   const anchorOf = (id: string) => {
     const ps = parentsOf(id);
     return ps.reduce((s, p) => s + memberX(p), 0) / ps.length;
@@ -201,14 +231,22 @@ export function layoutFamily(
   const childKey = (u: Unit) =>
     mean(u.members.flatMap((m) => childrenOf.get(m) ?? []).map(memberX));
 
-  /** Inside a couple, put each partner on the side their own parents are on. */
+  /**
+   * Inside a couple, put each partner on the side their own parents are on.
+   * A unit is a chain of marriages (someone married twice sits between both
+   * partners), so it only ever flips end to end, which keeps every partner
+   * next to the one they married.
+   */
   const orderMembers = (u: Unit) => {
     if (u.members.length < 2) return;
-    const own = new Map(u.members.map((m) => [m, parentsOf(m).length ? anchorOf(m) : undefined]));
-    const known = [...own.values()].filter((v): v is number => v !== undefined);
-    if (!known.length) return;
-    const centre = mean(known)!;
-    u.members.sort((a, b) => (own.get(a) ?? centre + 0.001) - (own.get(b) ?? centre + 0.001));
+    const cost = (order: string[]) =>
+      order.reduce((sum, m, i) => {
+        if (!parentsOf(m).length) return sum;
+        const x = u.x + (i - (order.length - 1) / 2) * opts.spouseStep;
+        return sum + Math.abs(x - anchorOf(m));
+      }, 0);
+    const flipped = [...u.members].reverse();
+    if (cost(flipped) < cost(u.members) - 0.001) u.members.splice(0, u.members.length, ...flipped);
   };
 
   // --- 3. Ordering sweeps ----------------------------------------------------
@@ -227,8 +265,7 @@ export function layoutFamily(
   for (let g = 1; g < rows; g++) rowUnits[g].forEach(orderMembers);
 
   // --- 4. Relaxation -----------------------------------------------------------
-  const familyMeanX = (key: string) =>
-    mean(input.filter((p) => familyKey(p.id) === key).map((p) => memberX(p.id)))!;
+  const familyMeanX = (key: string) => mean((siblingsByKey.get(key) ?? []).map(memberX))!;
 
   const separate = (row: Unit[]) => {
     for (let pass = 0; pass < 24; pass++) {
@@ -276,6 +313,15 @@ export function layoutFamily(
     }
   }
 
+  // Settle each couple's sides now that everyone is in place. Only plain
+  // couples: flipping one keeps its midpoint, so their children's lines stay
+  // put (a longer chain would move them).
+  for (let g = 1; g < rows; g++) {
+    rowUnits[g].forEach((u) => {
+      if (u.members.length === 2) orderMembers(u);
+    });
+  }
+
   // --- Output ------------------------------------------------------------------
   const placed: PlacedPerson[] = input.map((p) => ({
     id: p.id,
@@ -297,6 +343,9 @@ export function layoutFamily(
       for (let i = 1; i < u.members.length; i++) {
         const a = byId.get(u.members[i - 1])!;
         const b = byId.get(u.members[i])!;
+        // Neighbours in a unit who are not married (two partners of one
+        // person, in a tangle the chain could not lay flat) hold no thread.
+        if (!spousesOf(a.id).includes(b.id)) continue;
         couples.push({ a: a.id, b: b.id, x: (a.x + b.x) / 2, y: a.y });
       }
     }
@@ -335,4 +384,40 @@ export function layoutFamily(
     couples,
     families: [...families.values()],
   };
+}
+
+/**
+ * Order a spouse group so that partners sit side by side. Most groups are a
+ * couple; someone married twice makes a chain (first partner, them, second
+ * partner), walked from the end that comes first in the data. Anything
+ * tangier puts the most-married person in the middle with their partners
+ * either side.
+ */
+function chainOrder(
+  members: string[],
+  spousesOf: (id: string) => readonly string[],
+  dataIndex: ReadonlyMap<string, number>,
+): string[] {
+  const byData = [...members].sort((a, b) => dataIndex.get(a)! - dataIndex.get(b)!);
+  if (byData.length < 3) return byData;
+  const inUnit = new Set(byData);
+  const links = (id: string) => spousesOf(id).filter((s) => inUnit.has(s));
+  const isPath = byData.every((m) => links(m).length <= 2) && byData.some((m) => links(m).length === 1);
+  if (isPath) {
+    const order: string[] = [];
+    let at: string | undefined = byData.find((m) => links(m).length === 1);
+    while (at !== undefined && !order.includes(at)) {
+      order.push(at);
+      at = links(at)
+        .filter((s) => !order.includes(s))
+        .sort((a, b) => dataIndex.get(a)! - dataIndex.get(b)!)[0];
+    }
+    if (order.length === byData.length) return order;
+  }
+  const hub = byData.reduce((best, m) => (links(m).length > links(best).length ? m : best));
+  const left: string[] = [];
+  const right: string[] = [];
+  links(hub).forEach((s, i) => (i % 2 === 0 ? left : right).push(s));
+  const rest = byData.filter((m) => m !== hub && !left.includes(m) && !right.includes(m));
+  return [...rest, ...left.reverse(), hub, ...right];
 }
