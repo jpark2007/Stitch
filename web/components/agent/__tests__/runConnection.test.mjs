@@ -14,10 +14,15 @@ import {
   followRun,
   isFinalEvent,
   isFinished,
+  isNotWaiting,
+  MAX_SAVED_ANSWERS,
+  answersStorageKey,
   newRunBook,
   nextConnectionStep,
+  parseAnswers,
   recordAnswer,
   sendAnswer,
+  serializeAnswers,
 } from "../runConnection.ts";
 import { initialRunState, runReducer } from "../runState.ts";
 
@@ -299,6 +304,144 @@ test("sendAnswer ignores a call the run is not waiting on", async () => {
     assert.equal(posts, 0);
     assert.deepEqual(actions, []);
   }
+});
+
+/** An error shaped like the API client's ApiError (status + message). */
+function httpError(status, message) {
+  const e = new Error(message);
+  e.status = status;
+  return e;
+}
+
+test("sendAnswer: a 409 means already answered: it resolves and closes the pause quietly", async () => {
+  const raw = "run x is running, not waiting for an answer";
+  let state = [PLAN, QUESTION].reduce((s, m) => runReducer(s, { type: "event", message: m }), initialRunState);
+  assert.equal(state.phase, "waiting");
+  const actions = [];
+  const book = { folded: 2, highWater: 2, answers: [] };
+  const sent = await sendAnswer({
+    answer: async () => {
+      throw { status: 409, message: raw };
+    },
+    body: answerBody("answer", "Grandpa"),
+    pendingKind: "answer",
+    currentBook: () => book,
+    dispatch: (a) => {
+      actions.push(a);
+      state = runReducer(state, a);
+    },
+  });
+  assert.equal(sent, true);
+  assert.deepEqual(actions, [{ type: "answered", kind: "answer", summary: null }]);
+  assert.equal(state.pending, null);
+  assert.equal(state.phase, "running");
+  assert.doesNotMatch(JSON.stringify(state.log), /not waiting|running, not/);
+  assert.doesNotMatch(JSON.stringify(actions), /not waiting/);
+  // Recorded, so a replay closes the pause again at the same point.
+  assert.deepEqual(book.answers, [{ after: 2, kind: "answer", summary: null }]);
+
+  // An ApiError-like instance works the same way.
+  const again = await sendAnswer({
+    answer: async () => {
+      throw httpError(409, raw);
+    },
+    body: answerBody("props", []),
+    pendingKind: "props",
+    currentBook: () => null,
+    dispatch: () => assert.fail("nothing to dispatch for a swapped-out run"),
+  });
+  assert.equal(again, true);
+});
+
+test("sendAnswer: other failures still reject with their message", async () => {
+  for (const status of [503, 500, 0, 422, undefined]) {
+    const actions = [];
+    const book = newRunBook();
+    await assert.rejects(
+      sendAnswer({
+        answer: async () => {
+          throw httpError(status, "The studio is busy. Try again.");
+        },
+        body: answerBody("merge", true),
+        pendingKind: "merge",
+        currentBook: () => book,
+        dispatch: (a) => actions.push(a),
+      }),
+      { message: "The studio is busy. Try again." },
+    );
+    assert.deepEqual(actions, [], String(status));
+    assert.deepEqual(book.answers, []);
+  }
+});
+
+test("isNotWaiting duck-types status 409 only", () => {
+  assert.equal(isNotWaiting({ status: 409 }), true);
+  assert.equal(isNotWaiting(httpError(409, "x")), true);
+  for (const e of [null, undefined, "409", 409, { status: "409" }, { status: 503 }, new Error("409")]) {
+    assert.equal(isNotWaiting(e), false, String(e));
+  }
+});
+
+test("replay after a 409 closes the replayed pause again without a second line", async () => {
+  const book = newRunBook();
+  const { stream } = fakeStream([
+    [PLAN, QUESTION, "throw"],
+    [PLAN, QUESTION, DIRECTOR, DONE],
+  ]);
+  let state = initialRunState;
+  const dispatch = (a) => {
+    state = runReducer(state, a);
+    if (a.type === "event" && a.message.event === "question" && book.answers.length === 0) {
+      dispatch(recordAnswer(book, "answer", null));
+    }
+  };
+  await followRun({
+    stream,
+    book,
+    dispatch,
+    signal: new AbortController().signal,
+    replayOnReconnect: true,
+    maxRetries: 5,
+    retryDelayMs: defaultRetryDelay,
+    sleep: async () => {},
+  });
+  assert.equal(state.phase, "done");
+  assert.deepEqual(
+    state.log.filter((e) => e.kind === "answered").map((e) => e.summary),
+    [null],
+  );
+});
+
+test("replay re-applies an answer recorded after the run moved on: one line, the family's words", async () => {
+  // The POST resolved only after the next sub-agent had started, so the
+  // answer is recorded past the event that closed the pause.
+  const book = newRunBook();
+  const { stream } = fakeStream([
+    [PLAN, QUESTION, DIRECTOR, "throw"],
+    [PLAN, QUESTION, DIRECTOR, DONE],
+  ]);
+  let state = initialRunState;
+  const dispatch = (a) => {
+    state = runReducer(state, a);
+    if (a.type === "event" && a.message.event === "subagent_start" && book.answers.length === 0) {
+      dispatch(recordAnswer(book, "answer", "Grandpa drove", 2));
+    }
+  };
+  await followRun({
+    stream,
+    book,
+    dispatch,
+    signal: new AbortController().signal,
+    replayOnReconnect: true,
+    maxRetries: 5,
+    retryDelayMs: defaultRetryDelay,
+    sleep: async () => {},
+  });
+  assert.equal(state.phase, "done");
+  assert.deepEqual(
+    state.log.filter((e) => e.kind === "answered").map((e) => e.summary),
+    ["Grandpa drove"],
+  );
 });
 
 test("sendAnswer does not dispatch for a run that was swapped out meanwhile", async () => {
@@ -614,4 +757,173 @@ test("unknown events are folded harmlessly and counted for replay", async () => 
   assert.deepEqual(r.sleeps, [1000]);
   assert.equal(r.book.highWater, 4);
   assert.equal(r.state.phase, "done");
+});
+
+// ---------------------------------------------------------------------------
+// Saved answers: a reload in the same tab does not bring an answered card back
+
+test("serializeAnswers and parseAnswers round-trip the records", () => {
+  const answers = [
+    { after: 3, kind: "answer", summary: "Grandpa drove" },
+    { after: 7, kind: "props", summary: null },
+    { after: 9, kind: "merge", summary: "Yes, the same person" },
+  ];
+  assert.deepEqual(parseAnswers(serializeAnswers(answers)), answers);
+  assert.equal(answersStorageKey("fam/run1"), "stitch:run-answers:fam/run1");
+  assert.notEqual(answersStorageKey("fam/run1"), answersStorageKey("fam/run2"));
+});
+
+test("parseAnswers keeps only well-formed records and survives junk", () => {
+  for (const raw of [null, undefined, "", "not json", "{}", "42", '"x"', "null"]) {
+    assert.deepEqual(parseAnswers(raw), [], String(raw));
+  }
+  const raw = JSON.stringify([
+    { after: 2, kind: "answer", summary: "ok" },
+    { after: 0, kind: "answer", summary: "zero" },
+    { after: 1.5, kind: "answer", summary: "half" },
+    { after: "3", kind: "answer", summary: "string" },
+    { after: 4, kind: "shout", summary: "kind" },
+    { after: 5, kind: "props", summary: 12 },
+    null,
+    "x",
+    { after: 6, kind: "merge", summary: null, extra: "<b>" },
+  ]);
+  assert.deepEqual(parseAnswers(raw), [
+    { after: 2, kind: "answer", summary: "ok" },
+    { after: 6, kind: "merge", summary: null },
+  ]);
+  // Long summaries are cut to the usual length; long lists keep the latest.
+  const [long] = parseAnswers(JSON.stringify([{ after: 1, kind: "answer", summary: "a".repeat(500) }]));
+  assert.ok(long.summary.length <= 80);
+  const many = Array.from({ length: MAX_SAVED_ANSWERS + 10 }, (_, i) => ({ after: i + 1, kind: "answer", summary: null }));
+  const kept = parseAnswers(JSON.stringify(many));
+  assert.equal(kept.length, MAX_SAVED_ANSWERS);
+  assert.equal(kept.at(-1).after, MAX_SAVED_ANSWERS + 10);
+});
+
+test("newRunBook starts from saved answers without sharing them", () => {
+  const saved = [{ after: 3, kind: "answer", summary: "Grandpa" }];
+  const book = newRunBook(saved);
+  assert.deepEqual(book, { folded: 0, highWater: 0, answers: saved });
+  book.answers[0].after = 99;
+  assert.equal(saved[0].after, 3);
+  assert.deepEqual(newRunBook(), { folded: 0, highWater: 0, answers: [] });
+});
+
+test("sendAnswer hands the book to onRecorded once the answer is recorded", async () => {
+  const book = { folded: 2, highWater: 2, answers: [] };
+  const saved = [];
+  await sendAnswer({
+    answer: async () => {},
+    body: answerBody("answer", "Grandpa"),
+    pendingKind: "answer",
+    currentBook: () => book,
+    dispatch: () => {},
+    onRecorded: (b) => saved.push(serializeAnswers(b.answers)),
+  });
+  // A 409 is recorded (and saved) too; any other failure saves nothing.
+  await sendAnswer({
+    answer: async () => {
+      throw httpError(409, "run x is running, not waiting for an answer");
+    },
+    body: answerBody("merge", true),
+    pendingKind: "merge",
+    currentBook: () => book,
+    dispatch: () => {},
+    onRecorded: (b) => saved.push(serializeAnswers(b.answers)),
+  });
+  await assert.rejects(
+    sendAnswer({
+      answer: async () => {
+        throw httpError(503, "busy");
+      },
+      body: answerBody("merge", true),
+      pendingKind: "merge",
+      currentBook: () => book,
+      dispatch: () => {},
+      onRecorded: () => assert.fail("a failed answer is not saved"),
+    }),
+  );
+  assert.equal(saved.length, 2);
+  assert.deepEqual(parseAnswers(saved[1]), [
+    { after: 2, kind: "answer", summary: "Grandpa" },
+    { after: 2, kind: "merge", summary: null },
+  ]);
+  // Nothing is saved for a run that was swapped out meanwhile.
+  await sendAnswer({
+    answer: async () => {},
+    body: answerBody("answer", "x"),
+    pendingKind: "answer",
+    currentBook: () => null,
+    dispatch: () => {},
+    onRecorded: () => assert.fail("no book, nothing to save"),
+  });
+});
+
+/**
+ * One page load following `script` (which must end in "hang"): stops once
+ * every message has been folded. `onDispatch` sees each action and state.
+ */
+async function pageLoad(script, book, onDispatch) {
+  const messages = script.filter((m) => typeof m !== "string").length;
+  return follow([script], {
+    book,
+    onDispatch: (a, ctx) => {
+      onDispatch?.(a, ctx);
+      if (a.type === "event" && ctx.book.folded === messages) ctx.controller.abort();
+    },
+  });
+}
+
+test("a reload right after answering replays the question but shows no card: the saved answer closes it", async () => {
+  const storage = new Map();
+  const key = answersStorageKey("fam/run1");
+  // Before the reload: the run pauses on the question and the family answers.
+  const first = newRunBook();
+  let state = initialRunState;
+  await pageLoad([PLAN, START, QUESTION, "hang"], first, (a, ctx) => {
+    state = ctx.state;
+  });
+  assert.equal(state.phase, "waiting");
+  await sendAnswer({
+    answer: async () => {},
+    body: answerBody("answer", "Grandpa drove"),
+    pendingKind: "answer",
+    currentBook: () => first,
+    dispatch: () => {},
+    onRecorded: (b) => storage.set(key, serializeAnswers(b.answers)),
+  });
+
+  // The reload: a fresh book from storage, and the server replays the run,
+  // which has not yet moved past the paused tool call.
+  const r = await pageLoad([PLAN, START, QUESTION, "hang"], newRunBook(parseAnswers(storage.get(key))));
+  assert.equal(r.state.phase, "running");
+  assert.equal(r.state.pending, null);
+  const answered = r.state.log.filter((e) => e.kind === "answered");
+  assert.deepEqual(answered.map((e) => [e.answer, e.summary]), [["answer", "Grandpa drove"]]);
+  // Closed in the same breath as the question arrives: no state in between
+  // where the card could flash.
+  const i = r.actions.findIndex((a) => a.type === "event" && a.message.event === "question");
+  assert.deepEqual(r.actions[i + 1], { type: "answered", kind: "answer", summary: "Grandpa drove" });
+
+  // Later, when the run's next step also closes the pause, still one line.
+  const later = await pageLoad(
+    [PLAN, START, QUESTION, PLAN, END, DIRECTOR, "hang"],
+    newRunBook(parseAnswers(storage.get(key))),
+  );
+  assert.equal(later.state.pending, null);
+  assert.deepEqual(
+    later.state.log.filter((e) => e.kind === "answered").map((e) => e.summary),
+    ["Grandpa drove"],
+  );
+});
+
+test("saved answers for one run never close another run's pause", async () => {
+  const storage = new Map([[answersStorageKey("fam/run1"), serializeAnswers([{ after: 3, kind: "answer", summary: "x" }])]]);
+  const r = await pageLoad(
+    [PLAN, START, QUESTION, "hang"],
+    newRunBook(parseAnswers(storage.get(answersStorageKey("fam/run2")) ?? null)),
+  );
+  assert.equal(r.state.phase, "waiting");
+  assert.equal(r.state.pending?.kind, "answer");
 });

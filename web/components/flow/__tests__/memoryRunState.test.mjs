@@ -91,6 +91,40 @@ test("pendingKey: differs by kind and is 'none' without a pause", () => {
   assert.equal(new Set([s1, s2, s3].map(pendingKey)).size, 3);
 });
 
+test("pendingKey: lines logged mid-pause do not change the key", () => {
+  const paused = run(ev("subagent_start", { name: "prop_master" }), PROPS);
+  const later = runReducer(
+    runReducer(paused, ev("frames", { frames: [{ t: 1, mediaId: "m" }] })),
+    ev("compile_error", { errors: [], round: 1 }),
+  );
+  assert.ok(later.seq > paused.seq);
+  assert.equal(pendingCard(later), "props");
+  assert.equal(pendingKey(later), pendingKey(paused));
+});
+
+test("a pause found already answered after a reload shows no card and keys to none", () => {
+  const reloaded = run(
+    ev("subagent_start", { name: "interviewer" }),
+    ev("subagent_end", { name: "interviewer" }),
+    QUESTION,
+    ev("plan", { todos: [] }),
+    ev("subagent_start", { name: "prop_master" }),
+  );
+  assert.equal(pendingCard(reloaded), null);
+  assert.equal(pendingKey(reloaded), "none");
+  // The next pause after that gets its own key.
+  const next = runReducer(reloaded, PROPS);
+  assert.equal(pendingCard(next), "props");
+  assert.match(pendingKey(next), /^props-/);
+});
+
+test("pendingKey: a pause replacing an unanswered one gets a new key", () => {
+  const first = run(QUESTION);
+  const second = runReducer(first, MERGE);
+  assert.equal(pendingCard(second), "merge");
+  assert.notEqual(pendingKey(first), pendingKey(second));
+});
+
 test("sceneHrefFor: only once the run has named its memory, and only with a builder", () => {
   const href = (id) => `/memories/${id}`;
   assert.equal(sceneHrefFor(initialRunState, href), undefined);

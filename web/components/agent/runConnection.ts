@@ -47,7 +47,10 @@ export function isFinalEvent(event: string): boolean {
   return event === "done" || event === "error";
 }
 
-/** The line logged as "You answered: …" after an answer is accepted. */
+/**
+ * The short record of an accepted answer, kept on the log's `answered` entry.
+ * feedView.answeredLine phrases it per kind for the family.
+ */
 export function answerSummary(body: AnswerRequest): string {
   switch (body.kind) {
     case "answer":
@@ -168,7 +171,8 @@ export interface AnsweredRecord {
   /** How many run events had been folded when the answer was accepted. */
   after: number;
   kind: AnswerKind;
-  summary: string;
+  /** null: the server said the pause was already answered (see sendAnswer). */
+  summary: string | null;
 }
 
 /** Book-keeping for one run, kept across reconnects and retries of the same source. */
@@ -180,8 +184,67 @@ export interface RunBook {
   answers: AnsweredRecord[];
 }
 
-export function newRunBook(): RunBook {
-  return { folded: 0, highWater: 0, answers: [] };
+/**
+ * A fresh book. `answers` are the ones saved for this run before a reload
+ * (see parseAnswers): the replay then closes each answered pause right after
+ * the event it answered, as if the answer had been given on this page.
+ */
+export function newRunBook(answers: AnsweredRecord[] = []): RunBook {
+  return { folded: 0, highWater: 0, answers: answers.map((a) => ({ ...a })) };
+}
+
+// ---------------------------------------------------------------------------
+// Saving answers across a reload
+//
+// The run's stream replays every event from the first, but no run event says
+// that a pause was answered: after a reload the replay ends on the question
+// until the run's next step closes it (see runState clearsPause). So the hook
+// keeps the answers this tab gave in sessionStorage, per run, and a reload in
+// the same tab re-applies them at the point they were given. Another tab or
+// device still sees the pause until the run moves on; answering it there
+// gets a 409, which closes it quietly (sendAnswer).
+
+/** Most answers kept per run; a run pauses a handful of times at most. */
+export const MAX_SAVED_ANSWERS = 50;
+
+const ANSWER_KINDS: readonly string[] = ["answer", "props", "merge"];
+
+/** The sessionStorage key for one run's answers. */
+export function answersStorageKey(runKey: string): string {
+  return `stitch:run-answers:${runKey}`;
+}
+
+/** The book's answers as stored text. */
+export function serializeAnswers(answers: readonly AnsweredRecord[]): string {
+  return JSON.stringify(
+    answers.slice(-MAX_SAVED_ANSWERS).map(({ after, kind, summary }) => ({ after, kind, summary })),
+  );
+}
+
+/**
+ * Saved answers read back, keeping only well-formed records (a positive whole
+ * `after`, a known kind, a string or null summary). Anything unreadable gives
+ * an empty list, so a bad entry can only mean the card shows again.
+ */
+export function parseAnswers(raw: string | null | undefined): AnsweredRecord[] {
+  if (!raw) return [];
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(data)) return [];
+  const out: AnsweredRecord[] = [];
+  for (const item of data.slice(-MAX_SAVED_ANSWERS)) {
+    if (typeof item !== "object" || item === null) continue;
+    const { after, kind, summary } = item as Record<string, unknown>;
+    if (typeof after !== "number" || !Number.isInteger(after) || after < 1) continue;
+    if (typeof kind !== "string" || !ANSWER_KINDS.includes(kind)) continue;
+    if (summary !== null && typeof summary !== "string") continue;
+    out.push({ after, kind: kind as AnswerKind, summary: summary === null ? null : truncate(summary, SUMMARY_MAX) });
+  }
+  return out;
 }
 
 /**
@@ -193,7 +256,7 @@ export function newRunBook(): RunBook {
 export function recordAnswer(
   book: RunBook,
   kind: AnswerKind,
-  summary: string,
+  summary: string | null,
   sentAt: number = book.folded,
 ): RunAction {
   book.answers.push({ after: Math.max(sentAt, book.folded), kind, summary });
@@ -211,11 +274,26 @@ export function answerBody(kind: AnswerKind, value: string | PropEdit[] | boolea
 }
 
 /**
+ * True for a rejection that says the run is not waiting for this answer
+ * (HTTP 409 from the answer route). Duck-typed on `status`, so this module
+ * needs no runtime import of the API client's error class.
+ */
+export function isNotWaiting(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { status?: unknown }).status === 409;
+}
+
+/**
  * Posts one answer for the run. Does nothing (resolves false) unless the run
- * is paused on this kind of input. A failed post rejects with the source's
- * error and dispatches nothing; a successful one records the answer and
+ * is paused on this kind of input. A successful post records the answer and
  * dispatches `answered`, unless the run was swapped out meanwhile
  * (`currentBook` then returns null).
+ *
+ * A 409 means the run has already moved past this pause (it was answered
+ * before a reload, or in another tab): the pause is closed with a neutral
+ * `answered` (summary null), recorded so a replay closes it again, and the
+ * call resolves so the card simply goes away. The server's wording is never
+ * logged. Any other failure rejects with the source's error and dispatches
+ * nothing.
  */
 export async function sendAnswer(o: {
   answer: (body: AnswerRequest) => Promise<void>;
@@ -223,12 +301,24 @@ export async function sendAnswer(o: {
   pendingKind: AnswerKind | null;
   currentBook: () => RunBook | null;
   dispatch: (action: RunAction) => void;
+  /** Called with the book once an answer is recorded in it, to save its answers. */
+  onRecorded?: (book: RunBook) => void;
 }): Promise<boolean> {
   if (o.pendingKind !== o.body.kind) return false;
   const sentAt = o.currentBook()?.folded ?? 0;
-  await o.answer(o.body);
+  let summary: string | null;
+  try {
+    await o.answer(o.body);
+    summary = answerSummary(o.body);
+  } catch (error) {
+    if (!isNotWaiting(error)) throw error;
+    summary = null;
+  }
   const book = o.currentBook();
-  if (book) o.dispatch(recordAnswer(book, o.body.kind, answerSummary(o.body), sentAt));
+  if (book) {
+    o.dispatch(recordAnswer(book, o.body.kind, summary, sentAt));
+    o.onRecorded?.(book);
+  }
   return true;
 }
 

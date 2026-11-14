@@ -4,7 +4,7 @@
 // live agent run making its page. When the run pauses on the family, the
 // matching card (follow-up question, prop review or merge) sits inside the
 // feed; answers go back through useAgentRun to the run's answer route.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import AgentFeed from "@/components/agent/AgentFeed";
 import FollowUpCard from "@/components/agent/FollowUpCard";
@@ -46,14 +46,21 @@ function prefersReducedMotion(): boolean {
 export function MemoryRun(props: {
   source: RunSource | null;
   options?: UseAgentRunOptions;
+  /**
+   * Names the run (family and run id), so the answers given in this tab
+   * survive a reload and an answered card does not come back (see
+   * UseAgentRunOptions.runKey).
+   */
+  runKey?: string;
   telling?: MemoryRunTelling | null;
   mediaUrl: (mediaId: string) => string;
   sceneHref?: (memoryId: string) => string;
   onUploadPhoto?: (file: File) => Promise<string>;
   addAnotherHref?: string;
 }) {
-  const { source, options, telling, mediaUrl, sceneHref, onUploadPhoto, addAnotherHref } = props;
-  const { state, answerQuestion, reviewProps, decideMerge, retry } = useAgentRun(source, options);
+  const { source, options, runKey, telling, mediaUrl, sceneHref, onUploadPhoto, addAnotherHref } = props;
+  const runOptions = useMemo(() => (runKey ? { ...options, runKey } : options), [options, runKey]);
+  const { state, answerQuestion, reviewProps, decideMerge, retry } = useAgentRun(source, runOptions);
 
   // The card's key is read once per pending input (the reducer keeps the same
   // object for the whole pause), so nothing logged mid-pause can remount the
@@ -75,10 +82,12 @@ export function MemoryRun(props: {
   const cardRef = useRef<HTMLDivElement>(null);
   const lastShownKey = useRef<string | null>(null);
 
-  // A new card takes focus and scrolls into view. The feed's own log already
-  // announces the pause ("The studio asked: ..."), so no extra live region.
-  // When an answered card goes away, focus would fall to <body>: hand it to
-  // the feed's heading instead, without moving the page.
+  // A new card takes focus and scrolls into view, which is how the pause is
+  // announced: while the card is up the feed hides its own line for it, and
+  // the phase line under the heading names the kind of pause. When the card
+  // goes away (answered here, or found already answered after a reload),
+  // focus would fall to <body>: hand it to the feed's heading instead,
+  // without moving the page.
   useEffect(() => {
     const previous = lastShownKey.current;
     lastShownKey.current = shownKey;
@@ -126,6 +135,8 @@ export function MemoryRun(props: {
           mediaUrl={mediaUrl}
           onRetry={retry}
           sceneHref={sceneHrefFor(state, sceneHref)}
+          // After a reload the telling is unknown (null): call it a memory.
+          subject={telling?.secondTellingOf ? "telling" : "memory"}
         >
           {cardNode}
         </AgentFeed>

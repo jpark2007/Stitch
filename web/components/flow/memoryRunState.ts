@@ -22,12 +22,16 @@ export function pendingCard(s: Pick<RunState, "phase" | "pending">): PendingCard
 /**
  * A key that is new for every pause, so the card remounts with fresh state
  * between two follow-up questions (even two with the same text). QuestionEvent
- * carries no id, so the key is the kind plus the log sequence number: the
- * reducer logs every pause as it arrives, so `seq` is the pause's own entry
- * until something else is logged. MemoryRun reads it once per pending input.
+ * carries no id, so the key is the kind plus the sequence number of the
+ * pause's own log entry (`pauseSeq`, which the reducer sets with every pause
+ * and clears when the pause closes, answered or not). It stays the same while
+ * other lines are logged mid-pause and when a reconnect replays the run, so
+ * the card is not remounted and what the family typed survives. A state
+ * without `pauseSeq` falls back to `seq`, the pause's entry until something
+ * else is logged. MemoryRun reads it once per pending input.
  */
-export function pendingKey(s: Pick<RunState, "pending" | "seq">): string {
-  return s.pending === null ? "none" : `${s.pending.kind}-${s.seq}`;
+export function pendingKey(s: Pick<RunState, "pending" | "seq"> & Partial<Pick<RunState, "pauseSeq">>): string {
+  return s.pending === null ? "none" : `${s.pending.kind}-${s.pauseSeq ?? s.seq}`;
 }
 
 /** The scene link for the feed: only once the run has named its memory. */

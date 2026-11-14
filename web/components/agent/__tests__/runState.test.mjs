@@ -117,7 +117,13 @@ test("question pauses for an answer, answered resumes", () => {
   assert.equal(s.phase, "running");
   assert.equal(s.pending, null);
   assert.equal(needsInput(s), false);
-  assert.deepEqual(s.log.at(-1), { seq: 3, kind: "answered", summary: "At the lake" });
+  assert.deepEqual(s.log.at(-1), {
+    seq: 3,
+    kind: "answered",
+    answer: "answer",
+    summary: "At the lake",
+    prompt: "Where was it?",
+  });
 });
 
 test("props_found pauses for review, answered resumes", () => {
@@ -134,7 +140,7 @@ test("props_found pauses for review, answered resumes", () => {
   s = deepFreeze(runReducer(s, { type: "answered", kind: "props", summary: "Kept 2 props" }));
   assert.equal(s.phase, "running");
   assert.equal(s.pending, null);
-  assert.deepEqual(s.log.at(-1), { seq: 2, kind: "answered", summary: "Kept 2 props" });
+  assert.deepEqual(s.log.at(-1), { seq: 2, kind: "answered", answer: "props", summary: "Kept 2 props", prompt: null });
 });
 
 test("merge pauses for approval, answered resumes", () => {
@@ -148,7 +154,13 @@ test("merge pauses for approval, answered resumes", () => {
   s = deepFreeze(runReducer(s, { type: "answered", kind: "merge", summary: "Yes, same person" }));
   assert.equal(s.phase, "running");
   assert.equal(s.pending, null);
-  assert.deepEqual(s.log.at(-1), { seq: 2, kind: "answered", summary: "Yes, same person" });
+  assert.deepEqual(s.log.at(-1), {
+    seq: 2,
+    kind: "answered",
+    answer: "merge",
+    summary: "Yes, same person",
+    prompt: merge.text,
+  });
 });
 
 test("answered with no pending input or the wrong kind changes nothing", () => {
@@ -296,4 +308,167 @@ test("answering after an error while waiting clears the error", () => {
   assert.equal(s.phase, "running");
   assert.equal(s.pending, null);
   assert.equal(s.error, null);
+});
+
+// ---------------------------------------------------------------------------
+// A pause answered before a reload: the replayed run has no record of the
+// answer, so the events after the pause have to close it.
+
+const answeredLines = (s) => s.log.filter((e) => e.kind === "answered");
+
+test("reviewer's repro: a new sub-agent after a replayed question closes it", () => {
+  const s = run(
+    ev("plan", { todos: [{ text: "Listen", status: "in_progress" }] }),
+    ev("subagent_start", { name: "interviewer" }),
+    ev("subagent_end", { name: "interviewer", summary: "One question" }),
+    ev("question", { text: "Who drove?" }),
+    ev("plan", { todos: [{ text: "Listen", status: "completed" }, { text: "Props", status: "in_progress" }] }),
+    ev("subagent_start", { name: "prop_master" }),
+  );
+  assert.equal(s.phase, "running");
+  assert.equal(s.pending, null);
+  assert.equal(needsInput(s), false);
+  assert.equal(s.pauseSteps, null);
+  assert.equal(s.pauseSeq, null);
+});
+
+test("the quiet line is neutral and comes before the step that showed the run moved on", () => {
+  const s = run(ev("question", { text: "Who drove?" }), ev("subagent_start", { name: "storyboarder" }));
+  assert.deepEqual(
+    s.log.map((e) => e.kind),
+    ["asked", "answered", "step"],
+  );
+  assert.deepEqual(answeredLines(s), [
+    { seq: 2, kind: "answered", answer: "answer", summary: null, prompt: "Who drove?" },
+  ]);
+});
+
+test("a pause records the steps running at that moment", () => {
+  const s = run(
+    ev("subagent_start", { name: "storyboarder" }),
+    ev("subagent_end", { name: "storyboarder" }),
+    ev("subagent_start", { name: "prop_master" }),
+    ev("props_found", { props: [{ id: "p", name: "cap", size: "hand" }] }),
+  );
+  const pm = s.steps.find((x) => x.name === "prop_master");
+  assert.deepEqual(s.pauseSteps, [pm.key]);
+  assert.equal(s.pauseSeq, s.seq, "pauseSeq is the pause's own entry");
+});
+
+test("the paused step ending closes a props review; the next step starts on a running feed", () => {
+  const s = run(
+    ev("subagent_start", { name: "prop_master" }),
+    ev("props_found", { props: [{ id: "p", name: "cap", size: "hand" }] }),
+    ev("subagent_end", { name: "prop_master", summary: "Kept 1 prop." }),
+    ev("subagent_start", { name: "director" }),
+  );
+  assert.equal(s.pending, null);
+  assert.equal(s.phase, "running");
+  assert.equal(answeredLines(s).length, 1, "closed once, logged once");
+  assert.equal(answeredLines(s)[0].answer, "props");
+  // Already closed by the end alone.
+  const ended = run(
+    ev("subagent_start", { name: "prop_master" }),
+    ev("props_found", { props: [] }),
+    ev("subagent_end", { name: "prop_master", summary: "Kept 0 props." }),
+  );
+  assert.equal(ended.pending, null);
+  assert.equal(ended.phase, "running");
+});
+
+test("with two branches running, the pause waits for both to end", () => {
+  let s = run(
+    ev("subagent_start", { name: "a" }),
+    ev("subagent_start", { name: "b" }),
+    ev("question", { text: "Which church?" }),
+    ev("subagent_end", { name: "b" }),
+  );
+  assert.equal(s.phase, "waiting");
+  assert.deepEqual(s.pending, { kind: "answer", question: { text: "Which church?" } });
+  assert.equal(needsInput(s), true);
+
+  s = deepFreeze(runReducer(s, ev("subagent_end", { name: "a" })));
+  assert.equal(s.phase, "running");
+  assert.equal(s.pending, null);
+  assert.equal(answeredLines(s).length, 1);
+});
+
+test("plan, frames and compile_error never close a pause", () => {
+  const q = run(ev("question", { text: "Who?" }));
+  const s = run(
+    ev("question", { text: "Who?" }),
+    ev("plan", { todos: [{ text: "Wait" }] }),
+    ev("frames", { frames: [{ t: 1, mediaId: "m1" }] }),
+    ev("compile_error", { errors: [{ code: "x", message: "y" }], round: 1 }),
+  );
+  assert.equal(s.phase, "waiting");
+  assert.deepEqual(s.pending, q.pending);
+  assert.equal(s.pauseSeq, q.pauseSeq);
+  assert.equal(answeredLines(s).length, 0);
+});
+
+test("scene_ready and done close a pause", () => {
+  const ready = run(ev("question", { text: "Who?" }), ev("scene_ready", { memoryId: "m1" }));
+  assert.equal(ready.pending, null);
+  assert.equal(ready.phase, "scene_ready");
+  assert.deepEqual(
+    ready.log.map((e) => e.kind),
+    ["asked", "answered", "scene_ready"],
+  );
+
+  const done = run(ev("merge", { text: "Same?", personId: "p", candidateName: "Joe" }), ev("done", { memoryId: "m1" }));
+  assert.equal(done.pending, null);
+  assert.equal(done.phase, "done");
+  assert.equal(answeredLines(done).length, 1);
+});
+
+test("a new pause replaces the last and logs it as answered", () => {
+  const s = run(
+    ev("question", { text: "Who?" }),
+    ev("merge", { text: "Same?", personId: "p", candidateName: "Joe" }),
+  );
+  assert.equal(s.phase, "waiting");
+  assert.equal(s.pending.kind, "merge");
+  assert.deepEqual(
+    s.log.map((e) => e.kind),
+    ["asked", "answered", "merge"],
+  );
+  assert.equal(s.pauseSeq, 3);
+});
+
+test("the family's answer after the run already moved on fills the neutral line in", () => {
+  // The answer POST resolved after the next sub-agent had started.
+  const s = run(
+    ev("question", { text: "Who drove?" }),
+    ev("subagent_start", { name: "storyboarder" }),
+    { type: "answered", kind: "answer", summary: "Grandpa" },
+  );
+  assert.deepEqual(answeredLines(s).map((e) => e.summary), ["Grandpa"]);
+  assert.equal(s.log.length, 3, "nothing new logged");
+  // A second fill, or one of another kind, changes nothing.
+  assert.equal(runReducer(s, { type: "answered", kind: "answer", summary: "Again" }), s);
+  const other = run(ev("question", { text: "Who?" }), ev("subagent_start", { name: "x" }));
+  assert.equal(runReducer(other, { type: "answered", kind: "props", summary: "Kept 1 prop" }), other);
+});
+
+test("a neutral answered action closes the pause with a neutral line", () => {
+  const s = run(ev("question", { text: "Who?" }), { type: "answered", kind: "answer", summary: null });
+  assert.equal(s.pending, null);
+  assert.equal(s.phase, "running");
+  assert.deepEqual(answeredLines(s).map((e) => e.summary), [null]);
+  // Nothing to close: no change.
+  const idle = run(ev("plan", { todos: [] }));
+  assert.equal(runReducer(idle, { type: "answered", kind: "answer", summary: null }), idle);
+});
+
+test("steps note where they ended", () => {
+  const s = run(
+    ev("subagent_start", { name: "prop_master" }),
+    ev("props_found", { props: [] }),
+    { type: "answered", kind: "props", summary: "No changes" },
+    ev("subagent_end", { name: "prop_master", summary: "Kept 0 props." }),
+  );
+  assert.equal(s.steps[0].endSeq, 3);
+  const lone = run(ev("subagent_end", { name: "checker" }));
+  assert.equal(lone.steps[0].endSeq, lone.log[0].seq);
 });
