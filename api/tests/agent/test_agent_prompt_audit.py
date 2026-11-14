@@ -17,9 +17,10 @@ and the two skills the sub-agents read (popup-style, storyboarding):
 (f) no prompt is a prefix of another (the fake studio tells agents apart by prefix);
 (g) every prompt that follows a skill (subagents.SUBAGENT_SKILLS) names it exactly, up front.
 
-Extraction is plain regex over backticks and `name(` patterns. director.md and the
-directing skill are owned by another task: director.md's known mismatches sit in the one
-xfail list below, and the directing skill is not audited here.
+Extraction is plain regex over backticks and `name(` patterns. director.md is audited like
+every other prompt; the directing skill is not audited here (tests/agent/test_agent_skills.py
+covers it). The xfail list below is empty; it stays so a known mismatch in a file another
+task owns can be recorded with its reason instead of skipped silently.
 """
 
 from __future__ import annotations
@@ -62,11 +63,9 @@ SAMPLE_SCREENPLAY: dict[str, Any] = json.loads(
 DIRECTOR_OWNER = "director.md owned by agent-real-compiler-readiness"
 
 # (check, unit) pairs known to fail on a file this task does not own. One list, one reason.
-XFAIL: dict[tuple[str, str], str] = {
-    # director.md step 2 says "write them to `/compile_errors.txt`", but compile_screenplay
-    # already writes that file itself (agent.tools.compile.ERRORS_PATH) on every failure.
-    ("tool_owned_files", "director"): DIRECTOR_OWNER,
-}
+# Empty: director.md no longer tells the director to write /compile_errors.txt (the tool writes
+# it), which was the one known mismatch.
+XFAIL: dict[tuple[str, str], str] = {}
 
 # --------------------------------------------------------------------------- allowlist
 
@@ -357,8 +356,10 @@ def _fail_or_xfail(check: str, unit: str, problems: list[str]) -> None:
 
 
 def test_xfail_list_only_covers_director():
+    """Any exception left in XFAIL is for director.md only, with the one owner reason; an empty
+    list (no known mismatches) is the expected state."""
     assert {unit for _check, unit in XFAIL} <= {"director"}
-    assert set(XFAIL.values()) == {DIRECTOR_OWNER}
+    assert set(XFAIL.values()) <= {DIRECTOR_OWNER}
 
 
 # --------------------------------------------------------------------------- (a) tool names
