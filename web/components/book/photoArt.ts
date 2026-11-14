@@ -48,8 +48,18 @@ function figure(ctx: Ctx, x: number, base: number, s: number, body: string, dres
   ctx.fill();
 }
 
+const SCENE_MAX = 4096;
+function sceneSide(v: number) {
+  if (Number.isNaN(v) || v < 1) return 1;
+  return Math.min(v, SCENE_MAX);
+}
+
 /** A painted stand-in photo, in faded print colours. */
 export function paintScene(scene: PlaceholderScene, w: number, h: number, seed = 1): HTMLCanvasElement {
+  // A pixel to SCENE_MAX each way: a canvas (and its gradients) cannot be
+  // smaller, and a runaway aspect must not ask for a huge one.
+  w = sceneSide(w);
+  h = sceneSide(h);
   const { c, ctx } = canvas(w, h);
   const r = rng(seed);
   switch (scene) {
@@ -306,7 +316,14 @@ function loadImage(src: string): Promise<HTMLImageElement | null> {
   });
 }
 
-/** A print with a white border taped onto the page; returns its bottom y. */
+/** The smallest print drawn, page px wide; anything narrower is left out. */
+const MIN_PRINT_W = 24;
+
+/**
+ * A print with a white border taped onto the page; returns its bottom y.
+ * Never throws: a print with no usable size or place (too narrow, NaN) is
+ * left out and `y` returned, and one that fails to draw is skipped.
+ */
 export async function drawPhoto(
   ctx: Ctx,
   photo: BookPhoto,
@@ -318,20 +335,47 @@ export async function drawPhoto(
   fonts: PageFonts,
   tape: "top" | "corners",
 ) {
-  const aspect = photo.aspect ?? 4 / 3;
+  if (!(width >= MIN_PRINT_W) || !Number.isFinite(width) || !Number.isFinite(x) || !Number.isFinite(y)) return y;
+  if (!Number.isFinite(angle)) angle = 0;
+  const aspect = typeof photo.aspect === "number" && Number.isFinite(photo.aspect) && photo.aspect > 0 ? Math.min(4, Math.max(0.25, photo.aspect)) : 4 / 3;
   const pad = Math.round(width * 0.05);
   const imgW = width - pad * 2;
-  const imgH = Math.round(imgW / aspect);
+  const imgH = Math.max(1, Math.round(imgW / aspect));
   const capH = photo.caption ? Math.round(width * 0.17) : 0;
   const h = imgH + pad * 2 + capH;
 
-  let image: CanvasImageSource = paintScene(photo.scene ?? "hills", imgW * 2, imgH * 2, seed);
-  if (photo.src) {
-    const loaded = await loadImage(photo.src);
-    if (loaded) image = loaded;
+  let image: CanvasImageSource;
+  try {
+    image = paintScene(photo.scene ?? "hills", imgW * 2, imgH * 2, seed);
+    if (photo.src) {
+      const loaded = await loadImage(photo.src);
+      if (loaded && loaded.width > 0 && loaded.height > 0) image = loaded;
+    }
+  } catch {
+    return y;
   }
 
   ctx.save();
+  try {
+    printPhoto(ctx, photo, image, { x, y, width, h, pad, imgW, imgH, capH }, angle, seed, fonts, tape);
+  } catch {
+    // A print that cannot be drawn is left off the page; the page still opens.
+  } finally {
+    ctx.restore();
+  }
+  return y + h;
+}
+
+function printPhoto(
+  ctx: Ctx,
+  photo: BookPhoto,
+  image: CanvasImageSource,
+  { x, y, width, h, pad, imgW, imgH, capH }: { x: number; y: number; width: number; h: number; pad: number; imgW: number; imgH: number; capH: number },
+  angle: number,
+  seed: number,
+  fonts: PageFonts,
+  tape: "top" | "corners",
+) {
   ctx.translate(x + width / 2, y + h / 2);
   ctx.rotate(angle);
   ctx.shadowColor = "rgba(74,47,29,0.28)";
@@ -376,6 +420,4 @@ export async function drawPhoto(
     drawTape(ctx, -width / 2 + width * 0.07, -h / 2 + width * 0.06, width * 0.3, width * 0.085, -0.72, seed);
     drawTape(ctx, width / 2 - width * 0.07, h / 2 - width * 0.06, width * 0.3, width * 0.085, -0.72, seed + 3);
   }
-  ctx.restore();
-  return y + h;
 }
