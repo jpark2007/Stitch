@@ -50,6 +50,7 @@ import type { PlaybackController } from "@/components/stage/playback";
 import { pullTabGeometry } from "../labelArt";
 import { PAGE_H, PAGE_W } from "../leafShape";
 import { PAGE_PX_W } from "../pageArt";
+import { usePageSurface } from "../pagePrint";
 import type { PageFonts } from "../paperArt";
 import { OPEN_TO_PLAY, createPlayGate, stepPlayGate, type PlayGate } from "../playGate";
 import type { StageShot } from "../shot";
@@ -58,6 +59,7 @@ import type { BookSpread, BookTeller } from "../types";
 import { ExplainLayer, ExplainSession } from "./ExplainNote";
 import { PrintedCaption } from "./PrintedCaption";
 import { PullTabLever } from "./PullTabLever";
+import { stageUncovered } from "./tellings";
 
 export interface MomentStageProps {
   controller: PlaybackController;
@@ -77,6 +79,9 @@ export interface MomentStageProps {
   onReady?: () => void;
   /** Click-to-explain on the stage's cast and props. Default true. */
   explain?: boolean;
+  /** The spread's 0-based index (StageSlotArgs.index): with it, the stage is
+   *  not drawn once a leaf covers its page (tellings.ts, stageUncovered). */
+  index?: number;
 }
 
 /** The page's centre line in slot space. */
@@ -119,8 +124,13 @@ export function MomentStage({
   freezeAt = null,
   onReady,
   explain = true,
+  index,
 }: MomentStageProps) {
   const tellers: BookTeller[] = useMemo(() => spread.tellings ?? [], [spread]);
+  // Everything this stage draws, hidden once a leaf lies over its page: a
+  // spread's page only ever shows its own scene.
+  const root = useRef<Group>(null);
+  const book = usePageSurface();
   const gate = useRef<PlayGate>(null);
   // The open note, and the pause it holds on the telling.
   const notes = useMemo(() => new ExplainSession(controller), [controller]);
@@ -165,6 +175,7 @@ export function MomentStage({
   }, [controller, shot, invalidate]);
 
   useFrame((state) => {
+    if (root.current) root.current.visible = !book || index === undefined || stageUncovered(book.leaves, index);
     gate.current ??= createPlayGate();
     const status = controller.getStatus();
     const now = performance.now();
@@ -249,7 +260,7 @@ export function MomentStage({
   );
 
   return (
-    <>
+    <group ref={root}>
       {/* Centred on the page itself, not the slot (which sits toward the fore-edge). */}
       <group position-x={CENTRE_X}>
         <TimelineScene controller={controller} scene={scene} size={layout.stage} reveal={reveal} onReady={onSceneReady}>
@@ -274,6 +285,6 @@ export function MomentStage({
         <PullTabLever key={tab.id} controller={controller} tab={tab} shot={shots.get(tab.id) ?? null} reveal={reveal} />
       ))}
       <FpsProbe />
-    </>
+    </group>
   );
 }

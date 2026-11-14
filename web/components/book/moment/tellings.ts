@@ -288,3 +288,29 @@ export class ScenePlayers implements TellingsSource {
     for (const l of [...this.listeners]) l();
   }
 }
+
+/** A leaf as `stageUncovered` reads it (../runtime.ts LeafState). */
+export interface CoverLeaf {
+  /** 0 lying on the right, 1 lying on the left. */
+  readonly p: number;
+}
+
+/**
+ * Whether spread `index`'s pop-up may show at all: only while its own stage
+ * page is the right-hand page. Spread j's stage stands on leaf j + 1's recto,
+ * and leaf j is the one before it (../controller.ts, stageGoal).
+ *
+ * The stage folds on the book's frame clock (dt capped per frame) while a
+ * leaf turns on the wall clock, so after a slow frame (a stage mounting, a
+ * busy machine) a leaf can land while the outgoing stage still stands: the
+ * 1997 bike stood on the 1988 page after a turn back. Once the leaf before
+ * has come back past the spine, or its own page has turned past it, what is
+ * left of the stage is under paper and is not drawn.
+ */
+export function stageUncovered(leaves: readonly CoverLeaf[], index: number): boolean {
+  const before = leaves[index];
+  const page = leaves[index + 1];
+  if (before && before.p <= 0.5) return false;
+  if (page && page.p > 0.5) return false;
+  return true;
+}
