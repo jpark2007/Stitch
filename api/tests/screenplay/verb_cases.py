@@ -577,10 +577,12 @@ def _props() -> list[VerbCase]:
                       start={"dad": _at("door", holding="hymn_books")}, prop_start=TABLE),
                  "out_of_reach",
                  # errors.py out_of_reach_reason (ik.OutOfReach from verbs_objects.py apply_place_on, which
-                 # never walks): the books' grip on the table top is 0.95 from dad's right shoulder at
-                 # the door, and a tall arm reaches 2 x 0.17 x 0.55 = 0.19
+                 # never walks): the books' grip on the table top is below dad's shoulder and beyond a
+                 # standing arm, so he tries bending and kneeling toward it (verbs_core._crouch_solution);
+                 # the closest miss is 0.84 from his right shoulder, and a tall arm reaches
+                 # 2 x 0.17 x 0.55 = 0.19
                  'shot s1, t=1: dad cannot place_on "hymn_books"; '
-                 "dad's arm_r cannot reach: target is 0.95 from the shoulder, reach is 0.19"),
+                 "dad's arm_r cannot reach: target is 0.84 from the shoulder, reach is 0.19"),
 
         # --------------------------------------------------------------------- open
         _ok("open", "ok", _one(_a(1, "open", who="dad", what="suitcase"), start={"dad": _at("by_table")},
