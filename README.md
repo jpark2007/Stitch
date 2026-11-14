@@ -77,26 +77,61 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how it is built and [DESIGN.md](DESIG
 
 Requires Node 20+, Python 3.12+, and [uv](https://docs.astral.sh/uv/).
 
-```bash
-cp .env.example api/.env        # fill in MONGODB_URI, JWT_SECRET, model API keys
+For a local demo without MongoDB or model credentials, start the API in one terminal **from the repository root**:
 
-# API (http://localhost:8000)
+```bash
 cd api
 uv sync
-uv run playwright install chromium   # headless browser for the agent's frame checks
-uv run uvicorn main:app --reload
+STITCH_FAKE_DB=1 STITCH_AGENT=fake uv run uvicorn main:app --reload --port 8000
+```
 
-# Web (http://localhost:3000), in a second terminal
+This seeds an in-memory demo family and uses scripted agent runs with no model calls. Restarting the API resets demo data and, without a stable `JWT_SECRET`, signs users out. See the [demo seed guide](api/seed/README.md) for demo accounts, API smoke checks, scripted memory submission, and agent modes.
+
+Start the web app in a second terminal, also **from the repository root**:
+
+```bash
 cd web
 npm install
 npm run dev
 ```
 
+Open **http://localhost:3000**. The web app defaults to the API at `http://localhost:8000`; use `localhost` for both so browser session cookies work.
+
+To use a real MongoDB instead, stop the demo API and run the following **from the repository root**. Copy the template once, then fill in `MONGODB_URI` and `JWT_SECRET` in `api/.env`; configure model keys there when needed. The environment file is not loaded automatically.
+
+```bash
+cp .env.example api/.env
+cd api
+uv sync
+uv run playwright install chromium   # needed for the agent's frame checks
+uv run uvicorn main:app --env-file .env --reload --port 8000
+```
+
+The demo seed guide's real-MongoDB examples use a repository-root `.env` instead; use `--env-file .env` from `api/` for the `api/.env` location shown here (including `uv run --env-file .env python -m seed.demo` if you want to seed that database). Keep local credentials out of commits.
+
+### Checks
+
+After installing dependencies, run each block **from the repository root** in its own terminal. Generate Next.js route types before the first TypeScript check on a fresh checkout:
+
+```bash
+cd web
+npx next typegen
+npx tsc --noEmit
+npm run lint
+```
+
+```bash
+cd api
+uv run pytest
+```
+
 ## Using the app
 
-Keep this list current as features land: how to open it and everything that can be clicked, dragged or pulled.
+Keep this list current as features land:
 
-- Nothing is interactive yet. The app is a scaffold.
+- `/` currently shows the paper style guide: typography, colors, scrapbook photos, and a 3D material showcase.
+- Login, signup, family, add-a-memory, and book pages are still placeholders. The rendered stage page is also unfinished; the full browser story flow is not ready yet.
+- The API supports the seeded demo independently of those pages. Use the [API smoke checks](api/seed/README.md#smoke-check) to log in and fetch the tree and books, and the curl example under [Add a memory without keys](api/seed/README.md#add-a-memory-without-keys) for the scripted submission flow.
 
 ## Scope for the weekend
 
