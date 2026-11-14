@@ -28,7 +28,9 @@ Passing data between roles: every task description the studio writes ends with o
 the studio parses from the task ToolMessage.
 
 If a tool the script wants is not bound for that call, the role skips that step (for
-example the checker without `render_frames` / `inspect_frames`).
+example the checker without `render_frames` / `inspect_frames`). The narrator's voice pass
+calls `synthesize_narration` once more when it answers `Error...` (a TTS or media store
+failure), as the narrator prompt says.
 """
 
 from __future__ import annotations
@@ -904,6 +906,9 @@ def _narrator(s: _Script, ctx: dict[str, Any], _story: FakeStory) -> None:
     teller = ctx.get("teller")
     if ctx.get("pass") == "voice":
         result = s.one("synthesize_narration", {})
+        if result is not None and result.startswith("Error"):
+            # The TTS or the media store may fail once (an HTTP 503); voice once more.
+            result = s.one("synthesize_narration", {})
         ok = result is not None and not result.startswith("Error")
         s.finish(_report(f"voice pass for {teller}: {'ok' if ok else 'failed'}\n{result or ''}",
                          {"pass": "voice", "ok": ok}))

@@ -19,6 +19,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
+from langchain_core.messages import ToolMessage
 from PIL import Image
 from pydantic import BaseModel
 
@@ -27,6 +28,7 @@ from agent import runs, wiring
 from agent.fake_studio import FakeStory, fake_studio_model
 from agent.repo import InMemoryRepo, load_sample_family
 from agent.tools.compile import MAX_COMPILE_ROUNDS
+from agent.tools.narration import FakeTTS, Speech
 from agent.tools.photos import FakeVision
 
 FAMILY = "fam_e2e"
@@ -444,3 +446,74 @@ def test_compile_rounds_stop_at_the_cap(studios: list[Studio]) -> None:
     director_runs = [p for n, p in events if n == "subagent_start" and p.name == "director"]  # type: ignore[attr-defined]
     assert len(director_runs) == 1
     assert s.repo.find_memories(FAMILY, limit=1000) == memories_before
+
+
+# --------------------------------------------------------------------------- (f) the voice pass
+
+
+class FlakyTTS:
+    """FakeTTS that fails its first call, as a TTS provider answering HTTP 503 would."""
+
+    def __init__(self) -> None:
+        self.inner = FakeTTS()
+        self.failures = 0
+
+    def synthesize(self, text: str, *, voice: str | None = None) -> Speech:
+        if self.failures == 0:
+            self.failures += 1
+            raise RuntimeError("TTS provider returned HTTP 503")
+        return self.inner.synthesize(text, voice=voice)
+
+
+def test_a_tts_failure_is_retried_and_the_run_still_finishes(studios: list[Studio]) -> None:
+    s = new_studio(studios)
+    tts = FlakyTTS()
+    s.manager.shutdown(wait=True)
+    s.services = wiring.Services(**{**s.services.__dict__, "tts": tts})
+    s.manager = wiring.make_manager(s.services)
+
+    _, events = s.drive(MOM_USER, "mom", MOM_TEXT, [schemas.AnswerRequest(kind="answer", text=ANSWER),
+                                                    rename_first_prop], participant_ids=["dad"])
+    names = [n for n, _ in events]
+    assert names[-1] == "done" and "error" not in names, names
+    assert tts.failures == 1
+
+    # The narrator voiced twice: the first answer was the error, the second the narration.
+    model = s.services.model
+    replies: dict[str, str] = {}
+    for _, messages in model.calls:  # type: ignore[attr-defined]
+        for m in messages:
+            if isinstance(m, ToolMessage) and m.name == "synthesize_narration":
+                replies[m.tool_call_id] = str(m.content)
+    assert len(replies) == 2, replies
+    first, second = replies.values()
+    assert first.startswith("Error: could not voice the narration (RuntimeError: TTS provider returned HTTP 503)")
+    assert second.startswith("Narrated")
+
+    memory = s.memory(events[-1][1].memory_id)  # type: ignore[attr-defined]
+    assert memory.timeline is not None
+    track = (memory.timeline.narrations or {})["mom"]
+    assert track.audio and s.repo.get_media(FAMILY, track.audio) is not None
+
+
+def test_the_saved_scene_has_its_cue_on_the_spoken_word(
+    first_run: tuple[Studio, str, list[Event], dict[str, Any]],
+) -> None:
+    """The voice pass recompiled with the TTS word timings: the saved screenplay carries them,
+    and recompiling it gives the saved action, with mom's cued action on her spoken word."""
+    s, _, events, _ = first_run
+    memory = s.memory(events[-1][1].memory_id)  # type: ignore[attr-defined]
+    assert memory.screenplay is not None and memory.timeline is not None
+    lines = memory.screenplay.shots[0].narration
+    assert all(line.words for line in lines if line.text.strip())
+    lookup = wiring.scene_for(s.repo, FAMILY)
+    result = s.services.compiler(memory.screenplay, lookup(memory.screenplay))
+    assert result.ok and result.timeline is not None
+    assert result.timeline.tracks == memory.timeline.tracks
+    # The cued line's last word (no cueWord: the last word) is where the cued action starts.
+    (cued,) = [line for line in memory.timeline.narrations["mom"].lines if line.cue]  # type: ignore[index]
+    assert cued.words
+    shot = memory.screenplay.shots[0]
+    action = next(a for a in shot.actions if a.id == cued.cue)
+    walk = [t for t in memory.timeline.tracks if t.target == f"puppet:{action.who}" and t.channel == "root.position"]
+    assert walk and any(abs(k[0] - cued.words[-1].t) < 0.01 for k in walk[0].keys), (cued.words[-1].t, walk[0].keys[:4])
