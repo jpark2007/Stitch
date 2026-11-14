@@ -19,10 +19,16 @@ Schedule order within a shot: each puppet's actions form a queue in (retimed t, 
 order (an action without ``who`` is a queue of its own), and the earliest runnable queue head
 runs next. A ``follow`` of a cast member is runnable only once every action of its leader in
 the shot has run, so the follower can see where the leader goes; the follower's later actions
-wait behind the follow. When no head can run, each follow cycle (puppets that follow one
-another round a loop) is reported as ``follow_cycle`` on its earliest follow, which is skipped,
-and the rest of the shot then runs in time order. A puppet that only follows a member of a
-cycle is not part of it and is not reported.
+wait behind the follow. Any action is runnable only once every earlier action that touches the
+same puppet or prop (its ``who`` or a cast member or prop it names) has run, so an action on a
+follower (mom hands dad the books while dad follows kid) sees the follower where the follow
+put him, never a stale position. Without follows this is plain time order. When no head can
+run, the waits form a cycle through a follow: a cycle of follows only (puppets that follow one
+another round a loop) is reported as ``follow_cycle`` on its earliest follow, and any other
+cycle as ``follow_order`` on the leader's action that needs its follower first (kid points at
+dad while dad follows kid). The reported action is skipped and the rest of the shot is
+scheduled as before. A puppet that only waits on a cycle is not part of it and is not
+reported.
 
 Because of that reordering, ``World.busy_until`` only describes the action running now. The
 compiler keeps every puppet's busy spans in shot time and, before each handler, sets each
@@ -41,7 +47,7 @@ from __future__ import annotations
 import importlib
 import logging
 import pkgutil
-from collections.abc import Callable, Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
 import schemas
@@ -175,6 +181,10 @@ class _Span:
 Spans = dict[str, list[_Span]]
 
 
+# Action fields that can name another puppet or a prop (marks and offstage sides are not shared).
+_REF_FIELDS = ("to", "target", "at", "on", "what")
+
+
 def _follows_a_leader(action: Action, cast: Mapping[str, object]) -> str | None:
     """The leader a ``follow`` waits for: its target, when that is another cast member."""
     if action.do == "follow" and action.target is not None and action.target in cast and action.target != action.who:
@@ -182,46 +192,21 @@ def _follows_a_leader(action: Action, cast: Mapping[str, object]) -> str | None:
     return None
 
 
-def _follow_cycles(
-    actions: list[Action], heads: list[int], cast: Mapping[str, object],
-    when: Callable[[int], tuple[float, int]],
-) -> list[list[int]]:
-    """The follow cycles among ``heads`` (the queue heads when none can run, all blocked follows).
+def _touches(action: Action, cast: Mapping[str, object], props: Collection[str]) -> frozenset[str]:
+    """The puppets and props an action reads or changes: its ``who`` and every cast member or
+    prop it names. A follow touches only its follower; its leader is waited for separately."""
+    names = {action.who} if action.who is not None else set()
+    if action.do != "follow":
+        for name in (getattr(action, f) for f in _REF_FIELDS):
+            if name is not None and (name in cast or name in props):
+                names.add(name)
+    return frozenset(names)
 
-    Each puppet whose head is a blocked follow waits for that follow's leader, so the waits-for
-    graph has one edge per puppet. Every walk along it ends in a loop; a puppet that only waits
-    on a loop (a follower of one of its members) is not part of it. Returns each loop as the
-    indexes of its follows, starting from its earliest follow and going leader by leader, the
-    loops ordered by that earliest follow.
-    """
-    head_of: dict[str, int] = {}
-    for i in heads:
-        who = actions[i].who
-        if who is not None and _follows_a_leader(actions[i], cast) is not None:
-            head_of[who] = i
-    on_a_cycle: set[str] = set()
-    for start in sorted(head_of):
-        path: list[str] = []
-        who: str | None = start
-        while who in head_of and who not in path and who not in on_a_cycle:
-            path.append(who)
-            who = actions[head_of[who]].target
-        if who in path:
-            on_a_cycle.update(path[path.index(who):])
-    cycles: list[list[int]] = []
-    seen: set[str] = set()
-    for i in sorted((head_of[w] for w in on_a_cycle), key=when):
-        who = actions[i].who
-        assert who is not None
-        if who in seen:
-            continue
-        loop: list[int] = []
-        while who not in seen:
-            seen.add(who)
-            loop.append(head_of[who])
-            who = actions[head_of[who]].target
-        cycles.append(loop)
-    return cycles
+
+def _called(action: Action) -> str:
+    """``dad's hand_to at t=2`` (or ``the rain at t=2`` for an action without ``who``)."""
+    whose = f"{action.who}'s" if action.who is not None else "the"
+    return f"{whose} {action.do} at t={fmt_t(action.t)}"
 
 
 def _cycle_reason(actions: list[Action], loop: list[int]) -> str:
@@ -233,17 +218,50 @@ def _cycle_reason(actions: list[Action], loop: list[int]) -> str:
     return f"{', '.join(links[:-1])} and {links[-1]}; only one can lead"
 
 
+def _order_reason(actions: list[Action], loop: list[int], is_follow: set[int], blocker: dict[int, int]) -> str:
+    """Why the first action of ``loop`` (a waits-for cycle that starts right after a follow
+    edge) cannot run: what it needs first, and the follows that make that wait on itself."""
+    succ = {loop[k]: loop[(k + 1) % len(loop)] for k in range(len(loop))}
+    needs: list[int] = []
+    n = loop[0]
+    while n not in is_follow:  # conflict waits, up to the first follow on the loop
+        j, s = blocker[n], succ[n]
+        needs.append(j)
+        if s != j:
+            needs.append(s)
+        n = s
+    gate = n
+    links: list[str] = []
+    while n in is_follow:
+        links.append(f"{actions[n].who} follows {actions[n].target}")
+        n = succ[n]
+    last = actions[n].who
+    return (
+        f"this needs {', which needs '.join(_called(actions[j]) for j in needs)} first, "
+        f"but {' and '.join(links)}, so {actions[gate].who}'s actions are only worked out "
+        f"after {last}'s last action in this shot"
+    )
+
+
 def _schedule(
-    actions: list[Action], retimed: list[float], cast: Mapping[str, object]
-) -> tuple[list[int], list[tuple[int, str]]]:
-    """The order to run a shot's actions in, and the follows reported as cycles (index, reason).
+    actions: list[Action], retimed: list[float], cast: Mapping[str, object], props: Collection[str] = (),
+) -> tuple[list[int], list[tuple[int, str, str]]]:
+    """The order to run a shot's actions in, and the actions left out: (index, code, reason).
 
     Per-puppet queues in (retimed t, index) order; the earliest runnable head runs next (ties
-    by retimed t, then index). A follow of a cast member waits until every action of its
-    leader has run. When no head can run, each follow cycle among the blocked heads is
-    reported on its earliest follow (in (retimed t, index) order), which is left out of the
-    order; everything that is left runs in time order. A follow that only waits on a cycle is
-    not reported and still runs.
+    by retimed t, then index). A head is runnable when
+
+    - every earlier action (by retimed t, index) that touches one of its puppets or props has
+      run, so whatever it reads (where a puppet stands, who holds a prop) is as of its own
+      time; and
+    - for a follow of a cast member, every action of its leader has run.
+
+    Without follows that is plain time order. When no head can run, each puppet waits on
+    another along a cycle that goes through a follow. A cycle of follows only is reported as
+    ``follow_cycle`` on its earliest follow. Any other cycle is reported as ``follow_order``
+    on the action a follow's leader cannot do before its follower is worked out (say the
+    leader points at the follower). Each reported action is left out and the rest are
+    scheduled as before; a puppet that only waits on a cycle is not reported.
     """
     def when(i: int) -> tuple[float, int]:
         return (retimed[i], i)
@@ -254,32 +272,72 @@ def _schedule(
         who = actions[i].who
         queue_of[i] = ("who", who) if who is not None else ("action", i)
         queues.setdefault(queue_of[i], []).append(i)
-    remaining: dict[str, int] = {}
-    for a in actions:
-        if a.who is not None:
-            remaining[a.who] = remaining.get(a.who, 0) + 1
+    touches = [_touches(a, cast, props) for a in actions]
     heads = {key: 0 for key in queues}
+    done: set[int] = set()
     order: list[int] = []
+    left_out: list[tuple[int, str, str]] = []
 
-    def blocked(i: int) -> bool:
+    def head(i: int) -> int:
+        q = queues[queue_of[i]]
+        return q[heads[queue_of[i]]]
+
+    def blocked_by(i: int) -> tuple[int, bool] | None:
+        """What ``i`` waits for: (an action not yet run, whether it is a follow's leader wait)."""
         leader = _follows_a_leader(actions[i], cast)
-        return leader is not None and remaining.get(leader, 0) > 0
+        if leader is not None:
+            key = ("who", leader)
+            if key in queues and heads[key] < len(queues[key]):
+                return queues[key][heads[key]], True
+        for j in sorted((j for j in range(len(actions)) if j not in done and when(j) < when(i)), key=when):
+            if touches[j] & touches[i]:
+                return j, False
+        return None
 
-    while len(order) < len(actions):
-        waiting = [queues[k][heads[k]] for k in queues if heads[k] < len(queues[k])]
-        runnable = [i for i in waiting if not blocked(i)]
-        if not runnable:
-            loops = _follow_cycles(actions, waiting, cast, when)
-            dropped = {loop[0] for loop in loops}
-            rest = sorted((i for k in queues for i in queues[k][heads[k]:] if i not in dropped), key=when)
-            return order + rest, [(loop[0], _cycle_reason(actions, loop)) for loop in loops]
-        i = min(runnable, key=when)
+    def finish(i: int) -> None:
         heads[queue_of[i]] += 1
-        who = actions[i].who
-        if who is not None:
-            remaining[who] -= 1
-        order.append(i)
-    return order, []
+        done.add(i)
+
+    while len(done) < len(actions):
+        waiting = [queues[k][heads[k]] for k in queues if heads[k] < len(queues[k])]
+        waits = {i: blocked_by(i) for i in waiting}
+        runnable = [i for i in waiting if waits[i] is None]
+        if runnable:
+            i = min(runnable, key=when)
+            finish(i)
+            order.append(i)
+            continue
+        blocker = {i: w[0] for i, w in waits.items() if w is not None}
+        is_follow = {i for i, w in waits.items() if w is not None and w[1]}
+        succ = {i: head(j) for i, j in blocker.items()}
+        reports: list[tuple[int, str, str]] = []
+        seen: set[int] = set()
+        for start in sorted(waiting, key=when):
+            path: list[int] = []
+            n = start
+            while n not in seen and n not in path:
+                path.append(n)
+                n = succ[n]
+            seen.update(path)
+            if n not in path:
+                continue  # this walk only leads into a loop already found
+            loop = path[path.index(n):]
+            if all(i in is_follow for i in loop):
+                first = min(loop, key=when)
+                k = loop.index(first)
+                loop = loop[k:] + loop[:k]
+                reports.append((first, "follow_cycle", _cycle_reason(actions, loop)))
+            else:
+                # the actions a follow edge leads to: things a leader does that wait on its follower
+                gated = [loop[k] for k in range(len(loop)) if loop[k - 1] in is_follow and loop[k] not in is_follow]
+                first = min(gated, key=when)
+                k = loop.index(first)
+                loop = loop[k:] + loop[:k]
+                reports.append((first, "follow_order", _order_reason(actions, loop, is_follow, blocker)))
+        for i, _, _ in reports:
+            finish(i)
+        left_out.extend(sorted(reports, key=lambda r: when(r[0])))
+    return order, left_out
 
 
 def _set_busy_from_spans(world: World, spans: Spans, now: float) -> None:
@@ -469,9 +527,9 @@ def compile(
             retimed = [a.t for a in shot.actions]
 
         locate = make_locate(world, tracks, marks, shot.id)
-        order, cycles = _schedule(shot.actions, retimed, world.people)
-        for ci, reason in cycles:
-            errors.add(E.error("follow_cycle", reason, shot.id, shot.actions[ci]), si, ci)
+        order, left_out = _schedule(shot.actions, retimed, world.people, world.props)
+        for ci, code, reason in left_out:
+            errors.add(E.error(code, reason, shot.id, shot.actions[ci]), si, ci)
         spans: Spans = {}
         for ai in order:
             action = shot.actions[ai]

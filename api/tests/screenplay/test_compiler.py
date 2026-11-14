@@ -673,7 +673,7 @@ def test_schedule_runs_a_follow_chain_leader_first():
         {"t": 0, "who": "mom", "do": "wave"},
     )]
     assert C._schedule(loop, [a.t for a in loop], cast) == (
-        [3, 0, 2], [(1, "dad follows mom, mom follows kid and kid follows dad; only one can lead")],
+        [3, 0, 2], [(1, "follow_cycle", "dad follows mom, mom follows kid and kid follows dad; only one can lead")],
     )
 
 
@@ -688,7 +688,7 @@ def test_schedule_reports_only_the_follows_on_a_cycle():
         {"t": 2, "who": "mom", "do": "follow", "target": "dad"},
     )]
     assert C._schedule(on_a_cycle, [a.t for a in on_a_cycle], cast) == (
-        [0, 2], [(1, "dad and mom follow each other; only one can lead")],
+        [0, 2], [(1, "follow_cycle", "dad and mom follow each other; only one can lead")],
     )
     # two separate cycles are each reported once, on their earliest follow, in time order
     two = [Action.model_validate(a) for a in (
@@ -700,12 +700,13 @@ def test_schedule_reports_only_the_follows_on_a_cycle():
     )]
     assert C._schedule(two, [a.t for a in two], cast) == (
         [3, 0, 4],
-        [(2, "mom and dad follow each other; only one can lead"),
-         (1, "gran and uncle follow each other; only one can lead")],
+        [(2, "follow_cycle", "mom and dad follow each other; only one can lead"),
+         (1, "follow_cycle", "gran and uncle follow each other; only one can lead")],
     )
-    # retimed t, not the written t, picks the earliest follow of a cycle
+    # retimed t, not the written t, picks the earliest follow of a cycle; once mom's follow is
+    # left out, dad's follow can run, and kid's follow still waits for it
     assert C._schedule(on_a_cycle, [0.5, 3.0, 2.0], cast) == (
-        [0, 1], [(2, "mom and dad follow each other; only one can lead")],
+        [1, 0], [(2, "follow_cycle", "mom and dad follow each other; only one can lead")],
     )
 
 
@@ -736,34 +737,178 @@ def test_the_followers_own_action_inside_the_follow_is_busy(fake_follow):
 
 HAND_OVER_DURING_FOLLOW = [
     {"t": 0, "who": "kid", "do": "walk_to", "to": "curb"},
-    {"t": 5, "who": "kid", "do": "pose", "pose": "wave"},  # holds the follow back until after the hand_to
+    {"t": 5, "who": "kid", "do": "pose", "pose": "wave"},  # holds the follow back until after it
     {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
     {"t": 2, "who": "mom", "do": "hand_to", "what": "hymn_books", "to": "dad"},
 ]
 
 
-def test_a_follow_that_runs_into_a_later_hand_over_is_busy(fake_follow, ran):
+def test_a_hand_over_to_the_follower_waits_for_the_follow_and_sees_where_it_ends(fake_follow, ran):
+    # The hand_to (t=2) names dad, so it waits for dad's follow (t=1), which waits for kid's
+    # pose (t=5). Mom then hands the books to dad where the follow left him (x=0.6), exactly as
+    # if dad had walked there: from the top of the steps that is out of reach.
+    fake_follow["dur"] = 0.5
+    res = run(follow_shot(HAND_OVER_DURING_FOLLOW))
+    assert ran == [("kid", "walk_to"), ("kid", "pose"), ("mom", "hand_to")]
+    assert [(c["who"], c["now"]) for c in fake_follow["calls"]] == [("dad", 1.0)]
+    walked = follow_shot([
+        {"t": 0, "who": "kid", "do": "walk_to", "to": "curb"},
+        {"t": 0, "who": "dad", "do": "walk_to", "to": "beside_kid"},
+        {"t": 2, "who": "mom", "do": "hand_to", "what": "hymn_books", "to": "dad"},
+    ])
+    walked["shots"][0]["marks"] = {"beside_kid": [0.8, 0.0]}  # x=0.6 on stage
+    expected = 'shot s1, t=2: mom cannot hand_to "hymn_books"; dad\'s arm_r cannot reach: target is 0.26 from the shoulder, reach is 0.19'
+    assert messages(run(walked)) == [expected]
+    assert [(e.code, e.message) for e in res.errors] == [("out_of_reach", expected)]
+
+
+def test_a_hand_over_inside_the_follow_is_busy(fake_follow, ran):
     fake_follow["dur"] = 3.0
     res = run(follow_shot(HAND_OVER_DURING_FOLLOW))
+    assert ran == [("kid", "walk_to"), ("kid", "pose"), ("mom", "hand_to")]
+    assert [(e.code, e.message, e.t, e.who, e.do) for e in res.errors] == [(
+        "busy", 'shot s1, t=2: mom cannot hand_to "hymn_books"; dad is still following until t=4',
+        2.0, "mom", "hand_to",
+    )]
+
+
+def test_a_hand_over_before_a_later_follow_is_not_a_false_busy(fake_follow, ran):
+    # The hand_to (t=2) keeps dad busy taking the books until t=2.9; his follow starts at t=3,
+    # after kid's pose (t=5) in schedule order. Busy comes from spans in shot time: no clash.
+    fake_follow["dur"] = 0.5
+    res = run(follow_shot([
+        {"t": 0, "who": "kid", "do": "walk_to", "to": "curb"},
+        {"t": 5, "who": "kid", "do": "pose", "pose": "wave"},
+        {"t": 3, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 2, "who": "mom", "do": "hand_to", "what": "hymn_books", "to": "dad"},
+    ]))
+    assert res.ok, messages(res)
     assert ran == [("kid", "walk_to"), ("mom", "hand_to"), ("kid", "pose")]
-    assert [(c["who"], c["now"]) for c in fake_follow["calls"]] == [("dad", 1.0)]
+    assert [c["now"] for c in fake_follow["calls"]] == [3.0]
+    assert value(res, "prop:hymn_books", "parent", 8.0) == "puppet:dad.hand_r"
+    assert value(res, "puppet:dad", "root.position", 4.7) == [0.6, 0.0, 0.5]
+
+
+@pytest.fixture
+def fake_shower(monkeypatch):
+    """confetti (no who, names nobody) that keeps dad busy "being showered" for ``state["dur"]``:
+    a handler occupying a puppet the action does not name, as a vehicle carrying a passenger does."""
+    state = {"dur": 1.0}
+
+    def apply_confetti(world, tracks, action, t, action_start, locate):
+        world.occupy("dad", round(world.now + state["dur"], 6), "being showered", at=world.now)
+        return t + state["dur"]
+
+    monkeypatch.setitem(C.HANDLERS, "confetti", apply_confetti)
+    return state
+
+
+SHOWER_DURING_FOLLOW = [
+    {"t": 0, "who": "kid", "do": "walk_to", "to": "curb"},
+    {"t": 5, "who": "kid", "do": "pose", "pose": "wave"},
+    {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+    {"t": 2, "do": "confetti"},  # runs before the held-back follow
+]
+
+
+def test_a_held_back_follow_that_runs_into_a_later_span_is_busy(fake_follow, fake_shower, ran):
+    fake_follow["dur"] = 3.0
+    res = run(follow_shot(SHOWER_DURING_FOLLOW))
+    assert ran == [("kid", "walk_to"), ("kid", "pose")]
     assert [(e.code, e.message, e.t, e.who, e.do) for e in res.errors] == [(
         "busy",
-        "shot s1, t=1: dad cannot follow; dad would still be following until t=4, but starts taking hymn_books at t=2",
+        "shot s1, t=1: dad cannot follow; dad would still be following until t=4, but starts being showered at t=2",
         1.0, "dad", "follow",
     )]
 
 
-def test_a_hand_over_after_a_later_scheduled_follow_is_not_a_false_busy(fake_follow, ran):
-    # The hand_to runs first and keeps dad busy taking the books from t=2 to 2.9. The follow
-    # (t=1 to 1.5) runs after it in schedule order but before it in time: no clash.
+def test_a_held_back_follow_that_ends_before_a_later_span_is_not_busy(fake_follow, fake_shower):
     fake_follow["dur"] = 0.5
-    res = run(follow_shot(HAND_OVER_DURING_FOLLOW))
+    res = run(follow_shot(SHOWER_DURING_FOLLOW))
     assert res.ok, messages(res)
-    assert ran == [("kid", "walk_to"), ("mom", "hand_to"), ("kid", "pose")]
     assert [c["now"] for c in fake_follow["calls"]] == [1.0]
-    assert value(res, "prop:hymn_books", "parent", 5.0) == "puppet:dad.hand_r"
-    assert value(res, "puppet:dad", "root.position", 2.7) == [0.6, 0.0, 0.5]
+
+
+def mom_points_at_dad(*extra):
+    return follow_shot([
+        {"t": 0, "who": "kid", "do": "walk_to", "to": "curb"},
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 4, "who": "mom", "do": "point_at", "target": "dad"},
+        *extra,
+    ])
+
+
+def test_pointing_at_the_follower_does_not_depend_on_an_unrelated_later_action(fake_follow):
+    # Without kid's pose, the follow would run at its own time anyway; with it, the follow is
+    # held back, and mom's point (which names dad) is held back behind it. Mom's keys agree.
+    alone = run(mom_points_at_dad())
+    held = run(mom_points_at_dad({"t": 6, "who": "kid", "do": "pose", "pose": "wave"}))
+    assert alone.ok and held.ok, (messages(alone), messages(held))
+    mom = sorted({tr.channel for tr in alone.timeline.tracks if tr.target == "puppet:mom"})
+    assert mom == sorted({tr.channel for tr in held.timeline.tracks if tr.target == "puppet:mom"})
+    for channel in mom:
+        assert track(alone, "puppet:mom", channel) == track(held, "puppet:mom", channel), channel
+    # mom turns toward dad, who is at x=0.6 when she points (t=5.2), right of the steps' top
+    assert value(held, "puppet:dad", "root.position", 5.2) == [0.6, 0.0, 0.5]
+    assert value(held, "puppet:mom", "root.facing", 6.0) == 1
+
+
+def test_a_leader_acting_on_its_follower_is_a_follow_order_error(fake_follow, ran):
+    res = run(follow_shot([
+        {"t": 0, "who": "kid", "do": "walk_to", "to": "curb"},
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 6, "who": "kid", "do": "point_at", "target": "dad"},
+    ]))
+    assert [(e.code, e.message, e.t, e.who, e.do) for e in res.errors] == [(
+        "follow_order",
+        "shot s1, t=6: kid cannot point_at; this needs dad's follow at t=1 first, but dad follows kid, "
+        "so dad's actions are only worked out after kid's last action in this shot",
+        6.0, "kid", "point_at",
+    )]
+    # the point is left out; the follow still runs, after kid's walk
+    assert ran == [("kid", "walk_to")]
+    assert [(c["who"], c["now"]) for c in fake_follow["calls"]] == [("dad", 1.0)]
+
+
+def test_schedule_orders_by_shared_puppets_and_props_around_a_follow():
+    from screenplay.schema import Action
+
+    cast = {"dad": None, "mom": None, "kid": None}
+    # mom's pick_up names the ball dad drops behind his follow, so it waits for the drop
+    ball = [Action.model_validate(a) for a in (
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 2, "who": "dad", "do": "drop", "what": "ball"},
+        {"t": 3, "who": "mom", "do": "pick_up", "what": "ball"},
+        {"t": 4, "who": "kid", "do": "walk_to", "to": "curb"},
+        {"t": 2.5, "who": "mom", "do": "wave"},  # names nothing shared: runs at its time
+    )]
+    assert C._schedule(ball, [a.t for a in ball], cast, {"ball"}) == ([4, 3, 0, 1, 2], [])
+    # without knowing ball is a prop, nothing ties the pick_up to the drop
+    assert C._schedule(ball, [a.t for a in ball], cast) == ([4, 2, 3, 0, 1], [])
+    # a cycle through other puppets: kid's point needs mom's hand_to, which needs dad's follow
+    chain = [Action.model_validate(a) for a in (
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 4, "who": "mom", "do": "hand_to", "what": "books", "to": "dad"},
+        {"t": 6, "who": "kid", "do": "point_at", "target": "mom"},
+    )]
+    assert C._schedule(chain, [a.t for a in chain], cast, {"books"}) == (
+        [0, 1],
+        [(2, "follow_order",
+          "this needs mom's hand_to at t=4, which needs dad's follow at t=1 first, but dad follows kid, "
+          "so dad's actions are only worked out after kid's last action in this shot")],
+    )
+    # a leader that follows someone else and acts on its own follower: the whole run of follows is named
+    run_of_follows = [Action.model_validate(a) for a in (
+        {"t": 1, "who": "dad", "do": "follow", "target": "kid"},
+        {"t": 2, "who": "kid", "do": "follow", "target": "mom"},
+        {"t": 5, "who": "mom", "do": "point_at", "target": "dad"},
+    )]
+    assert C._schedule(run_of_follows, [a.t for a in run_of_follows], cast) == (
+        [1, 0],
+        [(2, "follow_order",
+          "this needs dad's follow at t=1 first, but dad follows kid and kid follows mom, "
+          "so dad's actions are only worked out after mom's last action in this shot")],
+    )
 
 
 def test_follow_scheduling_is_deterministic(fake_follow):
