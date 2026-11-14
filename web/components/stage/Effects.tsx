@@ -17,6 +17,8 @@ import {
   DoubleSide,
   Object3D,
   PlaneGeometry,
+  Shape,
+  ShapeGeometry,
   type BufferGeometry,
   type InstancedMesh,
 } from "three";
@@ -48,8 +50,8 @@ export interface PaperEffectProps {
 
 const DEFAULTS: Record<EffectKind, { count: number; colors: string[] }> = {
   confetti: { count: 110, colors: ["#b9573d", "#e6b45c", "#f6efe1", "#7f9873", "#5b82a6", "#d98d6b", "#8b5a7c"] },
-  steam: { count: 16, colors: ["#fbf7ef", "#f4eee3", "#efe7d9"] },
-  rain: { count: 170, colors: ["#9db3c2", "#b8c8d3", "#8aa3b5"] },
+  steam: { count: 11, colors: ["#fbf7ef", "#f4eee3", "#efe7d9"] },
+  rain: { count: 220, colors: ["#9fbdd6", "#bcd0e0", "#8aaecb"] },
   smoke: { count: 18, colors: ["#d8d0c3", "#c9bfb1", "#bdb2a3", "#e3dcd0"] },
 };
 
@@ -67,12 +69,23 @@ function puffGeometry(seed: number) {
   return g;
 }
 
+/** A long paper raindrop: a hair-thin tail swelling to a round foot. Unit height. */
+function dropGeometry() {
+  const s = new Shape();
+  const r = 0.028;
+  s.moveTo(0, 0.5);
+  s.bezierCurveTo(0.004, 0.2, r, -0.36, r, -0.44);
+  s.absarc(0, -0.44, r, 0, Math.PI, true);
+  s.bezierCurveTo(-r, -0.36, -0.004, 0.2, 0, 0.5);
+  return new ShapeGeometry(s, 8);
+}
+
 function geometryFor(kind: EffectKind, seed: number): BufferGeometry {
   switch (kind) {
     case "confetti":
       return new PlaneGeometry(1, 0.62);
     case "rain":
-      return new PlaneGeometry(0.06, 1);
+      return dropGeometry();
     default:
       return puffGeometry(seed);
   }
@@ -97,10 +110,12 @@ export function PaperEffect({
   const mesh = useRef<InstancedMesh>(null);
   const dummy = useMemo(() => new Object3D(), []);
   const geometry = useMemo(() => geometryFor(kind, seed), [kind, seed]);
-  const material = useMemo(
-    () => createPaperMaterial({ color: "#ffffff", kind: "paper", side: DoubleSide, grain: 0.5, roughness: 0.95 }),
-    [],
-  );
+  const material = useMemo(() => {
+    const m = createPaperMaterial({ color: "#ffffff", kind: "paper", side: DoubleSide, grain: 0.5, roughness: 0.95 });
+    // A warm floor of light, so paper turned away from the key never goes black.
+    m.emissive = new Color("#3b2c1e");
+    return m;
+  }, []);
   useEffect(() => () => geometry.dispose(), [geometry]);
   useEffect(() => () => material.dispose(), [material]);
 
@@ -113,7 +128,7 @@ export function PaperEffect({
     if (m.instanceColor) m.instanceColor.needsUpdate = true;
   }, [n, paletteKey, seed]);
 
-  const [sx, sz] = spread ?? (kind === "rain" ? [1.25, 1.4] : [0.85, 0.5]);
+  const [sx, sz] = spread ?? (kind === "rain" ? [1.1, 1.35] : [0.85, 0.5]);
 
   useFrame((state) => {
     const m = mesh.current;
@@ -169,7 +184,7 @@ export function PaperEffect({
           origin[2] + (h2 - 0.5) * 2 * sz,
         );
         dummy.rotation.set(0, camYaw, 0.08);
-        const s = 0.13 * scale * (0.7 + h3 * 0.6) * smoothstep(Math.min(k / 0.05, (1 - k) / 0.04));
+        const s = 0.11 * scale * (0.7 + h3 * 0.6) * smoothstep(Math.min(k / 0.05, (1 - k) / 0.04));
         dummy.scale.set(s, s, s);
       } else {
         // Steam and smoke: puffs rise, grow, drift, then shrink away.
@@ -189,7 +204,7 @@ export function PaperEffect({
         );
         dummy.quaternion.copy(camQ);
         dummy.rotateZ(h2 * 6.28 + age * (h3 - 0.5) * 0.6);
-        const grow = smoke ? 0.07 + 0.2 * Math.sqrt(k) : 0.035 + 0.11 * Math.sqrt(k);
+        const grow = smoke ? 0.07 + 0.2 * Math.sqrt(k) : 0.025 + 0.075 * Math.sqrt(k);
         const s = grow * scale * smoothstep(k / 0.08) * (1 - smoothstep((k - 0.62) / 0.38)) * (0.8 + h4 * 0.4);
         dummy.scale.set(s, s, s);
       }
@@ -205,7 +220,7 @@ export function PaperEffect({
       ref={mesh}
       args={[geometry, material, n]}
       frustumCulled={false}
-      castShadow={kind === "confetti"}
+      castShadow={kind !== "rain"}
       receiveShadow={kind !== "rain"}
     />
   );
