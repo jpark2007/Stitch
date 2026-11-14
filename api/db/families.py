@@ -14,6 +14,7 @@ membership, which is why `find_active_invite` is keyed by the code alone.
 from __future__ import annotations
 
 import secrets
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -98,19 +99,34 @@ def create_family(
     creator_user_id: str,
     family_id: str | None = None,
     now: datetime | None = None,
+    members: Sequence[schemas.Member] = (),
 ) -> schemas.Family:
     """Create a family; the creator becomes its admin.
 
-    ValueError on a blank name, and on an explicit `family_id` that is already taken.
+    `members` are written in the same insert, after the creator, so a family never exists
+    without them (a seed that is interrupted cannot leave a half-joined family). A member
+    without `joined_at` joins at `now`. ValueError on a blank name, on an explicit
+    `family_id` that is already taken, on a bad role, and on a member listed twice (or the
+    creator listed again).
     """
     if not isinstance(name, str) or not name.strip():
         raise ValueError("family name must not be blank")
     if not creator_user_id:
         raise ValueError("creator_user_id is required")
+    created = _now(now)
+    member_docs = [{"userId": creator_user_id, "role": "admin", "joinedAt": created}]
+    for member in members:
+        _check_role(member.role)
+        if not member.user_id:
+            raise ValueError("member user_id is required")
+        if any(m["userId"] == member.user_id for m in member_docs):
+            raise ValueError(f"member listed twice: {member.user_id}")
+        joined = _aware(member.joined_at) if member.joined_at is not None else created
+        member_docs.append({"userId": member.user_id, "role": member.role, "joinedAt": joined})
     doc = {
         "_id": family_id or str(ObjectId()),
         "name": name.strip(),
-        "members": [{"userId": creator_user_id, "role": "admin", "joinedAt": _now(now)}],
+        "members": member_docs,
         "invites": [],
     }
     try:

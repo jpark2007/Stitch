@@ -253,12 +253,16 @@ def _tokens(text: str | None) -> list[str]:
     """Word tokens in any script (Hangul, accented Latin, ...), stopwords dropped, stemmed.
 
     Scripts written without spaces (Chinese, Japanese) come out as one token per run, so
-    they match on whole names only.
+    they match on whole names only. Text with no word at all, such as a prop named only
+    by an emoji, falls back to its pictographic symbols, one token each; without that it
+    would have no tokens and could never be found, even by its exact name. Symbols next to
+    words are ignored, so "<trumpet emoji> trumpet" still matches "trumpet" exactly.
     """
     if not text:
         return []
     text = unicodedata.normalize("NFKC", text).casefold().replace("'", "").replace("\u2019", "")
-    return [_stem(t) for t in _WORD.findall(text) if t not in _STOPWORDS]
+    words = [_stem(t) for t in _WORD.findall(text) if t not in _STOPWORDS]
+    return words or [ch for ch in text if unicodedata.category(ch) == "So"]
 
 
 def _keyword_score(query: str, name: str, description: str | None) -> float:

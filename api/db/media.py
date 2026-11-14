@@ -29,6 +29,7 @@ from bson.errors import InvalidId
 from gridfs.errors import CorruptGridFile, NoFile
 from PIL import Image
 from pymongo.database import Database
+from pymongo.errors import DuplicateKeyError
 
 MediaKind = Literal["photo", "cutout", "audio", "frame", "other"]
 MEDIA_KINDS: frozenset[str] = frozenset(get_args(MediaKind))
@@ -123,8 +124,13 @@ def put_media(
     content_type: str,
     filename: str | None = None,
     kind: MediaKind = "photo",
+    media_id: str | None = None,
 ) -> str:
     """Store bytes for a family and return the new bare media id.
+
+    `media_id` (a bare ObjectId string or 'media/<id>') stores the file under that id
+    instead of a fresh one, so a seed can write the same ids on every run; ValueError when
+    it is not a valid ObjectId or a file with that id already exists (in any family).
 
     Raises ValueError when data is empty or larger than MAX_BYTES, when family_id or
     content_type is empty, or when kind is not a MediaKind. TypeError when data is not bytes.
@@ -143,21 +149,36 @@ def put_media(
     if kind not in MEDIA_KINDS:
         raise ValueError(f"unknown media kind: {kind!r}")
 
+    fixed: ObjectId | None = None
+    if media_id is not None:
+        fixed = _oid(media_id)
+        if fixed is None:
+            raise ValueError(f"media_id is not a valid id: {media_id!r}")
+        collection = INLINE if _is_mock(db) else FILES
+        if db[collection].count_documents({"_id": fixed}, limit=1):
+            raise ValueError(f"media id already exists: {fixed}")
+
     metadata = _metadata(family_id, kind, content_type)
     if _is_mock(db):
-        oid = ObjectId()
-        db[INLINE].insert_one(
-            {
-                "_id": oid,
-                "filename": filename,
-                "length": len(data),
-                "uploadDate": datetime.now(UTC),
-                "metadata": metadata,
-                "data": data,
-            }
-        )
+        oid = fixed or ObjectId()
+        try:
+            db[INLINE].insert_one(
+                {
+                    "_id": oid,
+                    "filename": filename,
+                    "length": len(data),
+                    "uploadDate": datetime.now(UTC),
+                    "metadata": metadata,
+                    "data": data,
+                }
+            )
+        except DuplicateKeyError as exc:
+            raise ValueError(f"media id already exists: {oid}") from exc
         return str(oid)
 
+    if fixed is not None:
+        _bucket(db).upload_from_stream_with_id(fixed, filename or "", data, metadata=metadata)
+        return str(fixed)
     oid = _bucket(db).upload_from_stream(filename or "", data, metadata=metadata)
     return str(oid)
 

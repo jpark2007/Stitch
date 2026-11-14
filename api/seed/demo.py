@@ -31,6 +31,10 @@ Run it against MONGODB_URI / MONGODB_DB from api/:
     uv run python -m seed.demo            # seed once; a no-op when the family exists
     uv run python -m seed.demo --reset    # delete the demo data and rebuild it
 
+Exit codes: 0 done, 1 bad demo data (nothing written), 2 bad arguments, 3 MongoDB
+unreachable or failing; errors are one message on stderr, never a traceback. Every run writes the same ids
+(people, memories, props, sets, photos, questions), so two seeded databases match.
+
 Every read and write, including the reset, goes through the db/ functions; the reset is
 scoped to the demo family id, the demo user ids and the demo emails, so non-demo data is
 never touched.
@@ -491,23 +495,59 @@ def _placeholder_png(title: str, sky: str, ground: str, accent: str) -> bytes:
     return out.getvalue()
 
 
+def _demo_object_id(kind: int, n: int) -> str:
+    """A fixed, valid ObjectId string for seeded data: '5eed' + kind (4 hex) + n (16 hex).
+
+    ObjectId-shaped so code that sorts or parses ids as ObjectIds keeps working, and
+    increasing in n, so seeded questions sort in the order they are listed.
+    """
+    return f"5eed{kind:04x}{n:016x}"
+
+
+# Fixed ids, so every seeded database (every teammate's STITCH_FAKE_DB run, every reset)
+# holds the same documents and the demo matches the one rehearsed.
+DEMO_PHOTO_IDS: tuple[str, ...] = (_demo_object_id(1, 1), _demo_object_id(1, 2))
+DEMO_QUESTION_IDS: tuple[str, ...] = tuple(_demo_object_id(2, n) for n in range(1, len(DEMO_QUESTIONS) + 1))
+
+
 def _put_demo_photos(db: Database) -> list[str]:
     photos = [
         ("green_sedan_1972.png", _placeholder_png("1972", "#bcd4e0", "#c9b48a", "#5e8c4a")),
         ("peach_stand_1972.png", _placeholder_png("peaches", "#f2d8b5", "#9fb27a", "#d4826a")),
     ]
     return [
-        media_db.put_media(db, DEMO_FAMILY_ID, data, content_type="image/png", filename=name, kind="photo")
-        for name, data in photos
+        media_db.put_media(db, DEMO_FAMILY_ID, data, content_type="image/png", filename=name, kind="photo",
+                           media_id=media_id)
+        for (name, data), media_id in zip(photos, DEMO_PHOTO_IDS, strict=True)
     ]
 
 
 # ----------------------------------------------------------------------------- reset
 
 def _purge(db: Database) -> None:
-    """Delete everything that belongs to the demo, and nothing else."""
-    users_db.delete_users(db, emails=list(DEMO_EMAILS), user_ids=list(DEMO_USER_IDS))
+    """Delete everything that belongs to the demo, and nothing else.
+
+    The family goes first (purge_family deletes the family document before its data), and
+    the accounts last: a purge that is interrupted part way always leaves the family
+    document missing, so the next seed_demo sees an incomplete demo and rebuilds it. The
+    other order could leave the family with no accounts, which the next run would accept.
+    """
     families_db.purge_family(db, DEMO_FAMILY_ID)  # the family, its data and its media
+    users_db.delete_users(db, emails=list(DEMO_EMAILS), user_ids=list(DEMO_USER_IDS))
+
+
+def demo_is_complete(db: Database) -> bool:
+    """True when the demo family exists and every demo account can sign in to it.
+
+    The family document is written last in one insert with every member, so it marks a
+    finished seed; the accounts are checked too, so a database where they were deleted
+    (by hand, or by an older interrupted reset) is rebuilt instead of left unusable.
+    """
+    family = families_db.get_family(db, DEMO_FAMILY_ID)
+    if family is None:
+        return False
+    found = {u.id: u.email for u in users_db.get_users(db, list(DEMO_USER_IDS))}
+    return all(found.get(a.user_id) == a.email for a in DEMO_ACCOUNTS)
 
 
 # ----------------------------------------------------------------------------- build
@@ -594,28 +634,36 @@ def _build(db: Database, data: DemoData) -> None:
             set_ids=scene.set_ids,
         )
 
-    for person_id, text, memory_id in DEMO_QUESTIONS:
-        memories_db.create_question(db, DEMO_FAMILY_ID, person_id=person_id, text=text, memory_id=memory_id)
+    for offset, ((person_id, text, memory_id), question_id) in enumerate(
+        zip(DEMO_QUESTIONS, DEMO_QUESTION_IDS, strict=True)
+    ):
+        memories_db.create_question(db, DEMO_FAMILY_ID, person_id=person_id, text=text, memory_id=memory_id,
+                                    question_id=question_id, now=base + timedelta(seconds=offset))
 
-    # The family document goes last: its existence marks a complete seed.
-    families_db.create_family(db, name=DEMO_FAMILY_NAME, creator_user_id=_ADMIN_USER_ID,
-                              family_id=DEMO_FAMILY_ID, now=base)
-    for offset, account in enumerate(DEMO_ACCOUNTS[1:], start=1):
-        families_db.add_member(db, DEMO_FAMILY_ID, account.user_id, account.role,
-                               now=base + timedelta(seconds=offset))
+    # The family document goes last, with every member in the same insert: its existence
+    # marks a complete seed, so an interrupted run never leaves a half-joined family.
+    families_db.create_family(
+        db, name=DEMO_FAMILY_NAME, creator_user_id=_ADMIN_USER_ID, family_id=DEMO_FAMILY_ID, now=base,
+        members=[
+            schemas.Member(user_id=account.user_id, role=account.role, joined_at=base + timedelta(seconds=offset))
+            for offset, account in enumerate(DEMO_ACCOUNTS[1:], start=1)
+        ],
+    )
 
 
 def seed_demo(db: Database, *, reset: bool = False) -> DemoSeed:
     """Seed the demo family. Idempotent.
 
-    When the family already exists and reset is False, nothing is written and the result
-    has created=False. Otherwise every screenplay is compiled first (a DemoDataError or
-    DemoCompileError is raised before anything is deleted or written), then any leftover
-    demo data (from reset, or from an interrupted earlier run, since the family document is
-    written last) is deleted and everything is rebuilt. Data outside the demo family, demo
-    users and demo media is never touched.
+    When the demo is complete (demo_is_complete: the family and every demo account exist)
+    and reset is False, nothing is written and the result has created=False. Otherwise
+    every screenplay is compiled first (a DemoDataError or DemoCompileError is raised
+    before anything is deleted or written), then any leftover demo data (from reset, or
+    from an interrupted earlier run, since the family document is written last) is deleted
+    and everything is rebuilt, with the same ids every time. Data outside the demo family,
+    demo users and demo media is never touched; the demo users' other families keep them,
+    since the accounts come back under the same ids (and their sessions stay valid).
     """
-    if not reset and families_db.get_family(db, DEMO_FAMILY_ID) is not None:
+    if not reset and demo_is_complete(db):
         return _demo_seed(created=False)
     data = load_demo_data()
     _purge(db)
@@ -625,7 +673,20 @@ def seed_demo(db: Database, *, reset: bool = False) -> DemoSeed:
 
 # ------------------------------------------------------------------------------- CLI
 
+EXIT_OK = 0
+EXIT_BAD_DATA = 1  # a file in seed/demo_family/ is malformed or does not compile
+EXIT_NO_DATABASE = 3  # MongoDB is unreachable or refused the writes
+# argparse exits with 2 on a bad command line.
+
+
 def main(argv: list[str] | None = None) -> int:
+    """`python -m seed.demo [--reset]`. Exit codes: 0 seeded or already present, 1 bad demo
+    data (nothing was written), 2 bad arguments, 3 MongoDB unreachable or failing. Errors go
+    to stderr as one readable message, never a traceback."""
+    import sys
+
+    from pymongo.errors import PyMongoError
+
     from db import client
 
     parser = argparse.ArgumentParser(prog="python -m seed.demo", description=__doc__.splitlines()[0])
@@ -633,8 +694,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     db = client.get_db()
-    client.ensure_indexes(db)
-    result = seed_demo(db, reset=args.reset)
+    try:
+        client.ensure_indexes(db)
+        result = seed_demo(db, reset=args.reset)
+    except (DemoDataError, DemoCompileError) as exc:
+        print(f"Demo seed stopped before writing anything: {exc}", file=sys.stderr)
+        return EXIT_BAD_DATA
+    except PyMongoError as exc:
+        print(
+            f"Demo seed failed: MongoDB error on database {db.name!r} ({type(exc).__name__}: {exc}). "
+            "Check MONGODB_URI and MONGODB_DB, or run the API with STITCH_FAKE_DB=1 to use the "
+            "in-memory demo database instead.",
+            file=sys.stderr,
+        )
+        return EXIT_NO_DATABASE
 
     status = "seeded" if result.created else "already present (use --reset to rebuild)"
     print(f"Demo family {result.family_id!r} ({DEMO_FAMILY_NAME}) {status} in database {db.name!r}.")
