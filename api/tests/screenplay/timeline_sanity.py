@@ -9,10 +9,11 @@ stage plays. Interpolation follows shared/CONTRACTS.md: hold the first value bef
 first key and the last after its last; numbers and lists are linear between keys; strings step.
 Two keys at the same time are a step: the later one wins from that time on.
 
-``sanity_problems(timeline)`` runs every function in ``CHECKS`` and returns all their problems,
-each a string that starts with the check's name. A later wave adds checks (foot planting, props
-across sets) by writing another ``check_<name>(timeline) -> list[str]`` and appending it to
-``CHECKS``; keep each one small and timeline-only.
+``sanity_problems(timeline)`` runs every function in ``CHECKS``, then ``LATER_CHECKS``, and
+returns all their problems, each a string that starts with the check's name. A later wave adds
+checks by writing another ``check_<name>(timeline) -> list[str]`` and appending it to
+``LATER_CHECKS`` (``CHECKS`` is pinned at five entries by test_story_scenarios); keep each one
+small and timeline-only.
 
 Checks:
 
@@ -31,6 +32,10 @@ Checks:
   ``(dx, dz)`` over the same interval, within 1e-3.
 - ``finite``: no NaN or inf anywhere, ``root.facing`` is always 1 or -1, and every
   ``root.position`` and prop ``position`` value is three numbers.
+- ``props_on_set`` (in LATER_CHECKS): at each shot's start, a prop on the ground on stage
+  (``|x| <= 1``; no parent track is the ground, no position track is [0, 0, 0]) has a parent or
+  position key in that shot (a key at a shot's end belongs to the next shot), or was placed in an earlier shot of the same run of shots on that
+  set. Otherwise it shows coordinates from another set, or a first key that comes later.
 """
 
 from __future__ import annotations
@@ -47,12 +52,15 @@ from typing import Any
 from screenplay.schema import Timeline
 
 __all__ = [
-    "CHECKS", "SEAT_TOL", "check_finite", "check_hands", "check_parent_position", "check_seated",
-    "check_times", "sanity_problems", "value_at",
+    "CHECKS", "LATER_CHECKS", "SEAT_TOL", "STAGE_EDGE", "check_finite", "check_hands", "check_parent_position",
+    "check_props_on_set", "check_seated", "check_times", "sanity_problems", "value_at",
 ]
 
 TIME_TOL = 1e-6
 SEAT_TOL = 1e-3
+# The stage's edge, |x| (shared/CONTRACTS.md: -1 to +1 on stage, offstage beyond); restated
+# here, equal to screenplay.effects.STAGE_EDGE, so the checks stay timeline-only.
+STAGE_EDGE = 1.0
 
 _POSES = json.loads((Path(__file__).resolve().parents[3] / "shared" / "rig" / "poses.json").read_text())
 LEG_BONES = ("leg_l.upper", "leg_l.lower", "leg_r.upper", "leg_r.lower")
@@ -276,9 +284,62 @@ def check_finite(tl: Timeline) -> list[str]:
     return out
 
 
+def _ground_x(parent: Keys, position: Keys, t: float) -> float | None:
+    """The prop's world x at ``t`` (same-time steps applied) when its parent is the ground, else
+    None. No parent track is the ground and no position track is [0, 0, 0] (CONTRACTS.md
+    Clarification 8). None too for a malformed position (check_finite reports that)."""
+    p = value_at(parent, t)
+    if p not in (None, "ground"):
+        return None
+    pos = value_at(position, t) if position else [0.0, 0.0, 0.0]
+    if not isinstance(pos, list) or not pos or isinstance(pos[0], bool) or not isinstance(pos[0], (int, float)):
+        return None
+    return float(pos[0])
+
+
+def check_props_on_set(tl: Timeline) -> list[str]:
+    """(f) No prop shows on a set before it is placed there or after it was left behind.
+
+    At each shot's start, a prop on the ground on stage (``|x| <= STAGE_EDGE``) must have a
+    ``parent`` or ``position`` key in ``[shot.start, shot.end)`` (the last shot: ``[start, end]``;
+    a key at a shot's end is the next shot's start key), or the shot before it must be on
+    the same set and the prop must already have been placed in that run of shots (a key in one
+    of them). Otherwise it is showing coordinates it was given on another set, or that its first
+    key, later on, holds backwards in time. A prop parked at an offstage x is fine."""
+    tracks = _tracks(tl)
+    out: list[str] = []
+    for prop in sorted({tgt for tgt, _ in tracks if tgt.startswith("prop:")}):
+        parent = tracks.get((prop, "parent"), [])
+        position = tracks.get((prop, "position"), [])
+        key_times = [t for t, _ in parent + position]
+        placed_on_this_set = False  # a key in this run of same-set shots so far
+        for i, shot in enumerate(tl.shots):
+            if i == 0 or tl.shots[i - 1].set != shot.set:
+                placed_on_this_set = False
+            # A key exactly at a shot's end is the next shot's start key (shots are contiguous),
+            # so it counts for the next shot only; the last shot's end is its own.
+            last = i == len(tl.shots) - 1
+            keyed = any(shot.start - TIME_TOL <= t and (t <= shot.end + TIME_TOL if last else t < shot.end - TIME_TOL)
+                        for t in key_times)
+            if not keyed and not placed_on_this_set:
+                x = _ground_x(parent, position, shot.start)
+                if x is not None and math.isfinite(x) and abs(x) <= STAGE_EDGE:
+                    out.append(
+                        f"props_on_set: shot {shot.id} ({shot.set}) at {_t(shot.start)}: {prop} is on the ground "
+                        f"at x={round(x, 3) + 0.0:g} but has no parent or position key in this shot, nor in an "
+                        f"earlier shot of this set"
+                    )
+            placed_on_this_set = placed_on_this_set or keyed
+    return out
+
+
 CHECKS: list[Check] = [check_hands, check_parent_position, check_times, check_seated, check_finite]
+# Checks added after CHECKS was pinned at five entries (test_story_scenarios asserts
+# len(CHECKS) == 5, in a file another task owns). sanity_problems runs them after CHECKS; move
+# each into CHECKS once that assertion is updated.
+LATER_CHECKS: list[Check] = [check_props_on_set]
 
 
 def sanity_problems(timeline: Timeline) -> list[str]:
-    """Every problem every check in CHECKS finds; empty when the timeline is sane."""
-    return [p for check in CHECKS for p in check(timeline)]
+    """Every problem every check in CHECKS and LATER_CHECKS finds; empty when the timeline is sane."""
+    return [p for check in (*CHECKS, *LATER_CHECKS) for p in check(timeline)]
