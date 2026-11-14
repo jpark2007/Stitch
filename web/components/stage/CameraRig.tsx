@@ -13,7 +13,7 @@
  *     whenever it changes;
  *   - a function of stage time: followed exactly (deterministic frames).
  * Poses are framed for a landscape screen (REF_ASPECT); on narrower screens
- * the rig widens the lens (fitFov) and looks at a pose's `narrowTarget`.
+ * the rig widens the lens (fitLens) and looks at a pose's `narrowTarget`.
  * With `orbit`, dragging swings the camera a little around its target (soft
  * limits, rubber-banded) and it eases back to the pose on release.
  */
@@ -49,22 +49,28 @@ export const DEFAULT_STAGE_SIZE: StageSize = [2.4, 3.2];
 export const REF_ASPECT = 1.6;
 /** The widest vertical FOV a narrow screen may widen a pose to, degrees. */
 const MAX_FOV = 65;
+/** How much further back a pose may step when even MAX_FOV cannot hold its width. */
+const MAX_PUSH = 1.2;
 /** At or below this aspect a pose looks fully at its `narrowTarget`. */
 const NARROW_ASPECT = 0.75;
 
 const DEG = Math.PI / 180;
 
 /**
- * The vertical FOV that shows a landscape-framed pose's horizontal extent on a
- * screen of `aspect` (width / height): unchanged at REF_ASPECT and wider,
- * widened on narrower screens, capped at MAX_FOV. `width` < 1 asks to keep only
- * that share of the landscape width in view.
+ * The lens that shows a landscape-framed pose's horizontal extent on a screen
+ * of `aspect` (width / height): unchanged at REF_ASPECT and wider; on narrower
+ * screens the vertical FOV widens up to MAX_FOV, then the camera steps back
+ * along its line of sight (`push`, up to MAX_PUSH). `width` < 1 asks to keep
+ * only that share of the landscape width in view.
  */
-export function fitFov(fov: number, aspect: number, width = 1): number {
+export function fitLens(fov: number, aspect: number, width = 1): { fov: number; push: number } {
   const ref = REF_ASPECT * width;
-  if (!(aspect > 0) || aspect >= ref) return fov;
-  const wide = (2 * Math.atan((Math.tan((fov * DEG) / 2) * ref) / aspect)) / DEG;
-  return Math.min(Math.max(fov, MAX_FOV), wide);
+  if (!(aspect > 0) || aspect >= ref) return { fov, push: 1 };
+  const halfTan = (Math.tan((fov * DEG) / 2) * ref) / aspect;
+  const cap = Math.max(fov, MAX_FOV);
+  const fit = (2 * Math.atan(halfTan)) / DEG;
+  if (fit <= cap) return { fov: fit, push: 1 };
+  return { fov: cap, push: Math.min(MAX_PUSH, halfTan / Math.tan((cap * DEG) / 2)) };
 }
 
 /** How far a screen of `aspect` is towards portrait: 0 at REF_ASPECT, 1 at NARROW_ASPECT. */
@@ -294,12 +300,15 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
     const { off, right, up, target } = tmp.current;
     const camera = state.camera;
     // Fit the pose to the screen: on narrow screens slide the camera over to
-    // the pose's narrow target (keeping its angle) and widen the lens.
+    // the pose's narrow target (keeping its angle), widen the lens, and if
+    // that is not enough step back a little.
     const aspect = state.size.width / Math.max(1, state.size.height);
-    const k = p.narrowTarget ? narrowness(aspect) : 0;
-    const look = k > 0 && p.narrowTarget ? mix(p.target, p.narrowTarget, k) : p.target;
+    const narrow = narrowness(aspect);
+    const look = narrow > 0 && p.narrowTarget ? mix(p.target, p.narrowTarget, narrow) : p.target;
     target.set(look[0], look[1], look[2]);
+    const lens = fitLens(p.fov ?? 30, aspect, lerp(1, p.narrowWidth ?? 1, narrow));
     off.set(p.position[0] - p.target[0], p.position[1] - p.target[1], p.position[2] - p.target[2]);
+    off.multiplyScalar(lens.push);
     if (yw !== 0 || pt !== 0) {
       off.applyAxisAngle(up, yw);
       right.crossVectors(up, off).normalize();
@@ -312,9 +321,8 @@ export function CameraRig({ pose, smoothTime = 1.1, orbit = true, maxYaw = 0.42,
     camera.lookAt(target);
     // What the camera looks at is what stays sharp (see DepthOfField).
     camera.userData.focus = off.length();
-    const fov = fitFov(p.fov ?? 30, aspect, lerp(1, p.narrowWidth ?? 1, narrowness(aspect)));
-    if (camera instanceof PerspectiveCamera && Math.abs(camera.fov - fov) > 1e-3) {
-      camera.fov = fov;
+    if (camera instanceof PerspectiveCamera && Math.abs(camera.fov - lens.fov) > 1e-3) {
+      camera.fov = lens.fov;
       camera.updateProjectionMatrix();
     }
   });
