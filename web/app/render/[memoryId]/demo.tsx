@@ -14,7 +14,7 @@
  */
 
 import { useMemo } from "react";
-import { cameraCues, stagePoses, type CameraCue, type CameraPath } from "@/components/stage/CameraRig";
+import { cameraPath, closeUp, stagePoses, type CameraPath } from "@/components/stage/CameraRig";
 import { getCutout, type CutoutSpec } from "@/components/stage/cutout";
 import { PaperEffect, type EffectKind, type Emitter, type PaperEffectProps } from "@/components/stage/Effects";
 import { FloatingLayer, PagePatch, SetPiece, usePieceEmitter, type PiecePlacement } from "@/components/stage/SetPiece";
@@ -32,7 +32,7 @@ import {
   steps,
   trees,
 } from "@/components/stage/art";
-import { linear, type Vec3 } from "@/components/stage/timeline";
+import { easeInOutSine, linear, type Vec3 } from "@/components/stage/timeline";
 
 export const DEMO_OPEN_AT = 0.5;
 
@@ -70,16 +70,24 @@ export const DEMO_CUTOUTS: CutoutSpec[] = [skyCard, church, cottage, trees, bush
 
 const poses = stagePoses();
 
-/** Wide while the set rises, then a slow dolly in towards the church door,
- *  written as screenplay camera cues. */
-export const DEMO_CUES: CameraCue[] = [
-  { t: 0, move: "wide", dur: 0 },
-  { t: 2.6, move: "dolly_to", target: [0.0, 0.48, -0.55], distance: 3.2, height: 0.86, dur: 6 },
-  // Never quite stop: a slow drift keeps the held shot alive.
-  { t: 8.6, move: "dolly_to", target: [-0.04, 0.48, -0.55], distance: 3.0, height: 0.8, dur: 11.4, ease: linear },
-];
+/** The side the wide shot looks from, kept for the whole move. */
+const DEMO_YAW = Math.atan2(
+  poses.wide.position[0] - poses.wide.target[0],
+  poses.wide.position[2] - poses.wide.target[2],
+);
 
-export const demoCamera: CameraPath = cameraCues(DEMO_CUES, poses.wide);
+/**
+ * Wide while the set rises, then a slow dolly in towards the church door that
+ * never quite stops: a linear drift keeps the held shot alive. Written as
+ * plain camera stops; a real telling's camera comes from the compiled
+ * timeline's tracks, not from here.
+ */
+export const demoCamera: CameraPath = cameraPath([
+  { at: 0, pose: poses.wide },
+  { at: 2.6, pose: poses.wide },
+  { at: 8.6, pose: closeUp([0.0, 0.48, -0.55], { distance: 3.2, height: 0.86, yaw: DEMO_YAW }), ease: easeInOutSine },
+  { at: 20, pose: closeUp([-0.04, 0.48, -0.55], { distance: 3.0, height: 0.8, yaw: DEMO_YAW }), ease: linear },
+]);
 
 /** Confetti thrown over the church door once the set has risen. */
 const CONFETTI_AT = 4.6;
