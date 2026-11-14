@@ -68,6 +68,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MIN_MEMORY_YEAR = 1850;
 const MIN_BORN_YEAR = 1800;
 const SHORT_TELLING_WORDS = 25;
+/** Largest photo POST /families/{fid}/media takes (api/db/media.py MAX_BYTES). */
+export const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
+/** What POST /families/{fid}/media takes; anything else is a 415. */
+const UPLOAD_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
 
 export const FOLLOW_UP_QUESTION = "Where were you when it happened, and who else was there?";
 export const NOT_WAITING = "The studio isn't waiting for that.";
@@ -276,6 +280,11 @@ function placeholderSvg(label: string): string {
     `<text x="160" y="128" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="20" fill="#7a6857">${escapeXml(label)}</text>` +
     "</svg>"
   );
+}
+
+/** Media ids may come as "media/<id>" (the stored art form) or bare. */
+function bareId(mediaId: string): string {
+  return mediaId.replace(/^media\//, "");
 }
 
 function svgDataUrl(svg: string): string {
@@ -1572,8 +1581,9 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     return json(200, out);
   });
 
-  route("GET", "/families/{fid}/media/{id}", (s, _req, [fid, id]) => {
+  route("GET", "/families/{fid}/media/{id}", (s, _req, [fid, raw]) => {
     requireMember(s, fid);
+    const id = bareId(raw);
     const entry = media.get(id);
     if (entry && entry.familyId === fid) {
       return new Response(entry.blob, {
@@ -1609,7 +1619,8 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       body.name === undefined || body.name === null
         ? null
         : requiredString(body, "name", ["body"], errors, { min: 1, blankMsg: "Give the prop a name." });
-    const photoId = optionalString(body, "photoId", ["body"], errors);
+    const rawPhotoId = optionalString(body, "photoId", ["body"], errors);
+    const photoId = rawPhotoId ? bareId(rawPhotoId) : null;
     if (photoId && media.get(photoId)?.familyId !== fid) {
       errors.push({ loc: ["body", "photoId"], msg: "We couldn't find that photo.", type: "value_error" });
     }
@@ -1621,6 +1632,34 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
     }
     save();
     return json(200, prop);
+  });
+
+  /** Keep an uploaded photo; mediaUrl and GET /families/{fid}/media/{id} serve it. */
+  function storeMedia(fid: string, blob: Blob): string {
+    const id = newId("media");
+    let url: string | null = null;
+    try {
+      if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") url = URL.createObjectURL(blob);
+    } catch {
+      url = null;
+    }
+    media.set(id, { familyId: fid, blob, url });
+    return id;
+  }
+
+  // Mirrors api/routes/props.py upload_media: one multipart field `file`.
+  route("POST", "/families/{fid}/media", (s, req, [fid]) => {
+    requireMember(s, fid);
+    const file =
+      typeof FormData !== "undefined" && req.body instanceof FormData ? req.body.get("file") : null;
+    if (file === null || typeof file === "string") {
+      failFields([{ loc: ["body", "file"], msg: "Field required", type: "missing" }]);
+    }
+    const type = (file.type || "").split(";", 1)[0].trim().toLowerCase();
+    if (!UPLOAD_IMAGE_TYPES.includes(type)) fail(415, "Upload a JPEG, PNG, WebP, GIF or HEIC image");
+    if (file.size > MAX_MEDIA_BYTES) fail(413, "Photos must be 20 MB or smaller");
+    if (file.size === 0) fail(400, "The file is empty");
+    return json(201, { id: storeMedia(fid, file) });
   });
 
   route("POST", "/families/{fid}/memories", (s, req, [fid]) => {
@@ -1689,18 +1728,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
       fail(404, "We couldn't find that memory.");
     }
 
-    const photoIds: string[] = [];
-    for (const photo of photos) {
-      const id = newId("media");
-      let url: string | null = null;
-      try {
-        if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") url = URL.createObjectURL(photo);
-      } catch {
-        url = null;
-      }
-      media.set(id, { familyId: fid, blob: photo, url });
-      photoIds.push(id);
-    }
+    const photoIds = photos.map((photo) => storeMedia(fid, photo));
 
     const run: MockRun = {
       id: newId("run"),
@@ -1793,7 +1821,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
           return;
         }
         if (edit.action === "replace_photo") {
-          if (typeof edit.photoId !== "string" || media.get(edit.photoId)?.familyId !== fid) {
+          if (typeof edit.photoId !== "string" || media.get(bareId(edit.photoId))?.familyId !== fid) {
             errors.push({ loc: [...loc, "photoId"], msg: "We couldn't find that photo.", type: "value_error" });
             return;
           }
@@ -1807,7 +1835,7 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
         } else if (edit.action === "rename") {
           run.chips = run.chips.map((c) => (c.id === edit.id ? { ...c, name: (edit.name ?? c.name).trim() } : c));
         } else if (edit.action === "replace_photo" && edit.photoId) {
-          run.chipPhotos[edit.id] = edit.photoId;
+          run.chipPhotos[edit.id] = bareId(edit.photoId);
         }
       }
     } else {
@@ -1931,7 +1959,8 @@ export function createMockBackend(opts: MockBackendOptions): MockBackend {
   return {
     fetch: (input: RequestInfo | URL, init?: RequestInit) => handle(input, init),
 
-    mediaUrl(fid: string, mediaId: string): string {
+    mediaUrl(fid: string, raw: string): string {
+      const mediaId = bareId(raw);
       const entry = media.get(mediaId);
       if (entry && entry.familyId === fid && entry.url) return entry.url;
       return svgDataUrl(placeholderSvg(mediaLabel(mediaId)));
