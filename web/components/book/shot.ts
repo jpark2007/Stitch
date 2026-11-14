@@ -40,9 +40,17 @@ export class StageShot implements ShotPose {
   readonly keep = new Vector3();
   hasKeep = false;
 
-  /** The stage wants (true) or gives up (false) its shot. */
-  offer(on: boolean) {
-    this.want = on ? 1 : 0;
+  /**
+   * The stage wants (true) or gives up (false) its shot. Returns whether that
+   * changed: the book's camera reads `want` before the stages' default-priority
+   * work in a frame, so on a canvas that draws on demand the caller must ask
+   * for one more frame when it does, or the camera never hears of it.
+   */
+  offer(on: boolean): boolean {
+    const want = on ? 1 : 0;
+    if (want === this.want) return false;
+    this.want = want;
+    return true;
   }
 
   /** The point the shot must keep in frame (world). */

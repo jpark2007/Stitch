@@ -101,3 +101,18 @@ describe("stepShotWeight", () => {
     assert.equal(s.stepShotWeight(0.3, 0, 0, 2, 1), 0);
   });
 });
+
+describe("StageShot.offer", () => {
+  // The bug: the book draws on demand and its camera reads `want` before the
+  // stage writes it, so a telling's end (offer(false)) with nothing else
+  // drawing left the camera leaned in until the pointer moved.
+  it("says when the offer changes, so the stage can ask for the frame the camera reads it on", () => {
+    const shot = s.createStageShot();
+    assert.equal(shot.offer(false), false, "nothing offered yet");
+    assert.equal(shot.offer(true), true);
+    assert.equal(shot.want, 1);
+    assert.equal(shot.offer(true), false, "held: no new frame needed");
+    assert.equal(shot.offer(false), true, "given up: the camera must hear of it");
+    assert.equal(shot.want, 0);
+  });
+});

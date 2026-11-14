@@ -131,9 +131,9 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
   useEffect(
     () => () => {
       controller.pause();
-      shot.offer(false);
+      if (shot.offer(false)) invalidate();
     },
-    [controller, shot],
+    [controller, shot, invalidate],
   );
 
   useFrame((state) => {
@@ -149,7 +149,10 @@ export function MomentStage({ controller, scene, spread, fonts, reveal, view, sh
     else if (!g.endedAt) g.endedAt = now;
     const holding = ended && now - g.endedAt < END_HOLD_MS;
     if (holding) state.invalidate();
-    shot.offer(!g.armed && r >= OPEN_TO_PLAY && (!ended || holding));
+    // The camera read the offer earlier this frame (CAMERA_PRIORITY): a
+    // change needs one more frame to be seen, or the camera, drawn on
+    // demand, stays leaned in once the hold ends.
+    if (shot.offer(!g.armed && r >= OPEN_TO_PLAY && (!ended || holding))) state.invalidate();
     if (r < OPEN_TO_REARM) {
       if (!g.armed) {
         // Folded away: next time the page opens, the set rises from the start.
