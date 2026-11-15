@@ -35,7 +35,7 @@ Put the variables in `api/.env`. The API (`main.load_env_files`) reads `api/.env
 | `MONGODB_URI` | persistence | `mongodb://localhost:27017` for family data | Runs, checkpoints and `/memories/` notes are kept in memory and lost on restart |
 | `MONGODB_DB` | persistence | `stitch` | |
 | `STITCH_FAKE_DB` | persistence | off | On (`1`, `true`, `yes`): everything is in an in-memory database seeded with the demo family, and `MONGODB_URI` is ignored |
-| `IMAGE_PROVIDER` | art | Higgsfield when `HIGGSFIELD_API_KEY` is set, else Cloudflare when `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are both set, else OpenAI when `IMAGE_API_KEY` is set | `higgsfield`, `cloudflare` or `openai`; an unknown value warns and uses the default rule. A chosen provider whose keys are missing gives placeholder art, never another provider |
+| `IMAGE_PROVIDER` | art | Higgsfield when `HIGGSFIELD_API_KEY` is set, else Cloudflare when `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are both set, else OpenAI when `IMAGE_API_KEY` is set | `higgsfield`, `cloudflare`, `openai` or `claude`; an unknown value warns and uses the default rule. `claude` is never picked by the default rule (see [Claude-drawn SVG art](#claude-drawn-svg-art)). A chosen provider whose keys are missing gives placeholder art, never another provider |
 | `HIGGSFIELD_API_KEY` | art | none | Placeholder art (unless `IMAGE_API_KEY` is set). Key ID from console.higgsfield.ai, or `id:secret` |
 | `HIGGSFIELD_API_SECRET` | art | none | Needed unless the key is `id:secret`; missing: placeholder art and an error |
 | `HIGGSFIELD_API_URL` | art | `https://api.higgsfield.ai` | Must be https (plain http only for localhost); otherwise placeholder art and an error |
@@ -50,6 +50,8 @@ Put the variables in `api/.env`. The API (`main.load_env_files`) reads `api/.env
 | `IMAGE_API_KEY` | art | none | Placeholder art |
 | `IMAGE_API_URL` | art | `https://api.openai.com/v1` | |
 | `IMAGE_MODEL` | art | `gpt-image-1` | |
+| `STITCH_ART_MODEL` | art | the studio's default model (`claude-opus-5-5`) | Only with `IMAGE_PROVIDER=claude`: the model that draws the SVG |
+| `STITCH_ART_EFFORT` | art | `medium` | Only with `IMAGE_PROVIDER=claude`: `low`, `medium`, `high`, `xhigh` or `max`; another value warns and uses `medium` |
 | `STITCH_ART_LAYERS` | art | `on` | `off`: only props, parts and states are generated; every set layer is a flat placeholder color layer (no image call, not counted in `STITCH_MAX_IMAGES_PER_RUN`). Any other value warns and means `on` |
 | `ELEVENLABS_API_KEY` | tts | none | Silent narration with estimated word timings |
 | `ELEVENLABS_MODEL` | tts | `eleven_multilingual_v2` | |
@@ -86,6 +88,16 @@ Cut-out art: none of these models has a background parameter, so the adapter doe
 Bounds: one `generate` takes at most 120 s (each attempt `min(90 s, time left)`); a connection that could not be made, HTTP 408, a capacity 429 or a 5xx is retried at most twice, each wait capped at 8 s and only when it fits the deadline; redirects are never followed; the answer is read to at most 25 MB with `Accept-Encoding: identity` (a gzip answer is inflated with a bounded output, any other encoding refused) and decoded only up to 40 megapixels. `CLOUDFLARE_API_URL` must be https. The token and the account ID never appear in an error, a log line or preflight output.
 
 Not stated in the docs, so unverified: a prompt length limit for the FLUX.2 and Phoenix models (none is given), whether FLUX.2 needs sizes on a multiple of 16 (the adapter always sends one), and the partial-tile billing above.
+
+### Claude-drawn SVG art
+
+`IMAGE_PROVIDER=claude` has Claude draw each prop, part, state and set layer as an SVG illustration in the cut-paper style, which `ClaudeSvgImageModel` (`agent/adapters/claude_svg.py`) sanitizes and renders locally to PNG with resvg (`resvg-py`). It needs no key besides `ANTHROPIC_API_KEY`, and it is opt-in only: the default rule never chooses it, because that key is always set.
+
+- One `messages.create` per image (`STITCH_ART_MODEL`, effort `STITCH_ART_EFFORT`, `max_tokens` 16000) with a system prompt that turns the locked style prompt into SVG terms: layered flat paper pieces with hand-cut edges, a short drop shadow under each layer, a light paper grain, the warm palette, no text and no faces. Reference images (a part's or state's prop) are sent as images.
+- Props, parts, states and the middle and front layers come back with a transparent background, so the cut-out step keeps them as drawn; the back layer is opaque and fills the frame. The image is always the size asked for, never stretched: a transparent one is letterboxed, the back layer is cropped like the other providers.
+- The SVG is sanitized before it is rendered (the subject comes from family stories): at most 400 KB; no DOCTYPE or entity declarations; only drawing elements are kept (no `script`, `foreignObject`, `image`, text, `style` or links); event handlers are removed, and every `href` or `url()` must point inside the same file. A refusal, an answer cut off at `max_tokens` or an SVG with nothing drawable left is placeholder art for that image.
+- Measured on `claude-opus-5-5` at `medium` (2026-11-15): 30 to 84 s and 2,700 to 7,700 output tokens per image (about 2,800 input tokens), so roughly $0.07 to $0.17 an image at $4 / $20 per million tokens.
+- Bounds: 150 s per request and at most one retry (a failed connection or HTTP 408/409/429/5xx, the wait capped at 8 s; never a timeout), so one image waits at most 308 s on Claude.
 
 Not studio variables, but the API reads them too: `JWT_SECRET` (without it sessions end when the API restarts) and `VOYAGE_API_KEY` (without it "ask the family" and prop matching use keyword search). Preflight never prints them either.
 
@@ -127,7 +139,7 @@ All commands run from `api/` unless they say otherwise.
    |---|---|---|
    | model | Anthropic `models.retrieve` for each model id, then one `messages.create` with `max_tokens=1` on the studio model (checks billing and credit) | a fraction of a cent |
    | vision | `models.retrieve` for `STITCH_VISION_MODEL` | free |
-   | art | Higgsfield: `POST /estimate/{HIGGSFIELD_IMAGE_MODEL}` (a price estimate, no generation, no redirects followed); Cloudflare: `GET /accounts/{id}/ai/models/search?search=<model>` (a model listing that proves the token, the account and that the model is offered; no generation, no redirects followed; a model missing from the answer is a warning); OpenAI: `GET /models/{IMAGE_MODEL}` on the image API (no generation) | Higgsfield: no image is generated, but the provider does not document whether an estimate call costs anything; Cloudflare: free (no inference, so no Neurons); OpenAI: free |
+   | art | Higgsfield: `POST /estimate/{HIGGSFIELD_IMAGE_MODEL}` (a price estimate, no generation, no redirects followed); Cloudflare: `GET /accounts/{id}/ai/models/search?search=<model>` (a model listing that proves the token, the account and that the model is offered; no generation, no redirects followed; a model missing from the answer is a warning); OpenAI: `GET /models/{IMAGE_MODEL}` on the image API (no generation); Claude: `models.retrieve` for `STITCH_ART_MODEL` (no generation) | Higgsfield: no image is generated, but the provider does not document whether an estimate call costs anything; Cloudflare: free (no inference, so no Neurons); OpenAI and Claude: free |
    | tts | `GET /v1/voices/{id}` on ElevenLabs for each voice | free |
    | persistence | a MongoDB ping (5 second timeout); the default `mongodb://localhost:27017` when `MONGODB_URI` is unset | free |
    | renderer | with `STITCH_WEB_URL` set, opens `{STITCH_WEB_URL}/render/draft-preflight?t=0.000` in headless Chromium with a minimal scene injected (`agent.tools.frames.probe_render_page`) | free |
@@ -164,7 +176,7 @@ studio services: model=real subagent_model=studio repo=mongo persistence=memory 
 
 (The `limits` label leaves out the model call cap; preflight's `[limits]` block shows it.)
 
-With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `persistence=mongo art=higgsfield tts=real renderer=playwright` (`art=cloudflare` or `art=openai` when that provider is chosen).
+With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `persistence=mongo art=higgsfield tts=real renderer=playwright` (`art=cloudflare`, `art=openai` or `art=claude` when that provider is chosen).
 
 | Label | Values |
 |---|---|
@@ -172,7 +184,7 @@ With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `p
 | `subagent_model` | `studio` (sub-agents share the studio model) or the `STITCH_SUBAGENT_MODEL` id |
 | `repo` | `mongo`: the family data, through the API's database (mongomock under `STITCH_FAKE_DB`) |
 | `persistence` | `mongo` (runs survive a restart) or `memory` (they do not) |
-| `art` | `higgsfield`, `cloudflare`, `openai` or `placeholder` (the image provider, `IMAGE_PROVIDER`) |
+| `art` | `higgsfield`, `cloudflare`, `openai`, `claude` or `placeholder` (the image provider, `IMAGE_PROVIDER`) |
 | `tts` | `real` (ElevenLabs) or `fake` (silent) |
 | `vision`, `critic` | `real`: Claude vision |
 | `renderer` | `playwright` (screenshots of the web stage, diagrams per render when it cannot) or `diagram` |

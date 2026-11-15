@@ -647,6 +647,60 @@ def test_art_fallback_names_the_image_budget(monkeypatch: pytest.MonkeyPatch) ->
     assert code == 0
 
 
+def test_claude_art_is_reported_with_its_model_and_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("IMAGE_PROVIDER", "claude")
+    monkeypatch.setenv("STITCH_ART_EFFORT", "turbo")
+    code, out = run(["--json"])
+    art = by_service(out)["art"]
+    assert art["mode"] == "claude"
+    assert "drawn as SVG by Claude (claude-opus-5-5, effort medium)" in art["summary"]
+    assert var(art, "STITCH_ART_MODEL")["set"] is False
+    effort = var(art, "STITCH_ART_EFFORT")
+    assert effort["severity"] == "warning" and "turbo" in effort["problem"]
+    assert any("308 s" in note for note in art["notes"])
+    assert code == 0  # a warning never fails preflight
+    assert ANTHROPIC not in out
+
+
+def test_claude_art_without_the_key_is_placeholder_with_the_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IMAGE_PROVIDER", "claude")
+    monkeypatch.setenv(images_adapter.API_KEY_ENV, IMAGE)
+    _, out = run(["--json"])
+    art = by_service(out)["art"]
+    assert art["mode"] == "placeholder"
+    assert "IMAGE_PROVIDER=claude but ANTHROPIC_API_KEY is not set" in art["summary"]
+
+
+def test_live_claude_art_only_looks_up_the_art_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("IMAGE_PROVIDER", "claude")
+    monkeypatch.setenv("STITCH_ART_MODEL", "claude-sonnet-5-5")
+    claude = FakeAnthropic()
+    # The default handler fails the test on any HTTP call: Claude art makes none.
+    code, out = run(["--live", "--json"], seams(claude=claude))
+    art = by_service(out)["art"]
+    assert code == 0, out
+    assert art["live"]["status"] == "pass"
+    assert "models.retrieve claude-sonnet-5-5" in art["live"]["detail"]
+    retrieved = [arg for name, arg in claude.calls if name == "models.retrieve"]
+    assert "claude-sonnet-5-5" in retrieved
+    creates = [arg for name, arg in claude.calls if name == "messages.create"]
+    assert len(creates) == 1 and creates[0]["max_tokens"] == 1  # only the studio's ping; no SVG generated
+
+
+def test_live_claude_art_fails_with_the_anthropic_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", ANTHROPIC)
+    monkeypatch.setenv("STITCH_FAKE_DB", "1")
+    monkeypatch.setenv("IMAGE_PROVIDER", "claude")
+    claude = FakeAnthropic(factory_error=RuntimeError("cannot build"))
+    code, out = run(["--live", "--json"], seams(claude=claude))
+    assert code == 1
+    assert by_service(out)["art"]["live"]["status"] == "fail"
+
+
 # --------------------------------------------------------------------------- limits
 
 
@@ -875,6 +929,8 @@ def test_agent_mode_matches_main(monkeypatch: pytest.MonkeyPatch, env: dict[str,
 COMBOS = [
     {},
     {"IMAGE_API_KEY": IMAGE},
+    {"IMAGE_PROVIDER": "claude"},
+    {"IMAGE_PROVIDER": "claude", "IMAGE_API_KEY": IMAGE, "STITCH_ART_EFFORT": "turbo"},
     {"ELEVENLABS_API_KEY": ELEVEN},
     {"IMAGE_API_KEY": "   ", "ELEVENLABS_API_KEY": "  "},
     {"STITCH_WEB_URL": WEB_URL},

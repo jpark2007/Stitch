@@ -5,7 +5,10 @@
 - ``HiggsfieldImageModel``: ``agent.tools.art.ImageModel`` (the Higgsfield API: submit, poll,
   download).
 - ``CloudflareImageModel``: ``agent.tools.art.ImageModel`` (Cloudflare Workers AI, one synchronous
-  call). ``choose_image_provider`` picks among the three (``IMAGE_PROVIDER``).
+  call).
+- ``ClaudeSvgImageModel``: ``agent.tools.art.ImageModel`` (Claude writes an SVG illustration,
+  sanitized and rasterized locally with resvg). ``choose_image_provider`` picks among the four
+  (``IMAGE_PROVIDER``; Claude only when asked for by name).
 - ``ElevenLabsTTS``: ``agent.tools.narration.TTS`` (speech with word timings).
 - ``AlphaAwareRemover``: ``agent.tools.art.BackgroundRemover`` (local, Pillow only).
 
@@ -33,12 +36,16 @@ docstring has the details):
                        time left), connect min(10 s, time       allowance, or 5xx, and only when
                        left); the answer checked between        the wait fits the deadline
                        chunks
+    ClaudeSvgImage-    150 s per request (SDK max_retries=0)    1, by the adapter, same rules as
+    Model                                                       AnthropicVision; never a timeout,
+                                                                a refusal or a cut-off answer
     ElevenLabsTTS     30 s read/write, 10 s connect            2, same rules
 
 Every wait before a retry is capped at ``images.MAX_BACKOFF_S`` (8 s), whatever the provider's
 ``Retry-After`` asks. The anthropic SDK alone would obey any ``Retry-After`` uncapped, which is
 why ``AnthropicVision`` retries itself; its worst case per call is
-``vision.worst_case_s(timeout, max_retries)``, 376 s with the defaults.
+``vision.worst_case_s(timeout, max_retries)``, 376 s with the defaults. ``ClaudeSvgImageModel``
+retries the same way; one ``generate`` waits at most 308 s on Claude with its defaults.
 
 A call that still fails raises, and the tool that made it degrades instead of failing the
 run: placeholder art (``agent.tools.art.ArtService``), silent narration with estimated word
@@ -47,6 +54,7 @@ timings (``agent.tools.narration``), a photo or frame critique skipped
 with no network; when it raises, the cutout is a placeholder too.
 """
 
+from agent.adapters.claude_svg import ClaudeSvgImageModel
 from agent.adapters.cloudflare import CloudflareImageModel
 from agent.adapters.cutout import AlphaAwareRemover
 from agent.adapters.higgsfield import HiggsfieldImageModel
@@ -58,6 +66,7 @@ from agent.adapters.vision import AnthropicVision
 __all__ = [
     "AlphaAwareRemover",
     "AnthropicVision",
+    "ClaudeSvgImageModel",
     "CloudflareImageModel",
     "ElevenLabsTTS",
     "HiggsfieldImageModel",

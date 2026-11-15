@@ -3,6 +3,7 @@
     IMAGE_PROVIDER=higgsfield   Higgsfield (HIGGSFIELD_API_KEY [+ HIGGSFIELD_API_SECRET])
     IMAGE_PROVIDER=cloudflare   Cloudflare Workers AI (CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN)
     IMAGE_PROVIDER=openai       the OpenAI-compatible images API (IMAGE_API_KEY)
+    IMAGE_PROVIDER=claude       Claude draws SVG, rasterized locally (ANTHROPIC_API_KEY)
     unset                       the first whose keys are set, in this order: Higgsfield
                                 (HIGGSFIELD_API_KEY), Cloudflare (both CLOUDFLARE_ACCOUNT_ID and
                                 CLOUDFLARE_API_TOKEN), OpenAI (IMAGE_API_KEY); else placeholder art
@@ -13,6 +14,9 @@ with a Higgsfield key stays on Higgsfield, and one with only IMAGE_API_KEY stays
 both Cloudflare variables are also set (a lone CLOUDFLARE_API_TOKEN, as wrangler uses, does not
 switch it).
 
+Claude is explicit only: the unset rule never picks it. ANTHROPIC_API_KEY is always set (the
+studio needs it), so choosing Claude by its key would silently move every setup onto it.
+
 An explicit provider whose key is not set gives placeholder art (with the reason), never another
 provider: the owner said which service may be billed.
 """
@@ -22,18 +26,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from agent.adapters import cloudflare, higgsfield, images
+from agent.adapters import claude_svg, cloudflare, higgsfield, images
 from agent.guards import env_value
 
 PROVIDER_ENV = "IMAGE_PROVIDER"
-PROVIDERS: tuple[str, ...] = ("higgsfield", "openai", "cloudflare")
+PROVIDERS: tuple[str, ...] = ("higgsfield", "openai", "cloudflare", "claude")
 """The values IMAGE_PROVIDER takes (the unset rule's order is in the module docstring)."""
 
 
 @dataclass(frozen=True)
 class ImageProviderChoice:
     provider: str
-    """'higgsfield', 'cloudflare', 'openai' or 'placeholder'."""
+    """'higgsfield', 'cloudflare', 'openai', 'claude' or 'placeholder'."""
     reason: str
     """Why, in one short clause (for logs and the preflight report)."""
     warning: str | None = None
@@ -66,6 +70,10 @@ def choose_image_provider(env: Mapping[str, str] | None = None) -> ImageProvider
         if has_openai:
             return ImageProviderChoice("openai", f"{PROVIDER_ENV}=openai")
         return ImageProviderChoice("placeholder", f"{PROVIDER_ENV}=openai but {images.API_KEY_ENV} is not set")
+    if wanted == "claude":
+        if env_value(env, claude_svg.API_KEY_ENV) is not None:
+            return ImageProviderChoice("claude", f"{PROVIDER_ENV}=claude")
+        return ImageProviderChoice("placeholder", f"{PROVIDER_ENV}=claude but {claude_svg.API_KEY_ENV} is not set")
     warning = None
     if wanted is not None:
         warning = f"{PROVIDER_ENV}={raw!r} is not one of {', '.join(PROVIDERS)}; using the default rule"

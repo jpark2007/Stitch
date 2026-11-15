@@ -27,7 +27,8 @@ cut to DETAIL_CHARS.
   price estimate: no image is generated); Cloudflare: GET {CLOUDFLARE_API_URL}/accounts/{id}/ai/models/search
   for the configured model (a model listing: proves the token, the account and the model; no
   image, no Neurons); OpenAI-compatible: GET {IMAGE_API_URL}/models/{IMAGE_MODEL} (no generation,
-  no cost).
+  no cost); Claude (IMAGE_PROVIDER=claude): models.retrieve for STITCH_ART_MODEL on the same
+  Anthropic client (no generation, no cost).
 - ElevenLabs: GET /v1/voices/{id} for the default voice and each mapped voice.
 - MongoDB: a ping with serverSelectionTimeoutMS=5000 (the family database, unless STITCH_FAKE_DB).
 - Render page (STITCH_WEB_URL set): agent.tools.frames.probe_render_page. 'contract' passes;
@@ -61,6 +62,7 @@ import httpx
 from dotenv import load_dotenv
 
 from agent import guards
+from agent.adapters import claude_svg as svg_adapter
 from agent.adapters import cloudflare as cf_adapter
 from agent.adapters import higgsfield as hf_adapter
 from agent.adapters import image_provider
@@ -150,6 +152,8 @@ ENV_NAMES: tuple[str, ...] = (
     images_adapter.API_KEY_ENV,
     images_adapter.URL_ENV,
     images_adapter.MODEL_ENV,
+    svg_adapter.MODEL_ENV,
+    svg_adapter.EFFORT_ENV,
     guards.ENV_ART_LAYERS,
     tts_adapter.API_KEY_ENV,
     tts_adapter.MODEL_ENV,
@@ -657,7 +661,8 @@ def _image_url(env: Mapping[str, str]) -> str:
 
 
 def art_label(env: Mapping[str, str]) -> str:
-    """agent.production's art label: 'higgsfield', 'cloudflare', 'openai' or 'placeholder' (same rule)."""
+    """agent.production's art label: 'higgsfield', 'cloudflare', 'openai', 'claude' or 'placeholder'
+    (same rule)."""
     choice = image_provider.choose_image_provider(env)
     if choice.provider == "higgsfield" and hf_adapter.config_problem(env):
         return "placeholder"
@@ -940,6 +945,20 @@ def _openai_vars(env: Mapping[str, str]) -> list[VarReport]:
     ]
 
 
+def _claude_art_vars(env: Mapping[str, str]) -> list[VarReport]:
+    """STITCH_ART_MODEL and STITCH_ART_EFFORT (IMAGE_PROVIDER=claude; the key is ANTHROPIC_API_KEY)."""
+    model = _model_var(env, svg_adapter.MODEL_ENV, "the studio's default model")
+    raw = env.get(svg_adapter.EFFORT_ENV)
+    effort_value, problem = svg_adapter.configured_effort(env)
+    if raw is None or not raw.strip():
+        effort = VarReport(svg_adapter.EFFORT_ENV, False, _unset(raw, svg_adapter.DEFAULT_EFFORT))
+    elif problem:
+        effort = VarReport(svg_adapter.EFFORT_ENV, True, f"set ({len(raw)} chars)", problem, "warning")
+    else:
+        effort = VarReport(svg_adapter.EFFORT_ENV, True, effort_value)
+    return [model, effort]
+
+
 def _art_layers_var(env: Mapping[str, str]) -> VarReport:
     """STITCH_ART_LAYERS: on (default) or off; any other value warns and means on (RunLimits)."""
     name = guards.ENV_ART_LAYERS
@@ -972,6 +991,7 @@ def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceRep
             *_hf_vars(env, hf_selected),
             *_cf_vars(env, cf_selected),
             *_openai_vars(env),
+            *_claude_art_vars(env),
             _art_layers_var(env),
         ],
     )
@@ -1017,6 +1037,21 @@ def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceRep
             )
         if not cf_adapter.MODELS[model].references:
             report.notes.append(f"{model} takes no reference image: references are ignored")
+    elif labels["art"] == "claude":
+        model = svg_adapter.configured_model(env)
+        effort, _ = svg_adapter.configured_effort(env)
+        report.summary = (
+            f"prop and set art drawn as SVG by Claude ({model}, effort {effort}) and rendered locally, "
+            f"at most {budget} image(s) a run"
+        )
+        report.fallback = (
+            f"{budget_fallback}; also when Claude declines an image or its SVG is cut off or has nothing "
+            "drawable after sanitizing"
+        )
+        report.notes.append(
+            "uses ANTHROPIC_API_KEY (billed like the studio's model calls); one image takes about 30 to 90 s "
+            f"and at most {svg_adapter.worst_case_s(svg_adapter.DEFAULT_TIMEOUT_S, svg_adapter.DEFAULT_MAX_RETRIES):.0f} s"
+        )
     elif labels["art"] == "openai":
         model = _image_model(env)
         report.summary = (
@@ -1255,9 +1290,12 @@ def _live_anthropic(by_name: dict[str, ServiceReport], env: Mapping[str, str], s
     if key is None:
         by_name["model"].live = by_name["vision"].live = LiveResult("skipped", "ANTHROPIC_API_KEY is not set")
         return
+    claude_art = by_name["art"].mode == "claude"
     made, client = guarded(lambda: (seams.anthropic_factory or _default_anthropic)(key, seams.timeout_s))
     if not made:
         by_name["model"].live = by_name["vision"].live = LiveResult("fail", client)
+        if claude_art:
+            by_name["art"].live = LiveResult("fail", client)
         return
     studio_model, sub_model, vision_model = _studio_model(env), _stripped(env, SUBAGENT_MODEL_ENV), _vision_model(env)
     retrieved: dict[str, tuple[bool, str]] = {}
@@ -1290,6 +1328,9 @@ def _live_anthropic(by_name: dict[str, ServiceReport], env: Mapping[str, str], s
             break  # one failure says it (a bad key fails every call the same way)
     by_name["model"].live = _combine(parts)
     by_name["vision"].live = _combine([retrieve(vision_model)])
+    if claude_art:
+        # The art model is only looked up: no SVG is generated, nothing is billed.
+        by_name["art"].live = _combine([retrieve(svg_adapter.configured_model(env))])
 
 
 def art_label_reason(env: Mapping[str, str]) -> str:
@@ -1396,6 +1437,8 @@ def _live_http(by_name: dict[str, ServiceReport], env: Mapping[str, str], seams:
             by_name["art"].live = _live_higgsfield(http, env, guarded)
         elif art_mode == "cloudflare":
             by_name["art"].live = _live_cloudflare(http, env, guarded)
+        elif art_mode == "claude":
+            pass  # checked on the Anthropic client (_live_anthropic)
         elif art_mode != "openai" or art_key is None:
             by_name["art"].live = LiveResult("skipped", f"placeholder art ({art_label_reason(env)})")
         else:
