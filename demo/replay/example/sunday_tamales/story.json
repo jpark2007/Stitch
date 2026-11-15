@@ -1,0 +1,14 @@
+{
+  "match": {
+    "text": "Every Sunday my mother made tamales, and the whole kitchen smelled of corn husks. I was allowed to spread the masa, badly. My father pretended every lumpy one was the best he had ever eaten.",
+    "keywords": ["tamales", "masa"],
+    "minOverlap": 0.8
+  },
+  "title": "Tamale Sundays",
+  "year": 1970,
+  "question": "Who else was in the kitchen?",
+  "reviewProps": ["tamale_pot", "lumpy_tamale"],
+  "screenplayFile": "../../../../api/seed/demo_family/demo_sunday_tamales.screenplay.json",
+  "propsFile": "../../../../api/seed/demo_family/props.json",
+  "setsFile": "../../../../api/seed/demo_family/sets.json"
+}
