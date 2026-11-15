@@ -25,7 +25,9 @@ def errors_of(directory: Path) -> list[str]:
 
 def test_the_data_dir_is_the_env_var_else_the_private_default(tmp_path):
     assert data_dir({family_data.DATA_DIR_ENV: str(tmp_path)}) == tmp_path.resolve()
-    assert data_dir({}) == Path("~/stitch-private/demo-family/data").expanduser().resolve()
+    private = Path("~/stitch-private/demo-family/data").expanduser().resolve()
+    expected = private if private.is_dir() else family_data.REPO_DATA_DIR
+    assert data_dir({}) == expected
 
 
 def test_the_fixture_loads_people_parents_first_with_accounts_linked(loaded):
@@ -111,7 +113,14 @@ def test_every_problem_is_named_at_once(data_copy):
     assert "'dad' is a demo family (Maos) id" in text
     assert "personId 'ghost' is not a person" in text
     assert "imessage must be an E.164 phone number" in text
-    assert "no photo photos/porch.png" in text
+    assert "no photo photos/porch.png" not in text
+
+
+def test_a_missing_photo_is_a_warning_and_the_telling_has_none(data_copy):
+    (data_copy / "photos" / "porch.png").unlink()
+    loaded = load_family(data_copy)
+    assert any("no photo photos/porch.png; shown without it" in w for w in loaded.warnings)
+    assert "porch.png" not in loaded.photo_ids
 
 
 def test_a_screenplay_that_does_not_compile_names_the_moment_and_the_error(data_copy):

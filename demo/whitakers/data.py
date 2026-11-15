@@ -49,6 +49,8 @@ from seed.fake_runs import remap_ids
 
 DATA_DIR_ENV = "STITCH_WHITAKERS_DIR"
 DEFAULT_DATA_DIR = Path("~/stitch-private/demo-family/data")
+# The committed copy (no family photos: those stay private and are dropped into its photos/).
+REPO_DATA_DIR = Path(__file__).resolve().parent.parent / "macoskos" / "data"
 FAMILY_FILE = "family.json"
 MOMENTS_DIR = "moments"
 MOMENT_FILE = "moment.json"
@@ -83,9 +85,13 @@ class WhitakerDataError(ValueError):
 
 
 def data_dir(environ: Mapping[str, str] = os.environ) -> Path:
-    """The data directory: STITCH_WHITAKERS_DIR, else the default. `~` is expanded."""
+    """The data directory: STITCH_WHITAKERS_DIR, else the private default when it exists,
+    else the committed copy in demo/macoskos/data. `~` is expanded."""
     raw = (environ.get(DATA_DIR_ENV) or "").strip()
-    return (Path(raw) if raw else DEFAULT_DATA_DIR).expanduser().resolve()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    private = DEFAULT_DATA_DIR.expanduser().resolve()
+    return private if private.is_dir() or not REPO_DATA_DIR.is_dir() else REPO_DATA_DIR
 
 
 # ------------------------------------------------------------------------------ the files
@@ -341,14 +347,15 @@ class _Files:
         return self.root / folder / name
 
     def photo(self, name: str, where: str) -> str | None:
-        """The media id of photos/<name>; an error when it is missing."""
+        """The media id of photos/<name>; a warning when it is missing (the telling is
+        saved without it, so a copy without the private photos still runs)."""
         if name in self.photo_ids:
             return self.photo_ids[name]
         path = self._file(PHOTOS_DIR, name)
         if path is None:
             return None
         if not path.is_file():
-            self.errors.append(f"{where}: no photo {PHOTOS_DIR}/{name}")
+            self.warnings.append(f"{where}: no photo {PHOTOS_DIR}/{name}; shown without it")
             return None
         found = _image(path, self.root, self.errors, "photo")
         if found is None:
