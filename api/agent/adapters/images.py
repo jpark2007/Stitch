@@ -21,7 +21,8 @@ changes:
   of ``w / h`` it is resized; otherwise it is scaled evenly until it covers ``(w, h)`` and then
   cropped to it, anchored at the bottom edge and centered horizontally (set layers stand on
   the ground line at the bottom, so a wide strip such as a 2048x464 middle layer keeps the
-  bottom band of a 1536x1024 canvas and loses the top).
+  bottom band of a 1536x1024 canvas and loses the top). The fitting lives in
+  ``agent.adapters.fitting`` and is shared with ``HiggsfieldImageModel``.
 
 ``canvas_size(size)`` returns the size actually requested from the API for ``size``
 (``closest_size``), so callers can tell the model which band of the canvas survives the crop
@@ -58,6 +59,9 @@ from typing import Any
 import httpx
 from PIL import Image
 
+from agent.adapters.fitting import ASPECT_TOLERANCE, fit_to_size
+from agent.adapters.fitting import has_alpha as _has_alpha
+from agent.adapters.fitting import to_png as _to_png
 from agent.guards import env_value
 
 API_KEY_ENV = "IMAGE_API_KEY"
@@ -93,10 +97,6 @@ def closest_size(size: tuple[int, int]) -> tuple[int, int]:
     return min(SUPPORTED_SIZES, key=lambda s: abs(math.log(s[0] / s[1]) - target))
 
 
-def _has_alpha(im: Image.Image) -> bool:
-    return im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
-
-
 def _reference_file(index: int, data: bytes) -> tuple[str, bytes, str]:
     """(filename, bytes, content type) for one reference image; unusual formats become PNG."""
     try:
@@ -112,43 +112,6 @@ def _reference_file(index: int, data: bytes) -> tuple[str, bytes, str]:
     buf = io.BytesIO()
     im.save(buf, format="PNG")
     return f"reference_{index}.png", buf.getvalue(), "image/png"
-
-
-ASPECT_TOLERANCE = 0.01
-"""A plain resize is used only when the source and target aspect ratios differ by at most 1%."""
-
-
-def fit_to_size(im: Image.Image, size: tuple[int, int]) -> Image.Image:
-    """Fit ``im`` to exactly ``size`` without uneven scaling.
-
-    Within ``ASPECT_TOLERANCE`` of the target aspect it is a plain resize. Otherwise the image is
-    scaled by one factor so it covers ``size``, then cropped to ``size`` anchored at the bottom
-    edge and centered horizontally.
-    """
-    tw, th = size
-    sw, sh = im.size
-    if (sw, sh) == (tw, th):
-        return im
-    if abs((sw / sh) / (tw / th) - 1.0) <= ASPECT_TOLERANCE:
-        return im.resize((tw, th), Image.Resampling.LANCZOS)
-    scale = max(tw / sw, th / sh)
-    # One factor for both axes; rounding can only add a pixel of slack, never squash.
-    nw = max(tw, round(sw * scale))
-    nh = max(th, round(sh * scale))
-    scaled = im.resize((nw, nh), Image.Resampling.LANCZOS)
-    left = (nw - tw) // 2
-    top = nh - th
-    return scaled.crop((left, top, left + tw, top + th))
-
-
-def _to_png(data: bytes, size: tuple[int, int]) -> bytes:
-    with Image.open(io.BytesIO(data)) as src:
-        src.load()
-        im = src.convert("RGBA" if _has_alpha(src) else "RGB")
-    im = fit_to_size(im, size)
-    buf = io.BytesIO()
-    im.save(buf, format="PNG")
-    return buf.getvalue()
 
 
 def retryable_error(exc: httpx.HTTPError) -> bool:
