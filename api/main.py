@@ -517,16 +517,30 @@ class BodySizeLimitMiddleware:
         self.app = app
         self.json_limit = json_limit
         self.multipart_limit = multipart_limit
-        # Exact scope["path"] matches (no prefix, case or trailing-slash variants; the query
-        # string is not part of the path). Whatever the content type, these win, larger or
-        # smaller than the default. The router matches the same decoded scope["path"], so a
-        # percent-encoded spelling of a capped path gets the same cap and the same route.
+        # Exact path matches (no prefix, case or trailing-slash variants; the query string is
+        # not part of the path). Whatever the content type, these win, larger or smaller than
+        # the default. Both the decoded scope["path"] and the path the router routes on (with
+        # scope["root_path"] stripped, as Starlette does) are looked up, and the smaller match
+        # wins, so a root_path (uvicorn --root-path) can never skip a cap below the default.
+        # Both are decoded, so a percent-encoded spelling gets the same cap and route.
         self.path_limits = dict(path_limits or {})
 
-    def limit_for(self, headers: Headers, path: str = "") -> int:
-        exact = self.path_limits.get(path)
-        if exact is not None:
-            return exact
+    @staticmethod
+    def route_path(scope: Scope) -> str:
+        """scope["path"] with scope["root_path"] stripped, the way Starlette's router sees it."""
+        path: str = scope.get("path") or ""
+        root_path: str = scope.get("root_path") or ""
+        if not root_path or not path.startswith(root_path):
+            return path
+        if path == root_path:
+            return ""
+        return path[len(root_path):] if path[len(root_path)] == "/" else path
+
+    def limit_for(self, headers: Headers, path: str = "", route_path: str | None = None) -> int:
+        matches = [self.path_limits[p] for p in {path, path if route_path is None else route_path}
+                   if p in self.path_limits]
+        if matches:
+            return min(matches)
         content_type = (headers.get("content-type") or "").strip().lower()
         return self.multipart_limit if content_type.startswith("multipart/form-data") else self.json_limit
 
@@ -535,7 +549,7 @@ class BodySizeLimitMiddleware:
             await self.app(scope, receive, send)
             return
         headers = Headers(scope=scope)
-        limit = self.limit_for(headers, scope.get("path") or "")
+        limit = self.limit_for(headers, scope.get("path") or "", self.route_path(scope))
         declared = (headers.get("content-length") or "").strip()
         # A malformed Content-Length is left to the server; the streamed count still applies.
         if declared.isdigit() and int(declared) > limit:

@@ -451,9 +451,9 @@ def test_eleven_variants_with_the_default_limit_never_reach_the_route(eleven, pa
     assert seen == []
 
 
-async def _raw_post(app, path: str, body: bytes) -> int:
-    """POST straight through ASGI with this exact scope["path"] (an HTTP client would read a
-    leading "//" as a host name). Returns the response status."""
+async def _raw_post(app, path: str, body: bytes, root_path: str = "") -> int:
+    """POST straight through ASGI with this exact scope["path"] and root_path (an HTTP client
+    would read a leading "//" as a host name). Returns the response status."""
     sent: list[dict] = []
     messages = [{"type": "http.request", "body": body, "more_body": False}]
 
@@ -464,7 +464,7 @@ async def _raw_post(app, path: str, body: bytes) -> int:
         sent.append(message)
 
     scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
-             "scheme": "http", "path": path, "raw_path": path.encode(), "root_path": "", "query_string": b"",
+             "scheme": "http", "path": path, "raw_path": path.encode(), "root_path": root_path, "query_string": b"",
              "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
              "client": ("testclient", 50000), "server": ("testserver", 80)}
     await app(scope, receive, send)
@@ -481,6 +481,77 @@ async def test_eleven_leading_double_slash_never_reaches_the_route(eleven, anyio
     assert await _raw_post(app, ELEVEN, b"x" * (ELEVEN_CAP + 1)) == 413  # the same helper does hit the cap
     assert await _raw_post(app, ELEVEN, b"x" * ELEVEN_CAP) == 200
     assert seen == [ELEVEN_CAP]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_eleven_cap_holds_when_the_scope_path_carries_a_root_path(eleven, anyio_backend):
+    # uvicorn --root-path /api: scope["path"] keeps the prefix, the router strips it.
+    app, seen = _stub_app()
+    path = "/api" + ELEVEN
+    assert await _raw_post(app, path, b"x" * (ELEVEN_CAP + 1), root_path="/api") == 413
+    assert await _raw_post(app, path, b"x" * 400_000, root_path="/api") == 413
+    assert await _raw_post(app, path, b"x" * ELEVEN_CAP, root_path="/api") == 200
+    assert seen == [ELEVEN_CAP]  # the same handler, so it really is the same route
+
+
+@pytest.mark.parametrize("path", [ELEVEN, "/api" + ELEVEN])
+def test_eleven_cap_holds_under_a_test_client_root_path(eleven, path):
+    app, seen = _stub_app()
+    headers = {"content-type": "application/json"}
+    with TestClient(app, root_path="/api") as c:
+        at = c.post(path, content=b"x" * ELEVEN_CAP, headers=headers)
+        assert (at.status_code, at.json()) == (200, {"bytes": ELEVEN_CAP})
+        over = c.post(path, content=b"x" * (ELEVEN_CAP + 1), headers=headers)
+        assert (over.status_code, over.json()) == (413, TOO_LARGE)
+        streamed_at = c.post(path, content=_chunks(ELEVEN_CAP), headers=headers)
+        assert (streamed_at.status_code, streamed_at.json()) == (200, {"bytes": ELEVEN_CAP})
+        streamed = c.post(path, content=_chunks(ELEVEN_CAP + 1), headers=headers)
+        assert (streamed.status_code, streamed.json()) == (413, TOO_LARGE)
+    assert seen == [ELEVEN_CAP, ELEVEN_CAP]
+
+
+@pytest.mark.parametrize("root_path, prefix", [("", ""), ("/api", ""), ("/api", "/api")])
+def test_root_path_leaves_the_media_and_ordinary_limits_as_before(eleven, root_path, prefix):
+    headers = {"content-type": "application/json"}
+    with TestClient(main.create_app(), root_path=root_path) as c:
+        eleven_over = c.post(prefix + ELEVEN, content=b"x" * (ELEVEN_CAP + 1), headers=headers)
+        assert (eleven_over.status_code, eleven_over.json()) == (413, TOO_LARGE)
+        for media in (PHOTO, VOICE):
+            big = c.post(prefix + media, content=b"x" * (NORMAL + 1), headers=headers)
+            assert big.status_code == 401, (media, big.text)  # over the default, under the media cap
+            over = c.post(prefix + media, content=b"x" * (CAP + 1), headers=headers)
+            assert (over.status_code, over.json()) == (413, TOO_LARGE), media
+        ordinary = prefix + "/families/fam_a/memories"
+        under = c.post(ordinary, content=b"x" * (ELEVEN_CAP + 1), headers=headers)
+        assert under.status_code != 413, under.text
+        over = c.post(ordinary, content=b"x" * (NORMAL + 1), headers=headers)
+        assert (over.status_code, over.json()) == (413, TOO_LARGE)
+
+
+@pytest.mark.parametrize("scope, expected", [
+    ({"path": ELEVEN}, ELEVEN),
+    ({"path": ELEVEN, "root_path": ""}, ELEVEN),
+    ({"path": "/api" + ELEVEN, "root_path": "/api"}, ELEVEN),
+    ({"path": ELEVEN, "root_path": "/api"}, ELEVEN),
+    ({"path": "/apix" + ELEVEN, "root_path": "/api"}, "/apix" + ELEVEN),
+    ({"path": "/api", "root_path": "/api"}, ""),
+])
+def test_route_path_strips_the_root_path_like_the_router(scope, expected):
+    assert main.BodySizeLimitMiddleware.route_path(scope) == expected
+
+
+def test_limit_for_takes_the_smaller_of_the_matching_path_limits():
+    from starlette.datastructures import Headers
+
+    mw = main.BodySizeLimitMiddleware(FastAPI(), json_limit=NORMAL, multipart_limit=main.MAX_MULTIPART_BODY_BYTES,
+                                      path_limits={"/api" + ELEVEN: CAP, ELEVEN: ELEVEN_CAP, PHOTO: CAP})
+    h = Headers({"content-type": "application/json"})
+    assert mw.limit_for(h, "/api" + ELEVEN, ELEVEN) == ELEVEN_CAP
+    assert mw.limit_for(h, ELEVEN, ELEVEN) == ELEVEN_CAP
+    assert mw.limit_for(h, "/api" + PHOTO, PHOTO) == CAP
+    assert mw.limit_for(h, "/api/other", "/other") == NORMAL
+    assert mw.limit_for(h, PHOTO) == CAP  # route_path omitted: scope["path"] alone, as before
 
 
 def test_eleven_trailing_slash_redirects_without_reading_and_the_retry_is_capped(eleven):
