@@ -23,7 +23,9 @@ def _wav(data):
             expected = frames * sound.getnchannels() * sound.getsampwidth()
             if expected > len(data) or len(sound.readframes(frames)) != expected:
                 raise ValueError("Truncated PCM WAV")
-    except (wave.Error, EOFError):
+    except (wave.Error, EOFError, RuntimeError):
+        # wave's chunk reader raises RuntimeError when a malformed chunk seeks
+        # beyond its enclosing RIFF bounds. Treat it as invalid input too.
         raise ValueError("Invalid WAV") from None
 
 

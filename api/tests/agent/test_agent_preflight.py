@@ -641,7 +641,7 @@ def test_art_fallback_names_the_image_budget(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv(guards.ENV_MAX_IMAGES_PER_RUN, "0")
     code, out = run(["--json"])
     art = by_service(out)["art"]
-    assert art["mode"] == "real"
+    assert art["mode"] == "openai"
     assert "STITCH_MAX_IMAGES_PER_RUN=0" in art["fallback"]
     assert any("every run gets placeholder art" in p["text"] for p in art["problems"])
     assert code == 0
@@ -1360,6 +1360,8 @@ def test_a_set_mongodb_uri_names_its_in_memory_fallback(monkeypatch: pytest.Monk
 SENTINELS: dict[str, str] = {
     "ANTHROPIC_API_KEY": "sk-ant-api03-SENTINELanthropic0101",
     images_adapter.API_KEY_ENV: "sk-proj-SENTINELimage0102",
+    "HIGGSFIELD_API_KEY": "SENTINELhiggsfieldID0111",
+    "HIGGSFIELD_API_SECRET": "SENTINELhiggsfieldSECRET0112",
     tts_adapter.API_KEY_ENV: "sk_SENTINELelevenlabs0103",
     "JWT_SECRET": "SENTINELjwtSECRET0104",
     "VOYAGE_API_KEY": "pa-SENTINELvoyage0105",

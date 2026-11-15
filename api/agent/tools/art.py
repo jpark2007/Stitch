@@ -31,11 +31,18 @@ An image model may also have the optional ``CanvasSizer`` capability,
 canvases, so the adapter fits the result by scaling evenly and cropping a bottom band, and
 ``make_layer`` tells the model which band is kept. The real adapters live in
 ``agent/adapters`` (``OpenAIImageModel`` has ``canvas_size``; the fakes here do not need it).
+
+An image model's ``generate`` may also accept an optional keyword ``plain_background: bool``.
+When it does, ``ArtService`` passes ``True`` for images that will be cut out (props, parts,
+states, the middle and front set layers) and ``False`` for the back layer, so a provider with a
+background control can draw on a plain ground the remover can cut. Models without the keyword
+are called exactly as before (``HiggsfieldImageModel`` has it; ``OpenAIImageModel`` does not).
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -326,6 +333,32 @@ BAND_LINE_THRESHOLD = 0.99
 """A composition line is added to a layer prompt only when less than 99% of the canvas is kept."""
 
 
+def accepts_plain_background(model: object) -> bool:
+    """True when ``model.generate`` takes the optional ``plain_background`` keyword."""
+    try:
+        params = inspect.signature(model.generate).parameters  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError):
+        return False
+    param = params.get("plain_background")
+    return param is not None and param.kind in (param.KEYWORD_ONLY, param.POSITIONAL_OR_KEYWORD)
+
+
+def _generate(
+    model: ImageModel,
+    prompt: str,
+    reference_images: tuple[bytes, ...],
+    size: tuple[int, int],
+    *,
+    plain_background: bool,
+) -> bytes:
+    """``model.generate``, with the ``plain_background`` hint only for models that take it."""
+    if accepts_plain_background(model):
+        return model.generate(  # type: ignore[call-arg]
+            prompt, reference_images=reference_images, size=size, plain_background=plain_background
+        )
+    return model.generate(prompt, reference_images=reference_images, size=size)
+
+
 def model_canvas_size(model: object, size: tuple[int, int]) -> tuple[int, int]:
     """``model.canvas_size(size)`` when the model has that capability and it answers sanely, else ``size``."""
     sizer = getattr(model, "canvas_size", None)
@@ -466,7 +499,7 @@ class ArtService:
         if not self._take_image(run_id):
             return None
         try:
-            image = self.image_model.generate(prompt, reference_images=tuple(reference_images), size=size)
+            image = _generate(self.image_model, prompt, tuple(reference_images), size, plain_background=True)
             return analyze_cutout(self.remover.remove(image))
         except Exception as exc:  # noqa: BLE001 - any service failure falls back to a placeholder
             log.warning("art generation failed, using placeholder: %s: %s", type(exc).__name__, exc)
@@ -507,7 +540,9 @@ class ArtService:
             band = layer_band_line(layer, kept_fraction(model_canvas_size(self.image_model, target), target))
             if band is not None:
                 prompt = f"{prompt}\n{band}"
-            image = self.image_model.generate(prompt, reference_images=tuple(reference_images), size=size)
+            image = _generate(
+                self.image_model, prompt, tuple(reference_images), size, plain_background=layer != "back"
+            )
             if layer == "back" or self.remover is None:
                 im = _load_rgba(image)
                 im.putalpha(255)

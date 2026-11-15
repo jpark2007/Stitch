@@ -275,7 +275,9 @@ class ChannelWorker:
         command = text.strip().upper()
         if typed_control and command in {"HELP", "CALL"}:
             queue([("Send story words, YEAR followed by its year, then SUBMIT. Reply KEEP for props or YES/NO "
-                    "for a person match. NEW starts another draft after the studio finishes. STOP ends messages. "
+                    "for a person match. NEW starts another draft after the studio finishes. "
+                    "STOP, STOPALL or UNSUBSCRIBE ends messages. CANCEL, END and QUIT also opt out "
+                    "unless a studio question is pending. Rejoin through notification settings with a fresh LINK code. "
                     "HELP shows these instructions.") if command == "HELP" else
                    "Live calls are not configured. You can continue by text; voice notes require enabled transcription."])
             deliver()
