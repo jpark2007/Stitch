@@ -1,0 +1,388 @@
+{
+  "memoryId": "grand_canyon_1997",
+  "cast": [
+    "jenna",
+    "mark",
+    "carol"
+  ],
+  "props": [
+    "mark_wagon",
+    "cherries",
+    "cherry_crate",
+    "road_atlas"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "macosko_driveway_1997",
+      "marks": {},
+      "start": {
+        "mark": {
+          "at": "driveway",
+          "facing": "right"
+        },
+        "carol": {
+          "at": "front_walk",
+          "facing": "right"
+        },
+        "jenna": {
+          "at": "porch",
+          "holding": "road_atlas",
+          "facing": "right"
+        }
+      },
+      "propStart": {
+        "mark_wagon": {
+          "at": "car_spot"
+        },
+        "cherry_crate": {
+          "at": "offstage_right"
+        },
+        "cherries": {
+          "at": "offstage_right"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 5.4,
+          "move": "dolly_to",
+          "target": "road_atlas",
+          "dur": 1.2
+        },
+        {
+          "t": 8.2,
+          "move": "pan_to",
+          "target": "mark_wagon",
+          "dur": 2
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "who": "mark",
+          "do": "get_in",
+          "what": "mark_wagon",
+          "socket": "driver",
+          "id": "driver"
+        },
+        {
+          "t": 0.6,
+          "who": "carol",
+          "do": "get_in",
+          "what": "mark_wagon",
+          "socket": "passenger"
+        },
+        {
+          "t": 5.0,
+          "who": "jenna",
+          "do": "get_in",
+          "what": "mark_wagon",
+          "socket": "back_seat",
+          "id": "back_seat"
+        },
+        {
+          "t": 8.5,
+          "do": "smoke",
+          "at": "mark_wagon",
+          "dur": 1.2
+        },
+        {
+          "t": 8.5,
+          "who": "mark",
+          "do": "drive_to",
+          "what": "mark_wagon",
+          "to": "road_out",
+          "id": "drive"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "Mark bought a blue station wagon that summer and decided we had to drive it to the Grand Canyon.",
+          "source": "telling:jenna:s1"
+        },
+        {
+          "t": 5.0,
+          "text": "I sat in the back with a map I refused to read.",
+          "source": "telling:jenna:s2",
+          "cue": "back_seat",
+          "cueWord": "sat"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Summer 1997. Mark bought a station wagon and decided the three of them were driving it to the Grand Canyon."
+    },
+    {
+      "id": "s2",
+      "set": "desert_road_1997",
+      "marks": {
+        "beside_crate": [
+          0.84,
+          0.0
+        ]
+      },
+      "start": {
+        "mark": {
+          "at": "road_in",
+          "in": "mark_wagon.driver"
+        },
+        "carol": {
+          "at": "road_in",
+          "in": "mark_wagon.passenger"
+        },
+        "jenna": {
+          "at": "road_in",
+          "in": "mark_wagon.back_seat"
+        }
+      },
+      "propStart": {
+        "mark_wagon": {
+          "at": "road_in"
+        },
+        "cherry_crate": {
+          "at": "crate_spot"
+        },
+        "cherries": {
+          "at": "stand"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 9.0,
+          "move": "dolly_to",
+          "target": "jenna",
+          "dur": 1.5
+        },
+        {
+          "t": 12.5,
+          "move": "pull_back",
+          "dur": 2
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "who": "mark",
+          "do": "drive_to",
+          "what": "mark_wagon",
+          "to": "roadside",
+          "id": "arrive"
+        },
+        {
+          "t": 2.4,
+          "do": "smoke",
+          "at": "mark_wagon",
+          "dur": 1.5
+        },
+        {
+          "t": 2.6,
+          "who": "mark",
+          "do": "get_out",
+          "what": "mark_wagon"
+        },
+        {
+          "t": 2.8,
+          "who": "carol",
+          "do": "get_out",
+          "what": "mark_wagon"
+        },
+        {
+          "t": 3.0,
+          "who": "jenna",
+          "do": "get_out",
+          "what": "mark_wagon"
+        },
+        {
+          "t": 3.0,
+          "who": "mark",
+          "do": "walk_to",
+          "to": "tire_spot"
+        },
+        {
+          "t": 5.7,
+          "who": "mark",
+          "do": "turn_to",
+          "target": "mark_wagon"
+        },
+        {
+          "t": 5.8,
+          "who": "mark",
+          "do": "kneel",
+          "dur": 6.5,
+          "id": "fix"
+        },
+        {
+          "t": 4.2,
+          "who": "jenna",
+          "do": "sit_on",
+          "what": "cherry_crate",
+          "id": "crate"
+        },
+        {
+          "t": 3.8,
+          "who": "carol",
+          "do": "pick_up",
+          "what": "cherries"
+        },
+        {
+          "t": 9.0,
+          "who": "carol",
+          "do": "walk_to",
+          "to": "beside_crate"
+        },
+        {
+          "t": 9.5,
+          "who": "carol",
+          "do": "hand_to",
+          "what": "cherries",
+          "to": "jenna",
+          "id": "cherries"
+        },
+        {
+          "t": 11.0,
+          "who": "jenna",
+          "do": "hold",
+          "what": "cherries",
+          "id": "eat"
+        },
+        {
+          "t": 11.6,
+          "who": "carol",
+          "do": "lean_toward",
+          "target": "jenna",
+          "dur": 1.4
+        }
+      ],
+      "narration": [
+        {
+          "t": 5.2,
+          "text": "We got a flat tire outside a cherry stand.",
+          "source": "telling:jenna:s3",
+          "cue": "fix",
+          "cueWord": "flat"
+        },
+        {
+          "t": 8.0,
+          "text": "We sat on a fruit crate and ate cherries while he fixed it.",
+          "source": "telling:jenna:s4",
+          "cue": "cherries",
+          "cueWord": "ate"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "A flat tire outside a cherry stand. Mark fixed it in his good trousers while Jenna ate cherries."
+    }
+  ],
+  "narrations": {
+    "carol": {
+      "s1": [
+        {
+          "t": 7.0,
+          "text": "Mark would not let anyone else drive that car.",
+          "source": "telling:carol:s1",
+          "cue": "drive",
+          "cueWord": "drive"
+        }
+      ],
+      "s2": [
+        {
+          "t": 2.9,
+          "text": "When the tire went, he changed it in his good trousers.",
+          "source": "telling:carol:s2",
+          "cue": "fix",
+          "cueWord": "changed"
+        },
+        {
+          "t": 9.5,
+          "text": "Jenna ate so many cherries she was sick the rest of the way.",
+          "source": "telling:carol:s3",
+          "cue": "cherries",
+          "cueWord": "ate"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "wheel_tab",
+      "kind": "pull_tab",
+      "label": "Pull to spin the front wheel",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.86,
+        0.82
+      ],
+      "drives": {
+        "type": "prop_part",
+        "prop": "mark_wagon",
+        "part": "wheel_front",
+        "channel": "rot",
+        "range": [
+          0,
+          6.28
+        ]
+      }
+    },
+    {
+      "id": "drive_tab",
+      "kind": "pull_tab",
+      "label": "Pull to drive to the cherry stand",
+      "shot": "s2",
+      "page": "story",
+      "at": [
+        0.14,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 0,
+        "to": 2.2,
+        "targets": [
+          "prop:mark_wagon",
+          "puppet:mark",
+          "puppet:carol",
+          "puppet:jenna"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:jenna",
+      "text": "Jenna was twenty-two, in the back seat with a map she refused to read. She ate so many cherries she was sick the rest of the way."
+    },
+    {
+      "target": "puppet:mark",
+      "text": "Mark was twenty-six and would not let anyone else drive his new car. When the tire went flat, he changed it in his good trousers."
+    },
+    {
+      "target": "puppet:carol",
+      "text": "Carol was forty-seven and rode up front. At the cherry stand she sat on the fruit crate with Jenna and watched Mark fix the tire."
+    },
+    {
+      "target": "prop:mark_wagon",
+      "text": "Mark's blue station wagon with a roof rack, bought that summer. He decided on the spot it had to see the Grand Canyon."
+    },
+    {
+      "target": "prop:cherries",
+      "text": "A paper bag of dark red cherries from the stand where the tire went flat. Jenna ate most of them before the spare was on."
+    },
+    {
+      "target": "prop:road_atlas",
+      "text": "The big folded road map of the Southwest. Jenna was in charge of it and refused to read a single fold."
+    },
+    {
+      "target": "prop:cherry_crate",
+      "text": "An upturned fruit crate by the cherry stand: the best seat in Arizona while Mark fixed the tire."
+    }
+  ]
+}

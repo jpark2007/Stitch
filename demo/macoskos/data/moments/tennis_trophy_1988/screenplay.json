@@ -1,0 +1,230 @@
+{
+  "memoryId": "tennis_trophy_1988",
+  "cast": [
+    "jenna",
+    "carol"
+  ],
+  "props": [
+    "tennis_trophy",
+    "tennis_racket",
+    "macosko_dinner_table"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "macosko_patio_1988",
+      "start": {
+        "carol": {
+          "at": "chair_side",
+          "facing": "left"
+        },
+        "jenna": {
+          "at": "offstage_left",
+          "holding": "tennis_trophy",
+          "facing": "right"
+        }
+      },
+      "propStart": {
+        "tennis_racket": {
+          "at": "fence"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 4.6,
+          "move": "pan_to",
+          "target": "jenna",
+          "dur": 1.2
+        },
+        {
+          "t": 8.0,
+          "move": "pull_back",
+          "dur": 1.4
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "day",
+          "dur": 1.0
+        },
+        {
+          "t": 1.0,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "jenna",
+          "to": "patio",
+          "id": "home"
+        },
+        {
+          "t": 5.0,
+          "do": "hold",
+          "who": "jenna",
+          "what": "tennis_trophy",
+          "id": "raise"
+        },
+        {
+          "t": 5.4,
+          "do": "pose",
+          "who": "carol",
+          "pose": "arms_raised",
+          "dur": 1.6,
+          "id": "clap"
+        },
+        {
+          "t": 7.6,
+          "do": "hug",
+          "who": "carol",
+          "target": "jenna",
+          "dur": 1.6
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.5,
+          "text": "I was thirteen and nobody expected me to win.",
+          "source": "telling:jenna:s1",
+          "cue": "home",
+          "cueWord": "thirteen"
+        },
+        {
+          "t": 4.75,
+          "text": "I held that trophy all the way home,",
+          "source": "telling:jenna:s2",
+          "cue": "raise",
+          "cueWord": "held"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Summer 1988. Thirteen years old, the youngest in the draw, and nobody expected her to win."
+    },
+    {
+      "id": "s2",
+      "set": "macosko_dining_1988",
+      "start": {
+        "jenna": {
+          "at": "door",
+          "holding": "tennis_trophy",
+          "facing": "right"
+        },
+        "carol": {
+          "at": "far_side",
+          "facing": "left"
+        }
+      },
+      "propStart": {
+        "macosko_dinner_table": {
+          "at": "table_spot"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 3.6,
+          "move": "dolly_to",
+          "target": "macosko_dinner_table",
+          "dur": 1.4
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "night",
+          "dur": 1.2
+        },
+        {
+          "t": 0.4,
+          "do": "walk_to",
+          "who": "jenna",
+          "to": "near_table"
+        },
+        {
+          "t": 2.6,
+          "do": "place_on",
+          "who": "jenna",
+          "what": "tennis_trophy",
+          "on": "macosko_dinner_table",
+          "id": "put"
+        },
+        {
+          "t": 4.8,
+          "do": "lean_toward",
+          "who": "carol",
+          "target": "jenna",
+          "dur": 1.4
+        },
+        {
+          "t": 5.0,
+          "do": "pose",
+          "who": "jenna",
+          "pose": "arms_raised",
+          "dur": 1.2
+        }
+      ],
+      "narration": [
+        {
+          "t": 1.6,
+          "text": "and Mom let me put it on the dinner table that night.",
+          "source": "telling:jenna:s3",
+          "cue": "put",
+          "cueWord": "put"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "That night the trophy had the best seat at the dinner table."
+    }
+  ],
+  "interactions": [
+    {
+      "id": "trophy_tab",
+      "kind": "pull_tab",
+      "label": "Pull to raise the trophy",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.18,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 5.0,
+        "to": 6.6,
+        "targets": [
+          "puppet:jenna",
+          "prop:tennis_trophy"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:jenna",
+      "text": "Jenna was thirteen, in her tennis visor, and nobody expected her to win. She held the trophy all the way home."
+    },
+    {
+      "target": "puppet:carol",
+      "text": "Carol was thirty-eight, and that night she let the trophy have the best seat at the dinner table."
+    },
+    {
+      "target": "prop:tennis_trophy",
+      "text": "A gold cup with a little tennis player on the lid. Jenna would not put it down the whole ride home."
+    },
+    {
+      "target": "prop:tennis_racket",
+      "text": "Jenna's wooden racket with the white grip, the one she won it all with at thirteen."
+    },
+    {
+      "target": "prop:macosko_dinner_table",
+      "text": "The long dinner table with the blue cloth. That night the trophy sat right in the middle."
+    }
+  ]
+}

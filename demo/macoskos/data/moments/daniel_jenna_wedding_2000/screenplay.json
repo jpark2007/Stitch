@@ -1,0 +1,340 @@
+{
+  "memoryId": "daniel_jenna_wedding_2000",
+  "cast": [
+    "daniel",
+    "ben",
+    "linda",
+    "rick"
+  ],
+  "props": [
+    "wedding_ring_box",
+    "orchard_bench",
+    "daniel_boutonniere"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "orchard_garden_2000",
+      "marks": {},
+      "start": {
+        "linda": {
+          "at": "bench_spot",
+          "in": "orchard_bench.left",
+          "facing": "right"
+        },
+        "rick": {
+          "at": "bench_spot",
+          "in": "orchard_bench.right",
+          "facing": "right"
+        },
+        "daniel": {
+          "at": "arch",
+          "holding": "daniel_boutonniere",
+          "facing": "left"
+        },
+        "ben": {
+          "at": "offstage_left",
+          "holding": "wedding_ring_box",
+          "facing": "right"
+        }
+      },
+      "propStart": {
+        "orchard_bench": {
+          "at": "bench_spot"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 4.6,
+          "move": "dolly_to",
+          "target": "wedding_ring_box",
+          "dur": 1.2
+        },
+        {
+          "t": 8.0,
+          "move": "pan_to",
+          "target": "orchard_bench",
+          "dur": 1.5
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "who": "daniel",
+          "do": "pose",
+          "pose": "slumped",
+          "dur": 1.6,
+          "id": "nervous"
+        },
+        {
+          "t": 0.3,
+          "who": "ben",
+          "do": "enter",
+          "from": "offstage_left",
+          "to": "beside_groom",
+          "id": "aisle"
+        },
+        {
+          "t": 5.1,
+          "who": "ben",
+          "do": "hand_to",
+          "what": "wedding_ring_box",
+          "to": "daniel",
+          "id": "rings"
+        },
+        {
+          "t": 7.0,
+          "who": "daniel",
+          "do": "set_state",
+          "what": "wedding_ring_box",
+          "state": "open"
+        },
+        {
+          "t": 9.5,
+          "who": "linda",
+          "do": "lean_toward",
+          "target": "rick",
+          "dur": 2.0,
+          "id": "lean"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "I was so nervous I forgot Ben had the rings.",
+          "source": "telling:daniel:s1"
+        },
+        {
+          "t": 3.6,
+          "text": "He walked up the aisle and pressed the box into my hand like it was nothing.",
+          "source": "telling:daniel:s2",
+          "cue": "rings",
+          "cueWord": "pressed"
+        },
+        {
+          "t": 7.8,
+          "text": "Mom and Dad sat on the front bench holding hands the whole time.",
+          "source": "telling:daniel:s3",
+          "cue": "lean",
+          "cueWord": "holding"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "June 2000, in the orchard. Jenna walked up the aisle, Daniel forgot who had the rings, and Ben didn't."
+    },
+    {
+      "id": "s2",
+      "set": "reception_tent_2000",
+      "marks": {},
+      "start": {
+        "daniel": {
+          "at": "floor_mid",
+          "holding": "daniel_boutonniere",
+          "facing": "left"
+        },
+        "linda": {
+          "at": "floor_left",
+          "facing": "right"
+        },
+        "rick": {
+          "at": "tent_right",
+          "facing": "left"
+        },
+        "ben": {
+          "at": "floor_right",
+          "facing": "left"
+        }
+      },
+      "propStart": {},
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 1.4,
+          "move": "dolly_to",
+          "target": "daniel",
+          "dur": 1.5
+        },
+        {
+          "t": 5.5,
+          "move": "pull_back",
+          "dur": 2
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "dusk",
+          "dur": 1.5
+        },
+        {
+          "t": 1.5,
+          "who": "linda",
+          "do": "hug",
+          "target": "daniel",
+          "dur": 2.0,
+          "id": "hug"
+        },
+        {
+          "t": 2.2,
+          "do": "confetti",
+          "at": "daniel",
+          "dur": 3.0
+        },
+        {
+          "t": 3.9,
+          "who": "daniel",
+          "do": "turn_to",
+          "target": "rick"
+        },
+        {
+          "t": 4.0,
+          "who": "daniel",
+          "do": "drop",
+          "what": "daniel_boutonniere",
+          "id": "fell_off"
+        },
+        {
+          "t": 4.5,
+          "who": "rick",
+          "do": "wave",
+          "target": "daniel",
+          "dur": 1.6,
+          "id": "wave_all"
+        },
+        {
+          "t": 5.0,
+          "who": "ben",
+          "do": "pick_up",
+          "what": "daniel_boutonniere",
+          "id": "rescue"
+        },
+        {
+          "t": 7.0,
+          "who": "ben",
+          "do": "hand_to",
+          "what": "daniel_boutonniere",
+          "to": "daniel",
+          "id": "pin_back"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.5,
+          "text": "At the party Mom hugged me so hard my boutonniere fell off.",
+          "source": "telling:daniel:s4",
+          "cue": "hug",
+          "cueWord": "hugged"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Under the tent lights: one big hug, one fallen flower, Ben to the rescue, and Rick waving at everyone."
+    }
+  ],
+  "narrations": {
+    "rick": {
+      "s1": [
+        {
+          "t": 0,
+          "text": "Daniel looked exactly like he did on his first day of school, terrified and pretending not to be.",
+          "source": "telling:rick:s1"
+        },
+        {
+          "t": 4.85,
+          "text": "Ben saved the day with the rings.",
+          "source": "telling:rick:s2",
+          "cue": "rings",
+          "cueWord": "saved"
+        }
+      ],
+      "s2": [
+        {
+          "t": 2.25,
+          "text": "When the confetti came down, Linda cried and I waved at everyone like a fool.",
+          "source": "telling:rick:s3",
+          "cue": "wave_all",
+          "cueWord": "waved"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "ring_tab",
+      "kind": "pull_tab",
+      "label": "Pull to open the ring box",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.7,
+        0.8
+      ],
+      "drives": {
+        "type": "prop_state",
+        "prop": "wedding_ring_box",
+        "states": [
+          "closed",
+          "open"
+        ]
+      }
+    },
+    {
+      "id": "hug_tab",
+      "kind": "pull_tab",
+      "label": "Pull for Mom's hug",
+      "shot": "s2",
+      "page": "story",
+      "at": [
+        0.4,
+        0.82
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 1.5,
+        "to": 4.6,
+        "targets": [
+          "puppet:linda",
+          "puppet:daniel",
+          "prop:daniel_boutonniere"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:daniel",
+      "text": "Daniel was twenty-seven and so nervous he forgot who was carrying the rings. His dad says he looked just like his first day of school."
+    },
+    {
+      "target": "puppet:ben",
+      "text": "Ben was nineteen, in charge of the rings, and of keeping his big brother calm. He pressed the box into Daniel's hand like it was nothing."
+    },
+    {
+      "target": "puppet:linda",
+      "text": "Linda was fifty. She held Rick's hand through the vows, cried through most of the party, and hugged Daniel so hard his flower fell off."
+    },
+    {
+      "target": "puppet:rick",
+      "text": "Rick was fifty-two. When the confetti came down he waved at every single guest, including several he had never met."
+    },
+    {
+      "target": "prop:wedding_ring_box",
+      "text": "A navy velvet ring box with two gold rings. Ben kept it in his jacket pocket all morning and checked it every five minutes."
+    },
+    {
+      "target": "prop:orchard_bench",
+      "text": "The front bench under the apple trees, where Rick and Linda held hands through the whole ceremony."
+    },
+    {
+      "target": "prop:daniel_boutonniere",
+      "text": "A single white rose on a pearl pin. Linda's hug knocked it off at the party, and Ben saved it again."
+    }
+  ]
+}

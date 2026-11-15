@@ -1,0 +1,19 @@
+{
+  "match": {
+    "text": "Mom swore she'd never get another cat, then came home from the shelter with an orange kitten in her coat. We named him Marmalade before we'd even closed the door.",
+    "keywords": [
+      "Marmalade"
+    ],
+    "minOverlap": 0.6
+  },
+  "title": "Marmalade comes home",
+  "year": 1999,
+  "question": "Who was in the kitchen when Marmalade came home?",
+  "familyId": "macoskos",
+  "reviewProps": [
+    "marmalade",
+    "kitten_basket",
+    "jenna_water_bottle"
+  ],
+  "screenplayFile": "screenplay.json"
+}

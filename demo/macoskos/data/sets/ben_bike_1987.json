@@ -1,0 +1,100 @@
+[
+  {
+    "id": "macosko_driveway_1987",
+    "name": "the Macosko driveway",
+    "description": "the driveway and the quiet street outside the Macosko house",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 0.95,
+        "color": "#a8b8c8"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.5,
+        "color": "#e6dccb"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.08,
+        "color": "#6f8a52"
+      }
+    ],
+    "marks": {
+      "garage": [
+        0.18,
+        0.0
+      ],
+      "behind_bike": [
+        0.3,
+        0.0
+      ],
+      "bike_spot": [
+        0.45,
+        0.0
+      ],
+      "beside_bike": [
+        0.53,
+        0.0
+      ],
+      "sidewalk": [
+        0.8,
+        0.0
+      ],
+      "street_end": [
+        1.35,
+        0.0
+      ]
+    }
+  },
+  {
+    "id": "oak_corner_1987",
+    "name": "the corner of Oak and Third",
+    "description": "a leafy street corner with a mailbox",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 0.9,
+        "color": "#9ab38a"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.35,
+        "color": "#c9b79a"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.08,
+        "color": "#6f6a60"
+      }
+    ],
+    "marks": {
+      "street_in": [
+        0.15,
+        0.0
+      ],
+      "let_go": [
+        0.2,
+        0.0
+      ],
+      "halfway": [
+        0.4,
+        0.0
+      ],
+      "near_corner": [
+        0.6,
+        0.0
+      ],
+      "corner": [
+        0.75,
+        0.0
+      ]
+    }
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "title": "The little red van",
+  "year": 1975,
+  "place": "the coast road",
+  "tellings": [
+    {
+      "teller": "carol",
+      "question": "What was the first trip you took with Jenna?",
+      "text": "Jenna was six weeks old the first time we drove to the coast in our little red van. Mark waved at every car the whole way, and Jenna slept through all of it.",
+      "photos": [
+        "roadtrip.jpg"
+      ]
+    }
+  ]
+}

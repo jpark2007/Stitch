@@ -1,0 +1,92 @@
+[
+  {
+    "id": "macosko_patio_1988",
+    "name": "the backyard patio",
+    "description": "a backyard patio by the pool, a wooden fence and potted plants",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 0.95,
+        "color": "#b07c52"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.4,
+        "color": "#78985a"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#7db3c6"
+      }
+    ],
+    "marks": {
+      "gate": [
+        0.12,
+        0.0
+      ],
+      "pool_side": [
+        0.32,
+        0.0
+      ],
+      "patio": [
+        0.5,
+        0.0
+      ],
+      "chair_side": [
+        0.66,
+        0.0
+      ],
+      "fence": [
+        0.84,
+        0.0
+      ]
+    }
+  },
+  {
+    "id": "macosko_dining_1988",
+    "name": "Carol's dining room",
+    "description": "a dining room with striped wallpaper and a window onto the dark garden",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 1.0,
+        "color": "#c7a56b"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.45,
+        "color": "#8a5a44"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.08,
+        "color": "#5b3b2e"
+      }
+    ],
+    "marks": {
+      "door": [
+        0.14,
+        0.0
+      ],
+      "near_table": [
+        0.42,
+        0.0
+      ],
+      "table_spot": [
+        0.56,
+        0.0
+      ],
+      "far_side": [
+        0.74,
+        0.0
+      ]
+    }
+  }
+]

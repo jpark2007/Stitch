@@ -1,0 +1,80 @@
+[
+  {
+    "id": "red_van",
+    "name": "the little red van",
+    "description": "a little red camper van with a white roof rack",
+    "source": "generated",
+    "size": "vehicle",
+    "art": {
+      "body": null,
+      "wheel": null
+    },
+    "color": "#b8402e",
+    "aspect": 1.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "driver": [
+        0.68,
+        0.5
+      ],
+      "passenger": [
+        0.52,
+        0.5
+      ],
+      "back_seat": [
+        0.34,
+        0.5
+      ],
+      "roof": [
+        0.42,
+        0.06
+      ]
+    },
+    "parts": {
+      "wheel_back": {
+        "art": "wheel",
+        "at": [
+          0.22,
+          0.86
+        ],
+        "spin": true
+      },
+      "wheel_front": {
+        "art": "wheel",
+        "at": [
+          0.8,
+          0.86
+        ],
+        "spin": true
+      }
+    },
+    "states": {}
+  },
+  {
+    "id": "macosko_suitcase",
+    "name": "the plaid suitcase",
+    "description": "a brown plaid suitcase strapped to the roof rack",
+    "source": "generated",
+    "size": "carried",
+    "art": {
+      "body": null
+    },
+    "color": "#8a5a3a",
+    "aspect": 1.4,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.1
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  }
+]

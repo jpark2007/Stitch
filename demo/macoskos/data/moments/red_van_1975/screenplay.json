@@ -1,0 +1,192 @@
+{
+  "memoryId": "red_van_1975",
+  "cast": [
+    "carol",
+    "mark",
+    "jenna"
+  ],
+  "props": [
+    "red_van",
+    "macosko_suitcase"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "coast_road_1975",
+      "start": {
+        "carol": {
+          "at": "road_in",
+          "in": "red_van.driver",
+          "facing": "right"
+        },
+        "jenna": {
+          "at": "road_in",
+          "in": "red_van.passenger",
+          "facing": "right"
+        },
+        "mark": {
+          "at": "road_in",
+          "in": "red_van.back_seat",
+          "facing": "right"
+        }
+      },
+      "propStart": {
+        "red_van": {
+          "at": "road_in"
+        },
+        "macosko_suitcase": {
+          "on": "red_van.roof"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 4.6,
+          "move": "dolly_to",
+          "target": "mark",
+          "dur": 1.4
+        },
+        {
+          "t": 8.4,
+          "move": "pull_back",
+          "dur": 1.6
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "day",
+          "dur": 1.0
+        },
+        {
+          "t": 2.4,
+          "do": "drive_to",
+          "who": "carol",
+          "what": "red_van",
+          "to": "bend",
+          "id": "drive"
+        },
+        {
+          "t": 5.6,
+          "do": "wave",
+          "who": "mark",
+          "dur": 1.6,
+          "id": "waves"
+        },
+        {
+          "t": 8.0,
+          "do": "drive_to",
+          "who": "carol",
+          "what": "red_van",
+          "to": "lookout",
+          "id": "arrive"
+        },
+        {
+          "t": 9.4,
+          "do": "pose",
+          "who": "jenna",
+          "pose": "bow_head",
+          "dur": 3.0,
+          "id": "asleep"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.15,
+          "text": "Jenna was six weeks old the first time we drove to the coast in our little red van.",
+          "source": "telling:carol:s1",
+          "cue": "drive",
+          "cueWord": "drove"
+        },
+        {
+          "t": 5.35,
+          "text": "Mark waved at every car the whole way,",
+          "source": "telling:carol:s2",
+          "cue": "waves",
+          "cueWord": "waved"
+        },
+        {
+          "t": 8.9,
+          "text": "and Jenna slept through all of it.",
+          "source": "telling:carol:s3",
+          "cue": "asleep",
+          "cueWord": "slept"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Summer 1975. The little red van, a plaid suitcase on the roof, and a baby asleep the whole way to the sea."
+    }
+  ],
+  "interactions": [
+    {
+      "id": "drive_tab",
+      "kind": "pull_tab",
+      "label": "Pull to drive the van to the sea",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.16,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 2.4,
+        "to": 9.4,
+        "targets": [
+          "prop:red_van",
+          "prop:macosko_suitcase",
+          "puppet:carol",
+          "puppet:mark",
+          "puppet:jenna"
+        ]
+      }
+    },
+    {
+      "id": "wheel_tab",
+      "kind": "pull_tab",
+      "label": "Pull to spin the wheel",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.86,
+        0.82
+      ],
+      "drives": {
+        "type": "prop_part",
+        "prop": "red_van",
+        "part": "wheel_front",
+        "channel": "rot",
+        "range": [
+          0,
+          6.28
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:carol",
+      "text": "Carol was twenty-five, and she did all the driving: nobody else could work the van's gears."
+    },
+    {
+      "target": "puppet:mark",
+      "text": "Mark was four. He waved at every car the whole way, and counted every one that waved back."
+    },
+    {
+      "target": "puppet:jenna",
+      "text": "Jenna was six weeks old, on her very first trip to the coast, and slept through all of it."
+    },
+    {
+      "target": "prop:red_van",
+      "text": "The little red van with the white roof rack. It had a sliding door that stuck, and no radio."
+    },
+    {
+      "target": "prop:macosko_suitcase",
+      "text": "The brown plaid suitcase strapped to the roof rack held everything the three of them needed."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "title": "Sunday pancakes at Evelyn's",
+  "year": 1958,
+  "place": "Evelyn's kitchen",
+  "tellings": [
+    {
+      "teller": "rick",
+      "question": "What did Sundays look like when you were little?",
+      "text": "Every Sunday my mother made pancakes, and the whole kitchen smelled of butter and syrup. I was allowed to pour the batter, badly. My father pretended every lopsided one was the best he had ever eaten.",
+      "order": 1
+    }
+  ]
+}

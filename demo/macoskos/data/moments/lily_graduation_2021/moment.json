@@ -1,0 +1,22 @@
+{
+  "title": "Lily's graduation",
+  "year": 2021,
+  "place": "the high school auditorium",
+  "people": [
+    "nora"
+  ],
+  "tellings": [
+    {
+      "teller": "jenna",
+      "question": "What do you remember about Lily's graduation?",
+      "text": "Both grandmothers came and sat in the front row in matching hats, which was not planned. Lily tripped on the stage stairs and turned it into a bow. Carol clapped louder than anyone in the hall. Outside she handed me that diploma, and I would not let go of her.",
+      "order": 1
+    },
+    {
+      "teller": "lily_macosko",
+      "question": "Mom says you turned a trip into a bow. What really happened?",
+      "text": "My gown was too long and I caught the hem on the second step. I figured if I bowed nobody would know. Carsten knew, and he still brings it up every Thanksgiving.",
+      "order": 2
+    }
+  ]
+}

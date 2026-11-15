@@ -1,0 +1,57 @@
+[
+  {
+    "id": "dance_hall_1943",
+    "name": "the Starlight dance hall",
+    "description": "a 1940s dance hall: wood-paneled walls, paper lanterns strung overhead, a little bandstand",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 1.0,
+        "color": "#8a4f3c"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.42,
+        "color": "#d9b26a"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#4f3426"
+      }
+    ],
+    "marks": {
+      "door": [
+        0.1,
+        0.0
+      ],
+      "dance_floor": [
+        0.26,
+        0.0
+      ],
+      "beside_table": [
+        0.4,
+        0.0
+      ],
+      "chair_hal_spot": [
+        0.48,
+        0.0
+      ],
+      "table_spot": [
+        0.6,
+        0.0
+      ],
+      "chair_evelyn_spot": [
+        0.72,
+        0.0
+      ],
+      "bandstand": [
+        0.88,
+        0.12
+      ]
+    }
+  }
+]

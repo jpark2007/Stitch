@@ -1,0 +1,282 @@
+{
+  "memoryId": "replay_marmalade_1999",
+  "cast": [
+    "jenna",
+    "carol"
+  ],
+  "props": [
+    "marmalade",
+    "kitten_basket",
+    "jenna_water_bottle",
+    "macosko_kitchen_table"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "macosko_kitchen_1999",
+      "start": {
+        "jenna": {
+          "at": "counter",
+          "facing": "left"
+        },
+        "carol": {
+          "at": "offstage_right",
+          "holding": "marmalade",
+          "facing": "left"
+        }
+      },
+      "propStart": {
+        "macosko_kitchen_table": {
+          "at": "table_spot"
+        },
+        "jenna_water_bottle": {
+          "on": "macosko_kitchen_table.top"
+        },
+        "kitten_basket": {
+          "at": "basket_spot"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 5.6,
+          "move": "dolly_to",
+          "target": "carol",
+          "dur": 1.4
+        },
+        {
+          "t": 10.6,
+          "move": "pull_back",
+          "dur": 1.4
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "day",
+          "dur": 1.0
+        },
+        {
+          "t": 1.2,
+          "do": "enter",
+          "from": "offstage_right",
+          "who": "carol",
+          "to": "by_door",
+          "id": "home"
+        },
+        {
+          "t": 4.4,
+          "do": "turn_to",
+          "who": "jenna",
+          "target": "carol"
+        },
+        {
+          "t": 5.6,
+          "do": "walk_to",
+          "who": "carol",
+          "to": "meet",
+          "id": "in_coat"
+        },
+        {
+          "t": 8.6,
+          "do": "hold",
+          "who": "carol",
+          "what": "marmalade",
+          "id": "peek"
+        },
+        {
+          "t": 9.4,
+          "do": "pose",
+          "who": "jenna",
+          "pose": "arms_raised",
+          "dur": 1.2,
+          "id": "gasp"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.95,
+          "text": "Mom swore she'd never get another cat,",
+          "source": "telling:jenna:s1",
+          "cue": "home",
+          "cueWord": "swore"
+        },
+        {
+          "t": 6.35,
+          "text": "then came home from the shelter with an orange kitten in her coat.",
+          "source": "telling:jenna:s2",
+          "cue": "peek",
+          "cueWord": "kitten"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Spring 1999. Carol swore: no more cats. Then she came home from the shelter with her coat buttoned up wrong."
+    },
+    {
+      "id": "s2",
+      "set": "macosko_kitchen_1999",
+      "start": {
+        "jenna": {
+          "at": "middle",
+          "facing": "right"
+        },
+        "carol": {
+          "at": "meet",
+          "holding": "marmalade",
+          "facing": "left"
+        }
+      },
+      "propStart": {
+        "macosko_kitchen_table": {
+          "at": "table_spot"
+        },
+        "jenna_water_bottle": {
+          "on": "macosko_kitchen_table.top"
+        },
+        "kitten_basket": {
+          "at": "basket_spot"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 1.8,
+          "move": "dolly_to",
+          "target": "jenna",
+          "dur": 1.4
+        },
+        {
+          "t": 9.6,
+          "move": "pull_back",
+          "dur": 1.6
+        }
+      ],
+      "actions": [
+        {
+          "t": 0.6,
+          "do": "lean_toward",
+          "who": "carol",
+          "target": "jenna",
+          "dur": 1.2
+        },
+        {
+          "t": 2.6,
+          "do": "hand_to",
+          "who": "carol",
+          "what": "marmalade",
+          "to": "jenna",
+          "id": "named"
+        },
+        {
+          "t": 4.6,
+          "do": "hold",
+          "who": "jenna",
+          "what": "marmalade",
+          "id": "hello"
+        },
+        {
+          "t": 6.4,
+          "do": "lean_toward",
+          "who": "carol",
+          "target": "jenna",
+          "dur": 1.8,
+          "id": "family"
+        },
+        {
+          "t": 8.6,
+          "do": "point_at",
+          "who": "carol",
+          "target": "kitten_basket",
+          "dur": 1.4
+        }
+      ],
+      "narration": [
+        {
+          "t": 1.85,
+          "text": "We named him Marmalade before we'd even closed the door.",
+          "source": "telling:jenna:s3",
+          "cue": "named",
+          "cueWord": "Marmalade"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "He was named before the door was shut: Marmalade, the newest Macosko."
+    }
+  ],
+  "interactions": [
+    {
+      "id": "peek_tab",
+      "kind": "pull_tab",
+      "label": "Pull to let the kitten peek out",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.84,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 8.6,
+        "to": 10.2,
+        "targets": [
+          "puppet:carol",
+          "prop:marmalade"
+        ]
+      }
+    },
+    {
+      "id": "hand_tab",
+      "kind": "pull_tab",
+      "label": "Pull to hand Marmalade to Jenna",
+      "shot": "s2",
+      "page": "stage",
+      "at": [
+        0.16,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 2.6,
+        "to": 6.2,
+        "targets": [
+          "puppet:carol",
+          "puppet:jenna",
+          "prop:marmalade"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "prop:marmalade",
+      "text": "Marmalade, a tiny orange tabby from the shelter. He was named before the kitchen door was even shut."
+    },
+    {
+      "target": "puppet:carol",
+      "text": "Carol was forty-nine and had sworn off cats for good. Then she came home from the shelter with a kitten in her coat."
+    },
+    {
+      "target": "puppet:jenna",
+      "text": "Jenna was twenty-four and home that spring. She named him Marmalade on the spot."
+    },
+    {
+      "target": "prop:kitten_basket",
+      "text": "The little wicker basket with the cream cushion. Marmalade never once slept in it."
+    },
+    {
+      "target": "prop:jenna_water_bottle",
+      "text": "Jenna had just come back from a run. The water bottle never got opened."
+    },
+    {
+      "target": "prop:macosko_kitchen_table",
+      "text": "The little round kitchen table where Marmalade ate his first dinner, off a saucer."
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+[
+  {
+    "id": "hal_porch_2005",
+    "name": "Grandpa Hal's porch",
+    "description": "a front porch with a white railing on an autumn street, a big orange maple and the neighbors' houses",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 1.0,
+        "color": "#d07a3a"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.42,
+        "color": "#efe8da"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#9a4a26"
+      }
+    ],
+    "marks": {
+      "street": [
+        0.12,
+        0.0
+      ],
+      "walk": [
+        0.26,
+        0.0
+      ],
+      "porch_left": [
+        0.4,
+        0.08
+      ],
+      "rocker_spot": [
+        0.54,
+        0.08
+      ],
+      "porch_right": [
+        0.66,
+        0.08
+      ],
+      "porch_far": [
+        0.76,
+        0.08
+      ],
+      "maple": [
+        0.88,
+        0.0
+      ],
+      "flag_spot": [
+        0.32,
+        0.0
+      ],
+      "nora_spot": [
+        0.18,
+        0.0
+      ]
+    }
+  }
+]

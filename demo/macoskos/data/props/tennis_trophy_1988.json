@@ -1,0 +1,73 @@
+[
+  {
+    "id": "tennis_trophy",
+    "name": "the tennis trophy",
+    "description": "a gold cup on a wooden base, with a little tennis player on the lid",
+    "source": "generated",
+    "size": "carried",
+    "art": {
+      "body": null
+    },
+    "color": "#d6a83a",
+    "aspect": 0.6,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.75
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "tennis_racket",
+    "name": "Jenna's tennis racket",
+    "description": "a wooden tennis racket with a white grip",
+    "source": "generated",
+    "size": "carried",
+    "art": {
+      "body": null
+    },
+    "color": "#b98a52",
+    "aspect": 0.45,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.9
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "macosko_dinner_table",
+    "name": "the dinner table",
+    "description": "a long dinner table with a blue tablecloth",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#4f74a0",
+    "aspect": 1.6,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "top": [
+        0.25,
+        0.14
+      ]
+    },
+    "parts": {},
+    "states": {}
+  }
+]

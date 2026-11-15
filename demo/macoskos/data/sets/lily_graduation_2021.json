@@ -1,0 +1,123 @@
+[
+  {
+    "id": "school_hall_2021",
+    "name": "the high school auditorium",
+    "description": "a high school auditorium with a stage and rows of folding chairs",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 1.0,
+        "color": "#7a4a5a"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.25,
+        "color": "#b07a4a"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#5b3b2e"
+      }
+    ],
+    "marks": {
+      "second_row_left": [
+        0.07,
+        0.0,
+        0.38
+      ],
+      "second_row_mid": [
+        0.21,
+        0.0,
+        0.38
+      ],
+      "second_row_aisle": [
+        0.35,
+        0.0,
+        0.38
+      ],
+      "row_left": [
+        0.14,
+        0.0
+      ],
+      "row_right": [
+        0.28,
+        0.0
+      ],
+      "aisle": [
+        0.4,
+        0.0
+      ],
+      "stage_steps": [
+        0.5,
+        0.0
+      ],
+      "stage_edge": [
+        0.62,
+        0.25
+      ],
+      "lectern_front": [
+        0.72,
+        0.25
+      ],
+      "lectern_spot": [
+        0.8,
+        0.25
+      ]
+    }
+  },
+  {
+    "id": "school_lawn_2021",
+    "name": "the school lawn",
+    "description": "the front lawn of the high school under an oak",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 0.95,
+        "color": "#8fae6a"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.55,
+        "color": "#c9b79a"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#5f7a45"
+      }
+    ],
+    "marks": {
+      "oak": [
+        0.12,
+        0.0
+      ],
+      "lawn_left": [
+        0.28,
+        0.0
+      ],
+      "lawn_mid": [
+        0.48,
+        0.0
+      ],
+      "lawn_center": [
+        0.58,
+        0.0
+      ],
+      "lawn_right": [
+        0.74,
+        0.0
+      ],
+      "path": [
+        0.88,
+        0.0
+      ]
+    }
+  }
+]

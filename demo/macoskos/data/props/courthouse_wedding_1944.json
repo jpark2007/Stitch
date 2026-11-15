@@ -1,0 +1,48 @@
+[
+  {
+    "id": "hal_sailor_cap",
+    "name": "Hal's sailor cap",
+    "description": "a white Navy sailor cap, the round dixie-cup kind",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": "prop_sailor_cap.png"
+    },
+    "color": "#f4f1ea",
+    "aspect": 1.52,
+    "anchor": [
+      0.5,
+      0.8
+    ],
+    "grip": [
+      0.5,
+      0.55
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "white_roses",
+    "name": "Evelyn's white roses",
+    "description": "a bouquet of white roses from her mother's garden, tied with a long white ribbon",
+    "source": "generated",
+    "size": "carried",
+    "art": {
+      "body": "prop_white_roses.png"
+    },
+    "color": "#f3eee2",
+    "aspect": 0.755,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.8
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  }
+]

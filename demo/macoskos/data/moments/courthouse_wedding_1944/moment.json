@@ -1,0 +1,22 @@
+{
+  "title": "The courthouse wedding",
+  "year": 1944,
+  "place": "the county courthouse",
+  "tellings": [
+    {
+      "teller": "harold",
+      "question": "How did you and Evelyn end up married so fast?",
+      "text": "I had three days of leave, so we didn't wait. My shipmates stood up for me in their dress blues on the courthouse steps. Evelyn carried white roses from her mother's garden.",
+      "photos": [
+        "wedding.jpg"
+      ],
+      "order": 1
+    },
+    {
+      "teller": "evelyn",
+      "question": "Hal remembers the courthouse steps. What do you remember?",
+      "text": "Hal makes it sound like a parade. I held on to those roses the whole time, because they were Mother's. His shipmates threw a whole sack of rice at us on the way down, and Hal laughed so hard he nearly lost his cap.",
+      "order": 2
+    }
+  ]
+}

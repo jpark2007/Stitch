@@ -1,0 +1,295 @@
+{
+  "memoryId": "sailor_dance_1943",
+  "cast": [
+    "evelyn",
+    "harold"
+  ],
+  "props": [
+    "hal_sailor_cap",
+    "soda_table",
+    "hall_chair_hal",
+    "hall_chair_evelyn",
+    "evelyn_soda",
+    "soda_bottle"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "dance_hall_1943",
+      "start": {
+        "harold": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "evelyn": {
+          "at": "chair_evelyn_spot",
+          "in": "hall_chair_evelyn.seat",
+          "facing": "left",
+          "holding": "evelyn_soda"
+        }
+      },
+      "propStart": {
+        "soda_table": {
+          "at": "table_spot"
+        },
+        "hall_chair_hal": {
+          "at": "chair_hal_spot"
+        },
+        "hall_chair_evelyn": {
+          "at": "chair_evelyn_spot"
+        },
+        "soda_bottle": {
+          "on": "soda_table.top_l"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 2.4,
+          "move": "pan_to",
+          "target": "harold",
+          "dur": 1.6
+        },
+        {
+          "t": 6.8,
+          "move": "pull_back",
+          "dur": 1.4
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "dusk",
+          "dur": 1.0
+        },
+        {
+          "t": 1.6,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "harold",
+          "to": "dance_floor",
+          "id": "arrive"
+        },
+        {
+          "t": 4.6,
+          "do": "pose",
+          "who": "harold",
+          "pose": "slumped",
+          "dur": 1.2,
+          "id": "two_left_feet"
+        },
+        {
+          "t": 6.4,
+          "do": "walk_to",
+          "who": "harold",
+          "to": "beside_table"
+        },
+        {
+          "t": 7.2,
+          "do": "point_at",
+          "who": "harold",
+          "target": "hall_chair_hal",
+          "dur": 1.2,
+          "id": "sit_ask"
+        },
+        {
+          "t": 8.8,
+          "do": "sit_on",
+          "who": "harold",
+          "what": "hall_chair_hal",
+          "id": "sits"
+        },
+        {
+          "t": 9.8,
+          "do": "lean_toward",
+          "who": "evelyn",
+          "target": "harold",
+          "dur": 1.4
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.6,
+          "text": "Hal was on shore leave and had two left feet,",
+          "source": "telling:evelyn:s1",
+          "cue": "arrive",
+          "cueWord": "leave"
+        },
+        {
+          "t": 5.95,
+          "text": "so he asked me to sit instead of dance.",
+          "source": "telling:evelyn:s2",
+          "cue": "sit_ask",
+          "cueWord": "sit"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "1943, the Starlight dance hall. A sailor with two left feet asked Evelyn to sit the dance out."
+    },
+    {
+      "id": "s2",
+      "set": "dance_hall_1943",
+      "start": {
+        "harold": {
+          "at": "chair_hal_spot",
+          "in": "hall_chair_hal.seat",
+          "facing": "right"
+        },
+        "evelyn": {
+          "at": "chair_evelyn_spot",
+          "in": "hall_chair_evelyn.seat",
+          "facing": "left",
+          "holding": "evelyn_soda"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 2.8,
+          "move": "dolly_to",
+          "target": "evelyn",
+          "dur": 1.2
+        },
+        {
+          "t": 7.4,
+          "move": "pull_back",
+          "dur": 1.6
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "night",
+          "dur": 3.0
+        },
+        {
+          "t": 0.8,
+          "do": "wave",
+          "who": "harold",
+          "target": "evelyn",
+          "dur": 1.4,
+          "id": "joke"
+        },
+        {
+          "t": 4.0,
+          "do": "pose",
+          "who": "evelyn",
+          "pose": "arms_raised",
+          "dur": 1.0,
+          "id": "laugh"
+        },
+        {
+          "t": 5.8,
+          "do": "drop",
+          "who": "evelyn",
+          "what": "evelyn_soda",
+          "id": "spill"
+        },
+        {
+          "t": 7.8,
+          "do": "lean_toward",
+          "who": "harold",
+          "target": "evelyn",
+          "dur": 1.6,
+          "id": "sweet"
+        },
+        {
+          "t": 8.0,
+          "do": "lean_toward",
+          "who": "evelyn",
+          "target": "harold",
+          "dur": 1.6
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.55,
+          "text": "We sat at that little table half the night,",
+          "source": "telling:evelyn:s3",
+          "cue": "joke",
+          "cueWord": "sat"
+        },
+        {
+          "t": 3.8,
+          "text": "and he made me laugh so hard I spilled my soda.",
+          "source": "telling:evelyn:s4",
+          "cue": "spill",
+          "cueWord": "spilled"
+        },
+        {
+          "t": 7.55,
+          "text": "I told my sister that night I'd marry him.",
+          "source": "telling:evelyn:s5",
+          "cue": "sweet",
+          "cueWord": "told"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "They sat at the little soda table half the night. Evelyn laughed so hard she spilled her soda."
+    }
+  ],
+  "interactions": [
+    {
+      "id": "spill_tab",
+      "kind": "pull_tab",
+      "label": "Pull to spill Evelyn's soda",
+      "shot": "s2",
+      "page": "stage",
+      "at": [
+        0.84,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 4.0,
+        "to": 6.6,
+        "targets": [
+          "puppet:evelyn",
+          "prop:evelyn_soda"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:evelyn",
+      "text": "Evelyn was twenty. That night she told her sister she was going to marry the sailor who couldn't dance."
+    },
+    {
+      "target": "puppet:harold",
+      "text": "Hal was twenty-two, on shore leave, with two left feet. He asked Evelyn to sit the dance out instead."
+    },
+    {
+      "target": "prop:evelyn_soda",
+      "text": "A tall soda with two paper straws. Hal made her laugh so hard that most of it ended up spilled."
+    },
+    {
+      "target": "prop:soda_table",
+      "text": "The little table where they sat out every song, half the night."
+    },
+    {
+      "target": "prop:hal_sailor_cap",
+      "text": "Hal's white sailor cap. He took it off to ask her, then forgot to put it back on."
+    },
+    {
+      "target": "prop:hall_chair_hal",
+      "text": "Hal's chair. He stayed in it all night rather than risk the dance floor."
+    },
+    {
+      "target": "prop:hall_chair_evelyn",
+      "text": "Evelyn's chair at the little table, where she laughed so hard the soda went over."
+    },
+    {
+      "target": "prop:soda_bottle",
+      "text": "A green glass soda bottle, shared across the table while Hal told joke after joke."
+    }
+  ]
+}

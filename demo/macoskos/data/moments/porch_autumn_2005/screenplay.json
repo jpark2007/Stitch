@@ -1,0 +1,374 @@
+{
+  "memoryId": "porch_autumn_2005",
+  "cast": [
+    "daniel",
+    "harold",
+    "evelyn",
+    "jenna",
+    "carsten",
+    "lily_macosko",
+    "nora"
+  ],
+  "props": [
+    "hal_rocking_chair",
+    "porch_flag"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "hal_porch_2005",
+      "start": {
+        "harold": {
+          "at": "rocker_spot",
+          "in": "hal_rocking_chair.seat",
+          "facing": "left"
+        },
+        "evelyn": {
+          "at": "porch_far",
+          "facing": "left"
+        },
+        "daniel": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "jenna": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "carsten": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "lily_macosko": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "nora": {
+          "at": "offstage_left",
+          "facing": "right"
+        }
+      },
+      "propStart": {
+        "hal_rocking_chair": {
+          "at": "rocker_spot"
+        },
+        "porch_flag": {
+          "at": "flag_spot"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 6.4,
+          "move": "dolly_to",
+          "target": "harold",
+          "dur": 1.4
+        },
+        {
+          "t": 9.6,
+          "move": "pull_back",
+          "dur": 1.4
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "day",
+          "dur": 1.0
+        },
+        {
+          "t": 0.4,
+          "do": "confetti",
+          "at": "maple",
+          "dur": 4.0
+        },
+        {
+          "t": 1.6,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "daniel",
+          "to": "walk",
+          "id": "arrive"
+        },
+        {
+          "t": 2.0,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "jenna",
+          "to": "street"
+        },
+        {
+          "t": 2.4,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "carsten",
+          "to": "porch_left"
+        },
+        {
+          "t": 4.2,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "lily_macosko",
+          "to": "flag_spot"
+        },
+        {
+          "t": 4.6,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "nora",
+          "to": "nora_spot"
+        },
+        {
+          "t": 6.8,
+          "do": "wave",
+          "who": "harold",
+          "target": "carsten",
+          "dur": 1.6,
+          "id": "lap"
+        },
+        {
+          "t": 7.2,
+          "do": "point_at",
+          "who": "evelyn",
+          "target": "harold",
+          "dur": 1.2
+        },
+        {
+          "t": 8.8,
+          "do": "wave",
+          "who": "carsten",
+          "target": "harold",
+          "dur": 1.2
+        }
+      ],
+      "narration": [
+        {
+          "t": 1.35,
+          "text": "We drove three states for the leaves and for Grandpa Hal,",
+          "source": "telling:daniel:s1",
+          "cue": "arrive",
+          "cueWord": "drove"
+        },
+        {
+          "t": 6.55,
+          "text": "who wanted every one of his great-grandkids on his lap at once.",
+          "source": "telling:daniel:s2",
+          "cue": "lap",
+          "cueWord": "wanted"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "October 2005. Three states of driving, an orange maple, and Grandpa Hal waiting on his porch."
+    },
+    {
+      "id": "s2",
+      "set": "hal_porch_2005",
+      "start": {
+        "harold": {
+          "at": "rocker_spot",
+          "in": "hal_rocking_chair.seat",
+          "facing": "left"
+        },
+        "nora": {
+          "at": "rocker_spot",
+          "in": "hal_rocking_chair.lap",
+          "facing": "left"
+        },
+        "carsten": {
+          "at": "porch_left",
+          "facing": "right"
+        },
+        "lily_macosko": {
+          "at": "porch_right",
+          "facing": "left"
+        },
+        "evelyn": {
+          "at": "porch_far",
+          "facing": "left"
+        },
+        "daniel": {
+          "at": "walk",
+          "facing": "right"
+        },
+        "jenna": {
+          "at": "street",
+          "facing": "right"
+        }
+      },
+      "propStart": {
+        "hal_rocking_chair": {
+          "at": "rocker_spot"
+        },
+        "porch_flag": {
+          "at": "flag_spot"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 3.6,
+          "move": "dolly_to",
+          "target": "nora",
+          "dur": 1.4
+        },
+        {
+          "t": 7.4,
+          "move": "pull_back",
+          "dur": 1.6
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "confetti",
+          "at": "maple",
+          "dur": 6.0
+        },
+        {
+          "t": 0.6,
+          "do": "lean_toward",
+          "who": "carsten",
+          "target": "harold",
+          "dur": 1.6
+        },
+        {
+          "t": 0.8,
+          "do": "lean_toward",
+          "who": "lily_macosko",
+          "target": "harold",
+          "dur": 1.6
+        },
+        {
+          "t": 4.0,
+          "do": "pose",
+          "who": "nora",
+          "pose": "bow_head",
+          "dur": 4.0,
+          "id": "asleep"
+        },
+        {
+          "t": 4.4,
+          "do": "lean_toward",
+          "who": "harold",
+          "target": "nora",
+          "dur": 2.0
+        },
+        {
+          "t": 7.0,
+          "do": "point_at",
+          "who": "jenna",
+          "target": "nora",
+          "dur": 1.4
+        },
+        {
+          "t": 7.4,
+          "do": "lean_toward",
+          "who": "daniel",
+          "target": "jenna",
+          "dur": 1.4
+        }
+      ],
+      "narration": [
+        {
+          "t": 3.25,
+          "text": "Baby Nora fell asleep on him in the middle of the photo.",
+          "source": "telling:daniel:s3",
+          "cue": "asleep",
+          "cueWord": "asleep"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Every great-grandkid on Hal's porch at once. Nora slept through the picture."
+    }
+  ],
+  "interactions": [
+    {
+      "id": "gather_tab",
+      "kind": "pull_tab",
+      "label": "Pull to bring the family up the walk",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.14,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 1.6,
+        "to": 6.8,
+        "targets": [
+          "puppet:daniel",
+          "puppet:jenna",
+          "puppet:carsten",
+          "puppet:lily_macosko",
+          "puppet:nora"
+        ]
+      }
+    },
+    {
+      "id": "nap_tab",
+      "kind": "pull_tab",
+      "label": "Pull to send Nora to sleep",
+      "shot": "s2",
+      "page": "stage",
+      "at": [
+        0.84,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 4.0,
+        "to": 6.4,
+        "targets": [
+          "puppet:nora",
+          "puppet:harold"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:harold",
+      "text": "Grandpa Hal was eighty-four and wanted every one of his great-grandkids on his lap at once. He got all three."
+    },
+    {
+      "target": "puppet:evelyn",
+      "text": "Evelyn was eighty-two, her pearl brooch pinned on for the picture, and she supervised the whole thing from the porch."
+    },
+    {
+      "target": "puppet:daniel",
+      "text": "Daniel was thirty-two and drove three states with three kids in the back, for the leaves and for Grandpa Hal."
+    },
+    {
+      "target": "puppet:carsten",
+      "text": "Carsten was five, in his striped sweater, and climbed onto Hal's lap before anyone said he could."
+    },
+    {
+      "target": "puppet:lily_macosko",
+      "text": "Lily was two, in pigtails, and kept trying to collect every leaf on the porch."
+    },
+    {
+      "target": "puppet:nora",
+      "text": "Nora was a few months old, in her baby bonnet, and fell asleep on Grandpa Hal in the middle of the photo."
+    },
+    {
+      "target": "prop:hal_rocking_chair",
+      "text": "Hal's white rocking chair. That afternoon it held one great-grandpa and three great-grandkids."
+    },
+    {
+      "target": "prop:porch_flag",
+      "text": "Hal put the flag out every morning of his life after the Navy."
+    },
+    {
+      "target": "puppet:jenna",
+      "text": "Jenna was thirty and passed the kids up onto Hal's lap one by one, the baby last."
+    }
+  ]
+}

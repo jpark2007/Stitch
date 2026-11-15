@@ -1,0 +1,369 @@
+{
+  "memoryId": "ben_bike_1987",
+  "cast": [
+    "rick",
+    "ben"
+  ],
+  "props": [
+    "ben_bike"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "macosko_driveway_1987",
+      "marks": {},
+      "start": {
+        "ben": {
+          "at": "garage",
+          "facing": "right"
+        },
+        "rick": {
+          "at": "beside_bike",
+          "facing": "left"
+        }
+      },
+      "propStart": {
+        "ben_bike": {
+          "at": "bike_spot",
+          "state": "quiet"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 2.4,
+          "move": "dolly_to",
+          "target": "ben",
+          "dur": 1.2
+        },
+        {
+          "t": 6.0,
+          "move": "dolly_to",
+          "target": "rick",
+          "dur": 1.2
+        },
+        {
+          "t": 7.8,
+          "move": "pan_to",
+          "target": "ben_bike",
+          "dur": 1.5
+        },
+        {
+          "t": 10.0,
+          "move": "pull_back",
+          "dur": 1.2
+        }
+      ],
+      "actions": [
+        {
+          "t": 0.5,
+          "who": "ben",
+          "do": "get_in",
+          "what": "ben_bike",
+          "socket": "driver",
+          "id": "on_bike"
+        },
+        {
+          "t": 3.8,
+          "who": "rick",
+          "do": "walk_to",
+          "to": "behind_bike",
+          "id": "round_back"
+        },
+        {
+          "t": 5.4,
+          "who": "rick",
+          "do": "turn_to",
+          "target": "ben"
+        },
+        {
+          "t": 6.4,
+          "who": "rick",
+          "do": "pose",
+          "pose": "reach",
+          "dur": 0.8,
+          "id": "steady"
+        },
+        {
+          "t": 7.8,
+          "who": "ben",
+          "do": "drive_to",
+          "what": "ben_bike",
+          "to": "street_end",
+          "id": "ride"
+        },
+        {
+          "t": 7.8,
+          "who": "rick",
+          "do": "run_to",
+          "to": "street_end",
+          "id": "run_behind"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "It was a blue bike with a bell, two sizes too big because I said he would grow into it.",
+          "source": "telling:rick:s1",
+          "cue": "on_bike",
+          "cueWord": "blue"
+        },
+        {
+          "t": 5.0,
+          "text": "I ran behind him holding the seat up and down the whole street.",
+          "source": "telling:rick:s2",
+          "cue": "steady",
+          "cueWord": "holding"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Spring 1987. A blue bike two sizes too big, and Dad running behind, holding the seat."
+    },
+    {
+      "id": "s2",
+      "set": "oak_corner_1987",
+      "marks": {
+        "chase_in": [
+          0.05,
+          0.0
+        ]
+      },
+      "start": {
+        "ben": {
+          "at": "street_in",
+          "in": "ben_bike.driver",
+          "facing": "right"
+        },
+        "rick": {
+          "at": "chase_in",
+          "facing": "right"
+        }
+      },
+      "propStart": {
+        "ben_bike": {
+          "at": "street_in",
+          "state": "quiet"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 2.0,
+          "move": "dolly_to",
+          "target": "rick",
+          "dur": 1.2
+        },
+        {
+          "t": 4.2,
+          "move": "dolly_to",
+          "target": "ben",
+          "dur": 1.2
+        },
+        {
+          "t": 8.5,
+          "move": "pull_back",
+          "dur": 1.5
+        }
+      ],
+      "actions": [
+        {
+          "t": 0.3,
+          "who": "ben",
+          "do": "drive_to",
+          "what": "ben_bike",
+          "to": "halfway",
+          "id": "wobble"
+        },
+        {
+          "t": 0.3,
+          "who": "rick",
+          "do": "run_to",
+          "to": "let_go",
+          "id": "chase"
+        },
+        {
+          "t": 1.6,
+          "who": "rick",
+          "do": "pose",
+          "pose": "arms_raised",
+          "dur": 1.2,
+          "id": "let_go"
+        },
+        {
+          "t": 2.2,
+          "do": "set_state",
+          "what": "ben_bike",
+          "state": "ringing",
+          "id": "bell"
+        },
+        {
+          "t": 2.2,
+          "who": "ben",
+          "do": "drive_to",
+          "what": "ben_bike",
+          "to": "corner",
+          "id": "half_block"
+        },
+        {
+          "t": 3.4,
+          "who": "rick",
+          "do": "follow",
+          "target": "ben",
+          "id": "catch_up"
+        },
+        {
+          "t": 4.4,
+          "do": "set_state",
+          "what": "ben_bike",
+          "state": "quiet"
+        },
+        {
+          "t": 4.6,
+          "who": "ben",
+          "do": "get_out",
+          "what": "ben_bike",
+          "id": "hop_off"
+        },
+        {
+          "t": 5.4,
+          "who": "ben",
+          "do": "wave",
+          "target": "rick",
+          "dur": 1.2,
+          "id": "wave"
+        },
+        {
+          "t": 8.4,
+          "who": "rick",
+          "do": "hug",
+          "target": "ben",
+          "dur": 1.8,
+          "id": "hug"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "When I finally let go he didn't notice for half a block.",
+          "source": "telling:rick:s3",
+          "cue": "let_go",
+          "cueWord": "go"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Dad let go. Ben kept pedalling for half a block and rang the bell all the way to the corner."
+    }
+  ],
+  "narrations": {
+    "ben": {
+      "s1": [
+        {
+          "t": 5.6,
+          "text": "I just didn't want to stop, because stopping meant falling.",
+          "source": "telling:ben:s2",
+          "cue": "ride",
+          "cueWord": "stop"
+        }
+      ],
+      "s2": [
+        {
+          "t": 0,
+          "text": "I noticed.",
+          "source": "telling:ben:s1",
+          "cue": "let_go",
+          "cueWord": "noticed"
+        },
+        {
+          "t": 2.0,
+          "text": "I rang the bell the whole way to the corner so he would know I was fine.",
+          "source": "telling:ben:s3",
+          "cue": "bell",
+          "cueWord": "rang"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "ride_tab",
+      "kind": "pull_tab",
+      "label": "Pull to push Ben off down the street",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.2,
+        0.82
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 7.8,
+        "to": 9.8,
+        "targets": [
+          "prop:ben_bike",
+          "puppet:ben",
+          "puppet:rick"
+        ]
+      }
+    },
+    {
+      "id": "bell_tab",
+      "kind": "pull_tab",
+      "label": "Pull to ring the bell",
+      "shot": "s2",
+      "page": "stage",
+      "at": [
+        0.8,
+        0.78
+      ],
+      "drives": {
+        "type": "prop_state",
+        "prop": "ben_bike",
+        "states": [
+          "quiet",
+          "ringing"
+        ]
+      }
+    },
+    {
+      "id": "wheel_tab",
+      "kind": "pull_tab",
+      "label": "Pull to spin the back wheel",
+      "shot": "s1",
+      "page": "story",
+      "at": [
+        0.3,
+        0.82
+      ],
+      "drives": {
+        "type": "prop_part",
+        "prop": "ben_bike",
+        "part": "wheel_back",
+        "channel": "rot",
+        "range": [
+          0,
+          6.28
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:rick",
+      "text": "Rick was thirty-nine. He bought the bike two sizes too big on purpose, then ran the whole street behind it holding the seat."
+    },
+    {
+      "target": "puppet:ben",
+      "text": "Ben was six and could barely reach the pedals. When Dad let go, he rang the bell all the way to the corner so Dad would know he was fine."
+    },
+    {
+      "target": "prop:ben_bike",
+      "text": "Ben's first bike: blue, with a silver bell, two sizes too big. He rode it until he really did grow into it."
+    }
+  ]
+}

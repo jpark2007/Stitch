@@ -1,0 +1,127 @@
+[
+  {
+    "id": "soda_table",
+    "name": "the little soda table",
+    "description": "a small round cafe table with a white cloth",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#efe6d2",
+    "aspect": 1.0,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "top_l": [
+        0.32,
+        0.12
+      ],
+      "top_r": [
+        0.68,
+        0.12
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "hall_chair_hal",
+    "name": "Hal's chair",
+    "description": "a bentwood cafe chair",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#7a4b2e",
+    "aspect": 0.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "seat": [
+        0.5,
+        0.5
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "hall_chair_evelyn",
+    "name": "Evelyn's chair",
+    "description": "a bentwood cafe chair",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#7a4b2e",
+    "aspect": 0.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "seat": [
+        0.5,
+        0.5
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "evelyn_soda",
+    "name": "Evelyn's soda",
+    "description": "a tall soda fountain cup with two paper straws",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": null
+    },
+    "color": "#e9c46a",
+    "aspect": 0.6,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.6
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "soda_bottle",
+    "name": "the soda bottle",
+    "description": "a green glass soda bottle",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": null
+    },
+    "color": "#5f8f6a",
+    "aspect": 0.4,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.55
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  }
+]

@@ -1,0 +1,96 @@
+[
+  {
+    "id": "orchard_garden_2000",
+    "name": "the orchard",
+    "description": "an apple orchard with a white wedding arch",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 0.95,
+        "color": "#8fae6a"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.6,
+        "color": "#e9dfc9"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#5f7a45"
+      }
+    ],
+    "marks": {
+      "aisle_start": [
+        0.12,
+        0.0
+      ],
+      "bench_spot": [
+        0.32,
+        0.0
+      ],
+      "aisle_mid": [
+        0.48,
+        0.0
+      ],
+      "beside_groom": [
+        0.64,
+        0.0
+      ],
+      "arch": [
+        0.74,
+        0.0
+      ]
+    }
+  },
+  {
+    "id": "reception_tent_2000",
+    "name": "the reception tent",
+    "description": "a white tent strung with lights",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 1.0,
+        "color": "#efe6d2"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.7,
+        "color": "#c7a56b"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.08,
+        "color": "#6b4a35"
+      }
+    ],
+    "marks": {
+      "tent_left": [
+        0.15,
+        0.0
+      ],
+      "floor_left": [
+        0.35,
+        0.0
+      ],
+      "floor_mid": [
+        0.5,
+        0.0
+      ],
+      "floor_right": [
+        0.65,
+        0.0
+      ],
+      "tent_right": [
+        0.85,
+        0.0
+      ]
+    }
+  }
+]

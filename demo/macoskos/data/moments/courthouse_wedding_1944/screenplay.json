@@ -1,0 +1,335 @@
+{
+  "memoryId": "courthouse_wedding_1944",
+  "cast": [
+    "harold",
+    "evelyn"
+  ],
+  "props": [
+    "hal_sailor_cap",
+    "white_roses"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "courthouse_steps_1944",
+      "start": {
+        "harold": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "evelyn": {
+          "at": "top_2",
+          "holding": "white_roses",
+          "facing": "left"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 3.2,
+          "move": "pan_to",
+          "target": "evelyn",
+          "dur": 1.4
+        },
+        {
+          "t": 6.2,
+          "move": "dolly_to",
+          "target": "evelyn",
+          "dur": 1.2
+        },
+        {
+          "t": 8.8,
+          "move": "pull_back",
+          "dur": 1.5
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "day",
+          "dur": 1.0
+        },
+        {
+          "t": 1.4,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "harold",
+          "to": "foot_left",
+          "id": "arrive"
+        },
+        {
+          "t": 3.4,
+          "do": "walk_to",
+          "who": "evelyn",
+          "to": "top_1",
+          "id": "bride"
+        },
+        {
+          "t": 4.4,
+          "do": "walk_to",
+          "who": "evelyn",
+          "to": "step_1"
+        },
+        {
+          "t": 5.4,
+          "do": "walk_to",
+          "who": "evelyn",
+          "to": "meet"
+        },
+        {
+          "t": 6.6,
+          "do": "hold",
+          "who": "evelyn",
+          "what": "white_roses",
+          "id": "roses"
+        },
+        {
+          "t": 7.8,
+          "do": "turn_to",
+          "who": "harold",
+          "target": "evelyn",
+          "id": "meet"
+        },
+        {
+          "t": 9.4,
+          "do": "lean_toward",
+          "who": "evelyn",
+          "target": "harold",
+          "dur": 1.4
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.15,
+          "text": "I had three days of leave, so we didn't wait.",
+          "source": "telling:harold:s1",
+          "cue": "arrive",
+          "cueWord": "leave"
+        },
+        {
+          "t": 5.85,
+          "text": "Evelyn carried white roses from her mother's garden.",
+          "source": "telling:harold:s3",
+          "cue": "roses",
+          "cueWord": "roses"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Spring 1944. Hal had three days of shore leave, and Evelyn had an armful of white roses."
+    },
+    {
+      "id": "s2",
+      "set": "courthouse_steps_1944",
+      "start": {
+        "harold": {
+          "at": "top_1",
+          "facing": "right"
+        },
+        "evelyn": {
+          "at": "top_2",
+          "holding": "white_roses",
+          "facing": "left"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 0.8,
+          "move": "pan_to",
+          "target": "harold",
+          "dur": 1.4
+        },
+        {
+          "t": 5.0,
+          "move": "pull_back",
+          "dur": 1.6
+        }
+      ],
+      "actions": [
+        {
+          "t": 0.6,
+          "do": "lean_toward",
+          "who": "harold",
+          "target": "evelyn",
+          "dur": 1.6,
+          "id": "vows"
+        },
+        {
+          "t": 3.0,
+          "do": "hug",
+          "who": "evelyn",
+          "target": "harold",
+          "dur": 1.8,
+          "id": "kiss"
+        },
+        {
+          "t": 5.2,
+          "do": "walk_to",
+          "who": "harold",
+          "to": "step_1",
+          "id": "down"
+        },
+        {
+          "t": 5.2,
+          "do": "confetti",
+          "at": "step_1",
+          "dur": 4.5
+        },
+        {
+          "t": 6.2,
+          "do": "walk_to",
+          "who": "harold",
+          "to": "foot_left"
+        },
+        {
+          "t": 6.3,
+          "do": "walk_to",
+          "who": "evelyn",
+          "to": "top_1"
+        },
+        {
+          "t": 7.2,
+          "do": "walk_to",
+          "who": "evelyn",
+          "to": "step_1"
+        },
+        {
+          "t": 8.1,
+          "do": "walk_to",
+          "who": "evelyn",
+          "to": "meet"
+        },
+        {
+          "t": 8.4,
+          "do": "pose",
+          "who": "harold",
+          "pose": "arms_raised",
+          "dur": 1.6,
+          "id": "cheer"
+        },
+        {
+          "t": 9.4,
+          "do": "hold",
+          "who": "evelyn",
+          "what": "white_roses"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.35,
+          "text": "My shipmates stood up for me in their dress blues on the courthouse steps.",
+          "source": "telling:harold:s2",
+          "cue": "vows",
+          "cueWord": "shipmates"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Four sailors in dress blues, one bride, and a whole sack of rice."
+    }
+  ],
+  "narrations": {
+    "evelyn": {
+      "s1": [
+        {
+          "t": 0.0,
+          "text": "Hal makes it sound like a parade.",
+          "source": "telling:evelyn:s1",
+          "cue": "arrive",
+          "cueWord": "parade"
+        },
+        {
+          "t": 5.35,
+          "text": "I held on to those roses the whole time, because they were Mother's.",
+          "source": "telling:evelyn:s2",
+          "cue": "roses",
+          "cueWord": "roses"
+        }
+      ],
+      "s2": [
+        {
+          "t": 3.45,
+          "text": "His shipmates threw a whole sack of rice at us on the way down,",
+          "source": "telling:evelyn:s3",
+          "cue": "down",
+          "cueWord": "rice"
+        },
+        {
+          "t": 7.9,
+          "text": "and Hal laughed so hard he nearly lost his cap.",
+          "source": "telling:evelyn:s4",
+          "cue": "cheer",
+          "cueWord": "laughed"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "roses_tab",
+      "kind": "pull_tab",
+      "label": "Pull to lift Evelyn's roses",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.16,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 6.6,
+        "to": 8.2,
+        "targets": [
+          "puppet:evelyn",
+          "prop:white_roses"
+        ]
+      }
+    },
+    {
+      "id": "steps_tab",
+      "kind": "pull_tab",
+      "label": "Pull to send them down the steps",
+      "shot": "s2",
+      "page": "stage",
+      "at": [
+        0.84,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 5.2,
+        "to": 10.4,
+        "targets": [
+          "puppet:harold",
+          "puppet:evelyn",
+          "prop:white_roses",
+          "prop:hal_sailor_cap"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:harold",
+      "text": "Hal was twenty-three, with three days of shore leave and no intention of wasting one. His shipmates stood up for him in their dress blues."
+    },
+    {
+      "target": "puppet:evelyn",
+      "text": "Evelyn was twenty-one, with her pearl brooch pinned on for the day. She held her mother's roses tight all the way down the steps, rice and all."
+    },
+    {
+      "target": "prop:white_roses",
+      "text": "White roses from her mother's garden, tied with a long white ribbon. Evelyn would not let go of them, because they were Mother's."
+    },
+    {
+      "target": "prop:hal_sailor_cap",
+      "text": "Hal's white sailor cap. When the rice came down he laughed so hard he nearly lost it on the courthouse steps."
+    }
+  ]
+}

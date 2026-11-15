@@ -1,0 +1,51 @@
+[
+  {
+    "id": "ben_bike",
+    "name": "Ben's blue bike",
+    "description": "a blue bicycle with a silver bell, two sizes too big; rigged as a vehicle so its rider can ride it and its wheels spin",
+    "source": "generated",
+    "size": "vehicle",
+    "art": {
+      "body": null,
+      "ringing": null,
+      "wheel": null
+    },
+    "color": "#3f6aa0",
+    "aspect": 1.25,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "driver": [
+        0.4,
+        0.64
+      ]
+    },
+    "parts": {
+      "wheel_back": {
+        "art": "wheel",
+        "at": [
+          0.2,
+          0.85
+        ],
+        "spin": true
+      },
+      "wheel_front": {
+        "art": "wheel",
+        "at": [
+          0.8,
+          0.85
+        ],
+        "spin": true
+      }
+    },
+    "states": {
+      "quiet": {},
+      "ringing": {
+        "body": "ringing"
+      }
+    }
+  }
+]

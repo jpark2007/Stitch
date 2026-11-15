@@ -1,0 +1,31 @@
+[
+  {
+    "id": "rick_umbrella",
+    "name": "Rick's umbrella",
+    "description": "a big black umbrella with a hooked wooden handle",
+    "source": "generated",
+    "size": "carried",
+    "art": {
+      "body": null,
+      "open": null
+    },
+    "color": "#26262b",
+    "aspect": 1.1,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.85
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {
+      "closed": {},
+      "open": {
+        "body": "open"
+      }
+    }
+  }
+]
