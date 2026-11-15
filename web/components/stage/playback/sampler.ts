@@ -504,6 +504,8 @@ export class CompiledTimeline {
       effect,
       active: false,
       progress: 0,
+      time: 0,
+      replaying: false,
     }));
     return {
       t: 0,
@@ -532,7 +534,9 @@ export class CompiledTimeline {
    *
    * Held drives in `options.interactions` apply on top: a scrub samples its
    * targets at its mapped time while every other track stays at t; prop_state
-   * and prop_part drives override that prop's state or part.
+   * and prop_part drives override that prop's state or part. An effect with a
+   * time in `options.effectClock` (a pull tab replaying it) is sampled at that
+   * time instead of t.
    */
   sample(t: number, out: PlaybackFrame, options?: SampleOptions): PlaybackFrame {
     out.t = t;
@@ -555,7 +559,7 @@ export class CompiledTimeline {
     this.applyBindings(out);
     this.applyPropDrives(out, held);
     this.sampleShot(out);
-    this.sampleEffects(out);
+    this.sampleEffects(out, options?.effectClock ?? null);
     this.sampleNarration(out, options?.narrator);
     return out;
   }
@@ -680,7 +684,7 @@ export class CompiledTimeline {
     out.shot = i < 0 ? null : this.shots[i];
   }
 
-  private sampleEffects(out: PlaybackFrame): void {
+  private sampleEffects(out: PlaybackFrame, clock: Float64Array | null): void {
     const t = out.t;
     let active = 0;
     const effects = out.effects as EffectFrame[];
@@ -688,12 +692,18 @@ export class CompiledTimeline {
       const fx = effects[i];
       const start = fx.effect.t;
       const dur = fx.effect.dur ?? 0;
-      if (t < start) {
+      // A pull tab replaying this effect gives it its own clock (NaN: none).
+      const own = clock !== null && i < clock.length ? clock[i] : Number.NaN;
+      const replaying = own === own;
+      const et = replaying ? own : t;
+      fx.time = et;
+      fx.replaying = replaying;
+      if (et < start) {
         fx.active = false;
         fx.progress = 0;
-      } else if (t < start + dur) {
+      } else if (et < start + dur) {
         fx.active = true;
-        fx.progress = (t - start) / dur;
+        fx.progress = (et - start) / dur;
         active++;
       } else {
         fx.active = false;
@@ -873,6 +883,7 @@ export class CompiledTimeline {
       part: d.part ?? null,
       channel: d.channel ?? "rot",
       range: d.range && d.range.length >= 2 ? [d.range[0], d.range[1]] : [0, 1],
+      effects: d.type === "scrub" ? tabEffects(this.timeline, d.from ?? 0, d.to ?? this.duration) : [],
     };
     this.interactionIndex.set(ci.id, index);
 
@@ -900,6 +911,27 @@ export class CompiledTimeline {
     this.driveSlots[index] = drive;
     return ci;
   }
+}
+
+/** Slack (s) on a scrub's from..to when deciding which effects it plays (the compiler rounds times). */
+const TAB_EFFECT_EPS = 1e-6;
+
+/**
+ * The effects a scrub tab over timeline time from..to plays when pulled:
+ * indices into Timeline.effects of every effect but time_of_day (a change of
+ * light, not a happening) whose t lies in from..to. The compiled timeline does
+ * not say which tab an effect belongs to, so the tab's window is the rule.
+ */
+export function tabEffects(timeline: Timeline, from: number, to: number): number[] {
+  const out: number[] = [];
+  const effects = timeline.effects ?? [];
+  const lo = Math.min(from, to) - TAB_EFFECT_EPS;
+  const hi = Math.max(from, to) + TAB_EFFECT_EPS;
+  for (let i = 0; i < effects.length; i++) {
+    const e = effects[i];
+    if (e.kind !== "time_of_day" && Number.isFinite(e.t) && e.t >= lo && e.t <= hi) out.push(i);
+  }
+  return out;
 }
 
 const compiledCache = new WeakMap<Timeline, CompiledTimeline>();

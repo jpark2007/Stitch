@@ -14,11 +14,20 @@
  * element, a teller with no recording yet, a blocked autoplay or a load
  * error) never stops the scene; it just plays silently.
  *
+ * Pulling a scrub tab past an effect it owns (CompiledInteraction.effects:
+ * confetti thrown in the hug the tab replays) replays that effect from its
+ * start, on its own clock that runs from the moment the pull reached it, at
+ * the scene's rate, for its duration and the particles' flight, whether the
+ * tab is still held or not. Pulling again (or back and forward again within
+ * one pull) throws it again. The scene's own playback is untouched: once it
+ * plays into an effect, or is seeked, restarted or loops, that effect is on
+ * scene time again, exactly as without the tab.
+ *
  * Node runs this file directly for the unit tests, so it may only import types.
  */
 
 import type { CompiledTimeline } from "./sampler";
-import type { InteractionInput, NarratorTrack, PlaybackFrame, SampleOptions } from "./types";
+import type { CompiledInteraction, InteractionInput, NarratorTrack, PlaybackFrame, SampleOptions } from "./types";
 
 /** The subset of HTMLAudioElement the controller uses. */
 export interface AudioLike {
@@ -90,6 +99,15 @@ export interface ReleaseOptions {
   settle?: "return" | "seek";
 }
 
+/** Seconds a replayed effect's clock runs past its duration, so particles in flight land or fade. */
+const REPLAY_TAIL = 8;
+/** Duration of an effect with none, as the stage draws it (EffectBindings). */
+const REPLAY_DEFAULT_DUR = 3;
+/** Within one pull, how far (s) the tab must go back before an effect it passed can be thrown again. */
+const REARM = 0.2;
+/** Slack (s) on reaching an effect's time, for rounding in scrub travel. */
+const REACH_EPS = 1e-6;
+
 const MIN_RATE = 0.1;
 const MAX_RATE = 4;
 
@@ -122,6 +140,16 @@ export class PlaybackController {
   private scrubHolds = 0;
   private resumeAfterScrub = false;
 
+  // Effects replayed by a pull tab, per Timeline.effects index: the effect's
+  // own clock (NaN: scene time; what sample() reads), the clock at its anchor,
+  // the wall time (ms) of that anchor, and where the clock stops.
+  private readonly effectClock: Float64Array;
+  private readonly replayFrom: Float64Array;
+  private readonly replayWall: Float64Array;
+  private readonly replayEnd: Float64Array;
+  /** Per held scrub tab with effects: 1 where ci.effects[j] can still be thrown by this pull. */
+  private readonly armed = new Map<string, Uint8Array>();
+
   // Audio
   private audio: AudioLike | null = null;
   private audioUrl: string | null = null;
@@ -151,7 +179,12 @@ export class PlaybackController {
     this.resolveAudio = options.resolveAudio ?? null;
     this.driftTolerance = options.driftTolerance ?? 0.2;
     this.narratorId = compiled.narrator(options.narrator)?.id ?? null;
-    this.sampleOptions = { narrator: this.narratorId, interactions: this.held };
+    const effects = compiled.timeline.effects?.length ?? 0;
+    this.effectClock = new Float64Array(effects).fill(Number.NaN);
+    this.replayFrom = new Float64Array(effects);
+    this.replayWall = new Float64Array(effects);
+    this.replayEnd = new Float64Array(effects);
+    this.sampleOptions = { narrator: this.narratorId, interactions: this.held, effectClock: this.effectClock };
     this.t = this.clampTime(options.time ?? 0);
     this.status = this.buildStatus();
     if (options.audio) this.attachAudio(options.audio);
@@ -199,7 +232,10 @@ export class PlaybackController {
   /** Starts playback. Call from a user gesture so the browser lets audio start. */
   play(): void {
     if (this.compiled.duration <= 0) return;
-    if (this.t >= this.compiled.duration) this.t = 0;
+    if (this.t >= this.compiled.duration) {
+      this.t = 0;
+      this.clearReplays();
+    }
     if (this.audioState === "blocked") this.audioState = "ready";
     this.ended = false;
     if (this.scrubHolds > 0) {
@@ -233,6 +269,7 @@ export class PlaybackController {
   seek(t: number): void {
     this.t = this.clampTime(t);
     this.ended = false;
+    this.clearReplays();
     this.anchor();
     this.dirty = true;
     if (this.audio && this.audioUrl) this.seekAudio();
@@ -245,6 +282,7 @@ export class PlaybackController {
     const r = clampRate(rate);
     if (r === this.rate) return;
     this.advance();
+    this.rebaseReplays();
     this.rate = r;
     this.anchor();
     if (this.audio) this.audio.playbackRate = r;
@@ -301,6 +339,7 @@ export class PlaybackController {
       }
     }
     entry.value = value;
+    if (ci.effects.length > 0) this.pullEffects(ci, value);
     this.dirty = true;
     this.sampleNow();
     this.emitStatus();
@@ -311,6 +350,7 @@ export class PlaybackController {
     const i = this.held.findIndex((h) => h.id === id);
     if (i < 0) return;
     const [entry] = this.held.splice(i, 1);
+    this.armed.delete(id);
     const ci = this.compiled.interaction(id);
     if (ci?.type === "scrub") {
       this.scrubHolds--;
@@ -334,6 +374,94 @@ export class PlaybackController {
   /** The value a drive is held at, or null when it is not held. */
   heldValue(id: string): number | null {
     return this.held.find((h) => h.id === id)?.value ?? null;
+  }
+
+  /** Throws each effect the tab's travel has reached this pull; re-arms one the tab went back before. */
+  private pullEffects(ci: CompiledInteraction, value: number): void {
+    let armed = this.armed.get(ci.id);
+    if (!armed) {
+      armed = new Uint8Array(ci.effects.length).fill(1);
+      this.armed.set(ci.id, armed);
+    }
+    const st = this.compiled.scrubTime(ci, value);
+    const effects = this.compiled.timeline.effects ?? [];
+    for (let j = 0; j < ci.effects.length; j++) {
+      const k = ci.effects[j];
+      const e = effects[k];
+      if (!e) continue;
+      if (armed[j] === 1) {
+        if (st >= e.t - REACH_EPS) {
+          armed[j] = 0;
+          this.startReplay(k, e.t, e.dur);
+        }
+      } else if (st < e.t - REARM) {
+        armed[j] = 1;
+      }
+    }
+  }
+
+  /** Starts effect k's own clock at its start time, now. */
+  private startReplay(k: number, start: number, dur: number | null | undefined): void {
+    this.effectClock[k] = start;
+    this.replayFrom[k] = start;
+    this.replayWall[k] = this.now();
+    this.replayEnd[k] = start + Math.max(0, dur ?? REPLAY_DEFAULT_DUR) + REPLAY_TAIL;
+    this.dirty = true;
+  }
+
+  /** Moves every running replay's clock to wall time `nowMs`. */
+  private advanceReplays(nowMs?: number): void {
+    const clock = this.effectClock;
+    let wall = Number.NaN;
+    for (let k = 0; k < clock.length; k++) {
+      const c = clock[k];
+      if (c !== c || c >= this.replayEnd[k]) continue;
+      if (wall !== wall) wall = nowMs ?? this.now();
+      const elapsed = wall > this.replayWall[k] ? wall - this.replayWall[k] : 0;
+      const next = Math.min(this.replayEnd[k], this.replayFrom[k] + (elapsed / 1000) * this.rate);
+      if (next !== c) {
+        clock[k] = next;
+        this.dirty = true;
+      }
+    }
+  }
+
+  /** Re-anchors running replays at now, before the rate changes. */
+  private rebaseReplays(): void {
+    this.advanceReplays();
+    const wall = this.now();
+    for (let k = 0; k < this.effectClock.length; k++) {
+      const c = this.effectClock[k];
+      if (c !== c) continue;
+      this.replayFrom[k] = c;
+      this.replayWall[k] = wall;
+    }
+  }
+
+  /** Puts every effect back on scene time. */
+  private clearReplays(): void {
+    const clock = this.effectClock;
+    for (let k = 0; k < clock.length; k++) {
+      if (clock[k] === clock[k]) {
+        clock[k] = Number.NaN;
+        this.dirty = true;
+      }
+    }
+  }
+
+  /** The scene played from `from` to `to`: an effect it played into is on scene time again. */
+  private sceneReached(from: number, to: number): void {
+    const clock = this.effectClock;
+    if (clock.length === 0 || !(to > from)) return;
+    const effects = this.compiled.timeline.effects ?? [];
+    for (let k = 0; k < clock.length; k++) {
+      if (clock[k] !== clock[k]) continue;
+      const t = effects[k]?.t;
+      if (t !== undefined && from < t && to >= t) {
+        clock[k] = Number.NaN;
+        this.dirty = true;
+      }
+    }
   }
 
   // ------------------------------------------------------------ audio
@@ -469,6 +597,7 @@ export class PlaybackController {
       if (this.t >= d) {
         if (this.loop && d > 0) {
           this.t = this.t % d;
+          this.clearReplays();
           this.anchor(nowMs);
           if (this.audio && this.audioUrl) this.seekAudio();
         } else {
@@ -479,6 +608,7 @@ export class PlaybackController {
       }
       this.syncAudio();
     }
+    this.advanceReplays(nowMs);
     const changed = this.sampleNow();
     if (changed || this.playing) this.emitStatus();
     return changed;
@@ -509,7 +639,9 @@ export class PlaybackController {
     const wall = nowMs ?? this.now();
     // A rAF timestamp can predate a play() made later in the same frame; never run backwards.
     const elapsed = wall > this.anchorWall ? wall - this.anchorWall : 0;
+    const from = this.t;
     this.t = this.anchorT + (elapsed / 1000) * this.rate;
+    this.sceneReached(from, this.t);
   }
 
   private sampleNow(): boolean {

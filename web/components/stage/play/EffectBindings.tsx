@@ -7,7 +7,10 @@
  * - confetti, steam, rain, smoke: one <PaperEffect> each, emitting from `at`
  *   (stage space) between t and t + dur. Particles are pure functions of
  *   stage time, which here is the player's scene time, so they pause, scrub
- *   and freeze with the scene.
+ *   and freeze with the scene. An effect a pull tab is replaying (the
+ *   frame's `replaying`) plays on its own clock instead (`time`: from its
+ *   start the moment the pull reached it), so confetti thrown in the hug a
+ *   tab replays flies when the tab is pulled.
  * - time_of_day: with the host's light `grade` (the standalone stage), the
  *   frame's timeOfDayFrom -> timeOfDay blend by timeOfDayMix re-lights the
  *   lamp (./grade: night dims and cools it, dusk warms it and keeps the rim).
@@ -15,9 +18,11 @@
  *   instead (dawn and dusk warm the paper, night adds a blue wash).
  */
 
-import { useFrame } from "@react-three/fiber";
-import { useMemo, useRef } from "react";
+import { useFrame, useThree } from "@react-three/fiber";
+import { useMemo, useRef, type ReactNode } from "react";
 import { Color, type HemisphereLight } from "three";
+import type { TimelineEffect } from "@/lib/types";
+import { StageClock, useStageTime } from "../clock";
 import { PaperEffect, type EffectKind } from "../Effects";
 import { blendGrade, type StageGrade } from "./grade";
 import { PRIORITY, useScene } from "./SceneProvider";
@@ -50,20 +55,39 @@ export function EffectBindings({ grade = null }: EffectBindingsProps) {
       {effects.map(({ e, i }) => {
         const at = e.at && e.at.length >= 3 ? ([e.at[0], e.at[1], e.at[2]] as [number, number, number]) : ([0, 0.4, 0.5] as [number, number, number]);
         return (
-          <PaperEffect
-            key={i}
-            kind={e.kind as EffectKind}
-            origin={at}
-            ground={e.kind === "confetti" || e.kind === "rain" ? 0 : undefined}
-            start={e.t}
-            end={e.t + (e.dur ?? DEFAULT_DUR)}
-            seed={i + 1}
-          />
+          <EffectClock key={i} index={i} effect={e}>
+            <PaperEffect
+              kind={e.kind as EffectKind}
+              origin={at}
+              ground={e.kind === "confetti" || e.kind === "rain" ? 0 : undefined}
+              start={e.t}
+              end={e.t + (e.dur ?? DEFAULT_DUR)}
+              seed={i + 1}
+            />
+          </EffectClock>
         );
       })}
       {grade ? <GradeBinding grade={grade} /> : hasTimeOfDay && <TimeOfDayLight />}
     </>
   );
+}
+
+/**
+ * Stage time for `effect` (Timeline.effects[index]): the scene's own stage
+ * time, except while a pull tab replays it, when it is its replay clock.
+ */
+function EffectClock({ index, effect, children }: { index: number; effect: TimelineEffect; children: ReactNode }) {
+  const { frame } = useScene();
+  const sceneNow = useStageTime();
+  const get = useThree((s) => s.get);
+  const source = useMemo(
+    () => () => {
+      const fx = frame.effects[index];
+      return fx !== undefined && fx.effect === effect && fx.replaying ? fx.time : sceneNow(get());
+    },
+    [frame, index, effect, sceneNow, get],
+  );
+  return <StageClock source={source}>{children}</StageClock>;
 }
 
 /** Blends the frame's time of day into the host's light grade (day when there is none). */
