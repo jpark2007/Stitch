@@ -190,7 +190,7 @@ Its bounded interview question can be relayed after the save. Studio follow-ups
 accept text, prop review only `KEEP`, and person matching only `YES` or `NO`.
 Other prop edits require the web app.
 
-The interview has a 20-second cancellation deadline, 32 persisted model calls and
+The interview has a 20-second cancellation deadline, 32 model calls per invocation and
 a recursion bound. The tick stops starting contacts after 25 seconds. This is a
 soft batch bound: in-flight bounded model, relay, database and outbound work must
 settle. Framework tools already running cannot be forcibly undone. Cancellation
@@ -354,8 +354,8 @@ Otherwise they use forty fixed neutral questions in a global `questionBank`.
 That collection contains no family data and is intentionally shared; all personal
 question and notification reads remain family-scoped. Previously attempted question
 keys are never reasked for the same family/contact, including cancelled attempts.
-A draft, active studio, incoming receipt queue, unanswered chain, or exhausted
-32-call lifetime interview budget prevents another proactive prompt. Notification
+A draft, active studio, incoming receipt queue or unanswered chain prevents another
+proactive prompt. Cumulative model-call telemetry does not block scheduling. Notification
 history inspection is capped at 1000; reaching the cap stops further scheduling.
 
 Family-scoped `notifications` reserve a stable question/contact identity before
@@ -393,3 +393,17 @@ Tests in `tests/channels/test_scheduler.py` cover due/quiet/DST/cadence behavior
 global-bank/family-notification isolation, second-telling selection, concurrency,
 lost ACK, STOP, direct-space proof and the bounded next-story lifecycle. They use
 mongomock and fake senders/studios, never actual outreach or live model services.
+
+### Proven preflight recovery
+
+Missing model configuration and drafts exceeding 10 photos or 20,000 characters
+produce fixed replies without changing the draft. The worker remains usable.
+There are no daily model, studio or transcription quotas. Interview calls retain
+the 32-call per-invocation bound, timeout and recursion safeguards. A known bound
+in the worker's read-only interview completes that receipt without retrying any
+paid calls; other provider failures remain held for reconciliation.
+
+For an unexpected construction failure marked `preflight_only`, stop worker ticks
+and use `db.conversations.resume_preflight_worker(db, family_id, contact_id)`. It
+requires durable pre-effect proof and refuses runs, pending answers, unsettled
+outbox or voice/transcription work. It is not a generic reset for uncertain work.

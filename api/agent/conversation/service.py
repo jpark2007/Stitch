@@ -15,6 +15,18 @@ import schemas
 from db import conversations, media, memories
 
 
+class ModelConfigurationUnavailable(RuntimeError):
+    """A definite pre-provider configuration failure; never an uncertain call."""
+
+
+def preflight_model_configuration():
+    from agent.studio import make_model
+    try:
+        return make_model()  # Constructs configuration only; makes no request.
+    except (RuntimeError, ValueError):
+        raise ModelConfigurationUnavailable("Story model configuration is unavailable") from None
+
+
 def _worker_only() -> None:
     try:
         asyncio.get_running_loop()
@@ -37,6 +49,7 @@ class ConversationService:
         self.db = db
         self.context = context
         self._runs = runs
+        self._production_runs = runs is None
         self._state()
 
     @classmethod
@@ -142,6 +155,8 @@ class ConversationService:
                                             question=question.text if question else None,
                                             memory_id=question.memory_id if question else None,
                                             participant_ids=[self.context.person_id])
+        if self._production_runs:
+            preflight_model_configuration()
         reserved = self._update(row, {"status": "submitting"}, status="draft")
         try:
             # Recheck STOP after acquiring the durable reservation, before side effects.
@@ -184,6 +199,16 @@ class ConversationService:
         self._state()
         self._update(row, {"draft": draft}, status="draft")
         return {"photoCount": len(combined)}
+
+    def preflight_draft_input(self, text: str, photo_ids: list[str]) -> None:
+        """Validate the entire incoming batch before either text or photos mutate."""
+        row = self._state()
+        if row["status"] != "draft":
+            raise ValueError("Draft is not open")
+        combined = "\n".join(x for x in (row["draft"].get("text", ""), text.strip()) if x)
+        if len(combined) > 20_000:
+            raise ValueError("Combined story is longer than 20000 characters")
+        self._validate_photos(list(dict.fromkeys([*row["draft"].get("photoIds", []), *photo_ids])))
 
     async def relay_run_events(self, *, timeout: float = 1.0, max_events: int = 50,
                                durable: bool = False) -> list[dict]:

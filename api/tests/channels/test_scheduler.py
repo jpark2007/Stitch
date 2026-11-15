@@ -140,7 +140,7 @@ def complete_story(client, worker):
         assert worker.tick()["blocked"] == 0
 
 
-def test_new_after_actual_terminal_event_preserves_budget_and_archives(scheduled):
+def test_new_after_actual_terminal_event_preserves_telemetry_and_archives(scheduled):
     client, db, worker, _, runs, _ = scheduled
     complete_story(client, worker)
     service = ConversationService.for_contact(db, "family-a", "family-a:alice", runs=runs)
@@ -250,7 +250,7 @@ def test_selected_second_telling_target_cannot_be_reassigned(scheduled):
         service.select_question(other)
 
 
-def test_archive_is_bounded_and_lifetime_budget_never_resets(scheduled):
+def test_archive_is_bounded_and_cumulative_telemetry_never_resets(scheduled):
     _, db, _, _, _, _ = scheduled
     class Immediate:
         serial = 0
@@ -516,3 +516,12 @@ def test_proof_change_during_model_budget_reservation_prevents_provider(schedule
     monkeypatch.setattr(conversations, "take_conversation_model_call", reserve)
     send(client, envelope(provider="imessage"))
     assert worker.tick()["blocked"] == 1 and not calls and not sender.messages
+
+
+def test_cumulative_model_calls_do_not_disable_due_prompt(scheduled):
+    _, db, worker, sender, *_ = scheduled
+    service = ConversationService.for_contact(db, "family-a", "family-a:alice")
+    db.conversations.update_one({"principal": {"$exists": True}}, {"$set": {"modelCalls": 100}})
+    assert worker.tick()["sent"] == 1
+    assert len(sender.messages) == 1
+    assert service._state()["modelCalls"] == 100
