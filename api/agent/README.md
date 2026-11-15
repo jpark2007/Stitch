@@ -35,6 +35,13 @@ Put the variables in `api/.env`. The API (`main.load_env_files`) reads `api/.env
 | `MONGODB_URI` | persistence | `mongodb://localhost:27017` for family data | Runs, checkpoints and `/memories/` notes are kept in memory and lost on restart |
 | `MONGODB_DB` | persistence | `stitch` | |
 | `STITCH_FAKE_DB` | persistence | off | On (`1`, `true`, `yes`): everything is in an in-memory database seeded with the demo family, and `MONGODB_URI` is ignored |
+| `IMAGE_PROVIDER` | art | Higgsfield when `HIGGSFIELD_API_KEY` is set, else OpenAI when `IMAGE_API_KEY` is set | `higgsfield` or `openai`; an unknown value warns and uses the default rule |
+| `HIGGSFIELD_API_KEY` | art | none | Placeholder art (unless `IMAGE_API_KEY` is set). Key ID from console.higgsfield.ai, or `id:secret` |
+| `HIGGSFIELD_API_SECRET` | art | none | Needed unless the key is `id:secret`; missing: placeholder art and an error |
+| `HIGGSFIELD_API_URL` | art | `https://api.higgsfield.ai` | |
+| `HIGGSFIELD_IMAGE_MODEL` | art | `recraft/v4.1/text-to-image` | Also `higgsfield-ai/soul/standard`, `higgsfield-ai/soul/v2/standard` |
+| `HIGGSFIELD_STYLE_SUFFIX` | art | `Flat 2D cut-paper illustration, not a photograph and not a 3D render.` | Appended to every Higgsfield prompt; `none` for no suffix |
+| `HIGGSFIELD_RESULT_HOSTS` | art | `higgsfield.ai` and subdomains | Extra comma-separated hosts results may be downloaded from |
 | `IMAGE_API_KEY` | art | none | Placeholder art |
 | `IMAGE_API_URL` | art | `https://api.openai.com/v1` | |
 | `IMAGE_MODEL` | art | `gpt-image-1` | |
@@ -92,7 +99,7 @@ All commands run from `api/` unless they say otherwise.
    |---|---|---|
    | model | Anthropic `models.retrieve` for each model id, then one `messages.create` with `max_tokens=1` on the studio model (checks billing and credit) | a fraction of a cent |
    | vision | `models.retrieve` for `STITCH_VISION_MODEL` | free |
-   | art | `GET /models/{IMAGE_MODEL}` on the image API (no generation) | free |
+   | art | Higgsfield: `POST /estimate/{HIGGSFIELD_IMAGE_MODEL}` (a price estimate, no generation); OpenAI: `GET /models/{IMAGE_MODEL}` on the image API (no generation) | free |
    | tts | `GET /v1/voices/{id}` on ElevenLabs for each voice | free |
    | persistence | a MongoDB ping (5 second timeout); the default `mongodb://localhost:27017` when `MONGODB_URI` is unset | free |
    | renderer | with `STITCH_WEB_URL` set, opens `{STITCH_WEB_URL}/render/draft-preflight?t=0.000` in headless Chromium with a minimal scene injected (`agent.tools.frames.probe_render_page`) | free |
