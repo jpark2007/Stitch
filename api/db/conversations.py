@@ -89,6 +89,14 @@ def conversation_key(family_id: str, contact_id: str) -> str:
     return hashlib.sha256(json.dumps([family_id, contact_id]).encode()).hexdigest()
 
 
+def has_pending_question(db, family_id: str, contact_id: str) -> bool:
+    """Read the selected contact's question state without creating a draft."""
+    row = db.conversations.find_one(
+        {"_id": conversation_key(family_id, contact_id), "familyId": family_id,
+         "contactId": contact_id}, {"pending": 1})
+    return bool(row and row.get("pending"))
+
+
 def load_conversation(db, family_id: str, contact_id: str, person_id: str, principal: str) -> dict:
     key = conversation_key(family_id, contact_id)
     db.conversations.update_one({"_id": key, "familyId": family_id}, {"$setOnInsert": {
