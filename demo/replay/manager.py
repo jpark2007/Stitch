@@ -67,7 +67,8 @@ from demo.replay.fixtures import (
     validate_story,
 )
 
-logger = logging.getLogger("demo.replay")
+# Under uvicorn's error logger, as api/main.py logs, so the server log shows which story matched.
+logger = logging.getLogger("uvicorn.error").getChild("replay")
 
 # ---------------------------------------------------------------------------------------------
 # The private seams of seed.fake_runs this module relies on. ScriptedRunManager has no public
