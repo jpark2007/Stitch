@@ -118,11 +118,16 @@ def update_conversation(db, family_id: str, contact_id: str, revision: int, fiel
 
 
 def take_conversation_model_call(db, family_id: str, contact_id: str, limit: int) -> None:
+    """Record cumulative telemetry; the callback enforces its invocation limit.
+
+    Keep the limit argument for existing callback instrumentation. No lifetime or
+    daily cap is enforced by this counter.
+    """
     row = db.conversations.find_one_and_update(
         {"_id": conversation_key(family_id, contact_id), "familyId": family_id,
-         "modelCalls": {"$lt": limit}}, {"$inc": {"modelCalls": 1}})
+         "contactId": contact_id}, {"$inc": {"modelCalls": 1}})
     if row is None:
-        raise RuntimeError("Conversation model-call limit reached")
+        raise RuntimeError("Conversation missing for model-call telemetry")
 
 
 def worker_candidates(db, *, limit: int = 5) -> list[tuple[str, str]]:
@@ -204,6 +209,38 @@ def reserve_worker_receipts(db, family_id: str, contact_id: str, ids: list[str],
 def complete_worker_receipts(db, family_id: str, contact_id: str, token: str) -> None:
     db.channelMessages.update_many({"familyId": family_id, "contactId": contact_id,
         "status": "processing", "workerToken": token}, {"$set": {"status": "processed"}})
+
+
+def resume_preflight_worker(db, family_id: str, contact_id: str) -> None:
+    """Operator-only recovery of a proved pre-effect failure; never a generic reset.
+
+    Stop worker ticks before invoking. A failed recovery remains held; old generic
+    reconciliation states have no proof and cannot use this path.
+    """
+    active_contact(db, family_id, contact_id)
+    key = "worker:" + conversation_key(family_id, contact_id)
+    query = {"_id": key, "familyId": family_id, "contactId": contact_id,
+             "status": "blocked", "reason": "preflight_only", "preflightOnly": True}
+    worker = db.conversations.find_one(query)
+    if worker is None:
+        raise RuntimeError("No proven preflight-only failure to resume")
+    state = db.conversations.find_one({"_id": conversation_key(family_id, contact_id), "familyId": family_id})
+    if (not state or state["status"] != "draft" or state.get("runId") or state.get("pending")
+            or state.get("relayBuffer") or state.get("answerStatus") == "sending"
+            or worker.get("pollRun") or any(x["status"] not in {"sent", "cancelled"} for x in worker.get("outbox", []))):
+        raise RuntimeError("Uncertain work cannot be resumed by preflight recovery")
+    receipts = list(db.channelMessages.find({"familyId": family_id, "contactId": contact_id,
+        "status": "processing"}))
+    if any(r.get("workerToken") != worker.get("token") or r.get("receiptType") == "voice"
+           or r.get("transcriptionStatus") for r in receipts):
+        raise RuntimeError("Receipt effects require reconciliation")
+    if db.conversations.update_one({**query, "token": worker["token"]}, {"$set": {"status": "recovering"}}).modified_count != 1:
+        raise RuntimeError("Worker recovery changed")
+    db.channelMessages.update_many({"familyId": family_id, "contactId": contact_id,
+        "status": "processing", "workerToken": worker["token"]},
+        {"$set": {"status": "received"}, "$unset": {"workerToken": ""}})
+    db.conversations.update_one({"_id": key, "familyId": family_id, "status": "recovering", "token": worker["token"]},
+        {"$set": {"status": "idle", "preflightOnly": False}, "$unset": {"reason": ""}})
 
 
 class PhotoConflict(ValueError):

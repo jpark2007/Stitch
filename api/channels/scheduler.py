@@ -64,7 +64,7 @@ def plan(db, service, contact, row, now):
         return None
     state = service._state()
     history = question_bank.notifications(db, c.family_id, c.contact_id)
-    if len(history) >= 1000 or any(item.get("active") for item in history) or state.get("modelCalls", 0) >= 32:
+    if len(history) >= 1000 or any(item.get("active") for item in history):
         return None
     if not cadence_due(contact, row, history, now):
         return None
