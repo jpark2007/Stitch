@@ -526,7 +526,11 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
       transition={{ duration: 0.6, delay: view.opened ? 0.8 : 0, ease: [0.22, 1, 0.36, 1] }}
       style={{ pointerEvents: view.opened ? "auto" : "none" }}
     >
-      <ol className="flex max-w-[calc(100vw-1rem)] items-start gap-1 rounded-full bg-[#140c07]/45 px-3 py-1.5">
+      <ol
+        className="flex max-w-[calc(100vw-1rem)] items-start px-6 py-1"
+        // No pill: a soft, edgeless shade so the light thread still reads where the bar crosses the page.
+        style={{ background: "radial-gradient(closest-side, rgb(20 12 7 / 0.42), rgb(20 12 7 / 0.18) 60%, transparent)" }}
+      >
         {spreads.map((s, i) => {
           const active = view.spread === i + 1;
           // Its dateLine ("Every Christmas Eve") when it has one, else its year.
@@ -545,22 +549,27 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
                 aria-label={s.kind === "end" ? s.title : dated ? `${s.title}, ${date}` : s.title}
                 aria-current={active ? "page" : undefined}
                 title={wordy ? `${s.title}, ${date}` : s.title}
-                className="group flex flex-col items-center gap-1 py-1 outline-offset-2"
+                className="group flex flex-col items-center gap-[7px] pt-1.5 pb-0.5 outline-offset-2"
                 style={{ width: `min(3.5rem, calc((100vw - 3.5rem) / ${spreads.length} - 0.25rem))` }}
               >
+                {/* A stitch, not a dot: a short thread, drawn longer and in terracotta on the open spread. */}
                 <span
-                  className="block rounded-full transition-all duration-300"
-                  style={{
-                    width: active ? 11 : 8,
-                    height: active ? 11 : 8,
-                    background: active ? "#d77a5a" : "rgb(243 230 207 / 0.45)",
-                    boxShadow: active ? "0 0 0 3px rgb(215 122 90 / 0.25)" : "none",
-                  }}
+                  className={
+                    "block rounded-[1px] transition-all duration-300 " +
+                    (active ? "bg-[#d77a5a]" : "bg-[rgb(243_230_207/0.38)] group-hover:bg-[rgb(243_230_207/0.7)]")
+                  }
+                  style={{ width: active ? 30 : 14, maxWidth: "100%", height: 2 }}
                 />
                 <span
-                  className="font-sans text-[0.68rem] font-bold tracking-[0.14em] transition-colors duration-300"
+                  className={
+                    "font-display text-[0.8rem] leading-none font-normal tracking-normal transition-colors duration-300" +
+                    (s.kind === "end" ? " italic" : "")
+                  }
                   style={{
-                    color: active ? "rgb(243 230 207 / 0.92)" : "rgb(243 230 207 / 0.5)",
+                    color: active ? "#f3e6cf" : "rgb(243 230 207 / 0.55)",
+                    fontVariantNumeric: "oldstyle-nums",
+                    // No pill behind it any more: a soft shadow keeps it readable on the wood.
+                    textShadow: "0 1px 2px rgb(0 0 0 / 0.7)",
                     visibility: quiet ? "hidden" : undefined,
                     // A dateLine is cut to the dot's width; the title tells it whole.
                     ...(wordy ? WORDY_LABEL : null),
