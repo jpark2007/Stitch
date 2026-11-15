@@ -24,9 +24,8 @@
  * Keyboards and screen readers get the open spread's controls as plain HTML
  * (MomentKeys): a button per telling and a slider per pull tab.
  *
- * Read-aloud (./ReadAloud.tsx): a "Read aloud" button speaks the open
- * spread's story page in the browser's voice, and a silent telling (no
- * narration recording) has its captions spoken as they are printed.
+ * A silent telling (no narration recording) has its captions spoken as
+ * they are printed (./ReadAloud.tsx).
  *
  * Test hooks: window.__stitchMoment (moment/probe.ts) reports the OPEN
  * spread's player; window.__moment is that player with `debug`; <html
@@ -61,7 +60,7 @@ import { Button, ButtonLink } from "@/components/flow/Button";
 import { hrefs } from "@/components/flow/session";
 import { api, bareMediaId } from "@/lib/api";
 import { installMomentProbe } from "./probe";
-import { ReadAloudButton, SpokenCaptions } from "./ReadAloud";
+import { SpokenCaptions } from "./ReadAloud";
 import { ScenePlayers, type NarrationAudio } from "./tellings";
 
 // three.js needs the browser: load the book on the client only.
@@ -389,14 +388,6 @@ export function MomentBook({
       )}
       {/* On the table from the start: the titles can be read while the book is brought out. */}
       {contents ? <ContentsCard spreads={spreads} view={view} onPick={goTo} /> : null}
-      {/* Per spread (keyed), so a turn hushes the page being read. */}
-      {view.opened && openSpread ? (
-        <ReadAloudButton
-          key={`read:${openSpread.id}`}
-          spread={openSpread}
-          controller={openScene && openSpread.stage ? players.player(openSpread.id) : null}
-        />
-      ) : null}
       {openSpread && openScene && openSpread.stage ? (
         <SpokenCaptions key={`spoken:${openSpread.id}`} controller={players.player(openSpread.id)!} />
       ) : null}

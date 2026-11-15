@@ -1,0 +1,4415 @@
+{
+  "version": 1,
+  "voice": "Eric - Smooth, Trustworthy",
+  "voiceId": "cjVigY5qzO86Huf0OWal",
+  "model": "eleven_multilingual_v2",
+  "recordings": {
+    "810f5e06ca5dcfc595481683f3df19f278c046a6d59e948502daa5ffc3a1c0c8": {
+      "file": "b86c94f5a512ac2813dea31d6550a410c2f93e66b75bd9215b7a28b968ab1ef4.wav",
+      "sha256": "b86c94f5a512ac2813dea31d6550a410c2f93e66b75bd9215b7a28b968ab1ef4",
+      "audioEnd": 23.8326875,
+      "track": {
+        "captions": [
+          {
+            "t": 1.8,
+            "text": "Hal was on shore leave and had two left feet,"
+          },
+          {
+            "t": 7.15,
+            "text": "so he asked me to sit instead of dance."
+          },
+          {
+            "t": 14.65,
+            "text": "We sat at that little table half the night,"
+          },
+          {
+            "t": 17.9,
+            "text": "and he made me laugh so hard I spilled my soda."
+          },
+          {
+            "t": 21.65,
+            "text": "I told my sister that night I'd marry him."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.8,
+            "text": "Hal was on shore leave and had two left feet,",
+            "source": "telling:evelyn:s1",
+            "cue": "arrive",
+            "cueWord": "leave",
+            "words": [
+              {
+                "t": 1.8,
+                "word": "Hal"
+              },
+              {
+                "t": 2.102,
+                "word": "was"
+              },
+              {
+                "t": 2.264,
+                "word": "on"
+              },
+              {
+                "t": 2.427,
+                "word": "shore"
+              },
+              {
+                "t": 2.717,
+                "word": "leave"
+              },
+              {
+                "t": 2.961,
+                "word": "and"
+              },
+              {
+                "t": 3.077,
+                "word": "had"
+              },
+              {
+                "t": 3.228,
+                "word": "two"
+              },
+              {
+                "t": 3.46,
+                "word": "left"
+              },
+              {
+                "t": 3.681,
+                "word": "feet"
+              }
+            ]
+          },
+          {
+            "t": 7.15,
+            "text": "so he asked me to sit instead of dance.",
+            "source": "telling:evelyn:s2",
+            "cue": "sit_ask",
+            "cueWord": "sit",
+            "words": [
+              {
+                "t": 7.15,
+                "word": "so"
+              },
+              {
+                "t": 7.371,
+                "word": "he"
+              },
+              {
+                "t": 7.463,
+                "word": "asked"
+              },
+              {
+                "t": 7.649,
+                "word": "me"
+              },
+              {
+                "t": 7.754,
+                "word": "to"
+              },
+              {
+                "t": 7.87,
+                "word": "sit"
+              },
+              {
+                "t": 8.137,
+                "word": "instead"
+              },
+              {
+                "t": 8.462,
+                "word": "of"
+              },
+              {
+                "t": 8.555,
+                "word": "dance"
+              }
+            ]
+          },
+          {
+            "t": 14.65,
+            "text": "We sat at that little table half the night,",
+            "source": "telling:evelyn:s3",
+            "cue": "joke",
+            "cueWord": "sat",
+            "words": [
+              {
+                "t": 14.65,
+                "word": "We"
+              },
+              {
+                "t": 14.882,
+                "word": "sat"
+              },
+              {
+                "t": 15.138,
+                "word": "at"
+              },
+              {
+                "t": 15.23,
+                "word": "that"
+              },
+              {
+                "t": 15.405,
+                "word": "little"
+              },
+              {
+                "t": 15.66,
+                "word": "table"
+              },
+              {
+                "t": 16.032,
+                "word": "half"
+              },
+              {
+                "t": 16.287,
+                "word": "the"
+              },
+              {
+                "t": 16.415,
+                "word": "night"
+              }
+            ]
+          },
+          {
+            "t": 17.9,
+            "text": "and he made me laugh so hard I spilled my soda.",
+            "source": "telling:evelyn:s4",
+            "cue": "spill",
+            "cueWord": "spilled",
+            "words": [
+              {
+                "t": 17.9,
+                "word": "and"
+              },
+              {
+                "t": 18.109,
+                "word": "he"
+              },
+              {
+                "t": 18.202,
+                "word": "made"
+              },
+              {
+                "t": 18.399,
+                "word": "me"
+              },
+              {
+                "t": 18.527,
+                "word": "laugh"
+              },
+              {
+                "t": 18.817,
+                "word": "so"
+              },
+              {
+                "t": 19.084,
+                "word": "hard"
+              },
+              {
+                "t": 19.305,
+                "word": "I"
+              },
+              {
+                "t": 19.386,
+                "word": "spilled"
+              },
+              {
+                "t": 19.711,
+                "word": "my"
+              },
+              {
+                "t": 19.85,
+                "word": "soda"
+              }
+            ]
+          },
+          {
+            "t": 21.65,
+            "text": "I told my sister that night I'd marry him.",
+            "source": "telling:evelyn:s5",
+            "cue": "sweet",
+            "cueWord": "told",
+            "words": [
+              {
+                "t": 21.65,
+                "word": "I"
+              },
+              {
+                "t": 21.847,
+                "word": "told"
+              },
+              {
+                "t": 22.068,
+                "word": "my"
+              },
+              {
+                "t": 22.219,
+                "word": "sister"
+              },
+              {
+                "t": 22.59,
+                "word": "that"
+              },
+              {
+                "t": 22.765,
+                "word": "night"
+              },
+              {
+                "t": 22.939,
+                "word": "I'd"
+              },
+              {
+                "t": 23.078,
+                "word": "marry"
+              },
+              {
+                "t": 23.345,
+                "word": "him"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "7d24b0d04028c4e162a3be44c5791ba5bed0e6a1a98405500568995fcc9bccfb": {
+      "file": "dbd70461b94f30ce016509af89944e36c60422b91d05b5024de046e6e3cf78cd.wav",
+      "sha256": "dbd70461b94f30ce016509af89944e36c60422b91d05b5024de046e6e3cf78cd",
+      "audioEnd": 17.71875,
+      "track": {
+        "captions": [
+          {
+            "t": 1.35,
+            "text": "I had three days of leave, so we didn't wait."
+          },
+          {
+            "t": 7.05,
+            "text": "Evelyn carried white roses from her mother's garden."
+          },
+          {
+            "t": 14.05,
+            "text": "My shipmates stood up for me in their dress blues on the courthouse steps."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.35,
+            "text": "I had three days of leave, so we didn't wait.",
+            "source": "telling:harold:s1",
+            "cue": "arrive",
+            "cueWord": "leave",
+            "words": [
+              {
+                "t": 1.35,
+                "word": "I"
+              },
+              {
+                "t": 1.513,
+                "word": "had"
+              },
+              {
+                "t": 1.652,
+                "word": "three"
+              },
+              {
+                "t": 1.849,
+                "word": "days"
+              },
+              {
+                "t": 2.058,
+                "word": "of"
+              },
+              {
+                "t": 2.186,
+                "word": "leave"
+              },
+              {
+                "t": 2.627,
+                "word": "so"
+              },
+              {
+                "t": 2.801,
+                "word": "we"
+              },
+              {
+                "t": 2.906,
+                "word": "didn't"
+              },
+              {
+                "t": 3.138,
+                "word": "wait"
+              }
+            ]
+          },
+          {
+            "t": 7.05,
+            "text": "Evelyn carried white roses from her mother's garden.",
+            "source": "telling:harold:s3",
+            "cue": "roses",
+            "cueWord": "roses",
+            "words": [
+              {
+                "t": 7.05,
+                "word": "Evelyn"
+              },
+              {
+                "t": 7.433,
+                "word": "carried"
+              },
+              {
+                "t": 7.747,
+                "word": "white"
+              },
+              {
+                "t": 8.014,
+                "word": "roses"
+              },
+              {
+                "t": 8.432,
+                "word": "from"
+              },
+              {
+                "t": 8.606,
+                "word": "her"
+              },
+              {
+                "t": 8.71,
+                "word": "mother's"
+              },
+              {
+                "t": 9.024,
+                "word": "garden"
+              }
+            ]
+          },
+          {
+            "t": 14.05,
+            "text": "My shipmates stood up for me in their dress blues on the courthouse steps.",
+            "source": "telling:harold:s2",
+            "cue": "vows",
+            "cueWord": "shipmates",
+            "words": [
+              {
+                "t": 14.05,
+                "word": "My"
+              },
+              {
+                "t": 14.271,
+                "word": "shipmates"
+              },
+              {
+                "t": 14.758,
+                "word": "stood"
+              },
+              {
+                "t": 15.025,
+                "word": "up"
+              },
+              {
+                "t": 15.165,
+                "word": "for"
+              },
+              {
+                "t": 15.304,
+                "word": "me"
+              },
+              {
+                "t": 15.443,
+                "word": "in"
+              },
+              {
+                "t": 15.536,
+                "word": "their"
+              },
+              {
+                "t": 15.71,
+                "word": "dress"
+              },
+              {
+                "t": 15.977,
+                "word": "blues"
+              },
+              {
+                "t": 16.302,
+                "word": "on"
+              },
+              {
+                "t": 16.407,
+                "word": "the"
+              },
+              {
+                "t": 16.511,
+                "word": "courthouse"
+              },
+              {
+                "t": 16.929,
+                "word": "steps"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "9d3328c1d18a0210dc0b96ede8d96e7902a54d08df1b089cc81682f20089ee9a": {
+      "file": "739927997f21fbd6dc7a25f7053c061a508f0df0c5710c9a7949ab5c225e7f63.wav",
+      "sha256": "739927997f21fbd6dc7a25f7053c061a508f0df0c5710c9a7949ab5c225e7f63",
+      "audioEnd": 24.2470625,
+      "track": {
+        "captions": [
+          {
+            "t": 1.2,
+            "text": "Hal makes it sound like a parade."
+          },
+          {
+            "t": 6.55,
+            "text": "I held on to those roses the whole time, because they were Mother's."
+          },
+          {
+            "t": 17.15,
+            "text": "His shipmates threw a whole sack of rice at us on the way down,"
+          },
+          {
+            "t": 21.6,
+            "text": "and Hal laughed so hard he nearly lost his cap."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.2,
+            "text": "Hal makes it sound like a parade.",
+            "source": "telling:evelyn:s1",
+            "cue": "arrive",
+            "cueWord": "parade",
+            "words": [
+              {
+                "t": 1.2,
+                "word": "Hal"
+              },
+              {
+                "t": 1.479,
+                "word": "makes"
+              },
+              {
+                "t": 1.688,
+                "word": "it"
+              },
+              {
+                "t": 1.792,
+                "word": "sound"
+              },
+              {
+                "t": 2.001,
+                "word": "like"
+              },
+              {
+                "t": 2.152,
+                "word": "a"
+              },
+              {
+                "t": 2.245,
+                "word": "parade"
+              }
+            ]
+          },
+          {
+            "t": 6.55,
+            "text": "I held on to those roses the whole time, because they were Mother's.",
+            "source": "telling:evelyn:s2",
+            "cue": "roses",
+            "cueWord": "roses",
+            "words": [
+              {
+                "t": 6.55,
+                "word": "I"
+              },
+              {
+                "t": 6.736,
+                "word": "held"
+              },
+              {
+                "t": 6.956,
+                "word": "on"
+              },
+              {
+                "t": 7.061,
+                "word": "to"
+              },
+              {
+                "t": 7.154,
+                "word": "those"
+              },
+              {
+                "t": 7.374,
+                "word": "roses"
+              },
+              {
+                "t": 7.734,
+                "word": "the"
+              },
+              {
+                "t": 7.839,
+                "word": "whole"
+              },
+              {
+                "t": 8.036,
+                "word": "time"
+              },
+              {
+                "t": 8.28,
+                "word": "because"
+              },
+              {
+                "t": 8.547,
+                "word": "they"
+              },
+              {
+                "t": 8.698,
+                "word": "were"
+              },
+              {
+                "t": 8.849,
+                "word": "Mother's"
+              }
+            ]
+          },
+          {
+            "t": 17.15,
+            "text": "His shipmates threw a whole sack of rice at us on the way down,",
+            "source": "telling:evelyn:s3",
+            "cue": "down",
+            "cueWord": "rice",
+            "words": [
+              {
+                "t": 17.15,
+                "word": "His"
+              },
+              {
+                "t": 17.382,
+                "word": "shipmates"
+              },
+              {
+                "t": 17.881,
+                "word": "threw"
+              },
+              {
+                "t": 18.137,
+                "word": "a"
+              },
+              {
+                "t": 18.23,
+                "word": "whole"
+              },
+              {
+                "t": 18.555,
+                "word": "sack"
+              },
+              {
+                "t": 18.891,
+                "word": "of"
+              },
+              {
+                "t": 19.019,
+                "word": "rice"
+              },
+              {
+                "t": 19.333,
+                "word": "at"
+              },
+              {
+                "t": 19.495,
+                "word": "us"
+              },
+              {
+                "t": 19.646,
+                "word": "on"
+              },
+              {
+                "t": 19.751,
+                "word": "the"
+              },
+              {
+                "t": 19.855,
+                "word": "way"
+              },
+              {
+                "t": 20.018,
+                "word": "down"
+              }
+            ]
+          },
+          {
+            "t": 21.6,
+            "text": "and Hal laughed so hard he nearly lost his cap.",
+            "source": "telling:evelyn:s4",
+            "cue": "cheer",
+            "cueWord": "laughed",
+            "words": [
+              {
+                "t": 21.6,
+                "word": "and"
+              },
+              {
+                "t": 21.832,
+                "word": "Hal"
+              },
+              {
+                "t": 22.053,
+                "word": "laughed"
+              },
+              {
+                "t": 22.308,
+                "word": "so"
+              },
+              {
+                "t": 22.494,
+                "word": "hard"
+              },
+              {
+                "t": 22.691,
+                "word": "he"
+              },
+              {
+                "t": 22.796,
+                "word": "nearly"
+              },
+              {
+                "t": 23.133,
+                "word": "lost"
+              },
+              {
+                "t": 23.458,
+                "word": "his"
+              },
+              {
+                "t": 23.597,
+                "word": "cap"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "8028653938bf9eebe843edf1181cab083e85b9b610c8967b4a5920d8fe20412a": {
+      "file": "3e599a45f3f7b6cd778176b32aeb594725e9842e6690dfd001fc4fc7d9626c56.wav",
+      "sha256": "3e599a45f3f7b6cd778176b32aeb594725e9842e6690dfd001fc4fc7d9626c56",
+      "audioEnd": 18.9721875,
+      "track": {
+        "captions": [
+          {
+            "t": 1.2,
+            "text": "Every Sunday my mother made pancakes, and the whole kitchen smelled of butter and syrup."
+          },
+          {
+            "t": 5.8,
+            "text": "I was allowed to pour the batter, badly."
+          },
+          {
+            "t": 15.257,
+            "text": "My father pretended every lopsided one was the best he had ever eaten."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.2,
+            "text": "Every Sunday my mother made pancakes, and the whole kitchen smelled of butter and syrup.",
+            "source": "telling:rick:s1",
+            "cue": "pot_down",
+            "cueWord": "syrup",
+            "words": [
+              {
+                "t": 1.2,
+                "word": "Every"
+              },
+              {
+                "t": 1.513,
+                "word": "Sunday"
+              },
+              {
+                "t": 1.85,
+                "word": "my"
+              },
+              {
+                "t": 1.989,
+                "word": "mother"
+              },
+              {
+                "t": 2.222,
+                "word": "made"
+              },
+              {
+                "t": 2.407,
+                "word": "pancakes"
+              },
+              {
+                "t": 3.081,
+                "word": "and"
+              },
+              {
+                "t": 3.278,
+                "word": "the"
+              },
+              {
+                "t": 3.383,
+                "word": "whole"
+              },
+              {
+                "t": 3.58,
+                "word": "kitchen"
+              },
+              {
+                "t": 3.928,
+                "word": "smelled"
+              },
+              {
+                "t": 4.253,
+                "word": "of"
+              },
+              {
+                "t": 4.404,
+                "word": "butter"
+              },
+              {
+                "t": 4.706,
+                "word": "and"
+              },
+              {
+                "t": 4.857,
+                "word": "syrup"
+              }
+            ]
+          },
+          {
+            "t": 5.8,
+            "text": "I was allowed to pour the batter, badly.",
+            "source": "telling:rick:s2",
+            "cue": "masa",
+            "cueWord": "batter",
+            "words": [
+              {
+                "t": 5.8,
+                "word": "I"
+              },
+              {
+                "t": 5.963,
+                "word": "was"
+              },
+              {
+                "t": 6.102,
+                "word": "allowed"
+              },
+              {
+                "t": 6.369,
+                "word": "to"
+              },
+              {
+                "t": 6.462,
+                "word": "pour"
+              },
+              {
+                "t": 6.659,
+                "word": "the"
+              },
+              {
+                "t": 6.764,
+                "word": "batter"
+              },
+              {
+                "t": 7.135,
+                "word": "badly"
+              }
+            ]
+          },
+          {
+            "t": 15.257,
+            "text": "My father pretended every lopsided one was the best he had ever eaten.",
+            "source": "telling:rick:s3",
+            "cue": "tamale",
+            "cueWord": "lopsided",
+            "words": [
+              {
+                "t": 15.257,
+                "word": "My"
+              },
+              {
+                "t": 15.512,
+                "word": "father"
+              },
+              {
+                "t": 15.837,
+                "word": "pretended"
+              },
+              {
+                "t": 16.314,
+                "word": "every"
+              },
+              {
+                "t": 16.557,
+                "word": "lopsided"
+              },
+              {
+                "t": 17.161,
+                "word": "one"
+              },
+              {
+                "t": 17.393,
+                "word": "was"
+              },
+              {
+                "t": 17.567,
+                "word": "the"
+              },
+              {
+                "t": 17.683,
+                "word": "best"
+              },
+              {
+                "t": 17.927,
+                "word": "he"
+              },
+              {
+                "t": 18.009,
+                "word": "had"
+              },
+              {
+                "t": 18.159,
+                "word": "ever"
+              },
+              {
+                "t": 18.38,
+                "word": "eaten"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "e8e2ba808edfd0b4b76015240619340d7429ebf15d03641293a0de68b965fa48": {
+      "file": "a89c22634972c9809b1552b0fd28967ee76454fb829b5895b09bc8cbc815bc8f.wav",
+      "sha256": "a89c22634972c9809b1552b0fd28967ee76454fb829b5895b09bc8cbc815bc8f",
+      "audioEnd": 21.057625,
+      "track": {
+        "captions": [
+          {
+            "t": 1.2,
+            "text": "It rained all morning, and I was sure the whole day was ruined."
+          },
+          {
+            "t": 6.0,
+            "text": "Rick showed up with his good shoes soaked through and gave me his umbrella without a word."
+          },
+          {
+            "t": 15.4,
+            "text": "By the time we came out of the chapel the sun was out."
+          },
+          {
+            "t": 19.2,
+            "text": "And everyone was laughing at his socks."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.2,
+            "text": "It rained all morning, and I was sure the whole day was ruined.",
+            "source": "telling:linda:s1",
+            "cue": null,
+            "cueWord": null,
+            "words": [
+              {
+                "t": 1.2,
+                "word": "It"
+              },
+              {
+                "t": 1.397,
+                "word": "rained"
+              },
+              {
+                "t": 1.676,
+                "word": "all"
+              },
+              {
+                "t": 1.85,
+                "word": "morning"
+              },
+              {
+                "t": 2.198,
+                "word": "and"
+              },
+              {
+                "t": 2.338,
+                "word": "I"
+              },
+              {
+                "t": 2.442,
+                "word": "was"
+              },
+              {
+                "t": 2.605,
+                "word": "sure"
+              },
+              {
+                "t": 2.918,
+                "word": "the"
+              },
+              {
+                "t": 3.034,
+                "word": "whole"
+              },
+              {
+                "t": 3.278,
+                "word": "day"
+              },
+              {
+                "t": 3.487,
+                "word": "was"
+              },
+              {
+                "t": 3.673,
+                "word": "ruined"
+              }
+            ]
+          },
+          {
+            "t": 6.0,
+            "text": "Rick showed up with his good shoes soaked through and gave me his umbrella without a word.",
+            "source": "telling:linda:s2",
+            "cue": "umbrella",
+            "cueWord": "gave",
+            "words": [
+              {
+                "t": 6.0,
+                "word": "Rick"
+              },
+              {
+                "t": 6.313,
+                "word": "showed"
+              },
+              {
+                "t": 6.592,
+                "word": "up"
+              },
+              {
+                "t": 6.731,
+                "word": "with"
+              },
+              {
+                "t": 6.894,
+                "word": "his"
+              },
+              {
+                "t": 7.022,
+                "word": "good"
+              },
+              {
+                "t": 7.219,
+                "word": "shoes"
+              },
+              {
+                "t": 7.521,
+                "word": "soaked"
+              },
+              {
+                "t": 7.8,
+                "word": "through"
+              },
+              {
+                "t": 8.101,
+                "word": "and"
+              },
+              {
+                "t": 8.252,
+                "word": "gave"
+              },
+              {
+                "t": 8.461,
+                "word": "me"
+              },
+              {
+                "t": 8.566,
+                "word": "his"
+              },
+              {
+                "t": 8.717,
+                "word": "umbrella"
+              },
+              {
+                "t": 9.146,
+                "word": "without"
+              },
+              {
+                "t": 9.437,
+                "word": "a"
+              },
+              {
+                "t": 9.506,
+                "word": "word"
+              }
+            ]
+          },
+          {
+            "t": 15.4,
+            "text": "By the time we came out of the chapel the sun was out.",
+            "source": "telling:linda:s3",
+            "cue": "out",
+            "cueWord": "sun",
+            "words": [
+              {
+                "t": 15.4,
+                "word": "By"
+              },
+              {
+                "t": 15.644,
+                "word": "the"
+              },
+              {
+                "t": 15.76,
+                "word": "time"
+              },
+              {
+                "t": 15.98,
+                "word": "we"
+              },
+              {
+                "t": 16.097,
+                "word": "came"
+              },
+              {
+                "t": 16.317,
+                "word": "out"
+              },
+              {
+                "t": 16.445,
+                "word": "of"
+              },
+              {
+                "t": 16.526,
+                "word": "the"
+              },
+              {
+                "t": 16.631,
+                "word": "chapel"
+              },
+              {
+                "t": 17.06,
+                "word": "the"
+              },
+              {
+                "t": 17.176,
+                "word": "sun"
+              },
+              {
+                "t": 17.409,
+                "word": "was"
+              },
+              {
+                "t": 17.594,
+                "word": "out"
+              }
+            ]
+          },
+          {
+            "t": 19.2,
+            "text": "And everyone was laughing at his socks.",
+            "source": "telling:linda:s4",
+            "cue": "socks",
+            "cueWord": "laughing",
+            "words": [
+              {
+                "t": 19.2,
+                "word": "And"
+              },
+              {
+                "t": 19.444,
+                "word": "everyone"
+              },
+              {
+                "t": 19.757,
+                "word": "was"
+              },
+              {
+                "t": 19.908,
+                "word": "laughing"
+              },
+              {
+                "t": 20.233,
+                "word": "at"
+              },
+              {
+                "t": 20.326,
+                "word": "his"
+              },
+              {
+                "t": 20.442,
+                "word": "socks"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "e28af5cdf9d1fcdad0e57b3a3470d2ed1a199893d17f0e7b5d172d47bff964fb": {
+      "file": "fadac0dacdca1ed2617aa1e77c4983403ba27c9570e0268093e800873813702c.wav",
+      "sha256": "fadac0dacdca1ed2617aa1e77c4983403ba27c9570e0268093e800873813702c",
+      "audioEnd": 21.0860625,
+      "track": {
+        "captions": [
+          {
+            "t": 1.2,
+            "text": "Linda always says it rained, and Rick always says it didn't."
+          },
+          {
+            "t": 6.8,
+            "text": "The one photo we have shows wet steps and a lot of umbrellas."
+          },
+          {
+            "t": 19.6,
+            "text": "So I think she wins that one."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.2,
+            "text": "Linda always says it rained, and Rick always says it didn't.",
+            "source": "telling:evelyn:s1",
+            "cue": "arrive",
+            "cueWord": "rained",
+            "words": [
+              {
+                "t": 1.2,
+                "word": "Linda"
+              },
+              {
+                "t": 1.537,
+                "word": "always"
+              },
+              {
+                "t": 1.804,
+                "word": "says"
+              },
+              {
+                "t": 2.036,
+                "word": "it"
+              },
+              {
+                "t": 2.152,
+                "word": "rained"
+              },
+              {
+                "t": 2.454,
+                "word": "and"
+              },
+              {
+                "t": 2.605,
+                "word": "Rick"
+              },
+              {
+                "t": 2.814,
+                "word": "always"
+              },
+              {
+                "t": 3.046,
+                "word": "says"
+              },
+              {
+                "t": 3.278,
+                "word": "it"
+              },
+              {
+                "t": 3.383,
+                "word": "didn't"
+              }
+            ]
+          },
+          {
+            "t": 6.8,
+            "text": "The one photo we have shows wet steps and a lot of umbrellas.",
+            "source": "telling:evelyn:s2",
+            "cue": "umbrella",
+            "cueWord": "umbrellas",
+            "words": [
+              {
+                "t": 6.8,
+                "word": "The"
+              },
+              {
+                "t": 7.009,
+                "word": "one"
+              },
+              {
+                "t": 7.183,
+                "word": "photo"
+              },
+              {
+                "t": 7.462,
+                "word": "we"
+              },
+              {
+                "t": 7.613,
+                "word": "have"
+              },
+              {
+                "t": 7.845,
+                "word": "shows"
+              },
+              {
+                "t": 8.158,
+                "word": "wet"
+              },
+              {
+                "t": 8.391,
+                "word": "steps"
+              },
+              {
+                "t": 8.75,
+                "word": "and"
+              },
+              {
+                "t": 8.867,
+                "word": "a"
+              },
+              {
+                "t": 8.936,
+                "word": "lot"
+              },
+              {
+                "t": 9.099,
+                "word": "of"
+              },
+              {
+                "t": 9.203,
+                "word": "umbrellas"
+              }
+            ]
+          },
+          {
+            "t": 19.6,
+            "text": "So I think she wins that one.",
+            "source": "telling:evelyn:s3",
+            "cue": "socks",
+            "cueWord": "wins",
+            "words": [
+              {
+                "t": 19.6,
+                "word": "So"
+              },
+              {
+                "t": 19.844,
+                "word": "I"
+              },
+              {
+                "t": 19.937,
+                "word": "think"
+              },
+              {
+                "t": 20.122,
+                "word": "she"
+              },
+              {
+                "t": 20.25,
+                "word": "wins"
+              },
+              {
+                "t": 20.471,
+                "word": "that"
+              },
+              {
+                "t": 20.668,
+                "word": "one"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "c18f88b9e169b62c52b4070424600cc83dbb41d739a4583be47017969ed5df05": {
+      "file": "22d40ef916041c89739e936c7b29c1b6637eb866ff1b2d9307a53a0eeee3a77f.wav",
+      "sha256": "22d40ef916041c89739e936c7b29c1b6637eb866ff1b2d9307a53a0eeee3a77f",
+      "audioEnd": 11.9111875,
+      "track": {
+        "captions": [
+          {
+            "t": 1.35,
+            "text": "Jenna was six weeks old the first time we drove to the coast in our little red van."
+          },
+          {
+            "t": 6.55,
+            "text": "Mark waved at every car the whole way,"
+          },
+          {
+            "t": 10.1,
+            "text": "and Jenna slept through all of it."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.35,
+            "text": "Jenna was six weeks old the first time we drove to the coast in our little red van.",
+            "source": "telling:carol:s1",
+            "cue": "drive",
+            "cueWord": "drove",
+            "words": [
+              {
+                "t": 1.35,
+                "word": "Jenna"
+              },
+              {
+                "t": 1.687,
+                "word": "was"
+              },
+              {
+                "t": 1.826,
+                "word": "six"
+              },
+              {
+                "t": 2.047,
+                "word": "weeks"
+              },
+              {
+                "t": 2.29,
+                "word": "old"
+              },
+              {
+                "t": 2.453,
+                "word": "the"
+              },
+              {
+                "t": 2.569,
+                "word": "first"
+              },
+              {
+                "t": 2.813,
+                "word": "time"
+              },
+              {
+                "t": 3.022,
+                "word": "we"
+              },
+              {
+                "t": 3.15,
+                "word": "drove"
+              },
+              {
+                "t": 3.417,
+                "word": "to"
+              },
+              {
+                "t": 3.521,
+                "word": "the"
+              },
+              {
+                "t": 3.649,
+                "word": "coast"
+              },
+              {
+                "t": 3.985,
+                "word": "in"
+              },
+              {
+                "t": 4.09,
+                "word": "our"
+              },
+              {
+                "t": 4.206,
+                "word": "little"
+              },
+              {
+                "t": 4.45,
+                "word": "red"
+              },
+              {
+                "t": 4.67,
+                "word": "van"
+              }
+            ]
+          },
+          {
+            "t": 6.55,
+            "text": "Mark waved at every car the whole way,",
+            "source": "telling:carol:s2",
+            "cue": "waves",
+            "cueWord": "waved",
+            "words": [
+              {
+                "t": 6.55,
+                "word": "Mark"
+              },
+              {
+                "t": 6.875,
+                "word": "waved"
+              },
+              {
+                "t": 7.189,
+                "word": "at"
+              },
+              {
+                "t": 7.293,
+                "word": "every"
+              },
+              {
+                "t": 7.502,
+                "word": "car"
+              },
+              {
+                "t": 7.746,
+                "word": "the"
+              },
+              {
+                "t": 7.862,
+                "word": "whole"
+              },
+              {
+                "t": 8.083,
+                "word": "way"
+              }
+            ]
+          },
+          {
+            "t": 10.1,
+            "text": "and Jenna slept through all of it.",
+            "source": "telling:carol:s3",
+            "cue": "asleep",
+            "cueWord": "slept",
+            "words": [
+              {
+                "t": 10.1,
+                "word": "and"
+              },
+              {
+                "t": 10.344,
+                "word": "Jenna"
+              },
+              {
+                "t": 10.622,
+                "word": "slept"
+              },
+              {
+                "t": 10.889,
+                "word": "through"
+              },
+              {
+                "t": 11.168,
+                "word": "all"
+              },
+              {
+                "t": 11.354,
+                "word": "of"
+              },
+              {
+                "t": 11.458,
+                "word": "it"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "50aaed13cd72e3edf329f3eed3e453110d588da60390ec1931807ca2a6837fa5": {
+      "file": "331d1e72145b60b377c9e24f6b9504f9937fed3c7ce9b0486e085cb910713ab0.wav",
+      "sha256": "331d1e72145b60b377c9e24f6b9504f9937fed3c7ce9b0486e085cb910713ab0",
+      "audioEnd": 16.0365625,
+      "track": {
+        "captions": [
+          {
+            "t": 2.15,
+            "text": "Mom lined all four of us up on the stone steps by the garden gate for the first day of school."
+          },
+          {
+            "t": 7.7,
+            "text": "Daniel kept fixing his tie,"
+          },
+          {
+            "t": 9.65,
+            "text": "I wore my sailor dress,"
+          },
+          {
+            "t": 12.6,
+            "text": "and Ben, who wasn't even in school yet, refused to be left out."
+          }
+        ],
+        "lines": [
+          {
+            "t": 2.15,
+            "text": "Mom lined all four of us up on the stone steps by the garden gate for the first day of school.",
+            "source": "telling:amy:s1",
+            "cue": "lineup",
+            "cueWord": "lined",
+            "words": [
+              {
+                "t": 2.15,
+                "word": "Mom"
+              },
+              {
+                "t": 2.498,
+                "word": "lined"
+              },
+              {
+                "t": 2.789,
+                "word": "all"
+              },
+              {
+                "t": 3.032,
+                "word": "four"
+              },
+              {
+                "t": 3.253,
+                "word": "of"
+              },
+              {
+                "t": 3.357,
+                "word": "us"
+              },
+              {
+                "t": 3.52,
+                "word": "up"
+              },
+              {
+                "t": 3.683,
+                "word": "on"
+              },
+              {
+                "t": 3.787,
+                "word": "the"
+              },
+              {
+                "t": 3.891,
+                "word": "stone"
+              },
+              {
+                "t": 4.228,
+                "word": "steps"
+              },
+              {
+                "t": 4.565,
+                "word": "by"
+              },
+              {
+                "t": 4.716,
+                "word": "the"
+              },
+              {
+                "t": 4.832,
+                "word": "garden"
+              },
+              {
+                "t": 5.157,
+                "word": "gate"
+              },
+              {
+                "t": 5.459,
+                "word": "for"
+              },
+              {
+                "t": 5.598,
+                "word": "the"
+              },
+              {
+                "t": 5.726,
+                "word": "first"
+              },
+              {
+                "t": 6.016,
+                "word": "day"
+              },
+              {
+                "t": 6.179,
+                "word": "of"
+              },
+              {
+                "t": 6.283,
+                "word": "school"
+              }
+            ]
+          },
+          {
+            "t": 7.7,
+            "text": "Daniel kept fixing his tie,",
+            "source": "telling:amy:s2",
+            "cue": "tie",
+            "cueWord": "fixing",
+            "words": [
+              {
+                "t": 7.7,
+                "word": "Daniel"
+              },
+              {
+                "t": 8.118,
+                "word": "kept"
+              },
+              {
+                "t": 8.327,
+                "word": "fixing"
+              },
+              {
+                "t": 8.652,
+                "word": "his"
+              },
+              {
+                "t": 8.791,
+                "word": "tie"
+              }
+            ]
+          },
+          {
+            "t": 9.65,
+            "text": "I wore my sailor dress,",
+            "source": "telling:amy:s3",
+            "cue": "dress",
+            "cueWord": "sailor",
+            "words": [
+              {
+                "t": 9.65,
+                "word": "I"
+              },
+              {
+                "t": 9.813,
+                "word": "wore"
+              },
+              {
+                "t": 10.01,
+                "word": "my"
+              },
+              {
+                "t": 10.149,
+                "word": "sailor"
+              },
+              {
+                "t": 10.498,
+                "word": "dress"
+              }
+            ]
+          },
+          {
+            "t": 12.6,
+            "text": "and Ben, who wasn't even in school yet, refused to be left out.",
+            "source": "telling:amy:s4",
+            "cue": "not_left_out",
+            "cueWord": "refused",
+            "words": [
+              {
+                "t": 12.6,
+                "word": "and"
+              },
+              {
+                "t": 12.832,
+                "word": "Ben"
+              },
+              {
+                "t": 13.088,
+                "word": "who"
+              },
+              {
+                "t": 13.262,
+                "word": "wasn't"
+              },
+              {
+                "t": 13.575,
+                "word": "even"
+              },
+              {
+                "t": 13.807,
+                "word": "in"
+              },
+              {
+                "t": 13.924,
+                "word": "school"
+              },
+              {
+                "t": 14.26,
+                "word": "yet"
+              },
+              {
+                "t": 14.655,
+                "word": "refused"
+              },
+              {
+                "t": 15.038,
+                "word": "to"
+              },
+              {
+                "t": 15.119,
+                "word": "be"
+              },
+              {
+                "t": 15.247,
+                "word": "left"
+              },
+              {
+                "t": 15.526,
+                "word": "out"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ba53b5126cf712b13c842b6f07cf37914ae9c1e21eb9be56b870a5150d6f141e": {
+      "file": "9939b800db60578d304256c306c9ab583d984941b9040eb8dc1d1b519b7b8a66.wav",
+      "sha256": "9939b800db60578d304256c306c9ab583d984941b9040eb8dc1d1b519b7b8a66",
+      "audioEnd": 17.486375,
+      "track": {
+        "captions": [
+          {
+            "t": 1.2,
+            "text": "It was a blue bike with a bell, two sizes too big because I said he would grow into it."
+          },
+          {
+            "t": 6.2,
+            "text": "I ran behind him holding the seat up and down the whole street."
+          },
+          {
+            "t": 14.7,
+            "text": "When I finally let go he didn't notice for half a block."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.2,
+            "text": "It was a blue bike with a bell, two sizes too big because I said he would grow into it.",
+            "source": "telling:rick:s1",
+            "cue": "on_bike",
+            "cueWord": "blue",
+            "words": [
+              {
+                "t": 1.2,
+                "word": "It"
+              },
+              {
+                "t": 1.374,
+                "word": "was"
+              },
+              {
+                "t": 1.513,
+                "word": "a"
+              },
+              {
+                "t": 1.583,
+                "word": "blue"
+              },
+              {
+                "t": 1.839,
+                "word": "bike"
+              },
+              {
+                "t": 2.164,
+                "word": "with"
+              },
+              {
+                "t": 2.338,
+                "word": "a"
+              },
+              {
+                "t": 2.431,
+                "word": "bell"
+              },
+              {
+                "t": 2.756,
+                "word": "two"
+              },
+              {
+                "t": 2.976,
+                "word": "sizes"
+              },
+              {
+                "t": 3.371,
+                "word": "too"
+              },
+              {
+                "t": 3.568,
+                "word": "big"
+              },
+              {
+                "t": 3.835,
+                "word": "because"
+              },
+              {
+                "t": 4.161,
+                "word": "I"
+              },
+              {
+                "t": 4.265,
+                "word": "said"
+              },
+              {
+                "t": 4.451,
+                "word": "he"
+              },
+              {
+                "t": 4.52,
+                "word": "would"
+              },
+              {
+                "t": 4.695,
+                "word": "grow"
+              },
+              {
+                "t": 4.927,
+                "word": "into"
+              },
+              {
+                "t": 5.217,
+                "word": "it"
+              }
+            ]
+          },
+          {
+            "t": 6.2,
+            "text": "I ran behind him holding the seat up and down the whole street.",
+            "source": "telling:rick:s2",
+            "cue": "steady",
+            "cueWord": "holding",
+            "words": [
+              {
+                "t": 6.2,
+                "word": "I"
+              },
+              {
+                "t": 6.409,
+                "word": "ran"
+              },
+              {
+                "t": 6.653,
+                "word": "behind"
+              },
+              {
+                "t": 7.013,
+                "word": "him"
+              },
+              {
+                "t": 7.175,
+                "word": "holding"
+              },
+              {
+                "t": 7.489,
+                "word": "the"
+              },
+              {
+                "t": 7.593,
+                "word": "seat"
+              },
+              {
+                "t": 7.814,
+                "word": "up"
+              },
+              {
+                "t": 7.976,
+                "word": "and"
+              },
+              {
+                "t": 8.092,
+                "word": "down"
+              },
+              {
+                "t": 8.267,
+                "word": "the"
+              },
+              {
+                "t": 8.359,
+                "word": "whole"
+              },
+              {
+                "t": 8.568,
+                "word": "street"
+              }
+            ]
+          },
+          {
+            "t": 14.7,
+            "text": "When I finally let go he didn't notice for half a block.",
+            "source": "telling:rick:s3",
+            "cue": "let_go",
+            "cueWord": "go",
+            "words": [
+              {
+                "t": 14.7,
+                "word": "When"
+              },
+              {
+                "t": 14.932,
+                "word": "I"
+              },
+              {
+                "t": 15.025,
+                "word": "finally"
+              },
+              {
+                "t": 15.397,
+                "word": "let"
+              },
+              {
+                "t": 15.594,
+                "word": "go"
+              },
+              {
+                "t": 15.826,
+                "word": "he"
+              },
+              {
+                "t": 15.931,
+                "word": "didn't"
+              },
+              {
+                "t": 16.14,
+                "word": "notice"
+              },
+              {
+                "t": 16.418,
+                "word": "for"
+              },
+              {
+                "t": 16.569,
+                "word": "half"
+              },
+              {
+                "t": 16.767,
+                "word": "a"
+              },
+              {
+                "t": 16.825,
+                "word": "block"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "39588e91d62a101d9917faa589268b6ac16620cfab00aa6c68c2acbda5f3cf5e": {
+      "file": "3fa56729fc1a3e0c61a099bbab58acaf45be9fb484646216bad5d3aebafdc1eb.wav",
+      "sha256": "3fa56729fc1a3e0c61a099bbab58acaf45be9fb484646216bad5d3aebafdc1eb",
+      "audioEnd": 20.275875,
+      "track": {
+        "captions": [
+          {
+            "t": 6.8,
+            "text": "I just didn't want to stop, because stopping meant falling."
+          },
+          {
+            "t": 14.7,
+            "text": "I noticed."
+          },
+          {
+            "t": 16.7,
+            "text": "I rang the bell the whole way to the corner so he would know I was fine."
+          }
+        ],
+        "lines": [
+          {
+            "t": 6.8,
+            "text": "I just didn't want to stop, because stopping meant falling.",
+            "source": "telling:ben:s2",
+            "cue": "ride",
+            "cueWord": "stop",
+            "words": [
+              {
+                "t": 6.8,
+                "word": "I"
+              },
+              {
+                "t": 6.974,
+                "word": "just"
+              },
+              {
+                "t": 7.16,
+                "word": "didn't"
+              },
+              {
+                "t": 7.404,
+                "word": "want"
+              },
+              {
+                "t": 7.578,
+                "word": "to"
+              },
+              {
+                "t": 7.671,
+                "word": "stop"
+              },
+              {
+                "t": 8.065,
+                "word": "because"
+              },
+              {
+                "t": 8.367,
+                "word": "stopping"
+              },
+              {
+                "t": 8.774,
+                "word": "meant"
+              },
+              {
+                "t": 9.006,
+                "word": "falling"
+              }
+            ]
+          },
+          {
+            "t": 14.7,
+            "text": "I noticed.",
+            "source": "telling:ben:s1",
+            "cue": "let_go",
+            "cueWord": "noticed",
+            "words": [
+              {
+                "t": 14.7,
+                "word": "I"
+              },
+              {
+                "t": 14.874,
+                "word": "noticed"
+              }
+            ]
+          },
+          {
+            "t": 16.7,
+            "text": "I rang the bell the whole way to the corner so he would know I was fine.",
+            "source": "telling:ben:s3",
+            "cue": "bell",
+            "cueWord": "rang",
+            "words": [
+              {
+                "t": 16.7,
+                "word": "I"
+              },
+              {
+                "t": 16.897,
+                "word": "rang"
+              },
+              {
+                "t": 17.118,
+                "word": "the"
+              },
+              {
+                "t": 17.222,
+                "word": "bell"
+              },
+              {
+                "t": 17.443,
+                "word": "the"
+              },
+              {
+                "t": 17.559,
+                "word": "whole"
+              },
+              {
+                "t": 17.803,
+                "word": "way"
+              },
+              {
+                "t": 17.989,
+                "word": "to"
+              },
+              {
+                "t": 18.105,
+                "word": "the"
+              },
+              {
+                "t": 18.221,
+                "word": "corner"
+              },
+              {
+                "t": 18.592,
+                "word": "so"
+              },
+              {
+                "t": 18.801,
+                "word": "he"
+              },
+              {
+                "t": 18.906,
+                "word": "would"
+              },
+              {
+                "t": 19.103,
+                "word": "know"
+              },
+              {
+                "t": 19.301,
+                "word": "I"
+              },
+              {
+                "t": 19.394,
+                "word": "was"
+              },
+              {
+                "t": 19.591,
+                "word": "fine"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "7a2532408f1011f4672d7b8d15267c9f74db58815885258680cb7b9b3699c6e9": {
+      "file": "4b2f398c3f0d68983a698093275bad8e227c5ff3d4f491081ff0a227752d5af0.wav",
+      "sha256": "4b2f398c3f0d68983a698093275bad8e227c5ff3d4f491081ff0a227752d5af0",
+      "audioEnd": 17.114875,
+      "track": {
+        "captions": [
+          {
+            "t": 1.7,
+            "text": "I was thirteen and nobody expected me to win."
+          },
+          {
+            "t": 5.95,
+            "text": "I held that trophy all the way home,"
+          },
+          {
+            "t": 14.7,
+            "text": "and Mom let me put it on the dinner table that night."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.7,
+            "text": "I was thirteen and nobody expected me to win.",
+            "source": "telling:jenna:s1",
+            "cue": "home",
+            "cueWord": "thirteen",
+            "words": [
+              {
+                "t": 1.7,
+                "word": "I"
+              },
+              {
+                "t": 1.863,
+                "word": "was"
+              },
+              {
+                "t": 2.002,
+                "word": "thirteen"
+              },
+              {
+                "t": 2.466,
+                "word": "and"
+              },
+              {
+                "t": 2.606,
+                "word": "nobody"
+              },
+              {
+                "t": 2.907,
+                "word": "expected"
+              },
+              {
+                "t": 3.314,
+                "word": "me"
+              },
+              {
+                "t": 3.418,
+                "word": "to"
+              },
+              {
+                "t": 3.511,
+                "word": "win"
+              }
+            ]
+          },
+          {
+            "t": 5.95,
+            "text": "I held that trophy all the way home,",
+            "source": "telling:jenna:s2",
+            "cue": "raise",
+            "cueWord": "held",
+            "words": [
+              {
+                "t": 5.95,
+                "word": "I"
+              },
+              {
+                "t": 6.136,
+                "word": "held"
+              },
+              {
+                "t": 6.333,
+                "word": "that"
+              },
+              {
+                "t": 6.484,
+                "word": "trophy"
+              },
+              {
+                "t": 6.867,
+                "word": "all"
+              },
+              {
+                "t": 7.018,
+                "word": "the"
+              },
+              {
+                "t": 7.123,
+                "word": "way"
+              },
+              {
+                "t": 7.274,
+                "word": "home"
+              }
+            ]
+          },
+          {
+            "t": 14.7,
+            "text": "and Mom let me put it on the dinner table that night.",
+            "source": "telling:jenna:s3",
+            "cue": "put",
+            "cueWord": "put",
+            "words": [
+              {
+                "t": 14.7,
+                "word": "and"
+              },
+              {
+                "t": 14.897,
+                "word": "Mom"
+              },
+              {
+                "t": 15.118,
+                "word": "let"
+              },
+              {
+                "t": 15.246,
+                "word": "me"
+              },
+              {
+                "t": 15.362,
+                "word": "put"
+              },
+              {
+                "t": 15.559,
+                "word": "it"
+              },
+              {
+                "t": 15.652,
+                "word": "on"
+              },
+              {
+                "t": 15.768,
+                "word": "the"
+              },
+              {
+                "t": 15.873,
+                "word": "dinner"
+              },
+              {
+                "t": 16.116,
+                "word": "table"
+              },
+              {
+                "t": 16.372,
+                "word": "that"
+              },
+              {
+                "t": 16.558,
+                "word": "night"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "981d18ca165661c5fdf03d2f615b1e4d857cc02492db423b8c759f101d2002d2": {
+      "file": "4dd51567f4b5f33d7e301e7797b330ecfbb29e19841659a2e11b05a63049e7f9.wav",
+      "sha256": "4dd51567f4b5f33d7e301e7797b330ecfbb29e19841659a2e11b05a63049e7f9",
+      "audioEnd": 25.3976875,
+      "track": {
+        "captions": [
+          {
+            "t": 1.2,
+            "text": "Mark bought a blue station wagon that summer and decided we had to drive it to the Grand Canyon."
+          },
+          {
+            "t": 6.2262,
+            "text": "I sat in the back with a map I refused to read."
+          },
+          {
+            "t": 19.672,
+            "text": "We got a flat tire outside a cherry stand."
+          },
+          {
+            "t": 22.472,
+            "text": "We sat on a fruit crate and ate cherries while he fixed it."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.2,
+            "text": "Mark bought a blue station wagon that summer and decided we had to drive it to the Grand Canyon.",
+            "source": "telling:jenna:s1",
+            "cue": null,
+            "cueWord": null,
+            "words": [
+              {
+                "t": 1.2,
+                "word": "Mark"
+              },
+              {
+                "t": 1.525,
+                "word": "bought"
+              },
+              {
+                "t": 1.769,
+                "word": "a"
+              },
+              {
+                "t": 1.85,
+                "word": "blue"
+              },
+              {
+                "t": 2.106,
+                "word": "station"
+              },
+              {
+                "t": 2.512,
+                "word": "wagon"
+              },
+              {
+                "t": 2.814,
+                "word": "that"
+              },
+              {
+                "t": 3.0,
+                "word": "summer"
+              },
+              {
+                "t": 3.441,
+                "word": "and"
+              },
+              {
+                "t": 3.696,
+                "word": "decided"
+              },
+              {
+                "t": 4.137,
+                "word": "we"
+              },
+              {
+                "t": 4.277,
+                "word": "had"
+              },
+              {
+                "t": 4.439,
+                "word": "to"
+              },
+              {
+                "t": 4.532,
+                "word": "drive"
+              },
+              {
+                "t": 4.787,
+                "word": "it"
+              },
+              {
+                "t": 4.869,
+                "word": "to"
+              },
+              {
+                "t": 4.962,
+                "word": "the"
+              },
+              {
+                "t": 5.066,
+                "word": "Grand"
+              },
+              {
+                "t": 5.345,
+                "word": "Canyon"
+              }
+            ]
+          },
+          {
+            "t": 6.2262,
+            "text": "I sat in the back with a map I refused to read.",
+            "source": "telling:jenna:s2",
+            "cue": "back_seat",
+            "cueWord": "sat",
+            "words": [
+              {
+                "t": 6.2262,
+                "word": "I"
+              },
+              {
+                "t": 6.4122,
+                "word": "sat"
+              },
+              {
+                "t": 6.6562,
+                "word": "in"
+              },
+              {
+                "t": 6.7372,
+                "word": "the"
+              },
+              {
+                "t": 6.8532,
+                "word": "back"
+              },
+              {
+                "t": 7.1902,
+                "word": "with"
+              },
+              {
+                "t": 7.3522,
+                "word": "a"
+              },
+              {
+                "t": 7.4332,
+                "word": "map"
+              },
+              {
+                "t": 7.7002,
+                "word": "I"
+              },
+              {
+                "t": 7.8172,
+                "word": "refused"
+              },
+              {
+                "t": 8.2352,
+                "word": "to"
+              },
+              {
+                "t": 8.3512,
+                "word": "read"
+              }
+            ]
+          },
+          {
+            "t": 19.672,
+            "text": "We got a flat tire outside a cherry stand.",
+            "source": "telling:jenna:s3",
+            "cue": "fix",
+            "cueWord": "flat",
+            "words": [
+              {
+                "t": 19.672,
+                "word": "We"
+              },
+              {
+                "t": 19.869,
+                "word": "got"
+              },
+              {
+                "t": 20.032,
+                "word": "a"
+              },
+              {
+                "t": 20.09,
+                "word": "flat"
+              },
+              {
+                "t": 20.334,
+                "word": "tire"
+              },
+              {
+                "t": 20.624,
+                "word": "outside"
+              },
+              {
+                "t": 20.937,
+                "word": "a"
+              },
+              {
+                "t": 21.007,
+                "word": "cherry"
+              },
+              {
+                "t": 21.309,
+                "word": "stand"
+              }
+            ]
+          },
+          {
+            "t": 22.472,
+            "text": "We sat on a fruit crate and ate cherries while he fixed it.",
+            "source": "telling:jenna:s4",
+            "cue": "cherries",
+            "cueWord": "ate",
+            "words": [
+              {
+                "t": 22.472,
+                "word": "We"
+              },
+              {
+                "t": 22.681,
+                "word": "sat"
+              },
+              {
+                "t": 22.902,
+                "word": "on"
+              },
+              {
+                "t": 23.006,
+                "word": "a"
+              },
+              {
+                "t": 23.076,
+                "word": "fruit"
+              },
+              {
+                "t": 23.32,
+                "word": "crate"
+              },
+              {
+                "t": 23.633,
+                "word": "and"
+              },
+              {
+                "t": 23.83,
+                "word": "ate"
+              },
+              {
+                "t": 24.016,
+                "word": "cherries"
+              },
+              {
+                "t": 24.388,
+                "word": "while"
+              },
+              {
+                "t": 24.55,
+                "word": "he"
+              },
+              {
+                "t": 24.655,
+                "word": "fixed"
+              },
+              {
+                "t": 24.968,
+                "word": "it"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "325cec44145e3e6a472207af52a8a7f5ddbf6a215913ccf39885284e754d09d3": {
+      "file": "4cefd2cf3622dea66b783034a61526f6ac543e17e4d872644847ac5a92bc6abd.wav",
+      "sha256": "4cefd2cf3622dea66b783034a61526f6ac543e17e4d872644847ac5a92bc6abd",
+      "audioEnd": 26.758375,
+      "track": {
+        "captions": [
+          {
+            "t": 8.2,
+            "text": "Mark would not let anyone else drive that car."
+          },
+          {
+            "t": 17.372,
+            "text": "When the tire went, he changed it in his good trousers."
+          },
+          {
+            "t": 23.972,
+            "text": "Jenna ate so many cherries she was sick the rest of the way."
+          }
+        ],
+        "lines": [
+          {
+            "t": 8.2,
+            "text": "Mark would not let anyone else drive that car.",
+            "source": "telling:carol:s1",
+            "cue": "drive",
+            "cueWord": "drive",
+            "words": [
+              {
+                "t": 8.2,
+                "word": "Mark"
+              },
+              {
+                "t": 8.502,
+                "word": "would"
+              },
+              {
+                "t": 8.676,
+                "word": "not"
+              },
+              {
+                "t": 8.827,
+                "word": "let"
+              },
+              {
+                "t": 9.013,
+                "word": "anyone"
+              },
+              {
+                "t": 9.315,
+                "word": "else"
+              },
+              {
+                "t": 9.477,
+                "word": "drive"
+              },
+              {
+                "t": 9.733,
+                "word": "that"
+              },
+              {
+                "t": 9.918,
+                "word": "car"
+              }
+            ]
+          },
+          {
+            "t": 17.372,
+            "text": "When the tire went, he changed it in his good trousers.",
+            "source": "telling:carol:s2",
+            "cue": "fix",
+            "cueWord": "changed",
+            "words": [
+              {
+                "t": 17.372,
+                "word": "When"
+              },
+              {
+                "t": 17.593,
+                "word": "the"
+              },
+              {
+                "t": 17.697,
+                "word": "tire"
+              },
+              {
+                "t": 17.999,
+                "word": "went"
+              },
+              {
+                "t": 18.208,
+                "word": "he"
+              },
+              {
+                "t": 18.336,
+                "word": "changed"
+              },
+              {
+                "t": 18.684,
+                "word": "it"
+              },
+              {
+                "t": 18.8,
+                "word": "in"
+              },
+              {
+                "t": 18.916,
+                "word": "his"
+              },
+              {
+                "t": 19.044,
+                "word": "good"
+              },
+              {
+                "t": 19.23,
+                "word": "trousers"
+              }
+            ]
+          },
+          {
+            "t": 23.972,
+            "text": "Jenna ate so many cherries she was sick the rest of the way.",
+            "source": "telling:carol:s3",
+            "cue": "cherries",
+            "cueWord": "ate",
+            "words": [
+              {
+                "t": 23.972,
+                "word": "Jenna"
+              },
+              {
+                "t": 24.309,
+                "word": "ate"
+              },
+              {
+                "t": 24.494,
+                "word": "so"
+              },
+              {
+                "t": 24.669,
+                "word": "many"
+              },
+              {
+                "t": 24.878,
+                "word": "cherries"
+              },
+              {
+                "t": 25.226,
+                "word": "she"
+              },
+              {
+                "t": 25.354,
+                "word": "was"
+              },
+              {
+                "t": 25.516,
+                "word": "sick"
+              },
+              {
+                "t": 25.772,
+                "word": "the"
+              },
+              {
+                "t": 25.888,
+                "word": "rest"
+              },
+              {
+                "t": 26.085,
+                "word": "of"
+              },
+              {
+                "t": 26.166,
+                "word": "the"
+              },
+              {
+                "t": 26.271,
+                "word": "way"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "f121f8e5e54dbd383dffb0359a193fc059022170712103bf269ffd143b331cf9": {
+      "file": "5ac0238e58a1682376756e155adec3fda5b407e3a1c4be0c28842482848b8969.wav",
+      "sha256": "5ac0238e58a1682376756e155adec3fda5b407e3a1c4be0c28842482848b8969",
+      "audioEnd": 18.6328125,
+      "track": {
+        "captions": [
+          {
+            "t": 1.2,
+            "text": "I was so nervous I forgot Ben had the rings."
+          },
+          {
+            "t": 4.8,
+            "text": "He walked up the aisle and pressed the box into my hand like it was nothing."
+          },
+          {
+            "t": 9.0,
+            "text": "Mom and Dad sat on the front bench holding hands the whole time."
+          },
+          {
+            "t": 15.8,
+            "text": "At the party Mom hugged me so hard my boutonniere fell off."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.2,
+            "text": "I was so nervous I forgot Ben had the rings.",
+            "source": "telling:daniel:s1",
+            "cue": null,
+            "cueWord": null,
+            "words": [
+              {
+                "t": 1.2,
+                "word": "I"
+              },
+              {
+                "t": 1.363,
+                "word": "was"
+              },
+              {
+                "t": 1.502,
+                "word": "so"
+              },
+              {
+                "t": 1.688,
+                "word": "nervous"
+              },
+              {
+                "t": 2.013,
+                "word": "I"
+              },
+              {
+                "t": 2.117,
+                "word": "forgot"
+              },
+              {
+                "t": 2.442,
+                "word": "Ben"
+              },
+              {
+                "t": 2.616,
+                "word": "had"
+              },
+              {
+                "t": 2.756,
+                "word": "the"
+              },
+              {
+                "t": 2.872,
+                "word": "rings"
+              }
+            ]
+          },
+          {
+            "t": 4.8,
+            "text": "He walked up the aisle and pressed the box into my hand like it was nothing.",
+            "source": "telling:daniel:s2",
+            "cue": "rings",
+            "cueWord": "pressed",
+            "words": [
+              {
+                "t": 4.8,
+                "word": "He"
+              },
+              {
+                "t": 5.009,
+                "word": "walked"
+              },
+              {
+                "t": 5.288,
+                "word": "up"
+              },
+              {
+                "t": 5.404,
+                "word": "the"
+              },
+              {
+                "t": 5.531,
+                "word": "aisle"
+              },
+              {
+                "t": 5.822,
+                "word": "and"
+              },
+              {
+                "t": 5.984,
+                "word": "pressed"
+              },
+              {
+                "t": 6.263,
+                "word": "the"
+              },
+              {
+                "t": 6.379,
+                "word": "box"
+              },
+              {
+                "t": 6.669,
+                "word": "into"
+              },
+              {
+                "t": 6.855,
+                "word": "my"
+              },
+              {
+                "t": 7.006,
+                "word": "hand"
+              },
+              {
+                "t": 7.273,
+                "word": "like"
+              },
+              {
+                "t": 7.435,
+                "word": "it"
+              },
+              {
+                "t": 7.528,
+                "word": "was"
+              },
+              {
+                "t": 7.702,
+                "word": "nothing"
+              }
+            ]
+          },
+          {
+            "t": 9.0,
+            "text": "Mom and Dad sat on the front bench holding hands the whole time.",
+            "source": "telling:daniel:s3",
+            "cue": "lean",
+            "cueWord": "holding",
+            "words": [
+              {
+                "t": 9.0,
+                "word": "Mom"
+              },
+              {
+                "t": 9.302,
+                "word": "and"
+              },
+              {
+                "t": 9.418,
+                "word": "Dad"
+              },
+              {
+                "t": 9.685,
+                "word": "sat"
+              },
+              {
+                "t": 9.871,
+                "word": "on"
+              },
+              {
+                "t": 9.952,
+                "word": "the"
+              },
+              {
+                "t": 10.057,
+                "word": "front"
+              },
+              {
+                "t": 10.3,
+                "word": "bench"
+              },
+              {
+                "t": 10.591,
+                "word": "holding"
+              },
+              {
+                "t": 10.939,
+                "word": "hands"
+              },
+              {
+                "t": 11.194,
+                "word": "the"
+              },
+              {
+                "t": 11.299,
+                "word": "whole"
+              },
+              {
+                "t": 11.519,
+                "word": "time"
+              }
+            ]
+          },
+          {
+            "t": 15.8,
+            "text": "At the party Mom hugged me so hard my boutonniere fell off.",
+            "source": "telling:daniel:s4",
+            "cue": "hug",
+            "cueWord": "hugged",
+            "words": [
+              {
+                "t": 15.8,
+                "word": "At"
+              },
+              {
+                "t": 15.974,
+                "word": "the"
+              },
+              {
+                "t": 16.079,
+                "word": "party"
+              },
+              {
+                "t": 16.357,
+                "word": "Mom"
+              },
+              {
+                "t": 16.589,
+                "word": "hugged"
+              },
+              {
+                "t": 16.81,
+                "word": "me"
+              },
+              {
+                "t": 16.926,
+                "word": "so"
+              },
+              {
+                "t": 17.1,
+                "word": "hard"
+              },
+              {
+                "t": 17.309,
+                "word": "my"
+              },
+              {
+                "t": 17.437,
+                "word": "boutonniere"
+              },
+              {
+                "t": 17.901,
+                "word": "fell"
+              },
+              {
+                "t": 18.145,
+                "word": "off"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "e480b4dcd8514b1b001e91ddd239139a3b73b166955b6a96bc4ecff1c0e21d0b": {
+      "file": "7abbf0edeadeafefb93b8b5daa3fe8c7fb83915a32d0d47b270fe65e04234157.wav",
+      "sha256": "7abbf0edeadeafefb93b8b5daa3fe8c7fb83915a32d0d47b270fe65e04234157",
+      "audioEnd": 21.59025,
+      "track": {
+        "captions": [
+          {
+            "t": 1.2,
+            "text": "Daniel looked exactly like he did on his first day of school, terrified and pretending not to be."
+          },
+          {
+            "t": 6.4584,
+            "text": "Ben saved the day with the rings."
+          },
+          {
+            "t": 17.55,
+            "text": "When the confetti came down, Linda cried and I waved at everyone like a fool."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.2,
+            "text": "Daniel looked exactly like he did on his first day of school, terrified and pretending not to be.",
+            "source": "telling:rick:s1",
+            "cue": null,
+            "cueWord": null,
+            "words": [
+              {
+                "t": 1.2,
+                "word": "Daniel"
+              },
+              {
+                "t": 1.606,
+                "word": "looked"
+              },
+              {
+                "t": 1.873,
+                "word": "exactly"
+              },
+              {
+                "t": 2.535,
+                "word": "like"
+              },
+              {
+                "t": 2.744,
+                "word": "he"
+              },
+              {
+                "t": 2.872,
+                "word": "did"
+              },
+              {
+                "t": 3.116,
+                "word": "on"
+              },
+              {
+                "t": 3.243,
+                "word": "his"
+              },
+              {
+                "t": 3.383,
+                "word": "first"
+              },
+              {
+                "t": 3.638,
+                "word": "day"
+              },
+              {
+                "t": 3.789,
+                "word": "of"
+              },
+              {
+                "t": 3.882,
+                "word": "school"
+              },
+              {
+                "t": 4.265,
+                "word": "terrified"
+              },
+              {
+                "t": 4.88,
+                "word": "and"
+              },
+              {
+                "t": 5.008,
+                "word": "pretending"
+              },
+              {
+                "t": 5.531,
+                "word": "not"
+              },
+              {
+                "t": 5.728,
+                "word": "to"
+              },
+              {
+                "t": 5.821,
+                "word": "be"
+              }
+            ]
+          },
+          {
+            "t": 6.4584,
+            "text": "Ben saved the day with the rings.",
+            "source": "telling:rick:s2",
+            "cue": "rings",
+            "cueWord": "saved",
+            "words": [
+              {
+                "t": 6.4584,
+                "word": "Ben"
+              },
+              {
+                "t": 6.7484,
+                "word": "saved"
+              },
+              {
+                "t": 6.9924,
+                "word": "the"
+              },
+              {
+                "t": 7.0974,
+                "word": "day"
+              },
+              {
+                "t": 7.2594,
+                "word": "with"
+              },
+              {
+                "t": 7.3984,
+                "word": "the"
+              },
+              {
+                "t": 7.5154,
+                "word": "rings"
+              }
+            ]
+          },
+          {
+            "t": 17.55,
+            "text": "When the confetti came down, Linda cried and I waved at everyone like a fool.",
+            "source": "telling:rick:s3",
+            "cue": "wave_all",
+            "cueWord": "waved",
+            "words": [
+              {
+                "t": 17.55,
+                "word": "When"
+              },
+              {
+                "t": 17.759,
+                "word": "the"
+              },
+              {
+                "t": 17.863,
+                "word": "confetti"
+              },
+              {
+                "t": 18.27,
+                "word": "came"
+              },
+              {
+                "t": 18.49,
+                "word": "down"
+              },
+              {
+                "t": 19.013,
+                "word": "Linda"
+              },
+              {
+                "t": 19.361,
+                "word": "cried"
+              },
+              {
+                "t": 19.733,
+                "word": "and"
+              },
+              {
+                "t": 19.86,
+                "word": "I"
+              },
+              {
+                "t": 19.965,
+                "word": "waved"
+              },
+              {
+                "t": 20.267,
+                "word": "at"
+              },
+              {
+                "t": 20.371,
+                "word": "everyone"
+              },
+              {
+                "t": 20.72,
+                "word": "like"
+              },
+              {
+                "t": 20.87,
+                "word": "a"
+              },
+              {
+                "t": 20.963,
+                "word": "fool"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "fedaea3e4603ddbe83b63087159db4d3b77efd2a86f94526fefce93d5491357e": {
+      "file": "d0090df38b7e7f58cbe25ce733e5ffa7000bec38f5bfabd77488a36062c85723.wav",
+      "sha256": "d0090df38b7e7f58cbe25ce733e5ffa7000bec38f5bfabd77488a36062c85723",
+      "audioEnd": 19.7970625,
+      "track": {
+        "captions": [
+          {
+            "t": 2.55,
+            "text": "We drove three states for the leaves and for Grandpa Hal,"
+          },
+          {
+            "t": 7.75,
+            "text": "who wanted every one of his great-grandkids on his lap at once."
+          },
+          {
+            "t": 17.15,
+            "text": "Baby Nora fell asleep on him in the middle of the photo."
+          }
+        ],
+        "lines": [
+          {
+            "t": 2.55,
+            "text": "We drove three states for the leaves and for Grandpa Hal,",
+            "source": "telling:daniel:s1",
+            "cue": "arrive",
+            "cueWord": "drove",
+            "words": [
+              {
+                "t": 2.55,
+                "word": "We"
+              },
+              {
+                "t": 2.747,
+                "word": "drove"
+              },
+              {
+                "t": 3.026,
+                "word": "three"
+              },
+              {
+                "t": 3.27,
+                "word": "states"
+              },
+              {
+                "t": 3.607,
+                "word": "for"
+              },
+              {
+                "t": 3.746,
+                "word": "the"
+              },
+              {
+                "t": 3.874,
+                "word": "leaves"
+              },
+              {
+                "t": 4.222,
+                "word": "and"
+              },
+              {
+                "t": 4.373,
+                "word": "for"
+              },
+              {
+                "t": 4.512,
+                "word": "Grandpa"
+              },
+              {
+                "t": 4.895,
+                "word": "Hal"
+              }
+            ]
+          },
+          {
+            "t": 7.75,
+            "text": "who wanted every one of his great-grandkids on his lap at once.",
+            "source": "telling:daniel:s2",
+            "cue": "lap",
+            "cueWord": "wanted",
+            "words": [
+              {
+                "t": 7.75,
+                "word": "who"
+              },
+              {
+                "t": 7.959,
+                "word": "wanted"
+              },
+              {
+                "t": 8.226,
+                "word": "every"
+              },
+              {
+                "t": 8.435,
+                "word": "one"
+              },
+              {
+                "t": 8.574,
+                "word": "of"
+              },
+              {
+                "t": 8.656,
+                "word": "his"
+              },
+              {
+                "t": 8.795,
+                "word": "great-grandkids"
+              },
+              {
+                "t": 9.538,
+                "word": "on"
+              },
+              {
+                "t": 9.631,
+                "word": "his"
+              },
+              {
+                "t": 9.759,
+                "word": "lap"
+              },
+              {
+                "t": 9.979,
+                "word": "at"
+              },
+              {
+                "t": 10.13,
+                "word": "once"
+              }
+            ]
+          },
+          {
+            "t": 17.15,
+            "text": "Baby Nora fell asleep on him in the middle of the photo.",
+            "source": "telling:daniel:s3",
+            "cue": "asleep",
+            "cueWord": "asleep",
+            "words": [
+              {
+                "t": 17.15,
+                "word": "Baby"
+              },
+              {
+                "t": 17.498,
+                "word": "Nora"
+              },
+              {
+                "t": 17.754,
+                "word": "fell"
+              },
+              {
+                "t": 17.951,
+                "word": "asleep"
+              },
+              {
+                "t": 18.323,
+                "word": "on"
+              },
+              {
+                "t": 18.439,
+                "word": "him"
+              },
+              {
+                "t": 18.566,
+                "word": "in"
+              },
+              {
+                "t": 18.659,
+                "word": "the"
+              },
+              {
+                "t": 18.752,
+                "word": "middle"
+              },
+              {
+                "t": 18.973,
+                "word": "of"
+              },
+              {
+                "t": 19.042,
+                "word": "the"
+              },
+              {
+                "t": 19.147,
+                "word": "photo"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "d873671bde6b0dc03bf84252aaed4b3d6325887da1bb3d614bf6961c01581cfe": {
+      "file": "9e34ca426a9dd878b325a3f5b0e727ab962aee9770019d7eb13fd3c451b9dd41.wav",
+      "sha256": "9e34ca426a9dd878b325a3f5b0e727ab962aee9770019d7eb13fd3c451b9dd41",
+      "audioEnd": 12.043375,
+      "track": {
+        "captions": [
+          {
+            "t": 1.7,
+            "text": "For Mom's eightieth we put her in the big wicker loveseat with the brand-new twins."
+          },
+          {
+            "t": 6.8,
+            "text": "She laughed so hard Theo started laughing too."
+          },
+          {
+            "t": 10.0,
+            "text": "Lily and Nora wouldn't leave her side."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.7,
+            "text": "For Mom's eightieth we put her in the big wicker loveseat with the brand-new twins.",
+            "source": "telling:carol:s1",
+            "cue": "cake_in",
+            "cueWord": "eightieth",
+            "words": [
+              {
+                "t": 1.7,
+                "word": "For"
+              },
+              {
+                "t": 1.932,
+                "word": "Mom's"
+              },
+              {
+                "t": 2.257,
+                "word": "eightieth"
+              },
+              {
+                "t": 2.652,
+                "word": "we"
+              },
+              {
+                "t": 2.78,
+                "word": "put"
+              },
+              {
+                "t": 2.942,
+                "word": "her"
+              },
+              {
+                "t": 3.047,
+                "word": "in"
+              },
+              {
+                "t": 3.128,
+                "word": "the"
+              },
+              {
+                "t": 3.233,
+                "word": "big"
+              },
+              {
+                "t": 3.453,
+                "word": "wicker"
+              },
+              {
+                "t": 3.767,
+                "word": "loveseat"
+              },
+              {
+                "t": 4.289,
+                "word": "with"
+              },
+              {
+                "t": 4.498,
+                "word": "the"
+              },
+              {
+                "t": 4.614,
+                "word": "brand-new"
+              },
+              {
+                "t": 5.113,
+                "word": "twins"
+              }
+            ]
+          },
+          {
+            "t": 6.8,
+            "text": "She laughed so hard Theo started laughing too.",
+            "source": "telling:carol:s2",
+            "cue": "theo_laughs",
+            "cueWord": "Theo",
+            "words": [
+              {
+                "t": 6.8,
+                "word": "She"
+              },
+              {
+                "t": 7.044,
+                "word": "laughed"
+              },
+              {
+                "t": 7.311,
+                "word": "so"
+              },
+              {
+                "t": 7.543,
+                "word": "hard"
+              },
+              {
+                "t": 7.81,
+                "word": "Theo"
+              },
+              {
+                "t": 8.112,
+                "word": "started"
+              },
+              {
+                "t": 8.425,
+                "word": "laughing"
+              },
+              {
+                "t": 8.785,
+                "word": "too"
+              }
+            ]
+          },
+          {
+            "t": 10.0,
+            "text": "Lily and Nora wouldn't leave her side.",
+            "source": "telling:carol:s3",
+            "cue": "girls",
+            "cueWord": "Lily",
+            "words": [
+              {
+                "t": 10.0,
+                "word": "Lily"
+              },
+              {
+                "t": 10.395,
+                "word": "and"
+              },
+              {
+                "t": 10.522,
+                "word": "Nora"
+              },
+              {
+                "t": 10.789,
+                "word": "wouldn't"
+              },
+              {
+                "t": 11.045,
+                "word": "leave"
+              },
+              {
+                "t": 11.242,
+                "word": "her"
+              },
+              {
+                "t": 11.382,
+                "word": "side"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "9ad35306ab730726b7e9333389704aceed1a7449208a6d8f8b8bf7775e234d9c": {
+      "file": "496b496339339fedec79f560cc7f4fac143a76337d0326dca80a5c6557aa9ff6.wav",
+      "sha256": "496b496339339fedec79f560cc7f4fac143a76337d0326dca80a5c6557aa9ff6",
+      "audioEnd": 20.6651875,
+      "track": {
+        "captions": [
+          {
+            "t": 1.2,
+            "text": "Both grandmothers came and sat in the front row in matching hats, which was not planned."
+          },
+          {
+            "t": 5.994,
+            "text": "Lily tripped on the stage stairs and turned it into a bow."
+          },
+          {
+            "t": 9.1,
+            "text": "Carol clapped louder than anyone in the hall."
+          },
+          {
+            "t": 16.95,
+            "text": "Outside she handed me that diploma, and I would not let go of her."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.2,
+            "text": "Both grandmothers came and sat in the front row in matching hats, which was not planned.",
+            "source": "telling:jenna:s1",
+            "cue": "hats",
+            "cueWord": "grandmothers",
+            "words": [
+              {
+                "t": 1.2,
+                "word": "Both"
+              },
+              {
+                "t": 1.513,
+                "word": "grandmothers"
+              },
+              {
+                "t": 2.071,
+                "word": "came"
+              },
+              {
+                "t": 2.303,
+                "word": "and"
+              },
+              {
+                "t": 2.419,
+                "word": "sat"
+              },
+              {
+                "t": 2.64,
+                "word": "in"
+              },
+              {
+                "t": 2.709,
+                "word": "the"
+              },
+              {
+                "t": 2.814,
+                "word": "front"
+              },
+              {
+                "t": 3.058,
+                "word": "row"
+              },
+              {
+                "t": 3.267,
+                "word": "in"
+              },
+              {
+                "t": 3.394,
+                "word": "matching"
+              },
+              {
+                "t": 3.801,
+                "word": "hats"
+              },
+              {
+                "t": 4.497,
+                "word": "which"
+              },
+              {
+                "t": 4.741,
+                "word": "was"
+              },
+              {
+                "t": 4.904,
+                "word": "not"
+              },
+              {
+                "t": 5.113,
+                "word": "planned"
+              }
+            ]
+          },
+          {
+            "t": 5.994,
+            "text": "Lily tripped on the stage stairs and turned it into a bow.",
+            "source": "telling:jenna:s2",
+            "cue": "bow",
+            "cueWord": "bow",
+            "words": [
+              {
+                "t": 5.994,
+                "word": "Lily"
+              },
+              {
+                "t": 6.354,
+                "word": "tripped"
+              },
+              {
+                "t": 6.644,
+                "word": "on"
+              },
+              {
+                "t": 6.749,
+                "word": "the"
+              },
+              {
+                "t": 6.853,
+                "word": "stage"
+              },
+              {
+                "t": 7.236,
+                "word": "stairs"
+              },
+              {
+                "t": 7.654,
+                "word": "and"
+              },
+              {
+                "t": 7.782,
+                "word": "turned"
+              },
+              {
+                "t": 8.072,
+                "word": "it"
+              },
+              {
+                "t": 8.177,
+                "word": "into"
+              },
+              {
+                "t": 8.409,
+                "word": "a"
+              },
+              {
+                "t": 8.49,
+                "word": "bow"
+              }
+            ]
+          },
+          {
+            "t": 9.1,
+            "text": "Carol clapped louder than anyone in the hall.",
+            "source": "telling:jenna:s3",
+            "cue": "clap",
+            "cueWord": "clapped",
+            "words": [
+              {
+                "t": 9.1,
+                "word": "Carol"
+              },
+              {
+                "t": 9.472,
+                "word": "clapped"
+              },
+              {
+                "t": 9.843,
+                "word": "louder"
+              },
+              {
+                "t": 10.168,
+                "word": "than"
+              },
+              {
+                "t": 10.342,
+                "word": "anyone"
+              },
+              {
+                "t": 10.644,
+                "word": "in"
+              },
+              {
+                "t": 10.714,
+                "word": "the"
+              },
+              {
+                "t": 10.83,
+                "word": "hall"
+              }
+            ]
+          },
+          {
+            "t": 16.95,
+            "text": "Outside she handed me that diploma, and I would not let go of her.",
+            "source": "telling:jenna:s4",
+            "cue": "handoff",
+            "cueWord": "handed",
+            "words": [
+              {
+                "t": 16.95,
+                "word": "Outside"
+              },
+              {
+                "t": 17.589,
+                "word": "she"
+              },
+              {
+                "t": 17.763,
+                "word": "handed"
+              },
+              {
+                "t": 18.03,
+                "word": "me"
+              },
+              {
+                "t": 18.146,
+                "word": "that"
+              },
+              {
+                "t": 18.32,
+                "word": "diploma"
+              },
+              {
+                "t": 19.028,
+                "word": "and"
+              },
+              {
+                "t": 19.249,
+                "word": "I"
+              },
+              {
+                "t": 19.33,
+                "word": "would"
+              },
+              {
+                "t": 19.551,
+                "word": "not"
+              },
+              {
+                "t": 19.725,
+                "word": "let"
+              },
+              {
+                "t": 19.911,
+                "word": "go"
+              },
+              {
+                "t": 20.108,
+                "word": "of"
+              },
+              {
+                "t": 20.236,
+                "word": "her"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "72bcf8b9dd435f660185579b814e7b04d9b21173565c91e005d02ff265f1c260": {
+      "file": "e5e3ce6eda9c613d3f65d5193e2d1b66261b19e5d1c1098ef65235872ff888c9.wav",
+      "sha256": "e5e3ce6eda9c613d3f65d5193e2d1b66261b19e5d1c1098ef65235872ff888c9",
+      "audioEnd": 25.02925,
+      "track": {
+        "captions": [
+          {
+            "t": 6.6,
+            "text": "My gown was too long and I caught the hem on the second step."
+          },
+          {
+            "t": 10.6,
+            "text": "I figured if I bowed nobody would know."
+          },
+          {
+            "t": 22.15,
+            "text": "Carsten knew, and he still brings it up every Thanksgiving."
+          }
+        ],
+        "lines": [
+          {
+            "t": 6.6,
+            "text": "My gown was too long and I caught the hem on the second step.",
+            "source": "telling:lily_macosko:s1",
+            "cue": "bow",
+            "cueWord": "caught",
+            "words": [
+              {
+                "t": 6.6,
+                "word": "My"
+              },
+              {
+                "t": 6.832,
+                "word": "gown"
+              },
+              {
+                "t": 7.064,
+                "word": "was"
+              },
+              {
+                "t": 7.215,
+                "word": "too"
+              },
+              {
+                "t": 7.413,
+                "word": "long"
+              },
+              {
+                "t": 7.691,
+                "word": "and"
+              },
+              {
+                "t": 7.819,
+                "word": "I"
+              },
+              {
+                "t": 7.912,
+                "word": "caught"
+              },
+              {
+                "t": 8.156,
+                "word": "the"
+              },
+              {
+                "t": 8.283,
+                "word": "hem"
+              },
+              {
+                "t": 8.481,
+                "word": "on"
+              },
+              {
+                "t": 8.585,
+                "word": "the"
+              },
+              {
+                "t": 8.69,
+                "word": "second"
+              },
+              {
+                "t": 9.026,
+                "word": "step"
+              }
+            ]
+          },
+          {
+            "t": 10.6,
+            "text": "I figured if I bowed nobody would know.",
+            "source": "telling:lily_macosko:s2",
+            "cue": null,
+            "cueWord": null,
+            "words": [
+              {
+                "t": 10.6,
+                "word": "I"
+              },
+              {
+                "t": 10.797,
+                "word": "figured"
+              },
+              {
+                "t": 11.099,
+                "word": "if"
+              },
+              {
+                "t": 11.215,
+                "word": "I"
+              },
+              {
+                "t": 11.355,
+                "word": "bowed"
+              },
+              {
+                "t": 11.645,
+                "word": "nobody"
+              },
+              {
+                "t": 11.947,
+                "word": "would"
+              },
+              {
+                "t": 12.133,
+                "word": "know"
+              }
+            ]
+          },
+          {
+            "t": 22.15,
+            "text": "Carsten knew, and he still brings it up every Thanksgiving.",
+            "source": "telling:lily_macosko:s3",
+            "cue": "tease",
+            "cueWord": "knew",
+            "words": [
+              {
+                "t": 22.15,
+                "word": "Carsten"
+              },
+              {
+                "t": 22.649,
+                "word": "knew"
+              },
+              {
+                "t": 22.939,
+                "word": "and"
+              },
+              {
+                "t": 23.067,
+                "word": "he"
+              },
+              {
+                "t": 23.172,
+                "word": "still"
+              },
+              {
+                "t": 23.404,
+                "word": "brings"
+              },
+              {
+                "t": 23.648,
+                "word": "it"
+              },
+              {
+                "t": 23.741,
+                "word": "up"
+              },
+              {
+                "t": 23.926,
+                "word": "every"
+              },
+              {
+                "t": 24.17,
+                "word": "Thanksgiving"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "294298b3a3e64e835f3ffda06a14bf6f3d17698e9671e30cbf4e47ea5e610bc8": {
+      "file": "b751a7e9611c5b77a815401d8bf200efac5d1ef4e8fc2892741ccc7ba2452fdd.wav",
+      "sha256": "b751a7e9611c5b77a815401d8bf200efac5d1ef4e8fc2892741ccc7ba2452fdd",
+      "audioEnd": 24.772375,
+      "track": {
+        "captions": [
+          {
+            "t": 1.95,
+            "text": "Linda sewed matching overalls for all six of us for the canoe trip,"
+          },
+          {
+            "t": 8.15,
+            "text": "so nobody could get lost."
+          },
+          {
+            "t": 19.386,
+            "text": "We tipped the canoe anyway,"
+          },
+          {
+            "t": 21.986,
+            "text": "and Katie still says it was the best day of the summer."
+          }
+        ],
+        "lines": [
+          {
+            "t": 1.95,
+            "text": "Linda sewed matching overalls for all six of us for the canoe trip,",
+            "source": "telling:rick:s1",
+            "cue": "sewed",
+            "cueWord": "sewed",
+            "words": [
+              {
+                "t": 1.95,
+                "word": "Linda"
+              },
+              {
+                "t": 2.345,
+                "word": "sewed"
+              },
+              {
+                "t": 2.728,
+                "word": "matching"
+              },
+              {
+                "t": 3.146,
+                "word": "overalls"
+              },
+              {
+                "t": 3.657,
+                "word": "for"
+              },
+              {
+                "t": 3.831,
+                "word": "all"
+              },
+              {
+                "t": 4.075,
+                "word": "six"
+              },
+              {
+                "t": 4.33,
+                "word": "of"
+              },
+              {
+                "t": 4.446,
+                "word": "us"
+              },
+              {
+                "t": 4.585,
+                "word": "for"
+              },
+              {
+                "t": 4.713,
+                "word": "the"
+              },
+              {
+                "t": 4.818,
+                "word": "canoe"
+              },
+              {
+                "t": 5.096,
+                "word": "trip"
+              }
+            ]
+          },
+          {
+            "t": 8.15,
+            "text": "so nobody could get lost.",
+            "source": "telling:rick:s2",
+            "cue": "count",
+            "cueWord": "nobody",
+            "words": [
+              {
+                "t": 8.15,
+                "word": "so"
+              },
+              {
+                "t": 8.394,
+                "word": "nobody"
+              },
+              {
+                "t": 8.684,
+                "word": "could"
+              },
+              {
+                "t": 8.847,
+                "word": "get"
+              },
+              {
+                "t": 9.009,
+                "word": "lost"
+              }
+            ]
+          },
+          {
+            "t": 19.386,
+            "text": "We tipped the canoe anyway,",
+            "source": "telling:rick:s3",
+            "cue": "tip",
+            "cueWord": "tipped",
+            "words": [
+              {
+                "t": 19.386,
+                "word": "We"
+              },
+              {
+                "t": 19.595,
+                "word": "tipped"
+              },
+              {
+                "t": 19.827,
+                "word": "the"
+              },
+              {
+                "t": 19.932,
+                "word": "canoe"
+              },
+              {
+                "t": 20.245,
+                "word": "anyway"
+              }
+            ]
+          },
+          {
+            "t": 21.986,
+            "text": "and Katie still says it was the best day of the summer.",
+            "source": "telling:rick:s4",
+            "cue": "best_day",
+            "cueWord": "Katie",
+            "words": [
+              {
+                "t": 21.986,
+                "word": "and"
+              },
+              {
+                "t": 22.288,
+                "word": "Katie"
+              },
+              {
+                "t": 22.659,
+                "word": "still"
+              },
+              {
+                "t": 22.961,
+                "word": "says"
+              },
+              {
+                "t": 23.228,
+                "word": "it"
+              },
+              {
+                "t": 23.321,
+                "word": "was"
+              },
+              {
+                "t": 23.472,
+                "word": "the"
+              },
+              {
+                "t": 23.588,
+                "word": "best"
+              },
+              {
+                "t": 23.82,
+                "word": "day"
+              },
+              {
+                "t": 23.971,
+                "word": "of"
+              },
+              {
+                "t": 24.041,
+                "word": "the"
+              },
+              {
+                "t": 24.145,
+                "word": "summer"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "77a4db52501f1ac4bc531528e5fc98768ca40de11853289e2d77df2cfc36fd17": {
+      "file": "27658e261822c883262a8511da3c6ca9113efac75a1bbe4b57296aad94ca7c54.wav",
+      "sha256": "27658e261822c883262a8511da3c6ca9113efac75a1bbe4b57296aad94ca7c54",
+      "audioEnd": 19.536375,
+      "track": {
+        "captions": [
+          {
+            "t": 2.15,
+            "text": "Mom swore she'd never get another cat,"
+          },
+          {
+            "t": 7.55,
+            "text": "then came home from the shelter with an orange kitten in her coat."
+          },
+          {
+            "t": 16.75,
+            "text": "We named him Marmalade before we'd even closed the door."
+          }
+        ],
+        "lines": [
+          {
+            "t": 2.15,
+            "text": "Mom swore she'd never get another cat,",
+            "source": "telling:jenna:s1",
+            "cue": "home",
+            "cueWord": "swore",
+            "words": [
+              {
+                "t": 2.15,
+                "word": "Mom"
+              },
+              {
+                "t": 2.51,
+                "word": "swore"
+              },
+              {
+                "t": 2.8,
+                "word": "she'd"
+              },
+              {
+                "t": 3.021,
+                "word": "never"
+              },
+              {
+                "t": 3.241,
+                "word": "get"
+              },
+              {
+                "t": 3.404,
+                "word": "another"
+              },
+              {
+                "t": 3.717,
+                "word": "cat"
+              }
+            ]
+          },
+          {
+            "t": 7.55,
+            "text": "then came home from the shelter with an orange kitten in her coat.",
+            "source": "telling:jenna:s2",
+            "cue": "peek",
+            "cueWord": "kitten",
+            "words": [
+              {
+                "t": 7.55,
+                "word": "then"
+              },
+              {
+                "t": 7.829,
+                "word": "came"
+              },
+              {
+                "t": 8.061,
+                "word": "home"
+              },
+              {
+                "t": 8.27,
+                "word": "from"
+              },
+              {
+                "t": 8.432,
+                "word": "the"
+              },
+              {
+                "t": 8.537,
+                "word": "shelter"
+              },
+              {
+                "t": 8.92,
+                "word": "with"
+              },
+              {
+                "t": 9.083,
+                "word": "an"
+              },
+              {
+                "t": 9.199,
+                "word": "orange"
+              },
+              {
+                "t": 9.512,
+                "word": "kitten"
+              },
+              {
+                "t": 9.814,
+                "word": "in"
+              },
+              {
+                "t": 9.918,
+                "word": "her"
+              },
+              {
+                "t": 10.046,
+                "word": "coat"
+              }
+            ]
+          },
+          {
+            "t": 16.75,
+            "text": "We named him Marmalade before we'd even closed the door.",
+            "source": "telling:jenna:s3",
+            "cue": "named",
+            "cueWord": "Marmalade",
+            "words": [
+              {
+                "t": 16.75,
+                "word": "We"
+              },
+              {
+                "t": 16.971,
+                "word": "named"
+              },
+              {
+                "t": 17.203,
+                "word": "him"
+              },
+              {
+                "t": 17.354,
+                "word": "Marmalade"
+              },
+              {
+                "t": 17.888,
+                "word": "before"
+              },
+              {
+                "t": 18.166,
+                "word": "we'd"
+              },
+              {
+                "t": 18.341,
+                "word": "even"
+              },
+              {
+                "t": 18.538,
+                "word": "closed"
+              },
+              {
+                "t": 18.828,
+                "word": "the"
+              },
+              {
+                "t": 18.933,
+                "word": "door"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
