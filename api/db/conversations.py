@@ -2,7 +2,8 @@
 
 import hashlib
 import json
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timezone, timedelta
 
 from pymongo.errors import DuplicateKeyError
 from pymongo import ReturnDocument
@@ -17,12 +18,178 @@ def contact_proof(contact: dict) -> dict | None:
             ("handle", "channel", "spaceId", "spaceKind", "verifiedAt", "optInAt")}
 
 
+class CallConflict(ValueError):
+    pass
+
+
+class CallRateLimited(ValueError):
+    pass
+
+
+def call_attempt(db, scope: str, identity: str, *, family_id=None, limit=10, now=None):
+    """Atomic minute windows, TTL cleanup; no transcript, token or caller retained."""
+    now = now or datetime.now(timezone.utc)
+    window = int(now.timestamp()) // 60
+    key = "call-rate:" + hashlib.sha256(f"{scope}:{identity}:{window}".encode()).hexdigest()
+    try:
+        row = db.channelMessages.find_one_and_update(
+            {"_id": key, "count": {"$lt": limit}},
+            {"$inc": {"count": 1}, "$setOnInsert": {"kind": "call-rate", "familyId": family_id,
+                "expireAt": now + timedelta(minutes=2)}}, upsert=True, return_document=ReturnDocument.AFTER)
+    except DuplicateKeyError:
+        raise CallRateLimited("Try again shortly") from None
+    return row
+
+
+def call_person_proof(db, family_id: str, person_id: str, actor_id: str) -> dict:
+    """Own linked person only; a membership generation prevents leave/rejoin revival."""
+    family = db.families.find_one({"_id": family_id})
+    person = db.people.find_one({"_id": person_id, "familyId": family_id, "userId": actor_id})
+    member = next((m for m in (family or {}).get("members", []) if m.get("userId") == actor_id), None)
+    if (not person or not member or not isinstance(member.get("joinedAt"), datetime)
+            or db.users.find_one({"_id": actor_id}, {"_id": 1}) is None):
+        raise LookupError("Call person unavailable")
+    return {"actorId": actor_id, "personId": person_id, "membershipJoinedAt": member["joinedAt"]}
+
+
+def call_code_hash(code: str) -> str:
+    return hashlib.sha256(("stitch-call-pairing:" + code).encode("ascii")).hexdigest()
+
+
+def create_call_pairing(db, family_id: str, person_id: str, actor_id: str, *, now=None) -> tuple[dict, str]:
+    proof = call_person_proof(db, family_id, person_id, actor_id)
+    now = now or datetime.now(timezone.utc)
+    key = "call-pairing:" + conversation_key(family_id, person_id)
+    call_attempt(db, "issue", family_id, family_id=family_id, now=now)
+    for _ in range(5):
+        code = f"{secrets.randbelow(10**12):012d}"
+        fields = {"kind": "call-pairing", "familyId": family_id, **proof, "tokenHash": call_code_hash(code),
+                  "state": "pending", "createdAt": now, "expireAt": now + timedelta(hours=1)}
+        try:
+            row = db.channelMessages.find_one_and_update(
+                {"_id": key, "familyId": family_id, "state": {"$ne": "claiming"}},
+                {"$set": fields, "$unset": {"conversationKey": ""}}, upsert=True,
+                return_document=ReturnDocument.AFTER)
+            # Membership changes after rotation cannot authorize ingestion.
+            if call_person_proof(db, family_id, person_id, actor_id) != proof:
+                raise LookupError("Call person changed")
+            return row, code
+        except DuplicateKeyError:
+            existing = db.channelMessages.find_one({"_id": key, "familyId": family_id})
+            if existing and existing.get("state") == "claiming":
+                raise CallConflict("A call is being attached; retry after it completes") from None
+    raise CallConflict("Pairing unavailable")
+
+
+def _call_proof_current(db, row):
+    proof = call_person_proof(db, row["familyId"], row["personId"], row["actorId"])
+    if any(row.get(key) != value for key, value in proof.items()):
+        raise LookupError("Call authority changed")
+
+
+def accept_call_transcript(db, agent_id: str, conversation_id: str, code: str,
+                           text: str, content_hash: str, *, now=None) -> bool:
+    """Provider discovery uses only the secret token; no input family/person is trusted.
+
+    A unique call reservation precedes ticket consumption. Binding is resumable only
+    for the exact original content; no transcript is published before proof settles.
+    """
+    now = now or datetime.now(timezone.utc)
+    key = "call:" + hashlib.sha256(json.dumps([agent_id, conversation_id], separators=(",", ":")).encode()).hexdigest()
+    token_hash = call_code_hash(code)
+    row = db.channelMessages.find_one({"_id": key, "kind": "call-draft"})
+    if row:
+        if row.get("contentHash") != content_hash or row.get("proofHash") != token_hash:
+            raise CallConflict("Call identity conflict")
+        _call_proof_current(db, row)
+        if row["status"] in {"ready", "deleted"}:
+            db.channelMessages.update_one({"kind": "call-pairing", "familyId": row["familyId"],
+                "tokenHash": token_hash, "conversationKey": key, "state": "claiming"}, {"$set": {"state": "consumed"}})
+            return True
+        if row["status"] != "binding":
+            raise CallConflict("Call binding unavailable")
+    else:
+        call_attempt(db, "bind", key, limit=5, now=now)
+        pairing = db.channelMessages.find_one({"kind": "call-pairing", "tokenHash": token_hash,
+            "state": "pending", "expireAt": {"$gt": now}})
+        if pairing is None:
+            raise LookupError("Call pairing unavailable")
+        _call_proof_current(db, pairing)
+        call_attempt(db, "family-bind", pairing["familyId"], family_id=pairing["familyId"], limit=20, now=now)
+        row = {"_id": key, "kind": "call-draft", "status": "binding", "familyId": pairing["familyId"],
+            **{name: pairing[name] for name in ("actorId", "personId", "membershipJoinedAt")},
+            "proofHash": token_hash, "contentHash": content_hash, "createdAt": now}
+        try:
+            db.channelMessages.insert_one(row)
+        except DuplicateKeyError:
+            return accept_call_transcript(db, agent_id, conversation_id, code, text, content_hash, now=now)
+    family_id = row["familyId"]
+    claimed = db.channelMessages.find_one_and_update({"kind": "call-pairing", "familyId": family_id,
+        "tokenHash": token_hash, "state": "pending", "expireAt": {"$gt": now},
+        "actorId": row["actorId"], "personId": row["personId"], "membershipJoinedAt": row["membershipJoinedAt"]},
+        {"$set": {"state": "claiming", "conversationKey": key}}, return_document=ReturnDocument.AFTER)
+    if claimed is None:
+        claimed = db.channelMessages.find_one({"kind": "call-pairing", "familyId": family_id,
+            "tokenHash": token_hash, "state": {"$in": ["claiming", "consumed"]}, "conversationKey": key})
+    if claimed is None:
+        db.channelMessages.update_one({"_id": key, "familyId": family_id, "status": "binding"},
+                                      {"$set": {"status": "rejected"}})
+        raise CallConflict("Call pairing is no longer available")
+    _call_proof_current(db, row)
+    db.channelMessages.update_one({"_id": key, "familyId": family_id, "status": "binding"},
+                                  {"$set": {"status": "ready", "text": text}})
+    db.channelMessages.update_one({"kind": "call-pairing", "familyId": family_id,
+        "tokenHash": token_hash, "conversationKey": key}, {"$set": {"state": "consumed"}})
+    # Recheck immediately after persistence; stale membership never discloses text.
+    try:
+        _call_proof_current(db, row)
+    except LookupError:
+        db.channelMessages.update_one({"_id": key, "familyId": family_id},
+                                      {"$set": {"status": "revoked"}, "$unset": {"text": ""}})
+        raise
+    return False
+
+
+def list_call_drafts(db, family_id: str, actor_id: str) -> list[dict]:
+    rows = list(db.channelMessages.find({"kind": "call-draft", "familyId": family_id,
+        "actorId": actor_id, "status": "ready"}).sort([("createdAt", -1), ("_id", 1)]).limit(50))
+    visible = []
+    for row in rows:
+        try:
+            _call_proof_current(db, row)
+        except LookupError:
+            continue
+        visible.append(row)
+    return visible
+
+
+def get_call_draft(db, family_id: str, actor_id: str, draft_id: str) -> dict:
+    row = db.channelMessages.find_one({"_id": draft_id, "kind": "call-draft", "familyId": family_id,
+                                       "actorId": actor_id, "status": "ready"})
+    if row is None:
+        raise LookupError("Call draft unavailable")
+    _call_proof_current(db, row)
+    return row
+
+
+def remove_call_draft(db, family_id: str, actor_id: str, draft_id: str) -> None:
+    row = get_call_draft(db, family_id, actor_id, draft_id)
+    result = db.channelMessages.update_one({"_id": row["_id"], "familyId": family_id, "status": "ready"},
+        {"$set": {"status": "deleted"}, "$unset": {"text": ""}})
+    if result.modified_count != 1:
+        raise LookupError("Call draft unavailable")
+
+
 def ensure_message_indexes(db) -> None:
-    # Only authentication records have expireAt; story receipts never expire here.
+    # Authentication, pairing and short-window counters expire; story receipts do not.
     db.channelMessages.create_index("expireAt", expireAfterSeconds=0,
                                     name="channel_auth_expiry")
     db.channelMessages.create_index([("familyId", 1), ("contactId", 1), ("createdAt", 1)],
                                     name="channel_inbox_contact")
+    # Only pairing tickets carry tokenHash. Draft receipts use proofHash so the
+    # sparse unique index also works beside existing records on repeated startup.
+    db.channelMessages.create_index("tokenHash", unique=True, sparse=True,
+                                    name="channel_call_pairing_hash")
 
 
 def consume_nonce(db, nonce: str, timestamp: int) -> bool:

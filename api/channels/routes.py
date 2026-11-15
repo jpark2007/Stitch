@@ -12,6 +12,8 @@ from .consent import receive_stop
 from .models import AuthorizeContact, InboundMessage, InboundPhoto, InboundVoice, Tick
 
 router = APIRouter(prefix="/internal/channels", tags=["channels"])
+from .elevenlabs import router as elevenlabs_router
+router.include_router(elevenlabs_router)
 
 
 def _receive(message: InboundMessage) -> dict:

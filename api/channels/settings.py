@@ -20,6 +20,8 @@ def enabled(response: Response):
 
 
 router = APIRouter(prefix="/families/{fid}/channels", tags=["channels-settings"], dependencies=[Depends(enabled)])
+from .call_settings import router as call_settings_router
+router.include_router(call_settings_router)
 
 
 class StrictModel(BaseModel):
