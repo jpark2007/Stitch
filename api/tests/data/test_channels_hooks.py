@@ -234,20 +234,40 @@ def test_on_a_channel_index_failure_stops_startup(on, monkeypatch, caplog, fake_
 
 @pytest.mark.parametrize("path", [PHOTO, VOICE])
 def test_on_the_media_paths_take_a_body_up_to_the_cap(on, path):
+    assert CAP == 27_978_412
+
+    def unsigned() -> dict[str, str]:
+        # Well-formed but wrongly signed: the handler gets past its header checks and reads
+        # the body, so the size cap (not a missing header) is what decides.
+        return {
+            "content-type": "application/json",
+            "x-channels-timestamp": str(int(time.time())),
+            "x-channels-nonce": str(uuid4()),
+            "x-channels-signature": "0" * 64,
+        }
+
+    def chunks(size: int):  # no Content-Length: counted as it streams
+        for _ in range(size // 1_000_000):
+            yield b"x" * 1_000_000
+        yield b"x" * (size % 1_000_000)
+
     with TestClient(main.create_app()) as c:
-        at = c.post(path, content=b"x" * CAP, headers={"content-type": "application/json"})
-        # Whole body past the middleware: the signed handler read it and refused the signature.
+        at = c.post(path, content=b"x" * CAP, headers=unsigned())
+        # Not refused by the size middleware; the handler then refuses the signature.
         assert (at.status_code, at.json()) == (401, {"detail": "Invalid channel authentication"}), at.text
-        over = c.post(path, content=b"x" * (CAP + 1), headers={"content-type": "application/json"})
+        over = c.post(path, content=b"x" * (CAP + 1), headers=unsigned())
         assert (over.status_code, over.json()) == (413, TOO_LARGE)
 
-        def chunks():  # no Content-Length: counted as it streams
-            for _ in range(CAP // 1_000_000):
-                yield b"x" * 1_000_000
-            yield b"x" * (CAP % 1_000_000 + 1)
-
-        streamed = c.post(path, content=chunks(), headers={"content-type": "application/json"})
+        streamed_at = c.post(path, content=chunks(CAP), headers=unsigned())
+        assert (streamed_at.status_code, streamed_at.json()) == (
+            401, {"detail": "Invalid channel authentication"}), streamed_at.text
+        streamed = c.post(path, content=chunks(CAP + 1), headers=unsigned())
         assert (streamed.status_code, streamed.json()) == (413, TOO_LARGE)
+
+        # Without the X-Channels headers the request is refused, before or after the body
+        # is read (401 from the header check, or 413 from the size cap), never accepted.
+        headerless = c.post(path, content=chunks(CAP + 1), headers={"content-type": "application/json"})
+        assert headerless.status_code in (401, 413), headerless.text
 
 
 @pytest.mark.parametrize("path", [
