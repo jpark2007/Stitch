@@ -445,6 +445,69 @@ test("effects are active for their duration; time of day holds and blends", () =
   close(f.timeOfDayMix, 0.5);
 });
 
+test("a scrub tab owns the effects in its window, never time of day", () => {
+  const timeline: Timeline = {
+    duration: 12,
+    tracks: [],
+    effects: [
+      { t: 0, kind: "steam", dur: 12 },
+      { t: 2, kind: "confetti", dur: 2 },
+      { t: 3.5, kind: "smoke", dur: 1 },
+      { t: 3, kind: "time_of_day", dur: 1, value: "dusk" },
+      { t: 5, kind: "rain", dur: 1 },
+      { t: 5.0000001, kind: "confetti" },
+      { t: 9, kind: "confetti", dur: 2 },
+    ],
+    interactions: [
+      { id: "hug", kind: "pull_tab", label: "Pull", at: [0, 0], drives: { type: "scrub", from: 2, to: 5, targets: ["puppet:mom"] } },
+      { id: "box", kind: "pull_tab", label: "Pull", at: [0, 0], drives: { type: "prop_state", prop: "box", states: ["a", "b"] } },
+      { id: "all", kind: "slider", label: "Slide", at: [0, 0], drives: { type: "scrub" } },
+    ],
+  };
+  const c = compileTimeline(timeline);
+  assert.deepEqual(c.interaction("hug")!.effects, [1, 2, 4, 5], "both ends count; steam before and confetti after do not");
+  assert.deepEqual(c.interaction("box")!.effects, [], "only a scrub replays effects");
+  assert.deepEqual(c.interaction("all")!.effects, [0, 1, 2, 4, 5, 6], "a scrub of the whole scene owns every effect but time of day");
+});
+
+test("an effect clock replays an effect on its own time; NaN follows the scene", () => {
+  const c = compileTimeline({
+    duration: 10,
+    tracks: [],
+    effects: [
+      { t: 2, kind: "confetti", dur: 2 },
+      { t: 6, kind: "smoke", dur: 1 },
+    ],
+  });
+  const f = c.createFrame();
+  c.sample(8, f);
+  assert.equal(f.effects[0].replaying, false);
+  assert.equal(f.effects[0].time, 8, "scene time when nothing replays it");
+  assert.equal(f.effects[0].progress, 1);
+  assert.equal(f.activeEffects, 0);
+
+  const clock = new Float64Array([3, Number.NaN]);
+  c.sample(8, f, { effectClock: clock });
+  assert.equal(f.t, 8, "the scene stays where it is");
+  assert.equal(f.effects[0].replaying, true);
+  assert.equal(f.effects[0].time, 3);
+  assert.equal(f.effects[0].active, true);
+  close(f.effects[0].progress, 0.5);
+  assert.equal(f.effects[1].replaying, false);
+  assert.equal(f.effects[1].time, 8);
+  assert.equal(f.effects[1].progress, 1);
+  assert.equal(f.activeEffects, 1);
+
+  c.sample(1, f, { effectClock: new Float64Array([1.5]) });
+  assert.equal(f.effects[0].active, false, "a clock before the start is before the start");
+  assert.equal(f.effects[0].progress, 0);
+  assert.equal(f.effects[1].time, 1, "a short clock leaves the rest on scene time");
+
+  c.sample(2.5, f, { effectClock: new Float64Array([Number.NaN, Number.NaN]) });
+  assert.equal(f.effects[0].replaying, false);
+  close(f.effects[0].progress, 0.25, "back on scene time");
+});
+
 test("parseParent handles every parent form", () => {
   assert.equal(parseParent("ground")?.kind, "ground");
   assert.deepEqual({ ...parseParent("prop:sedan.driver") }, {
@@ -460,7 +523,11 @@ test("parseParent handles every parent form", () => {
 
 test("sampling allocates nothing measurable over many frames", () => {
   const f = compiled.createFrame();
-  const options = { narrator: "mom", interactions: [{ id: "drop_books", value: 0.3 }] };
+  const options = {
+    narrator: "mom",
+    interactions: [{ id: "drop_books", value: 0.3 }],
+    effectClock: new Float64Array((hymn.effects ?? []).length + 1).fill(Number.NaN),
+  };
   // Warm up so the JIT settles, then measure heap growth across 50k samples.
   for (let i = 0; i < 20000; i++) compiled.sample((i % 1065) / 100, f, options);
   const before = process.memoryUsage().heapUsed;
