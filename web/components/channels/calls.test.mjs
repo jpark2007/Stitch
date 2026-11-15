@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createCallsClient, CallSettingsError } from "./calls-client.ts";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status });
-const pairing = { code: "012", personId: "p/name", expiresAt: "2030-01-01T00:05:00Z", instruction: "Say STITCH", phoneNumber: "+12292875827" };
+const pairing = { code: "012", personId: "p/name", expiresAt: "2030-01-01T00:15:00Z", instruction: "Say STITCH", phoneNumber: "+12292875827" };
 const draft = { id: "draft/one", personId: "p/name", createdAt: "2026-11-15T00:00:00Z", text: "小时候，奶奶教我包饺子。" };
 
 test("pairing uses cookie-authenticated no-store POST and keeps code out of URL", async () => {

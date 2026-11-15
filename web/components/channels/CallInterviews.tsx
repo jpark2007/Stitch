@@ -104,6 +104,7 @@ function CallPanel({ familyId, personId, personName }: { familyId: string; perso
         {pairing.phoneNumber ? <a className={`inline-flex min-h-11 items-center justify-center rounded-card bg-accent-deep px-5 py-2.5 font-semibold text-paper-light ${FOCUS_RING}`} href={`tel:${pairing.phoneNumber}`}>Call {pairing.phoneNumber}</a>
           : <p className="text-sm">Ask your family organizer for the Stitch interview number.</p>}
         <p className="text-sm text-ink-soft">Keep it private · use once · expires {new Date(pairing.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" })}.</p>
+        <p className="text-sm text-ink-soft">Start your call now and finish before the code expires.</p>
         <p className="text-sm text-ink-soft">After the call, refresh your drafts below. Your words may take a moment to arrive.</p>
         <Button variant="quiet" busy={busy} onClick={() => void act("pair")}>Replace call code</Button>
         <p className="text-sm text-ink-soft">Replacing this code cancels the unused one above.</p>
