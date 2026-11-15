@@ -32,7 +32,7 @@ import { SessionGate, type SessionValue } from "@/components/flow/SessionGate";
 import { hrefs } from "@/components/flow/session";
 import { CHECK_FIELDS_MESSAGE, type FieldErrors } from "@/components/flow/validation";
 import { YearInput } from "@/components/flow/YearInput";
-import { analyzePhotos, yieldToPage, type PhotoLook } from "@/components/film/analyze";
+import { analyzePhotos, type PhotoLook } from "@/components/film/analyze";
 import { FilmPhotoPicker, type Looking, type PickedPhoto } from "@/components/film/FilmPhotoPicker";
 import {
   FILM_YEAR_MIN,
@@ -64,6 +64,16 @@ const LEDE =
 const STILL_LOOKING = "Stitch is still looking through your photos. It won’t be long.";
 /** Progress redraws at most this often while Stitch looks. */
 const LOOKING_REDRAW_MS = 120;
+
+/**
+ * The pause between slices of choosing: a plain timer, which queues behind
+ * React's own work, so the page redraws (and the story box keeps up) while a
+ * big album is chosen from. scheduler.yield() would resume first and starve
+ * React's renders.
+ */
+function pauseForPage(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 const STORY_PLACEHOLDER =
   "Tell it the way you would at the kitchen table: where you went, who was there, what happened first and how it ended…";
 // Large, comfortable serif for writing in, as on the add-a-memory page.
@@ -282,7 +292,7 @@ function FilmForm(props: { api: StitchApi; fid: string }) {
         const plan = await planAlbumAsync(
           photos,
           { exactTimes, removed: a.removed, max: MAX_FILM_PHOTOS, min: MIN_FILM_PHOTOS },
-          yieldToPage,
+          pauseForPage,
         );
         if (control.signal.aborted) return;
         a.files = files;

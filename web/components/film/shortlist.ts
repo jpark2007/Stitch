@@ -51,13 +51,26 @@ export const NEAR_WINDOW_MS = 10_000;
 export const UNKNOWN_TIME_PALETTE = 0.8;
 export const UNKNOWN_TIME_BITS = 26;
 /**
- * Lining up is the costly comparison, and in an album shot in one place with
- * no times every pair passes the palette test. So a photo with no time is
- * lined up against at most this many kept photos, those with the closest
- * palettes (a copy sits a median 0.16 from its original; other moments in the
- * same place 0.2 to 0.6). Everything cheaper is still checked against all.
+ * A photo with no time is lined up against at most this many kept photos,
+ * the most promising first: ranked by how well a coarse 8x8 grid of the two
+ * lines up under a few crops and shifts (coarseKey). On the review albums a
+ * copy's original came first by that ranking in the median, and in the top 8
+ * for 139 of 140 copies (by palette alone it came as low as 63rd).
+ *
+ * The limit is about distinct moments more than time. In an album shot in
+ * one place with no times, every pair passes the palette test, and each
+ * extra lining-up between two different moments carries a small chance (2%
+ * of those tried) of calling them alike. Measured on 200 moments in one
+ * place plus 40 copies: lining up every candidate kept 147 of the 200
+ * moments, took 8 s and still left 2 copies kept apart; 16 kept 158; 8 kept
+ * 168 to 181 with at most one copy kept apart, in about 1.4 s. What the
+ * limit misses is caught later: a photo set aside is moved to the group of
+ * the photo it matches best (prepareAlbum), and the picker never puts two
+ * copies of one picture in the film (Album.sameUntimed).
  */
 export const UNTIMED_LINE_UPS = 8;
+/** A coarse key above this has never been a copy of one picture (copies measured up to 1.70). */
+const COPY_KEY_MAX = 1.8;
 
 /**
  * The look-alike rules. `distance` is the fine difference of the worst block
@@ -166,6 +179,8 @@ interface Fine {
    * fractions. A crop or shift barely changes it; another scene does.
    */
   palette: Float32Array;
+  /** Made when first needed: the coarse grids under each of COARSE_MOVES (see coarseKey). */
+  coarse: Float32Array | null;
 }
 
 function standardise(src: ArrayLike<number>, off: number, out: Float32Array, outOff: number): number {
@@ -263,7 +278,7 @@ function fineOf(signal: Pick<PhotoSignal, "fine">): Fine {
     }
     for (let k = 0; k < palette.length; k++) palette[k] /= Math.max(1, counted);
   }
-  const made = { full, col, row, grey, mask, blockMeans, palette };
+  const made = { full, col, row, grey, mask, blockMeans, palette, coarse: null };
   prepared.set(key, made);
   return made;
 }
@@ -288,14 +303,116 @@ function worthLiningUp(a: Pick<PhotoSignal, "fine">, b: Pick<PhotoSignal, "fine"
   return liningUpKey(a, b, bits) < Infinity;
 }
 
-/** worthLiningUp as a ranking (lower is more promising), Infinity when not worth it. */
-function liningUpKey(a: Pick<PhotoSignal, "fine">, b: Pick<PhotoSignal, "fine">, bits: number): number {
+/**
+ * worthLiningUp as a ranking (lower is more promising, see coarseKey),
+ * Infinity when not worth it.
+ */
+function liningUpKey(a: Pick<PhotoSignal, "fine">, b: Pick<PhotoSignal, "fine">, bits: number, ceiling = Infinity): number {
   if (bits <= ALIKE.farBits) return 0;
   const fa = fineOf(a);
   const fb = fineOf(b);
-  if (fa.grey || fb.grey) return bits <= UNKNOWN_TIME_BITS ? (bits / UNKNOWN_TIME_BITS) * UNKNOWN_TIME_PALETTE : Infinity;
-  const gap = paletteGap(fa, fb);
-  return gap <= UNKNOWN_TIME_PALETTE ? gap : Infinity;
+  if (fa.grey || fb.grey) return bits <= UNKNOWN_TIME_BITS ? coarseKey(fa, fb, ceiling) : Infinity;
+  return paletteGap(fa, fb) <= UNKNOWN_TIME_PALETTE ? coarseKey(fa, fb, ceiling) : Infinity;
+}
+
+/** The few lowest keys seen so far, to give coarseKey its ceiling. */
+class Lowest {
+  private keys: number[] = [];
+  private readonly size: number;
+  constructor(size: number) {
+    this.size = size;
+  }
+  /** The key a new one must beat to be among them. */
+  get ceiling(): number {
+    return this.keys.length < this.size ? Infinity : this.keys[this.size - 1];
+  }
+  add(key: number) {
+    if (key >= this.ceiling) return;
+    let at = this.keys.length;
+    while (at > 0 && this.keys[at - 1] > key) at--;
+    this.keys.splice(at, 0, key);
+    if (this.keys.length > this.size) this.keys.pop();
+  }
+}
+
+/**
+ * The crops and shifts coarseKey tries: [left, top, share across, share
+ * down], the first being none. Each axis is either left alone or cut to 88%
+ * at its start, middle or end, so a sideways shift (a lot off one side, a
+ * little off the top) is covered as well as an even crop.
+ */
+const COARSE_AXIS: [number, number][] = [
+  [0, 1],
+  [0, 0.88],
+  [0.06, 0.88],
+  [0.12, 0.88],
+];
+const COARSE_MOVES: [number, number, number, number][] = [];
+for (const [ox, sx] of COARSE_AXIS) for (const [oy, sy] of COARSE_AXIS) COARSE_MOVES.push([ox, oy, sx, sy]);
+const COARSE_CELLS = BLOCKS * BLOCKS;
+
+/** A photo's coarse 8x8 grid (its block means) seen through each of COARSE_MOVES. */
+function coarseGrids(f: Fine): Float32Array {
+  if (f.coarse) return f.coarse;
+  const out = new Float32Array(COARSE_MOVES.length * 3 * COARSE_CELLS);
+  COARSE_MOVES.forEach(([ox, oy, sx, sy], t) => {
+    for (let c = 0; c < 3; c++) {
+      for (let j = 0; j < BLOCKS; j++) {
+        for (let i = 0; i < BLOCKS; i++) {
+          const fx = Math.min(BLOCKS - 1, Math.max(0, (ox + (sx * (i + 0.5)) / BLOCKS) * BLOCKS - 0.5));
+          const fy = Math.min(BLOCKS - 1, Math.max(0, (oy + (sy * (j + 0.5)) / BLOCKS) * BLOCKS - 0.5));
+          const x0 = Math.floor(fx);
+          const y0 = Math.floor(fy);
+          const x1 = Math.min(BLOCKS - 1, x0 + 1);
+          const y1 = Math.min(BLOCKS - 1, y0 + 1);
+          const tx = fx - x0;
+          const ty = fy - y0;
+          const g = f.blockMeans;
+          const b = c * COARSE_CELLS;
+          out[(t * 3 + c) * COARSE_CELLS + j * BLOCKS + i] =
+            (g[b + y0 * BLOCKS + x0] * (1 - tx) + g[b + y0 * BLOCKS + x1] * tx) * (1 - ty) +
+            (g[b + y1 * BLOCKS + x0] * (1 - tx) + g[b + y1 * BLOCKS + x1] * tx) * ty;
+        }
+      }
+    }
+  });
+  f.coarse = out;
+  return out;
+}
+
+/**
+ * How well two photos' coarse 8x8 grids line up under the best of a few
+ * crops and shifts (either way round): the worst cell's difference. Cheap
+ * (a few microseconds), used only to decide which photos to line up first:
+ * a crop or shift of one picture scores low, another moment in the same
+ * place usually higher, since its people stand elsewhere. Only ever needs to
+ * beat `ceiling` (the last of the few that will be lined up): once no move
+ * can, it stops and returns `ceiling`.
+ */
+function coarseKey(a: Fine, b: Fine, ceiling = Infinity): number {
+  const ga = coarseGrids(a);
+  const gb = coarseGrids(b);
+  const chroma = a.grey || b.grey ? 0 : CHROMA_WEIGHT;
+  const light = chroma ? 1 : LIGHT_ONLY_WEIGHT;
+  let best = ceiling;
+  for (let t = 0; t < COARSE_MOVES.length; t++) {
+    for (let way = 0; way < (t === 0 ? 1 : 2); way++) {
+      // p moved by t against q as it is (move 0).
+      const p = way ? gb : ga;
+      const q = way ? ga : gb;
+      const pOff = t * 3 * COARSE_CELLS;
+      let worst = 0;
+      for (let k = 0; k < COARSE_CELLS && worst < best; k++) {
+        let d = light * Math.abs(p[pOff + k] - q[k]);
+        if (chroma) {
+          d += chroma * (Math.abs(p[pOff + COARSE_CELLS + k] - q[COARSE_CELLS + k]) + Math.abs(p[pOff + 2 * COARSE_CELLS + k] - q[2 * COARSE_CELLS + k]));
+        }
+        if (d > worst) worst = d;
+      }
+      if (worst < best) best = worst;
+    }
+  }
+  return best;
 }
 
 /**
@@ -800,6 +917,13 @@ export interface Album {
   at: Map<number, number>;
   /** Whether two photos (array positions) are compared lined up (see NEAR_WINDOW_MS, UNKNOWN_TIME_BITS). */
   near: (i: number, j: number) => boolean;
+  /**
+   * Whether two kept photos (array positions) with no capture time between
+   * them are still copies of one picture, which the per-photo limit on lining
+   * up (UNTIMED_LINE_UPS) can let through. The picker checks each new pick
+   * against those already chosen, so the film never holds both.
+   */
+  sameUntimed: (i: number, j: number) => boolean;
 }
 
 function find(parent: Int32Array, x: number): number {
@@ -936,7 +1060,7 @@ function* prepareSteps(photos: readonly PhotoSignal[], opts: AlikeOptions): Gene
    * otherwise, if they would be worth it, the answer is a number (how close
    * their palettes are) so the caller can line up the most promising first.
    */
-  const relate = (u: number[], k: number[], lineUpUntimed: boolean): boolean | number => {
+  const relate = (u: number[], k: number[], lineUpUntimed: boolean, ceiling = Infinity): boolean | number => {
     let b = 64;
     let isNear = false;
     let burst = false;
@@ -952,7 +1076,7 @@ function* prepareSteps(photos: readonly PhotoSignal[], opts: AlikeOptions): Gene
           if (dt <= NEAR_WINDOW_MS) isNear = true;
           if (dt <= BURST_WINDOW_MS) burst = true;
         } else {
-          untimed = Math.min(untimed, liningUpKey(photos[i], photos[j], bij));
+          untimed = Math.min(untimed, liningUpKey(photos[i], photos[j], bij, ceiling));
         }
       }
     }
@@ -975,23 +1099,34 @@ function* prepareSteps(photos: readonly PhotoSignal[], opts: AlikeOptions): Gene
   };
   const kept: number[][] = [];
   const keptOf = new Int32Array(n).fill(-1);
+  const untimedLineUps = UNTIMED_LINE_UPS;
+  const setAsideUntimed: number[][] = [];
   for (const bundle of bundles) {
     yield;
     let match = -1;
     if (!opts.strict) {
       // Everything cheap first: times close enough to line up, or the frames
       // as they are. Then, for photos with no time between them, the kept
-      // ones with the closest palettes, lined up, at most UNTIMED_LINE_UPS.
+      // ones most likely to be the same picture (coarseKey), lined up, at most
+      // UNTIMED_LINE_UPS of them.
       const untimed: [number, number][] = [];
+      const lowest = new Lowest(untimedLineUps);
       for (let k = 0; k < kept.length && match < 0; k++) {
-        const r = relate(bundle, kept[k], false);
+        const ceiling = lowest.ceiling;
+        const r = relate(bundle, kept[k], false, ceiling);
         if (r === true) match = k;
-        else if (typeof r === "number") untimed.push([r, k]);
+        else if (typeof r === "number" && r < ceiling) {
+          untimed.push([r, k]);
+          lowest.add(r);
+        }
       }
       if (match < 0 && untimed.length) {
         untimed.sort((x, y) => x[0] - y[0]);
-        for (let t = 0; t < Math.min(UNTIMED_LINE_UPS, untimed.length) && match < 0; t++) {
-          if (relate(bundle, kept[untimed[t][1]], true) === true) match = untimed[t][1];
+        for (let t = 0; t < Math.min(untimedLineUps, untimed.length) && match < 0; t++) {
+          if (relate(bundle, kept[untimed[t][1]], true) === true) {
+            match = untimed[t][1];
+            setAsideUntimed.push(bundle);
+          }
         }
       }
     }
@@ -1000,6 +1135,41 @@ function* prepareSteps(photos: readonly PhotoSignal[], opts: AlikeOptions): Gene
       kept.push(bundle);
     }
     for (const i of bundle) keptOf[i] = match;
+  }
+
+  // A photo set aside by lining up across unknown times may have been taken
+  // before its own original was placed (the sharper one goes first), and so
+  // joined another moment it nearly matched. Now that every photo is placed,
+  // it moves to the group of the photo it matches most closely, kept or set
+  // aside itself. Only set-aside photos move, so this never changes which
+  // photos are kept.
+  const inBundle = new Uint8Array(n);
+  for (const bundle of setAsideUntimed) {
+    yield;
+    for (const i of bundle) inBundle[i] = 1;
+    const ranked: [number, number][] = [];
+    const lowest = new Lowest(untimedLineUps);
+    for (let j = 0; j < n; j++) {
+      if (inBundle[j]) continue;
+      const ceiling = lowest.ceiling;
+      const key = liningUpKey(photos[bundle[0]], photos[j], bits(bundle[0], j), ceiling);
+      if (key < ceiling) {
+        ranked.push([key, j]);
+        lowest.add(key);
+      }
+    }
+    for (const i of bundle) inBundle[i] = 0;
+    ranked.sort((x, y) => x[0] - y[0]);
+    let best = keptOf[bundle[0]];
+    let bestDistance = Infinity;
+    for (const [, j] of ranked.slice(0, untimedLineUps)) {
+      const d = fineDistance(photos[bundle[0]], photos[j], ALIKE.lookAlike, true, RETRY_WITHIN);
+      if (d < bestDistance) {
+        bestDistance = d;
+        best = keptOf[j];
+      }
+    }
+    if (bestDistance <= ALIKE.lookAlike) for (const i of bundle) keptOf[i] = best;
   }
 
   // Groups numbered by their earliest photo, which is when the moment
@@ -1031,7 +1201,14 @@ function* prepareSteps(photos: readonly PhotoSignal[], opts: AlikeOptions): Gene
   const place = new Float64Array(n);
   for (let i = 0; i < n; i++) place[i] = groupPlace[group[i]];
 
-  return { photos, group, best, order, place, quality, duplicates: n - moments, at, near };
+  const sameUntimed = (i: number, j: number): boolean => {
+    if (known[i] && known[j]) return false; // timed pairs were all compared already
+    const key = liningUpKey(photos[i], photos[j], bits(i, j));
+    if (key > COPY_KEY_MAX) return false;
+    return albumAlike(bits(i, j), photos[i], photos[j], true, false, true);
+  };
+
+  return { photos, group, best, order, place, quality, duplicates: n - moments, at, near, sameUntimed };
 }
 
 /**
@@ -1101,7 +1278,13 @@ export function pickFrom(
         }
       }
       if (pick < 0 || top === -Infinity) return -1;
-      if (fine(pick)) return pick;
+      if (!fine(pick)) continue;
+      // Never two copies of one picture in the film, even ones that ended up
+      // kept apart (see Album.sameUntimed).
+      let copy = false;
+      if (!alikeOk) for (const c of chosen) if (album.sameUntimed(pick, c)) copy = true;
+      if (!copy) return pick;
+      out[pick] = 1;
     }
   };
 

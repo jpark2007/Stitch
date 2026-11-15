@@ -409,6 +409,41 @@ test("without times, different moments in one place survive", () => {
   assert.equal(small.chosen.length, 40, "25 moments and 15 scenes, no times: all 40 kept");
 });
 
+test("without times, crops and shifts of moments in one place, added at the end, go with their originals", () => {
+  for (const kind of ["park", "room"]) {
+    const moments = momentsAlbum(kind, 60).map((p) => ({ ...p, takenAt: null }));
+    // A crop or shift of every third moment, saved later and added at the end.
+    const copies = [];
+    const momentOf = moments.map((_, k) => k);
+    for (let k = 0; k < 60; k += 3) {
+      const kindOfCopy = (k / 3) % 2 ? "shift" : "crop";
+      copies.push({ ...signal(COPIES[kindOfCopy](momentImage(kind, k)), 60 + copies.length, null) });
+      momentOf.push(k);
+    }
+    const photos = [...moments, ...copies];
+    const plan = planAlbum(photos, { exactTimes: false });
+    const album = plan.album;
+    const groupOf = (idx) => album.group[album.at.get(idx)];
+    for (const c of copies) assert.equal(groupOf(c.index), groupOf(momentOf[c.index]), `${kind}: copy of moment ${momentOf[c.index]} kept apart`);
+    const distinctMoments = new Set(moments.map((m) => groupOf(m.index))).size;
+    assert.ok(distinctMoments >= 50, `${kind}: ${distinctMoments} of 60 moments kept apart`);
+    assert.equal(new Set(plan.chosen.map((i) => momentOf[i])).size, plan.chosen.length, `${kind}: one moment twice`);
+    const r = rng(23);
+    for (let run = 0; run < 4; run++) {
+      let current = plan.chosen.slice();
+      const removed = [];
+      for (let k = 0; k < 8; k++) {
+        const taken = current[Math.floor(r() * current.length)];
+        removed.push(taken);
+        current = replaceTaken(album, current, removed, taken);
+        const ms = current.map((i) => momentOf[i]);
+        assert.equal(new Set(ms).size, ms.length, `${kind}: one moment twice after removals`);
+        for (const out of removed) assert.ok(!ms.includes(momentOf[out]), `${kind}: a removed moment came back`);
+      }
+    }
+  }
+});
+
 test("without times, 1000 photos in one place still plan in a few seconds", () => {
   const photos = momentsAlbum("park", 1000, 5000, 3000).map((p) => ({ ...p, takenAt: null }));
   const started = performance.now();
