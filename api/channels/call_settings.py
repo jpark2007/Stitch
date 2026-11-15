@@ -39,10 +39,9 @@ def public_draft(row):
 @router.post("/people/{person_id}/call-pairing", status_code=201)
 def create_pairing(person_id: str, body: Empty, access: FamilyAccess = Depends(family_member), db=Depends(get_db)):
     row, code = operation(conversations.create_call_pairing, db, access.family_id, person_id, access.user.id)
-    displayed = code[:3] + "-" + code[3:]
-    return {"code": displayed, "expiresAt": row["expireAt"], "personId": person_id,
+    return {"code": code, "expiresAt": row["expireAt"], "personId": person_id,
         "phoneNumber": configuration().phone_number,
-        "instruction": "Read STITCH followed by these six digits as one turn at the start of your call, one digit at a time in English or Chinese. This code expires in ten minutes. Your words become a private draft for your review; nothing is submitted automatically."}
+        "instruction": "Read STITCH followed by these three digits as one turn at the start of your call, one digit at a time in English or Chinese. Start your call soon and finish before this code expires in fifteen minutes. Your words become a private draft for your review; nothing is submitted automatically."}
 
 
 @router.get("/call-drafts")

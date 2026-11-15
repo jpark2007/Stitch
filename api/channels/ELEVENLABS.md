@@ -3,7 +3,8 @@
 This receiver accepts signed ElevenLabs `post_call_transcription` events. It does
 not place calls, synthesize speech, run Studio, execute spoken commands, or publish
 a memory. Caller ID and provider-supplied family metadata are never identity proof.
-No iMessage enrollment is needed. The signed-in user's current family membership
+The three-digit code is a short-lived write-only draft association, **not strong
+caller authentication**. No iMessage enrollment is needed. The signed-in user's current family membership
 and their linked `person.userId` determine whose private draft receives the words.
 An admin cannot obtain a code for another person.
 
@@ -32,13 +33,15 @@ language instructions that do not conflict):
 You are Stitch's warm family-story interviewer. This is a fictional test call.
 Ask the caller which language they prefer, English or Chinese, and use that language.
 Before their story, ask them to open Stitch's call settings while signed in as
-themselves and create a call code. Ask them to say "STITCH" followed by the SIX
-digits, one digit at a time, in ONE standalone turn. The code lasts ten minutes.
-If their screen still shows an older twelve-digit code, ask them to read all twelve
+themselves and create a call code. Ask them to say "STITCH" followed by the THREE
+digits, one digit at a time, in ONE standalone turn. The code lasts fifteen minutes.
+Ask them to start the call soon after creating the code and finish before it expires.
+The webhook arrives AFTER the call ends, so reading a code before expiry is not enough.
+If their screen still shows an older six- or twelve-digit code, ask them to read all
 digits after STITCH instead; do not shorten a code shown by the app.
 They may say English digit words zero through nine or Chinese digits 零〇一二两三四五六七八九.
 Do not ask for a phone number, password, email, or another person's code.
-Wait until all six digits are finished; do not interrupt or speak over the code.
+Wait until all digits are finished; do not interrupt or speak over the code.
 If they say only digits, or "it's" followed by digits, ask them to repeat the SAME
 complete phrase once, beginning with STITCH. Do not read their code aloud yourself.
 If unclear, ask them to repeat the SAME complete STITCH-and-digits turn once.
@@ -55,8 +58,8 @@ At the end, ask them to return to Stitch's call settings to review the draft.
 ```
 
 Keep the existing fictional-test restriction until an actual signed test call is
-verified. ASR must yield a standalone marker such as `STITCH 123-456`,
-`STITCH one two three four five six`, or `STITCH 一二三四五六`.
+verified. ASR must yield a standalone marker such as `STITCH 123`,
+`STITCH one two three`, or `STITCH 一二三`.
 Ordinary surrounding punctuation and a comma/colon after STITCH are accepted in
 a standalone marker of at most 96 characters. Only exact individual digit tokens
 are normalized: zero through nine and 零〇一二两三四五六七八九. `oh`, full-width
@@ -64,17 +67,20 @@ numerals, arithmetic numbers such as twenty or 一百, missing/extra digits, nar
 around the marker, and redacted turns are rejected. Identity is never guessed from
 speech. Identical repeated markers are all omitted; conflicting markers reject
 the call. Repeating the code inside narrative in any recognized digit-token form
-rejects the transcript rather than retaining the secret. A read-only compatibility
-path accepts twelve-digit markers for already-issued unexpired tickets; all new
-tickets contain six digits. Existing exact twelve-digit call retries still dedupe.
+rejects the transcript rather than retaining the secret. Privacy scanning also
+rejects full-width copies of the code in narrative, while full-width digits remain
+invalid for pairing. A read-only compatibility
+path accepts six- and twelve-digit markers for already-issued tickets until their
+original expiry; all new tickets contain three digits. Existing exact legacy call
+retries still dedupe.
 
 ## Cookie-authenticated interface
 
 All paths below start `/families/{fid}/channels` and require `family_member`.
 
 - `POST /people/{person_id}/call-pairing {}` → 201
-  `{code, expiresAt, personId, instruction, phoneNumber}`. Six random decimal
-  digits displayed 3-3, valid ten minutes; only a hash is stored. An explicit new
+  `{code, expiresAt, personId, instruction, phoneNumber}`. Three random ASCII decimal
+  digits preserving leading zeros, valid fifteen minutes; only a hash is stored. An explicit new
   request rotates the previous unused code. Only the user's own linked person
   is eligible; an in-progress attachment returns 409 rather than replacing proof.
 - `GET /call-drafts` → `{drafts:[{id,personId,createdAt,text}]}`, newest 50 own drafts.
@@ -89,16 +95,43 @@ spoken SUBMIT, STOP, and KEEP remain ordinary transcript text.
 
 Pair issuance has an atomic family limit of 10 attempts/minute; attachment has
 20 attempts/family/minute and 5 attempts/provider-call/minute. Additionally, every
-signed candidate for a new call consumes a deployment-wide budget of 50 attempts
-per fixed ten-minute window **before** token lookup, including valid candidates.
+signed candidate for a new call consumes a deployment-wide budget of 5 attempts
+per fixed fifteen-minute window **before** token lookup, including valid candidates.
 This limits guessing across different call IDs; there are no refunds. A window
-boundary can allow 100 adjacent attempts. These are bounded burst controls, not
-daily quotas. Responses are 429 with `Retry-After: 60`, or `600` for the global
-limit. Minute counters expire after two minutes; global counters after twenty.
+boundary can allow 10 adjacent attempts. These are bounded burst controls, not
+daily quotas. Responses are 429 with `Retry-After: 60`, or `900` for the global
+limit. Minute counters expire after two minutes; global counters after thirty.
 Exact completed retries do not consume another attempt, including deleted drafts.
-Short codes still have less entropy than the earlier twelve digits; webhook
-signature verification, short expiry, unique active tickets, atomic consumption
-and the global candidate limit are all required. Do not expose an unsigned checker.
+Three digits have only 1,000 possibilities: a random guess has a 1/1,000 chance of
+matching one specific active ticket, and a higher chance of matching any of many
+active tickets. A successful guess can inject the caller's words into another
+person's private review drafts. It cannot read their data, authenticate an account,
+change consent, or publish a memory. Signature verification, short expiry, unique
+active tickets, atomic consumption and the global candidate limit reduce risk but
+do not make this strong authentication. Do not expose an unsigned checker. Minting
+retries collisions at most five times, then fails closed (409); active codes are
+never reassigned to another person to make room.
+
+Each newly issued code also has a `call-code-reservation` document keyed by its
+hash, containing only familyId and its original expiry. Its unique `_id` is reserved
+before updating the person's ticket. Rotation and consumption leave it in place
+until expiry, so another family cannot receive that still-unexpired old code.
+Interrupted issuance can leave an unused reservation until TTL cleanup; this is
+intentionally fail closed. The finite 1,000-code pool can temporarily exhaust.
+
+Start the call soon after generating its code and finish before `expiresAt`:
+redemption happens when the post-call webhook arrives, not when the digits are
+spoken. Fifteen minutes allows a configured ten-minute call plus delivery margin;
+expired tickets cannot redeem. For three-digit codes the signed payload must also
+contain an exact integer `data.metadata.start_time_unix_secs` (not boolean, float,
+or string). It must be at least `floor(ticket.createdAt)` in epoch seconds, strictly
+before ticket expiry, and not in the future; delivery must still be before expiry.
+The floor allows less than one second of timestamp precision tolerance. An older
+call cannot attach to a later reused code outside that tolerance. An expired-code
+holder who starts a NEW call after the same number is reissued is still a guessing
+risk; this guard is not strong caller authentication. Exact completed retries
+continue to dedupe after ticket expiry. Legacy six/twelve-digit tickets retain
+their original expiry and protocol.
 
 ## Verification and storage boundaries
 
@@ -113,7 +146,8 @@ post-call transcript and one unambiguous user pairing code can bind a draft.
 Only user turns are retained, joined by newlines, capped at 20,000 characters;
 Chinese is unchanged. Assistant/tool turns, analysis, caller metadata and the raw
 payload are not retained. `channelMessages` uses distinct `call-pairing`,
-`call-draft`, and expiring `call-rate` kinds, never worker `inbound` records.
+`call-draft`, expiring `call-code-reservation`, and expiring `call-rate` kinds,
+never worker `inbound` records.
 Only pairing tickets carry `tokenHash`, with a unique sparse index; draft receipts
 carry `proofHash` instead. A unique agent/conversation
 hash reserves a draft before an atomic single-use token claim. A retry can resume
@@ -128,7 +162,7 @@ between checks is not independently versioned by the existing person model.
 Family-bound records remain in the existing family-purged collection. Global
 counter records for unknown calls cannot yet carry a family: they contain only a
 call hash, count and expiry, and disappear by their two-minute TTL. The global
-candidate counter also has no family and expires after twenty minutes. Deletion leaves receipt
+candidate counter also has no family and expires after thirty minutes. Deletion leaves receipt
 identity/proof hashes but no transcript; removing the family purges those too.
 
 ## Local evidence and first live check

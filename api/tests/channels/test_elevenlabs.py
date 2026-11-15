@@ -24,10 +24,12 @@ SECRET = "synthetic-elevenlabs-test-secret-only-1234"
 BASE = "/families/demo_family/channels"
 PAIR = BASE + "/people/dad/call-pairing"
 HOOK = "/internal/channels/elevenlabs/post-call"
+_EVENT_STARTS = {}
 
 
 @pytest.fixture
 def stack(monkeypatch):
+    _EVENT_STARTS.clear()
     db = mongomock.MongoClient(tz_aware=True).calls
     db_client.ensure_indexes(db)
     ensure_channel_indexes(db)
@@ -60,6 +62,7 @@ def pair(client):
 def event(code, conversation="conv_test", text="我小时候和奶奶包饺子。\nSUBMIT STOP KEEP"):
     return {"type": "post_call_transcription", "data": {"agent_id": "agent_test",
         "conversation_id": conversation, "status": "done", "family_id": "attacker-family",
+        "metadata": {"start_time_unix_secs": _EVENT_STARTS.setdefault((code, conversation), int(time.time()))},
         "transcript": [{"role": "user", "message": "STITCH " + code},
                        {"role": "agent", "message": "SUBMIT assistant secret"},
                        {"role": "user", "message": text}]}}
@@ -87,8 +90,12 @@ def test_cookie_pair_signed_chinese_review_delete_and_replay(stack):
     draft = drafts[0]
     assert draft["text"] == payload["data"]["transcript"][2]["message"]
     assert set(draft) == {"id", "personId", "createdAt", "text"}
-    stored = repr(list(db.channelMessages.find({})))
-    assert code not in stored and code.replace("-", "") not in stored
+    records = list(db.channelMessages.find({}))
+    stored = repr(records)
+    # Three digits can coincidentally occur inside a SHA256 hex string. Check
+    # actual field values, not meaningless short substrings of a digest.
+    assert all(value != code for row in records for value in row.values())
+    assert all("code" not in row for row in records)
     assert "assistant secret" not in stored and "attacker-family" not in stored
     assert db.channelMessages.count_documents({"kind": "inbound"}) == 0
     assert db.contacts.count_documents({}) == 0
@@ -159,7 +166,7 @@ def test_atomic_two_calls_one_token_and_exact_replay(stack):
     code = pair(client).replace("-", "")
     def accept(index):
         try:
-            return conversations.accept_call_transcript(db, "agent_test", f"race_{index}", code, "故事", f"hash_{index}")
+            return conversations.accept_call_transcript(db, "agent_test", f"race_{index}", code, "故事", f"hash_{index}", call_started_at=int(time.time()))
         except (LookupError, conversations.CallConflict):
             return "denied"
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -188,6 +195,8 @@ def test_signature_before_json_strict_header_and_body_bound(stack):
     assert client.post(HOOK, content=raw, headers=headers).status_code == 401
     raw = b"x" * (elevenlabs.MAX_BODY + 1)
     assert client.post(HOOK, content=raw, headers=signed(raw)).status_code == 413
+    raw = b"[" * 2000 + b"0" + b"]" * 2000
+    assert client.post(HOOK, content=raw, headers=signed(raw)).status_code == 400
 
 
 @pytest.mark.parametrize("variant", ["assistant_code", "conflicting", "repeat", "redacted", "long", "empty", "wrong_agent", "unfinished", "words"])
@@ -255,11 +264,11 @@ def test_binding_recovers_after_storage_failure_without_double_attach(stack, mon
         return original(query, update, *args, **kwargs)
     monkeypatch.setattr(db.channelMessages, "update_one", fail_once)
     with pytest.raises(RuntimeError):
-        conversations.accept_call_transcript(db, "agent_test", "recover", code, "故事", "same")
+        conversations.accept_call_transcript(db, "agent_test", "recover", code, "故事", "same", call_started_at=int(time.time()))
     assert db.channelMessages.count_documents({"kind": "call-draft", "status": "ready"}) == 0
     assert client.post(PAIR, json={}).status_code == 409
-    assert conversations.accept_call_transcript(db, "agent_test", "recover", code, "故事", "same") is False
-    assert conversations.accept_call_transcript(db, "agent_test", "recover", code, "故事", "same") is True
+    assert conversations.accept_call_transcript(db, "agent_test", "recover", code, "故事", "same", call_started_at=int(time.time())) is False
+    assert conversations.accept_call_transcript(db, "agent_test", "recover", code, "故事", "same", call_started_at=int(time.time())) is True
     assert db.channelMessages.count_documents({"kind": "call-draft", "status": "ready"}) == 1
 
 
@@ -274,7 +283,7 @@ def test_membership_change_during_binding_revokes_before_read(stack, monkeypatch
         return result
     monkeypatch.setattr(db.channelMessages, "update_one", detach)
     with pytest.raises(LookupError):
-        conversations.accept_call_transcript(db, "agent_test", "revoke", code, "故事", "same")
+        conversations.accept_call_transcript(db, "agent_test", "revoke", code, "故事", "same", call_started_at=int(time.time()))
     row = db.channelMessages.find_one({"kind": "call-draft"})
     assert row["status"] == "revoked" and "text" not in row
 
@@ -334,16 +343,22 @@ def test_pairing_unique_sparse_index_restarts_with_existing_receipts(stack):
         db.channelMessages.insert_one({"kind": "call-pairing", "tokenHash": pairing["tokenHash"]})
 
 
-def test_new_pairing_is_six_digits_and_expires_in_ten_minutes(stack):
+def test_new_pairing_is_three_digits_and_expires_in_fifteen_minutes(stack):
     client, db = stack
     code = pair(client)
-    assert len(code) == 7 and code[3] == "-" and code.replace("-", "").isascii()
-    assert code.replace("-", "").isdecimal()
+    assert len(code) == 3 and code.isascii() and code.isdecimal()
     ticket = db.channelMessages.find_one({"kind": "call-pairing"})
-    assert ticket["expireAt"] - ticket["createdAt"] == timedelta(minutes=10)
+    assert ticket["expireAt"] - ticket["createdAt"] == timedelta(minutes=15)
     with pytest.raises(LookupError):
         conversations.accept_call_transcript(db, "agent_test", "late", code.replace("-", ""),
                                            "story", "late_hash", now=ticket["expireAt"])
+
+
+@pytest.mark.parametrize("marker", [
+    "STITCH 123.", "Stitch: one two three.", "STITCH 一二三。", "STITCH 一两三",
+])
+def test_three_digits_exact_normalization(marker):
+    assert elevenlabs.pairing_marker(marker) == "123"
 
 
 @pytest.mark.parametrize("marker", [
@@ -379,7 +394,7 @@ def test_no_homophones_fullwidth_arithmetic_or_narrative(marker):
 
 @pytest.mark.parametrize("repeat", [
     "My code was one two three four five six.", "验证码是一二三四五六。",
-    "Again: 123-456", "Again: 1 two 三 4 five 六",
+    "Again: 123-456", "Again: 1 two 三 4 five 六", "Again: １２３４５６",
 ])
 def test_recognized_code_variants_in_prose_are_not_persisted(repeat):
     payload = event("123456", text=repeat)
@@ -387,13 +402,14 @@ def test_recognized_code_variants_in_prose_are_not_persisted(repeat):
         elevenlabs.transcript(json.dumps(payload).encode(), frozenset({"agent_test"}))
 
 
-def test_legacy_unexpired_twelve_digit_ticket_is_read_only_compatible(stack):
+@pytest.mark.parametrize("legacy", ["123456", "123456789012"])
+def test_legacy_unexpired_ticket_is_read_only_compatible(stack, legacy):
     client, db = stack
     pair(client)
     db.channelMessages.update_one({"kind": "call-pairing"},
-                                  {"$set": {"tokenHash": conversations.call_code_hash("123456789012")}})
-    assert deliver(client, event("1234-5678-9012")).status_code == 200
-    assert len(client.post(PAIR, json={}).json()["code"]) == 7
+                                  {"$set": {"tokenHash": conversations.call_code_hash(legacy)}})
+    assert deliver(client, event(legacy)).status_code == 200
+    assert len(client.post(PAIR, json={}).json()["code"]) == 3
 
 
 def test_global_candidate_limit_spans_call_ids_and_replay_bypasses_it(stack, monkeypatch):
@@ -406,17 +422,17 @@ def test_global_candidate_limit_spans_call_ids_and_replay_bypasses_it(stack, mon
         return attempt(*args, **kwargs)
     monkeypatch.setattr(conversations, "call_attempt", fixed_window)
     assert deliver(client, event(code)).status_code == 200  # Counts one candidate.
-    for index in range(49):
+    for index in range(4):
         with pytest.raises(LookupError):
             conversations.accept_call_transcript(db, "agent_test", f"guess_{index}", "000000000000",
                                                "story", "hash", now=now)
     response = deliver(client, event("000000000000", "guess_over_limit"))
-    assert response.status_code == 429 and response.headers["retry-after"] == "600"
+    assert response.status_code == 429 and response.headers["retry-after"] == "900"
     assert deliver(client, event(code)).status_code == 200
     draft = client.get(BASE + "/call-drafts").json()["drafts"][0]
     assert client.delete(BASE + "/call-drafts/" + draft["id"]).status_code == 204
     assert deliver(client, event(code)).status_code == 200
-    now += timedelta(minutes=10)
+    now += timedelta(minutes=15)
     with pytest.raises(LookupError):
         conversations.accept_call_transcript(db, "agent_test", "next_window", "000000000000",
                                            "story", "hash", now=now)
@@ -434,8 +450,8 @@ def test_global_candidate_limit_is_atomic_for_concurrent_calls(stack):
         except conversations.CallRateLimited:
             return "throttled"
     with ThreadPoolExecutor(max_workers=12) as pool:
-        results = list(pool.map(guess, range(80)))
-    assert results.count("checked") == 50 and results.count("throttled") == 30
+        results = list(pool.map(guess, range(20)))
+    assert results.count("checked") == 5 and results.count("throttled") == 15
 
 
 def test_signed_http_repeated_english_and_chinese_codes_bind_one_private_draft(stack):
@@ -449,3 +465,107 @@ def test_signed_http_repeated_english_and_chinese_codes_bind_one_private_draft(s
     assert deliver(client, payload).status_code == 200
     drafts = client.get(BASE + "/call-drafts").json()["drafts"]
     assert len(drafts) == 1 and drafts[0]["text"] == "这是一段中文回忆。"
+
+
+def test_three_digits_preserve_leading_zeros_and_bound_collisions(stack, monkeypatch):
+    client, db = stack
+    monkeypatch.setattr(conversations.secrets, "randbelow", lambda _: 7)
+    assert pair(client) == "007"
+    with pytest.raises(conversations.CallConflict):
+        conversations.create_call_pairing(db, "demo_family", "mom", "demo_user_ana")
+    assert db.channelMessages.count_documents({"kind": "call-pairing"}) == 1
+    assert client.post(PAIR, json={}).status_code == 409  # Never reuse the visible old code.
+    assert deliver(client, event("007")).status_code == 200
+
+
+def test_ten_minute_call_can_finish_before_fifteen_minute_expiry(stack):
+    client, db = stack
+    code = pair(client)
+    ticket = db.channelMessages.find_one({"kind": "call-pairing"})
+    assert conversations.accept_call_transcript(db, "agent_test", "ten_minute_call", code,
+        "story", "hash", now=ticket["createdAt"] + timedelta(minutes=10),
+        call_started_at=int(ticket["createdAt"].timestamp())) is False
+
+
+@pytest.mark.parametrize("consumed", [False, True])
+def test_rotated_or_consumed_code_cannot_move_to_another_family_before_expiry(stack, monkeypatch, consumed):
+    client, db = stack
+    generated = iter([7, 8] + [7] * 5)
+    monkeypatch.setattr(conversations.secrets, "randbelow", lambda _: next(generated))
+    assert pair(client) == "007"
+    original_expiry = db.channelMessages.find_one({"kind": "call-pairing"})["expireAt"]
+    if consumed:
+        assert deliver(client, event("007")).status_code == 200
+    assert client.post(PAIR, json={}).json()["code"] == "008"
+    family = db.families.find_one({"_id": "demo_family"})
+    family["_id"] = "other_family"
+    db.families.insert_one(family)
+    person = db.people.find_one({"_id": "dad"})
+    person.update(_id="other_dad", familyId="other_family")
+    db.people.insert_one(person)
+    with pytest.raises(conversations.CallConflict):
+        conversations.create_call_pairing(db, "other_family", "other_dad", "demo_user_david")
+    reservation = db.channelMessages.find_one({"_id": "call-code:" + conversations.call_code_hash("007")})
+    assert reservation == {"_id": reservation["_id"], "kind": "call-code-reservation",
+                           "familyId": "demo_family", "expireAt": original_expiry}
+    assert db.channelMessages.count_documents({"kind": "call-pairing", "familyId": "other_family"}) == 0
+    assert deliver(client, event("007", "late_old_call")).status_code == 400
+
+
+@pytest.mark.parametrize("invalid", [None, True, 1.5, "123", "before", "future", "expiry"])
+def test_three_digit_start_metadata_is_required_exact_and_within_ticket(stack, invalid):
+    client, db = stack
+    code = pair(client)
+    ticket = db.channelMessages.find_one({"kind": "call-pairing"})
+    payload = event(code)
+    value = invalid
+    if invalid == "before": value = int(ticket["createdAt"].timestamp()) - 1
+    if invalid == "future": value = int(time.time()) + 120
+    if invalid == "expiry": value = int(ticket["expireAt"].timestamp()) + 1
+    payload["data"]["metadata"] = {} if invalid is None else {"start_time_unix_secs": value}
+    assert deliver(client, payload).status_code == 400
+    assert db.channelMessages.count_documents({"kind": "call-draft"}) == 0
+    assert db.channelMessages.find_one({"kind": "call-pairing"})["state"] == "pending"
+
+
+def test_delayed_old_call_cannot_bind_reused_three_digit_code(stack, monkeypatch):
+    client, db = stack
+    monkeypatch.setattr(conversations.secrets, "randbelow", lambda _: 7)
+    assert pair(client) == "007"
+    old_start = int(time.time())
+    expired = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.channelMessages.update_many({"kind": {"$in": ["call-pairing", "call-code-reservation"]}},
+                                   {"$set": {"expireAt": expired}})
+    family = db.families.find_one({"_id": "demo_family"})
+    family["_id"] = "other_family"
+    db.families.insert_one(family)
+    person = db.people.find_one({"_id": "dad"})
+    person.update(_id="other_dad", familyId="other_family")
+    db.people.insert_one(person)
+    issued_at = datetime.now(timezone.utc) + timedelta(seconds=2)
+    ticket, code = conversations.create_call_pairing(db, "other_family", "other_dad", "demo_user_david", now=issued_at)
+    assert code == "007"
+    payload = event("007", "delayed_old_call")
+    payload["data"]["metadata"]["start_time_unix_secs"] = old_start
+    assert deliver(client, payload).status_code == 400
+    assert db.channelMessages.count_documents({"kind": "call-draft"}) == 0
+    assert conversations.accept_call_transcript(db, "agent_test", "new_call", code, "new story", "new hash",
+        now=issued_at + timedelta(seconds=1), call_started_at=int(issued_at.timestamp())) is False
+
+
+def test_completed_three_digit_retry_after_expiry_still_deduplicates(stack):
+    client, db = stack
+    code = pair(client)
+    payload = event(code)
+    assert deliver(client, payload).status_code == 200
+    db.channelMessages.delete_many({"kind": {"$in": ["call-pairing", "call-code-reservation"]}})
+    assert deliver(client, payload).status_code == 200
+    assert db.channelMessages.count_documents({"kind": "call-draft"}) == 1
+
+
+def test_fullwidth_copy_of_three_digit_code_cannot_leak_in_story(stack):
+    client, db = stack
+    code = pair(client)
+    fullwidth = code.translate(str.maketrans("0123456789", "０１２３４５６７８９"))
+    assert deliver(client, event(code, text="My code was " + fullwidth)).status_code == 400
+    assert db.channelMessages.count_documents({"kind": "call-draft"}) == 0
