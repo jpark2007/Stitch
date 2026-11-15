@@ -35,13 +35,18 @@ Put the variables in `api/.env`. The API (`main.load_env_files`) reads `api/.env
 | `MONGODB_URI` | persistence | `mongodb://localhost:27017` for family data | Runs, checkpoints and `/memories/` notes are kept in memory and lost on restart |
 | `MONGODB_DB` | persistence | `stitch` | |
 | `STITCH_FAKE_DB` | persistence | off | On (`1`, `true`, `yes`): everything is in an in-memory database seeded with the demo family, and `MONGODB_URI` is ignored |
-| `IMAGE_PROVIDER` | art | Higgsfield when `HIGGSFIELD_API_KEY` is set, else OpenAI when `IMAGE_API_KEY` is set | `higgsfield` or `openai`; an unknown value warns and uses the default rule |
+| `IMAGE_PROVIDER` | art | Higgsfield when `HIGGSFIELD_API_KEY` is set, else Cloudflare when `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are both set, else OpenAI when `IMAGE_API_KEY` is set | `higgsfield`, `cloudflare` or `openai`; an unknown value warns and uses the default rule. A chosen provider whose keys are missing gives placeholder art, never another provider |
 | `HIGGSFIELD_API_KEY` | art | none | Placeholder art (unless `IMAGE_API_KEY` is set). Key ID from console.higgsfield.ai, or `id:secret` |
 | `HIGGSFIELD_API_SECRET` | art | none | Needed unless the key is `id:secret`; missing: placeholder art and an error |
 | `HIGGSFIELD_API_URL` | art | `https://api.higgsfield.ai` | Must be https (plain http only for localhost); otherwise placeholder art and an error |
 | `HIGGSFIELD_IMAGE_MODEL` | art | `recraft/v4.1/text-to-image` | Also `higgsfield-ai/soul/standard`, `higgsfield-ai/soul/v2/standard` |
 | `HIGGSFIELD_STYLE_SUFFIX` | art | `Flat 2D cut-paper illustration, not a photograph and not a 3D render.` | Appended to every Higgsfield prompt; `none` for no suffix |
 | `HIGGSFIELD_RESULT_HOSTS` | art | `higgsfield.ai` and subdomains | Extra comma-separated hosts results may be downloaded from; an entry with no dot or an IP address is ignored with a warning |
+| `CLOUDFLARE_ACCOUNT_ID` | art | none | Cloudflare Workers AI art needs it with the token (dashboard: Workers AI, Use REST API). Letters and digits only, else placeholder art and an error; never printed |
+| `CLOUDFLARE_API_TOKEN` | art | none | An API token with Workers AI Read and Edit; never printed. One without the other: placeholder art (or OpenAI when only `IMAGE_API_KEY` is complete) |
+| `CLOUDFLARE_API_URL` | art | `https://api.cloudflare.com/client/v4` | Must be https (plain http only for localhost); otherwise placeholder art and an error |
+| `CLOUDFLARE_IMAGE_MODEL` | art | `@cf/black-forest-labs/flux-2-klein-4b` | Also `@cf/black-forest-labs/flux-2-klein-9b`, `@cf/leonardo/phoenix-1.0` (see [Cloudflare Workers AI art](#cloudflare-workers-ai-art)) |
+| `CLOUDFLARE_STYLE_SUFFIX` | art | `Flat 2D cut-paper illustration, not a photograph and not a 3D render.` | Appended to every Cloudflare prompt; `none` for no suffix |
 | `IMAGE_API_KEY` | art | none | Placeholder art |
 | `IMAGE_API_URL` | art | `https://api.openai.com/v1` | |
 | `IMAGE_MODEL` | art | `gpt-image-1` | |
@@ -58,6 +63,28 @@ Put the variables in `api/.env`. The API (`main.load_env_files`) reads `api/.env
 | `STITCH_RUN_TIMEOUT_S` | limits | `1200` | |
 
 A model id (`STITCH_MODEL`, `STITCH_SUBAGENT_MODEL`, `STITCH_VISION_MODEL`, `IMAGE_MODEL`, `ELEVENLABS_MODEL`) that is blank or only spaces means the default, exactly as if it were unset, and a value with spaces around it is used stripped (`agent.guards.env_value`, which production and preflight both use, so the model preflight names is the model the studio calls).
+
+### Cloudflare Workers AI art
+
+`IMAGE_PROVIDER=cloudflare` (or both Cloudflare variables set and no Higgsfield key) draws art on Cloudflare Workers AI with `CloudflareImageModel` (`agent/adapters/cloudflare.py`): one synchronous `POST /accounts/{id}/ai/run/{model}` per image, the image comes back in the answer (no download step), fitted to the requested size like the other providers.
+
+| Model | Request | Answer | Neurons for one 1024x1024 image | Images a day on the free 10,000 |
+|---|---|---|---|---|
+| `@cf/black-forest-labs/flux-2-klein-4b` (default) | multipart form: `prompt`, `width`, `height` (256-1920), up to 4 references | JSON, `result.image` base64 | 4 output tiles x 26.05 = **about 104** | **about 96** |
+| `@cf/black-forest-labs/flux-2-klein-9b` | the same | the same | 1363.64 (the first megapixel) | about 7 |
+| `@cf/leonardo/phoenix-1.0` | JSON: `prompt`, `width`, `height` (up to 2048); no references | the raw JPEG bytes | 4 tiles x 530 + 25 default steps x 10 = 2370 | about 4 |
+
+The default is FLUX.2 [klein] 4B: the newest FLUX model Cloudflare runs that fits the free allowance at a useful rate, with better prompt following and flat illustration than FLUX.1 [schnell], and it takes reference images. FLUX.1 [schnell] is not offered: its schema caps the prompt at 2048 characters and the studio's art prompt (the locked style prompt alone is about 2,400) is longer. FLUX.2 [dev] costs 37.50 Neurons per output tile per step, far past the free allowance.
+
+The arithmetic, from [the pricing page](https://developers.cloudflare.com/workers-ai/platform/pricing/) (read 2026-11-14): the free allocation is 10,000 Neurons a day on every plan, reset at 00:00 UTC; klein 4B costs 26.05 Neurons per 512x512 output tile and 5.37 per input tile. A 1024x1024 image is 4 output tiles, about 104 Neurons, so 10,000 / 104 = about 96 images a day; a 1024x768 prop canvas is 3 tiles (about 78 Neurons, about 128 a day), and each reference image adds one input tile (5.37). The page does not say how a partial tile is billed: a set-layer strip such as 1136x256 is 1.1 tiles by area or 3 tiles rounded up, so budget with the rounded-up figure. With the default 24 images a run (`STITCH_MAX_IMAGES_PER_RUN`) that is about four full runs a day.
+
+When the allowance is used up Workers AI answers HTTP 429 with error `3036` ("You have used up your daily free allocation of 10,000 neurons"). The adapter raises `CloudflareAllowanceExhausted` at once, without retrying, so that image (and each one after it, until 00:00 UTC) is placeholder art; the API log shows the error with the code. A 429 with error `3040` (out of capacity) is retried. Workers Paid accounts are billed $0.011 per 1,000 Neurons past the free allowance instead.
+
+Cut-out art: none of these models has a background parameter, so the adapter does not take `plain_background`; the studio's style prompt already asks for a pure white ground, which the studio removes itself. Reference images (FLUX.2 only) are scaled to fit inside 511x511 (the docs: "must be smaller than 512x512"); one that cannot be read is skipped with a warning.
+
+Bounds: one `generate` takes at most 120 s (each attempt `min(90 s, time left)`); a connection that could not be made, HTTP 408, a capacity 429 or a 5xx is retried at most twice, each wait capped at 8 s and only when it fits the deadline; redirects are never followed; the answer is read to at most 25 MB with `Accept-Encoding: identity` (a gzip answer is inflated with a bounded output, any other encoding refused) and decoded only up to 40 megapixels. `CLOUDFLARE_API_URL` must be https. The token and the account ID never appear in an error, a log line or preflight output.
+
+Not stated in the docs, so unverified: a prompt length limit for the FLUX.2 and Phoenix models (none is given), whether FLUX.2 needs sizes on a multiple of 16 (the adapter always sends one), and the partial-tile billing above.
 
 Not studio variables, but the API reads them too: `JWT_SECRET` (without it sessions end when the API restarts) and `VOYAGE_API_KEY` (without it "ask the family" and prop matching use keyword search). Preflight never prints them either.
 
@@ -99,7 +126,7 @@ All commands run from `api/` unless they say otherwise.
    |---|---|---|
    | model | Anthropic `models.retrieve` for each model id, then one `messages.create` with `max_tokens=1` on the studio model (checks billing and credit) | a fraction of a cent |
    | vision | `models.retrieve` for `STITCH_VISION_MODEL` | free |
-   | art | Higgsfield: `POST /estimate/{HIGGSFIELD_IMAGE_MODEL}` (a price estimate, no generation, no redirects followed); OpenAI: `GET /models/{IMAGE_MODEL}` on the image API (no generation) | Higgsfield: no image is generated, but the provider does not document whether an estimate call costs anything; OpenAI: free |
+   | art | Higgsfield: `POST /estimate/{HIGGSFIELD_IMAGE_MODEL}` (a price estimate, no generation, no redirects followed); Cloudflare: `GET /accounts/{id}/ai/models/search?search=<model>` (a model listing that proves the token, the account and that the model is offered; no generation, no redirects followed; a model missing from the answer is a warning); OpenAI: `GET /models/{IMAGE_MODEL}` on the image API (no generation) | Higgsfield: no image is generated, but the provider does not document whether an estimate call costs anything; Cloudflare: free (no inference, so no Neurons); OpenAI: free |
    | tts | `GET /v1/voices/{id}` on ElevenLabs for each voice | free |
    | persistence | a MongoDB ping (5 second timeout); the default `mongodb://localhost:27017` when `MONGODB_URI` is unset | free |
    | renderer | with `STITCH_WEB_URL` set, opens `{STITCH_WEB_URL}/render/draft-preflight?t=0.000` in headless Chromium with a minimal scene injected (`agent.tools.frames.probe_render_page`) | free |
@@ -136,7 +163,7 @@ studio services: model=real subagent_model=studio repo=mongo persistence=memory 
 
 (The `limits` label leaves out the model call cap; preflight's `[limits]` block shows it.)
 
-With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `persistence=mongo art=higgsfield tts=real renderer=playwright` (`art=openai` when the OpenAI-compatible provider is chosen).
+With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `persistence=mongo art=higgsfield tts=real renderer=playwright` (`art=cloudflare` or `art=openai` when that provider is chosen).
 
 | Label | Values |
 |---|---|
@@ -144,7 +171,7 @@ With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `p
 | `subagent_model` | `studio` (sub-agents share the studio model) or the `STITCH_SUBAGENT_MODEL` id |
 | `repo` | `mongo`: the family data, through the API's database (mongomock under `STITCH_FAKE_DB`) |
 | `persistence` | `mongo` (runs survive a restart) or `memory` (they do not) |
-| `art` | `higgsfield`, `openai` or `placeholder` (the image provider, `IMAGE_PROVIDER`) |
+| `art` | `higgsfield`, `cloudflare`, `openai` or `placeholder` (the image provider, `IMAGE_PROVIDER`) |
 | `tts` | `real` (ElevenLabs) or `fake` (silent) |
 | `vision`, `critic` | `real`: Claude vision |
 | `renderer` | `playwright` (screenshots of the web stage, diagrams per render when it cannot) or `diagram` |
@@ -161,7 +188,7 @@ Every service except the model has a fallback, so a missing or failing key degra
 |---|---|---|
 | model, vision, critic | `ANTHROPIC_API_KEY` unset | **No fallback**: no studio. `STITCH_AGENT=real` falls back to scripted runs at startup; preflight exits 1. |
 | vision, critic | A Claude vision call failing in the middle of a run | The run goes on. `describe_photo` answers `could not describe photo <id>: <ExceptionType>`, so that photo is staged from the story text alone; `inspect_frames` answers `could not inspect frames: <ExceptionType>`, and the checker passes without a critique. |
-| art | `IMAGE_API_KEY` unset; one generation or background cut-out failing (that prop or layer only); the run used its image budget (`STITCH_MAX_IMAGES_PER_RUN`, `0` means always) | **Placeholder art**: props and set layers are flat shapes in a placeholder color instead of painted cut-paper art. Cut-outs of uploaded photos still work while the cut-out service does. |
+| art | No image provider's keys set; one generation or background cut-out failing (that prop or layer only); the run used its image budget (`STITCH_MAX_IMAGES_PER_RUN`, `0` means always); on Cloudflare, the free daily Neurons used up (every image until 00:00 UTC) | **Placeholder art**: props and set layers are flat shapes in a placeholder color instead of painted cut-paper art. Cut-outs of uploaded photos still work while the cut-out service does. |
 | tts | `ELEVENLABS_API_KEY` unset; or an ElevenLabs call failing in the middle of a run (a 401, a quota, a timeout) and its one retry failing too | **Silent narration**: no voice plays, but the narration text still highlights word by word on estimated timings (0.3 s a word). The run goes on; after a mid-run failure only that teller's voice pass is silent, and the narrator's tool result carries a `warning: the speech service failed` line. |
 | renderer | `STITCH_WEB_URL` unset; or, per render, the page unreachable, Playwright or Chromium missing, or the page lacking the render contract | **Diagram frames**: the family sees nothing different; the checker critiques labelled diagrams of the stage instead of screenshots, so it cannot catch art or layout problems (a puppet hidden behind scenery). |
 | persistence | `MONGODB_URI` unset, or `STITCH_FAKE_DB` on | **In memory**: a run in progress, and the studio's notes about each person, are lost if the API restarts. Saved memories are in the family database and survive, unless `STITCH_FAKE_DB` is on. |
