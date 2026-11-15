@@ -131,6 +131,7 @@ import routes.families  # noqa: E402
 import routes.films  # noqa: E402
 import routes.memories  # noqa: E402
 import routes.props  # noqa: E402
+import routes.questions  # noqa: E402
 import routes.traditions  # noqa: E402
 import routes.tree  # noqa: E402
 import asking  # noqa: E402
@@ -148,6 +149,7 @@ ROUTERS: tuple[APIRouter, ...] = (
     routes.tree.router,
     routes.props.router,
     routes.ask.router,
+    routes.questions.router,
     routes.memories.router,
     routes.traditions.router,
     routes.films.router,

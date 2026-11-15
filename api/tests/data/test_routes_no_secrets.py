@@ -351,6 +351,12 @@ def test_every_route_on_its_happy_path_leaks_no_secret(env):
         json={"name": "green hymn books", "photoId": media_id},
     )
     assert len(d.call(alice, "GET", "/families/{fid}/questions", 200, params=p).json()["questions"]) == 1
+    asked = d.call(
+        alice, "POST", "/families/{fid}/questions", 201, params=p,
+        json={"personId": alice_pid, "text": "How did you and Grace meet?"},
+    ).json()
+    assert asked["personId"] == alice_pid and asked["status"] == "open"
+    assert len(d.call(alice, "GET", "/families/{fid}/questions", 200, params=p).json()["questions"]) == 2
     d.call(alice, "POST", "/families/{fid}/ask", 200, params=p, json={"query": "hymn books"})
 
     # The Book of Family Traditions: add, list, read, edit, remove.

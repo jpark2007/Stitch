@@ -328,6 +328,18 @@ class QuestionsResponse(Model):
     questions: list[Question]
 
 
+MAX_QUESTION_CHARS = 300
+
+
+class CreateQuestionRequest(Model):
+    """POST /families/{fid}/questions -> 201 Question: ask a person in the family a question
+    (it joins their open questions). Any member may ask. `text` is 1-300 characters after
+    trimming (422 when broken); `personId` must be a person in this family (404 otherwise)."""
+
+    person_id: str
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_QUESTION_CHARS)]
+
+
 class SubmitMemoryFields(Model):
     """Form fields of POST /families/{fid}/memories (multipart; photos are files named `photos`)."""
 

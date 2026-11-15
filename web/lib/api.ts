@@ -1,5 +1,6 @@
 // Typed client for the FastAPI backend: every route in ARCHITECTURE.md
-// section 6, plus GET /families/{fid}/threads, the traditions routes
+// section 6, plus GET /families/{fid}/threads, POST /families/{fid}/questions
+// (ask a person a question), the traditions routes
 // (/families/{fid}/traditions[/{id}]) and the photo film routes
 // (/families/{fid}/films[/{id}]; mock: withMockFilms below).
 //
@@ -22,6 +23,7 @@ import type {
   CreateFamilyRequest,
   CreateFamilyResponse,
   CreateFilmRequest,
+  CreateQuestionRequest,
   CreateTraditionRequest,
   ErrorResponse,
   Family,
@@ -45,6 +47,7 @@ import type {
   Prop,
   PropPatch,
   PropsResponse,
+  Question,
   QuestionsResponse,
   RunEvents,
   SetsResponse,
@@ -412,7 +415,15 @@ export interface StitchApi {
   ): AsyncIterable<RunEventMessage>;
   /** Answer a follow-up, confirm or edit props, or approve a merge. */
   answerRun(fid: string, runId: string, body: AnswerRequest): Promise<void>;
+  /** The caller's own person's open questions, newest first ([] when they have no person). */
   getQuestions(fid: string): Promise<QuestionsResponse>;
+  /**
+   * Ask a person in the family a question (201): it joins their open questions.
+   * Any member may ask. Rejects 422 when the text is blank or over 300
+   * characters after trimming, and 404 "Person not found" for a person who is
+   * not in this family.
+   */
+  createQuestion(fid: string, body: CreateQuestionRequest): Promise<Question>;
   ask(fid: string, body: AskRequest): Promise<AskResponse>;
 
   // The Book of Family Traditions
@@ -689,6 +700,8 @@ export function createApiClient(opts?: {
       requestVoid("POST", path`/families/${fid}/runs/${runId}/answer`, { json: body }),
     getQuestions: async (fid) =>
       request<QuestionsResponse>("GET", path`/families/${fid}/questions`),
+    createQuestion: async (fid, body) =>
+      request<Question>("POST", path`/families/${fid}/questions`, { json: body }),
     ask: async (fid, body) =>
       request<AskResponse>("POST", path`/families/${fid}/ask`, { json: body }),
 
