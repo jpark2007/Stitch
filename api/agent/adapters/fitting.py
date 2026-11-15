@@ -16,6 +16,8 @@ from PIL import Image
 
 ASPECT_TOLERANCE = 0.01
 """A plain resize is used only when the source and target aspect ratios differ by at most 1%."""
+MAX_PIXELS = 40_000_000
+"""Largest generated image decoded (width x height); providers return a few megapixels."""
 
 
 def has_alpha(im: Image.Image) -> bool:
@@ -47,8 +49,14 @@ def fit_to_size(im: Image.Image, size: tuple[int, int]) -> Image.Image:
 
 
 def to_png(data: bytes, size: tuple[int, int]) -> bytes:
-    """Decode ``data`` (any format Pillow reads), keep any alpha, fit to ``size``, encode as PNG."""
+    """Decode ``data`` (any format Pillow reads), keep any alpha, fit to ``size``, encode as PNG.
+
+    Raises ``ValueError`` before decoding when the image has more than ``MAX_PIXELS`` pixels (a
+    small file can declare a huge canvas: a decompression bomb).
+    """
     with Image.open(io.BytesIO(data)) as src:
+        if src.width * src.height > MAX_PIXELS:
+            raise ValueError(f"image is {src.width}x{src.height}, more than {MAX_PIXELS} pixels; refused")
         src.load()
         im = src.convert("RGBA" if has_alpha(src) else "RGB")
     im = fit_to_size(im, size)
@@ -57,4 +65,4 @@ def to_png(data: bytes, size: tuple[int, int]) -> bytes:
     return buf.getvalue()
 
 
-__all__ = ["ASPECT_TOLERANCE", "fit_to_size", "has_alpha", "to_png"]
+__all__ = ["ASPECT_TOLERANCE", "MAX_PIXELS", "fit_to_size", "has_alpha", "to_png"]

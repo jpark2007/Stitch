@@ -38,10 +38,10 @@ Put the variables in `api/.env`. The API (`main.load_env_files`) reads `api/.env
 | `IMAGE_PROVIDER` | art | Higgsfield when `HIGGSFIELD_API_KEY` is set, else OpenAI when `IMAGE_API_KEY` is set | `higgsfield` or `openai`; an unknown value warns and uses the default rule |
 | `HIGGSFIELD_API_KEY` | art | none | Placeholder art (unless `IMAGE_API_KEY` is set). Key ID from console.higgsfield.ai, or `id:secret` |
 | `HIGGSFIELD_API_SECRET` | art | none | Needed unless the key is `id:secret`; missing: placeholder art and an error |
-| `HIGGSFIELD_API_URL` | art | `https://api.higgsfield.ai` | |
+| `HIGGSFIELD_API_URL` | art | `https://api.higgsfield.ai` | Must be https (plain http only for localhost); otherwise placeholder art and an error |
 | `HIGGSFIELD_IMAGE_MODEL` | art | `recraft/v4.1/text-to-image` | Also `higgsfield-ai/soul/standard`, `higgsfield-ai/soul/v2/standard` |
 | `HIGGSFIELD_STYLE_SUFFIX` | art | `Flat 2D cut-paper illustration, not a photograph and not a 3D render.` | Appended to every Higgsfield prompt; `none` for no suffix |
-| `HIGGSFIELD_RESULT_HOSTS` | art | `higgsfield.ai` and subdomains | Extra comma-separated hosts results may be downloaded from |
+| `HIGGSFIELD_RESULT_HOSTS` | art | `higgsfield.ai` and subdomains | Extra comma-separated hosts results may be downloaded from; an entry with no dot or an IP address is ignored with a warning |
 | `IMAGE_API_KEY` | art | none | Placeholder art |
 | `IMAGE_API_URL` | art | `https://api.openai.com/v1` | |
 | `IMAGE_MODEL` | art | `gpt-image-1` | |
@@ -99,7 +99,7 @@ All commands run from `api/` unless they say otherwise.
    |---|---|---|
    | model | Anthropic `models.retrieve` for each model id, then one `messages.create` with `max_tokens=1` on the studio model (checks billing and credit) | a fraction of a cent |
    | vision | `models.retrieve` for `STITCH_VISION_MODEL` | free |
-   | art | Higgsfield: `POST /estimate/{HIGGSFIELD_IMAGE_MODEL}` (a price estimate, no generation); OpenAI: `GET /models/{IMAGE_MODEL}` on the image API (no generation) | free |
+   | art | Higgsfield: `POST /estimate/{HIGGSFIELD_IMAGE_MODEL}` (a price estimate, no generation, no redirects followed); OpenAI: `GET /models/{IMAGE_MODEL}` on the image API (no generation) | Higgsfield: no image is generated, but the provider does not document whether an estimate call costs anything; OpenAI: free |
    | tts | `GET /v1/voices/{id}` on ElevenLabs for each voice | free |
    | persistence | a MongoDB ping (5 second timeout); the default `mongodb://localhost:27017` when `MONGODB_URI` is unset | free |
    | renderer | with `STITCH_WEB_URL` set, opens `{STITCH_WEB_URL}/render/draft-preflight?t=0.000` in headless Chromium with a minimal scene injected (`agent.tools.frames.probe_render_page`) | free |
@@ -136,7 +136,7 @@ studio services: model=real subagent_model=studio repo=mongo persistence=memory 
 
 (The `limits` label leaves out the model call cap; preflight's `[limits]` block shows it.)
 
-With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `persistence=mongo art=real tts=real renderer=playwright`.
+With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `persistence=mongo art=higgsfield tts=real renderer=playwright` (`art=openai` when the OpenAI-compatible provider is chosen).
 
 | Label | Values |
 |---|---|
@@ -144,7 +144,7 @@ With every key set, `MONGODB_URI` reachable and `STITCH_WEB_URL` set you want `p
 | `subagent_model` | `studio` (sub-agents share the studio model) or the `STITCH_SUBAGENT_MODEL` id |
 | `repo` | `mongo`: the family data, through the API's database (mongomock under `STITCH_FAKE_DB`) |
 | `persistence` | `mongo` (runs survive a restart) or `memory` (they do not) |
-| `art` | `real` or `placeholder` |
+| `art` | `higgsfield`, `openai` or `placeholder` (the image provider, `IMAGE_PROVIDER`) |
 | `tts` | `real` (ElevenLabs) or `fake` (silent) |
 | `vision`, `critic` | `real`: Claude vision |
 | `renderer` | `playwright` (screenshots of the web stage, diagrams per render when it cannot) or `diagram` |

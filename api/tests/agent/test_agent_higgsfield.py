@@ -665,3 +665,275 @@ def test_preflight_live_skips_a_higgsfield_setup_that_cannot_build() -> None:
         {hf.API_KEY_ENV: KEY_ID}, seams=preflight.LiveSeams(http_transport=httpx.MockTransport(refuse)), live=True
     )
     assert report.live.status == "skipped"
+
+
+# --------------------------------------------------------------------------- review fixes
+
+
+def test_review_1_preflight_scrubs_the_secret_half_of_an_id_secret_key() -> None:
+    """Reviewer repro: HIGGSFIELD_API_KEY=id:secret and a provider error echoing the secret alone."""
+    secret = "s3cr3t-Value_9999"
+    key_id = "kid-1234abcd"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": f"secret {secret} invalid for {key_id}"})
+
+    for argv in (["--live"], ["--live", "--json"]):
+        out = io.StringIO()
+        preflight.main(
+            argv,
+            environ={"STITCH_NO_DOTENV": "1", "STITCH_FAKE_DB": "1", "HIGGSFIELD_API_KEY": f"{key_id}:{secret}"},
+            out=out,
+            seams=preflight.LiveSeams(http_transport=httpx.MockTransport(handler)),
+        )
+        text = out.getvalue()
+        assert "HTTP 401" in text
+        assert secret not in text and key_id not in text
+
+
+class SlowAPI(FakeHiggsfield):
+    """Every call costs ``cost`` seconds on the fake clock; records each request's timeout."""
+
+    def __init__(self, clock: Clock, cost: float, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.clock = clock
+        self.cost = cost
+        self.timeouts: list[tuple[float, dict[str, float]]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.timeouts.append((self.clock.now, dict(request.extensions.get("timeout") or {})))
+        self.clock.now += self.cost
+        return super().__call__(request)
+
+
+def test_review_2_every_request_timeout_fits_inside_the_deadline_and_work_stops_at_it() -> None:
+    clock = Clock()
+    start = clock.now
+    api = SlowAPI(clock, 25.0, statuses=[{"status": "queued"}])
+    with pytest.raises(RuntimeError, match="did not finish within 120 s .last status queued"):
+        model_for(api, clock).generate("x", size=(64, 64))
+    # The fake transport cannot be cut short, so the bound is on what each call was allowed: no call
+    # starts after the deadline and none may wait past it (a real timeout ends it there).
+    for at, timeout in api.timeouts:
+        left = start + hf.DEFAULT_DEADLINE_S - at
+        assert left > 0
+        assert 0 < timeout["read"] <= min(hf.REQUEST_TIMEOUT_S, left)
+        assert 0 < timeout["connect"] <= min(hf.CONNECT_TIMEOUT_S, left)
+    # Submit and polls start with the cancel reserve still ahead of them.
+    assert all(start + hf.DEFAULT_DEADLINE_S - hf.CANCEL_RESERVE_S - at > 0 for at, _ in api.timeouts)
+    # The last poll overran the whole deadline (only a fake can), so no cancel was sent after it.
+    assert api.cancels == 0
+
+
+def test_review_2_a_queued_request_is_cancelled_inside_the_reserve() -> None:
+    clock = Clock()
+    start = clock.now
+    api = SlowAPI(clock, 1.0, statuses=[{"status": "queued"}])
+    with pytest.raises(RuntimeError, match="last status queued"):
+        model_for(api, clock).generate("x", size=(64, 64))
+    assert api.cancels == 1
+    cancel_at, cancel_timeout = api.timeouts[-1]
+    assert cancel_at + cancel_timeout["read"] <= start + hf.DEFAULT_DEADLINE_S
+    assert clock.now - start <= hf.DEFAULT_DEADLINE_S
+
+
+def test_review_2_a_call_that_overruns_stops_all_further_work() -> None:
+    clock = Clock()
+    start = clock.now
+    api = SlowAPI(clock, 200.0)
+    with pytest.raises(RuntimeError, match="did not finish within 120 s"):
+        model_for(api, clock).generate("x", size=(64, 64))
+    # One submit (its timeout capped by the time left); no poll, cancel or download after the deadline.
+    assert len(api.requests) == 1 and api.polls == 0
+    assert api.timeouts[0][1]["read"] <= hf.REQUEST_TIMEOUT_S
+    assert clock.now - start == 200.0  # only the fake transport's own cost: a real timeout would cut it
+
+
+def test_review_2_submit_retry_is_skipped_when_its_wait_reaches_the_deadline() -> None:
+    clock = Clock()
+    api = SlowAPI(clock, 113.0, submits=[httpx.Response(503, headers={"retry-after": "5"})])
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        model_for(api, clock).generate("x", size=(64, 64))
+    assert api.submit_count == 1
+
+
+def test_review_2_a_slow_download_is_bounded_in_total() -> None:
+    clock = Clock()
+    start = clock.now
+
+    class SlowStream(httpx.SyncByteStream):
+        def __iter__(self):  # type: ignore[override]
+            for _ in range(100):
+                clock.now += 10.0  # each chunk arrives in time for a per-read timeout
+                yield b"\0" * 10
+
+    def download(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=SlowStream(), headers={"content-type": "image/png"})
+
+    with pytest.raises(RuntimeError, match="download did not finish within 120 s"):
+        model_for(FakeHiggsfield(download=download), clock).generate("x", size=(64, 64))
+    assert clock.now - start <= hf.DEFAULT_DEADLINE_S + 10.0
+
+
+def _bomb() -> bytes:
+    buf = io.BytesIO()
+    Image.new("1", (13000, 13000)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+BOMB_WARNING = "ignore::PIL.Image.DecompressionBombWarning"
+
+
+@pytest.mark.filterwarnings(BOMB_WARNING)
+def test_review_3_a_decompression_bomb_is_refused_before_decoding() -> None:
+    bomb = _bomb()
+    assert len(bomb) < 100_000
+    with pytest.raises(ValueError, match="more than 40000000 pixels"):
+        fitting.to_png(bomb, (64, 64))
+    with pytest.raises(ValueError, match="pixels"):
+        images_mod._to_png(bomb, (64, 64))  # the OpenAI adapter shares the guard
+
+
+@pytest.mark.filterwarnings(BOMB_WARNING)
+def test_review_3_a_bomb_from_the_provider_becomes_placeholder_art() -> None:
+    from agent.adapters import AlphaAwareRemover
+
+    service = ArtService(model_for(FakeHiggsfield(image=_bomb())), AlphaAwareRemover())
+    assert service.make_cutout("a cup", size=(256, 256)) is None
+    assert service.make_layer("a hill", layer="back", size=(2048, 1024)) is None
+
+
+def test_review_4_plain_background_is_white_for_cutout_art_only() -> None:
+    from agent.adapters import AlphaAwareRemover
+
+    api = FakeHiggsfield(image=png((1024, 1024), (255, 255, 255)))
+    service = ArtService(model_for(api), AlphaAwareRemover())
+    service.make_cutout("a cup", size=(256, 256))
+    service.make_layer("houses", layer="middle", size=(2048, 464))
+    service.make_layer("trees", layer="front", size=(2048, 192))
+    service.make_layer("sky", layer="back", size=(2048, 1024))
+    grounds = [body.get("background_color") for body in api.bodies]
+    assert grounds == [{"rgb": [255, 255, 255]}] * 3 + [None]
+
+
+def test_review_4_only_models_that_document_a_background_get_one() -> None:
+    api = FakeHiggsfield()
+    model_for(api, model="higgsfield-ai/soul/v2/standard").generate("x", size=(64, 64), plain_background=True)
+    assert "background_color" not in api.bodies[0]
+
+
+def test_review_4_models_without_the_keyword_are_called_as_before() -> None:
+    from agent.tools.art import FakeBackgroundRemover, FakeImageModel, accepts_plain_background
+
+    assert accepts_plain_background(model_for(FakeHiggsfield()))
+    assert not accepts_plain_background(OpenAIImageModel(api_key="sk-x", transport=httpx.MockTransport(lambda r: httpx.Response(500))))
+    fake = FakeImageModel()
+    assert not accepts_plain_background(fake)
+    assert ArtService(fake, FakeBackgroundRemover()).make_cutout("a cup", size=(128, 128)) is not None
+
+
+@pytest.mark.parametrize(
+    ("url", "ok"),
+    [
+        ("https://api.higgsfield.ai", True),
+        ("http://localhost:9999", True),
+        ("http://127.0.0.1:9999", True),
+        ("http://[::1]:9999", True),
+        ("http://api.higgsfield.ai", False),
+        ("http://10.0.0.5", False),
+        ("ftp://api.higgsfield.ai", False),
+    ],
+)
+def test_review_5_a_cleartext_api_url_is_refused(url: str, ok: bool) -> None:
+    assert (hf.url_problem(url) is None) == ok
+    if ok:
+        HiggsfieldImageModel(api_key=KEY_ID, api_secret=SECRET, base_url=url)
+    else:
+        with pytest.raises(RuntimeError, match="HIGGSFIELD_API_URL"):
+            HiggsfieldImageModel(api_key=KEY_ID, api_secret=SECRET, base_url=url)
+
+
+def test_review_5_production_and_preflight_refuse_a_cleartext_api_url(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.ERROR)
+    env = {hf.API_KEY_ENV: KEY_ID, hf.API_SECRET_ENV: SECRET, hf.URL_ENV: "http://api.higgsfield.ai"}
+    svc = _production_env(monkeypatch, env)
+    assert svc.labels["art"] == "placeholder" and svc.art.image_model is None
+    assert "must be https" in caplog.text
+    report = art_report(env)
+    assert report.mode == "placeholder"
+    assert any("must be https" in e for e in report.errors())
+
+
+def test_review_6_unsafe_result_host_entries_are_ignored_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=hf.__name__)
+    raw = "com, ai, 10.0.0.1, [::1], d111.cloudfront.net"
+    monkeypatch.setenv(hf.RESULT_HOSTS_ENV, raw)
+    assert hf.configured_result_hosts() == ("higgsfield.ai", "d111.cloudfront.net")
+    model_for(FakeHiggsfield())
+    for entry in ("'com'", "'ai'", "'10.0.0.1'", "'[::1]'"):
+        assert entry in caplog.text
+    report = art_report({hf.RESULT_HOSTS_ENV: raw})
+    assert "'com'" in (var_of(report, hf.RESULT_HOSTS_ENV).problem or "")
+
+
+def test_review_7_a_model_that_cannot_be_built_gives_placeholder_art(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.ERROR)
+    svc = _production_env(monkeypatch, {"IMAGE_API_KEY": "sk-proj-éèü-pasted"})
+    assert svc.labels["art"] == "placeholder" and svc.art.image_model is None
+    assert "could not be built (UnicodeEncodeError)" in caplog.text
+    assert "éèü" not in caplog.text
+
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise UnicodeEncodeError("ascii", "x", 0, 1, f"bad {SECRET}")
+
+    monkeypatch.setattr(production, "HiggsfieldImageModel", broken)
+    svc = _production_env(monkeypatch, {hf.API_KEY_ENV: KEY_ID, hf.API_SECRET_ENV: SECRET})
+    assert svc.labels["art"] == "placeholder"
+    assert_no_key(caplog.text)
+
+
+def test_review_7_a_non_ascii_higgsfield_key_is_a_config_problem() -> None:
+    env = {hf.API_KEY_ENV: KEY_ID, hf.API_SECRET_ENV: "sécret-value-123"}
+    assert "non-ASCII" in (hf.config_problem(env) or "")
+    assert preflight.modes(env, compiler="x")["art"] == "placeholder"
+    assert any("non-ASCII" in e for e in art_report(env).errors())
+
+
+def test_review_8_download_asks_for_identity_and_refuses_an_encoded_body() -> None:
+    api = FakeHiggsfield()
+    model_for(api).generate("x", size=(64, 64))
+    assert api.requests[-1].headers["accept-encoding"] == "identity"
+
+    def gzipped(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"\x1f\x8b", headers={"content-type": "image/png", "content-encoding": "gzip"})
+
+    with pytest.raises(RuntimeError, match="content encoding 'gzip'"):
+        model_for(FakeHiggsfield(download=gzipped)).generate("x", size=(64, 64))
+
+
+def test_review_9_preflight_live_does_not_follow_redirects() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(307, headers={"location": "https://evil.example.com/collect"})
+
+    env = {hf.API_KEY_ENV: KEY_ID, hf.API_SECRET_ENV: SECRET}
+    report = art_report(env, seams=preflight.LiveSeams(http_transport=httpx.MockTransport(handler)), live=True)
+    assert report.live.status == "fail" and "HTTP 307" in report.live.detail
+    assert [r.url.host for r in seen] == ["api.higgsfield.ai"]
+
+
+def test_review_10_readme_names_the_provider_labels_and_the_estimate_cost() -> None:
+    from pathlib import Path
+
+    readme = (Path(preflight.__file__).parent / "README.md").read_text()
+    assert "art=real" not in readme
+    assert "art=higgsfield" in readme
+    assert "does not document whether an estimate call costs anything" in readme

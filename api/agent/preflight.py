@@ -291,6 +291,9 @@ def secret_values(env: Mapping[str, str]) -> list[str]:
             continue
         if name in SECRET_ENVS or (_SECRET_NAME.search(name) and len(value.strip()) >= 8):
             bases.append(value)
+            if name == hf_adapter.API_KEY_ENV and ":" in value:
+                # id:secret in one value: each half can be echoed alone (the secret above all).
+                bases += [part for part in value.strip().split(":") if part.strip()]
         if "://" in value:
             bases += _uri_secrets(value, mongo=value.strip().lower().startswith("mongodb"))
     plain: set[str] = set()
@@ -830,6 +833,10 @@ def _hf_vars(env: Mapping[str, str], selected: bool) -> list[VarReport]:
             )
             key.severity = severity
             key.shown = key.shown.replace(", format ok", "")
+        elif not all(part.isascii() for part in hf_adapter.credentials(env) or ()):
+            key.problem = "the key or secret contains a non-ASCII character (re-copy it from the console)"
+            key.severity = severity
+            key.shown = key.shown.replace(", format ok", "")
         elif ":" in key_value and secret.set:
             key.problem = (
                 f"looks like id:secret but {hf_adapter.API_SECRET_ENV} is set too; "
@@ -855,7 +862,12 @@ def _hf_vars(env: Mapping[str, str], selected: bool) -> list[VarReport]:
         bool(hosts_raw and hosts_raw.strip()),
         f"allowed result hosts: {hosts} (and their subdomains)",
     )
-    return [key, secret, _url_var(env, hf_adapter.URL_ENV, hf_adapter.DEFAULT_URL), model, style, hosts_var]
+    if rejected := hf_adapter.rejected_result_hosts(env):
+        hosts_var.problem, hosts_var.severity = "; ".join(rejected), "warning"
+    url = _url_var(env, hf_adapter.URL_ENV, hf_adapter.DEFAULT_URL)
+    if url.set and not url.problem and (problem := hf_adapter.url_problem(hf_adapter.configured_base_url(env))):
+        url.problem, url.severity = problem, severity
+    return [key, secret, url, model, style, hosts_var]
 
 
 def _openai_vars(env: Mapping[str, str]) -> list[VarReport]:
@@ -1185,13 +1197,17 @@ def _live_higgsfield(http: httpx.Client, env: Mapping[str, str], guarded: Any) -
     estimate endpoint answers {"usd": ...} for the same body a generation would send)."""
     creds = hf_adapter.credentials(env)
     model = hf_adapter.configured_model(env)
-    if creds is None or model not in hf_adapter.MODELS:
+    if creds is None or hf_adapter.config_problem(env):
         return LiveResult("skipped", "fix the Higgsfield errors above first")
     base = hf_adapter.configured_base_url(env)
 
     def estimate() -> str:
+        # No redirects: the key must only ever go to the configured API host.
         response = http.post(
-            f"{base}/estimate/{model}", json=hf_adapter.estimate_body(model), headers=hf_adapter.authorization(*creds)
+            f"{base}/estimate/{model}",
+            json=hf_adapter.estimate_body(model),
+            headers=hf_adapter.authorization(*creds),
+            follow_redirects=False,
         )
         if response.status_code != 200:
             try:

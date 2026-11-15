@@ -21,9 +21,11 @@ docstring has the details):
                                                                 never a timeout
     OpenAIImageModel   120 s read/write, 10 s connect           1, only for no connection or
                                                                 HTTP 408/429/5xx
-    HiggsfieldImage-   120 s for submit + polls + download,     1 submit, only for no connection or
-    Model              30 s per call, 10 s connect              HTTP 408/429/5xx (same idempotency
-                                                                key); never after a request id
+    HiggsfieldImage-   120 s for the whole generate (submit,    1 submit, only for no connection or
+    Model              its retry, polls, download, cancel);     HTTP 408/429/5xx (same idempotency
+                       each call min(30 s, time left), connect  key) and only when the wait fits
+                       min(10 s, time left); download checked   the deadline; never after a
+                       between chunks                           request id
     ElevenLabsTTS     30 s read/write, 10 s connect            2, same rules
 
 Every wait before a retry is capped at ``images.MAX_BACKOFF_S`` (8 s), whatever the provider's

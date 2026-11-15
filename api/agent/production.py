@@ -209,8 +209,17 @@ def _image_model() -> tuple[ImageModel | None, str]:
         if problem:
             logger.error("image art: Higgsfield is selected but %s; using placeholder art", problem)
             return None, "placeholder"
-        return HiggsfieldImageModel(), "higgsfield"
-    return OpenAIImageModel(), "openai"
+    build = HiggsfieldImageModel if choice.provider == "higgsfield" else OpenAIImageModel
+    try:
+        return build(), choice.provider
+    except Exception as exc:  # noqa: BLE001 - e.g. a non-ASCII character pasted into a key: degrade, never stop
+        # Only the exception type: its message could quote part of a key.
+        logger.error(
+            "image art: the %s image model could not be built (%s); using placeholder art",
+            choice.provider,
+            type(exc).__name__,
+        )
+        return None, "placeholder"
 
 
 def _art_service(limits: RunLimits, usage: RunUsage) -> tuple[ArtService, str]:
