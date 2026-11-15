@@ -186,11 +186,17 @@ class ReplayRunManager(ScriptedRunManager):
     def stories(self) -> tuple[PreparedStory, ...]:
         return self._stories
 
-    def match(self, family_id: str, fields: schemas.SubmitMemoryFields) -> Match | None:
-        """The prepared story this submission would replay (never one for a second telling)."""
+    def match(
+        self, family_id: str, fields: schemas.SubmitMemoryFields, *, db: Database | None = None
+    ) -> Match | None:
+        """The prepared story this submission would replay (never one for a second telling).
+
+        With `db`, only stories whose whole cast is in that family are candidates, so two
+        families' stories never shadow each other."""
         if fields.memory_id is not None:
             return None
-        return match_story(fields.text, self._stories, family_id=family_id)
+        stories = self._stories if db is None else [s for s in self._stories if cast_fits(db, family_id, s)]
+        return match_story(fields.text, stories, family_id=family_id)
 
     # ------------------------------------------------------------ overridden seams
 
@@ -253,7 +259,7 @@ class ReplayRunManager(ScriptedRunManager):
     def _pick(self, run: Any, db: Database) -> _Replay | None:
         """The prepared story this run replays, or None to run the scripted script. Never raises."""
         try:
-            found = self.match(run.family_id, run.fields)
+            found = self.match(run.family_id, run.fields, db=db)
             if found is None:
                 if self._stories and run.fields.memory_id is None:
                     logger.info("replay: run %s matched no prepared story; scripted scene", run.run_id[:8])
@@ -426,6 +432,32 @@ class ReplayRunManager(ScriptedRunManager):
 # ------------------------------------------------------------------------------ loading
 
 
+# Families a story without `familyId` is checked against at startup, in order (the first
+# whose people include its whole cast). A launcher that seeds more families adds them.
+REPLAY_FAMILIES: list[str] = [DEMO_FAMILY_ID]
+
+
+def add_replay_family(family_id: str) -> None:
+    """Check stories without `familyId` against this family too (after the ones before it)."""
+    if family_id not in REPLAY_FAMILIES:
+        REPLAY_FAMILIES.append(family_id)
+
+
+def cast_fits(db: Database, family_id: str, story: PreparedStory) -> bool:
+    """Whether every cast member of the story is a person of the family."""
+    cast = list(dict.fromkeys(story.screenplay.cast))
+    return len(people_db.get_people(db, family_id, cast)) == len(cast)
+
+
+def story_family(db: Database, story: PreparedStory) -> str:
+    """The family a story is checked against: its `familyId`, else the first of
+    REPLAY_FAMILIES that has its whole cast, else the demo family (which then names the
+    missing cast). At run time a story replays in any family that has its cast."""
+    if story.family_id:
+        return story.family_id
+    return next((fid for fid in REPLAY_FAMILIES if cast_fits(db, fid, story)), DEMO_FAMILY_ID)
+
+
 def family_inputs(
     db: Database, family_id: str, story: PreparedStory
 ) -> tuple[dict[str, schemas.Person], dict[str, schemas.Prop], dict[str, schemas.SetDef]]:
@@ -460,8 +492,9 @@ def install_replay_runs(
     """Put a ReplayRunManager behind agent.runs (via its `configure`). True on success.
 
     Same contract as seed.fake_runs.install_fake_runs, which api/main.py calls at startup.
-    `stories` default to `configured_stories()`, each compiled against its family (its
-    `familyId`, else the demo family) in the installed database; a story that does not
+    `stories` default to `configured_stories()`, each compiled against its family
+    (`story_family`: its `familyId`, else the first of REPLAY_FAMILIES with its cast) in the
+    installed database; a story that does not
     compile logs an error naming it and raises ReplayFixtureError.
     """
     try:
@@ -481,7 +514,7 @@ def install_replay_runs(
         loaded, directory = configured_stories()
         db = db_getter()
         for story in loaded:
-            family_id = story.family_id or DEMO_FAMILY_ID
+            family_id = story_family(db, story)
             people, props, sets = family_inputs(db, family_id, story)
             if not people:
                 logger.warning("replay: %s is for family %r, which has nobody in this database", story.name, family_id)
@@ -548,13 +581,17 @@ def wrap_lifespan(app: Any, step_seconds: Callable[[], float]) -> None:
 
 
 __all__ = [
+    "REPLAY_FAMILIES",
     "SEAMS",
     "ReplayRunManager",
+    "add_replay_family",
+    "cast_fits",
     "configured_stories",
     "ensure_replay_manager",
     "family_inputs",
     "install_replay_runs",
     "narrated_by",
+    "story_family",
     "use_replay_runs",
     "wrap_lifespan",
 ]

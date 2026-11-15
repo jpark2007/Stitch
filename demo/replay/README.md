@@ -124,7 +124,14 @@ cannot compile without that prop (someone holds it, say), the prop stays and the
 text, the follow-up answer as a new paragraph, and the uploaded photos). The participants
 are the teller, the cast and anyone named.
 
-If a matched story cannot be used for a run (its cast is not in that family, or it fails to
+A story replays in any family that has its whole cast: a telling in one family is only
+matched against the stories whose cast is in that family, so two families' stories never
+shadow each other. At startup a story is compiled against its `familyId`, else the first
+family in `manager.REPLAY_FAMILIES` with its whole cast (the demo family, plus any family a
+launcher adds with `add_replay_family`, as `demo/whitakers/` does), else the demo family,
+which then names the missing cast.
+
+If a matched story cannot be used for a run (a set or prop is missing there, or it fails to
 compile there), the log says why and the run ends on the scripted scene, never on an error.
 
 ### Matching
