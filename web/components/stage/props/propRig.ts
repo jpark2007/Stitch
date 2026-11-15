@@ -38,7 +38,7 @@ import {
   type PropPose,
   type SocketPivot,
 } from "./rig";
-import { placeholderLook, rollsOnWheels } from "./silhouette";
+import { mirrorForGrip, placeholderLook, rollsOnWheels, tagLabel } from "./silhouette";
 import type { SocketResolver } from "./sockets";
 
 export interface PropRigOptions {
@@ -165,18 +165,23 @@ export class PropRig {
     const p = this.prop;
     const spinning = Object.values(p.parts ?? {}).filter((x) => x.spin);
     // The body is cut in the shape the prop's words name (a "red bicycle"
-    // rigged as a vehicle is still a bicycle), else by its size class.
-    const look = v.part === null ? placeholderLook(p) : { shape: null, bell: false };
+    // rigged as a vehicle is still a bicycle, a bouquet is flowers), else by
+    // its size class (a neutral tag or parcel with the prop's name on it).
+    const body = v.part === null;
+    const look = body ? placeholderLook(p) : { shape: null, bell: false, variant: null };
     return {
-      kind: v.part === null ? "body" : v.spin ? "wheel" : "piece",
+      kind: body ? "body" : v.spin ? "wheel" : "piece",
       size: p.size,
       color: p.color ?? "#c4a37a",
-      aspect: v.part === null ? this.dims.aspect : 1,
-      seed: v.part === null ? p.id : `${p.id}.${v.part}`,
-      wheels: v.part === null && rollsOnWheels(look.shape, p.size) && spinning.length === 0,
+      aspect: body ? this.dims.aspect : 1,
+      seed: body ? p.id : `${p.id}.${v.part}`,
+      wheels: body && rollsOnWheels(look.shape, p.size) && spinning.length === 0,
       shape: look.shape,
+      variant: look.variant,
       bell: look.bell,
-      hubs: v.part === null ? spinning.map((x) => fractionOr(x.at, [0.5, 0.5])) : undefined,
+      hubs: body ? spinning.map((x) => fractionOr(x.at, [0.5, 0.5])) : undefined,
+      label: body && look.shape === null ? tagLabel(p.name) : undefined,
+      mirror: body && mirrorForGrip(look.shape, p.grip),
     };
   }
 
