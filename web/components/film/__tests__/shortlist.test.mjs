@@ -352,6 +352,73 @@ test("taking photos out never brings a copy of them back, and Choose again keeps
   assert.equal(after.length, small.chosen.length - 1);
 });
 
+// ---------------------------------------------------------------------------
+// No capture times (an album gathered from a messaging app, say)
+
+/** `photos` with every time gone and the edited copies moved to the end of the pick order. */
+function untimed(photos, isEdit) {
+  const order = [...photos.filter((p) => !isEdit(p)), ...photos.filter(isEdit)];
+  return order.map((p, k) => ({ ...p, index: k, takenAt: null, from: p.index }));
+}
+
+test("without times, copies far apart in the pick order are still refused", () => {
+  const { photos, sceneOf } = DUPS;
+  // Edits (crops, shifts, colour changes) land at the end, far from their originals.
+  const firstOfScene = new Set();
+  const isEdit = (p) => {
+    const s = sceneOf[p.index];
+    if (!firstOfScene.has(s)) {
+      firstOfScene.add(s);
+      return false;
+    }
+    return true;
+  };
+  const shuffled = untimed(photos, isEdit);
+  const scene = (idx) => sceneOf[shuffled[idx].from];
+  const plan = planAlbum(shuffled, { exactTimes: false });
+  assert.equal(plan.chosen.length, 40);
+  assert.equal(new Set(plan.chosen.map(scene)).size, 40, "40 different scenes");
+  assert.equal(plan.album.best.length, 120, "every copy found");
+  const r = rng(17);
+  for (let run = 0; run < 5; run++) {
+    let current = plan.chosen.slice();
+    const removed = [];
+    for (let k = 0; k < 8; k++) {
+      const taken = current[Math.floor(r() * current.length)];
+      removed.push(taken);
+      current = replaceTaken(plan.album, current, removed, taken);
+      const scenes = current.map(scene);
+      assert.equal(new Set(scenes).size, current.length, "no scene twice");
+      for (const out of removed) assert.ok(!scenes.includes(scene(out)), "a removed scene came back");
+    }
+  }
+});
+
+test("without times, different moments in one place survive", () => {
+  for (const kind of ["park", "room"]) {
+    const photos = momentsAlbum(kind, 60).map((p) => ({ ...p, takenAt: null }));
+    const plan = planAlbum(photos, { exactTimes: false });
+    assert.ok(plan.album.best.length >= 50, `${kind}: ${plan.album.best.length} of 60 kept as distinct`);
+    assert.equal(plan.chosen.length, 40, kind);
+  }
+  const mix = [
+    ...momentsAlbum("park", 25),
+    ...Array.from({ length: 15 }, (_, k) => signal(rgba(sceneImage(500 + k)), 25 + k, null)),
+  ].map((p) => ({ ...p, takenAt: null }));
+  const small = planAlbum(mix, { exactTimes: false });
+  assert.equal(small.chosen.length, 40, "25 moments and 15 scenes, no times: all 40 kept");
+});
+
+test("without times, 1000 photos in one place still plan in a few seconds", () => {
+  const photos = momentsAlbum("park", 1000, 5000, 3000).map((p) => ({ ...p, takenAt: null }));
+  const started = performance.now();
+  const plan = planAlbum(photos, { exactTimes: false });
+  const ms = performance.now() - started;
+  assert.equal(plan.chosen.length, 40);
+  assert.ok(ms < 10_000, `planned in ${ms.toFixed(0)} ms`);
+  console.log(`# 1000 photos, one place, no times: ${ms.toFixed(0)} ms (${plan.album.best.length} kept)`);
+});
+
 test("shortlist keeps the sharpest copy and respects max", () => {
   const c = sceneImage(21);
   const photos = [

@@ -103,14 +103,19 @@ test("fineSignature: three 32x32 rank maps that ignore brightness, contrast, ton
   ];
   const withMask = fineSignature(image(96, 72, scene), 96, 72);
   assert.equal(withMask.length, 4 * 32 * 32);
-  assert.ok(withMask.subarray(3072).every((v) => v === 0), "nothing clipped");
+  assert.ok(withMask.subarray(3072).every((v) => v < 1), "nothing blown out");
   const base = withMask.subarray(0, 3072);
   assert.ok(base.every((v) => v >= 0 && v <= 1));
-  // Blown-out cells are marked.
-  const blown = fineSignature(image(96, 72, (x, y) => (x < 24 ? [255, 255, 255] : scene(x, y))), 96, 72);
-  const mask = blown.subarray(3072);
-  assert.equal(mask[0], 1);
-  assert.equal(mask[31], 0);
+  // Blown-out cells are marked 1; a cell with one channel crushed 0.5 (its colour cannot be trusted).
+  const clipped = fineSignature(
+    image(96, 72, (x) => (x < 24 ? [255, 255, 255] : x >= 84 ? [120, 0, 90] : [100, 110, 90])),
+    96,
+    72,
+  );
+  const mask = clipped.subarray(3072);
+  assert.equal(mask[0], 1, "blown out");
+  assert.equal(mask[31], 0.5, "one channel crushed");
+  assert.equal(mask[16], 0, "fine");
   // Ranks spread over 0..1 in every channel.
   for (let c = 0; c < 3; c++) {
     const ch = base.subarray(c * 1024, (c + 1) * 1024);

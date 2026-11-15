@@ -40,12 +40,24 @@ export const BURST_WINDOW_MS = 5000;
  */
 export const NEAR_WINDOW_MS = 10_000;
 /**
- * When a capture time is unknown, photos this close in pick order count as
- * near, if their hashes are within NEAR_PICKS_BITS (a shifted copy can move
- * the hash a long way, an unrelated photo usually further).
+ * When either capture time is unknown, nothing says how far apart two photos
+ * were taken (an edited copy can land anywhere in the album), so any two
+ * whose palettes (how light pairs with colour, wherever it is in the frame)
+ * are within UNKNOWN_TIME_PALETTE are compared lined up; for a photo with no
+ * colour, any two within UNKNOWN_TIME_BITS hash bits. Measured on the review
+ * albums: 98.6% of copy pairs within 0.8 of palette and 0.6% of pairs of
+ * different scenes; a crop or shift can move the hash 30 bits or more.
  */
-export const NEAR_PICKS = 6;
-export const NEAR_PICKS_BITS = 26;
+export const UNKNOWN_TIME_PALETTE = 0.8;
+export const UNKNOWN_TIME_BITS = 26;
+/**
+ * Lining up is the costly comparison, and in an album shot in one place with
+ * no times every pair passes the palette test. So a photo with no time is
+ * lined up against at most this many kept photos, those with the closest
+ * palettes (a copy sits a median 0.16 from its original; other moments in the
+ * same place 0.2 to 0.6). Everything cheaper is still checked against all.
+ */
+export const UNTIMED_LINE_UPS = 8;
 
 /**
  * The look-alike rules. `distance` is the fine difference of the worst block
@@ -123,6 +135,10 @@ const LIGHT_ONLY_WEIGHT = 1.6;
 const BULK_GAIN = 0.85;
 /** A move trimming no more than this off any edge needs no such proof. */
 const SMALL_MOVE = 0.05;
+/** A lined-up fit within this many times the bound is nudged to see if it gets inside. */
+const REFINE_WITHIN = 2;
+/** A result within this many times the bound is tried again from the other photo's side. */
+const RETRY_WITHIN = 1.3;
 /** How far frames may be moved: each side may lose up to a fifth, the scale may change by a quarter. */
 const MIN_OVERLAP = 0.7;
 const MIN_SCALE = 0.78;
@@ -137,10 +153,19 @@ interface Fine {
   row: Float32Array;
   /** No colour to speak of: compared on light alone. */
   grey: boolean;
-  /** Cells blown out or crushed (1), which tell nothing about structure; null when none are. */
+  /**
+   * Clipped cells: 1 blown out or black (nothing to compare), 0.5 one channel
+   * crushed (light only); null when there are none.
+   */
   mask: Float32Array | null;
   /** Each block's mean in each standardised channel: a quick lower bound on the worst block. */
   blockMeans: Float32Array;
+  /**
+   * How light and colour go together, wherever they are in the frame: a 4x4
+   * histogram of (light, blue) rank quarters and one of (light, red), as
+   * fractions. A crop or shift barely changes it; another scene does.
+   */
+  palette: Float32Array;
 }
 
 function standardise(src: ArrayLike<number>, off: number, out: Float32Array, outOff: number): number {
@@ -210,9 +235,10 @@ function fineOf(signal: Pick<PhotoSignal, "fine">): Fine {
   let mask: Float32Array | null = null;
   if (src.length >= 4 * NN) {
     for (let i = 0; i < NN; i++) {
-      if (src[3 * NN + i] > 0.5) {
+      const m = src[3 * NN + i];
+      if (m > 0.25) {
         mask ??= new Float32Array(NN);
-        mask[i] = 1;
+        mask[i] = m > 0.75 ? 1 : 0.5;
       }
     }
   }
@@ -224,9 +250,52 @@ function fineOf(signal: Pick<PhotoSignal, "fine">): Fine {
       }
     }
   }
-  const made = { full, col, row, grey, mask, blockMeans };
+  const palette = new Float32Array(2 * PALETTE_BINS * PALETTE_BINS);
+  if (src.length >= 3 * NN) {
+    let counted = 0;
+    const bin = (v: number) => Math.min(PALETTE_BINS - 1, Math.max(0, Math.floor(v * PALETTE_BINS)));
+    for (let i = 0; i < NN; i++) {
+      if (mask && mask[i]) continue; // clipped colour says nothing about the palette
+      const y = bin(src[i]);
+      palette[y * PALETTE_BINS + bin(src[NN + i])]++;
+      palette[PALETTE_BINS * PALETTE_BINS + y * PALETTE_BINS + bin(src[2 * NN + i])]++;
+      counted++;
+    }
+    for (let k = 0; k < palette.length; k++) palette[k] /= Math.max(1, counted);
+  }
+  const made = { full, col, row, grey, mask, blockMeans, palette };
   prepared.set(key, made);
   return made;
+}
+
+const PALETTE_BINS = 4;
+
+/** How differently two photos pair light with colour (0 to 4), wherever things are in the frame. */
+function paletteGap(a: Fine, b: Fine): number {
+  let s = 0;
+  for (let k = 0; k < a.palette.length; k++) s += Math.abs(a.palette[k] - b.palette[k]);
+  return s;
+}
+
+/**
+ * Whether two photos with no capture time between them are worth lining up:
+ * their hashes are within ALIKE.farBits (all but the same picture), or their
+ * palettes are close (a crop or shift of one picture; or another moment in
+ * the same place), or, when either has no colour, their hashes are within
+ * UNKNOWN_TIME_BITS.
+ */
+function worthLiningUp(a: Pick<PhotoSignal, "fine">, b: Pick<PhotoSignal, "fine">, bits: number): boolean {
+  return liningUpKey(a, b, bits) < Infinity;
+}
+
+/** worthLiningUp as a ranking (lower is more promising), Infinity when not worth it. */
+function liningUpKey(a: Pick<PhotoSignal, "fine">, b: Pick<PhotoSignal, "fine">, bits: number): number {
+  if (bits <= ALIKE.farBits) return 0;
+  const fa = fineOf(a);
+  const fb = fineOf(b);
+  if (fa.grey || fb.grey) return bits <= UNKNOWN_TIME_BITS ? (bits / UNKNOWN_TIME_BITS) * UNKNOWN_TIME_PALETTE : Infinity;
+  const gap = paletteGap(fa, fb);
+  return gap <= UNKNOWN_TIME_PALETTE ? gap : Infinity;
 }
 
 /**
@@ -284,10 +353,15 @@ function worstBlock(
         const rowStart = (by * BLOCK + j) * N + bx * BLOCK;
         for (let i = 0; i < BLOCK; i++) {
           const k = rowStart + i;
-          if ((maskA && maskA[k]) || (maskB && maskB[k])) continue;
+          const m = Math.max(maskA ? maskA[k] : 0, maskB ? maskB[k] : 0);
+          if (m >= 0.75) continue; // blown out or black in one of them
           cells++;
-          s += light * Math.abs(a[k] - b[k]);
-          if (chroma) s += chroma * (Math.abs(a[NN + k] - b[NN + k]) + Math.abs(a[2 * NN + k] - b[2 * NN + k]));
+          if (chroma && m < 0.25) {
+            s += light * Math.abs(a[k] - b[k]) + chroma * (Math.abs(a[NN + k] - b[NN + k]) + Math.abs(a[2 * NN + k] - b[2 * NN + k]));
+          } else {
+            // No colour to trust in this cell: its light alone.
+            s += light * Math.abs(a[k] - b[k]);
+          }
         }
       }
       if (cells < MIN_CELLS) continue;
@@ -379,9 +453,12 @@ function lineUp(a: Float32Array, b: Float32Array): [number, number][] {
   return starts.map(([o0, s0]) => {
     let o = o0;
     let s = s0;
-    let val = profileGap(a, b, o, s, 20);
     // The two-dimensional nudging in fineDistance takes it the rest of the way.
-    for (const step of [0.02, 0.01]) {
+    for (const [step, k, profiles] of [
+      [0.02, 20, 4],
+      [0.01, 20, 4],
+    ]) {
+      let val = profileGap(a, b, o, s, k, profiles);
       for (let it = 0; it < 3; it++) {
         let moved = false;
         for (const [d0, d1] of [
@@ -392,7 +469,7 @@ function lineUp(a: Float32Array, b: Float32Array): [number, number][] {
           [step, -step],
           [-step, step],
         ]) {
-          const v = profileGap(a, b, o + d0, s + d1, 20);
+          const v = profileGap(a, b, o + d0, s + d1, k, profiles);
           if (v < val) {
             val = v;
             o += d0;
@@ -442,7 +519,7 @@ function overlapViews(a: Fine, b: Fine, ox: number, oy: number, sx: number, sy: 
     standardise(rawA, c * NN, viewA, c * NN);
     standardise(rawB, c * NN, viewB, c * NN);
   }
-  // Clipped cells follow along (a cell is clipped if it is mostly made of clipped cells).
+  // Clipped cells follow along, blended like everything else (worstBlock reads 0.75 and 0.25 as the cut-offs).
   for (const [fine, view, toB] of [
     [a, maskViewA, false],
     [b, maskViewB, true],
@@ -452,7 +529,7 @@ function overlapViews(a: Fine, b: Fine, ox: number, oy: number, sx: number, sy: 
       const ya = ly + ((ry - ly) * (j + 0.5)) / N;
       for (let i = 0; i < N; i++) {
         const xa = lx + ((rx - lx) * (i + 0.5)) / N;
-        view[j * N + i] = sampleCell(fine.mask, toB ? (xa - ox) / sx : xa, toB ? (ya - oy) / sy : ya, 0) >= 0.5 ? 1 : 0;
+        view[j * N + i] = sampleCell(fine.mask, toB ? (xa - ox) / sx : xa, toB ? (ya - oy) / sy : ya, 0);
       }
     }
   }
@@ -478,6 +555,21 @@ export function fineDistance(
   b: Pick<PhotoSignal, "fine">,
   bound = Infinity,
   allowLineUp = true,
+  refineWithin = REFINE_WITHIN,
+): number {
+  const d = fineDistanceOneWay(a, b, bound, allowLineUp, refineWithin);
+  // The search for an alignment starts from one photo's side; on a close
+  // call, starting from the other's can find what the first missed.
+  if (allowLineUp && d > bound && d <= bound * RETRY_WITHIN) return Math.min(d, fineDistanceOneWay(b, a, bound, true, refineWithin));
+  return d;
+}
+
+function fineDistanceOneWay(
+  a: Pick<PhotoSignal, "fine">,
+  b: Pick<PhotoSignal, "fine">,
+  bound: number,
+  allowLineUp: boolean,
+  refineWithin: number,
 ): number {
   const fa = fineOf(a);
   const fb = fineOf(b);
@@ -502,6 +594,7 @@ export function fineDistance(
   let oy = 0;
   let sx = 1;
   let sy = 1;
+  let hopeless = false;
   const tryAll = (tries: number[][]): boolean => {
     for (let k = 0; k < tries.length; k++) {
       const t = tries[k];
@@ -513,7 +606,10 @@ export function fineDistance(
       // this way round are not worth a look.
       const cap = Math.min(best, bound * 2);
       if (worstBlock(viewA, viewB, light, chroma, cap, null, mA, mB) >= cap) {
-        if (k === 0) return false;
+        if (k === 0) {
+          hopeless = true;
+          return false;
+        }
         continue;
       }
       const moved = { median: 0 };
@@ -538,10 +634,13 @@ export function fineDistance(
     return out;
   };
   if (tryAll(pairs(lineUp(fa.col, fb.col), lineUp(fa.row, fb.row), false))) return best;
-  // Only when the first way round was not close does the other get a go.
-  if (best > bound * 1.5 && tryAll(pairs(lineUp(fb.col, fa.col), lineUp(fb.row, fa.row), true))) return best;
+  // The other way round gets a go only when the first was neither close nor
+  // hopeless (its best-placed fit more than twice the bound out).
+  if (!hopeless && best > bound * 1.5 && tryAll(pairs(lineUp(fb.col, fa.col), lineUp(fb.row, fa.row), true))) return best;
   if (best === Infinity) return direct;
-  if (best <= bound || best > bound * 2) return Math.min(direct, best);
+  // Only a close call is worth nudging: further out, a nudge has never turned
+  // a different moment into a copy, and it is the costly part.
+  if (best <= bound || best > bound * refineWithin) return Math.min(direct, best);
 
   // A close call: nudge the alignment.
   for (const step of [0.015, 0.0075, 0.004]) {
@@ -577,11 +676,20 @@ function samePicture(bits: number, a: Pick<PhotoSignal, "fine">, b: Pick<PhotoSi
 /**
  * The album rule for two photos, given how many hash bits differ and whether
  * they were taken near each other (`near`) or in one burst (`burst`).
+ * `untimed`: lined up only because their times are unknown, so the costly
+ * nudging is kept to the closest calls.
  */
-function albumAlike(bits: number, a: Pick<PhotoSignal, "fine">, b: Pick<PhotoSignal, "fine">, near: boolean, burst: boolean): boolean {
+function albumAlike(
+  bits: number,
+  a: Pick<PhotoSignal, "fine">,
+  b: Pick<PhotoSignal, "fine">,
+  near: boolean,
+  burst: boolean,
+  untimed = false,
+): boolean {
   if (samePicture(bits, a, b)) return true;
   const bound = burst ? ALIKE.lookAlike * ALIKE.burstFactor : ALIKE.lookAlike;
-  if (near) return fineDistance(a, b, bound) <= bound;
+  if (near) return fineDistance(a, b, bound, true, untimed ? RETRY_WITHIN : REFINE_WITHIN) <= bound;
   if (bits <= ALIKE.farBits) return fineDistance(a, b, bound, false) <= bound;
   return false;
 }
@@ -690,7 +798,7 @@ export interface Album {
   duplicates: number;
   /** Array position by caller index. */
   at: Map<number, number>;
-  /** Whether two photos (array positions) were taken near each other (see NEAR_WINDOW_MS, NEAR_PICKS). */
+  /** Whether two photos (array positions) are compared lined up (see NEAR_WINDOW_MS, UNKNOWN_TIME_BITS). */
   near: (i: number, j: number) => boolean;
 }
 
@@ -816,16 +924,23 @@ function* prepareSteps(photos: readonly PhotoSignal[], opts: AlikeOptions): Gene
   const near = (i: number, j: number) =>
     known[i] && known[j]
       ? Math.abs(time[i] - time[j]) <= NEAR_WINDOW_MS
-      : Math.abs(pickRank[i] - pickRank[j]) <= NEAR_PICKS && bits(i, j) <= NEAR_PICKS_BITS;
+      : worthLiningUp(photos[i], photos[j], bits(i, j));
+  const timedNear = (i: number, j: number) => known[i] === 1 && known[j] === 1 && Math.abs(time[i] - time[j]) <= NEAR_WINDOW_MS;
   const inBurst = (i: number, j: number) => known[i] === 1 && known[j] === 1 && Math.abs(time[i] - time[j]) <= BURST_WINDOW_MS;
-  // Two bundles are compared through their sharpest photos first, as near
-  // and as much a burst as any of their photos are; if those differ, the
-  // other pictures of the bundles get a look (an edit can make the sharpest
-  // photo the odd one out).
-  const alike = (u: number[], k: number[]) => {
+  /**
+   * Whether bundle `u` looks like kept bundle `k`. Compared through their
+   * sharpest photos first, as near and as much a burst as any of their
+   * photos are; if those differ, the other pictures of the bundles get a
+   * look (an edit can make the sharpest photo the odd one out). Pairs with
+   * no capture time between them are only lined up when `lineUpUntimed`;
+   * otherwise, if they would be worth it, the answer is a number (how close
+   * their palettes are) so the caller can line up the most promising first.
+   */
+  const relate = (u: number[], k: number[], lineUpUntimed: boolean): boolean | number => {
     let b = 64;
     let isNear = false;
     let burst = false;
+    let untimed = Infinity;
     for (let x = 0; x < u.length; x++) {
       const i = u[x];
       for (let y = 0; y < k.length; y++) {
@@ -836,23 +951,27 @@ function* prepareSteps(photos: readonly PhotoSignal[], opts: AlikeOptions): Gene
           const dt = Math.abs(time[i] - time[j]);
           if (dt <= NEAR_WINDOW_MS) isNear = true;
           if (dt <= BURST_WINDOW_MS) burst = true;
-        } else if (Math.abs(pickRank[i] - pickRank[j]) <= NEAR_PICKS && bij <= NEAR_PICKS_BITS) {
-          isNear = true;
+        } else {
+          untimed = Math.min(untimed, liningUpKey(photos[i], photos[j], bij));
         }
       }
     }
-    if (!isNear && b > ALIKE.farBits) return false; // the cheap way out for most pairs
-    if (albumAlike(b, photos[u[0]], photos[k[0]], isNear, burst)) return true;
+    const onlyUntimed = !isNear && lineUpUntimed && untimed < Infinity;
+    if (onlyUntimed) isNear = true;
+    const later = !lineUpUntimed && untimed < Infinity ? untimed : false;
+    if (!isNear && b > ALIKE.farBits) return later; // the cheap way out for most pairs
+    if (albumAlike(b, photos[u[0]], photos[k[0]], isNear, burst, onlyUntimed)) return true;
     for (const i of u) {
       for (const j of k) {
         if (i === u[0] && j === k[0]) continue;
         const bij = bits(i, j);
-        const nij = near(i, j);
+        const timed = timedNear(i, j);
+        const nij = timed || (lineUpUntimed && near(i, j));
         if (!nij && bij > ALIKE.farBits) continue;
-        if (albumAlike(bij, photos[i], photos[j], nij, inBurst(i, j))) return true;
+        if (albumAlike(bij, photos[i], photos[j], nij, inBurst(i, j), nij && !timed)) return true;
       }
     }
-    return false;
+    return later;
   };
   const kept: number[][] = [];
   const keptOf = new Int32Array(n).fill(-1);
@@ -860,8 +979,20 @@ function* prepareSteps(photos: readonly PhotoSignal[], opts: AlikeOptions): Gene
     yield;
     let match = -1;
     if (!opts.strict) {
+      // Everything cheap first: times close enough to line up, or the frames
+      // as they are. Then, for photos with no time between them, the kept
+      // ones with the closest palettes, lined up, at most UNTIMED_LINE_UPS.
+      const untimed: [number, number][] = [];
       for (let k = 0; k < kept.length && match < 0; k++) {
-        if (alike(bundle, kept[k])) match = k;
+        const r = relate(bundle, kept[k], false);
+        if (r === true) match = k;
+        else if (typeof r === "number") untimed.push([r, k]);
+      }
+      if (match < 0 && untimed.length) {
+        untimed.sort((x, y) => x[0] - y[0]);
+        for (let t = 0; t < Math.min(UNTIMED_LINE_UPS, untimed.length) && match < 0; t++) {
+          if (relate(bundle, kept[untimed[t][1]], true) === true) match = untimed[t][1];
+        }
       }
     }
     if (match < 0) {

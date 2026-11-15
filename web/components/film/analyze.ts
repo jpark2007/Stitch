@@ -178,8 +178,9 @@ const CLIPPED_LOW = 6;
  * of light and dark (brightness, contrast, a tone curve, more or less
  * saturation) leaves it the same. A channel with no real colour in it stays
  * flat (all 0.5). A fourth plane marks cells that are blown out or crushed
- * (1), where an exposure edit cannot keep the order. shortlist.ts compares
- * two of these block by block.
+ * (1), where an exposure edit cannot keep the order, and cells with one
+ * channel crushed (0.5), whose colour cannot be trusted. shortlist.ts
+ * compares two of these block by block.
  */
 export function fineSignature(rgba: ArrayLike<number>, width: number, height: number): Float32Array {
   const n = FINE_SIZE;
@@ -196,7 +197,9 @@ export function fineSignature(rgba: ArrayLike<number>, width: number, height: nu
     channels[2][i] = r[i] - y;
     const hi = Math.max(r[i], g[i], b[i]);
     const lo = Math.min(r[i], g[i], b[i]);
-    out[3 * nn + i] = hi >= CLIPPED_HIGH || (hi <= CLIPPED_LOW && lo <= CLIPPED_LOW) ? 1 : 0;
+    // 1: blown out or black, nothing to compare; 0.5: one channel crushed
+    // (a strong saturation edit), so its colour no longer keeps its order.
+    out[3 * nn + i] = hi >= CLIPPED_HIGH || hi <= CLIPPED_LOW ? 1 : lo <= CLIPPED_LOW ? 0.5 : 0;
   }
   channels.forEach((values, c) => {
     let lo = Infinity;
