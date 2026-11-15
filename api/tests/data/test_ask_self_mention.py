@@ -83,6 +83,25 @@ def test_the_askers_own_presence_is_not_evidence(demo_db, asker, query, best, co
     assert ranking.outweighs_a_null_pick() is keep
 
 
+@pytest.mark.parametrize(("asker", "query", "best", "keep"), [
+    # The asker is in the top page and the question's words cover at least half of it.
+    ("sam", "the day I got my bike", BIKE, True),
+    ("lily", "when I tripped on stage", GRADUATION, True),
+    ("lily", "my gown", GRADUATION, True),
+    ("sam", "my wedding rings", SAM_WEDDING, True),
+    # The asker alone, with too little of the question matched.
+    ("sam", "what did I eat at christmas", BIKE, False),
+    ("sam", "my favorite toy", BIKE, False),
+    ("mom", "where did I grow up", HYMN, False),
+    ("sam", "when I got married", BIKE, False),  # coverage 0
+    ("sam", "my first day of school", BIKE, False),  # coverage 0.33
+])
+def test_the_asker_with_the_questions_words_outweighs_a_null_pick(demo_db, asker, query, best, keep):
+    ranking = _rank(demo_db, asker, query)
+    assert ranking.candidates[0].memory_id == best
+    assert ranking.outweighs_a_null_pick() is keep
+
+
 def test_person_other_leaves_out_only_the_self_mention(demo_db):
     first = _rank(demo_db, "sam", "what did I eat at christmas").candidates[0]
     assert first.person > 0 and first.person_other == 0 and first.named_person == 0  # still ranks Sam's pages
@@ -146,6 +165,21 @@ def test_route_null_pick_keeps_a_named_match(demo_db, email, query):
     assert deterministic["best"] is not None
     asking.set_answerer(lambda ctx: NULL_REPLY)
     assert tc.post(DEMO_ASK, json={"query": query}).json() == deterministic
+
+
+def test_route_null_pick_keeps_the_askers_page_the_words_cover(demo_db):
+    tc = _client_as(demo_db, "sam@demo.stitch")
+    deterministic = tc.post(DEMO_ASK, json={"query": "my wedding rings"}).json()
+    assert deterministic["best"]["memoryId"] == SAM_WEDDING
+    asking.set_answerer(lambda ctx: NULL_REPLY)
+    assert tc.post(DEMO_ASK, json={"query": "my wedding rings"}).json() == deterministic
+
+
+def test_route_null_pick_on_the_asker_alone_without_covered_words_is_no_story(demo_db):
+    tc = _client_as(demo_db, "sam@demo.stitch")
+    asking.set_answerer(lambda ctx: NULL_REPLY)
+    body = tc.post(DEMO_ASK, json={"query": "when I got married"}).json()
+    assert body == {"answer": search.NO_STORY, "quotes": [], "best": None, "mode": "model"}
 
 
 def test_route_null_pick_on_we_eat_at_christmas_is_still_no_story(demo_db):

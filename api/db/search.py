@@ -1005,11 +1005,16 @@ class Ranking:
         null for Rosa and Joseph's wedding on "where did grandpa and grandma meet"); a match
         this concrete is better than "no one has told that story". The asker's own presence
         is not that concrete: Sam asking "what did I eat at christmas" is in many pages.
+        It is when the question's words back it up: the asker is in the top memory
+        (person > 0) and it covers at least CONFIDENT_MIN_COVERAGE of the query's word
+        weight (Lily asking "my gown" keeps Lily's graduation; "when I got married", with
+        no word matched, does not).
         """
         if not self.candidates:
             return False
         first = self.candidates[0]
-        return self.confident() or first.named_person > 0 or first.keyword >= 1.0
+        return (self.confident() or first.named_person > 0 or first.keyword >= 1.0
+                or (first.person > 0 and first.coverage >= CONFIDENT_MIN_COVERAGE))
 
     def best(self, memory_id: str | None = None, confident: bool | None = None) -> schemas.AskBest | None:
         """AskBest for memory_id (default: the top candidate), or None when there is none."""
