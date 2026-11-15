@@ -1,0 +1,22 @@
+{
+  "title": "Rick and Linda's wedding",
+  "year": 1971,
+  "place": "the chapel on Elm Street",
+  "people": [
+    "harold"
+  ],
+  "tellings": [
+    {
+      "teller": "linda",
+      "question": "What do you remember about your wedding day?",
+      "text": "It rained all morning, and I was sure the whole day was ruined. Rick showed up with his good shoes soaked through and gave me his umbrella without a word. By the time we came out of the chapel the sun was out. And everyone was laughing at his socks.",
+      "order": 1
+    },
+    {
+      "teller": "evelyn",
+      "question": "What do you remember about Rick and Linda's wedding?",
+      "text": "Linda always says it rained, and Rick always says it didn't. The one photo we have shows wet steps and a lot of umbrellas. So I think she wins that one.",
+      "order": 2
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+[
+  {
+    "id": "red_canoe",
+    "name": "the red canoe",
+    "description": "a long wooden boat painted red, with four plank seats",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": "prop_canoe.png"
+    },
+    "color": "#b8452e",
+    "aspect": 2.73,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "bow": [
+        0.8,
+        0.45
+      ],
+      "front": [
+        0.6,
+        0.45
+      ],
+      "middle": [
+        0.4,
+        0.45
+      ],
+      "stern": [
+        0.2,
+        0.45
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "rick_paddle",
+    "name": "Rick's paddle",
+    "description": "a long wooden paddle",
+    "source": "generated",
+    "size": "carried",
+    "art": {
+      "body": null
+    },
+    "color": "#a8743f",
+    "aspect": 0.3,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.2
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "picnic_basket",
+    "name": "the picnic basket",
+    "description": "a wicker picnic basket with a red checked lid",
+    "source": "generated",
+    "size": "carried",
+    "art": {
+      "body": null
+    },
+    "color": "#b98a52",
+    "aspect": 1.3,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.1
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  }
+]

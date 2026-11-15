@@ -1,0 +1,29 @@
+{
+  "title": "Daniel and Jenna's wedding",
+  "year": 2000,
+  "place": "the orchard",
+  "people": [
+    "jenna",
+    "carol",
+    "mark",
+    "amy",
+    "katie",
+    "harold",
+    "evelyn",
+    "rose"
+  ],
+  "tellings": [
+    {
+      "teller": "daniel",
+      "question": "What do you remember about your wedding day?",
+      "text": "I was so nervous I forgot Ben had the rings. He walked up the aisle and pressed the box into my hand like it was nothing. Mom and Dad sat on the front bench holding hands the whole time. At the party Mom hugged me so hard my boutonniere fell off.",
+      "order": 1
+    },
+    {
+      "teller": "rick",
+      "question": "What do you remember about Daniel's wedding?",
+      "text": "Daniel looked exactly like he did on his first day of school, terrified and pretending not to be. Ben saved the day with the rings. When the confetti came down, Linda cried and I waved at everyone like a fool.",
+      "order": 2
+    }
+  ]
+}

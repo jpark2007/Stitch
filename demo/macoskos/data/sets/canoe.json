@@ -1,0 +1,53 @@
+[
+  {
+    "id": "autumn_lake_1984",
+    "name": "the lake",
+    "description": "a calm lake under a pale autumn sky, rolling hills of orange and mustard trees",
+    "layers": [
+      {
+        "art": "lake_back.png",
+        "depth": 0,
+        "height": 1.1,
+        "color": "#9fb9c0"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.14,
+        "color": "#c27a36"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#4f8296"
+      }
+    ],
+    "marks": {
+      "shore": [
+        0.1,
+        0.0
+      ],
+      "picnic": [
+        0.2,
+        0.0
+      ],
+      "water_edge": [
+        0.32,
+        0.0
+      ],
+      "canoe_spot": [
+        0.6,
+        0.0
+      ],
+      "splash": [
+        0.6,
+        0.0
+      ],
+      "far_shore": [
+        0.88,
+        0.0
+      ]
+    }
+  }
+]

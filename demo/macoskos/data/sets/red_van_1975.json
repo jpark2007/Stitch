@@ -1,0 +1,49 @@
+[
+  {
+    "id": "coast_road_1975",
+    "name": "the coast road",
+    "description": "a winding coastal road above the sea, green hills and a white lighthouse far off",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 0.95,
+        "color": "#7aa9bd"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.42,
+        "color": "#97ad68"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#5c564e"
+      }
+    ],
+    "marks": {
+      "road_in": [
+        -0.6,
+        0.0
+      ],
+      "bend": [
+        0.32,
+        0.0
+      ],
+      "lookout": [
+        0.52,
+        0.0
+      ],
+      "sea_edge": [
+        0.84,
+        0.0
+      ],
+      "by_van": [
+        0.72,
+        0.0
+      ]
+    }
+  }
+]

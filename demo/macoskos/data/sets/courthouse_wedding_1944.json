@@ -1,0 +1,65 @@
+[
+  {
+    "id": "courthouse_steps_1944",
+    "name": "the courthouse steps",
+    "description": "a stone courthouse with wide pale steps, tall columns and a carved wooden door",
+    "layers": [
+      {
+        "art": "wedding_back.png",
+        "depth": 0,
+        "height": 1.1,
+        "color": "#8d9fb0"
+      },
+      {
+        "art": "wedding_mid.png",
+        "depth": 1,
+        "height": 0.5,
+        "color": "#d9d1bf"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#6f8a52"
+      }
+    ],
+    "marks": {
+      "street_left": [
+        0.1,
+        0.0
+      ],
+      "foot_left": [
+        0.2,
+        0.0
+      ],
+      "meet": [
+        0.33,
+        0.0
+      ],
+      "step_1": [
+        0.4,
+        0.08
+      ],
+      "top_1": [
+        0.46,
+        0.16
+      ],
+      "top_2": [
+        0.54,
+        0.16
+      ],
+      "step_2": [
+        0.6,
+        0.08
+      ],
+      "foot_right": [
+        0.7,
+        0.0
+      ],
+      "street_right": [
+        0.88,
+        0.0
+      ]
+    }
+  }
+]

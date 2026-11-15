@@ -1,0 +1,101 @@
+[
+  {
+    "id": "marmalade",
+    "name": "Marmalade",
+    "description": "a tiny orange tabby kitten with a curled tail",
+    "source": "generated",
+    "size": "carried",
+    "art": {
+      "body": "prop_kitten.png"
+    },
+    "color": "#d9792f",
+    "aspect": 0.745,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.62
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "kitten_basket",
+    "name": "the cat basket",
+    "description": "a small round wicker basket with a cream cushion",
+    "source": "generated",
+    "size": "carried",
+    "art": {
+      "body": "prop_kitten_basket.png"
+    },
+    "color": "#b98a52",
+    "aspect": 1.31,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.2
+    ],
+    "sockets": {
+      "cushion": [
+        0.5,
+        0.35
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "jenna_water_bottle",
+    "name": "Jenna's water bottle",
+    "description": "a clear plastic water bottle",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": null
+    },
+    "color": "#cfe0e4",
+    "aspect": 0.45,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.55
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "macosko_kitchen_table",
+    "name": "the kitchen table",
+    "description": "a small round kitchen table with a sage cloth",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#e9dcc0",
+    "aspect": 1.1,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "top": [
+        0.5,
+        0.12
+      ]
+    },
+    "parts": {},
+    "states": {}
+  }
+]

@@ -1,0 +1,22 @@
+{
+  "title": "Ben's first bike",
+  "year": 1987,
+  "place": "the street outside home",
+  "people": [
+    "daniel"
+  ],
+  "tellings": [
+    {
+      "teller": "rick",
+      "question": "What do you remember about teaching Ben to ride a bike?",
+      "text": "It was a blue bike with a bell, two sizes too big because I said he would grow into it. I ran behind him holding the seat up and down the whole street. When I finally let go he didn't notice for half a block.",
+      "order": 1
+    },
+    {
+      "teller": "ben",
+      "question": "Dad says you didn't notice when he let go. Is that true?",
+      "text": "I just didn't want to stop, because stopping meant falling. I noticed. I rang the bell the whole way to the corner so he would know I was fine.",
+      "order": 2
+    }
+  ]
+}

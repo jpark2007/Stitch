@@ -1,0 +1,83 @@
+[
+  {
+    "id": "wedding_ring_box",
+    "name": "the ring box",
+    "description": "a small navy velvet box with two gold rings",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": null,
+      "open": null
+    },
+    "color": "#22305a",
+    "aspect": 1.2,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.5
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {
+      "closed": {},
+      "open": {
+        "body": "open"
+      }
+    }
+  },
+  {
+    "id": "orchard_bench",
+    "name": "the orchard bench",
+    "description": "a long white wooden bench under the apple trees",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#efece4",
+    "aspect": 2.2,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "left": [
+        0.3,
+        0.5
+      ],
+      "right": [
+        0.7,
+        0.5
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "daniel_boutonniere",
+    "name": "Daniel's boutonniere",
+    "description": "a single white rose, pinned with a pearl pin",
+    "source": "generated",
+    "size": "tiny",
+    "art": {
+      "body": null
+    },
+    "color": "#f4f1e6",
+    "aspect": 0.8,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.7
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  }
+]

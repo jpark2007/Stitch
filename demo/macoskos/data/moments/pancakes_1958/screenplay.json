@@ -1,0 +1,334 @@
+{
+  "memoryId": "pancakes_1958",
+  "cast": [
+    "rick",
+    "evelyn",
+    "harold"
+  ],
+  "props": [
+    "pancake_pan",
+    "lopsided_pancake",
+    "evelyn_kitchen_table",
+    "hal_kitchen_chair",
+    "rick_stool"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "evelyn_kitchen_1958",
+      "marks": {},
+      "start": {
+        "evelyn": {
+          "at": "by_stove",
+          "holding": "pancake_pan",
+          "facing": "right"
+        },
+        "rick": {
+          "at": "table_right",
+          "holding": "lopsided_pancake",
+          "facing": "left"
+        },
+        "harold": {
+          "at": "offstage_right",
+          "facing": "left"
+        }
+      },
+      "propStart": {
+        "evelyn_kitchen_table": {
+          "at": "table_spot"
+        },
+        "hal_kitchen_chair": {
+          "at": "chair_spot"
+        },
+        "rick_stool": {
+          "at": "stool_spot"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 1.0,
+          "move": "pan_to",
+          "target": "pancake_pan",
+          "dur": 1.5
+        },
+        {
+          "t": 5.0,
+          "move": "dolly_to",
+          "target": "lopsided_pancake",
+          "dur": 1.2
+        },
+        {
+          "t": 8.2,
+          "move": "dolly_to",
+          "target": "harold",
+          "dur": 1.5
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "steam",
+          "at": "pancake_pan",
+          "dur": 5
+        },
+        {
+          "t": 0.3,
+          "who": "evelyn",
+          "do": "walk_to",
+          "to": "at_table"
+        },
+        {
+          "t": 2.4,
+          "who": "evelyn",
+          "do": "place_on",
+          "what": "pancake_pan",
+          "on": "evelyn_kitchen_table",
+          "id": "pot_down"
+        },
+        {
+          "t": 5.2,
+          "who": "rick",
+          "do": "hold",
+          "what": "lopsided_pancake",
+          "id": "masa"
+        },
+        {
+          "t": 4.4,
+          "who": "evelyn",
+          "do": "lean_toward",
+          "target": "rick",
+          "dur": 1.6
+        },
+        {
+          "t": 7.4,
+          "who": "harold",
+          "do": "enter",
+          "from": "offstage_right",
+          "to": "back_door",
+          "id": "luis_in"
+        },
+        {
+          "t": 9.8,
+          "who": "harold",
+          "do": "sit_on",
+          "what": "hal_kitchen_chair",
+          "id": "sit"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "Every Sunday my mother made pancakes, and the whole kitchen smelled of butter and syrup.",
+          "source": "telling:rick:s1",
+          "cue": "pot_down",
+          "cueWord": "syrup"
+        },
+        {
+          "t": 4.6,
+          "text": "I was allowed to pour the batter, badly.",
+          "source": "telling:rick:s2",
+          "cue": "masa",
+          "cueWord": "batter"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Sunday at Evelyn's: butter on the griddle, batter everywhere, and one very lopsided pancake."
+    },
+    {
+      "id": "s2",
+      "set": "evelyn_kitchen_1958",
+      "marks": {},
+      "start": {
+        "harold": {
+          "at": "chair_spot",
+          "in": "hal_kitchen_chair.seat",
+          "facing": "left"
+        },
+        "rick": {
+          "at": "table_right",
+          "holding": "lopsided_pancake",
+          "facing": "left"
+        },
+        "evelyn": {
+          "at": "at_table",
+          "facing": "right"
+        }
+      },
+      "propStart": {},
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 1.4,
+          "move": "dolly_to",
+          "target": "harold",
+          "dur": 1.2
+        },
+        {
+          "t": 6.0,
+          "move": "pull_back",
+          "dur": 1.8
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "steam",
+          "at": "pancake_pan",
+          "dur": 6
+        },
+        {
+          "t": 0.1,
+          "who": "rick",
+          "do": "walk_to",
+          "to": "by_chair",
+          "id": "to_papa"
+        },
+        {
+          "t": 1.4,
+          "who": "rick",
+          "do": "hand_to",
+          "what": "lopsided_pancake",
+          "to": "harold",
+          "id": "tamale"
+        },
+        {
+          "t": 3.0,
+          "who": "harold",
+          "do": "hold",
+          "what": "lopsided_pancake",
+          "id": "best"
+        },
+        {
+          "t": 3.0,
+          "who": "evelyn",
+          "do": "walk_to",
+          "to": "table_right"
+        },
+        {
+          "t": 3.6,
+          "who": "rick",
+          "do": "sit_on",
+          "what": "rick_stool",
+          "id": "ana_sits"
+        },
+        {
+          "t": 4.4,
+          "who": "rick",
+          "do": "turn_to",
+          "target": "harold"
+        },
+        {
+          "t": 4.6,
+          "who": "harold",
+          "do": "pose",
+          "pose": "arms_raised",
+          "dur": 1.4,
+          "id": "cheer"
+        },
+        {
+          "t": 5.0,
+          "who": "evelyn",
+          "do": "lean_toward",
+          "target": "harold",
+          "dur": 1.4
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.4,
+          "text": "My father pretended every lopsided one was the best he had ever eaten.",
+          "source": "telling:rick:s3",
+          "cue": "tamale",
+          "cueWord": "lopsided"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Hal always ate Rick's lopsided pancake first, and called it the best one he'd ever had."
+    }
+  ],
+  "interactions": [
+    {
+      "id": "lid_tab",
+      "kind": "pull_tab",
+      "label": "Pull to lift the lid",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.2,
+        0.78
+      ],
+      "drives": {
+        "type": "prop_part",
+        "prop": "pancake_pan",
+        "part": "lid",
+        "channel": "rot",
+        "range": [
+          0,
+          0.8
+        ]
+      }
+    },
+    {
+      "id": "best_tab",
+      "kind": "pull_tab",
+      "label": "Pull to give Hal the lopsided one",
+      "shot": "s2",
+      "page": "story",
+      "at": [
+        0.7,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 1.4,
+        "to": 6.0,
+        "targets": [
+          "prop:lopsided_pancake",
+          "puppet:rick",
+          "puppet:harold"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:rick",
+      "text": "Rick was ten. Pouring the batter was his job, and he did it badly and proudly."
+    },
+    {
+      "target": "puppet:evelyn",
+      "text": "Evelyn was thirty-five and made pancakes every Sunday, until the whole kitchen smelled of butter and syrup."
+    },
+    {
+      "target": "puppet:harold",
+      "text": "Hal was thirty-seven. He always ate Rick's lopsided pancake first and swore it was the best he had ever eaten."
+    },
+    {
+      "target": "prop:pancake_pan",
+      "text": "Evelyn's big cast-iron pan. It is still in the family, and nobody else is allowed to wash it."
+    },
+    {
+      "target": "prop:lopsided_pancake",
+      "text": "Rick's pancake, more batter than shape. Hal held it up like a prize."
+    },
+    {
+      "target": "prop:evelyn_kitchen_table",
+      "text": "The square kitchen table with the yellow oilcloth, where every Sunday breakfast happened."
+    },
+    {
+      "target": "prop:hal_kitchen_chair",
+      "text": "Hal's ladder-back chair. Nobody else sat in it on Sundays."
+    },
+    {
+      "target": "prop:rick_stool",
+      "text": "Rick's little painted stool, right next to his father's chair."
+    }
+  ]
+}

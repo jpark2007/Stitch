@@ -1,0 +1,221 @@
+[
+  {
+    "id": "lily_diploma",
+    "name": "Lily's diploma",
+    "description": "a rolled diploma tied with a blue ribbon",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": null
+    },
+    "color": "#f2ead8",
+    "aspect": 1.6,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.4
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "hall_lectern",
+    "name": "the lectern",
+    "description": "a wooden lectern on the stage",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#8a5a34",
+    "aspect": 0.6,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "top": [
+        0.5,
+        0.15
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "folding_chair_carol",
+    "name": "Carol's chair",
+    "description": "a gray folding chair",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#9a9a9a",
+    "aspect": 0.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "seat": [
+        0.5,
+        0.5
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "folding_chair_linda",
+    "name": "Linda's chair",
+    "description": "a gray folding chair",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#9a9a9a",
+    "aspect": 0.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "seat": [
+        0.5,
+        0.5
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "folding_chair_jenna",
+    "name": "Jenna's chair",
+    "description": "a gray folding chair",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#9a9a9a",
+    "aspect": 0.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "seat": [
+        0.5,
+        0.5
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "folding_chair_carsten",
+    "name": "Carsten's chair",
+    "description": "a gray folding chair",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#9a9a9a",
+    "aspect": 0.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "seat": [
+        0.5,
+        0.5
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "folding_chair_daniel",
+    "name": "Daniel's chair",
+    "description": "a gray folding chair",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#9a9a9a",
+    "aspect": 0.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "seat": [
+        0.5,
+        0.5
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "carol_hat",
+    "name": "Carol's hat",
+    "description": "a pale blue hat with a white silk flower",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": null
+    },
+    "color": "#a8c4e0",
+    "aspect": 1.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.6
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "linda_hat",
+    "name": "Linda's hat",
+    "description": "the very same pale blue hat with a white silk flower",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": null
+    },
+    "color": "#a8c4e0",
+    "aspect": 1.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.6
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  }
+]

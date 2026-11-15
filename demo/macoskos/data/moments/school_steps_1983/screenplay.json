@@ -1,0 +1,248 @@
+{
+  "memoryId": "school_steps_1983",
+  "cast": [
+    "amy",
+    "linda",
+    "daniel",
+    "katie",
+    "ben"
+  ],
+  "props": [
+    "linda_camera",
+    "amy_lunchbox",
+    "daniel_schoolbooks"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "garden_steps_1983",
+      "start": {
+        "linda": {
+          "at": "photo_spot",
+          "holding": "linda_camera",
+          "facing": "right"
+        },
+        "daniel": {
+          "at": "offstage_right",
+          "holding": "daniel_schoolbooks",
+          "facing": "left"
+        },
+        "amy": {
+          "at": "offstage_right",
+          "holding": "amy_lunchbox",
+          "facing": "left"
+        },
+        "katie": {
+          "at": "offstage_right",
+          "facing": "left"
+        },
+        "ben": {
+          "at": "offstage_right",
+          "facing": "left"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 6.6,
+          "move": "pan_to",
+          "target": "daniel",
+          "dur": 1.2
+        },
+        {
+          "t": 8.8,
+          "move": "pan_to",
+          "target": "amy",
+          "dur": 1.0
+        },
+        {
+          "t": 10.4,
+          "move": "pull_back",
+          "dur": 1.4
+        },
+        {
+          "t": 13.6,
+          "move": "dolly_to",
+          "target": "ben",
+          "dur": 1.2
+        },
+        {
+          "t": 16.0,
+          "move": "wide",
+          "dur": 1.6
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "dawn",
+          "dur": 1.0
+        },
+        {
+          "t": 1.2,
+          "do": "enter",
+          "from": "offstage_right",
+          "who": "daniel",
+          "to": "step_4",
+          "id": "lineup"
+        },
+        {
+          "t": 2.0,
+          "do": "enter",
+          "from": "offstage_right",
+          "who": "amy",
+          "to": "step_3"
+        },
+        {
+          "t": 2.8,
+          "do": "enter",
+          "from": "offstage_right",
+          "who": "katie",
+          "to": "step_2"
+        },
+        {
+          "t": 7.0,
+          "do": "pose",
+          "who": "daniel",
+          "pose": "bow_head",
+          "dur": 1.4,
+          "id": "tie"
+        },
+        {
+          "t": 9.2,
+          "do": "wave",
+          "who": "amy",
+          "target": "linda",
+          "dur": 1.2,
+          "id": "dress"
+        },
+        {
+          "t": 10.6,
+          "do": "enter",
+          "from": "offstage_right",
+          "who": "ben",
+          "to": "gate",
+          "id": "ben_in"
+        },
+        {
+          "t": 13.4,
+          "do": "run_to",
+          "who": "ben",
+          "to": "step_1",
+          "id": "not_left_out"
+        },
+        {
+          "t": 15.2,
+          "do": "hold",
+          "who": "linda",
+          "what": "linda_camera",
+          "id": "snap"
+        },
+        {
+          "t": 15.4,
+          "do": "pose",
+          "who": "katie",
+          "pose": "arms_raised",
+          "dur": 1.2
+        },
+        {
+          "t": 15.6,
+          "do": "time_of_day",
+          "value": "day",
+          "dur": 1.0
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.95,
+          "text": "Mom lined all four of us up on the stone steps by the garden gate for the first day of school.",
+          "source": "telling:amy:s1",
+          "cue": "lineup",
+          "cueWord": "lined"
+        },
+        {
+          "t": 6.5,
+          "text": "Daniel kept fixing his tie,",
+          "source": "telling:amy:s2",
+          "cue": "tie",
+          "cueWord": "fixing"
+        },
+        {
+          "t": 8.45,
+          "text": "I wore my sailor dress,",
+          "source": "telling:amy:s3",
+          "cue": "dress",
+          "cueWord": "sailor"
+        },
+        {
+          "t": 11.4,
+          "text": "and Ben, who wasn't even in school yet, refused to be left out.",
+          "source": "telling:amy:s4",
+          "cue": "not_left_out",
+          "cueWord": "refused"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "September 1983. Four Macoskos on the garden steps for the first day of school, smallest last."
+    }
+  ],
+  "interactions": [
+    {
+      "id": "ben_tab",
+      "kind": "pull_tab",
+      "label": "Pull to bring Ben running",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.88,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 13.4,
+        "to": 15.2,
+        "targets": [
+          "puppet:ben"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:amy",
+      "text": "Amy was eight, in her sailor dress, and very sure she was the best-dressed one on the steps."
+    },
+    {
+      "target": "puppet:daniel",
+      "text": "Daniel was ten, the eldest, and starting fifth grade. He kept fixing his tie the whole time."
+    },
+    {
+      "target": "puppet:katie",
+      "text": "Katie was five, in her ruffle collar, and could not stop bouncing on the step."
+    },
+    {
+      "target": "puppet:ben",
+      "text": "Ben was two. He was not starting anything, and he refused to be left out of the picture."
+    },
+    {
+      "target": "puppet:linda",
+      "text": "Linda was thirty-three and lined all four up on the stone steps by the garden gate, smallest last."
+    },
+    {
+      "target": "prop:linda_camera",
+      "text": "Linda's boxy film camera. She took a photo on those steps every first day of school."
+    },
+    {
+      "target": "prop:amy_lunchbox",
+      "text": "Amy's red metal lunchbox, shaped like a little suitcase."
+    },
+    {
+      "target": "prop:daniel_schoolbooks",
+      "text": "Daniel's stack of school books in a leather strap, ready for fifth grade."
+    }
+  ]
+}

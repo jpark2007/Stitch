@@ -1,0 +1,15 @@
+{
+  "title": "The tennis trophy",
+  "year": 1988,
+  "place": "home, after the tournament",
+  "tellings": [
+    {
+      "teller": "jenna",
+      "question": "What's something you won that nobody expected?",
+      "text": "I was thirteen and nobody expected me to win. I held that trophy all the way home, and Mom let me put it on the dinner table that night.",
+      "photos": [
+        "tennis.jpg"
+      ]
+    }
+  ]
+}

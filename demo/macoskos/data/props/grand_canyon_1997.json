@@ -1,0 +1,128 @@
+[
+  {
+    "id": "mark_wagon",
+    "name": "Mark's station wagon",
+    "description": "a blue station wagon with a roof rack; rigged like a library car with driver, passenger and back seats and spinning wheels",
+    "source": "library",
+    "size": "vehicle",
+    "art": {
+      "body": null,
+      "wheel": null
+    },
+    "color": "#4f6f9a",
+    "aspect": 1.9,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "driver": [
+        0.62,
+        0.52
+      ],
+      "passenger": [
+        0.5,
+        0.52
+      ],
+      "back_seat": [
+        0.34,
+        0.52
+      ]
+    },
+    "parts": {
+      "wheel_back": {
+        "art": "wheel",
+        "at": [
+          0.2,
+          0.86
+        ],
+        "spin": true
+      },
+      "wheel_front": {
+        "art": "wheel",
+        "at": [
+          0.8,
+          0.86
+        ],
+        "spin": true
+      }
+    },
+    "states": {}
+  },
+  {
+    "id": "cherries",
+    "name": "the bag of cherries",
+    "description": "a paper bag of dark red cherries",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": null
+    },
+    "color": "#8a2f3a",
+    "aspect": 0.9,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.1
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "cherry_crate",
+    "name": "the fruit crate",
+    "description": "an upturned wooden fruit crate",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#b07a4a",
+    "aspect": 1.3,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "seat": [
+        0.5,
+        0.45
+      ],
+      "top": [
+        0.5,
+        0.4
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "road_atlas",
+    "name": "the road map",
+    "description": "a big folded road map of the Southwest",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": null
+    },
+    "color": "#d9c38f",
+    "aspect": 1.4,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.5
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  }
+]

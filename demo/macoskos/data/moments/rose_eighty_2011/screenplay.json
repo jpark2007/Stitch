@@ -1,0 +1,358 @@
+{
+  "memoryId": "rose_eighty_2011",
+  "cast": [
+    "carol",
+    "rose",
+    "theo",
+    "max",
+    "lily_macosko",
+    "nora"
+  ],
+  "props": [
+    "wicker_loveseat",
+    "rose_cake"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "summer_deck_2011",
+      "start": {
+        "rose": {
+          "at": "seat_spot",
+          "in": "wicker_loveseat.middle",
+          "facing": "left"
+        },
+        "theo": {
+          "at": "seat_spot",
+          "in": "wicker_loveseat.left",
+          "facing": "right"
+        },
+        "max": {
+          "at": "seat_spot",
+          "in": "wicker_loveseat.right",
+          "facing": "left"
+        },
+        "lily_macosko": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "nora": {
+          "at": "offstage_right",
+          "facing": "left"
+        },
+        "carol": {
+          "at": "offstage_right",
+          "holding": "rose_cake",
+          "facing": "left"
+        }
+      },
+      "propStart": {
+        "wicker_loveseat": {
+          "at": "seat_spot"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 5.6,
+          "move": "dolly_to",
+          "target": "rose",
+          "dur": 1.4
+        },
+        {
+          "t": 8.6,
+          "move": "pull_back",
+          "dur": 1.4
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "day",
+          "dur": 1.0
+        },
+        {
+          "t": 1.0,
+          "do": "enter",
+          "from": "offstage_right",
+          "who": "carol",
+          "to": "cake_side",
+          "id": "cake_in"
+        },
+        {
+          "t": 4.4,
+          "do": "place_on",
+          "who": "carol",
+          "what": "rose_cake",
+          "on": "wicker_loveseat",
+          "socket": "top",
+          "id": "cake_down"
+        },
+        {
+          "t": 6.0,
+          "do": "pose",
+          "who": "rose",
+          "pose": "arms_raised",
+          "dur": 1.4,
+          "id": "laugh"
+        },
+        {
+          "t": 6.6,
+          "do": "pose",
+          "who": "theo",
+          "pose": "arms_raised",
+          "dur": 1.4,
+          "id": "theo_laughs"
+        },
+        {
+          "t": 8.8,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "lily_macosko",
+          "to": "girls_left",
+          "id": "girls"
+        },
+        {
+          "t": 9.6,
+          "do": "enter",
+          "from": "offstage_right",
+          "who": "nora",
+          "to": "girls_right"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.5,
+          "text": "For Mom's eightieth we put her in the big wicker loveseat with the brand-new twins.",
+          "source": "telling:carol:s1",
+          "cue": "cake_in",
+          "cueWord": "eightieth"
+        },
+        {
+          "t": 5.6,
+          "text": "She laughed so hard Theo started laughing too.",
+          "source": "telling:carol:s2",
+          "cue": "theo_laughs",
+          "cueWord": "Theo"
+        },
+        {
+          "t": 8.8,
+          "text": "Lily and Nora wouldn't leave her side.",
+          "source": "telling:carol:s3",
+          "cue": "girls",
+          "cueWord": "Lily"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "July 2011. Rose turned eighty in the big wicker loveseat, with a brand-new twin on each side."
+    },
+    {
+      "id": "s2",
+      "set": "summer_deck_2011",
+      "start": {
+        "rose": {
+          "at": "seat_spot",
+          "in": "wicker_loveseat.middle",
+          "facing": "left"
+        },
+        "theo": {
+          "at": "seat_spot",
+          "in": "wicker_loveseat.left",
+          "facing": "right"
+        },
+        "max": {
+          "at": "seat_spot",
+          "in": "wicker_loveseat.right",
+          "facing": "left"
+        },
+        "lily_macosko": {
+          "at": "girls_left",
+          "facing": "right"
+        },
+        "nora": {
+          "at": "girls_right",
+          "facing": "left"
+        },
+        "carol": {
+          "at": "cake_side",
+          "facing": "left"
+        }
+      },
+      "propStart": {
+        "wicker_loveseat": {
+          "at": "seat_spot"
+        },
+        "rose_cake": {
+          "on": "wicker_loveseat.top",
+          "state": "lit"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 2.0,
+          "move": "dolly_to",
+          "target": "rose",
+          "dur": 1.4
+        },
+        {
+          "t": 6.0,
+          "move": "pull_back",
+          "dur": 1.6
+        }
+      ],
+      "actions": [
+        {
+          "t": 0.8,
+          "do": "lean_toward",
+          "who": "lily_macosko",
+          "target": "rose",
+          "dur": 2.0,
+          "id": "side"
+        },
+        {
+          "t": 1.0,
+          "do": "lean_toward",
+          "who": "nora",
+          "target": "rose",
+          "dur": 2.0
+        },
+        {
+          "t": 2.6,
+          "do": "lean_toward",
+          "who": "rose",
+          "target": "rose_cake",
+          "dur": 1.4,
+          "id": "blow"
+        },
+        {
+          "t": 3.4,
+          "do": "set_state",
+          "what": "rose_cake",
+          "state": "out"
+        },
+        {
+          "t": 3.4,
+          "do": "smoke",
+          "at": "rose_cake",
+          "dur": 1.6
+        },
+        {
+          "t": 4.2,
+          "do": "confetti",
+          "at": "rose",
+          "dur": 3.5
+        },
+        {
+          "t": 4.4,
+          "do": "pose",
+          "who": "carol",
+          "pose": "arms_raised",
+          "dur": 1.6
+        },
+        {
+          "t": 4.6,
+          "do": "pose",
+          "who": "lily_macosko",
+          "pose": "arms_raised",
+          "dur": 1.4
+        },
+        {
+          "t": 4.8,
+          "do": "pose",
+          "who": "nora",
+          "pose": "arms_raised",
+          "dur": 1.4
+        }
+      ],
+      "narration": [],
+      "transition": "fold",
+      "pageText": "Eighty candles' worth of wishes, one big breath, and two great-granddaughters at her side."
+    }
+  ],
+  "interactions": [
+    {
+      "id": "candles_tab",
+      "kind": "pull_tab",
+      "label": "Pull to blow out the candles",
+      "shot": "s2",
+      "page": "stage",
+      "at": [
+        0.84,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 2.6,
+        "to": 6.2,
+        "targets": [
+          "puppet:rose",
+          "puppet:carol",
+          "puppet:lily_macosko",
+          "puppet:nora"
+        ]
+      }
+    },
+    {
+      "id": "laugh_tab",
+      "kind": "pull_tab",
+      "label": "Pull for Rose's big laugh",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.16,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 6.0,
+        "to": 8.0,
+        "targets": [
+          "puppet:rose",
+          "puppet:theo"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:rose",
+      "text": "Rose was eighty that day, silver pendant on, and laughed so hard that Theo started laughing too."
+    },
+    {
+      "target": "puppet:carol",
+      "text": "Carol was sixty-one. She put her mother in the big wicker loveseat with a brand-new twin on each side."
+    },
+    {
+      "target": "puppet:theo",
+      "text": "Theo was a few weeks old, in his mint onesie. He started laughing when Rose did, and didn't stop."
+    },
+    {
+      "target": "puppet:max",
+      "text": "Max, Theo's twin and the sleepier one, dozed through most of the party on Rose's other side."
+    },
+    {
+      "target": "puppet:lily_macosko",
+      "text": "Lily was eight and would not leave her great-grandmother's side. She appointed herself Rose's assistant for the day."
+    },
+    {
+      "target": "puppet:nora",
+      "text": "Nora was six and stuck to Rose's side with her big sister, not even leaving for cake."
+    },
+    {
+      "target": "prop:rose_cake",
+      "text": "A white cake with pink roses, for Rose. Eighty years of wishes, one big breath."
+    },
+    {
+      "target": "prop:wicker_loveseat",
+      "text": "The big white wicker loveseat with the flowered cushion: one great-grandma and two brand-new twins, all at once."
+    }
+  ]
+}

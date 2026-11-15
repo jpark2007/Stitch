@@ -1,0 +1,502 @@
+{
+  "memoryId": "lily_graduation_2021",
+  "cast": [
+    "lily_macosko",
+    "jenna",
+    "daniel",
+    "carsten",
+    "carol",
+    "linda"
+  ],
+  "props": [
+    "lily_diploma",
+    "hall_lectern",
+    "folding_chair_carol",
+    "folding_chair_linda",
+    "folding_chair_jenna",
+    "folding_chair_carsten",
+    "folding_chair_daniel",
+    "carol_hat",
+    "linda_hat"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "school_hall_2021",
+      "marks": {},
+      "start": {
+        "carol": {
+          "at": "row_left",
+          "in": "folding_chair_carol.seat",
+          "holding": "carol_hat",
+          "facing": "right"
+        },
+        "linda": {
+          "at": "row_right",
+          "in": "folding_chair_linda.seat",
+          "holding": "linda_hat",
+          "facing": "right"
+        },
+        "jenna": {
+          "at": "second_row_left",
+          "in": "folding_chair_jenna.seat",
+          "facing": "right"
+        },
+        "carsten": {
+          "at": "second_row_mid",
+          "in": "folding_chair_carsten.seat",
+          "facing": "right"
+        },
+        "daniel": {
+          "at": "second_row_aisle",
+          "in": "folding_chair_daniel.seat",
+          "facing": "right"
+        },
+        "lily_macosko": {
+          "at": "aisle",
+          "facing": "right"
+        }
+      },
+      "propStart": {
+        "folding_chair_carol": {
+          "at": "row_left"
+        },
+        "folding_chair_linda": {
+          "at": "row_right"
+        },
+        "folding_chair_jenna": {
+          "at": "second_row_left"
+        },
+        "folding_chair_carsten": {
+          "at": "second_row_mid"
+        },
+        "folding_chair_daniel": {
+          "at": "second_row_aisle"
+        },
+        "hall_lectern": {
+          "at": "lectern_spot"
+        },
+        "lily_diploma": {
+          "on": "hall_lectern.top"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 0.6,
+          "move": "dolly_to",
+          "target": "carol",
+          "dur": 1.2
+        },
+        {
+          "t": 4.2,
+          "move": "pan_to",
+          "target": "lily_macosko",
+          "dur": 1.2
+        },
+        {
+          "t": 6.2,
+          "move": "dolly_to",
+          "target": "lily_macosko",
+          "dur": 1.2
+        },
+        {
+          "t": 8.0,
+          "move": "dolly_to",
+          "target": "carol",
+          "dur": 1.0
+        },
+        {
+          "t": 10.4,
+          "move": "pull_back",
+          "dur": 1.5
+        }
+      ],
+      "actions": [
+        {
+          "t": 0.3,
+          "who": "carol",
+          "do": "put_on",
+          "what": "carol_hat",
+          "id": "hats"
+        },
+        {
+          "t": 0.3,
+          "who": "linda",
+          "do": "put_on",
+          "what": "linda_hat"
+        },
+        {
+          "t": 2.4,
+          "who": "linda",
+          "do": "turn_to",
+          "target": "carol"
+        },
+        {
+          "t": 3.9,
+          "who": "lily_macosko",
+          "do": "walk_to",
+          "to": "stage_steps",
+          "id": "called_up"
+        },
+        {
+          "t": 6.9,
+          "who": "lily_macosko",
+          "do": "pose",
+          "pose": "bow_head",
+          "dur": 1.2,
+          "id": "bow"
+        },
+        {
+          "t": 7.6,
+          "who": "carol",
+          "do": "stand_up",
+          "id": "cheer"
+        },
+        {
+          "t": 8.1,
+          "who": "carol",
+          "do": "pose",
+          "pose": "arms_raised",
+          "dur": 1.6,
+          "id": "clap"
+        },
+        {
+          "t": 10.4,
+          "who": "carol",
+          "do": "sit_on",
+          "what": "folding_chair_carol"
+        },
+        {
+          "t": 8.0,
+          "who": "linda",
+          "do": "lean_toward",
+          "target": "carol",
+          "dur": 1.2
+        },
+        {
+          "t": 8.2,
+          "who": "carsten",
+          "do": "point_at",
+          "target": "lily_macosko",
+          "dur": 1.4,
+          "id": "sam_saw"
+        },
+        {
+          "t": 8.8,
+          "who": "jenna",
+          "do": "lean_toward",
+          "target": "lily_macosko",
+          "dur": 1.4,
+          "id": "mom_cries"
+        },
+        {
+          "t": 10.6,
+          "who": "daniel",
+          "do": "stand_up",
+          "id": "photo"
+        },
+        {
+          "t": 12.4,
+          "who": "daniel",
+          "do": "sit_on",
+          "what": "folding_chair_daniel"
+        },
+        {
+          "t": 8.6,
+          "who": "lily_macosko",
+          "do": "walk_to",
+          "to": "stage_edge"
+        },
+        {
+          "t": 9.6,
+          "who": "lily_macosko",
+          "do": "walk_to",
+          "to": "lectern_front"
+        },
+        {
+          "t": 10.4,
+          "who": "lily_macosko",
+          "do": "pick_up",
+          "what": "lily_diploma",
+          "id": "lily_diploma"
+        },
+        {
+          "t": 12.0,
+          "who": "lily_macosko",
+          "do": "hold",
+          "what": "lily_diploma"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "Both grandmothers came and sat in the front row in matching hats, which was not planned.",
+          "source": "telling:jenna:s1",
+          "cue": "hats",
+          "cueWord": "grandmothers"
+        },
+        {
+          "t": 4.2,
+          "text": "Lily tripped on the stage stairs and turned it into a bow.",
+          "source": "telling:jenna:s2",
+          "cue": "bow",
+          "cueWord": "bow"
+        },
+        {
+          "t": 7.9,
+          "text": "Carol clapped louder than anyone in the hall.",
+          "source": "telling:jenna:s3",
+          "cue": "clap",
+          "cueWord": "clapped"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Class of 2021. The whole family came, two grandmas wore matching hats, and Lily turned a trip on the stairs into a bow."
+    },
+    {
+      "id": "s2",
+      "set": "school_lawn_2021",
+      "marks": {},
+      "start": {
+        "lily_macosko": {
+          "at": "lawn_center",
+          "holding": "lily_diploma",
+          "facing": "left"
+        },
+        "jenna": {
+          "at": "lawn_mid",
+          "facing": "right"
+        },
+        "daniel": {
+          "at": "lawn_left",
+          "facing": "right"
+        },
+        "carsten": {
+          "at": "lawn_right",
+          "facing": "left"
+        }
+      },
+      "propStart": {},
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 2.6,
+          "move": "dolly_to",
+          "target": "jenna",
+          "dur": 1.5
+        },
+        {
+          "t": 7.0,
+          "move": "wide",
+          "dur": 1.5
+        }
+      ],
+      "actions": [
+        {
+          "t": 1.4,
+          "who": "lily_macosko",
+          "do": "hand_to",
+          "what": "lily_diploma",
+          "to": "jenna",
+          "id": "handoff"
+        },
+        {
+          "t": 3.4,
+          "who": "jenna",
+          "do": "hug",
+          "target": "lily_macosko",
+          "dur": 2.0,
+          "id": "hug"
+        },
+        {
+          "t": 4.0,
+          "do": "confetti",
+          "at": "lily_macosko",
+          "dur": 2.5
+        },
+        {
+          "t": 6.0,
+          "who": "carsten",
+          "do": "point_at",
+          "target": "lily_macosko",
+          "dur": 1.4,
+          "id": "tease"
+        },
+        {
+          "t": 6.4,
+          "who": "daniel",
+          "do": "wave",
+          "target": "lily_macosko"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.6,
+          "text": "Outside she handed me that diploma, and I would not let go of her.",
+          "source": "telling:jenna:s4",
+          "cue": "handoff",
+          "cueWord": "handed"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Outside, the diploma went straight to Mom. Carsten started a joke he still tells every Thanksgiving."
+    }
+  ],
+  "narrations": {
+    "lily_macosko": {
+      "s1": [
+        {
+          "t": 5.4,
+          "text": "My gown was too long and I caught the hem on the second step.",
+          "source": "telling:lily_macosko:s1",
+          "cue": "bow",
+          "cueWord": "caught"
+        },
+        {
+          "t": 9.4,
+          "text": "I figured if I bowed nobody would know.",
+          "source": "telling:lily_macosko:s2"
+        }
+      ],
+      "s2": [
+        {
+          "t": 5.8,
+          "text": "Carsten knew, and he still brings it up every Thanksgiving.",
+          "source": "telling:lily_macosko:s3",
+          "cue": "tease",
+          "cueWord": "knew"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "trip_tab",
+      "kind": "pull_tab",
+      "label": "Pull to make Lily bow",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.52,
+        0.84
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 6.9,
+        "to": 8.1,
+        "targets": [
+          "puppet:lily_macosko"
+        ]
+      }
+    },
+    {
+      "id": "cheer_tab",
+      "kind": "pull_tab",
+      "label": "Pull to make Carol cheer",
+      "shot": "s1",
+      "page": "story",
+      "at": [
+        0.2,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 7.6,
+        "to": 10.0,
+        "targets": [
+          "puppet:carol"
+        ]
+      }
+    },
+    {
+      "id": "diploma_tab",
+      "kind": "pull_tab",
+      "label": "Pull to hand Mom the diploma",
+      "shot": "s2",
+      "page": "story",
+      "at": [
+        0.6,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 1.4,
+        "to": 3.2,
+        "targets": [
+          "prop:lily_diploma",
+          "puppet:lily_macosko",
+          "puppet:jenna"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:lily_macosko",
+      "text": "Lily was eighteen, in a gown too long for her. She caught the hem on the second step and turned it into a bow."
+    },
+    {
+      "target": "puppet:jenna",
+      "text": "Jenna was forty-six. Outside, Lily handed her the diploma, and Jenna would not let go of her."
+    },
+    {
+      "target": "puppet:daniel",
+      "text": "Daniel was forty-eight and took the aisle seat so he could jump up for photos. He took ninety that day, and three are in focus."
+    },
+    {
+      "target": "puppet:carsten",
+      "text": "Carsten was twenty-one, and he saw Lily's foot catch first. He still brings up that bow every Thanksgiving."
+    },
+    {
+      "target": "puppet:carol",
+      "text": "Carol was seventy-one, in the front row in her pale blue hat, and clapped louder than anyone in the hall."
+    },
+    {
+      "target": "puppet:linda",
+      "text": "Linda was seventy-one too, right beside Carol in the very same hat. Neither of them has ever admitted to planning it."
+    },
+    {
+      "target": "prop:lily_diploma",
+      "text": "Lily's diploma, tied with a blue ribbon. It went straight from Lily's hands to her mom's."
+    },
+    {
+      "target": "prop:hall_lectern",
+      "text": "The lectern where the diplomas waited. Lily had to cross the whole stage to reach hers, right after the bow."
+    },
+    {
+      "target": "prop:carol_hat",
+      "text": "Carol's pale blue hat with a white silk flower, bought specially for the day."
+    },
+    {
+      "target": "prop:linda_hat",
+      "text": "Linda's hat: the very same pale blue hat with the very same white silk flower. Nobody planned it."
+    },
+    {
+      "target": "prop:folding_chair_carol",
+      "text": "Carol's chair in the front row, close enough to the stage to clap the loudest."
+    },
+    {
+      "target": "prop:folding_chair_linda",
+      "text": "Linda's chair, front row, right next to Carol's: two grandmothers, two matching hats."
+    },
+    {
+      "target": "prop:folding_chair_jenna",
+      "text": "Jenna's chair, right behind the grandmothers. She was crying in it from the first name called."
+    },
+    {
+      "target": "prop:folding_chair_carsten",
+      "text": "Carsten's chair, behind the grandmothers, with a clear view of the stage stairs and Lily's famous bow."
+    },
+    {
+      "target": "prop:folding_chair_daniel",
+      "text": "Daniel's chair on the aisle. He was barely in it, he was up taking photos so often."
+    }
+  ]
+}

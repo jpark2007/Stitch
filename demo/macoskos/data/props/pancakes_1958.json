@@ -1,0 +1,133 @@
+[
+  {
+    "id": "pancake_pan",
+    "name": "Evelyn's big pan",
+    "description": "a big cast-iron pan with a lid, full of pancakes",
+    "source": "generated",
+    "size": "carried",
+    "art": {
+      "body": null,
+      "lid": null
+    },
+    "color": "#3d3a38",
+    "aspect": 0.9,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.2
+    ],
+    "sockets": {},
+    "parts": {
+      "lid": {
+        "art": "lid",
+        "at": [
+          0.5,
+          0.05
+        ],
+        "spin": false
+      }
+    },
+    "states": {}
+  },
+  {
+    "id": "lopsided_pancake",
+    "name": "Rick's lopsided pancake",
+    "description": "a lopsided golden pancake",
+    "source": "generated",
+    "size": "hand",
+    "art": {
+      "body": null
+    },
+    "color": "#d9a35a",
+    "aspect": 1.6,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": [
+      0.5,
+      0.5
+    ],
+    "sockets": {},
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "evelyn_kitchen_table",
+    "name": "the kitchen table",
+    "description": "a square wooden table with a yellow oilcloth",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#c9a23a",
+    "aspect": 1.5,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "top": [
+        0.5,
+        0.22
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "hal_kitchen_chair",
+    "name": "Hal's chair",
+    "description": "a ladder-back wooden chair",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#7a4b2e",
+    "aspect": 0.7,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "seat": [
+        0.5,
+        0.5
+      ]
+    },
+    "parts": {},
+    "states": {}
+  },
+  {
+    "id": "rick_stool",
+    "name": "Rick's stool",
+    "description": "a little painted wooden stool",
+    "source": "generated",
+    "size": "furniture",
+    "art": {
+      "body": null
+    },
+    "color": "#3f6aa0",
+    "aspect": 0.8,
+    "anchor": [
+      0.5,
+      1.0
+    ],
+    "grip": null,
+    "sockets": {
+      "seat": [
+        0.5,
+        0.55
+      ]
+    },
+    "parts": {},
+    "states": {}
+  }
+]

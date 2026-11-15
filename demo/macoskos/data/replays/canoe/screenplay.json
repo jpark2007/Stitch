@@ -1,0 +1,403 @@
+{
+  "memoryId": "replay_canoe_1984",
+  "cast": [
+    "rick",
+    "linda",
+    "daniel",
+    "amy",
+    "katie",
+    "ben"
+  ],
+  "props": [
+    "red_canoe",
+    "rick_paddle",
+    "picnic_basket"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "autumn_lake_1984",
+      "start": {
+        "linda": {
+          "at": "offstage_left",
+          "holding": "picnic_basket",
+          "facing": "right"
+        },
+        "rick": {
+          "at": "offstage_left",
+          "holding": "rick_paddle",
+          "facing": "right"
+        },
+        "daniel": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "amy": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "katie": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "ben": {
+          "at": "offstage_left",
+          "facing": "right"
+        }
+      },
+      "propStart": {
+        "red_canoe": {
+          "at": "canoe_spot"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 5.0,
+          "move": "pan_to",
+          "target": "katie",
+          "dur": 1.6
+        },
+        {
+          "t": 9.6,
+          "move": "pull_back",
+          "dur": 1.4
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "day",
+          "dur": 1.0
+        },
+        {
+          "t": 1.0,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "linda",
+          "to": "picnic",
+          "id": "sewed"
+        },
+        {
+          "t": 1.4,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "daniel",
+          "to": "water_edge"
+        },
+        {
+          "t": 1.8,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "amy",
+          "to": "shore"
+        },
+        {
+          "t": 2.6,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "rick",
+          "to": "water_edge"
+        },
+        {
+          "t": 3.0,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "katie",
+          "to": "canoe_spot"
+        },
+        {
+          "t": 3.6,
+          "do": "enter",
+          "from": "offstage_left",
+          "who": "ben",
+          "to": "canoe_spot"
+        },
+        {
+          "t": 7.2,
+          "do": "point_at",
+          "who": "linda",
+          "target": "katie",
+          "dur": 1.4,
+          "id": "count"
+        },
+        {
+          "t": 8.8,
+          "do": "sit_on",
+          "who": "rick",
+          "what": "red_canoe",
+          "socket": "stern"
+        },
+        {
+          "t": 9.2,
+          "do": "sit_on",
+          "who": "katie",
+          "what": "red_canoe",
+          "socket": "front"
+        },
+        {
+          "t": 9.6,
+          "do": "sit_on",
+          "who": "ben",
+          "what": "red_canoe",
+          "socket": "middle"
+        },
+        {
+          "t": 10.0,
+          "do": "sit_on",
+          "who": "daniel",
+          "what": "red_canoe",
+          "socket": "bow"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0.75,
+          "text": "Linda sewed matching overalls for all six of us for the canoe trip,",
+          "source": "telling:rick:s1",
+          "cue": "sewed",
+          "cueWord": "sewed"
+        },
+        {
+          "t": 6.95,
+          "text": "so nobody could get lost.",
+          "source": "telling:rick:s2",
+          "cue": "count",
+          "cueWord": "nobody"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Fall 1984. Six Macoskos in six matching pairs of overalls, so nobody could get lost."
+    },
+    {
+      "id": "s2",
+      "set": "autumn_lake_1984",
+      "start": {
+        "rick": {
+          "at": "canoe_spot",
+          "in": "red_canoe.stern",
+          "holding": "rick_paddle",
+          "facing": "right"
+        },
+        "ben": {
+          "at": "canoe_spot",
+          "in": "red_canoe.middle",
+          "facing": "right"
+        },
+        "katie": {
+          "at": "canoe_spot",
+          "in": "red_canoe.front",
+          "facing": "right"
+        },
+        "daniel": {
+          "at": "canoe_spot",
+          "in": "red_canoe.bow",
+          "facing": "right"
+        },
+        "linda": {
+          "at": "picnic",
+          "holding": "picnic_basket",
+          "facing": "right"
+        },
+        "amy": {
+          "at": "shore",
+          "facing": "right"
+        }
+      },
+      "propStart": {
+        "red_canoe": {
+          "at": "canoe_spot"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 1.2,
+          "move": "dolly_to",
+          "target": "ben",
+          "dur": 1.4
+        },
+        {
+          "t": 5.4,
+          "move": "pull_back",
+          "dur": 1.2
+        }
+      ],
+      "actions": [
+        {
+          "t": 0.6,
+          "do": "lean_toward",
+          "who": "daniel",
+          "target": "far_shore",
+          "dur": 1.4
+        },
+        {
+          "t": 2.6,
+          "do": "lean_toward",
+          "who": "katie",
+          "target": "far_shore",
+          "dur": 1.2,
+          "id": "wobble"
+        },
+        {
+          "t": 3.8,
+          "do": "stand_up",
+          "who": "ben",
+          "id": "tip"
+        },
+        {
+          "t": 3.8,
+          "do": "rain",
+          "dur": 0.8
+        },
+        {
+          "t": 4.0,
+          "do": "stand_up",
+          "who": "katie"
+        },
+        {
+          "t": 4.0,
+          "do": "stand_up",
+          "who": "daniel"
+        },
+        {
+          "t": 4.2,
+          "do": "drop",
+          "who": "rick",
+          "what": "rick_paddle"
+        },
+        {
+          "t": 4.6,
+          "do": "pose",
+          "who": "ben",
+          "pose": "arms_raised",
+          "dur": 1.4
+        },
+        {
+          "t": 4.8,
+          "do": "pose",
+          "who": "daniel",
+          "pose": "slumped",
+          "dur": 1.6
+        },
+        {
+          "t": 5.0,
+          "do": "pose",
+          "who": "rick",
+          "pose": "bow_head",
+          "dur": 1.6
+        },
+        {
+          "t": 6.4,
+          "do": "pose",
+          "who": "katie",
+          "pose": "arms_raised",
+          "dur": 3.2,
+          "id": "best_day"
+        },
+        {
+          "t": 6.6,
+          "do": "pose",
+          "who": "amy",
+          "pose": "arms_raised",
+          "dur": 2.4
+        },
+        {
+          "t": 6.8,
+          "do": "point_at",
+          "who": "linda",
+          "target": "katie",
+          "dur": 2.4
+        }
+      ],
+      "narration": [
+        {
+          "t": 3.55,
+          "text": "We tipped the canoe anyway,",
+          "source": "telling:rick:s3",
+          "cue": "tip",
+          "cueWord": "tipped"
+        },
+        {
+          "t": 6.15,
+          "text": "and Katie still says it was the best day of the summer.",
+          "source": "telling:rick:s4",
+          "cue": "best_day",
+          "cueWord": "Katie"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Out on the lake, the canoe tipped anyway. Katie still calls it the best day of the summer."
+    }
+  ],
+  "interactions": [
+    {
+      "id": "tip_tab",
+      "kind": "pull_tab",
+      "label": "Pull to tip the canoe",
+      "shot": "s2",
+      "page": "stage",
+      "at": [
+        0.84,
+        0.8
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 2.6,
+        "to": 6.4,
+        "targets": [
+          "puppet:rick",
+          "puppet:ben",
+          "puppet:katie",
+          "puppet:daniel",
+          "prop:rick_paddle"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:rick",
+      "text": "Rick was thirty-six and took the stern with his paddle. The canoe held four Macoskos just fine, until Ben stood up."
+    },
+    {
+      "target": "puppet:linda",
+      "text": "Linda was thirty-four. She sewed all six pairs of matching overalls so nobody could get lost, and counted heads from the shore."
+    },
+    {
+      "target": "puppet:katie",
+      "text": "Katie was six. She came up out of the lake cheering, and she still says it was the best day of the summer."
+    },
+    {
+      "target": "puppet:ben",
+      "text": "Ben was three, and the first one to stand up."
+    },
+    {
+      "target": "puppet:daniel",
+      "text": "Daniel was eleven, up in the bow, and leaning for the far shore when it all went over."
+    },
+    {
+      "target": "puppet:amy",
+      "text": "Amy was nine and stayed on the shore with Mom, which she still says was the smart choice."
+    },
+    {
+      "target": "prop:red_canoe",
+      "text": "The long red canoe with four plank seats: one for each Macosko who went in the lake."
+    },
+    {
+      "target": "prop:picnic_basket",
+      "text": "Linda's picnic basket with the red checked lid. It stayed on the shore with her, so lunch stayed dry."
+    },
+    {
+      "target": "prop:rick_paddle",
+      "text": "Rick's long wooden paddle. It went into the lake along with everyone else."
+    }
+  ]
+}

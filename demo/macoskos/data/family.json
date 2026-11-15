@@ -1,0 +1,290 @@
+{
+  "family": {
+    "id": "macoskos",
+    "name": "The Macoskos"
+  },
+  "accounts": [
+    {
+      "email": "jenna@macosko.demo",
+      "password": "stitch-demo",
+      "name": "Jenna Macosko",
+      "personId": "jenna",
+      "role": "admin"
+    },
+    {
+      "email": "daniel@macosko.demo",
+      "password": "stitch-demo",
+      "name": "Daniel Macosko",
+      "personId": "daniel",
+      "role": "member"
+    },
+    {
+      "email": "rick@macosko.demo",
+      "password": "stitch-demo",
+      "name": "Rick Macosko",
+      "personId": "rick",
+      "role": "member"
+    },
+    {
+      "email": "linda@macosko.demo",
+      "password": "stitch-demo",
+      "name": "Linda Macosko",
+      "personId": "linda",
+      "role": "member"
+    },
+    {
+      "email": "carol@macosko.demo",
+      "password": "stitch-demo",
+      "name": "Carol Macosko",
+      "personId": "carol",
+      "role": "member"
+    },
+    {
+      "email": "amy@macosko.demo",
+      "password": "stitch-demo",
+      "name": "Amy Macosko",
+      "personId": "amy",
+      "role": "member"
+    },
+    {
+      "email": "harold@macosko.demo",
+      "password": "stitch-demo",
+      "name": "Harold Macosko",
+      "personId": "harold",
+      "role": "member"
+    },
+    {
+      "email": "evelyn@macosko.demo",
+      "password": "stitch-demo",
+      "name": "Evelyn Macosko",
+      "personId": "evelyn",
+      "role": "member"
+    }
+  ],
+  "people": [
+    {
+      "id": "harold",
+      "name": "Harold Macosko",
+      "born": 1921,
+      "color": "#2f4a7a",
+      "item": "white sailor cap",
+      "build": "tall",
+      "notes": "stands like he is still on deck, hands behind his back",
+      "itemPropId": "hal_sailor_cap"
+    },
+    {
+      "id": "evelyn",
+      "name": "Evelyn Macosko",
+      "born": 1923,
+      "color": "#7a2f3a",
+      "item": "pearl brooch",
+      "build": "short",
+      "notes": "quick small steps, laughs with her whole body",
+      "spouses": [
+        "harold"
+      ]
+    },
+    {
+      "id": "rick",
+      "name": "Rick Macosko",
+      "born": 1948,
+      "color": "#2f5a3a",
+      "item": "canoe paddle",
+      "build": "tall",
+      "notes": "long easy strides, always pointing at the view",
+      "parents": [
+        "harold",
+        "evelyn"
+      ]
+    },
+    {
+      "id": "linda",
+      "name": "Linda Macosko",
+      "born": 1950,
+      "color": "#8a9a6a",
+      "item": "green turtleneck",
+      "build": "average",
+      "notes": "counts heads wherever she goes",
+      "spouses": [
+        "rick"
+      ]
+    },
+    {
+      "id": "daniel",
+      "name": "Daniel Macosko",
+      "born": 1973,
+      "color": "#3a3a3a",
+      "item": "black sweater",
+      "build": "tall",
+      "notes": "the eldest; straightens his collar when he is nervous",
+      "parents": [
+        "rick",
+        "linda"
+      ]
+    },
+    {
+      "id": "amy",
+      "name": "Amy Macosko",
+      "born": 1975,
+      "color": "#c77d8a",
+      "item": "sailor-dress tie",
+      "build": "short",
+      "notes": "skips instead of walking",
+      "parents": [
+        "rick",
+        "linda"
+      ]
+    },
+    {
+      "id": "katie",
+      "name": "Katie Macosko",
+      "born": 1978,
+      "color": "#c9a23a",
+      "item": "ruffle collar",
+      "build": "short",
+      "notes": "bounces on her heels",
+      "parents": [
+        "rick",
+        "linda"
+      ]
+    },
+    {
+      "id": "ben",
+      "name": "Ben Macosko",
+      "born": 1981,
+      "color": "#6a7a8a",
+      "item": "little gray suit",
+      "build": "small",
+      "notes": "the youngest; runs to keep up with everyone",
+      "parents": [
+        "rick",
+        "linda"
+      ]
+    },
+    {
+      "id": "rose",
+      "name": "Rose Macosko",
+      "born": 1931,
+      "color": "#e8dcc0",
+      "item": "silver pendant",
+      "build": "small",
+      "notes": "sits very upright, laughs with her head thrown back"
+    },
+    {
+      "id": "carol",
+      "name": "Carol Macosko",
+      "born": 1950,
+      "color": "#b0603a",
+      "item": "red hair clip",
+      "build": "average",
+      "notes": "talks with her hands",
+      "parents": [
+        "rose"
+      ]
+    },
+    {
+      "id": "mark",
+      "name": "Mark Macosko",
+      "born": 1971,
+      "color": "#c08a3a",
+      "item": "waving hand",
+      "build": "tall",
+      "notes": "waves at everyone, strangers included",
+      "parents": [
+        "carol"
+      ]
+    },
+    {
+      "id": "jenna",
+      "name": "Jenna Macosko",
+      "born": 1975,
+      "color": "#7aa8c8",
+      "item": "tennis visor",
+      "build": "average",
+      "notes": "walks fast, always a step ahead",
+      "parents": [
+        "carol"
+      ],
+      "spouses": [
+        "daniel"
+      ]
+    },
+    {
+      "id": "carsten",
+      "name": "Carsten Macosko",
+      "born": 2000,
+      "color": "#c87a3a",
+      "item": "striped sweater",
+      "build": "average",
+      "notes": "hands in his pockets",
+      "parents": [
+        "daniel",
+        "jenna"
+      ]
+    },
+    {
+      "id": "lily_macosko",
+      "name": "Lily Macosko",
+      "born": 2003,
+      "color": "#d88aa0",
+      "item": "pigtails",
+      "build": "small",
+      "notes": "spins when she is happy",
+      "parents": [
+        "daniel",
+        "jenna"
+      ]
+    },
+    {
+      "id": "nora",
+      "name": "Nora Macosko",
+      "born": 2005,
+      "color": "#9a8ac0",
+      "item": "baby bonnet",
+      "build": "small",
+      "notes": "the baby of the family; falls asleep anywhere",
+      "parents": [
+        "daniel",
+        "jenna"
+      ]
+    },
+    {
+      "id": "theo",
+      "name": "Theo Macosko",
+      "born": 2011,
+      "color": "#8ac8a8",
+      "item": "mint onesie",
+      "build": "small",
+      "notes": "Max's twin, the louder one",
+      "parents": [
+        "mark"
+      ]
+    },
+    {
+      "id": "max",
+      "name": "Max Macosko",
+      "born": 2011,
+      "color": "#a8c4e0",
+      "item": "pale blue onesie",
+      "build": "small",
+      "notes": "Theo's twin, the sleepier one",
+      "parents": [
+        "mark"
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "personId": "linda",
+      "text": "What do you remember about sewing the matching overalls?"
+    },
+    {
+      "personId": "rose",
+      "text": "What was your eightieth birthday like from the loveseat?"
+    },
+    {
+      "personId": "katie",
+      "text": "Why was the day the canoe tipped the best day of the summer?"
+    }
+  ]
+}

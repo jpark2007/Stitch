@@ -1,0 +1,19 @@
+{
+  "title": "Road trip to the Grand Canyon",
+  "year": 1997,
+  "place": "the road to the Grand Canyon",
+  "tellings": [
+    {
+      "teller": "jenna",
+      "question": "Tell me about a road trip with your family.",
+      "text": "Mark bought a blue station wagon that summer and decided we had to drive it to the Grand Canyon. I sat in the back with a map I refused to read. We got a flat tire outside a cherry stand. We sat on a fruit crate and ate cherries while he fixed it.",
+      "order": 1
+    },
+    {
+      "teller": "carol",
+      "question": "Jenna remembers the Grand Canyon trip. What do you remember?",
+      "text": "Mark would not let anyone else drive that car. When the tire went, he changed it in his good trousers. Jenna ate so many cherries she was sick the rest of the way.",
+      "order": 2
+    }
+  ]
+}

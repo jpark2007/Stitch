@@ -74,7 +74,7 @@ def seed_family(db: Database, data: FamilyData) -> bool:
     for offset, moment in enumerate(data.moments):
         tellings = [
             schemas.Telling(author_id=t.author_id, question=t.question, text=t.text,
-                            photo_ids=[data.photo_ids[name] for name in t.photos])
+                            photo_ids=[data.photo_ids[name] for name in t.photos if name in data.photo_ids])
             for t in moment.tellings
         ]
         memories_db.create_memory(

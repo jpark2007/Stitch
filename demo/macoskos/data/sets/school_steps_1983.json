@@ -1,0 +1,57 @@
+[
+  {
+    "id": "garden_steps_1983",
+    "name": "the garden steps",
+    "description": "mossy stone steps with an iron railing beside the garden gate",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 1.0,
+        "color": "#6f8f58"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.4,
+        "color": "#a8a092"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#556f42"
+      }
+    ],
+    "marks": {
+      "photo_spot": [
+        0.18,
+        0.0
+      ],
+      "path": [
+        0.3,
+        0.0
+      ],
+      "step_1": [
+        0.46,
+        0.05
+      ],
+      "step_2": [
+        0.55,
+        0.1
+      ],
+      "step_3": [
+        0.64,
+        0.15
+      ],
+      "step_4": [
+        0.73,
+        0.2
+      ],
+      "gate": [
+        0.9,
+        0.0
+      ]
+    }
+  }
+]

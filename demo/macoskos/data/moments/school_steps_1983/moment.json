@@ -1,0 +1,15 @@
+{
+  "title": "Four kids, one staircase",
+  "year": 1983,
+  "place": "the garden steps at home",
+  "tellings": [
+    {
+      "teller": "amy",
+      "question": "What do you remember about the first day of school?",
+      "text": "Mom lined all four of us up on the stone steps by the garden gate for the first day of school. Daniel kept fixing his tie, I wore my sailor dress, and Ben, who wasn't even in school yet, refused to be left out.",
+      "photos": [
+        "first_day_school.jpg"
+      ]
+    }
+  ]
+}

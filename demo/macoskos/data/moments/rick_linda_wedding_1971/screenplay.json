@@ -1,0 +1,345 @@
+{
+  "memoryId": "rick_linda_wedding_1971",
+  "cast": [
+    "linda",
+    "rick"
+  ],
+  "props": [
+    "rick_umbrella"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "chapel_steps_1971",
+      "marks": {
+        "steps_near": [
+          0.44,
+          0.0
+        ],
+        "upper_step": [
+          0.55,
+          0.15
+        ]
+      },
+      "start": {
+        "rick": {
+          "at": "offstage_left",
+          "holding": "rick_umbrella",
+          "facing": "right"
+        },
+        "linda": {
+          "at": "steps_top",
+          "facing": "left"
+        }
+      },
+      "propStart": {},
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 3.0,
+          "move": "pan_to",
+          "target": "rick",
+          "dur": 1.5
+        },
+        {
+          "t": 6.8,
+          "move": "dolly_to",
+          "target": "rick_umbrella",
+          "dur": 1.2
+        },
+        {
+          "t": 10.4,
+          "move": "pull_back",
+          "dur": 1.5
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "dawn",
+          "dur": 1.0
+        },
+        {
+          "t": 0,
+          "do": "rain"
+        },
+        {
+          "t": 0,
+          "do": "set_state",
+          "what": "rick_umbrella",
+          "state": "open"
+        },
+        {
+          "t": 0,
+          "who": "rick",
+          "do": "enter",
+          "from": "offstage_left",
+          "to": "steps_near",
+          "id": "arrive"
+        },
+        {
+          "t": 4.6,
+          "who": "linda",
+          "do": "walk_to",
+          "to": "upper_step"
+        },
+        {
+          "t": 7.4,
+          "who": "rick",
+          "do": "hand_to",
+          "what": "rick_umbrella",
+          "to": "linda",
+          "id": "umbrella"
+        },
+        {
+          "t": 9.0,
+          "who": "rick",
+          "do": "pose",
+          "pose": "bow_head",
+          "dur": 1.6,
+          "id": "soaked"
+        },
+        {
+          "t": 9.2,
+          "who": "linda",
+          "do": "lean_toward",
+          "target": "rick",
+          "dur": 1.4
+        }
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "It rained all morning, and I was sure the whole day was ruined.",
+          "source": "telling:linda:s1"
+        },
+        {
+          "t": 4.8,
+          "text": "Rick showed up with his good shoes soaked through and gave me his umbrella without a word.",
+          "source": "telling:linda:s2",
+          "cue": "umbrella",
+          "cueWord": "gave"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "June 1971, on the chapel steps. It poured, and Rick gave Linda his umbrella."
+    },
+    {
+      "id": "s2",
+      "set": "chapel_lawn_1971",
+      "marks": {},
+      "start": {
+        "linda": {
+          "at": "church_door",
+          "holding": "rick_umbrella",
+          "facing": "right"
+        },
+        "rick": {
+          "at": "lilac",
+          "facing": "left"
+        }
+      },
+      "propStart": {},
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 4.6,
+          "move": "dolly_to",
+          "target": "rick",
+          "dur": 1.2
+        },
+        {
+          "t": 7.6,
+          "move": "pull_back",
+          "dur": 1.5
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "do": "time_of_day",
+          "value": "day",
+          "dur": 2.0,
+          "id": "sun"
+        },
+        {
+          "t": 0,
+          "do": "set_state",
+          "what": "rick_umbrella",
+          "state": "closed"
+        },
+        {
+          "t": 0.4,
+          "who": "rick",
+          "do": "walk_to",
+          "to": "lawn_right"
+        },
+        {
+          "t": 0.6,
+          "who": "linda",
+          "do": "walk_to",
+          "to": "lawn_mid",
+          "id": "out"
+        },
+        {
+          "t": 2.6,
+          "do": "confetti",
+          "at": "linda",
+          "dur": 2.5
+        },
+        {
+          "t": 4.8,
+          "who": "rick",
+          "do": "kneel",
+          "dur": 1.6,
+          "id": "socks"
+        },
+        {
+          "t": 5.0,
+          "who": "linda",
+          "do": "point_at",
+          "target": "rick",
+          "dur": 1.2,
+          "id": "laugh"
+        },
+        {
+          "t": 7.6,
+          "who": "linda",
+          "do": "hug",
+          "target": "rick",
+          "dur": 1.8,
+          "id": "hug"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "By the time we came out of the chapel the sun was out.",
+          "source": "telling:linda:s3",
+          "cue": "out",
+          "cueWord": "sun"
+        },
+        {
+          "t": 3.8,
+          "text": "And everyone was laughing at his socks.",
+          "source": "telling:linda:s4",
+          "cue": "socks",
+          "cueWord": "laughing"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "Then the sun came out, the rice flew, and everyone laughed at Rick's soggy socks."
+    }
+  ],
+  "narrations": {
+    "evelyn": {
+      "s1": [
+        {
+          "t": 0,
+          "text": "Linda always says it rained, and Rick always says it didn't.",
+          "source": "telling:evelyn:s1",
+          "cue": "arrive",
+          "cueWord": "rained"
+        },
+        {
+          "t": 5.6,
+          "text": "The one photo we have shows wet steps and a lot of umbrellas.",
+          "source": "telling:evelyn:s2",
+          "cue": "umbrella",
+          "cueWord": "umbrellas"
+        }
+      ],
+      "s2": [
+        {
+          "t": 4.2,
+          "text": "So I think she wins that one.",
+          "source": "telling:evelyn:s3",
+          "cue": "socks",
+          "cueWord": "wins"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "umbrella_tab",
+      "kind": "pull_tab",
+      "label": "Pull to open Rick's umbrella",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.18,
+        0.8
+      ],
+      "drives": {
+        "type": "prop_state",
+        "prop": "rick_umbrella",
+        "states": [
+          "closed",
+          "open"
+        ]
+      }
+    },
+    {
+      "id": "socks_tab",
+      "kind": "pull_tab",
+      "label": "Pull to see Rick's soggy socks",
+      "shot": "s2",
+      "page": "stage",
+      "at": [
+        0.72,
+        0.82
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 4.8,
+        "to": 6.4,
+        "targets": [
+          "puppet:rick",
+          "puppet:linda"
+        ]
+      }
+    },
+    {
+      "id": "hug_tab",
+      "kind": "pull_tab",
+      "label": "Pull to bring them together",
+      "shot": "s2",
+      "page": "story",
+      "at": [
+        0.82,
+        0.74
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 7.6,
+        "to": 9.4,
+        "targets": [
+          "puppet:linda",
+          "puppet:rick"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:linda",
+      "text": "Linda was twenty-one and sure the rain had ruined the whole day. By the time they came out of the chapel, the sun was out."
+    },
+    {
+      "target": "puppet:rick",
+      "text": "Rick was twenty-three. He showed up with his good shoes soaked through and stood through the vows in wet socks."
+    },
+    {
+      "target": "prop:rick_umbrella",
+      "text": "Rick's big black umbrella. He handed it to Linda on the chapel steps without a word and stood in the rain himself."
+    }
+  ]
+}

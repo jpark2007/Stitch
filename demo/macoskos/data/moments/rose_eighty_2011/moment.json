@@ -1,0 +1,21 @@
+{
+  "title": "Rose turns eighty",
+  "year": 2011,
+  "place": "the backyard deck",
+  "people": [
+    "mark",
+    "jenna",
+    "daniel",
+    "carsten"
+  ],
+  "tellings": [
+    {
+      "teller": "carol",
+      "question": "What do you remember about your mother's eightieth birthday?",
+      "text": "For Mom's eightieth we put her in the big wicker loveseat with the brand-new twins. She laughed so hard Theo started laughing too. Lily and Nora wouldn't leave her side.",
+      "photos": [
+        "rose_80th.jpg"
+      ]
+    }
+  ]
+}

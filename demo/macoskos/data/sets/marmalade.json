@@ -1,0 +1,61 @@
+[
+  {
+    "id": "macosko_kitchen_1999",
+    "name": "Carol's kitchen",
+    "description": "a cozy late-1990s kitchen: a white fridge covered in magnets and postcards, a shelf of photos, a wicker basket on top of the fridge, sage curtains",
+    "layers": [
+      {
+        "art": "kitchen_back.png",
+        "depth": 0,
+        "height": 1.1,
+        "color": "#e2c88f"
+      },
+      {
+        "art": "kitchen_mid.png",
+        "depth": 1,
+        "height": 0.42,
+        "color": "#8ea67e"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.08,
+        "color": "#7a5238"
+      }
+    ],
+    "marks": {
+      "fridge": [
+        0.14,
+        0.0
+      ],
+      "table_spot": [
+        0.24,
+        0.0
+      ],
+      "counter": [
+        0.36,
+        0.0
+      ],
+      "middle": [
+        0.44,
+        0.0
+      ],
+      "meet": [
+        0.55,
+        0.0
+      ],
+      "basket_spot": [
+        0.7,
+        0.0
+      ],
+      "by_door": [
+        0.8,
+        0.0
+      ],
+      "door": [
+        0.9,
+        0.0
+      ]
+    }
+  }
+]

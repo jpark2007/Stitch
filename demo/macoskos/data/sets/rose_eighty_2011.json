@@ -1,0 +1,53 @@
+[
+  {
+    "id": "summer_deck_2011",
+    "name": "the backyard deck",
+    "description": "a summer backyard deck, a green lawn and tall trees, paper lanterns over the rail",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 0.95,
+        "color": "#9cc0d8"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.4,
+        "color": "#5f7f45"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#8a5e3c"
+      }
+    ],
+    "marks": {
+      "steps": [
+        0.1,
+        0.0
+      ],
+      "girls_left": [
+        0.25,
+        0.0
+      ],
+      "seat_spot": [
+        0.5,
+        0.0
+      ],
+      "cake_side": [
+        0.69,
+        0.0
+      ],
+      "girls_right": [
+        0.8,
+        0.0
+      ],
+      "rail": [
+        0.9,
+        0.0
+      ]
+    }
+  }
+]

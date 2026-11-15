@@ -1,0 +1,100 @@
+[
+  {
+    "id": "macosko_driveway_1997",
+    "name": "Carol's driveway",
+    "description": "the driveway outside Carol's house, early in the morning",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 0.95,
+        "color": "#c7a56b"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.55,
+        "color": "#e6dccb"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#6f8a52"
+      }
+    ],
+    "marks": {
+      "porch": [
+        0.12,
+        0.0
+      ],
+      "front_walk": [
+        0.22,
+        0.0
+      ],
+      "driveway": [
+        0.32,
+        0.0
+      ],
+      "car_spot": [
+        0.6,
+        0.0
+      ],
+      "road_out": [
+        1.6,
+        0.0
+      ]
+    }
+  },
+  {
+    "id": "desert_road_1997",
+    "name": "the desert road",
+    "description": "a long red desert road with mesas far off and a cherry stand",
+    "layers": [
+      {
+        "art": null,
+        "depth": 0,
+        "height": 0.9,
+        "color": "#d9a066"
+      },
+      {
+        "art": null,
+        "depth": 1,
+        "height": 0.4,
+        "color": "#b5603c"
+      },
+      {
+        "art": null,
+        "depth": 2,
+        "height": 0.1,
+        "color": "#7a5a44"
+      }
+    ],
+    "marks": {
+      "road_in": [
+        -0.6,
+        0.0
+      ],
+      "roadside": [
+        0.2,
+        0.0
+      ],
+      "tire_spot": [
+        0.5,
+        0.0
+      ],
+      "crate_spot": [
+        0.76,
+        0.0
+      ],
+      "stand_front": [
+        0.85,
+        0.0
+      ],
+      "stand": [
+        0.95,
+        0.0
+      ]
+    }
+  }
+]

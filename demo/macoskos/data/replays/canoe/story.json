@@ -1,0 +1,19 @@
+{
+  "match": {
+    "text": "Linda sewed matching overalls for all six of us for the canoe trip, so nobody could get lost. We tipped the canoe anyway, and Katie still says it was the best day of the summer.",
+    "keywords": [
+      "canoe"
+    ],
+    "minOverlap": 0.5
+  },
+  "title": "Matching overalls on the lake",
+  "year": 1984,
+  "question": "Who was the first one in the water?",
+  "familyId": "macoskos",
+  "reviewProps": [
+    "red_canoe",
+    "rick_paddle",
+    "picnic_basket"
+  ],
+  "screenplayFile": "screenplay.json"
+}
