@@ -31,7 +31,7 @@ def mixed_photos() -> list[SourcePhoto]:
 
 def check(cut: FilmCut, photos: list[SourcePhoto]) -> None:
     assert isinstance(cut, FilmCut)
-    assert_well_cut(cut.shots, cut.beats, cut.words, cut.duration, {p.id for p in photos})
+    assert_well_cut(cut.shots, cut.beats, cut.words, cut.duration, {p.id for p in photos}, {p.id: p.data for p in photos})
     shown = {s.photo_id for s in cut.shots}
     assert "broken" not in shown and "dup_soft" not in shown
 

@@ -5,19 +5,40 @@ instead of failing: a describer error gives that photo the offline description, 
 error the fallback plan, a narrator error (or a narration that does not fit its lines) a
 silent narration with estimated timings. Only what no fallback can fix raises FilmError: an
 empty story, or fewer than MIN_USABLE_PHOTOS photos Pillow can read.
+
+No duplicates, bounded cost. However many photos come in, at most MAX_DESCRIBED are
+described (one vision call each): `select` picks the film's wanted shot count plus a small
+surplus (selection.candidate_count), no two alike. The plan keeps the wanted count, leaving
+out repeated moments first (plan.trim_to). Last, before timing, `distinct_shots` drops any
+shot whose photo looks like an earlier shot's (selection.looks_alike), so the cut never
+shows the same picture twice whatever the editor did. Timing never shows a photo twice
+either: with too few photos it holds each longer (film.timing).
+
+The story is narrated only as far as the photos can carry it: at most
+timing.NARRATION_PER_PHOTO seconds of estimated narration per chosen photo (`story_for`,
+which trims with plan.trim_story), so one photo is not held for half a minute.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from film.describe import FakeDescriber, normalize
 from film.ingest import Ingested, ingest
 from film.narrate import silent_narration
-from film.plan import make_plan, sentences, title_from
-from film.selection import select
-from film.timing import time_film
+from film.plan import PlanBeat, make_plan, merge_empty_beats, sentences, title_from, trim_story
+from film.selection import (
+    MAX_DESCRIBED,
+    SECONDS_PER_WORD,
+    candidate_count,
+    looks_alike,
+    select,
+    target_count,
+    word_count,
+)
+from film.timing import NARRATION_PER_PHOTO, time_film
 from film.types import Describer, FilmCut, FilmError, Narration, Narrator, Services, SourcePhoto, Story
 
 log = logging.getLogger(__name__)
@@ -54,6 +75,39 @@ def _narrate(narrator: Narrator, lines: list[str]) -> Narration:
         return silent_narration(lines)
 
 
+def distinct_shots(beats: list[PlanBeat], photos: dict[str, Ingested]) -> list[PlanBeat]:
+    """The plan with no two shots of look-alike photos: walking the shots in film order, a
+    shot whose photo looks like an earlier kept shot's is dropped (logged). A beat left with
+    no photo hands its narration on (plan.merge_empty_beats). The first shot always stays."""
+    kept: list[Ingested] = []
+    dropped: list[str] = []
+    for beat in beats:
+        shots = []
+        for shot in beat.shots:
+            photo = photos.get(shot.photo_id)
+            if photo is not None and any(k.id != photo.id and looks_alike(k, photo) for k in kept):
+                dropped.append(shot.photo_id)
+                continue
+            if photo is not None:
+                kept.append(photo)
+            shots.append(shot)
+        beat.shots = shots
+    if not dropped:
+        return beats
+    log.warning("film: left out %d look-alike shot(s) after planning: %s", len(dropped), ", ".join(dropped))
+    return merge_empty_beats(beats)
+
+
+def story_for(story: Story, photos: int) -> Story:
+    """The story trimmed (plan.trim_story) to what `photos` photos can carry: at most
+    NARRATION_PER_PHOTO seconds of estimated narration each."""
+    words = max(1, int(NARRATION_PER_PHOTO * max(1, photos) / SECONDS_PER_WORD))
+    if word_count(story.text) <= words:
+        return story
+    log.info("film: %d photo(s) carry about %d words; trimming the narration", photos, words)
+    return dataclasses.replace(story, text=" ".join(trim_story(story.text, words)))
+
+
 def film_title(story: Story) -> str:
     if story.title and story.title.strip():
         return " ".join(story.title.split())
@@ -71,12 +125,15 @@ def make_film(photos: list[SourcePhoto], story: Story, services: Services) -> Fi
             f"Stitch could only open {len(readable)} of the {len(photos)} photos, and a film needs at "
             f"least {MIN_USABLE_PHOTOS}. Try JPEG or PNG photos."
         )
-    chosen = select(readable, story.text)
+    wanted = target_count(story.text)
+    chosen = select(readable, story.text, candidate_count(wanted))[:MAX_DESCRIBED]
     descriptions = _describe_all(services.describer, chosen)
     photo_facts = [
         {**descriptions[p.id], "id": p.id, "takenAt": p.taken_at.isoformat() if p.taken_at else None} for p in chosen
     ]
-    beats = make_plan(story, photo_facts, services.editor)
+    told = story_for(story, len(chosen))
+    beats = make_plan(told, photo_facts, services.editor, min(wanted, target_count(told.text)))
+    beats = distinct_shots(beats, {p.id: p for p in chosen})
     lines = [b.narration for b in beats]
     narration = _narrate(services.narrator, lines)
     try:
@@ -96,4 +153,4 @@ def make_film(photos: list[SourcePhoto], story: Story, services: Services) -> Fi
     )
 
 
-__all__ = ["MIN_USABLE_PHOTOS", "film_title", "make_film"]
+__all__ = ["MAX_DESCRIBED", "MIN_USABLE_PHOTOS", "distinct_shots", "film_title", "make_film", "story_for"]

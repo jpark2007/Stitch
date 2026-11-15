@@ -78,8 +78,14 @@ export function AddTraditionForm(props: {
   submitLabel?: string;
   /** Save it. Resolve once saved (the page then leaves); reject with the ApiError to show it here. */
   onSubmit: (draft: TraditionDraft, photos: File[]) => Promise<void>;
+  /**
+   * What the form holds now, told after every change (and once to start
+   * with), for the book beside it. The photos array is the same one until
+   * the photos change.
+   */
+  onPreview?: (draft: TraditionDraft, photos: File[]) => void;
 }) {
-  const { people, selfPersonId, disabled = false, submitLabel = "Save this tradition", onSubmit } = props;
+  const { people, selfPersonId, disabled = false, submitLabel = "Save this tradition", onSubmit, onPreview } = props;
 
   const [draft, setDraft] = useState<TraditionDraft>(() => emptyTraditionDraft(selfPersonId));
   const [photos, setPhotos] = useState<File[]>([]);
@@ -95,6 +101,10 @@ export function AddTraditionForm(props: {
   useEffect(() => {
     if (focusTick > 0) focusFirstError(formRef.current);
   }, [focusTick]);
+
+  useEffect(() => {
+    onPreview?.(draft, photos);
+  }, [onPreview, draft, photos]);
 
   const locked = disabled || pending;
   const showMonth = monthMakesSense(draft.kind);
@@ -220,6 +230,7 @@ export function AddTraditionForm(props: {
               legend="What kind of tradition is it?"
               name="category"
               options={CATEGORY_OPTIONS}
+              layout={KIND_LAYOUT}
               value={draft.category}
               onChange={(v) => update("category", v)}
               error={errors.category}
@@ -232,6 +243,7 @@ export function AddTraditionForm(props: {
               legend="How often does it happen?"
               name="kind"
               options={WHEN_OPTIONS}
+              layout={WHEN_LAYOUT}
               value={draft.kind}
               onChange={(v) => {
                 setDraft((d) => ({ ...d, kind: v }));
@@ -394,6 +406,23 @@ export function AddTraditionForm(props: {
  */
 const BLANK_TEXT = "font-serif! text-[0.9375rem]! placeholder:italic";
 
+/*
+ * How a choice line lies in its column (container widths, not the window's):
+ * one line from the width its words take on one line (measured in the serif
+ * at 15px, chosen word's weight included, less the 8px the list hangs out
+ * past the column); below that, even rows in content-sized columns; in a
+ * very narrow column, two (or one) a row. Each step is reached only where
+ * its own columns fit.
+ */
+/** The eight kinds (one line 502px; 4 + 4, 4px apart, 292px): one line of 8, else 4 + 4, else 2 a row. */
+const KIND_LAYOUT =
+  "grid gap-x-1 grid-cols-[repeat(2,max-content)] @min-[18rem]:grid-cols-[repeat(4,max-content)] " +
+  "@min-[31rem]:flex @min-[31rem]:flex-nowrap @min-[31rem]:gap-x-1.5";
+/** The five frequencies (one line 512px; 3 + 2, 4px apart, 308px): one line of 5, else 3 + 2, else one a row. */
+const WHEN_LAYOUT =
+  "grid gap-x-1 grid-cols-[max-content] @min-[18.75rem]:grid-cols-[repeat(3,max-content)] " +
+  "@min-[32rem]:flex @min-[32rem]:flex-nowrap @min-[32rem]:gap-x-1.5";
+
 /**
  * One entry of the details table: the short label (presentation only: each
  * control inside names itself in full) and the answer in the value column.
@@ -457,10 +486,14 @@ function Blank(props: {
  * hidden) radio buttons, so arrow keys move between them and the kit's
  * dashed ring shows focus. The chosen word is semibold, in full ink, with an
  * accent underline (weight and shape, not colour alone); the rest are muted
- * and only darken on hover. One line from sm up; on a phone the words flow
- * like a line of text, evenly spaced and wrapping only between whole words,
- * as the names under "Who" do. Its legend is for assistive tech (SpecRow
+ * and only darken on hover. Its legend is for assistive tech (SpecRow
  * draws the label).
+ *
+ * Laid out by the width of its own column (a container query, so it holds in
+ * any column the form is put in, not by the window): one line where the
+ * words fit; where they do not, even rows in columns (`layout`: the eight
+ * kinds as 4 + 4, the five frequencies as 3 + 2), never a word left alone
+ * on a line of its own; in a very narrow column, fewer columns still.
  */
 function ChoiceLine<T extends string>(props: {
   legend: ReactNode;
@@ -470,8 +503,10 @@ function ChoiceLine<T extends string>(props: {
   onChange(value: T): void;
   error?: string | null;
   disabled?: boolean;
+  /** How the words lie in the column (KIND_LAYOUT, WHEN_LAYOUT). */
+  layout: string;
 }) {
-  const { legend, name, options, value, onChange, error, disabled } = props;
+  const { legend, name, options, value, onChange, error, disabled, layout } = props;
   const uid = useId();
   const errorId = `${uid}-error`;
 
@@ -483,43 +518,46 @@ function ChoiceLine<T extends string>(props: {
       className="min-w-0"
     >
       <legend className="sr-only">{legend}</legend>
-      {/* -mx-1 pulls each word's padding out, so the words sit flush with the column. */}
-      <ul className="-mx-1 flex list-none flex-wrap gap-x-1.5 p-0 sm:flex-nowrap">
-        {options.map((o, i) => {
-          const checked = value === o.value;
-          const inputId = `${uid}-${o.value}`;
-          return (
-            <li key={o.value} className="min-w-0">
-              <label
-                htmlFor={inputId}
-                className={[
-                  `group relative inline-flex min-h-11 select-none items-center rounded-paper px-1 whitespace-nowrap ${VALUE_TEXT}`,
-                  "transition-colors duration-150 ease-paper motion-reduce:transition-none",
-                  FOCUS_RING_WITHIN,
-                  "has-[:disabled]:cursor-not-allowed",
-                  checked ? "text-ink" : "text-ink-soft hover:text-ink",
-                  disabled ? "opacity-60" : "cursor-pointer",
-                ].join(" ")}
-              >
-                <input
-                  id={inputId}
-                  type="radio"
-                  name={name}
-                  value={o.value}
-                  className="sr-only"
-                  checked={checked}
-                  disabled={disabled}
-                  required
-                  // The first word takes focus after a failed send.
-                  aria-invalid={error && i === 0 ? true : undefined}
-                  onChange={() => onChange(o.value)}
-                />
-                <ChosenText checked={checked}>{o.label}</ChosenText>
-              </label>
-            </li>
-          );
-        })}
-      </ul>
+      {/* The container its layout reads. -mx-1 pulls each word's padding
+          out, so the words sit flush with the column. */}
+      <div className="@container min-w-0">
+        <ul className={`-mx-1 list-none p-0 ${layout}`}>
+          {options.map((o, i) => {
+            const checked = value === o.value;
+            const inputId = `${uid}-${o.value}`;
+            return (
+              <li key={o.value} className="min-w-0">
+                <label
+                  htmlFor={inputId}
+                  className={[
+                    `group relative inline-flex min-h-11 select-none items-center rounded-paper px-1 whitespace-nowrap ${VALUE_TEXT}`,
+                    "transition-colors duration-150 ease-paper motion-reduce:transition-none",
+                    FOCUS_RING_WITHIN,
+                    "has-[:disabled]:cursor-not-allowed",
+                    checked ? "text-ink" : "text-ink-soft hover:text-ink",
+                    disabled ? "opacity-60" : "cursor-pointer",
+                  ].join(" ")}
+                >
+                  <input
+                    id={inputId}
+                    type="radio"
+                    name={name}
+                    value={o.value}
+                    className="sr-only"
+                    checked={checked}
+                    disabled={disabled}
+                    required
+                    // The first word takes focus after a failed send.
+                    aria-invalid={error && i === 0 ? true : undefined}
+                    onChange={() => onChange(o.value)}
+                  />
+                  <ChosenText checked={checked}>{o.label}</ChosenText>
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
       {error ? (
         <p id={errorId} className={`mt-0.5 mb-1 ${FIELD_ERROR_CLASS}`}>
           {error}
