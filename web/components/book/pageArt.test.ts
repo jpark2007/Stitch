@@ -52,10 +52,13 @@ interface Rect {
   fill: unknown;
   w: number;
   h: number;
+  /** The last translate before it: a print's centre (photoArt.printPhoto translates there, then fills). */
+  cx: number;
+  cy: number;
 }
 
 /** Everything drawn on any canvas since the last reset. */
-const drawn = { texts: [] as Print[], rects: [] as Rect[] };
+const drawn = { texts: [] as Print[], rects: [] as Rect[], at: { x: 0, y: 0 } };
 
 const noop = () => undefined;
 const gradient = () => ({ addColorStop: noop });
@@ -93,7 +96,10 @@ function fakeContext(canvas: FakeCanvas) {
       drawn.texts.push({ text, font: String(state.font), x, y });
     },
     fillRect(_x: number, _y: number, w: number, h: number) {
-      drawn.rects.push({ fill: state.fillStyle, w, h });
+      drawn.rects.push({ fill: state.fillStyle, w, h, cx: drawn.at.x, cy: drawn.at.y });
+    },
+    translate(x: number, y: number) {
+      drawn.at = { x, y };
     },
     createLinearGradient: gradient,
     createRadialGradient(_x0: number, _y0: number, r0: number, _x1: number, _y1: number, r1: number) {
@@ -168,13 +174,15 @@ function measureCtx() {
   return document.createElement("canvas").getContext("2d") as CanvasRenderingContext2D;
 }
 
-/** Lay a story page out as drawStoryPage does (title on one line). */
+/** Lay a story page out as drawStoryPage does (title on one line, captioned photos as photo()). */
 function layout(text: string, photos: number, tail = 34) {
+  const n = Math.min(2, photos);
   return art.layoutStory(measureCtx(), text, fonts, {
     width: 770,
     top: 262 + 72 + 8 + 58,
     tail,
-    photos: Array.from({ length: Math.min(2, photos) }, (_, i) => ASPECTS[i % 3]),
+    photos: Array.from({ length: n }, (_, i) => ASPECTS[i % 3]),
+    captions: Array.from({ length: n }, () => true),
   });
 }
 
@@ -322,5 +330,157 @@ describe("drawPhoto", () => {
       const c = photoArt.paintScene("sea", w, h);
       assert.ok(c.width >= 1 && c.height >= 1 && c.width <= 4096 && c.height <= 4096);
     }
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Photo sizing                                                              */
+/* ------------------------------------------------------------------------ */
+
+// Jonah (Issue #1): uploaded photos printed too small. One photo should be
+// large and fill the space under the story; two shrink to share it.
+
+const LEFT = 96;
+const RIGHT = 1000 - 134;
+const SHORT = "A day at the sea.";
+/** The lowest a print may reach: one photo, or two (photoRoom). */
+const FOOT = { 1: 1300 - 150, 2: 1300 - 140 } as const;
+const shot = (aspect: number, caption?: string): BookPhoto => ({ id: `s${aspect}`, scene: "sea", aspect, ...(caption ? { caption } : {}) });
+
+/** Draw a story page and return its prints' boxes (unrotated), in the order taped. */
+async function drawPrints(photos: BookPhoto[], text = SHORT, extra: Partial<BookSpread> = {}) {
+  reset();
+  await art.drawStoryPage(spread(text, 0, { ...extra, photos }), 2, fonts, 30);
+  // The words and tellers, not the page number at the foot.
+  const words = drawn.texts.filter((t) => t.y < 1200 && !/^italic/.test(t.font));
+  const wordsEnd = Math.max(...words.map((t) => t.y));
+  const boxes = prints().map((p) => ({ w: p.w, h: p.h, x0: p.cx - p.w / 2, x1: p.cx + p.w / 2, y0: p.cy - p.h / 2, y1: p.cy + p.h / 2 }));
+  return { boxes, wordsEnd };
+}
+
+describe("photo sizing", () => {
+  it("printHeight is the bottom drawPhoto draws to", async () => {
+    for (const width of [120, 333, 365, 501, 770]) {
+      for (const aspect of [4, 16 / 9, 4 / 3, 1, 3 / 4, 0.25]) {
+        for (const caption of [undefined, "the drive home"]) {
+          const y = await photoArt.drawPhoto(measureCtx(), shot(aspect, caption), 10, 700, width, 0.03, 1, fonts, "top");
+          assert.equal(y - 700, art.printHeight(width, aspect, Boolean(caption)), `${width} wide at ${aspect}${caption ? ", captioned" : ""}`);
+        }
+      }
+    }
+  });
+
+  it("prints one landscape photo nearly the measure wide, filling the space", async () => {
+    const { boxes, wordsEnd } = await drawPrints([shot(4 / 3)]);
+    assert.equal(boxes.length, 1);
+    const [p] = boxes;
+    assert.ok(p.w >= 700, `only ${p.w} wide (it was at most 520)`);
+    assert.ok(p.x0 >= LEFT && p.x1 <= RIGHT, `runs ${p.x0}–${p.x1}`);
+    assert.ok(p.y0 > wordsEnd + 30, `top ${p.y0} on the words (${wordsEnd})`);
+    assert.ok(p.y1 <= FOOT[1], `bottom ${p.y1} past the foot`);
+    // Either the whole measure wide, or the whole space tall.
+    assert.ok(p.w === art.PHOTO_MEASURE || FOOT[1] - p.y1 <= 3, `${p.w} wide, ${FOOT[1] - p.y1} short of the foot`);
+  });
+
+  it("prints one portrait photo the space's full height", async () => {
+    const { boxes, wordsEnd } = await drawPrints([shot(3 / 4)]);
+    const [p] = boxes;
+    assert.ok(p.w >= 400 && p.w < art.PHOTO_MEASURE, `${p.w} wide (it was at most ~300)`);
+    assert.ok(p.y0 > wordsEnd + 30 && p.y1 <= FOOT[1] && FOOT[1] - p.y1 <= 3, `runs ${p.y0}–${p.y1}`);
+    // Centred on the measure, give or take its lean to the right.
+    assert.ok(Math.abs((p.x0 + p.x1) / 2 - (LEFT + RIGHT) / 2) <= 10);
+  });
+
+  it("starts the photos higher when the words end sooner", () => {
+    assert.equal(art.photoTop(420), 560);
+    assert.ok(art.photoRoom(1, 420) > 1300 - 150 - 700, "still floored at 700");
+    assert.equal(art.photoTop(800), 846);
+  });
+
+  it("shares the measure between two photos side by side", async () => {
+    const one = (await drawPrints([shot(4 / 3)])).boxes[0];
+    const { boxes, wordsEnd } = await drawPrints([shot(4 / 3), shot(4 / 3)]);
+    assert.equal(boxes.length, 2);
+    const [a, b] = boxes;
+    // Two landscapes: each takes half the measure (less the gap).
+    assert.equal(a.w, b.w);
+    assert.ok(a.w >= 340 && a.w < one.w, `${a.w} wide`);
+    assert.ok(a.x1 + 40 <= b.x0, `the prints overlap: ${a.x1} and ${b.x0}`);
+    assert.ok(a.x0 >= LEFT - 6 && b.x1 <= RIGHT + 8);
+    for (const p of boxes) assert.ok(p.y0 > wordsEnd + 30 && p.y1 <= FOOT[2], `runs ${p.y0}–${p.y1}`);
+    assert.ok(b.y0 > a.y0, "the second is set lower");
+
+    // A landscape and a portrait: the portrait, as wide, is the taller; the
+    // pair is set in the middle of the space.
+    const mixed = (await drawPrints([shot(4 / 3), shot(3 / 4)])).boxes;
+    assert.equal(mixed.length, 2);
+    assert.equal(mixed[0].w, mixed[1].w);
+    assert.ok(mixed[1].h > mixed[0].h * 1.5);
+    assert.ok(mixed[1].y1 <= FOOT[2], `portrait ends at ${mixed[1].y1}`);
+    assert.ok(mixed[0].x1 + 40 <= mixed[1].x0);
+    const above = mixed[0].y0 - (wordsEnd + 46);
+    const below = FOOT[2] - mixed[1].y1;
+    assert.ok(Math.abs(above - below) <= 30, `${above} above, ${below} below`);
+
+    // Two portraits under a long telling: each as tall as the space allows.
+    const tall = (await drawPrints([shot(3 / 4), shot(3 / 4)], story(400))).boxes;
+    assert.equal(tall.length, 2);
+    assert.ok(tall[0].w < 365 && FOOT[2] - Math.max(tall[0].y1, tall[1].y1) <= 3, `${tall[0].w} wide, to ${tall[1].y1}`);
+  });
+
+  it("makes room for a caption under the print", async () => {
+    const plain = (await drawPrints([shot(3 / 4)])).boxes[0];
+    const { boxes } = await drawPrints([shot(3 / 4, "the drive home")]);
+    const [p] = boxes;
+    assert.ok(p.w < plain.w, "a captioned portrait is narrower, to keep its caption on the page");
+    assert.ok(p.y1 <= FOOT[1] && FOOT[1] - p.y1 <= 3, `ends at ${p.y1}`);
+    // Sized as if uncaptioned, its caption would run past the foot.
+    const room = art.photoRoom(1, 600);
+    const [w] = art.photoWidths(room, [3 / 4]);
+    assert.ok(art.printHeight(w, 3 / 4, true) > room);
+    const [wc] = art.photoWidths(room, [3 / 4], [true]);
+    assert.ok(art.printHeight(wc, 3 / 4, true) <= room);
+  });
+
+  it("never sizes a print past its room, nor a print in no room", () => {
+    const sets: [number[], boolean[]][] = [
+      [[4 / 3], [false]],
+      [[3 / 4], [true]],
+      [[4], [true]],
+      [[0.25], [false]],
+      [[4 / 3, 3 / 4], [true, false]],
+      [[0.25, 4], [false, true]],
+    ];
+    for (let y = 400; y <= 1300; y += 7) {
+      for (const [aspects, captions] of sets) {
+        const room = art.photoRoom(aspects.length, y);
+        const widths = art.photoWidths(room, aspects, captions);
+        widths.forEach((w, i) => {
+          const fits = i === 0 ? room : room - art.pairDrop(room);
+          if (room <= 0) assert.ok(!(w > 0), `a ${w}-wide print in room ${room}`);
+          else if (w > 0) assert.ok(art.printHeight(w, aspects[i], captions[i]) <= fits, `y ${y}: ${w} wide in ${fits}`);
+          assert.ok(!(w > (aspects.length === 1 ? art.PHOTO_MEASURE : art.PHOTO_MEASURE / 2)));
+        });
+      }
+    }
+  });
+
+  it("keeps the prints under long words, or leaves them out", async () => {
+    for (const n of [300, 500, 700, 900, 1200]) {
+      for (const photos of [[shot(4 / 3, "the drive home")], [shot(3 / 4), shot(4 / 3, "the lake")]]) {
+        const { boxes, wordsEnd } = await drawPrints(photos, story(n));
+        for (const p of boxes) {
+          assert.ok(p.w >= art.PHOTO_MIN_W, `${n} characters: a ${p.w}-wide print`);
+          assert.ok(p.y0 > wordsEnd + 30, `${n} characters: a print at ${p.y0} on the words (${wordsEnd})`);
+          assert.ok(p.y1 <= FOOT[boxes.length as 1 | 2], `${n} characters: a print to ${p.y1}`);
+        }
+      }
+    }
+  });
+
+  it("draws no print without photos", async () => {
+    assert.deepEqual(art.photoWidths(500, []), []);
+    const { boxes } = await drawPrints([]);
+    assert.equal(boxes.length, 0);
   });
 });
