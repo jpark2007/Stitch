@@ -22,6 +22,7 @@ from db import props as props_db
 from db import users as users_db
 
 from demo.whitakers.data import FamilyData
+from demo.whitakers.narration import attach_narration
 
 
 def family_is_complete(db: Database, data: FamilyData) -> bool:
@@ -84,7 +85,9 @@ def seed_family(db: Database, data: FamilyData) -> bool:
         )
         for telling in tellings[1:]:
             memories_db.add_telling(db, fid, moment.id, telling)
-        memories_db.save_scene(db, fid, moment.id, screenplay=moment.screenplay, timeline=moment.timeline,
+        # Startup and --check are offline, even when credentials happen to be set.
+        timeline = attach_narration(db, fid, moment.screenplay, moment.timeline, allow_generate=False)
+        memories_db.save_scene(db, fid, moment.id, screenplay=moment.screenplay, timeline=timeline,
                                prop_ids=moment.prop_ids, set_ids=moment.set_ids)
 
     for offset, q in enumerate(data.questions):

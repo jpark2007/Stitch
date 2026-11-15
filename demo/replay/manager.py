@@ -407,6 +407,9 @@ class ReplayRunManager(ScriptedRunManager):
         data = remap_ids(data, {k: v for k, v in ids.items() if k != v})
         screenplay = narrated_by(Screenplay.model_validate(data), run.person_id)
         result = compile_scene(db, fid, screenplay)
+        if result.ok and result.timeline is not None and fid == "macoskos":
+            from demo.whitakers.narration import attach_narration
+            result = result.model_copy(update={"timeline": attach_narration(db, fid, screenplay, result.timeline)})
         participants = list(dict.fromkeys([run.person_id, *screenplay.cast, *named]))
         return _Staged(
             screenplay=screenplay, result=result, participants=participants, prop_ids=prop_ids, set_ids=set_ids
