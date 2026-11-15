@@ -11,6 +11,7 @@ import { SelectField, TextField } from "@/components/flow/Field";
 import { FormError } from "@/components/flow/FormError";
 import { ChannelSettingsError, createSettingsClient } from "./client";
 import { CallInterviews } from "./CallInterviews";
+import { TextDrafts } from "./TextDrafts";
 import { preferenceError, preferencesFor, statusDescription, storedTestPromptRequestId, validHandle } from "./settings";
 import type { ChannelContact, Enrollment, Preferences } from "./settings";
 
@@ -68,6 +69,7 @@ function FamilyContacts({ family }: { family: FamilySummary }) {
       {people.map(p => <option key={p.id} value={p.id}>{p.name}{p.userId === me.user.id ? " (you)" : ""}</option>)}
     </SelectField> : <p className="font-display text-xl">{person?.name}’s messaging account</p>}
     {person && <ContactPanel key={person.id} familyId={family.id} person={person} />}
+    {person?.userId === me.user.id && <TextDrafts key={`${family.id}:${person.id}`} familyId={family.id} personId={person.id} />}
     {person?.userId === me.user.id && <CallInterviews familyId={family.id} personId={person.id} personName={person.name} />}
   </div>;
 }

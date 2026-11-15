@@ -279,6 +279,26 @@ class ChannelWorker:
         pending = state.get("pending")
         typed_control = not is_voice and not photo_ids and all(r.get("receiptType") not in {"photo", "voice"} for r in batch)
         command = text.strip().upper()
+        from .text_drafts import ordinary_text
+        if (identity["channel"] == "imessage" and identity.get("userId") and typed_control and not pending
+                and all(ordinary_text(receipt["text"]) for receipt in batch)):
+            # The exact texts were already saved at intake, even if a previous
+            # studio is finished or this optional combined draft has reached its cap.
+            update({"preflightOnly": False})
+            if state["status"] == "draft":
+                try:
+                    service.preflight_draft_input(text, [])
+                except ValueError:
+                    pass
+                else:
+                    service.save_story_draft(text=text)
+            question_bank.answer_prompt(self.db, family, contact_id, batch[0]["_id"], self.now())
+            queue(["Saved in Stitch. Read your private text drafts: " + self.web_url
+                   + "/settings/notifications?" + urlencode({"family": family})
+                   + "#text-drafts\nYou can keep texting whenever a memory comes to mind. Reply STOP to stop messages."])
+            deliver()
+            conversations.complete_worker_receipts(self.db, family, contact_id, token)
+            return len(batch), sent
         year_command = typed_control and re.fullmatch(r"YEAR\s+(\d{4})", text.strip(), re.IGNORECASE)
         story_input = not (typed_control and (command in {"HELP", "CALL", "NEW", "SUBMIT"} or year_command))
         preflight_reply = None

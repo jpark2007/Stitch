@@ -24,7 +24,8 @@ def _receive(message: InboundMessage) -> dict:
         if stopped is not None:
             return stopped
         contact = contacts.resolve_contact(db, message.provider, message.senderId)
-        return {"accepted": True, "duplicate": conversations.save_inbound(db, contact, data)}
+        from .text_drafts import save_received_text
+        return {"accepted": True, "duplicate": save_received_text(db, contact, data)}
     except LookupError:
         raise HTTPException(404, "Unknown contact") from None
     except PermissionError:

@@ -137,6 +137,12 @@ def get_contact(person_id: str, access: FamilyAccess = Depends(family_member), d
     return {"contact": public_contact(operation(contacts.get_settings_contact, db, access.family_id, person_id, access.user.id))}
 
 
+@router.get("/people/{person_id}/text-drafts")
+def get_text_drafts(person_id: str, access: FamilyAccess = Depends(family_member), db=Depends(get_db)):
+    from .text_drafts import list_text_drafts
+    return {"drafts": operation(list_text_drafts, db, access.family_id, person_id, access.user.id)}
+
+
 @router.post("/people/{person_id}/enrollment", status_code=201)
 def create_enrollment(person_id: str, body: EnrollmentRequest, access: FamilyAccess = Depends(family_member), db=Depends(get_db)):
     preferences = body.model_dump(exclude={"provider", "handle"})
