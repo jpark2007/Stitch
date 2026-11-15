@@ -333,7 +333,8 @@ def test_cli_exit_codes_and_messages(restore_db, capsys, tmp_path, monkeypatch):
     broken = tmp_path / "demo_family"
     broken.mkdir()
     for path in demo.DATA_DIR.iterdir():
-        (broken / path.name).write_text(path.read_text())
+        if path.is_file():  # the art/ folder is not needed to reach the bad props.json
+            (broken / path.name).write_text(path.read_text())
     (broken / "props.json").write_text("[not json")
     monkeypatch.setattr(demo, "DATA_DIR", broken)
     assert demo.main(["--reset"]) == demo.EXIT_BAD_DATA

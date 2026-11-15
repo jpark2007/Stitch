@@ -93,9 +93,9 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 # ------------------------------------------------------------------------ empty folder
 
-def test_the_committed_art_folder_holds_only_its_readme():
-    names = sorted(p.name for p in demo.ART_DIR.iterdir())
-    assert names == ["README.md"]
+def test_the_art_folder_is_in_the_demo_data_and_has_its_naming_rules():
+    assert demo.ART_DIR == demo.DATA_DIR / "art"
+    assert "<propId>.<artKey>.png" in (demo.ART_DIR / "README.md").read_text()
 
 
 def test_an_empty_folder_gives_exactly_todays_props_and_sets(art_dir: Path):
