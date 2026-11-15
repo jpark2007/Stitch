@@ -43,9 +43,21 @@ and **rewrites the file in place** in that final form:
 
 - **Props, parts and state art**: the white background touching the border is removed
   (an image that already has transparency is kept as it is), then the image is cropped to
-  its opaque shape. A body image gives the prop its `aspect` (width / height of the crop,
-  clamped to 0.5 to 2.5 like a photo swap) and its `anchor` (bottom center of the shape).
-  Parts are placed by the `at` fractions in `props.json`, so draw the body so they line up.
+  its opaque shape.
+- **Art never changes a prop's shape.** The stage draws a body image stretched over the
+  prop's box, whose width / height is the prop's `aspect` in `props.json`. So the bake puts
+  the cropped body, unscaled, on the smallest transparent canvas of exactly that aspect,
+  bottom-aligned and horizontally centred, and the prop keeps its authored `aspect`,
+  `anchor` and every other rig field. The scenes stage exactly as authored. Draw close to
+  the prop's aspect: a much wider drawing sits short in its box, a much taller one sits
+  narrow (green_sedan is 1.9 wide per 1 tall; a 2.5-wide car comes out about three
+  quarters of the box's height). The same applies to art a state shows in place of the body
+  (`black_umbrella.open.png`).
+- **Parts** (`green_sedan.wheel.png`, `tamale_pot.lid.png`) keep their own cropped shape:
+  the stage sizes a part by its pixel height relative to the body image, so draw parts at
+  the same scale as the body on the same sheet. They are placed by the `at` fractions in
+  `props.json` (fractions of the body image, canvas included), so draw the body so they
+  line up.
 - **Back layers**: scaled evenly to the layer's frame (2048 px wide, height from the layer
   height in `sets.json`: 2048x1024 for a 1.0 layer), cropped from the bottom if the aspect
   differs, and made fully opaque.
@@ -53,16 +65,13 @@ and **rewrites the file in place** in that final form:
   white background removed and no crop to the shape.
 
 It then writes `art.json`: for every usable file its slot (`prop` + `artKey`, or `set` +
-`layer`), pixel size, a body's `aspect` and `anchor`, and the `sha256` of the final PNG.
-Baking again skips files that already match their entry, so it changes nothing twice.
-Keep your originals elsewhere if you want to re-edit them.
+`layer`), its pixel size, and the `sha256` of the final PNG. Baking again skips files that
+already match their entry, so it changes nothing twice. Keep your originals elsewhere if
+you want to re-edit them.
 
-Last, it compiles every demo scene with the baked art. A body image whose aspect or anchor
-would stop a scene compiling is reported (with the scene and the compile error), and the
-seed draws that prop's placeholder body instead.
-
-The bake reports a file and gives it no entry (its prop or layer keeps the placeholder)
-when its name matches no prop, set, art key or layer; it is not a readable image; it has
+The bake reports a file once and gives it no entry (its prop or layer keeps the
+placeholder) when it is a symlink; its name matches no prop, set, art key or layer (or has
+an empty key, like `tamale_pot..png`); it is not a readable image; it has
 more than 16,000,000 pixels; nothing is opaque after the cut-out; or the result is over the
 media size limit. It exits 1 when anything was reported, else 0.
 

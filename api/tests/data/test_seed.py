@@ -33,13 +33,13 @@ SAMPLE_RAW = json.loads((REPO_DIR / "web/public/samples/hymn_books.memory.json")
 
 
 def same_but_art(stored: schemas.Prop | schemas.SetDef, authored: schemas.Prop | schemas.SetDef) -> bool:
-    """`stored` equals `authored` except for what a hand-made image in seed/demo_family/art/
-    legitimately sets: art refs (the keys stay, and each ref set is that file's fixed id,
-    seed.demo.demo_art_media_id), and, only when the prop has a body image, its aspect and anchor."""
+    """`stored` equals `authored` except for what a baked image in seed/demo_family/art/ sets:
+    art refs (the keys stay, and each ref set is that file's fixed id,
+    seed.demo.demo_art_media_id). Art never changes a prop's rig."""
     if isinstance(stored, schemas.Prop):
         for key, ref in stored.art.items():
             assert ref is None or ref == media_db.media_ref(demo.demo_art_media_id(stored.id, key)), (stored.id, key)
-        exclude = {"art", "aspect", "anchor"} if stored.art.get("body") else {"art"}
+        exclude = {"art"}
         return (sorted(stored.art) == sorted(authored.art)
                 and stored.model_dump(exclude=exclude) == authored.model_dump(exclude=exclude))
     names = {0: "back", 1: "middle", 2: "front"}

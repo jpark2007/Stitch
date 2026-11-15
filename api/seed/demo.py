@@ -531,23 +531,23 @@ def load_demo_data(directory: Path | None = None, art_dir: Path | None = None) -
     """Load, check and compile every moment's screenplay. Nothing touches a database.
 
     `directory` defaults to DATA_DIR and `art_dir` to ART_DIR (both read at call time; with
-    another `directory`, its own `art/` folder; see load_demo_art). The art is applied to the props and sets
-    before compiling, so each timeline is staged with the aspect and anchor of the image
-    it will draw. Raises DemoDataError for a malformed or inconsistent file (naming it) and
-    DemoCompileError for a screenplay that does not compile; a bad art file is only a
-    warning (its prop or layer keeps the placeholder). So is a body image whose aspect or
-    anchor would stop a moment compiling: that prop keeps the placeholder body and its
-    authored rig (see _compile_with_art).
+    another `directory`, its own `art/` folder; see load_demo_art). Baked art only sets art
+    refs (never a prop's aspect, anchor or any other rig field), so the scenes compile and
+    stage exactly as authored with or without it. Raises DemoDataError for a malformed or
+    inconsistent file (naming it) and DemoCompileError for a screenplay that does not compile;
+    a bad art file is only a warning (its prop or layer keeps the placeholder).
     """
     if art_dir is None:
         art_dir = ART_DIR if directory is None else directory / ART_DIR_NAME
     directory = DATA_DIR if directory is None else directory
-    authored_props = load_props(directory / PROPS_PATH.name)
-    props, sets, art = load_demo_art(authored_props, load_sets(directory / SETS_PATH.name), art_dir)
+    props, sets, art = load_demo_art(load_props(directory / PROPS_PATH.name),
+                                     load_sets(directory / SETS_PATH.name), art_dir)
+    by_id_props = {p.id: p for p in props}
+    by_id_sets = {s.id: s for s in sets}
     people = scene_people()
     for person in people.values():
         item = person.character.item_prop_id
-        if item is not None and item not in {p.id for p in props}:
+        if item is not None and item not in by_id_props:
             raise DemoDataError(f"{PROPS_PATH.name}: no prop {item!r}, the signature item of {person.id}")
     stray = sorted(
         p.name for p in directory.glob(f"*{SCREENPLAY_SUFFIX}")
@@ -555,92 +555,14 @@ def load_demo_data(directory: Path | None = None, art_dir: Path | None = None) -
     )
     if stray:
         raise DemoDataError(f"screenplays for no demo moment in {directory.name}/: {', '.join(stray)}")
-    screenplays: dict[str, Screenplay] = {}
+    scenes: dict[str, DemoScene] = {}
     for moment in MOMENTS:
         screenplay = load_screenplay(moment.id, directory)
         _check_moment(moment, screenplay, people)
-        screenplays[moment.id] = screenplay
-    props, art, timelines = _compile_with_art(screenplays, authored_props, props, sets, art, people)
-    scenes = {
-        memory_id: DemoScene(screenplay, timelines[memory_id], list(screenplay.props),
-                             list(dict.fromkeys(shot.set for shot in screenplay.shots)))
-        for memory_id, screenplay in screenplays.items()
-    }
+        timeline = compile_moment(screenplay, sets=by_id_sets, props=by_id_props, people=people)
+        set_ids = list(dict.fromkeys(shot.set for shot in screenplay.shots))
+        scenes[moment.id] = DemoScene(screenplay, timeline, list(screenplay.props), set_ids)
     return DemoData(props, sets, scenes, art)
-
-
-def _compile_all(screenplays: Mapping[str, Screenplay], props: list[schemas.Prop],
-                 sets: list[schemas.SetDef], people: Mapping[str, schemas.Person]) -> dict[str, Timeline]:
-    by_id_props = {p.id: p for p in props}
-    by_id_sets = {s.id: s for s in sets}
-    return {
-        memory_id: compile_moment(screenplay, sets=by_id_sets, props=by_id_props, people=people)
-        for memory_id, screenplay in screenplays.items()
-    }
-
-
-def _compile_with_art(
-    screenplays: Mapping[str, Screenplay],
-    authored: list[schemas.Prop],
-    props: list[schemas.Prop],
-    sets: list[schemas.SetDef],
-    art: tuple[DemoArtFile, ...],
-    people: Mapping[str, schemas.Person],
-) -> tuple[list[schemas.Prop], tuple[DemoArtFile, ...], dict[str, Timeline]]:
-    """Compile every moment; when a body image's aspect or anchor stops one compiling, drop it.
-
-    A hand-made body image restages its prop (a wider car parks further offstage, a lower
-    anchor moves where a hand reaches). When a moment fails and some of its props have a rig
-    from art (aspect or anchor differing from props.json), the prop to blame is found by
-    reverting one at a time (all of them when no single one fixes it); each is put back to
-    its authored aspect, anchor and placeholder body, with a warning naming the file and the
-    compile error, and everything is compiled again. A failure with no art involved raises
-    DemoCompileError exactly as without art.
-    """
-    by_authored = {p.id: p for p in authored}
-    props = list(props)
-
-    def rig(p: schemas.Prop) -> tuple:
-        return (p.aspect, list(p.anchor))
-
-    def revert(current: list[schemas.Prop], prop_id: str) -> list[schemas.Prop]:
-        base = by_authored[prop_id]
-        return [
-            p.model_copy(update={"aspect": base.aspect, "anchor": list(base.anchor),
-                                 "art": {**p.art, props_db.BODY: base.art.get(props_db.BODY)}})
-            if p.id == prop_id else p
-            for p in current
-        ]
-
-    while True:
-        try:
-            return props, art, _compile_all(screenplays, props, sets, people)
-        except DemoCompileError as exc:
-            screenplay = screenplays[exc.memory_id]
-            by_id = {p.id: p for p in props}
-            rigged = [pid for pid in dict.fromkeys(screenplay.props)
-                      if pid in by_id and pid in by_authored and rig(by_id[pid]) != rig(by_authored[pid])]
-            if not rigged:
-                raise
-            blamed = rigged
-            for pid in rigged:
-                try:
-                    _compile_all({exc.memory_id: screenplay}, revert(props, pid), sets, people)
-                except DemoCompileError:
-                    continue
-                blamed = [pid]
-                break
-            reason = exc.errors[0].message if exc.errors else "no error detail"
-            for pid in blamed:
-                media_id = demo_art_media_id(pid, props_db.BODY)
-                name = next((f.filename for f in art if f.media_id == media_id), f"{pid}{ART_SUFFIX}")
-                log.warning(
-                    "demo art %s/%s skipped, the placeholder stays: with aspect %.2f and anchor %s, "
-                    "moment %r does not compile (%s)",
-                    ART_DIR_NAME, name, by_id[pid].aspect, by_id[pid].anchor, exc.memory_id, reason,
-                )
-                props = revert(props, pid)
-                art = tuple(f for f in art if f.media_id != media_id)
 
 
 def compile_demo_scenes(directory: Path | None = None) -> dict[str, DemoScene]:
@@ -703,7 +625,8 @@ def _put_demo_photos(db: Database) -> list[str]:
 # Two steps, so the running app never imports agent/ or processes images:
 # - bake (`python -m seed.demo --bake-art`, a CLI; may import agent helpers): processes each
 #   file the way the studio processes generated art, rewrites it in place in final form and
-#   records it in art/art.json (slot, pixel size, a body's aspect and anchor, sha256);
+#   records it in art/art.json (slot, pixel size, sha256). Art never changes a prop's rig:
+#   a body is fitted into the prop's authored aspect, so scenes stage exactly as authored;
 # - seed (load_demo_art): reads art.json and the PNG bytes only, stores each as a "cutout"
 #   under a fixed media id and sets it on its prop or layer. Anything absent keeps `art: null`.
 
@@ -748,7 +671,9 @@ def demo_art_media_id(owner_id: str, key: str) -> str:
 def _art_target(stem: str, props: Mapping[str, schemas.Prop],
                 sets: Mapping[str, schemas.SetDef]) -> tuple[str, str, str]:
     """('prop' | 'set', id, art key or layer name) for a file stem, or _SkipArt."""
-    owner, _, key = stem.partition(".")
+    owner, dot, key = stem.partition(".")
+    if dot and not key:
+        raise _SkipArt("empty art key after the dot (expected <id>.png or <id>.<key>.png)")
     if "." in key:
         raise _SkipArt("name has too many dots (expected <id>.png or <id>.<key>.png)")
     if owner in sets:
@@ -814,15 +739,45 @@ def _remove_white(data: bytes) -> bytes:
     return AlphaAwareRemover().remove(data)
 
 
-def _prop_art(data: bytes):
-    """The studio's prop path: white background removed (real alpha kept), cropped to the
-    shape (agent.tools.art.analyze_cutout: aspect and bottom-center anchor). -> Cutout."""
+def _prop_art(data: bytes, box_aspect: float | None) -> bytes:
+    """The studio's prop path: white background removed (real alpha kept) and cropped to the
+    shape (agent.tools.art.analyze_cutout). With `box_aspect` (art drawn in the prop's body
+    box), the crop is then placed, unscaled, on the smallest transparent canvas of exactly
+    that width / height that contains it, bottom-aligned and horizontally centred: the stage
+    stretches a body image over the prop's authored box, so this keeps the drawing
+    undistorted ("contain") and the prop's rig unchanged. Not resampled, so a part drawn on
+    the same sheet keeps its scale (the stage sizes a part by its pixel height relative to the
+    body image's)."""
     from agent.tools.art import analyze_cutout
 
     try:
-        return analyze_cutout(_remove_white(data))
+        crop = analyze_cutout(_remove_white(data)).png
     except ValueError as exc:  # analyze_cutout: no opaque pixels
         raise _SkipArt(str(exc)) from exc
+    if box_aspect is None:
+        return crop
+    with Image.open(io.BytesIO(crop)) as src:
+        src.load()
+        im = src.convert("RGBA")
+    w, h = im.size
+    if w / h > box_aspect:
+        cw, ch = w, max(h, round(w / box_aspect))
+    else:
+        cw, ch = max(w, round(h * box_aspect)), h
+    if (cw, ch) == (w, h):
+        return crop
+    canvas = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+    canvas.paste(im, ((cw - w) // 2, ch - h))
+    return _png(canvas)
+
+
+def _body_box_keys(prop: schemas.Prop) -> set[str]:
+    """Art keys the stage draws in the body's box (stretched to the prop's authored aspect):
+    'body' and every key a state shows in place of the body (black_umbrella's 'open').
+    Other keys are parts, drawn at their own aspect (web/components/stage/props/propRig.ts,
+    partSize)."""
+    return {props_db.BODY} | {key for override in prop.states.values()
+                              for slot, key in override.items() if slot == props_db.BODY and key}
 
 
 def _layer_art(data: bytes, layer: str, height: float) -> bytes:
@@ -856,8 +811,6 @@ class _ArtSlot:
     owner: str
     key: str  # art key or layer name
     png: bytes
-    aspect: float | None = None  # prop bodies only
-    anchor: list[float] | None = None
 
 
 def _apply_art(props: list[schemas.Prop], sets: list[schemas.SetDef], slots: list[_ArtSlot]
@@ -872,9 +825,6 @@ def _apply_art(props: list[schemas.Prop], sets: list[schemas.SetDef], slots: lis
             continue
         update = prop_updates.setdefault(slot.owner, {"art": dict(by_prop[slot.owner].art)})
         update["art"][slot.key] = ref
-        if slot.key == props_db.BODY:
-            update["aspect"] = slot.aspect
-            update["anchor"] = list(slot.anchor or [])
     new_props = [p.model_copy(update=prop_updates[p.id]) if p.id in prop_updates else p for p in props]
     new_sets = [
         s.model_copy(update={"layers": [
@@ -889,10 +839,26 @@ def _apply_art(props: list[schemas.Prop], sets: list[schemas.SetDef], slots: lis
     return new_props, new_sets, files
 
 
-def _art_files(art_dir: Path) -> list[Path]:
+def _art_files(art_dir: Path) -> tuple[list[Path], list[str]]:
+    """(candidate files in the art folder, names skipped as links). Symlinks, and anything that
+    does not resolve to a file directly inside the folder, are skipped with a warning, so the
+    seed never reads a file from elsewhere."""
     if not art_dir.is_dir():
-        return []
-    return sorted(p for p in art_dir.iterdir() if p.is_file() and p.name not in ART_IGNORED)
+        return [], []
+    root = art_dir.resolve()
+    out: list[Path] = []
+    links: list[str] = []
+    for path in sorted(art_dir.iterdir()):
+        if path.name in ART_IGNORED and not path.is_symlink():
+            continue
+        if path.is_symlink() or path.resolve().parent != root:
+            log.warning("demo art %s/%s skipped, the placeholder stays: a link, not a file in the folder",
+                        art_dir.name, path.name)
+            links.append(path.name)
+            continue
+        if path.is_file():
+            out.append(path)
+    return out, links
 
 
 def _read_manifest(art_dir: Path) -> dict[str, dict]:
@@ -919,30 +885,22 @@ def _manifest_slot(entry: dict, kind: str, owner: str, key: str) -> bool:
     return entry.get("prop") == owner and entry.get("artKey") == key
 
 
-def _body_rig(entry: dict) -> tuple[float, list[float]]:
-    aspect, anchor = entry.get("aspect"), entry.get("anchor")
-    if (not isinstance(aspect, (int, float)) or isinstance(aspect, bool) or not 0 < aspect < 100
-            or not isinstance(anchor, list) or len(anchor) != 2
-            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in anchor)):
-        raise _SkipArt(f"its {MANIFEST_NAME} entry has no valid aspect and anchor")
-    return props_db.clamp_photo_aspect(float(aspect)), [float(v) for v in anchor]
-
-
 def load_demo_art(
     props: list[schemas.Prop], sets: list[schemas.SetDef], art_dir: Path
 ) -> tuple[list[schemas.Prop], list[schemas.SetDef], tuple[DemoArtFile, ...]]:
     """Apply the baked images in `art_dir` to `props` and `sets` (new models; inputs untouched).
 
     Seed time: reads art/art.json and the PNG bytes only (no image decoding, nothing from
-    agent/). Returns the props and sets with their art refs set ('media/<fixed id>'), each prop
-    body's aspect and anchor from the manifest, and the files to store. A missing or empty
+    agent/). Returns the props and sets with their art refs set ('media/<fixed id>'; nothing
+    else changes: the bake fitted each body into its prop's authored box), and the files to
+    store. A missing or empty
     folder changes nothing. A PNG with no manifest entry, or whose bytes no longer match the
     entry's sha256 (edited after baking), is skipped, with one warning naming every such file
     and the bake command. A file whose name no longer matches a prop, art key, set or layer, a
     second file for one slot, or one over the media size limit, is a warning and skipped.
     Skipped files keep their placeholder; none of this stops the seed.
     """
-    files = _art_files(art_dir)
+    files, _links = _art_files(art_dir)
     if not files:
         return props, sets, ()
     manifest = _read_manifest(art_dir)
@@ -968,9 +926,6 @@ def load_demo_art(
             if kind == "set" and not any(x.depth == _LAYER_DEPTHS[key] for x in by_set[owner].layers):
                 raise _SkipArt(f"set {owner!r} has no {key} layer")
             _check_media_size(data)
-            aspect = anchor = None
-            if kind == "prop" and key == props_db.BODY:
-                aspect, anchor = _body_rig(entry)
         except _SkipArt as exc:
             log.warning("demo art %s skipped, the placeholder stays: %s", where, exc)
             continue
@@ -978,7 +933,7 @@ def load_demo_art(
             log.warning("demo art %s skipped, the placeholder stays: cannot read it (%s)", where, exc)
             continue
         taken[kind, owner, key] = path.name
-        slots.append(_ArtSlot(path.name, kind, owner, key, data, aspect, anchor))
+        slots.append(_ArtSlot(path.name, kind, owner, key, data))
     if unbaked:
         log.warning(
             "demo art: %d file(s) in %s/ are not baked or changed since baking, so they keep their "
@@ -991,14 +946,13 @@ def load_demo_art(
 class BakeResult:
     baked: list[str]  # files recorded in art.json (processed now, or unchanged since the last bake)
     skipped: list[str]  # files that cannot be used (each logged with its reason)
-    reverted: list[str]  # body images that stop a demo scene compiling (the seed keeps the placeholder)
 
     @property
     def ok(self) -> bool:
-        return not self.skipped and not self.reverted
+        return not self.skipped
 
 
-def _bake_one(path: Path, kind: str, owner: str, key: str,
+def _bake_one(path: Path, kind: str, owner: str, key: str, by_prop: Mapping[str, schemas.Prop],
               by_set: Mapping[str, schemas.SetDef]) -> tuple[bytes, dict]:
     """Process one file the way the studio would. -> (final PNG, manifest entry without sha256)."""
     data = _open_art(path)
@@ -1010,16 +964,9 @@ def _bake_one(path: Path, kind: str, owner: str, key: str,
         png = _layer_art(data, key, layer.height)
         entry: dict = {"set": owner, "layer": key}
     else:
-        cut = _prop_art(data)
-        png = cut.png
+        prop = by_prop[owner]
+        png = _prop_art(data, prop.aspect if key in _body_box_keys(prop) else None)
         entry = {"prop": owner, "artKey": key}
-        if key == props_db.BODY:
-            aspect = props_db.clamp_photo_aspect(round(cut.aspect, 4))
-            if aspect != round(cut.aspect, 4):
-                log.warning("demo art %s/%s: aspect %.2f clamped to %.2f so every scene still compiles",
-                            path.parent.name, path.name, cut.aspect, aspect)
-            entry["aspect"] = aspect
-            entry["anchor"] = [round(v, 4) for v in cut.anchor]
     _check_media_size(png)
     with Image.open(io.BytesIO(png)) as im:
         entry["width"], entry["height"] = im.size
@@ -1031,29 +978,28 @@ def bake_demo_art(art_dir: Path | None = None) -> BakeResult:
 
     Each new or changed file (no art.json entry with its sha256) is processed like studio art:
     the white background removed unless it already has transparency (agent.adapters.cutout);
-    props, parts and state art cropped to the shape (agent.tools.art.analyze_cutout), a
-    body's aspect clamped like a photo swap and its anchor measured; layers fitted to their
-    frame (agent.adapters.images.fit_to_size to agent.tools.sets.layer_size), the back layer
-    made fully opaque. The file is rewritten in place in that final form. A file already
-    baked is left alone, so baking twice changes nothing. art.json is then rewritten with
-    every usable file: its slot, pixel size, a body's aspect and anchor, and the sha256 of the
-    final PNG. Unusable files are logged and returned in `skipped` (no entry). Last, the demo
-    scenes are compiled with the baked art (the seed's own path); a body image that would stop
-    one compiling is logged and returned in `reverted` (the seed draws that prop's placeholder
-    body). DemoDataError / DemoCompileError for demo data that is broken without any art.
+    props, parts and state art cropped to the shape (agent.tools.art.analyze_cutout), and art
+    drawn in the body's box (the body, and a state's replacement body) placed on a
+    transparent canvas of the prop's authored aspect (_prop_art), so the prop's rig never
+    changes and the scenes stage exactly as authored; layers fitted to their frame
+    (agent.adapters.images.fit_to_size to agent.tools.sets.layer_size), the back layer made
+    fully opaque. The file is rewritten in place in that final form. A file already baked is
+    left alone, so baking twice changes nothing. art.json is then rewritten with every usable
+    file: its slot, pixel size and the sha256 of the final PNG. Unusable files (and links) are
+    logged once each and returned in `skipped`, with no entry.
 
     Imports agent helpers: a CLI step, never run by the app.
     """
     art_dir = ART_DIR if art_dir is None else art_dir
-    files = _art_files(art_dir)
+    files, links = _art_files(art_dir)
     manifest_path = art_dir / MANIFEST_NAME
     if not files and not manifest_path.exists():
-        return BakeResult([], [], [])
+        return BakeResult([], sorted(links))
     by_prop = {p.id: p for p in load_props()}
     by_set = {s.id: s for s in load_sets()}
     old = _read_manifest(art_dir)
     entries: dict[str, dict] = {}
-    skipped: list[str] = []
+    skipped: list[str] = list(links)
     taken: dict[tuple[str, str, str], str] = {}
     for path in files:
         where = f"{art_dir.name}/{path.name}"
@@ -1067,7 +1013,7 @@ def bake_demo_art(art_dir: Path | None = None) -> BakeResult:
             entry = old.get(path.name)
             if not (entry and entry.get("sha256") == hashlib.sha256(current).hexdigest()
                     and _manifest_slot(entry, kind, owner, key)):
-                png, entry = _bake_one(path, kind, owner, key, by_set)
+                png, entry = _bake_one(path, kind, owner, key, by_prop, by_set)
                 if png != current:
                     tmp = path.with_name(path.name + ".tmp")
                     tmp.write_bytes(png)
@@ -1088,13 +1034,7 @@ def bake_demo_art(art_dir: Path | None = None) -> BakeResult:
     tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     tmp.replace(manifest_path)
 
-    data = load_demo_data(art_dir=art_dir)  # the seed's own path, compile fallback included
-    stored = {p.id: p for p in data.props}
-    reverted = sorted(
-        name for name, e in entries.items()
-        if e.get("artKey") == props_db.BODY and stored[e["prop"]].art.get(props_db.BODY) is None
-    )
-    return BakeResult(sorted(entries), skipped, reverted)
+    return BakeResult(sorted(entries), sorted(skipped))
 
 
 # ----------------------------------------------------------------------------- reset
@@ -1286,7 +1226,7 @@ def _vector_index_line(outcomes: list) -> str:
 
 
 def _bake_cli() -> int:
-    """--bake-art: 0 when every file baked and every scene compiles with it, else 1."""
+    """--bake-art: 0 when every file baked, else 1."""
     import logging
     import sys
 
@@ -1301,9 +1241,6 @@ def _bake_cli() -> int:
           + (f": {', '.join(result.baked)}" if result.baked else "."))
     if result.skipped:
         print(f"Not baked (placeholder stays; reasons above): {', '.join(result.skipped)}", file=sys.stderr)
-    if result.reverted:
-        print("Baked, but a demo scene does not compile with them, so the seed keeps the placeholder "
-              f"body (details above): {', '.join(result.reverted)}", file=sys.stderr)
     return EXIT_OK if result.ok else EXIT_BAD_DATA
 
 

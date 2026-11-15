@@ -366,9 +366,11 @@ part such as `green_sedan.wheel.png`, or the art a state switches to such as
 `black_umbrella.open.png`), and `<setId>.back.png` / `.middle.png` / `.front.png` for set
 layers; the full rules are in [`demo_family/art/README.md`](demo_family/art/README.md). The
 bake cuts each file out like studio art, rewrites it in place in final form and records
-its slot, size, a body's aspect and anchor, and a sha256 in `art/art.json`. It reports
-files it cannot use and bodies whose shape would stop a demo scene compiling, and exits 1
-if there were any. The next seed (`seed.serve` start, or `python -m seed.demo --reset`)
+its slot, size and a sha256 in `art/art.json`. Art never changes a prop's rig: a body
+image is placed, unscaled, on a transparent canvas of the prop's authored aspect
+(bottom-aligned, centred), so a much wider or taller drawing sits small in its box and the
+scenes stage exactly as authored. It reports files it cannot use (and symlinks), and exits
+1 if there were any. The next seed (`seed.serve` start, or `python -m seed.demo --reset`)
 reads only `art.json` and the bytes (no image work, nothing from `agent/`), stores each
 file as a `cutout` under a fixed media id (`seed.demo.demo_art_media_id`) and draws it
 instead of the placeholder. A PNG that was not baked or changed since is a warning naming
