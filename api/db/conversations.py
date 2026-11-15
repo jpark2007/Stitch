@@ -76,10 +76,12 @@ def active_contact(db, family_id: str, contact_id: str) -> dict:
     if not family_id or not contact_id:
         raise PermissionError("An active verified contact is required")
     contact = db.contacts.find_one({"_id": contact_id, "familyId": family_id})
-    if (not contact or contact.get("status") != "active" or not contact.get("verifiedAt")
-            or not contact.get("optInAt") or not db.people.find_one(
-                {"_id": contact.get("personId"), "familyId": family_id}, {"_id": 1})):
-        raise PermissionError("An active verified contact is required")
+    if contact is None:
+        raise PermissionError("An active authorized contact is required")
+    try:
+        contacts.validate_contact_principal(db, contact)
+    except (LookupError, ValueError, PermissionError):
+        raise PermissionError("An active authorized contact is required") from None
     return contact
 
 
@@ -87,6 +89,14 @@ def conversation_key(family_id: str, contact_id: str) -> str:
     if not family_id or not contact_id:
         raise ValueError("Family and contact are required")
     return hashlib.sha256(json.dumps([family_id, contact_id]).encode()).hexdigest()
+
+
+def has_pending_question(db, family_id: str, contact_id: str) -> bool:
+    """Read the selected contact's question state without creating a draft."""
+    row = db.conversations.find_one(
+        {"_id": conversation_key(family_id, contact_id), "familyId": family_id,
+         "contactId": contact_id}, {"pending": 1})
+    return bool(row and row.get("pending"))
 
 
 def load_conversation(db, family_id: str, contact_id: str, person_id: str, principal: str) -> dict:

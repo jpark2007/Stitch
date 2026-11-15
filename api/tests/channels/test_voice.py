@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import struct
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor
@@ -133,6 +134,23 @@ def test_invalid_voice_boundary(voice_stack, change):
 @pytest.mark.parametrize("data", [b"<html>not audio</html>", b"PK\3\4archive", b"RIFF\0\0\0\0WAVE", wav_bytes()[:-1]])
 def test_fake_truncated_wav_rejected(voice_stack, data):
     assert post(voice_stack[0], envelope(data)).status_code == 422
+
+
+@pytest.mark.parametrize("mime", ["audio/wav", "audio/x-wav"])
+@pytest.mark.parametrize("chunk_size", [0x7fffffff, 0xffffffff])
+def test_wav_chunk_outside_riff_rejected_before_receipt_or_transcription(voice_stack, monkeypatch, mime, chunk_size):
+    client, db, worker, transcriber, sender, runs = voice_stack
+    # The RIFF parent ends before JUNK's declared body. wave's chunk reader
+    # raises RuntimeError while skipping it, rather than wave.Error/EOFError.
+    data = b"RIFF" + struct.pack("<I", 12) + b"WAVEJUNK" + struct.pack("<I", chunk_size) + b"x" * 16
+    monkeypatch.setattr(conversations, "save_voice_inbound",
+                        lambda *args, **kwargs: pytest.fail("stored malformed WAV"))
+    result = post(client, envelope(data, mimeType=mime))
+    assert result.status_code == 422
+    assert not db.channelMessages.find_one({"receiptType": "voice"})
+    assert db[media.INLINE].count_documents({}) == 0
+    worker.tick()
+    assert not transcriber.calls and not sender.messages and not runs.starts
 
 
 def test_voice_large_raw_cap_is_scoped(voice_stack):

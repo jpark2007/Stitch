@@ -47,14 +47,28 @@ def resolve_contact(db, provider: str, handle: str) -> dict:
     if len(rows) != 1:
         raise ValueError("Family selection required")
     contact = rows[0]
+    validate_contact_principal(db, contact)
+    return contact
+
+
+def validate_contact_principal(db, contact: dict) -> None:
+    """Revalidate consent, person mapping and current linked-account authority."""
     family_id, person_id = contact.get("familyId"), contact.get("personId")
-    if not family_id or not person_id or not db.people.find_one(
-        {"familyId": family_id, "_id": person_id}, {"_id": 1}
-    ):
+    person = db.people.find_one({"familyId": family_id, "_id": person_id}) if family_id and person_id else None
+    if person is None:
         raise LookupError("Unknown contact")
     if contact.get("status") != "active" or not contact.get("verifiedAt") or not contact.get("optInAt"):
         raise PermissionError("Contact is not opted in")
-    return contact
+    # A phone's proof is not a grant to impersonate a newly linked person or a
+    # removed/deleted account. Recheck authority on intake and every worker effect.
+    user_id = contact.get("userId")
+    if user_id != person.get("userId"):
+        raise PermissionError("Contact identity is no longer authorized")
+    if user_id:
+        from .families import get_member_role
+        if (db.users.find_one({"_id": user_id}, {"_id": 1}) is None
+                or get_member_role(db, family_id, user_id) is None):
+            raise PermissionError("Contact identity is no longer authorized")
 
 
 def stop_contacts(db, provider: str, handle: str, rows: list[dict]) -> None:
@@ -174,15 +188,23 @@ def create_pending_enrollment(db, family_id: str, person_id: str, actor_id: str,
     handle = _identity_handle(provider, handle)
     now = now or datetime.now(timezone.utc)
     person = settings_person(db, family_id, person_id, actor_id)
+    if person.get("userId") and person["userId"] != actor_id:
+        raise PermissionError("Only the linked user can enroll this person")
     _enrollment_rate(db, actor_id, now)
     existing = get_settings_contact(db, family_id, person_id, actor_id)
     matches = matching_contacts(db, provider, handle)
-    if matches and (len(matches) != 1 or existing is None or matches[0]["_id"] != existing["_id"]):
+    if len(matches) > 1:
         raise ContactConflict("Enrollment unavailable")
-    if existing is not None:
-        if (existing.get("status") not in {"pending", "stopped"} or existing.get("channel") != provider
-                or existing.get("handle") != handle or existing.get("userId") != person.get("userId")
-                or (existing.get("status") == "pending" and existing.get("enrollmentExpiresAt", now) > now)):
+    slot = matches[0] if matches else None
+    # One managed contact per person remains enforced; do not silently abandon
+    # a different handle or overwrite a live destination while reclaiming one.
+    if existing is not None and (slot is None or existing["_id"] != slot["_id"]):
+        raise ContactConflict("Enrollment unavailable")
+    if slot is not None:
+        expires = slot.get("enrollmentExpiresAt")
+        expired = (slot.get("status") == "pending" and isinstance(expires, datetime)
+                   and expires <= now)
+        if not expired and slot.get("status") != "stopped":
             raise ContactConflict("Enrollment unavailable")
     code = secrets.token_urlsafe(32)
     fields = {"familyId": family_id, "personId": person_id, "userId": person.get("userId"),
@@ -191,7 +213,7 @@ def create_pending_enrollment(db, family_id: str, person_id: str, actor_id: str,
         "enrollmentExpiresAt": now + timedelta(minutes=10), "enrollmentAttempts": 0,
         "enrollmentInitiator": actor_id, "enrollmentPersonUserId": person.get("userId"),
         "verifiedAt": None, "optInAt": None, "spaceId": None, "spaceKind": None}
-    if existing is None:
+    if slot is None:
         # A deterministic new-contact key serializes creation for the same handle
         # across API workers/families without changing legacy contact indexes.
         key = "enrollment:" + hashlib.sha256(f"{provider}\n{handle}".encode()).hexdigest()
@@ -200,12 +222,18 @@ def create_pending_enrollment(db, family_id: str, person_id: str, actor_id: str,
         except DuplicateKeyError:
             raise ContactConflict("Enrollment unavailable") from None
         return {"_id": key, **fields}, code
-    state = ({"enrollmentHash": existing.get("enrollmentHash"), "enrollmentExpiresAt": {"$lte": now}}
-             if existing["status"] == "pending" else {"stoppedAt": existing.get("stoppedAt")})
-    row = db.contacts.find_one_and_update(
-        {"_id": existing["_id"], "familyId": family_id, "personId": person_id, "status": existing["status"],
-         "channel": provider, "handle": handle, "userId": person.get("userId"), **state},
-        {"$set": fields}, return_document=ReturnDocument.AFTER)
+    # Replace a stale ownership slot in one atomic operation. Match the observed
+    # identity and consent generation so concurrent activation, STOP, or another
+    # claimant wins over this stale request. Replacement drops all old proof data.
+    expected = {key: slot.get(key) for key in (
+        "_id", "familyId", "personId", "userId", "channel", "handle", "status",
+        "enrollmentHash", "enrollmentExpiresAt", "stoppedAt", "verifiedAt", "optInAt",
+        "spaceId", "spaceKind")}
+    try:
+        row = db.contacts.find_one_and_replace(expected, {"_id": slot["_id"], **fields},
+                                               return_document=ReturnDocument.AFTER)
+    except DuplicateKeyError:
+        raise ContactConflict("Enrollment unavailable") from None
     if row is None:
         raise ContactConflict("Enrollment unavailable")
     return row, code
@@ -263,6 +291,8 @@ def redeem_enrollment(db, provider: str, handle: str, code: str, space_id: str,
     try:
         actor = row["enrollmentInitiator"]
         person = settings_person(db, row["familyId"], row["personId"], actor)
+        if person.get("userId") and person["userId"] != actor:
+            return False
         if get_user(db, actor) is None or person.get("userId") != row.get("enrollmentPersonUserId"):
             return False
         if row.get("userId") != person.get("userId"):

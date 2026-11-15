@@ -10,6 +10,7 @@ from PIL import Image, UnidentifiedImageError
 from db import contacts, conversations, media
 from routes.memories import ALLOWED_PHOTO_TYPES
 from .models import InboundPhoto
+from .consent import receive_stop
 
 MAX_IMAGE_PIXELS = 40_000_000
 MAX_IMAGE_FRAMES = 200
@@ -63,6 +64,9 @@ def decode_photo(message: InboundPhoto) -> bytes:
 
 
 def receive_photo(db, message: InboundPhoto) -> dict:
+    stopped = receive_stop(db, message.model_dump(exclude={"dataBase64"}), message.caption)
+    if stopped is not None:
+        return stopped
     # Consent precedes expensive decode and is checked again in the storage layer.
     contact = contacts.resolve_contact(db, message.provider, message.senderId)
     data = decode_photo(message)

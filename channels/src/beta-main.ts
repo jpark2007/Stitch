@@ -7,6 +7,7 @@ export async function startBeta(): Promise<void> {
   const config = betaConfig(process.env);
   const secret = validateSecret(process.env.CHANNELS_SHARED_SECRET ?? "");
   const client = new ApiClient(process.env.CHANNELS_API_URL ?? "http://127.0.0.1:8000", secret, { attempts: 1 });
+  const tickClient = new ApiClient(process.env.CHANNELS_API_URL ?? "http://127.0.0.1:8000", secret, { attempts: 1, timeoutMs: 45_000 });
   const port = Number(process.env.CHANNELS_BRIDGE_PORT ?? "3011");
   if (!Number.isInteger(port) || port < 1 || port > 65535 || port === config.webhookPort) throw new Error("Invalid CHANNELS_BRIDGE_PORT");
   const store = new BetaStore(config.statePath, config.projectId);
@@ -21,7 +22,7 @@ export async function startBeta(): Promise<void> {
   const drain = setInterval(() => { if (!stopping) void bridge.drain(config.projectId, config.agentHandle).catch(() => console.warn("Photon queue storage unavailable")); }, 1000);
   const tick = setInterval(async () => {
     if (stopping || ticking) return; ticking = true;
-    try { await client.post("/internal/channels/tick", {}); } catch { console.warn("Channels tick unavailable"); } finally { ticking = false; }
+    try { await tickClient.post("/internal/channels/tick", {}); } catch { console.warn("Channels tick unavailable"); } finally { ticking = false; }
   }, 60_000);
   const stop = async () => {
     if (stopping) return; stopping = true; clearInterval(drain); clearInterval(tick);
