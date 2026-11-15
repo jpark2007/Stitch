@@ -614,3 +614,112 @@ def test_fullwidth_copy_of_three_digit_code_cannot_leak_in_story(stack):
     draft = db.channelMessages.find_one({"kind": "call-draft"})
     assert draft["text"] == "My code was [code], and we had 12 dumplings"
     assert code not in draft["text"] and fullwidth not in draft["text"]
+
+
+@pytest.fixture
+def automatic(stack, monkeypatch):
+    """The demo host's switch: every signed call is dad's memory in 1984."""
+    import agent.runs
+    started = []
+
+    def start_run(family_id, user_id, person_id, fields, photo_ids):
+        started.append((family_id, user_id, person_id, fields, photo_ids))
+        return f"run_{len(started)}"
+    monkeypatch.setattr(agent.runs, "start_run", start_run)
+    monkeypatch.setenv("STITCH_CHANNELS_CALL_AUTO", "demo_family:dad:1984")
+    return (*stack, started)
+
+
+def codeless(conversation="conv_auto", text="We tipped the canoe anyway."):
+    payload = event("000", conversation, text)
+    payload["data"]["transcript"].pop(0)
+    payload["data"].pop("metadata")
+    return payload
+
+
+def test_automatic_call_starts_one_run_for_the_configured_person_without_a_code(automatic):
+    client, db, started = automatic
+    assert deliver(client, codeless()).json() == {"received": True}
+    assert len(started) == 1
+    family_id, user_id, person_id, fields, photo_ids = started[0]
+    assert (family_id, user_id, person_id, photo_ids) == ("demo_family", "demo_user_david", "dad", [])
+    assert (fields.text, fields.year, fields.channel) == ("We tipped the canoe anyway.", 1984, "voice")
+    row = db.channelMessages.find_one({"kind": "call-run"})
+    assert row["status"] == "started" and row["runId"] == "run_1" and "text" not in row
+    assert db.channelMessages.count_documents({"kind": "call-draft"}) == 0
+    # The exact retry is acknowledged and starts nothing; a changed body is refused.
+    assert deliver(client, codeless()).status_code == 200
+    assert deliver(client, codeless(text="Another story entirely.")).status_code == 409
+    assert len(started) == 1
+
+
+def test_automatic_call_drops_a_code_spoken_out_of_habit(automatic):
+    client, db, started = automatic
+    payload = event("417", "conv_habit", "We tipped the canoe anyway.")
+    assert deliver(client, payload).status_code == 200
+    assert started[0][3].text == "We tipped the canoe anyway."
+
+
+def test_automatic_call_is_still_signed_bounded_and_agent_checked(automatic):
+    client, db, started = automatic
+    raw = json.dumps(codeless()).encode()
+    assert client.post(HOOK, content=raw, headers={"content-type": "application/json"}).status_code == 401
+    wrong = codeless("conv_wrong")
+    wrong["data"]["agent_id"] = "other"
+    assert deliver(client, wrong).status_code == 400
+    assert deliver(client, codeless("conv_empty", " ")).status_code == 400
+    assert started == []
+    for index in range(conversations.CALL_AUTO_PER_WINDOW):
+        assert deliver(client, codeless(f"conv_{index}")).status_code in {200, 429}
+    assert deliver(client, codeless("conv_over")).status_code == 429
+    assert len(started) <= conversations.CALL_AUTO_PER_WINDOW
+
+
+@pytest.mark.parametrize("setting", ["demo_family:dad", "demo_family:dad:84", "demo family:dad:1984", ":dad:1984"])
+def test_malformed_automatic_setting_fails_closed(automatic, monkeypatch, setting):
+    client, db, started = automatic
+    monkeypatch.setenv("STITCH_CHANNELS_CALL_AUTO", setting)
+    assert deliver(client, codeless()).status_code == 503
+    assert started == [] and db.channelMessages.count_documents({"kind": "call-run"}) == 0
+
+
+@pytest.mark.parametrize("target", ["demo_family:nobody:1984", "other:dad:1984", "demo_family:grandpa_luis:1984"])
+def test_automatic_call_needs_a_person_linked_to_a_current_member(automatic, monkeypatch, target):
+    client, db, started = automatic
+    monkeypatch.setenv("STITCH_CHANNELS_CALL_AUTO", target)
+    assert deliver(client, codeless()).status_code == 503
+    assert started == [] and db.channelMessages.count_documents({"kind": "call-run"}) == 0
+
+
+def test_failed_start_frees_the_call_for_the_provider_retry(automatic, monkeypatch):
+    client, db, started = automatic
+    import agent.runs
+    working = agent.runs.start_run
+    monkeypatch.setattr(agent.runs, "start_run", lambda *args: (_ for _ in ()).throw(RuntimeError("studio down")))
+    assert deliver(client, codeless()).status_code == 503
+    assert db.channelMessages.count_documents({"kind": "call-run"}) == 0
+    monkeypatch.setattr(agent.runs, "start_run", working)
+    assert deliver(client, codeless()).status_code == 200
+    assert len(started) == 1
+
+
+def test_latest_call_run_is_only_shown_to_its_own_person(automatic):
+    client, db, started = automatic
+    login(client)
+    assert client.get(BASE + "/call-runs/latest").json() == {"run": None, "automatic": True}
+    assert deliver(client, codeless()).status_code == 200
+    shown = client.get(BASE + "/call-runs/latest")
+    assert shown.headers["cache-control"] == "no-store"
+    assert shown.json()["run"]["runId"] == "run_1" and shown.json()["automatic"] is True
+    login(client, "ana@demo.stitch")
+    assert client.get(BASE + "/call-runs/latest").json()["run"] is None
+
+
+def test_without_the_setting_a_codeless_call_is_refused_and_nothing_starts(stack, monkeypatch):
+    client, db = stack
+    import agent.runs
+    monkeypatch.setattr(agent.runs, "start_run", lambda *args: pytest.fail("no automatic add without the setting"))
+    monkeypatch.delenv("STITCH_CHANNELS_CALL_AUTO", raising=False)
+    assert deliver(client, codeless()).status_code == 400
+    login(client)
+    assert client.get(BASE + "/call-runs/latest").json() == {"run": None, "automatic": False}

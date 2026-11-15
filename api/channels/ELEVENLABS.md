@@ -179,5 +179,20 @@ Chinese text and edit it before choosing Add a memory. If pairing fails, obtain 
 fresh code and retry the call; do not manually infer identity or reuse another
 person's code. No live test is claimed by this implementation.
 
+## Automatic add for a supervised demo
+
+`STITCH_CHANNELS_CALL_AUTO=<familyId>:<personId>:<year>` on the host (for example
+`macoskos:<Rick's person id>:1984`) removes the spoken code and the draft step.
+Every signed call from an allowed agent then starts Add a memory at once, as that
+person, in that year. The person must be linked to a signed-in member of the
+family. With that person's account open on Add a memory, the page moves to the
+run by itself when the call ends, and the follow-up question is answered there.
+
+It is off unless set, and a malformed value answers 503. While it is on, anyone
+who reaches the phone number adds to that person's book, call codes are ignored
+(one spoken out of habit is dropped), and nothing is saved as a draft. At most ten
+calls start a run in fifteen minutes. A provider retry of the same call starts
+nothing. Unset it after the demo.
+
 Provider references: [post-call payloads](https://elevenlabs.io/docs/eleven-agents/workflows/post-call-webhooks),
 [webhook delivery behavior](https://elevenlabs.io/docs/eleven-api/resources/webhooks).

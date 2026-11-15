@@ -53,6 +53,7 @@ import { isApiError, isMockMode } from "@/lib/api";
 
 import { AddForm, AddLoadFailed, LOAD_ERROR, messageOf, type FormPreview, type StartedRun } from "./AddForm";
 import { AddRun } from "./AddRun";
+import { useCallRun } from "./callRun";
 import {
   ADD_BACK,
   currentPath,
@@ -293,6 +294,20 @@ function AddFlow(props: {
     },
     [fid, router, pageWatch],
   );
+
+  // A phone call that starts its own memory opens here, as if it had been sent
+  // from this form. Only the plain form waits for one: not a run, a retry or
+  // a second telling.
+  const waitsForCall = run === null && !runId && !retryOf && !memoryId ? fid : null;
+  const onCallRun = useCallback(
+    (callRunId: string) => {
+      if (!fid) return;
+      setRun(reattach(callRunId));
+      router.replace(runHref({ familyId: fid, runId: callRunId }), { scroll: false });
+    },
+    [fid, router],
+  );
+  useCallRun(waitsForCall, onCallRun);
 
   // After the run's own error: back to the form, filled in with what it was
   // sent. The form shows at once (tellingAgain), before ?retry= catches up.

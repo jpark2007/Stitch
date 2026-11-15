@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict
 from auth import FamilyAccess, family_member
 from db.client import get_db
 from db import conversations
-from .elevenlabs import configuration
+from .elevenlabs import auto_target, configuration
 
 
 def enabled(response: Response):
@@ -42,6 +42,14 @@ def create_pairing(person_id: str, body: Empty, access: FamilyAccess = Depends(f
     return {"code": code, "expiresAt": row["expireAt"], "personId": person_id,
         "phoneNumber": configuration().phone_number,
         "instruction": "Read STITCH followed by these three digits as one turn at the start of your call, one digit at a time in English or Chinese. Start your call soon and finish before this code expires in fifteen minutes. Your words become a private draft for your review; nothing is submitted automatically."}
+
+
+@router.get("/call-runs/latest")
+def latest_run(access: FamilyAccess = Depends(family_member), db=Depends(get_db)):
+    """The run the newest automatic call started for the caller's own person, or null."""
+    row = conversations.latest_call_run(db, access.family_id, access.user.id)
+    return {"run": {"runId": row["runId"], "createdAt": row["createdAt"]} if row else None,
+            "automatic": auto_target() is not None}
 
 
 @router.get("/call-drafts")
