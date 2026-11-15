@@ -45,6 +45,10 @@ Environment:
   signed /internal/channels/* routes (kept out of the OpenAPI schema) and the cookie
   /families/{fid}/channels settings routes are mounted, startup creates the channel indexes
   (a failure there stops startup), and the two media intake paths get a larger body cap.
+- STITCH_CHANNELS_ELEVENLABS: exactly "1", together with STITCH_CHANNELS exactly "1", caps the
+  ElevenLabs post-call webhook (POST /internal/channels/elevenlabs/post-call, that exact path)
+  at MAX_ELEVENLABS_POST_CALL_BODY_BYTES (256 KiB), below the ordinary limit. Any other value
+  of either flag leaves that path on the ordinary limit. Read when create_app() runs.
 
 No agent step can make startup fail: on any error it logs, and the run routes answer 503.
 Validation errors (422) never echo the request input back, so a rejected signup or login
@@ -53,7 +57,9 @@ does not send its password back in the response.
 Request bodies are capped before any route reads them (BodySizeLimitMiddleware): a POST,
 PUT or PATCH body over MAX_MULTIPART_BODY_BYTES (multipart/form-data) or
 MAX_JSON_BODY_BYTES (anything else) is a 413 {"detail": "That request is too large"},
-by Content-Length up front or by counting a chunked body as it streams in. It sits inside
+by Content-Length up front or by counting a chunked body as it streams in. An exact-path cap
+(the Channels media and ElevenLabs paths above) replaces those two limits on that one path,
+larger or smaller, under the same two checks. It sits inside
 CORSMiddleware, so the 413 carries the CORS headers and the web app can show it. GET
 requests, the run event streams among them, pass straight through.
 
@@ -162,6 +168,10 @@ BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 # signed JSON body. Only these exact paths, and only when Channels is mounted.
 MAX_CHANNELS_MEDIA_BODY_BYTES = 27_978_412
 CHANNELS_MEDIA_PATHS = frozenset({"/internal/channels/inbound-photo", "/internal/channels/inbound-voice"})
+# ElevenLabs post-call webhook: a smaller cap than the default, on this exact path only, and
+# only when channels_elevenlabs_enabled().
+MAX_ELEVENLABS_POST_CALL_BODY_BYTES = 262_144
+ELEVENLABS_POST_CALL_PATH = "/internal/channels/elevenlabs/post-call"
 CHANNELS_STATE = "channels_enabled"
 
 
@@ -198,6 +208,21 @@ def channels_enabled() -> bool:
     only that exact string, so "true", "yes" or " 1" must not mount routes that then refuse.
     """
     return os.environ.get("STITCH_CHANNELS") == "1"
+
+
+def channels_elevenlabs_enabled() -> bool:
+    """True only when STITCH_CHANNELS and STITCH_CHANNELS_ELEVENLABS are both exactly "1"."""
+    return channels_enabled() and os.environ.get("STITCH_CHANNELS_ELEVENLABS") == "1"
+
+
+def body_path_limits() -> dict[str, int]:
+    """Exact-path body caps for BodySizeLimitMiddleware, from the Channels flags (empty when off)."""
+    limits: dict[str, int] = {}
+    if channels_enabled():
+        limits.update(dict.fromkeys(CHANNELS_MEDIA_PATHS, MAX_CHANNELS_MEDIA_BODY_BYTES))
+    if channels_elevenlabs_enabled():
+        limits[ELEVENLABS_POST_CALL_PATH] = MAX_ELEVENLABS_POST_CALL_BODY_BYTES
+    return limits
 
 
 def agent_mode() -> str:
@@ -493,7 +518,9 @@ class BodySizeLimitMiddleware:
         self.json_limit = json_limit
         self.multipart_limit = multipart_limit
         # Exact scope["path"] matches (no prefix, case or trailing-slash variants; the query
-        # string is not part of the path). Whatever the content type, these win.
+        # string is not part of the path). Whatever the content type, these win, larger or
+        # smaller than the default. The router matches the same decoded scope["path"], so a
+        # percent-encoded spelling of a capped path gets the same cap and the same route.
         self.path_limits = dict(path_limits or {})
 
     def limit_for(self, headers: Headers, path: str = "") -> int:
@@ -566,8 +593,8 @@ def _include_channels(app: FastAPI) -> None:
 
 
 def create_app() -> FastAPI:
-    """Build the app. Reads STITCH_CORS_ORIGINS and STITCH_CHANNELS now; STITCH_FAKE_DB and
-    STITCH_AGENT when it starts.
+    """Build the app. Reads STITCH_CORS_ORIGINS, STITCH_CHANNELS and STITCH_CHANNELS_ELEVENLABS
+    now; STITCH_FAKE_DB and STITCH_AGENT when it starts.
 
     Middleware runs outermost first: CORSMiddleware, then BodySizeLimitMiddleware, so a
     413 for an oversized body still carries the CORS headers. (Starlette's add_middleware
@@ -580,7 +607,7 @@ def create_app() -> FastAPI:
         BodySizeLimitMiddleware,
         json_limit=MAX_JSON_BODY_BYTES,
         multipart_limit=MAX_MULTIPART_BODY_BYTES,
-        path_limits=dict.fromkeys(CHANNELS_MEDIA_PATHS, MAX_CHANNELS_MEDIA_BODY_BYTES) if with_channels else None,
+        path_limits=body_path_limits() or None,
     )
     app.add_middleware(
         CORSMiddleware,

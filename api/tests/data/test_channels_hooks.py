@@ -1,6 +1,7 @@
 """main.py's Stitch Channels hooks (api/channels/README.md, "Integration hooks"): mounting
-behind STITCH_CHANNELS exactly "1", startup channel indexes, the media body cap, and the
-family purge of the Channels collections.
+behind STITCH_CHANNELS exactly "1", startup channel indexes, the media body cap, the smaller
+ElevenLabs post-call body cap (STITCH_CHANNELS_ELEVENLABS also exactly "1"), and the family
+purge of the Channels collections.
 
 Runs on mongomock with TestClient; no MongoDB, no provider, no network, no keys.
 """
@@ -20,6 +21,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 import main
@@ -33,6 +35,8 @@ CAP = main.MAX_CHANNELS_MEDIA_BODY_BYTES
 NORMAL = main.MAX_JSON_BODY_BYTES
 PHOTO = "/internal/channels/inbound-photo"
 VOICE = "/internal/channels/inbound-voice"
+ELEVEN = main.ELEVENLABS_POST_CALL_PATH
+ELEVEN_CAP = main.MAX_ELEVENLABS_POST_CALL_BODY_BYTES
 INTERNAL_PATHS = (
     "/internal/channels/inbound", "/internal/channels/authorize", PHOTO, VOICE,
     "/internal/channels/tick", "/internal/channels/enroll",
@@ -49,7 +53,8 @@ SETTINGS_PATHS = (
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch: pytest.MonkeyPatch, mdb):
     for name in ("STITCH_CHANNELS", "STITCH_FAKE_DB", "STITCH_CORS_ORIGINS", "STITCH_AGENT", "ANTHROPIC_API_KEY",
-                 "VOYAGE_API_KEY", "STITCH_CHANNELS_WORKER", "STITCH_CHANNELS_SCHEDULER"):
+                 "VOYAGE_API_KEY", "STITCH_CHANNELS_WORKER", "STITCH_CHANNELS_SCHEDULER",
+                 "STITCH_CHANNELS_ELEVENLABS"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("STITCH_AGENT", "off")
     monkeypatch.setenv("CHANNELS_SHARED_SECRET", SECRET)
@@ -301,6 +306,218 @@ def test_on_multipart_web_uploads_keep_their_own_limit(on):
 def test_off_the_middleware_has_no_path_limits():
     mw = next(m for m in main.create_app().user_middleware if m.cls is main.BodySizeLimitMiddleware)
     assert not mw.kwargs["path_limits"]
+
+
+# ------------------------------------------------------------------------------- elevenlabs
+
+
+def _body_limit_kwargs() -> dict:
+    """The BodySizeLimitMiddleware kwargs create_app() uses under the current environment."""
+    mw = next(m for m in main.create_app().user_middleware if m.cls is main.BodySizeLimitMiddleware)
+    return dict(mw.kwargs)
+
+
+def _stub_app() -> tuple[FastAPI, list[int]]:
+    """A bare app with a stub route at the ElevenLabs path behind create_app()'s real body caps.
+
+    The stub reads the whole body and records its length, so a request that reaches it got
+    through the middleware. Not create_app() itself: the real webhook route may be mounted there.
+    """
+    seen: list[int] = []
+    app = FastAPI()
+
+    @app.post(ELEVEN)
+    async def post_call(request: Request) -> dict[str, int]:
+        body = await request.body()
+        seen.append(len(body))
+        return {"bytes": len(body)}
+
+    app.add_middleware(main.BodySizeLimitMiddleware, **_body_limit_kwargs())
+    return app, seen
+
+
+def _chunks(size: int, step: int = 65_536):  # no Content-Length: counted as it streams
+    for _ in range(size // step):
+        yield b"x" * step
+    yield b"x" * (size % step)
+
+
+@pytest.fixture
+def eleven(on, monkeypatch):
+    monkeypatch.setenv("STITCH_CHANNELS_ELEVENLABS", "1")
+
+
+def test_eleven_constants():
+    assert ELEVEN_CAP == 262_144 < NORMAL
+    assert ELEVEN == "/internal/channels/elevenlabs/post-call"
+
+
+@pytest.mark.parametrize("channels", [None, "", "0", "1", "true", " 1", "01", "1 "])
+@pytest.mark.parametrize("elevenlabs", [None, "", "0", "1", "true", " 1", "01", "1 "])
+def test_eleven_enabled_only_when_both_flags_are_exactly_one(monkeypatch, channels, elevenlabs):
+    for name, raw in (("STITCH_CHANNELS", channels), ("STITCH_CHANNELS_ELEVENLABS", elevenlabs)):
+        if raw is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, raw)
+    both = channels == "1" and elevenlabs == "1"
+    assert main.channels_elevenlabs_enabled() is both
+    limits = main.body_path_limits()
+    assert limits.get(ELEVEN) == (ELEVEN_CAP if both else None)
+    # The media caps follow STITCH_CHANNELS alone, unchanged by the ElevenLabs flag.
+    assert {k: v for k, v in limits.items() if k != ELEVEN} == ({PHOTO: CAP, VOICE: CAP} if channels == "1" else {})
+    assert _body_limit_kwargs()["path_limits"] == (limits or None)
+
+
+@pytest.mark.parametrize("channels, elevenlabs", [
+    (None, None), (None, "1"), ("1", None), ("1", "true"), ("1", " 1"), ("1", "01"), ("1", "1 "), ("true", "1"),
+    (" 1", "1"), ("01", "1"), ("1 ", "1"), ("1", "1"),
+])
+def test_eleven_path_limit_through_the_whole_app(monkeypatch, channels, elevenlabs):
+    for name, raw in (("STITCH_CHANNELS", channels), ("STITCH_CHANNELS_ELEVENLABS", elevenlabs)):
+        if raw is not None:
+            monkeypatch.setenv(name, raw)
+    both = channels == "1" and elevenlabs == "1"
+    headers = {"content-type": "application/json"}
+    with TestClient(main.create_app()) as c:
+        over_cap = c.post(ELEVEN, content=b"x" * (ELEVEN_CAP + 1), headers=headers)
+        if both:
+            assert (over_cap.status_code, over_cap.json()) == (413, TOO_LARGE)
+        else:  # the ordinary limit: whatever answers, it is not the size middleware
+            assert over_cap.status_code != 413, over_cap.text
+            at_normal = c.post(ELEVEN, content=b"x" * NORMAL, headers=headers)
+            assert at_normal.status_code != 413, at_normal.text
+        over_normal = c.post(ELEVEN, content=b"x" * (NORMAL + 1), headers=headers)
+        assert (over_normal.status_code, over_normal.json()) == (413, TOO_LARGE)
+        at_cap = c.post(ELEVEN, content=b"x" * ELEVEN_CAP, headers=headers)
+        assert at_cap.status_code != 413, at_cap.text
+
+
+def test_eleven_cap_is_exact_for_content_length_and_chunked_bodies(eleven):
+    app, seen = _stub_app()
+    headers = {"content-type": "application/json"}
+    with TestClient(app) as c:
+        at = c.post(ELEVEN, content=b"x" * ELEVEN_CAP, headers=headers)
+        assert (at.status_code, at.json()) == (200, {"bytes": ELEVEN_CAP})
+        over = c.post(ELEVEN, content=b"x" * (ELEVEN_CAP + 1), headers=headers)
+        assert (over.status_code, over.json()) == (413, TOO_LARGE)
+        streamed_at = c.post(ELEVEN, content=_chunks(ELEVEN_CAP), headers=headers)
+        assert (streamed_at.status_code, streamed_at.json()) == (200, {"bytes": ELEVEN_CAP})
+        streamed = c.post(ELEVEN, content=_chunks(ELEVEN_CAP + 1), headers=headers)
+        assert (streamed.status_code, streamed.json()) == (413, TOO_LARGE)
+        # A lying Content-Length under the cap does not get a bigger body through.
+        lying = c.post(ELEVEN, content=_chunks(ELEVEN_CAP + 1), headers={**headers, "content-length": "10"})
+        assert lying.status_code in (400, 413), lying.text
+    assert seen == [ELEVEN_CAP, ELEVEN_CAP]
+
+
+def test_eleven_cap_holds_whatever_the_content_type(eleven):
+    app, seen = _stub_app()
+    with TestClient(app) as c:
+        for content_type in ("multipart/form-data; boundary=x", "text/plain", ""):
+            res = c.post(ELEVEN, content=b"x" * (ELEVEN_CAP + 1), headers={"content-type": content_type})
+            assert (res.status_code, res.json()) == (413, TOO_LARGE), content_type
+    assert seen == []
+
+
+@pytest.mark.parametrize("path", [
+    ELEVEN + "?big=1",
+    "/internal/channels/elevenlabs%2Fpost-call",
+    "/internal/channels/eleven%6Cabs/post-call",
+    "/internal/channels/elevenlabs/post%2Dcall",
+])
+def test_eleven_variants_that_reach_the_route_get_the_cap(eleven, path):
+    app, seen = _stub_app()
+    with TestClient(app) as c:
+        over = c.post(path, content=b"x" * (ELEVEN_CAP + 1), headers={"content-type": "application/json"})
+        assert (over.status_code, over.json()) == (413, TOO_LARGE), path
+        at = c.post(path, content=b"x" * ELEVEN_CAP, headers={"content-type": "application/json"})
+        assert (at.status_code, at.json()) == (200, {"bytes": ELEVEN_CAP}), path
+    assert seen == [ELEVEN_CAP]
+
+
+@pytest.mark.parametrize("path", [
+    ELEVEN.upper(), "/internal/channels/ElevenLabs/post-call", "/internal//channels/elevenlabs/post-call",
+    "/internal/channels//elevenlabs/post-call", "/internal/channels/elevenlabs/post-call/x",
+    "/internal/channels/elevenlabs/post-calls",
+])
+def test_eleven_variants_with_the_default_limit_never_reach_the_route(eleven, path):
+    app, seen = _stub_app()
+    with TestClient(app) as c:
+        res = c.post(path, content=b"x" * (ELEVEN_CAP + 1), headers={"content-type": "application/json"})
+        assert res.status_code == 404, (path, res.status_code, res.text)
+        over = c.post(path, content=b"x" * (NORMAL + 1), headers={"content-type": "application/json"})
+        assert (over.status_code, over.json()) == (413, TOO_LARGE), path
+    assert seen == []
+
+
+async def _raw_post(app, path: str, body: bytes) -> int:
+    """POST straight through ASGI with this exact scope["path"] (an HTTP client would read a
+    leading "//" as a host name). Returns the response status."""
+    sent: list[dict] = []
+    messages = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def receive():
+        return messages.pop(0) if messages else {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+             "scheme": "http", "path": path, "raw_path": path.encode(), "root_path": "", "query_string": b"",
+             "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+             "client": ("testclient", 50000), "server": ("testserver", 80)}
+    await app(scope, receive, send)
+    return next(m["status"] for m in sent if m["type"] == "http.response.start")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_eleven_leading_double_slash_never_reaches_the_route(eleven, anyio_backend):
+    app, seen = _stub_app()
+    path = "/" + ELEVEN
+    assert await _raw_post(app, path, b"x" * (ELEVEN_CAP + 1)) == 404
+    assert await _raw_post(app, path, b"x" * (NORMAL + 1)) == 413
+    assert await _raw_post(app, ELEVEN, b"x" * (ELEVEN_CAP + 1)) == 413  # the same helper does hit the cap
+    assert await _raw_post(app, ELEVEN, b"x" * ELEVEN_CAP) == 200
+    assert seen == [ELEVEN_CAP]
+
+
+def test_eleven_trailing_slash_redirects_without_reading_and_the_retry_is_capped(eleven):
+    app, seen = _stub_app()
+    with TestClient(app) as c:
+        moved = c.post(ELEVEN + "/", content=b"x" * (ELEVEN_CAP + 1), headers={"content-type": "application/json"},
+                       follow_redirects=False)
+        assert moved.status_code == 307
+        assert moved.headers["location"].endswith(ELEVEN)
+        assert seen == []  # the handler never ran on the slash path
+        followed = c.post(ELEVEN + "/", content=b"x" * (ELEVEN_CAP + 1), headers={"content-type": "application/json"})
+        assert (followed.status_code, followed.json()) == (413, TOO_LARGE)
+    assert seen == []
+
+
+@pytest.mark.parametrize("path", [
+    "/internal/channels/inbound", "/internal/channels/tick", "/families/fam_a/memories",
+    "/internal/channels/elevenlabs", "/internal/channels/elevenlabs/pre-call",
+])
+def test_eleven_on_every_other_path_keeps_the_normal_limit(eleven, path):
+    with TestClient(main.create_app()) as c:
+        at = c.post(path, content=b"x" * (ELEVEN_CAP + 1), headers={"content-type": "application/json"})
+        assert at.status_code != 413, (path, at.text)
+        res = c.post(path, content=b"x" * (NORMAL + 1), headers={"content-type": "application/json"})
+    assert (res.status_code, res.json()) == (413, TOO_LARGE), path
+
+
+def test_eleven_leaves_the_media_and_multipart_caps_unchanged(eleven):
+    kwargs = _body_limit_kwargs()
+    assert kwargs["path_limits"] == {PHOTO: CAP, VOICE: CAP, ELEVEN: ELEVEN_CAP}
+    assert kwargs["json_limit"] == NORMAL
+    assert kwargs["multipart_limit"] == main.MAX_MULTIPART_BODY_BYTES
+    with TestClient(main.create_app()) as c:
+        over = c.post(PHOTO, content=b"x" * (CAP + 1), headers={"content-type": "application/json"})
+        assert (over.status_code, over.json()) == (413, TOO_LARGE)
+        big = c.post(VOICE, content=b"x" * (NORMAL + 1), headers={"content-type": "application/json"})
+        assert big.status_code == 401, big.text  # over the default, under the media cap: reaches the handler
 
 
 # ------------------------------------------------------------------------------- purge
