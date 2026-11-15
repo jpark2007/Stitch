@@ -34,19 +34,26 @@ It ends on the kitchen scene: Carol walks in with the kitten, hands Marmalade to
 
 ## 2. Rick tells "Matching overalls on the lake" on the phone
 
-This one is told on a call (Stitch Channels: start the launcher with `--channels`), or typed on /add as Rick if the call is not available. It matches any telling that has the word **"canoe"** in it, so a transcript that wanders or gets a few words wrong still lands on the prepared scene.
+The call itself only saves a **private draft** for Rick. The memory (and the replayed canoe scene) starts when Rick submits that draft through Add a memory. The prepared scene matches any telling with the word **"canoe"** in it, so a transcript that wanders still lands on it.
 
-What Rick says on the call:
+1. **Sign in as Rick** in a fresh window: `rick@macosko.demo` / `stitch-demo`. His account is linked to his own person, which is what lets the call land in his drafts.
+2. **Get a call code:** open the call-pairing screen (Settings → notifications, or `/demo?family=macoskos`) and create a code. It is **three digits**, valid 15 minutes. Make a fresh one right before the call.
+3. **Call the ElevenLabs agent.** When it asks, say **"STITCH"** followed by the three digits, on their own, before the story (for example "STITCH 4 1 7"). Then tell the story:
 
-> Linda sewed matching overalls for all six of us for the canoe trip, so nobody could get lost. We tipped the canoe anyway, and Katie still says it was the best day of the summer.
+   > Linda sewed matching overalls for all six of us for the canoe trip, so nobody could get lost. We tipped the canoe anyway, and Katie still says it was the best day of the summer.
 
-If asked when: *"That was the fall of 1984."* (typed: `1984`)
+   Hang up when done.
+4. **Review the draft:** back on the web as Rick, open his call drafts (the same pairing screen lists them). The transcript is there, private to Rick; fix any words if needed.
+5. **Submit it through Add a memory:** use the draft to start Add a memory, set **When was this?** to `1984`, and submit.
+6. The agent feed runs. It asks *"Who was the first one in the water?"*; answer:
 
-The agent asks: *"Who was the first one in the water?"* Answer:
+   > Daniel. He was in the front of the canoe.
 
-> Daniel. He was in the front of the canoe.
+7. It ends on the lake scene: the family walks down to the red canoe, four climb in, and pulling **"Pull to tip the canoe"** tips it with a splash.
 
-It ends on the lake scene: the family walks down to the red canoe, four climb in, it tips. Pull "Pull to tip the canoe".
+If the call is not available, type the same story on /add as Rick (year 1984) and it replays the same way.
+
+The demo host must run the launcher with `--channels`, `STITCH_CHANNELS_ELEVENLABS=1`, `CHANNELS_SHARED_SECRET`, `ELEVENLABS_WEBHOOK_SECRET` and `ELEVENLABS_AGENT_IDS`, and the ElevenLabs post-call webhook must reach that host's API (see `channels/CALLS.md`).
 
 Photo for the typed version: `~/stitch-private/demo-family/prepped/canoe.jpg`
 
