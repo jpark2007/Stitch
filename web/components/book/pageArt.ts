@@ -78,6 +78,7 @@ export async function drawStoryPage(
     top: bodyTop,
     tail: storyTailHeight(spread),
     photos: taped.map((p) => photoAspect(p.aspect)),
+    captions: taped.map((p) => Boolean(p.caption)),
   });
   const photos = taped.slice(0, plan.photos);
   // Without photos the words sit on their own layer, to be set in the
@@ -165,15 +166,23 @@ export async function drawStoryPage(
   }
 
   // Photos, taped into the space that is left (layoutStory kept only those
-  // at least PHOTO_MIN_W wide in it).
+  // at least PHOTO_MIN_W wide in it), each as large as its share of it
+  // allows; prints that do not fill its height are set in its middle.
   const top = photoTop(y);
   const room = photoRoom(photos.length, y);
-  const [w0, w1] = photoWidths(room, photos.map((p) => photoAspect(p.aspect)));
+  const prints = photos.map((p) => ({ aspect: photoAspect(p.aspect), caption: Boolean(p.caption) }));
+  const [w0, w1] = photoWidths(room, prints.map((p) => p.aspect), prints.map((p) => p.caption));
   if (photos.length === 1) {
-    if (w0 > 0) await drawPhoto(ctx, photos[0], left + (width - w0) / 2 + 10, top, w0, -0.03, seed + 1, fonts, "top");
+    const dy = Math.max(0, Math.round((room - printHeight(w0, prints[0].aspect, prints[0].caption)) / 2));
+    // A little right of centre, as before, unless the print takes the whole measure.
+    const x = left + (width - w0) / 2 + Math.min(10, (width - w0) / 2);
+    if (w0 > 0) await drawPhoto(ctx, photos[0], x, top + dy, w0, -0.03, seed + 1, fonts, "top");
   } else if (photos.length >= 2) {
-    if (w0 > 0) await drawPhoto(ctx, photos[0], left - 6, top, w0, -0.055, seed + 1, fonts, "top");
-    if (w1 > 0) await drawPhoto(ctx, photos[1], right - w1 + 8, top + Math.min(70, room * 0.16), w1, 0.06, seed + 2, fonts, "corners");
+    const drop = pairDrop(room);
+    const tall = Math.max(printHeight(w0, prints[0].aspect, prints[0].caption), drop + printHeight(w1, prints[1].aspect, prints[1].caption));
+    const dy = Math.max(0, Math.round((room - tall) / 2));
+    if (w0 > 0) await drawPhoto(ctx, photos[0], left - 6, top + dy, w0, -0.055, seed + 1, fonts, "top");
+    if (w1 > 0) await drawPhoto(ctx, photos[1], right - w1 + 8, top + dy + drop, w1, 0.06, seed + 2, fonts, "corners");
   }
 
   pageNumber(pageCtx, page, "left", fonts);
@@ -220,24 +229,67 @@ export function photoAspect(aspect: number | undefined): number {
   return typeof aspect === "number" && Number.isFinite(aspect) && aspect > 0 ? Math.min(4, Math.max(0.25, aspect)) : 4 / 3;
 }
 
-/** Where the photos are taped, for words ending at y. */
-function photoTop(y: number) {
-  return Math.max(y + 46, 700);
+/** The story page's measure, page px (drawStoryPage's left to right). */
+export const PHOTO_MEASURE = PAGE_PX_W - 96 - 134;
+/** The space between two photos side by side, page px (they also lean, and are placed 14 px further apart). */
+const PAIR_GAP = 40;
+/** The highest the photos' space starts, page px, however soon the words end. */
+const PHOTO_TOP_MIN = 560;
+
+/** Where the photos' space starts, for words ending at y. */
+export function photoTop(y: number) {
+  return Math.max(y + 46, PHOTO_TOP_MIN);
 }
 
-/** The photos' room under words ending at y (two photos stand a little lower). */
+/** The photos' room (height) under words ending at y (two photos stand a little lower). */
 export function photoRoom(count: number, y: number) {
   return PAGE_PX_H - (count >= 2 ? 140 : 150) - photoTop(y);
 }
 
+/** How much lower the second of two photos is set, in `room`. */
+export function pairDrop(room: number) {
+  return Math.max(0, Math.min(70, room * 0.16));
+}
+
 /**
- * Each photo's print width in `room` (photoRoom), by aspect: one photo
- * centred, or two, the second smaller and set lower. Not positive when the
- * room is not.
+ * A print's full height, page px, at `width`: its white border, the picture
+ * at `aspect` (photoAspect), and the strip under it when captioned. Mirrors
+ * photoArt.drawPhoto, which returns the same bottom. 0 when not positive.
  */
-export function photoWidths(room: number, aspects: readonly number[]): number[] {
-  if (aspects.length === 1) return [Math.min(520, room * aspects[0] * 0.9)];
-  if (aspects.length >= 2) return [Math.min(430, room * aspects[0] * 0.82), Math.min(330, room * aspects[1] * 0.72)];
+export function printHeight(width: number, aspect: number, caption = false): number {
+  if (!(width > 0)) return 0;
+  const pad = Math.round(width * 0.05);
+  const imgH = Math.max(1, Math.round((width - pad * 2) / aspect));
+  return imgH + pad * 2 + (caption ? Math.round(width * 0.17) : 0);
+}
+
+/**
+ * The widest print, at most `maxW`, whose full height (printHeight) fits in
+ * `room`. Not positive when the room is not.
+ */
+function fitPrint(room: number, maxW: number, aspect: number, caption: boolean): number {
+  const perWidth = 0.9 / aspect + 0.1 + (caption ? 0.17 : 0);
+  if (!(room > 0)) return Math.min(maxW, room / perWidth);
+  let w = Math.floor(Math.min(maxW, room / perWidth));
+  // The print rounds its border and picture: step in the pixel or two that can add.
+  while (w > 0 && printHeight(w, aspect, caption) > room) w--;
+  return w;
+}
+
+/**
+ * Each photo's print width in `room` (photoRoom), by aspect (photoAspect)
+ * and whether it is captioned, so the whole print fits the room: one photo
+ * as large as the measure and the room allow, or two side by side sharing
+ * the measure, the second set lower (pairDrop). Not positive when the room
+ * is not.
+ */
+export function photoWidths(room: number, aspects: readonly number[], captions: readonly boolean[] = []): number[] {
+  const cap = (i: number) => captions[i] ?? false;
+  if (aspects.length === 1) return [fitPrint(room, PHOTO_MEASURE, aspects[0], cap(0))];
+  if (aspects.length >= 2) {
+    const half = (PHOTO_MEASURE - PAIR_GAP) / 2;
+    return [fitPrint(room, half, aspects[0], cap(0)), fitPrint(room - pairDrop(room), half, aspects[1], cap(1))];
+  }
   return [];
 }
 
@@ -280,6 +332,8 @@ export interface StoryLayoutOptions {
   tail: number;
   /** Each photo's aspect, in the order they are taped in. */
   photos: readonly number[];
+  /** Whether each photo is captioned (a captioned print is taller), same order. */
+  captions?: readonly boolean[];
 }
 
 function setBody(ctx: Ctx, text: string, fonts: PageFonts, width: number, [size, lead]: readonly [number, number], tidy: boolean): StoryBody {
@@ -336,7 +390,7 @@ export function layoutStory(ctx: Ctx, text: string, fonts: PageFonts, o: StoryLa
   const fits = (b: StoryBody, n: number) => {
     const end = o.top + b.height + o.tail;
     if (n === 0) return end <= TEXT_FOOT;
-    return photoWidths(photoRoom(n, end), o.photos.slice(0, n)).every((w) => w >= PHOTO_MIN_W);
+    return photoWidths(photoRoom(n, end), o.photos.slice(0, n), o.captions?.slice(0, n)).every((w) => w >= PHOTO_MIN_W);
   };
   if (!cut) {
     for (let n = Math.min(2, o.photos.length); n >= 0; n--) {
