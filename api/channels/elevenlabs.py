@@ -93,7 +93,10 @@ def pairing_marker(message: str) -> str | None:
 
 
 def without_code(message: str, code: str) -> str | None:
-    """Never retain the numeric secret, and never lose the story around it.
+    """Drop a repeated code from the draft without losing the story around it.
+
+    Best effort: the code is already consumed and the draft is private to its
+    owner, so a code spoken as part of a longer run of numbers is left alone.
 
     A standalone repeat of the code (any recognized spelling, once or several
     times over) is replaced by a marker. A longer number that merely contains
