@@ -178,6 +178,21 @@
   }
 }
 
+/* ---------- The paper stays paper after leaving the wood table ----------
+ * The flow pages' desk (components/flow/deskStyle.ts) darkens the window with
+ * `html:has([data-desk])` and clears body's paper. Next keeps a page you left
+ * mounted but hidden (React Activity: `display: none !important` inline), so
+ * after /add the hidden desk still matches and the tree, a person's book or
+ * any other page came back on black. While no desk is actually shown, the
+ * window keeps its paper. Unlayered and more specific than the desk's rules,
+ * so it wins whichever stylesheet loads last. */
+html:has([data-desk]):not(:has([data-desk]:not([style*="display: none"], [style*="display: none"] *))) {
+  background-color: transparent;
+}
+html:has([data-desk]):not(:has([data-desk]:not([style*="display: none"], [style*="display: none"] *))) body {
+  background-color: var(--paper);
+}
+
 /* ---------- Small reusable type helpers ---------- */
 
 /* Handwritten caption (Caveat), for notes beside photos and figures */
