@@ -8,15 +8,21 @@
    COMFORT_SECONDS each), so a short story still lets its photos breathe.
 2. A beat whose span is under MIN_SHOT cannot hold a shot of its own: it is merged into the
    next beat (the last one into the one before), titles and narration joined.
-3. Each beat can hold between ceil(span / MAX_SHOT) and floor(span / MIN_SHOT) shots. When
-   the photos are more than all beats can hold, the lowest-quality ones are dropped (never a
-   beat's last photo); when they are too few to keep every shot under MAX_SHOT, a beat's photo is
-   shown again (with a different motion) as a last resort.
+3. A photo is never shown twice. Each beat can hold between ceil(span / MAX_SHOT) and
+   floor(span / MIN_SHOT) shots. When the photos are more than all beats can hold, the
+   lowest-quality ones are dropped (never a beat's last photo). When they are too few to keep
+   every shot under MAX_SHOT, each beat keeps at least one and the rest go where a photo
+   would otherwise be held longest, and photos are held longer than MAX_SHOT. A beat that
+   would still hold a photo past LONG_HOLD is merged with its neighbour (the one holding its
+   photos for less time), so the merged beat's photos share its time. (make_film keeps the
+   narration to NARRATION_PER_PHOTO seconds a photo, so this is rare.)
 4. Shot counts per beat stay as close to the plan as those bounds allow, and the photos are
    dealt out in plan order, so a photo moves at most to a neighbouring beat.
 5. Inside a beat, the cuts divide the span evenly, each moved to the nearest word start
    within SNAP seconds (a word that opens a phrase, after a comma or full stop, is preferred)
-   while every shot stays within MIN_SHOT..MAX_SHOT.
+   while every shot stays within MIN_SHOT..MAX_SHOT, or, in a beat with too few photos for
+   that, within MIN_SHOT and an even share of the beat plus SNAP. Every shot lasts at most
+   LONG_HOLD unless a single beat's narration is longer than LONG_HOLD a photo.
 6. Motion follows the photo's focus (left or right of centre pans that way, else a zoom) and
    never repeats on adjacent shots.
 """
@@ -33,6 +39,11 @@ from film.types import Narration
 
 MIN_SHOT = 2.5
 MAX_SHOT = 8.0
+"""The longest shot while there are photos enough."""
+LONG_HOLD = 20.0
+"""The longest a photo is ever held (with too few photos for the narration)."""
+NARRATION_PER_PHOTO = 12.0
+"""The most narration (estimated seconds) make_film keeps per photo; see film.pipeline."""
 TAIL = 1.5
 """Seconds the last photo holds after the last word."""
 COMFORT_SECONDS = 3.0
@@ -110,20 +121,18 @@ def _groups(beats: list[PlanBeat], narration: Narration, end: float) -> list[_Gr
         short = next((i for i, g in enumerate(groups) if g.span < MIN_SHOT - _EPS), None)
         if short is None:
             break
-        a, b = (short, short + 1) if short + 1 < len(groups) else (short - 1, short)
-        first, second = groups[a], groups[b]
-        groups[a : b + 1] = [
-            _Group(
-                first.title,
-                f"{first.narration} {second.narration}",
-                first.start,
-                second.end,
-                first.shots + second.shots,
-            )
-        ]
+        _merge(groups, *((short, short + 1) if short + 1 < len(groups) else (short - 1, short)))
     if groups[0].span < MIN_SHOT:
         groups[0].end = MIN_SHOT
     return groups
+
+
+def _merge(groups: list[_Group], a: int, b: int) -> None:
+    """Groups a and b (= a + 1) become one: a's title, both narrations, both photos."""
+    first, second = groups[a], groups[b]
+    groups[a : b + 1] = [
+        _Group(first.title, f"{first.narration} {second.narration}", first.start, second.end, first.shots + second.shots)
+    ]
 
 
 def _quality(descriptions: dict[str, dict], photo_id: str) -> float:
@@ -132,7 +141,7 @@ def _quality(descriptions: dict[str, dict], photo_id: str) -> float:
 
 
 def _fit_counts(groups: list[_Group], descriptions: dict[str, dict]) -> None:
-    """Drop or repeat photos until sum(lo) <= photos <= sum(hi)."""
+    """Drop the lowest-quality photos until photos <= sum(hi). Never repeats one."""
     while sum(len(g.shots) for g in groups) > sum(g.hi for g in groups):
         # The lowest-quality photo of any beat that keeps one; ties: the fullest beat, the later photo.
         gi, k = min(
@@ -145,21 +154,19 @@ def _fit_counts(groups: list[_Group], descriptions: dict[str, dict]) -> None:
             ),
         )
         del groups[gi].shots[k]
-    while sum(len(g.shots) for g in groups) < sum(g.lo for g in groups):
-        i = max(range(len(groups)), key=lambda i: (groups[i].lo - len(groups[i].shots), -i))
-        g = groups[i]
-        pool = g.shots or next(groups[j].shots for j in sorted(range(len(groups)), key=lambda j: abs(j - i)) if groups[j].shots)
-        uses: dict[str, int] = {}
-        for s in pool:
-            uses[s.photo_id] = uses.get(s.photo_id, 0) + 1
-        last = g.shots[-1].photo_id if g.shots else None
-        pick = min(pool, key=lambda s: (uses[s.photo_id], s.photo_id == last, pool.index(s)))
-        g.shots.append(PlanShot(pick.photo_id, None))
 
 
 def _counts(groups: list[_Group]) -> list[int]:
-    """Shots per beat within each beat's bounds, as close to the plan as possible."""
+    """Shots per beat within each beat's bounds, as close to the plan as possible. With too
+    few photos for every beat's lower bound: one each, the rest one at a time to the beat that
+    would otherwise hold its photos longest."""
     total = sum(len(g.shots) for g in groups)
+    if total < sum(g.lo for g in groups):
+        counts = [1] * len(groups)
+        for _ in range(total - len(groups)):
+            i = max((i for i in range(len(groups)) if counts[i] < groups[i].hi), key=lambda i: (groups[i].span / counts[i], -i))
+            counts[i] += 1
+        return counts
     counts = [min(max(len(g.shots), g.lo), g.hi) for g in groups]
     while sum(counts) < total:
         i = max(
@@ -188,14 +195,22 @@ def _phrase_starts(lines: list[str], narration: Narration) -> set[int]:
     return {i for i, f in enumerate(flags) if f}
 
 
+def _longest(span: float, count: int) -> float:
+    """The longest shot a beat of `span` seconds with `count` photos may have: MAX_SHOT, or
+    with too few photos for that, an even share plus SNAP (room to cut on a word)."""
+    share = span / count
+    return MAX_SHOT if share <= MAX_SHOT else max(share, min(LONG_HOLD, share + SNAP))
+
+
 def _cuts(a: float, b: float, count: int, words: list[tuple[float, bool]]) -> list[float]:
-    """count + 1 cut times from a to b, each shot MIN_SHOT..MAX_SHOT, snapped to words."""
+    """count + 1 cut times from a to b, each shot MIN_SHOT.._longest, snapped to words."""
+    longest = _longest(b - a, count)
     cuts = [a]
     for k in range(1, count):
         prev = cuts[-1]
         after = count - k
-        lo_t = _ceil3(max(prev + MIN_SHOT, b - after * MAX_SHOT))
-        hi_t = _floor3(min(prev + MAX_SHOT, b - after * MIN_SHOT))
+        lo_t = _ceil3(max(prev + MIN_SHOT, b - after * longest))
+        hi_t = _floor3(min(prev + longest, b - after * MIN_SHOT))
         ideal = min(max(prev + (b - prev) / (after + 1), lo_t), hi_t)
         best, best_score = _r(ideal), SNAP
         for t, phrase in words:
@@ -235,6 +250,17 @@ def time_film(beats: list[PlanBeat], narration: Narration, descriptions: dict[st
     groups = _groups(beats, narration, end)
     _fit_counts(groups, descriptions)
     counts = _counts(groups)
+    while len(groups) > 1:
+        holds = [g.span / c for g, c in zip(groups, counts, strict=True)]
+        over = next((i for i, h in enumerate(holds) if h > LONG_HOLD + _EPS), None)
+        if over is None:
+            break
+        # Share the time with the neighbour that holds its photos for less.
+        if over == 0 or (over + 1 < len(groups) and holds[over + 1] <= holds[over - 1]):
+            _merge(groups, over, over + 1)
+        else:
+            _merge(groups, over - 1, over)
+        counts = _counts(groups)
 
     flat = [s for g in groups for s in g.shots]
     phrase = _phrase_starts([b.narration for b in beats], narration)
@@ -268,4 +294,14 @@ def time_film(beats: list[PlanBeat], narration: Narration, descriptions: dict[st
     return TimedFilm(shots=shots, beats=film_beats, words=words, duration=duration)
 
 
-__all__ = ["COMFORT_SECONDS", "MAX_SHOT", "MIN_SHOT", "TAIL", "TimedFilm", "check_narration", "time_film"]
+__all__ = [
+    "COMFORT_SECONDS",
+    "LONG_HOLD",
+    "MAX_SHOT",
+    "MIN_SHOT",
+    "NARRATION_PER_PHOTO",
+    "TAIL",
+    "TimedFilm",
+    "check_narration",
+    "time_film",
+]

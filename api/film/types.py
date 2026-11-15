@@ -58,9 +58,13 @@ class Story:
 
 class Describer(Protocol):
     def describe(self, photo: bytes) -> dict:
-        """Structured facts about one photo (image bytes in), with exactly these keys:
+        """Structured facts about one photo (image bytes in), with these keys:
 
         - "caption": str, a short plain description of what is in it
+        - "scene" (optional; may be absent or empty, as from the offline describer): str, a
+          short normalised label of the moment shown ("family at dinner table", "kids in the
+          lake"). Two photos with the same label taken close together are one moment, and
+          the plan leaves the repeat out when it has photos to spare.
         - "people": list[str], who or what kind of people are visible ("a girl in a red coat")
         - "setting": str, where it is ("a lake dock at dusk")
         - "mood": str, one or two words ("quiet", "giddy")
@@ -79,7 +83,9 @@ class Editor(Protocol):
         Returns {"beats": [{"title": str, "narration": str, "shots": [{"photoId": str,
         "caption": str | None}, ...]}, ...]} where narration is the teller's own words
         (lightly trimmed, first person, nothing invented) and every photoId is one of the
-        given photos, each used at most once. None means: use the deterministic fallback
+        given photos, each used at most once. There are a few more photos than the film wants
+        (film.plan.wanted_shots), so photos may be left out, and a photo that repeats the
+        moment of another should be. None means: use the deterministic fallback
         (chronological order, the story's sentences spread over evenly sized beats).
         """
         ...
