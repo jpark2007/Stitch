@@ -13,6 +13,7 @@ from db import conversations
 from tests.channels.test_settings import stack, login, create, proof, PERSON, BODY, SECRET
 from tests.channels.test_inbox import sign
 from tests.channels.test_worker import Sender, Runs
+from agent.conversation.demo import ScriptedConversation
 
 
 @pytest.fixture
@@ -110,20 +111,22 @@ def test_list_is_bounded_newest_first(linked):
     assert len(result) == 50 and result[0]["text"] == "119" and result[-1]["text"] == "70"
 
 
-def test_worker_acknowledges_saved_draft_without_model_or_automatic_run(linked):
+def test_worker_preserves_follow_up_flow_and_accessible_drafts(linked):
+    from agent.conversation.demo import ScriptedConversation
     client, db = linked
     sender, runs = Sender(), Runs()
-    def forbidden(_):
-        raise AssertionError("Ordinary iMessage storage must not need a model")
-    worker = ChannelWorker(db, sender=sender, agent_factory=forbidden, runs=runs,
+    runs.stream_run = lambda family, run: runs._stream()
+    worker = ChannelWorker(db, sender=sender, agent_factory=ScriptedConversation, runs=runs,
                            web_url="http://localhost:3114", scheduler_enabled=False)
     receive(client, "This story is saved immediately.")
-    assert worker.tick() == {"processed": 1, "sent": 1, "blocked": 0, "scheduler": "manual"}
-    reply = sender.messages[0]["text"]
-    assert "Saved in Stitch" in reply and "#text-drafts" in reply
-    assert "YEAR" not in reply and "SUBMIT" not in reply
-    assert not runs.starts
+    assert worker.tick()["processed"] == 1
     assert drafts(client).json()["drafts"][0]["text"] == "This story is saved immediately."
+    receive(client, "YEAR 1998", "follow-year")
+    worker.tick()
+    receive(client, "SUBMIT", "follow-submit")
+    assert worker.tick()["blocked"] == 0
+    assert len(runs.starts) == 1
+    assert sender.messages[-1]["text"] == "Who was there?"
 
 
 def test_failed_ack_does_not_hide_draft_or_retry_send(linked):
@@ -133,7 +136,7 @@ def test_failed_ack_does_not_hide_draft_or_retry_send(linked):
         sender.messages.append(message)
         raise TimeoutError()
     sender.send = lost
-    worker = ChannelWorker(db, sender=sender, agent_factory=lambda _: None, runs=Runs(), scheduler_enabled=False)
+    worker = ChannelWorker(db, sender=sender, agent_factory=ScriptedConversation, runs=Runs(), scheduler_enabled=False)
     receive(client, "Saved even when acknowledgement is lost.")
     assert worker.tick()["blocked"] == 1
     assert drafts(client).json()["drafts"][0]["text"] == "Saved even when acknowledgement is lost."
