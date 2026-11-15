@@ -84,7 +84,28 @@ import {
 
 type Moment = MomentInfo;
 
-type PickablePerson = { id: string; name: string; born?: number | null; color?: string | null };
+type PickablePerson = {
+  id: string;
+  name: string;
+  born?: number | null;
+  color?: string | null;
+  /** Their puppet's look, for the teller's book beside the form. */
+  item?: string | null;
+  build?: "small" | "short" | "average" | "tall" | null;
+};
+
+/**
+ * What the form holds now, for the teller's book beside it (its story page
+ * fills in as they write). Told on every edit, like onDraftChange.
+ */
+export interface FormPreview {
+  draft: MemoryDraft;
+  photos: File[];
+  people: readonly PickablePerson[];
+  selfPersonId: string;
+  /** The moment's title, for a second telling. */
+  secondTellingOf: string | null;
+}
 
 /** Where the form starts before any question is picked. */
 type Base =
@@ -199,6 +220,8 @@ export function AddForm(props: {
   /** Which family this goes into; named on the page only for someone in two or more. */
   choice: FamilyChoice;
   onStarted: (run: StartedRun) => void;
+  /** Told what the form holds on every edit (the book beside it follows). */
+  onPreview?: (preview: FormPreview) => void;
   /** Fill the form in with what a failed run was sent. */
   restore?: Restore;
   /** `?added=`: someone just added on the add-relative page, to tick under "Who was there?". */
@@ -219,6 +242,7 @@ function AddFormLoader(props: {
   memoryId: string | null;
   choice: FamilyChoice;
   onStarted: (run: StartedRun) => void;
+  onPreview?: (preview: FormPreview) => void;
   restore?: Restore;
   added?: string | null;
   questionId?: string | null;
@@ -232,6 +256,7 @@ function AddFormLoader(props: {
     memoryId,
     choice,
     onStarted,
+    onPreview,
     restore,
     added = null,
     questionId = null,
@@ -282,6 +307,8 @@ function AddFormLoader(props: {
           name: p.name,
           born: p.born ?? null,
           color: p.character?.color ?? null,
+          item: p.character?.item ?? null,
+          build: p.character?.build ?? null,
         }));
         const questions = qs.questions;
         setStatus((s) => {
@@ -373,6 +400,7 @@ function AddFormLoader(props: {
       data={status.data}
       choice={choice}
       onStarted={onStarted}
+      onPreview={onPreview}
       restore={restore}
       added={added}
       questionId={questionId}
@@ -410,12 +438,13 @@ function AddFormReady(props: {
   data: Loaded;
   choice: FamilyChoice;
   onStarted: (run: StartedRun) => void;
+  onPreview?: (preview: FormPreview) => void;
   restore?: Restore;
   added: string | null;
   questionId: string | null;
   momentHome: MomentHome | null;
 }) {
-  const { api, fid, selfPersonId, data, choice, onStarted, restore, added, questionId, momentHome } = props;
+  const { api, fid, selfPersonId, data, choice, onStarted, onPreview, restore, added, questionId, momentHome } = props;
   const { people, questions, base } = data;
   const router = useRouter();
   const baseMemoryId = base.kind === "second" ? base.memoryId : null;
@@ -552,10 +581,20 @@ function AddFormReady(props: {
     }
   }, [currentId, syncQuestion]);
 
+  // The book beside the form follows every edit; the moment's title (a
+  // second telling) is worked out further down, so it is read from a ref.
+  const secondTitleRef = useRef<string | null>(null);
+  const preview = useCallback(
+    (draft: MemoryDraft, photos: File[], secondTellingOf: string | null) =>
+      onPreview?.({ draft, photos, people, selfPersonId, secondTellingOf }),
+    [onPreview, people, selfPersonId],
+  );
+
   const onDraftChange = useCallback(
     (draft: MemoryDraft, photos: File[]) => {
       const second = Boolean(draft.memoryId);
       latest.current = { draft, photos, second };
+      preview(draft, photos, secondTitleRef.current);
       if (photos.length > 0) setPhotosLeft(0);
       // Kept for a reload of this tab. A picked question's text, a moment's
       // year and people are not typed: they come back with the pick.
@@ -570,7 +609,7 @@ function AddFormReady(props: {
         photoCount: photos.length > 0 ? photos.length : photosLeft,
       });
     },
-    [fid, baseMemoryId, currentId, selfPersonId, photosLeft],
+    [fid, baseMemoryId, currentId, selfPersonId, photosLeft, preview],
   );
 
   // Off to the add-relative page: keep the whole draft (all but the photo
@@ -713,6 +752,13 @@ function AddFormReady(props: {
 
   const second = secondTellingOf !== null;
   const secondTitle = secondTellingOf?.title ?? null;
+  // The book's page takes the moment's title as soon as it is known (and the
+  // people, when they are loaded again).
+  useEffect(() => {
+    secondTitleRef.current = secondTitle;
+    const { draft, photos } = latest.current;
+    if (draft) preview(draft, photos, secondTitle);
+  }, [secondTitle, preview]);
   const photosNote = carriedPhotosNote(photosLeft);
   // One question area: the family's notes for a new memory, nothing to pick
   // for a second telling (its own question rides along read-only).
