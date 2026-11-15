@@ -124,6 +124,22 @@ export class SceneView {
   }
 }
 
+/** The reader's switch, named for the view it goes to: the label shown, the action it says aloud, its tooltip. */
+export interface ViewSwitch {
+  readonly to: SceneViewMode;
+  readonly label: string;
+  readonly action: string;
+  readonly title: string;
+}
+
+const TO_BOOK: ViewSwitch = { to: "book", label: "Whole book", action: "See the whole book", title: "See the whole book (Esc)" };
+const TO_SCENE: ViewSwitch = { to: "scene", label: "Cutscene", action: "Back to the cutscene", title: "Back to the cutscene (Esc)" };
+
+/** From the cutscene the switch offers the whole book; from the whole book, the cutscene. */
+export function viewSwitch(mode: SceneViewMode): ViewSwitch {
+  return mode === "scene" ? TO_BOOK : TO_SCENE;
+}
+
 /** What the book's Escape does (after an open explain note or contents list has taken it). */
 export function escapeAction(available: boolean): "toggle" | "focus" {
   return available ? "toggle" : "focus";
