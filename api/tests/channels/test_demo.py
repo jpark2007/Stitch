@@ -281,6 +281,8 @@ def test_web_demo_mounts_settings_on_same_db_without_allowing_cloud_activation(i
             "quietHours": {"start": "21:00", "end": "08:00"}})
         assert updated.status_code == 200
         assert app.state.demo_db.contacts.find_one({"_id": "terminal-contact"})["cadenceDays"] == 7
+        # Linked relatives enroll their own contact, even when another member is an admin.
+        assert client.post("/auth/login", json={"email": "ana@demo.stitch", "password": "stitch-demo"}).status_code == 200
         pending = client.post(base + "/people/mom/enrollment", json={"provider": "imessage", "handle": "+15555550123",
             "timezone": "America/New_York", "cadenceDays": 7, "quietHours": {"start": "21:00", "end": "08:00"}})
         assert pending.status_code == 201 and pending.json()["contact"]["status"] == "pending"

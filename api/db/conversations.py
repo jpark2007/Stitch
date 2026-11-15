@@ -76,10 +76,12 @@ def active_contact(db, family_id: str, contact_id: str) -> dict:
     if not family_id or not contact_id:
         raise PermissionError("An active verified contact is required")
     contact = db.contacts.find_one({"_id": contact_id, "familyId": family_id})
-    if (not contact or contact.get("status") != "active" or not contact.get("verifiedAt")
-            or not contact.get("optInAt") or not db.people.find_one(
-                {"_id": contact.get("personId"), "familyId": family_id}, {"_id": 1})):
-        raise PermissionError("An active verified contact is required")
+    if contact is None:
+        raise PermissionError("An active authorized contact is required")
+    try:
+        contacts.validate_contact_principal(db, contact)
+    except (LookupError, ValueError, PermissionError):
+        raise PermissionError("An active authorized contact is required") from None
     return contact
 
 
