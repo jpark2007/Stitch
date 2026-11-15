@@ -527,9 +527,16 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
       style={{ pointerEvents: view.opened ? "auto" : "none" }}
     >
       <ol
-        className="flex max-w-[calc(100vw-1rem)] items-start px-6 py-1"
-        // No pill: a soft, edgeless shade so the light thread still reads where the bar crosses the page.
-        style={{ background: "radial-gradient(closest-side, rgb(20 12 7 / 0.42), rgb(20 12 7 / 0.18) 60%, transparent)" }}
+        className="flex max-w-[calc(100vw-1rem)] items-start px-3 pt-1 pb-1.5"
+        // A sewn ribbon, not a pill: a strip of dark cloth with a running stitch around its edge,
+        // readable on the wood and where the bar crosses the page.
+        style={{
+          background: "#2a1c13",
+          borderRadius: 3,
+          outline: "1.5px dashed rgb(243 230 207 / 0.42)",
+          outlineOffset: -5,
+          boxShadow: "0 1px 0 rgb(255 255 255 / 0.06) inset, 0 2px 4px rgb(0 0 0 / 0.35)",
+        }}
       >
         {spreads.map((s, i) => {
           const active = view.spread === i + 1;
@@ -568,8 +575,7 @@ function NavDots({ spreads, view, onPick }: { spreads: BookSpread[]; view: BookV
                   style={{
                     color: active ? "#f3e6cf" : "rgb(243 230 207 / 0.55)",
                     fontVariantNumeric: "oldstyle-nums",
-                    // No pill behind it any more: a soft shadow keeps it readable on the wood.
-                    textShadow: "0 1px 2px rgb(0 0 0 / 0.7)",
+
                     visibility: quiet ? "hidden" : undefined,
                     // A dateLine is cut to the dot's width; the title tells it whole.
                     ...(wordy ? WORDY_LABEL : null),
