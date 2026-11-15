@@ -21,10 +21,14 @@ registerHooks({
 
 const {
   FILM_ACCEPT,
+  MAX_ALBUM_PHOTOS,
   MAX_FILM_PHOTOS,
   MIN_FILM_PHOTOS,
   acceptFilmPhotos,
+  albumLine,
   filmRequest,
+  lookingLine,
+  unreadableLine,
   filmServerErrors,
   photoCountLine,
   runQueue,
@@ -78,8 +82,37 @@ test("acceptFilmPhotos stops at 40 and names what was left out", () => {
   assert.match(many.errors[0], /^“y0.jpg”, “y1.jpg”, “y2.jpg” and 42 more weren’t added/);
 });
 
+test("acceptFilmPhotos takes a whole album up to 1,000 and says plainly what was left out", () => {
+  const album = Array.from({ length: 1003 }, (_, i) => photo(`a${i}.jpg`));
+  const { accepted, errors } = acceptFilmPhotos([], album, MAX_ALBUM_PHOTOS);
+  assert.equal(MAX_ALBUM_PHOTOS, 1000);
+  assert.equal(accepted.length, 1000);
+  assert.deepEqual(accepted.slice(0, 2), [0, 1], "the first thousand, in order");
+  assert.deepEqual(errors, ["Stitch looks through up to 1,000 photos at a time, so the last 3 weren’t added."]);
+  const one = acceptFilmPhotos(photos(999), [photo("x.jpg"), photo("y.jpg")], MAX_ALBUM_PHOTOS);
+  assert.deepEqual(one.errors, ["Stitch looks through up to 1,000 photos at a time, so the last one wasn’t added."]);
+});
+
+test("albumLine says what Stitch looked at, chose and set aside", () => {
+  assert.equal(
+    albumLine({ considered: 846, chosen: 40, setAside: 173, chose: true }),
+    "Stitch looked at 846 photos and chose 40. 173 near-duplicates were set aside.",
+  );
+  assert.equal(albumLine({ considered: 1000, chosen: 39, setAside: 0, chose: true }), "Stitch looked at 1,000 photos and chose 39.");
+  assert.equal(albumLine({ considered: 12, chosen: 11, setAside: 1, chose: false }), "11 photos. One near-duplicate was set aside.");
+  assert.equal(albumLine({ considered: 12, chosen: 12, setAside: 0, chose: false }), null);
+  assert.equal(lookingLine(312, 846), "312 of 846");
+  assert.equal(lookingLine(1200, 1000), "1,000 of 1,000");
+  assert.equal(unreadableLine([]), null);
+  assert.equal(unreadableLine(["a.jpg"]), "“a.jpg” couldn’t be opened, so it was left out.");
+  assert.equal(unreadableLine(["a.jpg", "b.jpg"]), "“a.jpg” and “b.jpg” couldn’t be opened, so they were left out.");
+});
+
 test("photoCountLine makes the 8-to-40 rule obvious", () => {
-  assert.deepEqual(photoCountLine(0), { text: "Pick 8 to 40 photos from one day or trip.", ready: false });
+  assert.deepEqual(photoCountLine(0), {
+    text: "Pick at least 8 photos from one day or trip, as many as you like. Stitch uses up to 40.",
+    ready: false,
+  });
   assert.deepEqual(photoCountLine(1), { text: "1 photo. Add at least 7 more.", ready: false });
   assert.deepEqual(photoCountLine(7), { text: "7 photos. Add at least 1 more.", ready: false });
   assert.deepEqual(photoCountLine(8), { text: "8 photos. Stitch picks the best of them.", ready: true });
@@ -92,7 +125,7 @@ test("validateFilmDraft checks photos, story, year and title", () => {
   const bad = validateFilmDraft({ text: "  ", year: "", title: "x".repeat(201) }, 3);
   assert.deepEqual(Object.keys(bad).sort(), ["photos", "text", "title", "year"]);
   assert.equal(bad.photos, "A film needs at least 8 photos. Add 5 more.");
-  assert.equal(validateFilmDraft(ok, 0).photos, "Add 8 to 40 photos.");
+  assert.equal(validateFilmDraft(ok, 0).photos, "Add at least 8 photos.");
   assert.equal(validateFilmDraft(ok, 41).photos, "A film can use up to 40 photos. Remove 1.");
   assert.equal(validateFilmDraft({ ...ok, year: "1700" }, 8).year, "Pick a year from 1800 on.");
   assert.equal(validateFilmDraft({ ...ok, year: String(new Date().getFullYear() + 1) }, 8).year, "That year hasn't happened yet.");

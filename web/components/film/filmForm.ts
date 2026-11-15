@@ -20,6 +20,12 @@ export const FILM_YEAR_MIN = 1800;
 export const FILM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 /** At most this many photos upload at once. */
 export const UPLOADS_IN_FLIGHT = 3;
+/**
+ * The most photos one pick can hand over. They are looked at in the browser
+ * (components/film/analyze.ts) and only the shortlist, at most
+ * MAX_FILM_PHOTOS, is uploaded.
+ */
+export const MAX_ALBUM_PHOTOS = 1000;
 
 /** The photo kinds a film takes. An iPhone hands over JPEGs for this list. */
 export const FILM_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
@@ -112,15 +118,60 @@ export function acceptFilmPhotos(
   if (empty.length) errors.push(`${namesList(empty)} ${empty.length === 1 ? "looks" : "look"} empty. Try picking ${empty.length === 1 ? "it" : "them"} again.`);
   if (tooBig.length) errors.push(`${namesList(tooBig)} ${is(tooBig.length)} over 10 MB.`);
   if (overCap.length) {
-    errors.push(`${namesList(overCap)} ${overCap.length === 1 ? "wasn’t" : "weren’t"} added: a film can use up to ${max} photos.`);
+    if (max > MAX_FILM_PHOTOS) {
+      const n = overCap.length;
+      errors.push(
+        `Stitch looks through up to ${num(max)} photos at a time, so ${n === 1 ? "the last one wasn’t" : `the last ${num(n)} weren’t`} added.`,
+      );
+    } else {
+      errors.push(`${namesList(overCap)} ${overCap.length === 1 ? "wasn’t" : "weren’t"} added: a film can use up to ${max} photos.`);
+    }
   }
   return { accepted, errors };
+}
+
+/** A count as people write it: 846, 1,000. */
+function num(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+function nearDuplicates(n: number): string {
+  return n === 1 ? "One near-duplicate was set aside." : `${num(n)} near-duplicates were set aside.`;
+}
+
+/**
+ * The one honest line about what Stitch did with a pick: how many it looked
+ * at, how many it chose and how many look-alikes it set aside. `chosen` is
+ * what is in the film now (after any removals). Null when there is nothing
+ * to say beyond the count line.
+ */
+export function albumLine(s: { considered: number; chosen: number; setAside: number; chose: boolean }): string | null {
+  const setAside = s.setAside > 0 ? ` ${nearDuplicates(s.setAside)}` : "";
+  if (s.chose) return `Stitch looked at ${num(s.considered)} photos and chose ${num(s.chosen)}.${setAside}`;
+  if (s.setAside > 0) return `${num(s.chosen)} ${s.chosen === 1 ? "photo" : "photos"}.${setAside}`;
+  return null;
+}
+
+/** The line while Stitch looks through a pick: real counts only. */
+export function lookingLine(done: number, total: number): string {
+  return `${num(Math.min(done, total))} of ${num(total)}`;
+}
+
+/** Files that could not be opened as pictures, named. */
+export function unreadableLine(names: readonly string[]): string | null {
+  if (!names.length) return null;
+  return `${namesList(names)} ${names.length === 1 ? "couldn’t be opened, so it was" : "couldn’t be opened, so they were"} left out.`;
 }
 
 /** The line under the photos that makes the 8-to-40 rule obvious. `ready` once there are enough. */
 export function photoCountLine(count: number): { text: string; ready: boolean } {
   const n = Math.max(0, Math.floor(count));
-  if (n === 0) return { text: `Pick ${MIN_FILM_PHOTOS} to ${MAX_FILM_PHOTOS} photos from one day or trip.`, ready: false };
+  if (n === 0) {
+    return {
+      text: `Pick at least ${MIN_FILM_PHOTOS} photos from one day or trip, as many as you like. Stitch uses up to ${MAX_FILM_PHOTOS}.`,
+      ready: false,
+    };
+  }
   if (n < MIN_FILM_PHOTOS) {
     const more = MIN_FILM_PHOTOS - n;
     return { text: `${n} ${n === 1 ? "photo" : "photos"}. Add at least ${more} more.`, ready: false };
@@ -147,7 +198,7 @@ export function validateFilmDraft(draft: FilmDraft, photoCount: number): FieldEr
     const more = MIN_FILM_PHOTOS - photoCount;
     errors.photos =
       photoCount === 0
-        ? `Add ${MIN_FILM_PHOTOS} to ${MAX_FILM_PHOTOS} photos.`
+        ? `Add at least ${MIN_FILM_PHOTOS} photos.`
         : `A film needs at least ${MIN_FILM_PHOTOS} photos. Add ${more} more.`;
   } else if (photoCount > MAX_FILM_PHOTOS) {
     errors.photos = `A film can use up to ${MAX_FILM_PHOTOS} photos. Remove ${photoCount - MAX_FILM_PHOTOS}.`;

@@ -230,13 +230,15 @@ def test_real_deep_agent_with_scripted_model_submits(setup):
     assert service._state()["modelCalls"] == 3
 
 
-def test_model_budget_persisted_across_agent_rebuild(setup):
+def test_model_budget_is_per_invocation_with_cumulative_telemetry(setup):
     _, service, _ = setup
     model = ScriptedChatModel(responder=lambda *_: AIMessage(content="Tell me more."))
-    ConversationAgent(service, model=model, max_model_calls=1).invoke("Hello")
-    with pytest.raises(RuntimeError, match="model-call limit"):
-        ConversationAgent(service, model=model, max_model_calls=1).invoke("Again")
-    assert len(model.calls) == 1
+    agent = ConversationAgent(service, model=model, max_model_calls=1)
+    for _ in range(33):
+        agent.invoke("Hello")
+    ConversationAgent(service, model=model, max_model_calls=1).invoke("Again")
+    assert len(model.calls) == 34
+    assert service._state()["modelCalls"] == 34
 
 
 def test_deep_agent_subagent_cannot_bypass_budget(setup):

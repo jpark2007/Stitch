@@ -1,12 +1,13 @@
-"""Deep-agent wrapper with fixed trusted context and a persisted call budget."""
+"""Deep-agent wrapper with fixed trusted context and a per-invocation call budget."""
 
 import asyncio
+import threading
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import tool
 
 from db import conversations
-from .service import ConversationService
+from .service import ConversationService, preflight_model_configuration
 
 
 def conversation_tools(service: ConversationService, *, worker_managed: bool = False):
@@ -44,15 +45,25 @@ def conversation_tools(service: ConversationService, *, worker_managed: bool = F
     return tools[:1] if worker_managed else tools + [relay_run_question, answer_run_question]
 
 
+class ModelCallLimitReached(RuntimeError):
+    """This invocation reached its known pre-provider call bound."""
+
+
 class _Budget(BaseCallbackHandler):
     raise_error = True
     run_inline = True
 
     def __init__(self, service, limit):
         self.service, self.limit = service, limit
+        self.calls = 0
+        self.lock = threading.Lock()
 
     def on_chat_model_start(self, serialized, messages, **kwargs):
         self.service._state()
+        with self.lock:
+            if self.calls >= self.limit:
+                raise ModelCallLimitReached("Invocation model-call limit reached")
+            self.calls += 1
         c = self.service.context
         conversations.take_conversation_model_call(self.service.db, c.family_id, c.contact_id, self.limit)
         # The budget write can overlap a consent update. Recheck the frozen proof
@@ -70,13 +81,12 @@ class ConversationAgent:
         from deepagents import create_deep_agent
         from deepagents.backends import StateBackend
         from langgraph.checkpoint.memory import InMemorySaver
-        from agent.studio import make_model
 
         self.service = service
         self.worker_managed = worker_managed
-        self._budget = _Budget(service, max_model_calls)
+        self._max_model_calls = max_model_calls
         self._graph = create_deep_agent(
-            model=model if model is not None else make_model(),
+            model=model if model is not None else preflight_model_configuration(),
             tools=conversation_tools(service, worker_managed=worker_managed),
             backend=StateBackend(),
             checkpointer=checkpointer if checkpointer is not None else InMemorySaver(),
@@ -100,7 +110,7 @@ class ConversationAgent:
             raise ValueError("Message must contain 1 to 8000 characters")
         result = self._graph.invoke({"messages": [{"role": "user", "content": text}]}, {
             "configurable": {"thread_id": self.service.thread_id},
-            "recursion_limit": 64, "callbacks": [self._budget],
+            "recursion_limit": 64, "callbacks": [_Budget(self.service, self._max_model_calls)],
         })
         self.service._state()  # Suppress a response if consent changed during the model call.
         return result
@@ -118,7 +128,7 @@ class ConversationAgent:
         async with asyncio.timeout(timeout):
             result = await self._graph.ainvoke({"messages": [{"role": "user", "content": text}]}, {
                 "configurable": {"thread_id": self.service.thread_id},
-                "recursion_limit": 64, "callbacks": [self._budget],
+                "recursion_limit": 64, "callbacks": [_Budget(self.service, self._max_model_calls)],
             })
         await asyncio.to_thread(self.service._state)
         return result

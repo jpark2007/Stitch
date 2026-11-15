@@ -208,7 +208,8 @@ def test_email_normalization_and_legacy_crossfamily_conflict_are_generic(stack):
     assert proof(client, response.json()["code"], senderId="NATE@EXAMPLE.COM").status_code == 200
     db.contacts.insert_one({"_id": "foreign", "familyId": "private-family", "personId": "private-person",
                             "channel": "imessage", "handle": "+15555550124", "status": "active"})
-    response = create(client, BASE + "/people/mom", handle="+15555550124")
+    relative_id = db.people.find_one({"familyId": "demo_family", "userId": None})["_id"]
+    response = create(client, BASE + f"/people/{relative_id}", handle="+15555550124")
     assert response.status_code == 409 and "private" not in response.text
 
 
@@ -233,7 +234,8 @@ def test_create_rate_limit_and_single_managed_contact_per_person(stack):
     for _ in range(4):
         assert create(client).status_code == 409
     assert db.channelEnrollmentLimits.find_one({})["count"] == 5
-    assert create(client, BASE + "/people/mom", handle="+15555550124").status_code == 409
+    relative_id = db.people.find_one({"familyId": "demo_family", "userId": None})["_id"]
+    assert create(client, BASE + f"/people/{relative_id}", handle="+15555550124").status_code == 409
     assert db.contacts.count_documents({}) == 1
 
 
@@ -313,7 +315,7 @@ def test_stopped_handle_cannot_be_rebound_and_requires_fresh_proof(stack):
     old = create(client).json()["code"]
     assert client.post(PERSON + "/contact/stop", json={}).status_code == 200
     assert create(client, handle="+15555550124").status_code == 409
-    assert create(client, BASE + "/people/mom").status_code == 409
+    assert create(client, BASE + "/people/mom").status_code == 403
     fresh = create(client)
     assert fresh.status_code == 201
     assert db.contacts.find_one({})["status"] == "pending"
