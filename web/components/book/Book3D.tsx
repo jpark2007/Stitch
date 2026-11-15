@@ -347,7 +347,7 @@ export function Book3D({
           )}
         </Link>
         <div className="flex items-center gap-3">
-          <SceneViewToggle view={sceneView} />
+          <SceneViewToggle view={sceneView} crowded={actions != null || children != null} />
           {actions}
           <MuteButton muted={muted} />
         </div>
@@ -430,8 +430,13 @@ function TurnHint({ view, enabled }: { view: BookView; enabled: boolean }) {
  * out to the whole open book; there it reads "Cutscene" and zooms back into
  * the scene at the timeline's current shot. The scene plays on either way;
  * Escape does the same. Renders nothing on a spread without a playing moment.
+ *
+ * The name shows beside the icon at every size, unless the page is
+ * `crowded`: it puts other chrome in the header (a Contents tab) or on the
+ * table under it (a demo note in the header's middle, "Add a memory" beside
+ * the way out). Then, below lg, the icon alone says which way, as before.
  */
-function SceneViewToggle({ view }: { view: SceneView }) {
+function SceneViewToggle({ view, crowded }: { view: SceneView; crowded: boolean }) {
   const { mode, available } = useSyncExternalStore(view.subscribe, view.get, view.get);
   const next = viewSwitch(mode);
   const toScene = next.to === "scene";
@@ -449,9 +454,9 @@ function SceneViewToggle({ view }: { view: SceneView }) {
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -4 }}
           transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-          className={`pointer-events-auto flex h-11 min-w-11 cursor-pointer items-center justify-center gap-1.5 rounded-full pr-3.5 pl-3 font-display text-[0.95rem] whitespace-nowrap shadow-[0_2px_3px_rgb(0_0_0/0.25),0_8px_20px_-6px_rgb(0_0_0/0.5)] outline-offset-2 outline-[#f3e6cf] transition-[background-color,color,scale] duration-200 hover:scale-105 focus-visible:outline-2 active:scale-95 max-sm:[&:has(~*~*)]:px-0 sm:gap-2 sm:px-4 ${
-            toScene ? "bg-[#e3cfab] text-[#4a3c31]" : "bg-[#f5eee1]/95 text-[#5c4e43]"
-          }`}
+          className={`pointer-events-auto flex h-11 min-w-11 cursor-pointer items-center justify-center rounded-full font-display text-[0.95rem] whitespace-nowrap shadow-[0_2px_3px_rgb(0_0_0/0.25),0_8px_20px_-6px_rgb(0_0_0/0.5)] outline-offset-2 outline-[#f3e6cf] transition-[background-color,color,scale] duration-200 hover:scale-105 focus-visible:outline-2 active:scale-95 ${
+            crowded ? "w-11 lg:w-auto lg:gap-2 lg:px-4" : "gap-1.5 pr-3.5 pl-3 sm:gap-2 sm:px-4"
+          } ${toScene ? "bg-[#e3cfab] text-[#4a3c31]" : "bg-[#f5eee1]/95 text-[#5c4e43]"}`}
         >
           {toScene ? (
             /* A magnifier over the page with a plus: zoom back in. */
@@ -471,9 +476,7 @@ function SceneViewToggle({ view }: { view: SceneView }) {
               <path d="M12 7v12.4" />
             </svg>
           )}
-          {/* Beside the icon at every size, but on a phone whose header also holds other actions
-              (a Contents tab before mute) there is no room: there the icon alone says which way. */}
-          <span className="max-sm:[button:has(~*~*)>&]:sr-only">{next.label}</span>
+          <span className={crowded ? "sr-only lg:not-sr-only" : undefined}>{next.label}</span>
         </motion.button>
       ) : null}
     </AnimatePresence>
