@@ -20,6 +20,16 @@ import type { SetLayer } from "@/lib/types";
 import type { CutoutSpec, PaintKit } from "../cutout";
 import { rng } from "../timeline";
 
+/**
+ * The family's own media comes from the API on another port, behind the session
+ * cookie, so it is fetched with credentials (the API answers with the exact origin
+ * and Allow-Credentials). Anything else stays anonymous, which a CDN without
+ * credentialed CORS still serves.
+ */
+function artCrossOrigin(url: string): "use-credentials" | "anonymous" {
+  return /\/families\/[^/]+\/media\//.test(url) ? "use-credentials" : "anonymous";
+}
+
 /** Width of every layer in stage units. */
 export const LAYER_WIDTH = 2;
 
@@ -226,7 +236,7 @@ export function loadImage(url: string): Promise<HTMLImageElement> {
   if (!p) {
     p = new Promise((resolve, reject) => {
       const img = new Image();
-      img.crossOrigin = "anonymous";
+      img.crossOrigin = artCrossOrigin(url);
       img.decoding = "async";
       img.onload = () => resolve(img);
       img.onerror = () => reject(new Error(`could not load ${url}`));
