@@ -129,25 +129,86 @@ export function tellerLabelsHeight(count: number): number {
 }
 
 /**
- * A pencilled question over the labels, "Who's telling?", with a small
- * curved arrow down to them. Returns the height it takes.
+ * How far the playing label's ribbon hangs below the label's foot, page px
+ * (drawRibbonEnd: 86 long, tucked 34 under the label, leaning and shadowed),
+ * for a label drawn full size.
  */
-export function drawLabelsPrompt(ctx: Ctx, x: number, y: number, fonts: PageFonts, seed: number): number {
+export const RIBBON_HANG = 60;
+/**
+ * Between labels stacked in a column: the playing one's ribbon hangs into
+ * it, clear of the next label. In a column the ribbon hangs from the label's
+ * left (drawTellerLabels), away from the tape over the next one's right
+ * corner, which reaches about 34 px above it.
+ */
+const STACK_GAP = 8;
+/** Every other label in a column sits this much right, as if taped in by hand. */
+const STACK_STAGGER = 12;
+/** The smallest a label is drawn in a column (layoutTellerColumn): its name still reads. */
+export const COLUMN_SCALE_MIN = 0.8;
+
+/** The width a column of labels drawn at `scale` takes, the stagger included. */
+export function tellerColumnWidth(scale: number): number {
+  return LABEL_MAX_W * scale + STACK_STAGGER;
+}
+
+/**
+ * Where the labels go stacked one under another in a column from `left`
+ * (every other one a little to the right), the first at `y`, each the full
+ * label drawn at `scale` (drawTellerLabels draws a rect's label at its size).
+ */
+export function layoutTellerColumn(tellers: readonly BookTeller[], left: number, y: number, scale = 1): LabelRect[] {
+  const w = LABEL_MAX_W * scale;
+  const h = LABEL_H * scale;
+  const step = h + RIBBON_HANG * scale + STACK_GAP;
+  return tellers.map((t, i) => ({ id: t.id, x: left + (i % 2) * STACK_STAGGER, y: y + i * step, w, h }));
+}
+
+/** The height a column of `count` labels at `scale` takes (layoutTellerColumn), the last one's ribbon not counted. */
+export function tellerColumnHeight(count: number, scale = 1): number {
+  return count > 0 ? count * LABEL_H * scale + (count - 1) * (RIBBON_HANG * scale + STACK_GAP) : 0;
+}
+
+/**
+ * The label under a point on its page (page px), if any, with a little slack
+ * around each: what a click on the story page chooses (Book3D).
+ */
+export function labelUnder(labels: readonly LabelRect[], px: number, py: number): LabelRect | null {
+  return labels.find((r) => px >= r.x - 6 && px <= r.x + r.w + 6 && py >= r.y - 10 && py <= r.y + r.h + 6) ?? null;
+}
+
+/** The widest the "Who's telling?" note's words are set right (drawLabelsPrompt), page px. */
+export const PROMPT_MAX_W = 210;
+
+/**
+ * A pencilled question over the labels, "Who's telling?", with a small
+ * curved arrow down to them. Returns the height it takes. `align` "right"
+ * sets the words ending at `x`, the arrow at their start curling the other
+ * way: over a column of labels, it points down at the first label's puppet
+ * rather than at the tape over its corner.
+ */
+export function drawLabelsPrompt(ctx: Ctx, x: number, y: number, fonts: PageFonts, seed: number, align: "left" | "right" = "left"): number {
   ctx.save();
   ctx.fillStyle = "rgba(78,72,68,0.78)";
   ctx.font = `500 38px ${fonts.hand}`;
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
-  ctx.translate(x, y + 34);
-  ctx.rotate(-0.02);
   const text = "Who\u2019s telling?";
-  ctx.fillText(text, 0, 0);
-  const w = ctx.measureText(text).width;
+  // Set right, the words keep to PROMPT_MAX_W (they take ~170 px in the hand).
+  const fit = align === "right" ? PROMPT_MAX_W : Number.POSITIVE_INFINITY;
+  const w = Math.min(fit, ctx.measureText(text).width);
+  const x0 = align === "right" ? x - w : x;
+  ctx.translate(x0, y + 34);
+  ctx.rotate(-0.02);
+  if (align === "right") ctx.fillText(text, 0, 0, w);
+  else ctx.fillText(text, 0, 0);
   ctx.restore();
-  const from: [number, number] = [x + w + 14, y + 22];
-  const to: [number, number] = [x + w + 44, y + 64];
-  pencilCurve(ctx, from, [x + w + 46, y + 18], to, seed, 0.6);
-  pencilHead(ctx, to, Math.PI / 2 + 0.25, 11, seed + 1, 0.6);
+  // The arrow, off the words' end (or, set right, their start).
+  const s = align === "right" ? -1 : 1;
+  const e = align === "right" ? x0 : x0 + w;
+  const from: [number, number] = [e + s * 14, y + 22];
+  const to: [number, number] = [e + s * 44, y + 64];
+  pencilCurve(ctx, from, [e + s * 46, y + 18], to, seed, 0.6);
+  pencilHead(ctx, to, Math.PI / 2 + s * 0.25, 11, seed + 1, 0.6);
   return 52;
 }
 
@@ -196,7 +257,9 @@ function pencilHead(ctx: Ctx, tip: [number, number], angle: number, size: number
  * One label per telling, taped onto the page: the teller's puppet, a small
  * "Hear" and their name's version in handwriting. The `active` one is the
  * telling playing: full ink, the puppet mid-story, the name stitched under in
- * their thread. The others wait a shade lighter, ready to be chosen.
+ * their thread. The others wait a shade lighter, ready to be chosen. Its
+ * ribbon hangs below the label's right side, or with `ribbon` "left" (labels
+ * stacked in a column, layoutTellerColumn) its left, 56 px in.
  */
 export function drawTellerLabels(
   ctx: Ctx,
@@ -205,6 +268,7 @@ export function drawTellerLabels(
   active: string | null,
   fonts: PageFonts,
   seed: number,
+  ribbon: "left" | "right" = "right",
 ) {
   tellers.forEach((t, i) => {
     const rc = rects[i];
@@ -214,11 +278,14 @@ export function drawTellerLabels(
     ctx.save();
     ctx.translate(rc.x + rc.w / 2, rc.y + rc.h / 2);
     ctx.rotate(angle);
-    const w = rc.w;
-    const h = rc.h;
+    // A shorter rect is the whole label drawn smaller (a column's, layoutTellerColumn).
+    const scale = rc.h / LABEL_H;
+    if (scale !== 1) ctx.scale(scale, scale);
+    const w = rc.w / scale;
+    const h = LABEL_H;
     // The telling playing: a ribbon end in their thread, tucked under the
     // label and hanging out below it, like a bookmark left at their page.
-    if (on) drawRibbonEnd(ctx, w / 2 - 56, h / 2 - 34, 26, 86, t.color, seed + i);
+    if (on) drawRibbonEnd(ctx, ribbon === "left" ? -w / 2 + 56 : w / 2 - 56, h / 2 - 34, 26, 86, t.color, seed + i);
     // The label: a cut card, a soft shadow under it on the page.
     ctx.shadowColor = on ? "rgba(74,47,29,0.3)" : "rgba(74,47,29,0.2)";
     ctx.shadowBlur = on ? 12 : 7;

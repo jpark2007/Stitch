@@ -57,6 +57,7 @@ import { BOARD_D, BOARD_W, BookController, COVER_PIVOT_Y, HIT_MARGIN, type BookS
 import { Leaf, type LeafTextures } from "./Leaf";
 import { BLOCK_T, COVER_T, PAGE_H, PAGE_W } from "./leafShape";
 import { PAGE_PX_H, PAGE_PX_W } from "./pageArt";
+import { labelUnder } from "./labelArt";
 import { isBookControl } from "./controls";
 import { BookRuntimeProvider } from "./pagePrint";
 import { isMuted, paperLift, setMuted, subscribeMuted, unlockAudio } from "./sound";
@@ -949,7 +950,7 @@ function BookModel({ art, spreads, start, onControls, onView, renderStage, telli
     // The story page: x from -PAGE_W (outer edge) to 0 (gutter), z down the page.
     const px = ((x + PAGE_W) / PAGE_W) * PAGE_PX_W;
     const py = ((z + PAGE_H / 2) / PAGE_H) * PAGE_PX_H;
-    const hit = leaf.labels.find((r) => px >= r.x - 6 && px <= r.x + r.w + 6 && py >= r.y - 10 && py <= r.y + r.h + 6);
+    const hit = labelUnder(leaf.labels, px, py);
     return hit ? { spread: j - 1, id: hit.id } : null;
   };
 
