@@ -254,12 +254,13 @@ def test_on_the_media_paths_take_a_body_up_to_the_cap(on, path):
     with TestClient(main.create_app()) as c:
         at = c.post(path, content=b"x" * CAP, headers=unsigned())
         # Not refused by the size middleware; the handler then refuses the signature.
-        assert at.status_code != 413, at.text
+        assert (at.status_code, at.json()) == (401, {"detail": "Invalid channel authentication"}), at.text
         over = c.post(path, content=b"x" * (CAP + 1), headers=unsigned())
         assert (over.status_code, over.json()) == (413, TOO_LARGE)
 
         streamed_at = c.post(path, content=chunks(CAP), headers=unsigned())
-        assert streamed_at.status_code != 413, streamed_at.text
+        assert (streamed_at.status_code, streamed_at.json()) == (
+            401, {"detail": "Invalid channel authentication"}), streamed_at.text
         streamed = c.post(path, content=chunks(CAP + 1), headers=unsigned())
         assert (streamed.status_code, streamed.json()) == (413, TOO_LARGE)
 
