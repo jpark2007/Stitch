@@ -32,7 +32,7 @@ import { SessionGate, type SessionValue } from "@/components/flow/SessionGate";
 import { hrefs } from "@/components/flow/session";
 import { CHECK_FIELDS_MESSAGE, type FieldErrors } from "@/components/flow/validation";
 import { YearInput } from "@/components/flow/YearInput";
-import { analyzePhotos, type PhotoLook } from "@/components/film/analyze";
+import { analyzePhotos, yieldToPage, type PhotoLook } from "@/components/film/analyze";
 import { FilmPhotoPicker, type Looking, type PickedPhoto } from "@/components/film/FilmPhotoPicker";
 import {
   FILM_YEAR_MIN,
@@ -54,7 +54,7 @@ import {
   type FilmField,
 } from "@/components/film/filmForm";
 import { familyFromQuery, filmHref, filmsHref } from "@/components/film/filmLinks";
-import { chooseAgain, planAlbum, replaceTaken, signalsFromLooks, type AlbumPlan } from "@/components/film/shortlist";
+import { chooseAgain, planAlbumAsync, replaceTaken, signalsFromLooks, type AlbumPlan } from "@/components/film/shortlist";
 import { useFilmFamily } from "@/components/film/useFilmFamily";
 import { isApiError, type StitchApi } from "@/lib/api";
 
@@ -233,16 +233,23 @@ function FilmForm(props: { api: StitchApi; fid: string }) {
     [update, clearPhotosError],
   );
 
-  /** Choose from the whole album again (after a pick, or the "Choose again" action). */
-  const replan = useCallback(() => {
-    const a = album.current;
-    const { photos, exactTimes } = signalsFromLooks(a.looks);
-    const plan = planAlbum(photos, { exactTimes, removed: a.removed, max: MAX_FILM_PHOTOS, min: MIN_FILM_PHOTOS });
-    a.plan = plan;
-    show(plan.chosen);
-    setSummary({ considered: photos.length, setAside: plan.setAside, chose: plan.mode === "album" });
-    setCanChooseAgain(false);
-  }, [show]);
+  /** Show a plan for the whole album. */
+  const applyPlan = useCallback(
+    (plan: AlbumPlan) => {
+      album.current.plan = plan;
+      show(plan.chosen);
+      setSummary({ considered: plan.album.photos.length, setAside: plan.setAside, chose: plan.mode === "album" });
+      setCanChooseAgain(false);
+    },
+    [show],
+  );
+
+  /** The "Choose again" action: a fresh choice from the album already looked through, removed photos still out. */
+  const rechoose = useCallback(() => {
+    const plan = album.current.plan;
+    if (!plan) return;
+    applyPlan({ ...plan, ...chooseAgain(plan.album, plan.mode, album.current.removed, MAX_FILM_PHOTOS, MIN_FILM_PHOTOS) });
+  }, [applyPlan]);
 
   const addFiles = (files: File[]) => {
     if (lookingRef.current) return;
@@ -264,13 +271,25 @@ function FilmForm(props: { api: StitchApi; fid: string }) {
         setLooking({ done, total });
       },
     })
-      .then((looks) => {
+      .then(async (looks) => {
         if (control.signal.aborted) return;
-        a.files = [...a.files, ...fresh];
-        a.looks = [...a.looks, ...looks];
+        // Choosing can take a moment for a big album: it pauses for the page
+        // between slices, and the panel says what it is doing.
+        setLooking({ done: fresh.length, total: fresh.length, choosing: true });
+        const files = [...a.files, ...fresh];
+        const allLooks = [...a.looks, ...looks];
+        const { photos, exactTimes } = signalsFromLooks(allLooks);
+        const plan = await planAlbumAsync(
+          photos,
+          { exactTimes, removed: a.removed, max: MAX_FILM_PHOTOS, min: MIN_FILM_PHOTOS },
+          yieldToPage,
+        );
+        if (control.signal.aborted) return;
+        a.files = files;
+        a.looks = allLooks;
         const unreadable = unreadableLine(fresh.filter((_, k) => !looks[k]).map((f) => f.name));
         if (unreadable) setNotes([...left, unreadable]);
-        replan();
+        applyPlan(plan);
       })
       .catch(() => {
         // Stopped: the album stays as it was before this pick.
@@ -436,7 +455,7 @@ function FilmForm(props: { api: StitchApi; fid: string }) {
         looking={looking}
         onStopLooking={stopLooking}
         summary={summary ? albumLine({ ...summary, chosen: items.length }) : null}
-        onChooseAgain={canChooseAgain ? replan : null}
+        onChooseAgain={canChooseAgain ? rechoose : null}
         albumSize={albumSize}
       />
 

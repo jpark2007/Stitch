@@ -1,7 +1,16 @@
 // Choosing a film's photos from a whole album, in the browser. Pure: no DOM,
-// no I/O. analyze.ts turns each File into a PhotoSignal; this file groups the
-// look-alikes, orders the album by capture time and picks up to 40 photos
-// that cover the day evenly, never two that look alike, sharper ones first.
+// no I/O. analyze.ts turns each File into a PhotoSignal; this file finds the
+// copies (re-saves, edits, crops, burst frames), orders the album by capture
+// time and picks up to 40 photos that cover the day evenly, never two that
+// look alike, sharper ones first.
+//
+// Telling a copy from a different moment in the same place is the hard part.
+// A copy differs from its original a little everywhere (or not at all, once
+// the frames are lined up); a different moment in the same place differs a
+// lot in a few places (where the people are) and hardly at all elsewhere. So
+// two photos are compared on their fine structure (analyze.ts fineSignature)
+// block by block, and it is the WORST block that decides: one person-sized
+// difference is enough to call them different moments.
 //
 // Erasable TypeScript, import-free. Tests: components/film/__tests__/shortlist.test.mjs.
 
@@ -13,46 +22,68 @@ export interface PhotoSignal {
   takenAt: number | null;
   /** Higher is crisper (analyze.ts: variance of the Laplacian). Only compared, never shown. */
   sharpness: number;
-  /** 64-bit difference hash: a bigint, or 16 hex digits. */
+  /** 64-bit difference hash: a bigint, or 16 hex digits. A cheap first look. */
   hash: bigint | string;
-  /** Colour layout: 8x8 cells of mean RGB, as [r, g, b, r, g, b, …] (any length, as long as both match). */
-  layout: readonly number[];
+  /** analyze.ts fineSignature: 3 channels of FINE_SIZE x FINE_SIZE ranks. */
+  fine: ArrayLike<number>;
 }
 
-/** Two captures this close together are a burst, and look-alikes are judged more loosely. */
+/** Side of the fine-structure grid (analyze.ts FINE_SIZE). */
+export const FINE_SIZE = 32;
+/** Two captures this close together are a burst, and judged more loosely. */
 export const BURST_WINDOW_MS = 5000;
+/**
+ * Photos this close in time are compared allowing for a crop or shift
+ * between them: an edit keeps its capture time, a burst frame is seconds
+ * away. Photos further apart are only compared frame to frame, which also
+ * keeps the work small when a whole match is shot from one spot.
+ */
+export const NEAR_WINDOW_MS = 10_000;
+/**
+ * When a capture time is unknown, photos this close in pick order count as
+ * near, if their hashes are within NEAR_PICKS_BITS (a shifted copy can move
+ * the hash a long way, an unrelated photo usually further).
+ */
+export const NEAR_PICKS = 6;
+export const NEAR_PICKS_BITS = 26;
 
 /**
- * The look-alike thresholds. `hash` is the dHash Hamming distance (0 to 64
- * bits); `layout` the mean absolute difference of the colour layouts once
- * each channel's overall level is taken out (0 to 255), so a brighter or
- * warmer copy of the same picture still matches.
+ * The look-alike rules. `distance` is the fine difference of the worst block
+ * (an eighth of the frame each way) between two photos, in standard
+ * deviations of the photos' own light and colour ranks (cells blown out or
+ * crushed in either photo left out), after lining the frames up where
+ * allowed.
  *
- * Measured on a synthetic album (150 scenes with re-encodes, crops, brightness
- * edits and shifted or blurred burst frames): copies of one scene came within
- * 22 bits and 20 of layout, while photos of different scenes were never
- * closer than 25 of layout at under 14 bits.
+ * Measured on the review albums (621 photos: 150 scenes with re-encodes,
+ * resizes, crops, shifts, exposure, contrast and saturation edits, burst
+ * frames, EXIF-less and rotated copies; and 60 distinct moments each against
+ * one park, one beach and one dark living-room background): re-saves and
+ * colour edits of one picture came within 6 hash bits and 0.93, frame to
+ * frame; crops, shifts and burst frames, once lined up, mostly within 1.0
+ * and all within 1.4 (bursts are allowed 1.54). Distinct moments in the same
+ * place were never closer than 0.98 frame to frame and mostly above 1.5;
+ * some shared a hash to the bit, so the hash alone never decides.
  */
 export const ALIKE = {
-  /** The same picture saved again: re-encodes, resizes, exposure or colour edits. Always applies. */
-  samePicture: { hash: 10, layout: 12 },
-  /** A small crop, shift or tilt of the same moment, whenever it was taken. */
-  sameMoment: { hash: 16, layout: 18 },
-  /** A blurred or noisy frame: weak edges scramble the hash, but the colours stay put. */
-  softFrame: { hash: 22, layout: 8 },
-  /** Taken within BURST_WINDOW_MS of each other: the camera moved a little between frames. */
-  burst: { hash: 22, layout: 22 },
+  /** The same picture saved again or recoloured: the frames already line up. */
+  samePicture: { bits: 6, distance: 0.85 },
+  /** A copy or a near-identical frame (lined up first when the two are near in time). */
+  lookAlike: 1.1,
+  /** Within BURST_WINDOW_MS the camera moved a little between frames: this much looser. */
+  burstFactor: 1.4,
+  /** Photos far apart in time are only compared at all within this many hash bits. */
+  farBits: 6,
 } as const;
 
 export interface AlikeOptions {
-  /** Only the samePicture rule: for a handful of photos someone chose one by one. */
+  /** Only exact copies (samePicture): for a handful of photos someone chose one by one. */
   strict?: boolean;
-  /** Apply the burst rule (default true). Off when the times are file dates, not capture times. */
+  /** Times are capture times, so bursts can be told (default true). Off when they are file dates. */
   bursts?: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// Distances
+// Hashes
 
 /** A 64-bit hash as two unsigned 32-bit halves. Garbage reads as 0. */
 export function hashHalves(hash: bigint | string): [number, number] {
@@ -76,36 +107,494 @@ export function hamming(a: bigint | string, b: bigint | string): number {
   return popcount32(ah ^ bh) + popcount32(al ^ bl);
 }
 
-/** The layout with each channel's mean taken out (RGB triples when the length allows, else one channel). */
-export function centredLayout(layout: readonly number[]): Float64Array {
-  const n = layout.length;
-  const channels = n % 3 === 0 ? 3 : 1;
-  const mean = [0, 0, 0];
-  for (let i = 0; i < n; i++) mean[i % channels] += layout[i];
-  for (let c = 0; c < channels; c++) mean[c] /= n / channels || 1;
-  const out = new Float64Array(n);
-  for (let i = 0; i < n; i++) out[i] = layout[i] - mean[i % channels];
-  return out;
+// ---------------------------------------------------------------------------
+// Fine structure
+
+const N = FINE_SIZE;
+const NN = N * N;
+/** Blocks are BLOCK x BLOCK cells: an 8 x 8 grid of blocks over the frame. */
+const BLOCK = 4;
+const BLOCKS = N / BLOCK;
+/** Colour counts half as much as light. */
+const CHROMA_WEIGHT = 0.5;
+/** Without colour, light alone is scaled to stand for all three channels. */
+const LIGHT_ONLY_WEIGHT = 1.6;
+/** A moved frame only counts if it lines up the bulk of the picture this much better than leaving it. */
+const BULK_GAIN = 0.85;
+/** A move trimming no more than this off any edge needs no such proof. */
+const SMALL_MOVE = 0.05;
+/** How far frames may be moved: each side may lose up to a fifth, the scale may change by a quarter. */
+const MIN_OVERLAP = 0.7;
+const MIN_SCALE = 0.78;
+const MAX_SCALE = 1.28;
+
+/** A photo's fine structure made ready to compare. */
+interface Fine {
+  /** Each channel standardised (mean 0, spread 1). */
+  full: Float32Array;
+  /** Per axis, four profiles of N: plain light, then light, blue and red detail. */
+  col: Float32Array;
+  row: Float32Array;
+  /** No colour to speak of: compared on light alone. */
+  grey: boolean;
+  /** Cells blown out or crushed (1), which tell nothing about structure; null when none are. */
+  mask: Float32Array | null;
+  /** Each block's mean in each standardised channel: a quick lower bound on the worst block. */
+  blockMeans: Float32Array;
 }
 
-function centredGap(a: Float64Array, b: Float64Array): number {
-  if (a.length !== b.length || a.length === 0) return Infinity;
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
-  return sum / a.length;
+function standardise(src: ArrayLike<number>, off: number, out: Float32Array, outOff: number): number {
+  let s = 0;
+  let q = 0;
+  for (let i = 0; i < NN; i++) {
+    const v = src[off + i];
+    s += v;
+    q += v * v;
+  }
+  const mean = s / NN;
+  const spread = Math.sqrt(Math.max(0, q / NN - mean * mean));
+  const sd = Math.max(0.02, spread);
+  for (let i = 0; i < NN; i++) out[outOff + i] = (src[off + i] - mean) / sd;
+  return spread;
 }
 
-/** Mean absolute difference of two colour layouts, each channel's overall level taken out. */
-export function layoutDistance(a: readonly number[], b: readonly number[]): number {
-  return centredGap(centredLayout(a), centredLayout(b));
+const prepared = new WeakMap<object, Fine>();
+
+function fineOf(signal: Pick<PhotoSignal, "fine">): Fine {
+  const key = signal.fine as unknown as object;
+  const known = prepared.get(key);
+  if (known) return known;
+  const src = signal.fine;
+  const full = new Float32Array(3 * NN);
+  let grey = false;
+  if (src.length >= 3 * NN) {
+    standardise(src, 0, full, 0);
+    const u = standardise(src, NN, full, NN);
+    const v = standardise(src, 2 * NN, full, 2 * NN);
+    grey = u < 1e-4 || v < 1e-4;
+  } else {
+    grey = true;
+  }
+  // Profiles for lining frames up: column (and row) means of light, plus the
+  // mean distance of each channel from its row (column) mean, which shows
+  // shapes and edges whatever their tone.
+  const col = new Float32Array(4 * N);
+  const row = new Float32Array(4 * N);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const v = full[y * N + x] / N;
+      col[x] += v;
+      row[y] += v;
+    }
+  }
+  const rowMean = new Float32Array(N);
+  const colMean = new Float32Array(N);
+  for (let c = 0; c < 3; c++) {
+    rowMean.fill(0);
+    colMean.fill(0);
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const v = full[c * NN + y * N + x] / N;
+        rowMean[y] += v;
+        colMean[x] += v;
+      }
+    }
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const v = full[c * NN + y * N + x];
+        col[(c + 1) * N + x] += Math.abs(v - rowMean[y]) / N;
+        row[(c + 1) * N + y] += Math.abs(v - colMean[x]) / N;
+      }
+    }
+  }
+  let mask: Float32Array | null = null;
+  if (src.length >= 4 * NN) {
+    for (let i = 0; i < NN; i++) {
+      if (src[3 * NN + i] > 0.5) {
+        mask ??= new Float32Array(NN);
+        mask[i] = 1;
+      }
+    }
+  }
+  const blockMeans = new Float32Array(3 * BLOCKS * BLOCKS);
+  for (let c = 0; c < 3; c++) {
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        blockMeans[c * BLOCKS * BLOCKS + ((y / BLOCK) | 0) * BLOCKS + ((x / BLOCK) | 0)] += full[c * NN + y * N + x] / (BLOCK * BLOCK);
+      }
+    }
+  }
+  const made = { full, col, row, grey, mask, blockMeans };
+  prepared.set(key, made);
+  return made;
 }
 
-function alikeBy(bits: number, layout: number, dt: number | null, opts: AlikeOptions): boolean {
-  const within = (t: { hash: number; layout: number }) => bits <= t.hash && layout <= t.layout;
-  if (within(ALIKE.samePicture)) return true;
-  if (opts.strict) return false;
-  if (opts.bursts !== false && dt !== null && dt <= BURST_WINDOW_MS && within(ALIKE.burst)) return true;
-  return within(ALIKE.sameMoment) || within(ALIKE.softFrame);
+/**
+ * A lower bound on the worst block, frame to frame: a block's mean
+ * difference is at least the difference of its means. Cheap (a few hundred
+ * steps against a few thousand), and enough to tell most different moments
+ * apart, since a person standing in a block moves its mean.
+ */
+function worstBlockAtLeast(a: Fine, b: Fine, light: number, chroma: number): number {
+  const m = BLOCKS * BLOCKS;
+  let worst = 0;
+  for (let k = 0; k < m; k++) {
+    let s = light * Math.abs(a.blockMeans[k] - b.blockMeans[k]);
+    if (chroma) s += chroma * (Math.abs(a.blockMeans[m + k] - b.blockMeans[m + k]) + Math.abs(a.blockMeans[2 * m + k] - b.blockMeans[2 * m + k]));
+    if (s > worst) worst = s;
+  }
+  return worst;
+}
+
+// Scratch space (one comparison at a time).
+const blockScores = new Float32Array(BLOCKS * BLOCKS);
+const rawA = new Float32Array(3 * NN);
+const rawB = new Float32Array(3 * NN);
+const viewA = new Float32Array(3 * NN);
+const viewB = new Float32Array(3 * NN);
+const maskViewA = new Float32Array(NN);
+const maskViewB = new Float32Array(NN);
+const lineA = new Float32Array(32);
+const lineB = new Float32Array(32);
+/** A block with fewer usable cells than this is not judged. */
+const MIN_CELLS = (BLOCK * BLOCK) / 4;
+
+/**
+ * The worst block's mean difference, leaving out cells clipped in either
+ * photo. Stops as soon as one block passes `bound`; with `bulk`, measures
+ * every block and also returns the median.
+ */
+function worstBlock(
+  a: Float32Array,
+  b: Float32Array,
+  light: number,
+  chroma: number,
+  bound: number,
+  bulk: { median: number } | null,
+  maskA: Float32Array | null = null,
+  maskB: Float32Array | null = null,
+): number {
+  let worst = 0;
+  let n = 0;
+  for (let by = 0; by < BLOCKS; by++) {
+    for (let bx = 0; bx < BLOCKS; bx++) {
+      let s = 0;
+      let cells = 0;
+      for (let j = 0; j < BLOCK; j++) {
+        const rowStart = (by * BLOCK + j) * N + bx * BLOCK;
+        for (let i = 0; i < BLOCK; i++) {
+          const k = rowStart + i;
+          if ((maskA && maskA[k]) || (maskB && maskB[k])) continue;
+          cells++;
+          s += light * Math.abs(a[k] - b[k]);
+          if (chroma) s += chroma * (Math.abs(a[NN + k] - b[NN + k]) + Math.abs(a[2 * NN + k] - b[2 * NN + k]));
+        }
+      }
+      if (cells < MIN_CELLS) continue;
+      s /= cells;
+      blockScores[n++] = s;
+      if (s > worst) {
+        worst = s;
+        if (worst > bound && !bulk) return worst;
+      }
+    }
+  }
+  if (bulk) bulk.median = n ? blockScores.slice(0, n).sort()[n >> 1] : 0;
+  return worst;
+}
+
+function lerp(a: Float32Array, off: number, u: number): number {
+  const f = Math.min(N - 1, Math.max(0, u * N - 0.5));
+  const i = Math.floor(f);
+  const j = Math.min(N - 1, i + 1);
+  const t = f - i;
+  return a[off + i] * (1 - t) + a[off + j] * t;
+}
+
+/**
+ * How badly two profile sets disagree under x_b = (x_a - o) / s, over their
+ * overlap (k samples each, the first `profiles` profiles).
+ */
+function profileGap(a: Float32Array, b: Float32Array, o: number, s: number, k: number, profiles = 4): number {
+  const l = Math.max(0, o);
+  const r = Math.min(1, o + s);
+  if (s < MIN_SCALE || s > MAX_SCALE || r - l < MIN_OVERLAP || (r - l) / s < MIN_OVERLAP) return Infinity;
+  let total = 0;
+  for (let p = 0; p < profiles; p++) {
+    const off = p * N;
+    let ma = 0;
+    let mb = 0;
+    for (let t = 0; t < k; t++) {
+      const ua = l + ((r - l) * (t + 0.5)) / k;
+      lineA[t] = lerp(a, off, ua);
+      lineB[t] = lerp(b, off, (ua - o) / s);
+      ma += lineA[t];
+      mb += lineB[t];
+    }
+    ma /= k;
+    mb /= k;
+    let qa = 0;
+    let qb = 0;
+    for (let t = 0; t < k; t++) {
+      qa += (lineA[t] - ma) ** 2;
+      qb += (lineB[t] - mb) ** 2;
+    }
+    const sa = Math.sqrt(qa / k);
+    const sb = Math.sqrt(qb / k);
+    // A flat profile says nothing about where the frames line up.
+    const weight = Math.min(sa, sb);
+    if (weight < 1e-3) continue;
+    let e = 0;
+    for (let t = 0; t < k; t++) e += Math.abs((lineA[t] - ma) / sa - (lineB[t] - mb) / sb);
+    total += (e / k) * weight;
+  }
+  return total;
+}
+
+const SCALES = [0.8, 0.84, 0.88, 0.92, 0.96, 1, 1.04, 1.09, 1.14, 1.19, 1.25];
+/** How many alignments per axis go on to be tried in two dimensions. */
+const LINE_UP_CANDIDATES = 2;
+
+/**
+ * The offsets and scales along one axis that best line up two profile sets,
+ * best first: a coarse search, then the best few distinct starting points
+ * refined. One minimum is not trusted on its own, since a picture with few
+ * features along an axis can fit a wrong scale nearly as well.
+ */
+function lineUp(a: Float32Array, b: Float32Array): [number, number][] {
+  // Coarse: light only (plain and detail), a few samples.
+  const coarse: [number, number, number][] = [];
+  for (const scale of SCALES) {
+    for (let off = -0.24; off <= 0.2401; off += 0.04) {
+      const e = profileGap(a, b, off, scale, 10, 2);
+      if (e < Infinity) coarse.push([e, off, scale]);
+    }
+  }
+  coarse.sort((x, y) => x[0] - y[0]);
+  const starts: [number, number][] = [];
+  for (const [, off, scale] of coarse) {
+    if (starts.length >= LINE_UP_CANDIDATES) break;
+    if (starts.every(([o, s]) => Math.abs(o - off) > 0.05 || Math.abs(s - scale) > 0.05)) starts.push([off, scale]);
+  }
+  return starts.map(([o0, s0]) => {
+    let o = o0;
+    let s = s0;
+    let val = profileGap(a, b, o, s, 20);
+    // The two-dimensional nudging in fineDistance takes it the rest of the way.
+    for (const step of [0.02, 0.01]) {
+      for (let it = 0; it < 3; it++) {
+        let moved = false;
+        for (const [d0, d1] of [
+          [step, 0],
+          [-step, 0],
+          [0, step],
+          [0, -step],
+          [step, -step],
+          [-step, step],
+        ]) {
+          const v = profileGap(a, b, o + d0, s + d1, 20);
+          if (v < val) {
+            val = v;
+            o += d0;
+            s += d1;
+            moved = true;
+          }
+        }
+        if (!moved) break;
+      }
+    }
+    return [o, s] as [number, number];
+  });
+}
+
+function sampleCell(f: Float32Array, x: number, y: number, c: number): number {
+  const fx = Math.min(N - 1, Math.max(0, x * N - 0.5));
+  const fy = Math.min(N - 1, Math.max(0, y * N - 0.5));
+  const x0 = Math.floor(fx);
+  const y0 = Math.floor(fy);
+  const x1 = Math.min(N - 1, x0 + 1);
+  const y1 = Math.min(N - 1, y0 + 1);
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const base = c * NN;
+  return (
+    (f[base + y0 * N + x0] * (1 - tx) + f[base + y0 * N + x1] * tx) * (1 - ty) +
+    (f[base + y1 * N + x0] * (1 - tx) + f[base + y1 * N + x1] * tx) * ty
+  );
+}
+
+/** Both photos sampled over their common part under x_b = (x_a - ox) / sx (and the same down), each standardised there. */
+function overlapViews(a: Fine, b: Fine, ox: number, oy: number, sx: number, sy: number) {
+  const lx = Math.max(0, ox);
+  const rx = Math.min(1, ox + sx);
+  const ly = Math.max(0, oy);
+  const ry = Math.min(1, oy + sy);
+  for (let c = 0; c < 3; c++) {
+    for (let j = 0; j < N; j++) {
+      const ya = ly + ((ry - ly) * (j + 0.5)) / N;
+      const yb = (ya - oy) / sy;
+      for (let i = 0; i < N; i++) {
+        const xa = lx + ((rx - lx) * (i + 0.5)) / N;
+        rawA[c * NN + j * N + i] = sampleCell(a.full, xa, ya, c);
+        rawB[c * NN + j * N + i] = sampleCell(b.full, (xa - ox) / sx, yb, c);
+      }
+    }
+    standardise(rawA, c * NN, viewA, c * NN);
+    standardise(rawB, c * NN, viewB, c * NN);
+  }
+  // Clipped cells follow along (a cell is clipped if it is mostly made of clipped cells).
+  for (const [fine, view, toB] of [
+    [a, maskViewA, false],
+    [b, maskViewB, true],
+  ] as const) {
+    if (!fine.mask) continue;
+    for (let j = 0; j < N; j++) {
+      const ya = ly + ((ry - ly) * (j + 0.5)) / N;
+      for (let i = 0; i < N; i++) {
+        const xa = lx + ((rx - lx) * (i + 0.5)) / N;
+        view[j * N + i] = sampleCell(fine.mask, toB ? (xa - ox) / sx : xa, toB ? (ya - oy) / sy : ya, 0) >= 0.5 ? 1 : 0;
+      }
+    }
+  }
+}
+
+function allowed(ox: number, oy: number, sx: number, sy: number): boolean {
+  const fits = (o: number, s: number) => {
+    const l = Math.max(0, o);
+    const r = Math.min(1, o + s);
+    return s >= MIN_SCALE && s <= MAX_SCALE && r - l >= MIN_OVERLAP && (r - l) / s >= MIN_OVERLAP;
+  };
+  return fits(ox, sx) && fits(oy, sy);
+}
+
+/**
+ * The fine difference between two photos: the worst block, frame to frame,
+ * or (with `lineUp`) after lining the frames up when that helps the bulk of
+ * the picture. Once it is clear the answer is above `bound`, the exact
+ * figure is not chased.
+ */
+export function fineDistance(
+  a: Pick<PhotoSignal, "fine">,
+  b: Pick<PhotoSignal, "fine">,
+  bound = Infinity,
+  allowLineUp = true,
+): number {
+  const fa = fineOf(a);
+  const fb = fineOf(b);
+  const grey = fa.grey || fb.grey;
+  const light = grey ? LIGHT_ONLY_WEIGHT : 1;
+  const chroma = grey ? 0 : CHROMA_WEIGHT;
+  const still = { median: 0 };
+  if (!allowLineUp && !fa.mask && !fb.mask) {
+    const atLeast = worstBlockAtLeast(fa, fb, light, chroma);
+    if (atLeast > bound) return atLeast;
+  }
+  const direct = worstBlock(fa.full, fb.full, light, chroma, bound, allowLineUp ? still : null, fa.mask, fb.mask);
+  const mA = fa.mask ? maskViewA : null;
+  const mB = fb.mask ? maskViewB : null;
+  if (direct <= bound || !allowLineUp) return direct;
+
+  // Line the frames up both ways round (a onto b, and b onto a turned back),
+  // trying the best few alignments of each axis together, and keep whichever
+  // lines up best.
+  let best = Infinity;
+  let ox = 0;
+  let oy = 0;
+  let sx = 1;
+  let sy = 1;
+  const tryAll = (tries: number[][]): boolean => {
+    for (let k = 0; k < tries.length; k++) {
+      const t = tries[k];
+      if (!allowed(t[0], t[1], t[2], t[3])) continue;
+      if (Math.abs(t[0]) < 0.004 && Math.abs(t[1]) < 0.004 && Math.abs(t[2] - 1) < 0.004 && Math.abs(t[3] - 1) < 0.004) continue;
+      overlapViews(fa, fb, t[0], t[1], t[2], t[3]);
+      // A cheap first look: no need to measure every block of a poor fit.
+      // When even the best-placed fit (the first) is far off, the rest of
+      // this way round are not worth a look.
+      const cap = Math.min(best, bound * 2);
+      if (worstBlock(viewA, viewB, light, chroma, cap, null, mA, mB) >= cap) {
+        if (k === 0) return false;
+        continue;
+      }
+      const moved = { median: 0 };
+      const v = worstBlock(viewA, viewB, light, chroma, Infinity, moved, mA, mB);
+      // Two moments in one place already line up where nothing happened;
+      // moving a frame far enough to hide a difference at its edge is only
+      // allowed when it lines up the rest of the picture clearly better. A
+      // small move (at most SMALL_MOVE off any edge) cannot hide anyone.
+      const trim = Math.max(Math.abs(t[0]), Math.abs(t[1]), Math.abs(t[0] + t[2] - 1), Math.abs(t[1] + t[3] - 1));
+      if (trim > SMALL_MOVE && !(moved.median < BULK_GAIN * still.median)) continue;
+      if (v < best) {
+        best = v;
+        [ox, oy, sx, sy] = t;
+        if (best <= bound) return true; // that settles it
+      }
+    }
+    return false;
+  };
+  const pairs = (xs: [number, number][], ys: [number, number][], back: boolean) => {
+    const out: number[][] = [];
+    for (const [o1, s1] of xs) for (const [o2, s2] of ys) out.push(back ? [-o1 / s1, -o2 / s2, 1 / s1, 1 / s2] : [o1, o2, s1, s2]);
+    return out;
+  };
+  if (tryAll(pairs(lineUp(fa.col, fb.col), lineUp(fa.row, fb.row), false))) return best;
+  // Only when the first way round was not close does the other get a go.
+  if (best > bound * 1.5 && tryAll(pairs(lineUp(fb.col, fa.col), lineUp(fb.row, fa.row), true))) return best;
+  if (best === Infinity) return direct;
+  if (best <= bound || best > bound * 2) return Math.min(direct, best);
+
+  // A close call: nudge the alignment.
+  for (const step of [0.015, 0.0075, 0.004]) {
+    for (let it = 0; it < 4; it++) {
+      let improved = false;
+      for (let k = 0; k < 4; k++) {
+        for (const d of [-step, step]) {
+          const t = [ox, oy, sx, sy];
+          t[k] += d;
+          if (k >= 2) t[k - 2] -= d / 2; // grow or shrink about the centre
+          if (!allowed(t[0], t[1], t[2], t[3])) continue;
+          overlapViews(fa, fb, t[0], t[1], t[2], t[3]);
+          const v = worstBlock(viewA, viewB, light, chroma, best, null, mA, mB);
+          if (v < best) {
+            best = v;
+            [ox, oy, sx, sy] = t;
+            improved = true;
+          }
+        }
+      }
+      if (!improved) break;
+    }
+    if (best <= bound) break;
+  }
+  return Math.min(direct, best);
+}
+
+/** The same picture saved again or recoloured (re-encode, resize, exposure, contrast, saturation). */
+function samePicture(bits: number, a: Pick<PhotoSignal, "fine">, b: Pick<PhotoSignal, "fine">): boolean {
+  return bits <= ALIKE.samePicture.bits && fineDistance(a, b, ALIKE.samePicture.distance, false) <= ALIKE.samePicture.distance;
+}
+
+/**
+ * The album rule for two photos, given how many hash bits differ and whether
+ * they were taken near each other (`near`) or in one burst (`burst`).
+ */
+function albumAlike(bits: number, a: Pick<PhotoSignal, "fine">, b: Pick<PhotoSignal, "fine">, near: boolean, burst: boolean): boolean {
+  if (samePicture(bits, a, b)) return true;
+  const bound = burst ? ALIKE.lookAlike * ALIKE.burstFactor : ALIKE.lookAlike;
+  if (near) return fineDistance(a, b, bound) <= bound;
+  if (bits <= ALIKE.farBits) return fineDistance(a, b, bound, false) <= bound;
+  return false;
+}
+
+/**
+ * The loosest rule, for keeping a removed photo out: judged as loosely as a
+ * burst, frame to frame whatever the times and lined up when the two are
+ * near (crops and shifts keep their capture time). A copy of a photo someone
+ * took out never comes back in its place.
+ */
+function looseAlike(a: Pick<PhotoSignal, "fine">, b: Pick<PhotoSignal, "fine">, near: boolean): boolean {
+  const bound = ALIKE.lookAlike * ALIKE.burstFactor;
+  return fineDistance(a, b, bound, near) <= bound;
 }
 
 function timeGap(a: number | null, b: number | null): number | null {
@@ -113,16 +602,19 @@ function timeGap(a: number | null, b: number | null): number | null {
 }
 
 /**
- * Whether two photos are near-duplicates (see ALIKE). Time only ever loosens
- * the rule (a burst); without times, or far apart, near-identical frames are
- * still caught.
+ * Whether two photos are near-duplicates (see ALIKE). With both capture times
+ * known, photos more than NEAR_WINDOW_MS apart are compared frame to frame
+ * only; with either unknown they may be lined up. `strict`: exact copies only.
  */
 export function looksAlike(
-  a: Pick<PhotoSignal, "hash" | "layout" | "takenAt">,
-  b: Pick<PhotoSignal, "hash" | "layout" | "takenAt">,
+  a: Pick<PhotoSignal, "hash" | "fine" | "takenAt">,
+  b: Pick<PhotoSignal, "hash" | "fine" | "takenAt">,
   opts: AlikeOptions = {},
 ): boolean {
-  return alikeBy(hamming(a.hash, b.hash), layoutDistance(a.layout, b.layout), timeGap(a.takenAt, b.takenAt), opts);
+  const bits = hamming(a.hash, b.hash);
+  if (opts.strict) return samePicture(bits, a, b);
+  const dt = opts.bursts === false ? null : timeGap(a.takenAt, b.takenAt);
+  return albumAlike(bits, a, b, dt === null || dt <= NEAR_WINDOW_MS, dt !== null && dt <= BURST_WINDOW_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +641,7 @@ export function chooseTimes(
 /** What analyze.ts reports for one photo (null: it could not be read). */
 export interface LookLike {
   hash: string;
-  layout: readonly number[];
+  fine: ArrayLike<number>;
   sharpness: number;
   exifTime: number | null;
   fileTime: number | null;
@@ -173,7 +665,7 @@ export function signalsFromLooks(looks: readonly (LookLike | null)[]): { photos:
     takenAt: times[k],
     sharpness: r.look.sharpness,
     hash: r.look.hash,
-    layout: r.look.layout,
+    fine: r.look.fine,
   }));
   return { photos, exactTimes: exact };
 }
@@ -181,12 +673,12 @@ export function signalsFromLooks(looks: readonly (LookLike | null)[]): { photos:
 // ---------------------------------------------------------------------------
 // The album
 
-/** An album made ready for choosing: look-alikes grouped, ordered in time, placed on a 0-to-1 line. */
+/** An album made ready for choosing: copies found, ordered in time, placed on a 0-to-1 line. */
 export interface Album {
   photos: readonly PhotoSignal[];
-  /** For each photo (by array position): its look-alike group. */
+  /** For each photo (by array position): the kept photo it is, or is a copy of (a group). */
   group: Int32Array;
-  /** For each group: the sharpest photo in it (array position). */
+  /** For each group: its kept photo, the sharpest of the copies first seen (array position). */
   best: number[];
   /** Array positions, earliest moment first (a group together, from its earliest photo). */
   order: number[];
@@ -194,10 +686,12 @@ export interface Album {
   place: Float64Array;
   /** For each photo: its sharpness rank, 0 (softest) to 1 (sharpest). */
   quality: Float64Array;
-  /** Photos set aside as near-duplicates of a sharper one. */
+  /** Photos set aside as copies or near-duplicates of a kept photo. */
   duplicates: number;
   /** Array position by caller index. */
   at: Map<number, number>;
+  /** Whether two photos (array positions) were taken near each other (see NEAR_WINDOW_MS, NEAR_PICKS). */
+  near: (i: number, j: number) => boolean;
 }
 
 function find(parent: Int32Array, x: number): number {
@@ -209,26 +703,63 @@ function find(parent: Int32Array, x: number): number {
 }
 
 /**
- * Groups look-alikes (a photo joins every group it looks like, so a burst
- * that drifts stays one group), orders the photos by capture time (a photo
- * without one sits after the one picked before it) and places each on a line
- * from 0 to 1: half by time, half by count, so a long quiet stretch gets some
- * photos but not all of them.
+ * Finds the copies and orders the album:
+ * 1. Copies of the very same picture (samePicture) are bundled: re-saves and
+ *    recolourings of one frame stay one picture however many there are. The
+ *    rule is far tighter than any two moments, so this never joins moments.
+ * 2. Going from the sharpest bundle down, a bundle is kept only if none of
+ *    its photos looks like a photo of a bundle already kept (the album rule,
+ *    pairwise: nothing chains through photos that were set aside). In
+ *    `strict` mode step 2 is skipped.
+ * Then the photos are ordered by capture time (a photo without one sits
+ * after the one picked before it) and each group placed on a line from 0 to
+ * 1: half by time, half by count, so a long quiet stretch gets some photos
+ * but not all of them.
  */
 export function prepareAlbum(photos: readonly PhotoSignal[], opts: AlikeOptions = {}): Album {
+  const steps = prepareSteps(photos, opts);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/**
+ * prepareAlbum a slice at a time: after each `sliceMs` of work it waits for
+ * `pause` (a yield to the page), so even a long album never freezes typing.
+ */
+export async function prepareAlbumAsync(
+  photos: readonly PhotoSignal[],
+  opts: AlikeOptions,
+  pause: () => Promise<void>,
+  sliceMs = 12,
+): Promise<Album> {
+  const steps = prepareSteps(photos, opts);
+  let started = Date.now();
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+    if (Date.now() - started >= sliceMs) {
+      await pause();
+      started = Date.now();
+    }
+  }
+}
+
+/** The work of prepareAlbum, yielding now and then so a caller can pause between slices. */
+function* prepareSteps(photos: readonly PhotoSignal[], opts: AlikeOptions): Generator<void, Album, void> {
   const n = photos.length;
   const hi = new Uint32Array(n);
   const lo = new Uint32Array(n);
-  const layouts: Float64Array[] = [];
   const at = new Map<number, number>();
   for (let i = 0; i < n; i++) {
     [hi[i], lo[i]] = hashHalves(photos[i].hash);
-    layouts.push(centredLayout(photos[i].layout));
     at.set(photos[i].index, i);
   }
+  const bits = (i: number, j: number) => popcount32(hi[i] ^ hi[j]) + popcount32(lo[i] ^ lo[j]);
 
-  // Order: by capture time; a photo with none takes the time of the nearest
-  // photo picked before it (or after, at the start). Ties keep pick order.
+  // Times: a photo with none takes the time of the nearest photo picked
+  // before it (or after, at the start). Ties keep pick order.
   const byPick = Array.from({ length: n }, (_, i) => i).sort((a, b) => photos[a].index - photos[b].index);
   const time = new Float64Array(n);
   let last: number | null = null;
@@ -247,24 +778,6 @@ export function prepareAlbum(photos: readonly PhotoSignal[], opts: AlikeOptions 
   byPick.forEach((i, r) => (pickRank[i] = r));
   const byTime = Array.from({ length: n }, (_, i) => i).sort((a, b) => time[a] - time[b] || pickRank[a] - pickRank[b]);
 
-  // Look-alike groups. The time-free rules have to compare every pair, which
-  // is cheap: a 1000-photo album is half a million XOR-and-count steps, and
-  // the layout is only measured for the few pairs whose hashes are close.
-  const parent = new Int32Array(n);
-  for (let i = 0; i < n; i++) parent[i] = i;
-  const loosest = opts.strict ? ALIKE.samePicture.hash : Math.max(ALIKE.sameMoment.hash, ALIKE.softFrame.hash, ALIKE.burst.hash);
-  for (let x = 0; x < n; x++) {
-    const i = byTime[x];
-    for (let y = x + 1; y < n; y++) {
-      const j = byTime[y];
-      const bits = popcount32(hi[i] ^ hi[j]) + popcount32(lo[i] ^ lo[j]);
-      if (bits > loosest) continue;
-      if (find(parent, i) === find(parent, j)) continue;
-      const dt = timeGap(photos[i].takenAt, photos[j].takenAt);
-      if (alikeBy(bits, centredGap(layouts[i], layouts[j]), dt, opts)) parent[find(parent, i)] = find(parent, j);
-    }
-  }
-
   // Sharpness as a rank, so one odd score cannot swamp the rest.
   const quality = new Float64Array(n);
   const bySharp = Array.from({ length: n }, (_, i) => i).sort(
@@ -272,29 +785,111 @@ export function prepareAlbum(photos: readonly PhotoSignal[], opts: AlikeOptions 
   );
   bySharp.forEach((i, r) => (quality[i] = n > 1 ? r / (n - 1) : 1));
 
-  // Groups are numbered by their earliest photo, which is when the moment
+  // 1. Bundles of the same picture. The hash gate keeps this to a handful of
+  // fine comparisons even for a thousand photos.
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const b = bits(i, j);
+      if (b > ALIKE.samePicture.bits || find(parent, i) === find(parent, j)) continue;
+      if (samePicture(b, photos[i], photos[j])) parent[find(parent, i)] = find(parent, j);
+    }
+    if ((i & 31) === 31) yield;
+  }
+  const bundleOf = new Map<number, number[]>();
+  for (const i of bySharp.slice().reverse()) {
+    const root = find(parent, i);
+    const list = bundleOf.get(root);
+    if (list) list.push(i);
+    else bundleOf.set(root, [i]);
+  }
+  // Sharpest bundle first (each list is sharpest first).
+  const bundles = [...bundleOf.values()].sort((a, b) => quality[b[0]] - quality[a[0]]);
+
+  // 2. Pairwise refusal against kept bundles only.
+  const known = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = photos[i].takenAt;
+    known[i] = opts.bursts !== false && t !== null && Number.isFinite(t) ? 1 : 0;
+  }
+  const near = (i: number, j: number) =>
+    known[i] && known[j]
+      ? Math.abs(time[i] - time[j]) <= NEAR_WINDOW_MS
+      : Math.abs(pickRank[i] - pickRank[j]) <= NEAR_PICKS && bits(i, j) <= NEAR_PICKS_BITS;
+  const inBurst = (i: number, j: number) => known[i] === 1 && known[j] === 1 && Math.abs(time[i] - time[j]) <= BURST_WINDOW_MS;
+  // Two bundles are compared through their sharpest photos first, as near
+  // and as much a burst as any of their photos are; if those differ, the
+  // other pictures of the bundles get a look (an edit can make the sharpest
+  // photo the odd one out).
+  const alike = (u: number[], k: number[]) => {
+    let b = 64;
+    let isNear = false;
+    let burst = false;
+    for (let x = 0; x < u.length; x++) {
+      const i = u[x];
+      for (let y = 0; y < k.length; y++) {
+        const j = k[y];
+        const bij = popcount32(hi[i] ^ hi[j]) + popcount32(lo[i] ^ lo[j]);
+        if (bij < b) b = bij;
+        if (known[i] && known[j]) {
+          const dt = Math.abs(time[i] - time[j]);
+          if (dt <= NEAR_WINDOW_MS) isNear = true;
+          if (dt <= BURST_WINDOW_MS) burst = true;
+        } else if (Math.abs(pickRank[i] - pickRank[j]) <= NEAR_PICKS && bij <= NEAR_PICKS_BITS) {
+          isNear = true;
+        }
+      }
+    }
+    if (!isNear && b > ALIKE.farBits) return false; // the cheap way out for most pairs
+    if (albumAlike(b, photos[u[0]], photos[k[0]], isNear, burst)) return true;
+    for (const i of u) {
+      for (const j of k) {
+        if (i === u[0] && j === k[0]) continue;
+        const bij = bits(i, j);
+        const nij = near(i, j);
+        if (!nij && bij > ALIKE.farBits) continue;
+        if (albumAlike(bij, photos[i], photos[j], nij, inBurst(i, j))) return true;
+      }
+    }
+    return false;
+  };
+  const kept: number[][] = [];
+  const keptOf = new Int32Array(n).fill(-1);
+  for (const bundle of bundles) {
+    yield;
+    let match = -1;
+    if (!opts.strict) {
+      for (let k = 0; k < kept.length && match < 0; k++) {
+        if (alike(bundle, kept[k])) match = k;
+      }
+    }
+    if (match < 0) {
+      match = kept.length;
+      kept.push(bundle);
+    }
+    for (const i of bundle) keptOf[i] = match;
+  }
+
+  // Groups numbered by their earliest photo, which is when the moment
   // happened (a copy edited hours later still belongs back then).
-  const group = new Int32Array(n);
   const groupOf = new Map<number, number>();
+  const group = new Int32Array(n);
   const best: number[] = [];
   const when: number[] = [];
   for (const i of byTime) {
-    const root = find(parent, i);
-    let g = groupOf.get(root);
+    let g = groupOf.get(keptOf[i]);
     if (g === undefined) {
       g = best.length;
-      groupOf.set(root, g);
-      best.push(i);
+      groupOf.set(keptOf[i], g);
+      best.push(kept[keptOf[i]][0]);
       when.push(time[i]);
-    } else if (quality[i] > quality[best[g]]) {
-      best[g] = i;
     }
     group[i] = g;
   }
   const order = byTime.slice().sort((a, b) => group[a] - group[b] || time[a] - time[b] || pickRank[a] - pickRank[b]);
 
   // Place on the day: half by time, half by count of distinct moments.
-  // Every photo of a group sits where the moment does.
   const moments = best.length;
   const t0 = moments ? when[0] : 0;
   const span = moments ? when[moments - 1] - t0 : 0;
@@ -305,16 +900,18 @@ export function prepareAlbum(photos: readonly PhotoSignal[], opts: AlikeOptions 
   const place = new Float64Array(n);
   for (let i = 0; i < n; i++) place[i] = groupPlace[group[i]];
 
-  return { photos, group, best, order, place, quality, duplicates: n - moments, at };
+  return { photos, group, best, order, place, quality, duplicates: n - moments, at, near };
 }
 
 /**
  * Up to `target` photos for the film: everything in `keep` (caller indices),
- * then the best of the rest, never from a look-alike group already in or in
- * `exclude` (photos taken out, whose look-alikes stay out with them). Each
- * pick goes where the chosen photos leave the widest gap in the day, a softer
- * photo needing a wider gap to win over a sharper one. The first picks open
- * and close the day. Returns caller indices, earliest first.
+ * then the best of the rest: one kept photo per group, never from a group
+ * already in, and never one that looks like anything in `exclude` (photos
+ * taken out), judged by the loosest rule. Each pick goes where the chosen
+ * photos leave the widest gap in the day, a softer photo needing a wider gap
+ * to win over a sharper one. The first picks open and close the day.
+ * With `alikeOk` any photo may be picked (to reach a minimum). Returns
+ * caller indices, earliest first.
  */
 export function pickFrom(
   album: Album,
@@ -327,11 +924,14 @@ export function pickFrom(
   const alikeOk = !!opts.alikeOk;
   const blocked = new Uint8Array(best.length);
   const out = new Uint8Array(photos.length);
+  const cleared = new Uint8Array(photos.length);
   const chosen = new Set<number>();
+  const removed: number[] = [];
   for (const idx of exclude) {
     const i = at.get(idx);
     if (i === undefined) continue;
     out[i] = 1;
+    removed.push(i);
     if (!alikeOk) blocked[group[i]] = 1;
   }
   const minGap = new Float64Array(photos.length).fill(Infinity);
@@ -345,34 +945,46 @@ export function pickFrom(
     const i = at.get(idx);
     if (i !== undefined && !chosen.has(i)) take(i);
   }
+  /** Not like anything taken out (checked once, when it is first in the running). */
+  const fine = (i: number): boolean => {
+    if (cleared[i]) return true;
+    if (removed.some((r) => looseAlike(photos[i], photos[r], album.near(i, r)))) {
+      out[i] = 1;
+      if (!alikeOk) blocked[group[i]] = 1;
+      return false;
+    }
+    cleared[i] = 1;
+    return true;
+  };
+  const open = () => (alikeOk ? order.filter((i) => !out[i]) : best.filter((i) => !blocked[group[i]] && !out[i]));
+  /** The open photo scoring highest that is unlike everything taken out. */
+  const nextBest = (score: (i: number) => number): number => {
+    for (;;) {
+      let pick = -1;
+      let top = -Infinity;
+      for (const i of open()) {
+        const s = score(i);
+        if (s > top || (s === top && pick >= 0 && quality[i] > quality[pick])) {
+          top = s;
+          pick = i;
+        }
+      }
+      if (pick < 0 || top === -Infinity) return -1;
+      if (fine(pick)) return pick;
+    }
+  };
 
   const want = Math.max(0, Math.floor(target));
-  // Only the best photo of each open group is ever a candidate (with
-  // `alikeOk`, any photo not yet in or out).
-  const open = () => (alikeOk ? order.filter((i) => !out[i]) : best.filter((i) => !blocked[group[i]]));
   if (chosen.size === 0 && want > 0) {
     const edge = 1 / Math.max(2, want);
     for (const side of [0, 1]) {
       if (chosen.size >= want) break;
-      let pick = -1;
-      for (const i of open()) {
-        const near = side === 0 ? place[i] <= edge : place[i] >= 1 - edge;
-        if (near && (pick < 0 || quality[i] > quality[pick])) pick = i;
-      }
+      const pick = nextBest((i) => ((side === 0 ? place[i] <= edge : place[i] >= 1 - edge) ? quality[i] : -Infinity));
       if (pick >= 0) take(pick);
     }
   }
   while (chosen.size < want) {
-    let pick = -1;
-    let score = -1;
-    for (const i of open()) {
-      const gap = chosen.size === 0 ? 1 : minGap[i];
-      const s = gap * (0.6 + 0.4 * quality[i]);
-      if (s > score || (s === score && quality[i] > quality[pick])) {
-        score = s;
-        pick = i;
-      }
-    }
+    const pick = nextBest((i) => (chosen.size === 0 ? 1 : minGap[i]) * (0.6 + 0.4 * quality[i]));
     if (pick < 0) break;
     take(pick);
   }
@@ -382,15 +994,15 @@ export function pickFrom(
 export interface Shortlist {
   /** Caller indices, earliest first. */
   chosen: number[];
-  /** Photos set aside as near-duplicates of a sharper one. */
+  /** Photos set aside as copies or near-duplicates of a kept photo. */
   duplicatesDropped: number;
   /** Photos looked at. */
   considered: number;
 }
 
 /**
- * The film's photos from an album: one per look-alike group (the sharpest),
- * up to `max`, spread evenly over the day.
+ * The film's photos from an album: one per moment (the sharpest of its
+ * copies), up to `max`, spread evenly over the day.
  */
 export function shortlist(photos: readonly PhotoSignal[], max = 40, opts: AlikeOptions = {}): Shortlist {
   const album = prepareAlbum(photos, opts);
@@ -402,9 +1014,9 @@ export function shortlist(photos: readonly PhotoSignal[], max = 40, opts: AlikeO
 
 /**
  * - "album": more than `max` photos, so Stitch chose up to `max`.
- * - "picks": `max` or fewer, all kept but exact near-duplicates.
- * - "as-picked": too few would be left without the near-duplicates, so the
- *   picks stand as they are.
+ * - "picks": `max` or fewer, all kept but exact copies.
+ * - "as-picked": too few would be left without the copies, so the picks
+ *   stand as they are.
  */
 export type PlanMode = "album" | "picks" | "as-picked";
 
@@ -413,32 +1025,45 @@ export interface AlbumPlan {
   mode: PlanMode;
   /** Caller indices, earliest first. */
   chosen: number[];
-  /** Near-duplicates set aside (never more than the photos left out). */
+  /** Copies and near-duplicates set aside (never more than the photos left out). */
   setAside: number;
 }
 
 /**
  * Which photos go into the film, never any in `removed` or like them:
- * - more than `max`: the shortlist (look-alikes judged loosely, bursts too
- *   when the times are capture times); topped up to `min` with look-alikes
- *   when the album has fewer distinct moments than that;
- * - `max` or fewer: only exact near-duplicates go, and only if `min` remain.
+ * - more than `max`: the shortlist (copies and near-identical frames set
+ *   aside; bursts judged loosely when the times are capture times); topped
+ *   up to `min` with look-alikes when the album has fewer distinct moments;
+ * - `max` or fewer: only exact copies go, and only if `min` remain.
  */
-export function planAlbum(
-  photos: readonly PhotoSignal[],
-  opts: { exactTimes: boolean; removed?: readonly number[]; max?: number; min?: number },
-): AlbumPlan {
-  const max = opts.max ?? 40;
-  const min = opts.min ?? 8;
-  const removed = opts.removed ?? [];
-  const isOut = new Set(removed);
+export function planAlbum(photos: readonly PhotoSignal[], opts: PlanOptions): AlbumPlan {
+  const { mode, albumOpts } = planShape(photos, opts);
+  return finishPlan(prepareAlbum(photos, albumOpts), mode, opts);
+}
+
+/** planAlbum, pausing for the page between slices of work (see prepareAlbumAsync). */
+export async function planAlbumAsync(photos: readonly PhotoSignal[], opts: PlanOptions, pause: () => Promise<void>): Promise<AlbumPlan> {
+  const { mode, albumOpts } = planShape(photos, opts);
+  return finishPlan(await prepareAlbumAsync(photos, albumOpts, pause), mode, opts);
+}
+
+export interface PlanOptions {
+  exactTimes: boolean;
+  removed?: readonly number[];
+  max?: number;
+  min?: number;
+}
+
+function planShape(photos: readonly PhotoSignal[], opts: PlanOptions): { mode: PlanMode; albumOpts: AlikeOptions } {
+  const isOut = new Set(opts.removed ?? []);
   const left = photos.filter((p) => !isOut.has(p.index)).length;
-  if (left > max) {
-    const album = prepareAlbum(photos, { bursts: opts.exactTimes });
-    return { album, ...chooseAgain(album, "album", removed, max, min) };
-  }
-  const album = prepareAlbum(photos, { strict: true });
-  return { album, ...chooseAgain(album, "picks", removed, max, min) };
+  return left > (opts.max ?? 40)
+    ? { mode: "album", albumOpts: { bursts: opts.exactTimes } }
+    : { mode: "picks", albumOpts: { strict: true } };
+}
+
+function finishPlan(album: Album, mode: PlanMode, opts: PlanOptions): AlbumPlan {
+  return { album, ...chooseAgain(album, mode, opts.removed ?? [], opts.max ?? 40, opts.min ?? 8) };
 }
 
 /** A fresh choice from an album already prepared (the "Choose again" action). */
@@ -454,7 +1079,7 @@ export function chooseAgain(
   let chosen = pickFrom(album, [], removed, max);
   if (mode === "album") {
     if (chosen.length < min) chosen = pickFrom(album, chosen, removed, Math.min(min, left), { alikeOk: true });
-    return { mode, chosen, setAside: Math.min(album.duplicates, left - chosen.length) };
+    return { mode, chosen, setAside: Math.max(0, Math.min(album.duplicates, left - chosen.length)) };
   }
   if (chosen.length < Math.min(min, left)) {
     const all = album.order.map((i) => album.photos[i].index).filter((idx) => !isOut.has(idx));

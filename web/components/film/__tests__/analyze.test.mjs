@@ -6,16 +6,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 const {
+  FINE_SIZE,
   boxResize,
   colourLayout,
   dHash,
+  fineSignature,
   grayFromRgba,
   lookFromPixels,
   parseExifDate,
   readExifTime,
   sharpness,
 } = await import("../analyze.ts");
-const { hamming } = await import("../shortlist.ts");
+const shortlistModule = await import("../shortlist.ts");
+const { hamming } = shortlistModule;
 
 /** An RGBA image from a function of (x, y) -> [r, g, b]. */
 function image(w, h, fn) {
@@ -83,11 +86,58 @@ test("sharpness is high for crisp edges, low for soft ones, zero when flat", () 
   assert.equal(sharpness(new Float32Array(4), 2, 2), 0);
 });
 
-test("lookFromPixels gives hash, layout and sharpness together", () => {
+test("lookFromPixels gives hash, layout, fine structure and sharpness together", () => {
   const look = lookFromPixels(image(32, 24, (x, y) => [x * 8, y * 10, 128]), 32, 24);
   assert.match(look.hash, /^[0-9a-f]{16}$/);
   assert.equal(look.layout.length, 192);
+  assert.equal(look.fine.length, 4 * FINE_SIZE * FINE_SIZE);
   assert.ok(Number.isFinite(look.sharpness));
+});
+
+test("fineSignature: three 32x32 rank maps that ignore brightness, contrast, tone curves and saturation, and a clipped-cell mask", () => {
+  assert.equal(FINE_SIZE, shortlistModule.FINE_SIZE, "analyze.ts and shortlist.ts agree on the grid");
+  const scene = (x, y) => [
+    90 + 60 * Math.sin(x / 9) + 30 * Math.cos(y / 5),
+    110 + 50 * Math.cos((x + y) / 11),
+    70 + 40 * Math.sin(y / 7) + (x > 40 && y < 30 ? 60 : 0),
+  ];
+  const withMask = fineSignature(image(96, 72, scene), 96, 72);
+  assert.equal(withMask.length, 4 * 32 * 32);
+  assert.ok(withMask.subarray(3072).every((v) => v === 0), "nothing clipped");
+  const base = withMask.subarray(0, 3072);
+  assert.ok(base.every((v) => v >= 0 && v <= 1));
+  // Blown-out cells are marked.
+  const blown = fineSignature(image(96, 72, (x, y) => (x < 24 ? [255, 255, 255] : scene(x, y))), 96, 72);
+  const mask = blown.subarray(3072);
+  assert.equal(mask[0], 1);
+  assert.equal(mask[31], 0);
+  // Ranks spread over 0..1 in every channel.
+  for (let c = 0; c < 3; c++) {
+    const ch = base.subarray(c * 1024, (c + 1) * 1024);
+    assert.ok(Math.min(...ch) === 0 && Math.max(...ch) === 1, `channel ${c}`);
+  }
+  const maxDiff = (a, b) => a.reduce((m, v, i) => Math.max(m, Math.abs(v - b[i])), 0);
+  const meanDiff = (a, b) => a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length;
+  // Darker and flatter: the order of light (and colour) is the same.
+  const flatter = fineSignature(image(96, 72, (x, y) => scene(x, y).map((v) => v * 0.7 + 20)), 96, 72);
+  assert.ok(maxDiff(base, flatter) < 0.03, "unchanged by brightness and contrast");
+  // A gamma curve on each channel nearly keeps it (luma of curved channels is not exactly a curve of luma).
+  const toned = fineSignature(image(96, 72, (x, y) => scene(x, y).map((v) => 255 * (v / 255) ** 1.3)), 96, 72);
+  assert.ok(meanDiff(base.subarray(0, 1024), toned.subarray(0, 1024)) < 0.02, "light all but unchanged by a tone curve");
+  // Saturation halved about the grey: the colour channels keep their order.
+  const desat = fineSignature(
+    image(96, 72, (x, y) => {
+      const [r, g, b] = scene(x, y);
+      const l = 0.299 * r + 0.587 * g + 0.114 * b;
+      return [l + (r - l) * 0.5, l + (g - l) * 0.5, l + (b - l) * 0.5];
+    }),
+    96,
+    72,
+  );
+  assert.ok(maxDiff(base, desat) < 0.03, "colour order unchanged by less saturation");
+  // A grey picture has no colour channels to speak of: they stay flat.
+  const grey = fineSignature(image(96, 72, (x, y) => { const v = scene(x, y)[0]; return [v, v, v]; }), 96, 72);
+  assert.ok(grey.subarray(1024, 3072).every((v) => v === 0.5));
 });
 
 // ---------------------------------------------------------------------------

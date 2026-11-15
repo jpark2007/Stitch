@@ -41,6 +41,8 @@ export interface PickedPhoto {
 export interface Looking {
   done: number;
   total: number;
+  /** Every photo looked at; now choosing among them. */
+  choosing?: boolean;
 }
 
 function dragHasFiles(e: DragEvent): boolean {
@@ -161,8 +163,14 @@ export function FilmPhotoPicker(props: {
               />
             </div>
             <p className="text-[0.9375rem] text-ink-soft tabular-nums">
-              {lookingLine(looking.done, looking.total)}
-              <span className="sr-only"> looked at</span>
+              {looking.choosing ? (
+                "Choosing the best of them…"
+              ) : (
+                <>
+                  {lookingLine(looking.done, looking.total)}
+                  <span className="sr-only"> looked at</span>
+                </>
+              )}
             </p>
           </div>
           <p className="max-w-[34ch] text-sm text-pretty text-ink-soft">

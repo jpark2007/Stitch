@@ -1,7 +1,8 @@
 // Looking at photos in the browser, so a whole album can be narrowed down
 // without sending it anywhere. For each File: a small decode (EXIF
-// orientation honoured), its difference hash, colour layout and sharpness,
-// and its capture time from the EXIF header. Nothing here leaves the page.
+// orientation honoured), its difference hash, colour layout, fine structure
+// and sharpness, and its capture time from the EXIF header. Nothing here
+// leaves the page.
 //
 // The maths is in pure exported functions (pixels in, numbers out) so it is
 // tested without a browser: components/film/__tests__/analyze.test.mjs.
@@ -13,6 +14,8 @@ export interface PhotoLook {
   hash: string;
   /** 8x8 cells of mean RGB, [r, g, b, …], 192 numbers. */
   layout: number[];
+  /** Fine structure for telling copies from different moments (see fineSignature). */
+  fine: Float32Array;
   /** Variance of the Laplacian on the small grayscale copy; higher is crisper. */
   sharpness: number;
   /** EXIF DateTimeOriginal (wall clock read as UTC, ms), or null. */
@@ -139,14 +142,88 @@ export function sharpness(gray: ArrayLike<number>, width: number, height: number
   return Math.max(0, sq / n - mean * mean);
 }
 
-/** Hash, layout and sharpness of an RGBA image. */
+/** Side of the fine-structure grid (shortlist.ts FINE_SIZE must match; a test keeps them equal). */
+export const FINE_SIZE = 32;
+/** A chroma channel that spans less than this (0-255 units) counts as no colour at all. */
+const COLOURLESS_SPAN = 12;
+
+/**
+ * Ranks of `values` (each within ±512) scaled to 0..1, ties sharing their
+ * mean rank. Quantised to 1/16 and packed with the index, so a typed-array
+ * sort does the work.
+ */
+function ranks(values: Float64Array, out: Float32Array, offset: number) {
+  const n = values.length;
+  const keys = new Float64Array(n);
+  for (let i = 0; i < n; i++) keys[i] = Math.round((values[i] + 512) * 16) * 4096 + i;
+  keys.sort();
+  for (let k = 0; k < n; ) {
+    const q = Math.floor(keys[k] / 4096);
+    let e = k;
+    while (e + 1 < n && Math.floor(keys[e + 1] / 4096) === q) e++;
+    const r = (k + e) / 2 / (n - 1);
+    for (let t = k; t <= e; t++) out[offset + (keys[t] % 4096)] = r;
+    k = e + 1;
+  }
+}
+
+/** A grid cell whose channel averages this close to 0 or 255 has lost its detail (blown out or crushed). */
+const CLIPPED_HIGH = 248;
+const CLIPPED_LOW = 6;
+
+/**
+ * The fine structure of a photo: the whole frame squeezed to a 32x32 grid in
+ * three channels (luma, blue-difference, red-difference), each channel given
+ * as ranks from 0 to 1 rather than values, so any change that keeps the order
+ * of light and dark (brightness, contrast, a tone curve, more or less
+ * saturation) leaves it the same. A channel with no real colour in it stays
+ * flat (all 0.5). A fourth plane marks cells that are blown out or crushed
+ * (1), where an exposure edit cannot keep the order. shortlist.ts compares
+ * two of these block by block.
+ */
+export function fineSignature(rgba: ArrayLike<number>, width: number, height: number): Float32Array {
+  const n = FINE_SIZE;
+  const nn = n * n;
+  const r = boxResize(rgba, width, height, n, n, 4, 0);
+  const g = boxResize(rgba, width, height, n, n, 4, 1);
+  const b = boxResize(rgba, width, height, n, n, 4, 2);
+  const channels = [new Float64Array(nn), new Float64Array(nn), new Float64Array(nn)];
+  const out = new Float32Array(4 * nn).fill(0.5);
+  for (let i = 0; i < nn; i++) {
+    const y = 0.299 * r[i] + 0.587 * g[i] + 0.114 * b[i];
+    channels[0][i] = y;
+    channels[1][i] = b[i] - y;
+    channels[2][i] = r[i] - y;
+    const hi = Math.max(r[i], g[i], b[i]);
+    const lo = Math.min(r[i], g[i], b[i]);
+    out[3 * nn + i] = hi >= CLIPPED_HIGH || (hi <= CLIPPED_LOW && lo <= CLIPPED_LOW) ? 1 : 0;
+  }
+  channels.forEach((values, c) => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < nn; i++) {
+      lo = Math.min(lo, values[i]);
+      hi = Math.max(hi, values[i]);
+    }
+    if (c > 0 && hi - lo < COLOURLESS_SPAN) return;
+    ranks(values, out, c * nn);
+  });
+  return out;
+}
+
+/** Hash, layout, fine structure and sharpness of an RGBA image. */
 export function lookFromPixels(
   rgba: ArrayLike<number>,
   width: number,
   height: number,
-): Pick<PhotoLook, "hash" | "layout" | "sharpness"> {
+): Pick<PhotoLook, "hash" | "layout" | "fine" | "sharpness"> {
   const gray = grayFromRgba(rgba, width, height);
-  return { hash: dHash(gray, width, height), layout: colourLayout(rgba, width, height), sharpness: sharpness(gray, width, height) };
+  return {
+    hash: dHash(gray, width, height),
+    layout: colourLayout(rgba, width, height),
+    fine: fineSignature(rgba, width, height),
+    sharpness: sharpness(gray, width, height),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -295,8 +372,8 @@ function abortError(): Error {
   return typeof DOMException === "function" ? new DOMException("Stopped", "AbortError") : new Error("Stopped");
 }
 
-/** Lets the page breathe between photos (typing, scrolling, progress). */
-function yieldToPage(): Promise<void> {
+/** Lets the page breathe between photos, or slices of other work (typing, scrolling, progress). */
+export function yieldToPage(): Promise<void> {
   const s = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
   if (s?.yield) return s.yield();
   return new Promise((r) => setTimeout(r, 0));
