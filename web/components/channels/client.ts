@@ -1,4 +1,4 @@
-import { parseContact } from "./settings";
+import { parseContact, parseTestPromptResult } from "./settings";
 import type { ChannelContact, Enrollment, Preferences } from "./settings";
 
 export class ChannelSettingsError extends Error {
@@ -43,6 +43,11 @@ export function createSettingsClient(baseUrl: string, fetcher: typeof fetch = fe
     } catch { throw new ChannelSettingsError(0); }
   }
   return {
+    async testPrompt(fid: string, pid: string, requestId: string, signal?: AbortSignal) {
+      const data = await request("POST", fid, pid, "contact/test-prompt", { requestId }, signal);
+      try { return parseTestPromptResult(data); }
+      catch { throw new ChannelSettingsError(0); }
+    },
     async get(fid: string, pid: string, signal?: AbortSignal) {
       return contactResult(await request("GET", fid, pid, "contact", undefined, signal), pid);
     },

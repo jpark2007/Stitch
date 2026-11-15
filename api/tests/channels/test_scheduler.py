@@ -110,7 +110,7 @@ def test_open_question_priority_preserves_second_telling_target(scheduled):
     db.people.insert_one({"_id": "foreign", "familyId": "family-b"})
     memories.create_question(db, "family-b", person_id="foreign", text="Private other family question")
     assert worker.tick()["sent"] == 1
-    assert sender.messages[-1]["text"] == q.text
+    assert sender.messages[-1]["text"] == q.text + "\n\nReply STOP to stop messages."
     assert db.conversations.find_one({"principal": {"$exists": True}})["draft"]["questionId"] == q.id
     for text in ("I remember the river.", "YEAR 1998", "SUBMIT"):
         input_text(client, text)

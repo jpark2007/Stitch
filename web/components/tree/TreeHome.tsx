@@ -168,6 +168,7 @@ function FamilyHome(props: {
       ask={hrefs.ask({ familyId })}
       traditions={traditionsHref(familyId)}
       add={hrefs.add({ familyId })}
+      calls={process.env.NEXT_PUBLIC_STITCH_CHANNELS === "1" ? `/settings/notifications?family=${encodeURIComponent(familyId)}#call-interviews-title` : undefined}
       switcher={
         view.families.length > 1 ? (
           <FamilySwitch families={view.families} currentId={familyId} busy={switching} onChange={onSwitch} />
@@ -315,15 +316,17 @@ function HomeShell(props: {
   traditions?: string;
   /** "Add a memory" link: only for a signed-in viewer on a real family. */
   add?: string;
+  calls?: string;
   note?: ReactNode;
   busy?: boolean;
   children: ReactNode;
 }) {
-  const { title, caption, threads, ask, traditions, add, switcher, note, busy, children } = props;
+  const { title, caption, threads, ask, traditions, add, calls, switcher, note, busy, children } = props;
   const placeholder = busy === true;
   const extras = [
     ask ? { href: ask, label: "Ask the family" } : null,
     traditions ? { href: traditions, label: "Traditions" } : null,
+    calls ? { href: calls, label: "Call interviews" } : null,
   ].filter((x): x is { href: string; label: string } => x !== null);
   // Two or more go under "More" until the bar has room for every word.
   const folded = extras.length > 1;

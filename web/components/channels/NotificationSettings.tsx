@@ -11,7 +11,7 @@ import { SelectField, TextField } from "@/components/flow/Field";
 import { FormError } from "@/components/flow/FormError";
 import { ChannelSettingsError, createSettingsClient } from "./client";
 import { CallInterviews } from "./CallInterviews";
-import { preferenceError, preferencesFor, statusDescription, validHandle } from "./settings";
+import { preferenceError, preferencesFor, statusDescription, storedTestPromptRequestId, validHandle } from "./settings";
 import type { ChannelContact, Enrollment, Preferences } from "./settings";
 
 const client = createSettingsClient(API_BASE_URL);
@@ -97,7 +97,7 @@ function ContactPanel({ familyId, person }: { familyId: string; person: Person }
 }
 
 function ContactForm({ familyId, person, initial, reload }: { familyId: string; person: Person; initial: ChannelContact | null; reload: () => void }) {
-  const { refresh } = useSession();
+  const { refresh, me } = useSession();
   const [contact, setContact] = useState(initial);
   const [prefs, setPrefs] = useState<Preferences>(() => preferencesFor(initial));
   const [handle, setHandle] = useState(initial?.handle ?? "");
@@ -143,6 +143,8 @@ function ContactForm({ familyId, person, initial, reload }: { familyId: string; 
   }
 
   const stopped = contact?.status === "stopped";
+  const scheduled = process.env.NEXT_PUBLIC_STITCH_SCHEDULER === "1" && contact?.status === "active" && contact.provider === "imessage";
+  const savedSchedule = preferencesFor(contact);
   return <div className="space-y-7">
     <section aria-label="Messaging consent" className={section}>
       <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -170,8 +172,16 @@ function ContactForm({ familyId, person, initial, reload }: { familyId: string; 
       </div>}
     </section>
 
+    {person.userId === me.user.id && contact?.status === "active" && contact.provider === "imessage" &&
+      <TestPrompt familyId={familyId} personId={person.id} handle={contact.handle} disabled={busy} />}
     <form className={section} aria-busy={busy} onSubmit={e => { e.preventDefault(); void mutate(contact && !stopped ? "save" : "enroll"); }}>
-      <div><h2 className="font-display text-2xl">A comfortable rhythm</h2><p className="mt-2 text-sm leading-relaxed text-ink-soft">Save preferences for story prompts. Saving these does not turn on a schedule or send a message.</p></div>
+      <div><h2 className="font-display text-2xl">A comfortable rhythm</h2><p className="mt-2 text-sm leading-relaxed text-ink-soft">{scheduled
+        ? "Saved preferences control your active story-prompt schedule. Saving does not send a message immediately."
+        : "Save preferences for story prompts. Saving these does not turn on a schedule or send a message."}</p></div>
+      {scheduled && <p role="status" className="border-l-2 border-accent pl-4 text-sm leading-relaxed text-ink-soft">
+        Story prompts are scheduled for {contact.handle} every {savedSchedule.cadenceDays} {savedSchedule.cadenceDays === 1 ? "day" : "days"} while the demo server is running.
+        {" "}Quiet hours are {savedSchedule.quietHours.start}–{savedSchedule.quietHours.end} ({savedSchedule.timezone}). Delivery depends on the messaging connection.
+      </p>}
       <div className="grid gap-5 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]"><TextField label="Time zone" hint="For example, America/New_York." value={prefs.timezone} disabled={busy}
         onChange={e => setPrefs(p => ({ ...p, timezone: e.target.value }))} required />
       <TextField label="Days between prompts" hint="Between 1 and 30 days." type="number" min={1} max={30} step={1} value={Number.isNaN(prefs.cadenceDays) ? "" : prefs.cadenceDays} disabled={busy}
@@ -187,4 +197,63 @@ function ContactForm({ familyId, person, initial, reload }: { familyId: string; 
     <div aria-live="polite">{notice && <p role="status" className="text-sm text-ink-soft">{notice}</p>}</div>
     {error && <div ref={errorRegion} className="space-y-3"><FormError message={error} /><div className="flex flex-wrap gap-2"><Button variant="secondary" disabled={busy} onClick={reload}>Refresh contact</Button><Button variant="quiet" disabled={busy} onClick={() => void refresh().catch(() => {})}>Refresh session</Button></div></div>}
   </div>;
+}
+
+function TestPrompt({ familyId, personId, handle, disabled }: { familyId: string; personId: string; handle: string; disabled: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<"sent" | "pending" | "uncertain" | null>(null);
+  const [message, setMessage] = useState("");
+  const lock = useRef(false);
+  const requestId = useRef<string | null>(null);
+  const controller = useRef<AbortController | null>(null);
+  const storageKey = `stitch:test-prompt:${encodeURIComponent(familyId)}:${encodeURIComponent(personId)}`;
+  useEffect(() => () => controller.current?.abort(), []);
+
+  async function send() {
+    if (lock.current || disabled || status === "sent") return;
+    lock.current = true;
+    setBusy(true);
+    setMessage("");
+    try {
+      // Keep the same operation across retries and refreshes, including a lost response.
+      if (!requestId.current) {
+        requestId.current = storedTestPromptRequestId(sessionStorage, storageKey, () => crypto.randomUUID());
+      }
+    } catch {
+      setMessage("Your browser could not keep track of this request. No message was sent. Enable session storage and try again.");
+      setBusy(false); lock.current = false;
+      return;
+    }
+    const abort = new AbortController(); controller.current = abort;
+    try {
+      const result = await client.testPrompt(familyId, personId, requestId.current, abort.signal);
+      if (abort.signal.aborted) return;
+      setStatus(result.status);
+      setMessage(result.status === "sent"
+        ? "The messaging service accepted your prompt. Check your phone; delivery is not yet confirmed."
+        : result.status === "pending"
+          ? "This request is still being processed. Check its status below; this will not send another prompt."
+          : "Delivery could not be confirmed. Check your phone. This request will not be resent automatically; contact the demo organizer if it is missing.");
+    } catch (error) {
+      if (abort.signal.aborted) return;
+      setStatus("uncertain");
+      const code = error instanceof ChannelSettingsError ? error.status : 0;
+      setMessage(code === 403 ? "Only your own verified, opted-in account can receive a test. Refresh your contact settings."
+        : code === 409 ? "Another message may still be processing. Check your phone or ask the demo organizer before trying again."
+        : code === 503 ? "Test messaging is unavailable. Ask the demo organizer to check the connection."
+        : code === 401 ? "Sign in again to check this request."
+        : "The result could not be confirmed. Check your phone or check this same request again; a new prompt will not be sent.");
+    } finally {
+      if (!abort.signal.aborted) { setBusy(false); lock.current = false; }
+    }
+  }
+
+  return <section className={section} aria-labelledby="test-prompt-title">
+    <div><h2 id="test-prompt-title" className="font-display text-2xl">Try a story prompt</h2>
+      <p className="mt-2 text-sm leading-relaxed text-ink-soft">Sends one prompt now to your connected account, {handle}, even during quiet hours. This does not start an automatic schedule.</p></div>
+    <Button variant="secondary" disabled={disabled || status === "sent"} busy={busy} busyLabel="Checking…" onClick={() => void send()}>
+      {status === "sent" ? "Prompt sent" : status ? "Check this request" : "Send test prompt"}
+    </Button>
+    <div aria-live="polite">{message && <p role="status" className="text-sm leading-relaxed text-ink-soft">{message}</p>}</div>
+  </section>;
 }
