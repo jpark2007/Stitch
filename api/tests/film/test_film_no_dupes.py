@@ -18,11 +18,12 @@ import pytest
 from PIL import Image
 
 from film_checks import alike_pairs, assert_no_look_alikes, assert_well_cut
-from film_images import STORY, T0, blurred, brighter, cropped, encode, photo, scene, tinted_scene
+from film_images import STORY, T0, blurred, brighter, cropped, encode, outing, photo, scene, tinted_scene
 from film.describe import DESCRIBE_PROMPT, FakeDescriber, normalize
 from film.ingest import ingest
 from film.narrate import offline_narrator
-from film.pipeline import distinct_shots, make_film
+from film.pipeline import distinct_shots, make_film, story_for
+from film.timing import LONG_HOLD, NARRATION_PER_PHOTO
 from film.plan import (
     EDITOR_SYSTEM,
     PlanBeat,
@@ -36,6 +37,7 @@ from film.plan import (
 )
 from film.selection import (
     MAX_DESCRIBED,
+    SECONDS_PER_WORD,
     candidate_count,
     chronological,
     clusters,
@@ -44,6 +46,7 @@ from film.selection import (
     select,
     spread,
     target_count,
+    word_count,
 )
 from film.types import Services, SourcePhoto, Story
 
@@ -90,6 +93,105 @@ def test_different_scenes_in_one_dominant_colour_never_look_alike(base):
     photos = ingest([photo(f"t{i}", tinted_scene(i, base), taken=T0 + timedelta(seconds=30 * i)) for i in range(16)])
     assert alike_pairs(photos) == []
     assert len(clusters(photos)) == 16
+
+
+def _jpeg(im: Image.Image, quality: int) -> Image.Image:
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=quality)
+    return Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
+
+
+def _rotated(im: Image.Image, degrees: float, black_corners: bool = False) -> Image.Image:
+    turned = im.rotate(degrees, resample=Image.Resampling.BICUBIC)
+    if black_corners:
+        return turned
+    w, h = im.size
+    return turned.crop((int(w * 0.04), int(h * 0.04), int(w * 0.96), int(h * 0.96))).resize((w, h))
+
+
+def _shifted(im: Image.Image, frac: float) -> Image.Image:
+    w, h = im.size
+    dx, dy = int(w * frac), int(h * frac)
+    return im.crop((dx, dy, w, h)).resize((w, h))
+
+
+def _warm(im: Image.Image) -> Image.Image:
+    r, g, b = im.split()
+    return Image.merge("RGB", (r.point(lambda v: min(255, int(v * 1.15))), g, b.point(lambda v: int(v * 0.85))))
+
+
+def _enhanced(kind: str, factor: float):
+    from PIL import ImageEnhance
+
+    return lambda im: getattr(ImageEnhance, kind)(im).enhance(factor)
+
+
+HARD_COPIES = {
+    "jpeg q20": lambda im: _jpeg(im, 20),
+    "jpeg q35": lambda im: _jpeg(im, 35),
+    "resize 0.5": lambda im: im.resize((im.width // 2, im.height // 2)),
+    "resize 0.25": lambda im: im.resize((im.width // 4, im.height // 4)),
+    "crop 3% left": lambda im: cropped(im, 0.03, "left"),
+    "crop 5% top": lambda im: cropped(im, 0.05, "top"),
+    "crop 8% left": lambda im: cropped(im, 0.08, "left"),
+    "crop 8% centre": lambda im: cropped(im, 0.08, "centre"),
+    "crop 8% corner": lambda im: _shifted(im, 0.08),
+    "crop 8% left, not resized": lambda im: im.crop((int(im.width * 0.08), 0, im.width, im.height)),
+    "shift 6%": lambda im: _shifted(im, 0.06),
+    "brightness 0.7": _enhanced("Brightness", 0.7),
+    "brightness 1.35": _enhanced("Brightness", 1.35),
+    "contrast 0.7": _enhanced("Contrast", 0.7),
+    "contrast 1.4": _enhanced("Contrast", 1.4),
+    "saturation 0.4": _enhanced("Color", 0.4),
+    "saturation 1.6": _enhanced("Color", 1.6),
+    "black and white": lambda im: im.convert("L").convert("RGB"),
+    "rotated 1 degree": lambda im: _rotated(im, 1),
+    "rotated -2 degrees": lambda im: _rotated(im, -2),
+    "rotated 2 degrees, black corners": lambda im: _rotated(im, 2, black_corners=True),
+    "warm filter": _warm,
+    "crop 5% + brighter + q40": lambda im: _jpeg(_enhanced("Brightness", 1.2)(_shifted(im, 0.05)), 40),
+    "small + contrast + shift 4%": lambda im: _enhanced("Contrast", 1.2)(_shifted(im, 0.04)).resize(
+        (im.width * 3 // 10, im.height * 3 // 10)
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", list(HARD_COPIES))
+def test_a_hard_copy_of_a_day_out_photo_looks_like_its_original(kind):
+    for seed in range(6):
+        im = outing(700 + seed, ("park", "beach", "lake")[seed % 3])
+        a, b = ingest([photo("a", im, taken=T0), photo("b", HARD_COPIES[kind](im), taken=T0 + timedelta(hours=3))])
+        assert looks_alike(a, b), (kind, seed)
+
+
+@pytest.mark.parametrize(
+    "place, people, at_least",
+    [("park", (2, 5), 27), ("park", (1, 2), 25), ("beach", (1, 5), 28), ("lake", (1, 5), 26)],
+)
+def test_different_moments_in_one_place_are_kept_apart(place, people, at_least):
+    # 30 moments of one day out: the same sky, horizon and ground, people moving about. Their
+    # colour layouts are nearly the same; only the structure tells them apart. (Before, the
+    # colour layout chained a whole park album into one photo.)
+    photos = ingest([
+        photo(f"m{i:02d}", outing(100 + i, place, people), taken=T0 + timedelta(minutes=12 * i)) for i in range(30)
+    ])
+    chosen = select(photos, STORY, count=30)
+    assert len(chosen) >= at_least, len(chosen)
+    assert alike_pairs(chosen) == []
+
+
+def test_selecting_from_a_thousand_photos_of_one_place_stays_fast():
+    # The worst case for cost: nothing is ruled out by the cheap tests, so every comparison is
+    # the structural one.
+    photos = [
+        photo(f"m{i:04d}", outing(3000 + i, "park", size=(320, 240)), taken=T0 + timedelta(seconds=30 * i))
+        for i in range(1000)
+    ]
+    started = time.perf_counter()
+    chosen = select(ingest(photos), STORY, count=candidate_count(24))
+    elapsed = time.perf_counter() - started
+    assert elapsed < 10, f"ingest + select of 1000 photos of one park took {elapsed:.1f}s"
+    assert len(chosen) == MAX_DESCRIBED
 
 
 def test_flat_photos_of_different_colours_are_different():
@@ -378,6 +480,20 @@ def test_copies_of_one_photo_make_a_film_of_that_one_photo():
               photo("d", cropped(base, 0.05), taken=T0 + timedelta(hours=2))]
     cut = make_film(photos, Story(STORY, None, 1998), Services(FakeDescriber(), None, offline_narrator()))
     assert len({s.photo_id for s in cut.shots}) == 1
+
+
+def test_a_long_story_over_few_photos_is_trimmed_and_no_photo_is_shown_twice():
+    photos = [photo(f"p{i}", outing(900 + i, "lake"), taken=T0 + timedelta(minutes=10 * i)) for i in range(4)]
+    long_story = " ".join(f"We swam to the raft number {i} and back again before lunch." for i in range(30))
+    told = story_for(Story(long_story, None, 1998), 4)
+    assert word_count(told.text) <= NARRATION_PER_PHOTO * 4 / SECONDS_PER_WORD
+    assert told.text.startswith("We swam to the raft number 0") and told.text.endswith("number 29 and back again before lunch.")
+    cut = make_film(photos, Story(long_story, None, 1998), Services(FakeDescriber(), None, offline_narrator()))
+    ids = [s.photo_id for s in cut.shots]
+    assert sorted(ids) == ["p0", "p1", "p2", "p3"]  # each once, none twice
+    assert_well_cut(cut.shots, cut.beats, cut.words, cut.duration, {p.id for p in photos}, {p.id: p.data for p in photos})
+    assert max(s.duration for s in cut.shots) <= LONG_HOLD
+    assert story_for(Story("We went to the lake.", None, 1998), 4).text == "We went to the lake."
 
 
 def test_the_describer_is_called_at_most_max_described_times_for_300_photos():

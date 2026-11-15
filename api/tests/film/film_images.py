@@ -78,6 +78,63 @@ def tinted_scene(seed: int, base: tuple[int, int, int], size: tuple[int, int] = 
     return im
 
 
+_PLACES = {
+    # sky top, sky at the horizon, ground near the horizon, ground at the bottom
+    "park": ((110, 165, 235), (190, 215, 245), (80, 150, 60), (40, 100, 30)),
+    "beach": ((100, 160, 230), (195, 215, 240), (215, 200, 160), (180, 160, 120)),
+    "lake": ((120, 170, 230), (200, 220, 240), (60, 110, 150), (30, 70, 110)),
+}
+
+
+def _lerp(a: tuple[int, ...], b: tuple[int, ...], t: float) -> tuple[int, ...]:
+    return tuple(int(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def outing(
+    seed: int, place: str = "park", people: tuple[int, int] = (2, 5), size: tuple[int, int] = (640, 480)
+) -> Image.Image:
+    """A moment of one day out: the same `place` (sky gradient, horizon, a tree line in the
+    park, the sea's edge at the beach, a far shore at the lake) at about the same camera
+    height, with `people` figures of different sizes, shirts and places, and a little sensor
+    noise. Two seeds are two different moments in the same place."""
+    rng = random.Random(seed)
+    w, h = size
+    sky_top, sky_low, ground_top, ground_low = _PLACES[place]
+    im = Image.new("RGB", size)
+    draw = ImageDraw.Draw(im)
+    horizon = int(h * (0.45 + rng.uniform(-0.04, 0.04)))
+    for y in range(h):
+        if y < horizon:
+            colour = _lerp(sky_top, sky_low, y / horizon)
+        else:
+            colour = _lerp(ground_top, ground_low, (y - horizon) / (h - horizon))
+        draw.line([(0, y), (w, y)], fill=colour)
+    if place == "park":
+        for x in range(0, w, 24):
+            r = rng.randint(16, 36)
+            draw.ellipse([x - r, horizon - 2 * r, x + r, horizon + 4], fill=(30 + rng.randint(0, 20), 80 + rng.randint(0, 30), 30))
+    elif place == "beach":
+        draw.rectangle([0, horizon, w, horizon + h // 12], fill=(70, 130, 190))
+    else:
+        draw.rectangle([0, horizon - h // 20, w, horizon], fill=(70, 95, 70))
+    figures, mask = Image.new("RGB", size), Image.new("L", size, 0)
+    fd, md = ImageDraw.Draw(figures), ImageDraw.Draw(mask)
+    for _ in range(rng.randint(*people)):
+        cx = rng.uniform(0.1, 0.9) * w
+        tall = h * rng.uniform(0.15, 0.45)
+        wide = tall * 0.35
+        foot = rng.uniform(horizon + 20, h)
+        top = foot - tall
+        shirt = tuple(rng.randint(20, 240) for _ in range(3))
+        for d, fill in ((fd, shirt), (md, 255)):
+            d.rectangle([cx - wide / 2, top + tall * 0.2, cx + wide / 2, foot], fill=fill)
+        for d, fill in ((fd, (225, 185, 150)), (md, 255)):
+            d.ellipse([cx - wide / 3, top, cx + wide / 3, top + tall * 0.22], fill=fill)
+    im = Image.composite(figures, im, mask.filter(ImageFilter.GaussianBlur(2)))
+    grain = Image.frombytes("L", (w // 4, h // 4), rng.randbytes((w // 4) * (h // 4))).resize(size)
+    return Image.blend(im, Image.merge("RGB", (grain, grain, grain)), 0.06)
+
+
 def subject_moved(seed: int, frac: float = 0.3) -> Image.Image:
     """scene(seed) with a band `frac` of its width replaced, as when someone steps into the
     middle of the frame between two frames of a burst."""

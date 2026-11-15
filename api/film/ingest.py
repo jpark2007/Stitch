@@ -3,14 +3,18 @@
 For every photo it records the EXIF capture time (DateTimeOriginal, else DateTime), the
 upright width and height (EXIF orientations 5-8 swap them, as db.media.image_aspect does), a
 cheap sharpness score (variance of the Laplacian on a fixed-size grayscale copy, so photos of
-different resolutions compare fairly) and two visual signatures of the upright image for
+different resolutions compare fairly) and three visual signatures of the upright image for
 look-alike detection (film.selection.looks_alike):
 
 - `dhash`: a 64-bit difference hash of the grayscale copy (fine structure; moves when the
   framing shifts by a few percent);
 - `layout` and `tone`: a LAYOUT_GRID x LAYOUT_GRID colour thumbnail with each channel's mean
-  removed and divided by the photo's own contrast (so exposure, white balance and small
-  shifts or crops barely move it), and the photo's overall colour balance.
+  removed and divided by the photo's own contrast, and the photo's overall colour balance.
+  Coarse and cheap: used to rule out clearly different photos before the costly comparison;
+- `structure` (`Structure`): a STRUCTURE_SIZE thumbnail in YCbCr, each channel normalised to
+  its own mean and spread (so exposure, contrast, saturation and white balance cancel out),
+  with its 3x3 neighbourhood maxima and minima. Fine enough to see a person; the comparison
+  (film.selection.structure_alike) lines two photos up over a few crops and shifts first.
 
 A photo Pillow cannot open or decode is skipped (logged), never fatal.
 """
@@ -19,7 +23,7 @@ from __future__ import annotations
 
 import io
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from PIL import Image, ImageFilter, ImageStat
@@ -39,6 +43,17 @@ LAYOUT_MIN_CONTRAST = 6.0
 """The contrast a near-flat photo is divided by, so sensor noise is not blown up."""
 TONE_MIN_LEVEL = 8.0
 """The brightness a near-black photo's tone is measured against."""
+
+STRUCTURE_SIZE = (48, 36)
+"""The structure thumbnail (width, height); every photo is squashed to it, whatever its shape."""
+STRUCTURE_SCALE = 32
+"""Structure values are stored as 128 + STRUCTURE_SCALE * (value - mean) / spread, clipped."""
+LUMA_MIN_SPREAD = 4.0
+"""The brightness spread a near-flat photo is divided by, so noise is not blown up."""
+CHROMA_MIN_SPREAD = 6.0
+"""The same for the two colour channels."""
+COLOURFUL_SPREAD = 2.0
+"""A photo whose colour channels spread less than this is treated as black and white."""
 
 _ORIENTATION = 0x0112
 _EXIF_IFD = 0x8769
@@ -61,6 +76,18 @@ _LAPLACIAN = ImageFilter.Kernel((3, 3), [0, 1, 0, 1, -4, 1, 0, 1, 0], scale=1, o
 
 
 @dataclass(frozen=True)
+class Structure:
+    """A photo's normalised YCbCr thumbnail (mode "RGB" holding Y, Cb, Cr) and its 3x3
+    neighbourhood maxima and minima, for film.selection.structure_alike."""
+
+    image: Image.Image
+    high: Image.Image
+    low: Image.Image
+    colourful: bool  # False for a black and white photo: compare brightness only
+    detail: float  # spread of the raw brightness; near 0 for a flat photo
+
+
+@dataclass(frozen=True)
 class Ingested:
     """One readable photo and what the pipeline knows about it before any model call."""
 
@@ -74,6 +101,7 @@ class Ingested:
     dhash: int  # 64-bit difference hash of the upright image
     layout: bytes = b""  # contrast-normalised colour layout (see colour_layout); b"" = unknown
     tone: tuple[float, float, float] = (1.0, 1.0, 1.0)  # each channel's mean over the overall mean
+    structure: Structure | None = field(default=None, compare=False, repr=False)  # None = unknown
 
     @property
     def portrait(self) -> bool:
@@ -154,6 +182,30 @@ def colour_layout(rgb: Image.Image) -> tuple[bytes, tuple[float, float, float]]:
     return layout, tone
 
 
+def _normalised(channel: Image.Image, min_spread: float) -> tuple[Image.Image, float]:
+    """`channel` (mode L) mapped to 128 + STRUCTURE_SCALE * (v - mean) / spread, and the spread."""
+    stat = ImageStat.Stat(channel)
+    mean, spread = stat.mean[0], stat.stddev[0]
+    scale = STRUCTURE_SCALE / max(spread, min_spread)
+    return channel.point([max(0, min(255, round(128 + scale * (v - mean)))) for v in range(256)]), spread
+
+
+def structure(rgb: Image.Image) -> Structure:
+    """The structure signature of an RGB image (see the module docstring)."""
+    y, cb, cr = rgb.resize(STRUCTURE_SIZE, Image.Resampling.BOX).convert("YCbCr").split()
+    y, detail = _normalised(y, LUMA_MIN_SPREAD)
+    cb, cb_spread = _normalised(cb, CHROMA_MIN_SPREAD)
+    cr, cr_spread = _normalised(cr, CHROMA_MIN_SPREAD)
+    image = Image.merge("RGB", (y, cb, cr))
+    return Structure(
+        image=image,
+        high=image.filter(ImageFilter.MaxFilter(3)),
+        low=image.filter(ImageFilter.MinFilter(3)),
+        colourful=max(cb_spread, cr_spread) >= COLOURFUL_SPREAD,
+        detail=detail,
+    )
+
+
 def ingest_one(photo: SourcePhoto, order: int) -> Ingested | None:
     """What Pillow can read of one photo, or None when it cannot open or decode it."""
     try:
@@ -185,6 +237,7 @@ def ingest_one(photo: SourcePhoto, order: int) -> Ingested | None:
         dhash=dhash(gray),
         layout=layout,
         tone=tone,
+        structure=structure(rgb),
     )
 
 
@@ -202,11 +255,14 @@ __all__ = [
     "ANALYSIS_EDGE",
     "LAYOUT_GRID",
     "LAYOUT_SCALE",
+    "STRUCTURE_SIZE",
     "Ingested",
+    "Structure",
     "colour_layout",
     "dhash",
     "hamming",
     "ingest",
     "ingest_one",
     "sharpness",
+    "structure",
 ]
