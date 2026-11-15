@@ -25,6 +25,7 @@ DIGIT_TOKEN = r"(?:[0-9零〇一二两三四五六七八九]|(?<![A-Za-z])(?:zer
 DIGIT_SEQUENCE = re.compile(DIGIT_TOKEN + r"(?:[ \t,，、-]*" + DIGIT_TOKEN + r")*", re.IGNORECASE)
 DIGIT_PART = re.compile(DIGIT_TOKEN, re.IGNORECASE)
 PRIVACY_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+CODE_MARKER = "[code]"
 router = APIRouter()
 
 
@@ -91,6 +92,28 @@ def pairing_marker(message: str) -> str | None:
     return None
 
 
+def without_code(message: str, code: str) -> str | None:
+    """Drop a repeated code from the draft without losing the story around it.
+
+    Best effort: the code is already consumed and the draft is private to its
+    owner, so a code spoken as part of a longer run of numbers is left alone.
+
+    A standalone repeat of the code (any recognized spelling, once or several
+    times over) is replaced by a marker. A longer number that merely contains
+    the same digits, such as the year 1314 beside code 314, is narrative and
+    stays. A turn that held nothing but the code is dropped.
+    """
+    def replace(match):
+        digits = normalized_digits(match[0])
+        times, rest = divmod(len(digits), len(code))
+        return CODE_MARKER if times and not rest and digits == code * times else message[match.start():match.end()]
+    # Fullwidth digits fold one-for-one, so the spans line up with the original.
+    kept = DIGIT_SEQUENCE.sub(replace, message.translate(PRIVACY_DIGITS))
+    if CODE_MARKER not in kept:
+        return message
+    return kept if kept.replace(CODE_MARKER, "").strip(PAIRING_EDGE_PUNCTUATION + " \t\r\n") else None
+
+
 def transcript(raw: bytes, allowed_agents: frozenset[str]) -> tuple[str, str, str, str, int | None]:
     try:
         event = json.loads(raw.decode("utf-8"), object_pairs_hook=_object,
@@ -123,11 +146,7 @@ def transcript(raw: bytes, allowed_agents: frozenset[str]) -> tuple[str, str, st
         if not pairing or len(set(pairing)) != 1:
             raise ValueError()
         code = pairing[0]
-        # Never retain the numeric secret if the caller repeats it in a sentence.
-        if any(code in normalized_digits(sequence[0]) for message in users
-               for sequence in DIGIT_SEQUENCE.finditer(message.translate(PRIVACY_DIGITS))):
-            raise ValueError()
-        text = "\n".join(users)
+        text = "\n".join(kept for kept in (without_code(message, code) for message in users) if kept is not None)
         if not text.strip() or len(text) > MAX_TEXT:
             raise ValueError()
         call_started_at = None
