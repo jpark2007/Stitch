@@ -233,12 +233,16 @@ export function MemoryRun(props: {
         // The two ways on once the page is made, besides opening it: tell
         // another, or go back to the tree where the new page now hangs.
         // Side by side with a dot between them where there is room; stacked
-        // (no dangling dot) on a phone.
-        <nav aria-label="What next" className="flex flex-col items-center gap-x-2 sm:flex-row sm:justify-center">
+        // (no dangling dot) on a phone, and in a narrow column beside the
+        // book (a size container under 34rem: the book desk).
+        <nav
+          aria-label="What next"
+          className="flex flex-col items-center gap-x-2 sm:flex-row sm:justify-center @max-[34rem]:flex-col"
+        >
           <ButtonLink variant="quiet" href={another}>
             Add another memory
           </ButtonLink>
-          <span aria-hidden="true" className="hidden text-ink-faint sm:inline">
+          <span aria-hidden="true" className="hidden text-ink-faint sm:inline @max-[34rem]:hidden">
             &middot;
           </span>
           <ButtonLink variant="quiet" href={hrefs.home()}>

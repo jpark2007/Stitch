@@ -296,9 +296,13 @@ export function CraftingBook({ owner, page: pageWatch, run, placement }: Craftin
   // the narrator inks it), the stage page while the pop-up is made, and the
   // whole book while it waits on the teller and once it is made (or
   // stopped). The camera eases between them on its own. Under reduced
-  // motion it never moves: the whole spread, always.
+  // motion it never moves: the whole spread, always. Beside the page (the
+  // desk) it stays on the whole spread too: the book already fills its side
+  // of the window, and the table under it runs on, drawn for this view, into
+  // the page's own (BookDesk); a closer look would crop the book at the
+  // writing's edge. The small picture on a phone still leans in.
   const look: -1 | 0 | 1 =
-    reduced || !scene
+    reduced || !scene || placement === "side"
       ? 0
       : scene.waiting || scene.stage === "done" || scene.stage === "stopped"
         ? 0
