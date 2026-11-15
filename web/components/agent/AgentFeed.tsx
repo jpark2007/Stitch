@@ -45,6 +45,17 @@ const DONE_FILL = "bg-[color-mix(in_oklab,var(--sage)_80%,var(--ink))]";
 // A stitched rule between parts of the sheet, like thread running through it.
 const STITCH_TOP = "border-t-[1.5px] border-dashed border-rule";
 
+/**
+ * On the book desk (/add: the writing in light ink straight on the wooden
+ * table, BookDesk's data-desk-writing) the feed is written on the table: no
+ * sheet of its own. A stitched rule parts it from what is above. `!`: the
+ * flat look must beat the sheet's own sm:px-8.
+ */
+const ON_DESK =
+  "in-[[data-desk-writing]]:max-w-none! in-[[data-desk-writing]]:rounded-none! in-[[data-desk-writing]]:border-0! " +
+  "in-[[data-desk-writing]]:border-t-[1.5px]! in-[[data-desk-writing]]:border-dashed! in-[[data-desk-writing]]:bg-transparent! " +
+  "in-[[data-desk-writing]]:px-0! in-[[data-desk-writing]]:pt-7! in-[[data-desk-writing]]:pb-0! in-[[data-desk-writing]]:shadow-none!";
+
 const FOCUS_RING = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
 
 const STEP_NAMES: Record<string, string> = {
@@ -175,7 +186,7 @@ export default function AgentFeed(props: {
     <MotionConfig reducedMotion="user">
       <section
         aria-labelledby={headingId}
-        className="relative w-full max-w-xl rounded-paper border border-rule bg-paper-light px-5 py-7 text-ink shadow-lift sm:px-8 sm:py-8"
+        className={`relative w-full max-w-xl rounded-paper border border-rule bg-paper-light px-5 py-7 text-ink shadow-lift sm:px-8 sm:py-8 ${ON_DESK}`}
       >
         <header>
           <h2 id={headingId} className="font-display text-[1.625rem] leading-tight sm:text-[1.875rem]">

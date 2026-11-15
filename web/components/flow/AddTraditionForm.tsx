@@ -61,11 +61,13 @@ const STORY_CLASS = "font-serif! text-[1.1875rem]! leading-[1.65]! sm:text-[1.25
 // column and the value column, 1.5rem apart, each row's label sitting on the
 // baseline of the first line of its answer. Rhythm unit 4px: every row has
 // 12px above and below its 44px lines, and a hairline between rows.
-const GRID = "md:grid md:grid-cols-[6.5rem_minmax(0,1fr)] md:gap-x-6";
+// In a narrow column that is a size container (the book desk, beside its
+// book) the rows stack as on a phone; elsewhere the container rules never apply.
+const GRID = "md:grid md:grid-cols-[6.5rem_minmax(0,1fr)] md:gap-x-6 @max-[34rem]:block";
 const ROW = `${GRID} md:items-baseline border-t border-rule py-3 first:border-t-0`;
 /** A row's short label: small tracked capitals, like the "Stitch" mark, in ink-soft (not faint) for contrast. */
 const LABEL_CLASS =
-  "block pt-2 pb-1.5 font-sans text-[0.72rem] leading-4 font-bold tracking-[0.16em] uppercase md:pt-0 md:pb-0";
+  "block pt-2 pb-1.5 font-sans text-[0.72rem] leading-4 font-bold tracking-[0.16em] uppercase md:pt-0 md:pb-0 @max-[34rem]:pt-2 @max-[34rem]:pb-1.5";
 /** Values are set in the reading serif. */
 const VALUE_TEXT = "font-serif text-[0.9375rem] leading-snug";
 const ERROR_RED = "text-[#9c3b2a]";
@@ -551,7 +553,9 @@ function ChoiceLine<T extends string>(props: {
                     aria-invalid={error && i === 0 ? true : undefined}
                     onChange={() => onChange(o.value)}
                   />
-                  <ChosenText checked={checked}>{o.label}</ChosenText>
+                  <ChosenText checked={checked} text={o.label}>
+                    {o.label}
+                  </ChosenText>
                 </label>
               </li>
             );

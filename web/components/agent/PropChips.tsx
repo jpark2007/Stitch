@@ -32,6 +32,14 @@ const FOCUS_RING = "focus-visible:outline-2 focus-visible:outline-offset-2 focus
 const ALERT_BOX =
   "rounded-card border border-accent/30 border-l-[3px] border-l-accent bg-accent/8 px-3.5 py-2.5 text-sm leading-snug text-accent-deep";
 
+/**
+ * The prop's picture is a print: paper and dark ink wherever the card lies,
+ * even where the page around it sets light ink on wood (the book desk, which
+ * re-points these tokens). The kit's own values (globals.css).
+ */
+const PRINTED =
+  "[--paper:#f5eee1] [--paper-light:#fbf8f1] [--paper-deep:#ebe0cb] [--ink:#2f2620] [--ink-soft:#5c4e43] [--rule:rgb(47_38_32/0.14)]";
+
 function initials(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);
   const letters = words.slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "");
@@ -308,7 +316,7 @@ function ChipCard(p: {
       }`}
     >
       <div className="flex items-start gap-4">
-        <div className={`shrink-0 pt-0.5 transition-opacity duration-200 ease-paper ${removed ? "opacity-55" : ""}`}>
+        <div className={`shrink-0 pt-0.5 transition-opacity duration-200 ease-paper ${PRINTED} ${removed ? "opacity-55" : ""}`}>
           {showPhotoPreview ? (
             <Photo src={photo.previewUrl} alt={`Your photo for ${chip.name}`} width={72} aspect={1} tape="none" rotate={tiltFor(chip.id)} />
           ) : (

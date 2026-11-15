@@ -77,9 +77,16 @@ export default function FollowUpCard(props: {
   return (
     <section
       aria-labelledby={`${uid}-title`}
-      className="relative rounded-paper border border-rule bg-paper px-5 pt-7 pb-6 text-ink shadow-paper sm:px-7"
+      // On the book desk (/add) the question is written on the table: no card or tape of its own.
+      className="relative rounded-paper border border-rule bg-paper px-5 pt-7 pb-6 text-ink shadow-paper sm:px-7 in-[[data-desk-writing]]:rounded-none! in-[[data-desk-writing]]:border-0! in-[[data-desk-writing]]:bg-transparent! in-[[data-desk-writing]]:p-0! in-[[data-desk-writing]]:shadow-none!"
     >
-      <Tape width={92} height={22} rotate={-3} seed={5} className="absolute -top-3 left-1/2 -translate-x-1/2" />
+      <Tape
+        width={92}
+        height={22}
+        rotate={-3}
+        seed={5}
+        className="absolute -top-3 left-1/2 -translate-x-1/2 in-[[data-desk-writing]]:hidden!"
+      />
 
       <h2 id={`${uid}-title`} className="font-sans text-xs font-bold tracking-[0.16em] text-ink-soft uppercase">
         One quick question

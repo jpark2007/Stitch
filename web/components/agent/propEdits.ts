@@ -26,10 +26,11 @@ export const REUSED_PROP_LABEL = "used before";
  * tap). Tailwind v4 already limits `hover:` to hover-capable pointers.
  */
 export const PROP_OPTION_CHIP_CLASS = [
-  "inline-flex min-h-8 items-center rounded-card border border-ink-faint bg-paper-light px-3",
+  // On the book desk (light ink on the wooden table) an unpicked option has no fill of its own.
+  "inline-flex min-h-8 items-center rounded-card border border-ink-faint bg-paper-light px-3 in-[[data-desk-writing]]:peer-not-checked:bg-transparent",
   "text-sm leading-none text-ink-soft transition-colors duration-150 ease-paper",
   "peer-not-checked:hover:border-ink-soft peer-not-checked:hover:text-ink",
-  "peer-checked:border-ink peer-checked:bg-ink peer-checked:text-paper-light",
+  "peer-checked:border-ink peer-checked:bg-ink peer-checked:text-paper-light in-[[data-desk-writing]]:peer-checked:text-[#2f2620]",
   "peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent",
   "peer-disabled:cursor-not-allowed peer-disabled:opacity-60",
 ].join(" ");

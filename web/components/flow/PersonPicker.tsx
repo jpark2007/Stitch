@@ -198,7 +198,10 @@ export function PersonPicker(props: {
                           : undefined
                       }
                     />
-                    <ChosenText checked={checked}>
+                    <ChosenText
+                      checked={checked}
+                      text={`${person.name}${showYear ? ` (${person.born})` : ""}${locked ? " (you)" : ""}`}
+                    >
                       {person.name}
                       {showYear ? <span className="font-normal text-ink-soft"> ({person.born})</span> : null}
                       {locked ? <span className="font-normal text-ink-soft"> (you)</span> : null}
@@ -310,8 +313,12 @@ export function PersonPicker(props: {
  * cell reserves the wider width, so choosing never shifts the words beside
  * it. It wraps only at spaces; a single word longer than a whole line breaks
  * as a last resort. Hover belongs to the caller (it only darkens the ink).
+ *
+ * `text` is the same words as plain text: the twin draws them as generated
+ * content, so the label's own text (what finds a control by its label) says
+ * them once.
  */
-export function ChosenText({ checked, children }: { checked: boolean; children: ReactNode }) {
+export function ChosenText({ checked, text, children }: { checked: boolean; text: string; children: ReactNode }) {
   return (
     <span className="inline-grid max-w-full [overflow-wrap:anywhere]">
       <span
@@ -321,9 +328,11 @@ export function ChosenText({ checked, children }: { checked: boolean; children: 
       >
         {children}
       </span>
-      <span aria-hidden="true" className="invisible col-start-1 row-start-1 font-semibold">
-        {children}
-      </span>
+      <span
+        aria-hidden="true"
+        data-text={text}
+        className="invisible col-start-1 row-start-1 font-semibold after:content-[attr(data-text)]"
+      />
     </span>
   );
 }
