@@ -9,7 +9,8 @@ README "Scope for the weekend": the stage demo starts with a full tree and books
   COMPILES with the real compiler (screenplay.compiler.compile) and stores with the
   resulting timeline, so every book opens on playable scenes. Six moments have two
   tellings by different people, and most have two to six participants so threads cross;
-- the props and sets those scenes use (placeholder art: `art` null with a color);
+- the props and sets those scenes use (placeholder art: `art` null with a color, unless a
+  hand-made image is in seed/demo_family/art/, see load_demo_art and that folder's README);
 - two placeholder photos on the 1972 road trip;
 - five traditions for the Book of Family Traditions, the same ids and text as the web
   mock (web/components/flow/mock/demoTraditions.ts) with this family's person ids; the
@@ -34,6 +35,7 @@ like the API; variables already set win):
 
     uv run python -m seed.demo            # seed once; a no-op when the family exists
     uv run python -m seed.demo --reset    # delete the demo data and rebuild it
+    uv run python -m seed.demo --cut-out-art  # save white-background art with transparency
 
 It prints only the redacted target (scheme and hosts) and the database name, creates the
 indexes and, best effort, the Atlas Vector Search indexes, then seeds. Exit codes: 0 done,
@@ -49,15 +51,18 @@ never touched.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
+import logging
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 from pydantic import ValidationError
 from pymongo.database import Database
 
@@ -80,6 +85,8 @@ DATA_DIR = Path(__file__).resolve().parent / "demo_family"
 PROPS_PATH = DATA_DIR / "props.json"
 SETS_PATH = DATA_DIR / "sets.json"
 SCREENPLAY_SUFFIX = ".screenplay.json"
+
+log = logging.getLogger(__name__)
 
 DEMO_FAMILY_ID = "demo_family"
 DEMO_FAMILY_NAME = "The Maos"
@@ -518,24 +525,30 @@ class DemoData:
     props: list[schemas.Prop]
     sets: list[schemas.SetDef]
     scenes: dict[str, DemoScene]  # memory id -> compiled scene, in MOMENTS order
+    art: tuple[DemoArtFile, ...] = ()  # processed images from seed/demo_family/art/, written by _build
 
 
-def load_demo_data(directory: Path | None = None) -> DemoData:
+def load_demo_data(directory: Path | None = None, art_dir: Path | None = None) -> DemoData:
     """Load, check and compile every moment's screenplay. Nothing touches a database.
 
-    `directory` defaults to DATA_DIR (read at call time). Raises DemoDataError for a
-    malformed or inconsistent file (naming it) and DemoCompileError for a screenplay that
-    does not compile.
+    `directory` defaults to DATA_DIR and `art_dir` to ART_DIR (both read at call time; with
+    another `directory`, its own `art/` folder; see load_demo_art). The art is applied to the props and sets
+    before compiling, so each timeline is staged with the aspect and anchor of the image
+    it will draw. Raises DemoDataError for a malformed or inconsistent file (naming it) and
+    DemoCompileError for a screenplay that does not compile; a bad art file is only a
+    warning (its prop or layer keeps the placeholder). So is a body image whose aspect or
+    anchor would stop a moment compiling: that prop keeps the placeholder body and its
+    authored rig (see _compile_with_art).
     """
+    if art_dir is None:
+        art_dir = ART_DIR if directory is None else directory / ART_DIR_NAME
     directory = DATA_DIR if directory is None else directory
-    props = load_props(directory / PROPS_PATH.name)
-    sets = load_sets(directory / SETS_PATH.name)
-    by_id_props = {p.id: p for p in props}
-    by_id_sets = {s.id: s for s in sets}
+    authored_props = load_props(directory / PROPS_PATH.name)
+    props, sets, art = load_demo_art(authored_props, load_sets(directory / SETS_PATH.name), art_dir)
     people = scene_people()
     for person in people.values():
         item = person.character.item_prop_id
-        if item is not None and item not in by_id_props:
+        if item is not None and item not in {p.id for p in props}:
             raise DemoDataError(f"{PROPS_PATH.name}: no prop {item!r}, the signature item of {person.id}")
     stray = sorted(
         p.name for p in directory.glob(f"*{SCREENPLAY_SUFFIX}")
@@ -543,14 +556,92 @@ def load_demo_data(directory: Path | None = None) -> DemoData:
     )
     if stray:
         raise DemoDataError(f"screenplays for no demo moment in {directory.name}/: {', '.join(stray)}")
-    scenes: dict[str, DemoScene] = {}
+    screenplays: dict[str, Screenplay] = {}
     for moment in MOMENTS:
         screenplay = load_screenplay(moment.id, directory)
         _check_moment(moment, screenplay, people)
-        timeline = compile_moment(screenplay, sets=by_id_sets, props=by_id_props, people=people)
-        set_ids = list(dict.fromkeys(shot.set for shot in screenplay.shots))
-        scenes[moment.id] = DemoScene(screenplay, timeline, list(screenplay.props), set_ids)
-    return DemoData(props, sets, scenes)
+        screenplays[moment.id] = screenplay
+    props, art, timelines = _compile_with_art(screenplays, authored_props, props, sets, art, people)
+    scenes = {
+        memory_id: DemoScene(screenplay, timelines[memory_id], list(screenplay.props),
+                             list(dict.fromkeys(shot.set for shot in screenplay.shots)))
+        for memory_id, screenplay in screenplays.items()
+    }
+    return DemoData(props, sets, scenes, art)
+
+
+def _compile_all(screenplays: Mapping[str, Screenplay], props: list[schemas.Prop],
+                 sets: list[schemas.SetDef], people: Mapping[str, schemas.Person]) -> dict[str, Timeline]:
+    by_id_props = {p.id: p for p in props}
+    by_id_sets = {s.id: s for s in sets}
+    return {
+        memory_id: compile_moment(screenplay, sets=by_id_sets, props=by_id_props, people=people)
+        for memory_id, screenplay in screenplays.items()
+    }
+
+
+def _compile_with_art(
+    screenplays: Mapping[str, Screenplay],
+    authored: list[schemas.Prop],
+    props: list[schemas.Prop],
+    sets: list[schemas.SetDef],
+    art: tuple[DemoArtFile, ...],
+    people: Mapping[str, schemas.Person],
+) -> tuple[list[schemas.Prop], tuple[DemoArtFile, ...], dict[str, Timeline]]:
+    """Compile every moment; when a body image's aspect or anchor stops one compiling, drop it.
+
+    A hand-made body image restages its prop (a wider car parks further offstage, a lower
+    anchor moves where a hand reaches). When a moment fails and some of its props have a rig
+    from art (aspect or anchor differing from props.json), the prop to blame is found by
+    reverting one at a time (all of them when no single one fixes it); each is put back to
+    its authored aspect, anchor and placeholder body, with a warning naming the file and the
+    compile error, and everything is compiled again. A failure with no art involved raises
+    DemoCompileError exactly as without art.
+    """
+    by_authored = {p.id: p for p in authored}
+    props = list(props)
+
+    def rig(p: schemas.Prop) -> tuple:
+        return (p.aspect, list(p.anchor))
+
+    def revert(current: list[schemas.Prop], prop_id: str) -> list[schemas.Prop]:
+        base = by_authored[prop_id]
+        return [
+            p.model_copy(update={"aspect": base.aspect, "anchor": list(base.anchor),
+                                 "art": {**p.art, props_db.BODY: base.art.get(props_db.BODY)}})
+            if p.id == prop_id else p
+            for p in current
+        ]
+
+    while True:
+        try:
+            return props, art, _compile_all(screenplays, props, sets, people)
+        except DemoCompileError as exc:
+            screenplay = screenplays[exc.memory_id]
+            by_id = {p.id: p for p in props}
+            rigged = [pid for pid in dict.fromkeys(screenplay.props)
+                      if pid in by_id and pid in by_authored and rig(by_id[pid]) != rig(by_authored[pid])]
+            if not rigged:
+                raise
+            blamed = rigged
+            for pid in rigged:
+                try:
+                    _compile_all({exc.memory_id: screenplay}, revert(props, pid), sets, people)
+                except DemoCompileError:
+                    continue
+                blamed = [pid]
+                break
+            reason = exc.errors[0].message if exc.errors else "no error detail"
+            for pid in blamed:
+                media_id = demo_art_media_id(pid, props_db.BODY)
+                name = next((f.filename for f in art if f.media_id == media_id), f"{pid}{ART_SUFFIX}")
+                log.warning(
+                    "demo art %s/%s skipped, the placeholder stays: with aspect %.2f and anchor %s, "
+                    "moment %r does not compile (%s)",
+                    ART_DIR_NAME, name, by_id[pid].aspect, by_id[pid].anchor, exc.memory_id, reason,
+                )
+                props = revert(props, pid)
+                art = tuple(f for f in art if f.media_id != media_id)
 
 
 def compile_demo_scenes(directory: Path | None = None) -> dict[str, DemoScene]:
@@ -601,6 +692,270 @@ def _put_demo_photos(db: Database) -> list[str]:
                            media_id=media_id)
         for (name, data), media_id in zip(photos, DEMO_PHOTO_IDS, strict=True)
     ]
+
+
+# ------------------------------------------------------------------------------- art
+
+# Hand-made prop and set images in seed/demo_family/art/ (naming rules in its README.md):
+#   <propId>.png            the prop's body
+#   <propId>.<artKey>.png   any other key of the prop's `art` map (a part such as `wheel`,
+#                           or the art a state switches to, such as `open`)
+#   <setId>.<layer>.png     a set layer: back, middle or front
+# Each file is processed the way the studio processes generated art, stored as a "cutout"
+# under a fixed media id, and set on its prop or layer. Anything absent keeps `art: null`.
+
+ART_DIR_NAME = "art"
+ART_DIR = DATA_DIR / ART_DIR_NAME
+ART_SUFFIX = ".png"
+ART_IGNORED = frozenset({"README.md", ".gitkeep", ".DS_Store"})
+DEMO_ART_MAX_PIXELS = 16_000_000
+"""Files with more pixels than this (e.g. 4096x4096) are skipped before they are decoded."""
+_ART_ID_KIND = 3  # _demo_object_id kind: 1 photos, 2 questions, 3 art
+_LAYER_DEPTHS: dict[str, int] = {"back": 0, "middle": 1, "front": 2}
+_OPAQUE_ALPHA = 128  # agent.tools.art.ALPHA_THRESHOLD: a pixel at or above it belongs to the shape
+
+
+@dataclass(frozen=True)
+class DemoArtFile:
+    """One processed image, ready for put_media."""
+
+    media_id: str  # bare ObjectId string
+    filename: str  # the source file's name
+    png: bytes
+
+
+class _SkipArt(ValueError):
+    """An art file that cannot be used; the message says why."""
+
+
+def demo_art_media_id(owner_id: str, key: str) -> str:
+    """The fixed media id of `<owner_id>.<key>.png`, the same on every run and every machine.
+
+    `key` is a prop art key or a layer name. Kind 3 keeps it apart from the photo and
+    question ids; the low 16 hex digits are a hash of the name, so adding or removing other
+    files never moves it.
+    """
+    digest = hashlib.sha256(f"{owner_id}.{key}".encode()).hexdigest()
+    return _demo_object_id(_ART_ID_KIND, int(digest[:16], 16))
+
+
+def _art_target(stem: str, props: Mapping[str, schemas.Prop],
+                sets: Mapping[str, schemas.SetDef]) -> tuple[str, str, str]:
+    """('prop' | 'set', id, art key or layer name) for a file stem, or _SkipArt."""
+    owner, _, key = stem.partition(".")
+    if "." in key:
+        raise _SkipArt("name has too many dots (expected <id>.png or <id>.<key>.png)")
+    if owner in sets:
+        if key not in _LAYER_DEPTHS:
+            raise _SkipArt(f"set {owner!r} needs a layer name: {owner}.back.png, .middle.png or .front.png")
+        return "set", owner, key
+    if owner in props:
+        key = key or props_db.BODY
+        if key not in props[owner].art:
+            keys = ", ".join(sorted(props[owner].art))
+            raise _SkipArt(f"prop {owner!r} has no art key {key!r} (its keys: {keys})")
+        return "prop", owner, key
+    raise _SkipArt(f"no prop or set with id {owner!r} in {PROPS_PATH.name} or {SETS_PATH.name}")
+
+
+def _open_art(path: Path) -> bytes:
+    """The file's image bytes, upright. Checks the pixel cap from the header, before decoding."""
+    data = path.read_bytes()
+    try:
+        with Image.open(io.BytesIO(data)) as src:
+            width, height = src.size
+            if width <= 0 or height <= 0:
+                raise _SkipArt("image is empty")
+            if width * height > DEMO_ART_MAX_PIXELS:
+                raise _SkipArt(f"{width}x{height} is over the {DEMO_ART_MAX_PIXELS:,} pixel cap")
+            try:
+                orientation = int(src.getexif().get(0x0112) or 1)  # EXIF Orientation
+            except Exception:  # noqa: BLE001 - a broken EXIF block means "upright"
+                orientation = 1
+            if orientation == 1:
+                src.load()  # decode now, so a truncated file is reported here
+                return data
+            src.load()
+            upright = ImageOps.exif_transpose(src)
+            out = io.BytesIO()
+            upright.save(out, format="PNG")
+            return out.getvalue()
+    except _SkipArt:
+        raise
+    except Exception as exc:  # not an image Pillow can read
+        raise _SkipArt(f"not a readable image ({type(exc).__name__}: {exc})") from exc
+
+
+def _check_media_size(png: bytes) -> None:
+    if len(png) > media_db.MAX_BYTES:
+        raise _SkipArt(f"the processed image is {len(png):,} bytes, over the media limit of {media_db.MAX_BYTES:,}")
+
+
+def _png(im: Image.Image) -> bytes:
+    out = io.BytesIO()
+    im.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _remove_white(data: bytes) -> tuple[bytes, bool]:
+    """The production cut-out remover (agent.adapters.cutout.AlphaAwareRemover): an image with
+    real transparency comes back as it is; otherwise the white background touching the border
+    is flood-filled away. The flag says whether that (slow, pure-Python) fill ran."""
+    from agent.adapters.cutout import AlphaAwareRemover
+
+    out = AlphaAwareRemover().remove(data)
+    return out, out is not data
+
+
+def _prop_art(data: bytes):
+    """The studio's prop path: white background removed (real alpha kept), cropped to the
+    shape (agent.tools.art.analyze_cutout: aspect and bottom-center anchor). -> (Cutout, filled)."""
+    from agent.tools.art import analyze_cutout
+
+    cut, filled = _remove_white(data)
+    try:
+        return analyze_cutout(cut), filled
+    except ValueError as exc:  # analyze_cutout: no opaque pixels
+        raise _SkipArt(str(exc)) from exc
+
+
+def _layer_art(data: bytes, layer: str, height: float) -> tuple[bytes, bool]:
+    """The studio's layer path: fitted to the layer's frame (layer_size, scaled evenly and
+    cropped from the bottom, as the image adapter fits a model's canvas), never cropped to the
+    shape; the back layer made fully opaque, the middle and front layers with their white
+    background removed. -> (png, filled)."""
+    from agent.adapters.images import fit_to_size
+    from agent.tools.sets import layer_size
+
+    with Image.open(io.BytesIO(data)) as src:
+        src.load()
+        im = fit_to_size(src.convert("RGBA"), layer_size(height))
+    if layer == "back":
+        im.putalpha(255)
+        return _png(im), False
+    cut, filled = _remove_white(_png(im))
+    with Image.open(io.BytesIO(cut)) as out:
+        alpha = out.convert("RGBA").getchannel("A")
+    if alpha.point(lambda a: 255 if a >= _OPAQUE_ALPHA else 0).getbbox() is None:
+        raise _SkipArt("layer has no opaque pixels")
+    return cut, filled
+
+
+def load_demo_art(
+    props: list[schemas.Prop], sets: list[schemas.SetDef], art_dir: Path
+) -> tuple[list[schemas.Prop], list[schemas.SetDef], tuple[DemoArtFile, ...]]:
+    """Apply the images in `art_dir` to `props` and `sets` (new models; the inputs are untouched).
+
+    Returns the props and sets with their art refs set ('media/<fixed id>'), and the processed
+    files to store. A prop's body image also sets its aspect (clamped into
+    db.props.MIN_PHOTO_ASPECT..MAX_PHOTO_ASPECT, like a photo swap, so every scene keeps
+    compiling) and its anchor. A missing or empty folder changes nothing. A file that cannot be
+    used (unknown name, unreadable, not an image, over DEMO_ART_MAX_PIXELS, no opaque pixels,
+    or a second file for the same slot) is logged as a warning naming it and skipped, so its
+    prop or layer keeps the placeholder.
+    """
+    if not art_dir.is_dir():
+        return props, sets, ()
+    files = sorted(p for p in art_dir.iterdir() if p.is_file() and p.name not in ART_IGNORED)
+    if not files:
+        return props, sets, ()
+
+    by_prop = {p.id: p for p in props}
+    by_set = {s.id: s for s in sets}
+    prop_updates: dict[str, dict] = {}
+    layer_art: dict[tuple[str, int], str] = {}
+    stored: list[DemoArtFile] = []
+    white: list[str] = []
+    started = time.perf_counter()
+    taken: dict[tuple[str, str, str], str] = {}
+
+    for path in files:
+        where = f"{art_dir.name}/{path.name}"
+        try:
+            if path.suffix != ART_SUFFIX:
+                raise _SkipArt(f"not a {ART_SUFFIX} file")
+            kind, owner, key = _art_target(path.name[: -len(ART_SUFFIX)], by_prop, by_set)
+            if (kind, owner, key) in taken:
+                raise _SkipArt(f"{taken[kind, owner, key]} already gives this {kind} its {key!r} art")
+            data = _open_art(path)
+            media_id = demo_art_media_id(owner, key)
+            if kind == "set":
+                depth = _LAYER_DEPTHS[key]
+                layer = next((x for x in by_set[owner].layers if x.depth == depth), None)
+                if layer is None:
+                    raise _SkipArt(f"set {owner!r} has no {key} layer (depth {depth})")
+                png, filled = _layer_art(data, key, layer.height)
+                _check_media_size(png)
+                layer_art[owner, depth] = media_db.media_ref(media_id)
+            else:
+                cut, filled = _prop_art(data)
+                png = cut.png
+                _check_media_size(png)
+                update = prop_updates.setdefault(owner, {"art": dict(by_prop[owner].art)})
+                update["art"][key] = media_db.media_ref(media_id)
+                if key == props_db.BODY:
+                    aspect = props_db.clamp_photo_aspect(round(cut.aspect, 4))
+                    if aspect != round(cut.aspect, 4):
+                        log.warning("demo art %s: aspect %.2f clamped to %.2f so every scene still compiles",
+                                    where, cut.aspect, aspect)
+                    update["aspect"] = aspect
+                    update["anchor"] = [round(v, 4) for v in cut.anchor]
+        except _SkipArt as exc:
+            log.warning("demo art %s skipped, the placeholder stays: %s", where, exc)
+            continue
+        except Exception as exc:  # noqa: BLE001 - one bad file never stops the seed
+            log.warning("demo art %s skipped, the placeholder stays: %s: %s", where, type(exc).__name__, exc)
+            continue
+        taken[kind, owner, key] = path.name
+        stored.append(DemoArtFile(media_id=media_id, filename=path.name, png=png))
+        if filled:
+            white.append(path.name)
+
+    if white:
+        log.warning(
+            "demo art: %d file(s) have a white background, removed again on every start (%.1fs in all "
+            "for the art folder): %s. Run `uv run python -m seed.demo --cut-out-art` once to save them "
+            "with transparency.", len(white), time.perf_counter() - started, ", ".join(white),
+        )
+
+    new_props = [p.model_copy(update=prop_updates[p.id]) if p.id in prop_updates else p for p in props]
+    new_sets = [
+        s.model_copy(update={"layers": [
+            layer.model_copy(update={"art": layer_art[s.id, layer.depth]})
+            if (s.id, layer.depth) in layer_art else layer
+            for layer in s.layers
+        ]})
+        if any(owner == s.id for owner, _ in layer_art) else s
+        for s in sets
+    ]
+    return new_props, new_sets, tuple(stored)
+
+
+def cut_out_demo_art(art_dir: Path | None = None) -> list[str]:
+    """Save every white-background prop or middle/front layer image in the art folder with
+    its background made transparent (the same remover the seed runs), so later seeds skip
+    the slow flood fill. Back layers and images that already have transparency are left as
+    they are; a file the seed would skip is only warned about. Returns the rewritten names.
+    `python -m seed.demo --cut-out-art`.
+    """
+    art_dir = ART_DIR if art_dir is None else art_dir
+    by_prop = {p.id: p for p in load_props()}
+    by_set = {s.id: s for s in load_sets()}
+    rewritten: list[str] = []
+    for path in sorted(art_dir.glob(f"*{ART_SUFFIX}")) if art_dir.is_dir() else []:
+        try:
+            kind, _owner, key = _art_target(path.name[: -len(ART_SUFFIX)], by_prop, by_set)
+            if kind == "set" and key == "back":
+                continue
+            out, filled = _remove_white(_open_art(path))
+            if filled:
+                tmp = path.with_name(path.name + ".tmp")
+                tmp.write_bytes(out)
+                tmp.replace(path)
+                rewritten.append(path.name)
+        except Exception as exc:  # noqa: BLE001 - report it and go on with the others
+            log.warning("demo art %s/%s left as it is: %s", art_dir.name, path.name, exc)
+    return rewritten
 
 
 # ----------------------------------------------------------------------------- reset
@@ -675,6 +1030,9 @@ def _build(db: Database, data: DemoData) -> None:
             person_id=person.id,
         )
 
+    for art in data.art:  # before the props and sets that point at it
+        media_db.put_media(db, DEMO_FAMILY_ID, art.png, content_type="image/png", filename=art.filename,
+                           kind="cutout", media_id=art.media_id)
     for prop in data.props:
         props_db.insert_prop(db, DEMO_FAMILY_ID, prop, prop_id=prop.id)
     for set_def in data.sets:
@@ -789,7 +1147,7 @@ def _vector_index_line(outcomes: list) -> str:
 
 
 def main(argv: list[str] | None = None, *, connect=None) -> int:
-    """`python -m seed.demo [--reset]`. Exit codes: 0 seeded or already present, 1 bad demo
+    """`python -m seed.demo [--reset | --cut-out-art]`. Exit codes: 0 seeded or already present, 1 bad demo
     data (nothing was written), 2 bad arguments, 3 MongoDB unreachable or failing. Errors go
     to stderr as one readable message, never a traceback, and never hold the URI's
     credentials or query string.
@@ -813,7 +1171,14 @@ def main(argv: list[str] | None = None, *, connect=None) -> int:
 
     parser = argparse.ArgumentParser(prog="python -m seed.demo", description=__doc__.splitlines()[0])
     parser.add_argument("--reset", action="store_true", help="delete the demo data and rebuild it")
+    parser.add_argument("--cut-out-art", action="store_true",
+                        help="save white-background images in seed/demo_family/art/ with transparency "
+                             "(no database needed), so the seed starts faster")
     args = parser.parse_args(argv)
+    if args.cut_out_art:
+        names = cut_out_demo_art()
+        print(f"Saved {len(names)} demo art file(s) with transparency" + (f": {', '.join(names)}" if names else "."))
+        return EXIT_OK
 
     mongo_client = None
     target: str | None = None  # the URI connected to (None: a database installed with set_db)

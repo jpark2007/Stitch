@@ -153,7 +153,8 @@ The stage demo starts with a full tree and books. `seed/demo.py` creates the dem
 - Seven moments from 1958 to 2019, every one with a **compiled scene** (screenplay and
   timeline), so every book opens on playable pages. They are listed in
   [The scenes](#the-scenes) below.
-- The props and sets those scenes use, all with placeholder art (`art` null, a `color`).
+- The props and sets those scenes use, with placeholder art (`art` null, a `color`) unless
+  a hand-made image is in `seed/demo_family/art/` (see [Hand-made art](#hand-made-art)).
 - Open questions that ask a participant who has not told a moment yet for their version,
   and one general prompt. See [Demo accounts and their questions](#demo-accounts-and-their-questions).
 - Five traditions for the Book of Family Traditions (`GET /families/demo_family/traditions`,
@@ -276,6 +277,7 @@ Everything the scenes are made of is plain JSON in `seed/demo_family/`:
 | `<memoryId>.screenplay.json` | One hand-authored `Screenplay` per moment (`api/screenplay/schema.py`; conventions in `shared/CONTRACTS.md`). `sample_hymn_books.screenplay.json` is a copy of `web/public/samples/hymn_books.screenplay.json`; adjust the copy here, never the sample. |
 | `props.json` | The family's props (`schemas.Prop`): size, aspect, anchor, grip, sockets (seats, table tops, the car's `driver`, `passenger` and `back_seat`), parts (spinning wheels, a pot lid) and states. |
 | `sets.json` | The family's sets (`schemas.SetDef`): paper layers and named marks `[u, h]`. |
+| `art/` | Optional hand-made PNGs for those props and set layers (see [Hand-made art](#hand-made-art)). Empty: every prop and layer draws its placeholder. |
 
 The moments' titles, years, participants and tellings, and the seeded questions, are in
 `seed/demo.py` (`EXTRA_MEMORIES`, `DEMO_QUESTIONS`; the hymn-book memory comes from the
@@ -346,6 +348,23 @@ that turns to day once the 1958 rain has passed, and dusk falling on the 2019 pa
 Nothing authored is ever left out of the stored screenplay. An effect that cannot be
 placed (say `at` names someone not on stage) fails the seed like any other `CompileError`.
 `test_seed_scenes.py` checks that every authored effect is in the stored timeline.
+
+### Hand-made art
+
+Drop PNGs into `seed/demo_family/art/` and the next seed (`seed.serve` start, or
+`python -m seed.demo --reset`) draws them instead of the placeholders: `<propId>.png` for a
+prop's body, `<propId>.<artKey>.png` for its other art keys (a part such as
+`green_sedan.wheel.png`, or the art a state switches to such as `black_umbrella.open.png`),
+and `<setId>.back.png` / `.middle.png` / `.front.png` for set layers. The full rules are in
+[`demo_family/art/README.md`](demo_family/art/README.md). Each file is cut out like studio
+art and stored as a `cutout` under a fixed media id (`seed.demo.demo_art_media_id`); a body
+image also sets the prop's aspect and anchor, and the scenes are compiled with them. A file
+that cannot be used (unknown name, not an image, too big, nothing opaque, or a body whose
+shape would stop a scene compiling) is a warning naming it, and that prop or layer keeps its
+placeholder; it never stops the seed. Images saved with transparency cost about 30 ms each
+at start; a white background is removed on every start (about 0.5 s each), so run
+`uv run python -m seed.demo --cut-out-art` once to save them with transparency.
+`tests/data/test_seed_demo_art.py` covers it.
 
 ## Preflight a real MongoDB
 
