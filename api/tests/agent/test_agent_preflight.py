@@ -1362,6 +1362,8 @@ SENTINELS: dict[str, str] = {
     images_adapter.API_KEY_ENV: "sk-proj-SENTINELimage0102",
     "HIGGSFIELD_API_KEY": "SENTINELhiggsfieldID0111",
     "HIGGSFIELD_API_SECRET": "SENTINELhiggsfieldSECRET0112",
+    "CLOUDFLARE_ACCOUNT_ID": "SENTINELcloudflareACCOUNT0113",
+    "CLOUDFLARE_API_TOKEN": "SENTINELcloudflareTOKEN0114",
     tts_adapter.API_KEY_ENV: "sk_SENTINELelevenlabs0103",
     "JWT_SECRET": "SENTINELjwtSECRET0104",
     "VOYAGE_API_KEY": "pa-SENTINELvoyage0105",
