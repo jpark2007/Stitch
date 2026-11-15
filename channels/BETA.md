@@ -126,11 +126,12 @@ known identical deliveries and rejects changed content without new storage.
 
 Signed opt-out-shaped events have reserved headroom: ordinary events stop at 9,900
 active events, 49,000 total identities or 15 MiB of bodies. The remaining 100 active
-slots, 1,000 identities and 1 MiB are reserved for normalized STOP/STOPALL/UNSUBSCRIBE
+slots, 1,000 identities and 1 MiB are reserved for normalized STOP/STOPALL/UNSUBSCRIBE/CANCEL/END/QUIT
 commands (optionally please, thanks or thank you), and eligible opt-outs drain before
 ordinary work. Normalization matches the API: compatibility letters, format/filler
 characters and variation selectors are handled before punctuation/emoji tokenization.
-Other combining marks remain meaningful. This is priority only;
+Other combining marks remain meaningful. Contextual CANCEL/END/QUIT receive admission
+priority because the bridge cannot know whether a studio question is pending. This is priority only;
 the existing API decides consent semantics and still checks identity. No unexpired
 completed hash or uncertain identity is evicted to admit new work. Reserves are
 finite and can also fill; callers then receive 503 rather than a false ACK. Monitor

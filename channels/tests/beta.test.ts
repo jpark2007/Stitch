@@ -534,13 +534,14 @@ test("saturated signed webhook admits API-equivalent emoji and invisible opt-out
   }
   const variants = ["STOP", "❤️ STOP", "S\uFE0FTOP", "S\uFE00TOP", "S\u{E0100}TOP", "S\u{E01EF}TOP",
     "ＳＴＯＰ!", "S\u200bTOP", "STOP\u3164", "STOP\u115f", "STOP\u1160", "STOP\uffa0", "STOP\u034f",
-    "❤️ unsubscribe, thank you!", "STOPALL thanks", "\u001cSTOP please\u001f", "\u0085STOP thanks\u0085"];
+    "❤️ unsubscribe, thank you!", "STOPALL thanks", "\u001cSTOP please\u001f", "\u0085STOP thanks\u0085",
+    "CANCEL", "❤️ cancel please", "END.", "ＥＮＤ thanks", "QUIT!", "Q\uFE0FUIT thank you"];
   for (const text of variants) {
     assert.equal((await send(text)).status, 204, JSON.stringify(text));
     await bridge.drain(projectId, agentHandle);
   }
   assert.deepEqual(forwarded, variants, "priority normalization must not modify forwarded text");
-  for (const text of ["Ordinary story", "I told him to STOP", "STOP tomorrow", "S\u0301TOP", "CANCEL"]) {
+  for (const text of ["Ordinary story", "I told him to STOP", "STOP tomorrow", "S\u0301TOP", "Cancel our dinner plans", "The end", "I quit school"]) {
     assert.equal((await send(text)).status, 503, JSON.stringify(text));
   }
   assert.equal(f.store.counts().find(row => row.state === "blocked")?.count, 9900);

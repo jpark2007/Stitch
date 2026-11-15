@@ -45,12 +45,14 @@ export type Event = { id: string; messageId: string; proof: Proof; parts: Obj[] 
 export function isStopEvent(event: Event): boolean {
   return event.parts.some(part => {
     if (part.type !== "text") return false;
-    // Match the API's unconditional command normalization. Emoji variation
+    // Match the API's possible command normalization. Emoji variation
     // selectors must disappear before punctuation/symbol token separation.
     const tokens = part.text.normalize("NFKC").toLowerCase()
       .replace(/[\p{Cf}\u034f\u115f\u1160\ufe00-\ufe0f\u{e0100}-\u{e01ef}]/gu, "")
       .replace(/[\p{P}\p{S}]/gu, " ").split(/[\s\u001c-\u001f\u0085]+/u).filter(Boolean);
-    return ["stop", "stopall", "unsubscribe"].includes(tokens[0])
+    // Contextual aliases need admission too; only the API can decide whether a
+    // pending studio question makes CANCEL/END/QUIT an answer instead of opt-out.
+    return ["stop", "stopall", "unsubscribe", "cancel", "end", "quit"].includes(tokens[0])
       && ["", "please", "thanks", "thank you"].includes(tokens.slice(1).join(" "));
   });
 }
