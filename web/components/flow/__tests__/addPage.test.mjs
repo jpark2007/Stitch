@@ -54,6 +54,9 @@ import {
   openRunsFor,
   rememberOpenRun,
   runToResume,
+  DEMO_DRAFT_KEY,
+  demoDraftCarry,
+  dropDemoDraft,
 } from "../addPage.ts";
 import { pickFamily, safeNext } from "../session.ts";
 
@@ -1513,5 +1516,82 @@ describe("familyAsking", () => {
     assert.equal(familyAsking(fams, [null, undefined, [{ id: "q" }]]).id, "c");
     assert.equal(familyAsking(fams, [null, [], []]), null);
     assert.equal(familyAsking([], []), null);
+  });
+});
+
+// ---- the demo control page's prepared telling ---------------------------------
+
+describe("demoDraftCarry", () => {
+  const draft = { text: "Grace and I met at the county fair.", year: 1968, title: "The county fair", question: " How did you meet? " };
+  const withDraft = (value = JSON.stringify(draft)) => {
+    const s = memoryStorage();
+    s.setItem(DEMO_DRAFT_KEY, value);
+    return s;
+  };
+  const on = new URLSearchParams("family=fam_1&demoDraft=1");
+
+  test("the key is the one the control page writes", () => {
+    assert.equal(DEMO_DRAFT_KEY, "stitch.demo.draft");
+  });
+
+  test("with demoDraft=1: the story, year and question as a carry for the family, key left in place", () => {
+    const s = withDraft();
+    assert.deepEqual(demoDraftCarry(on, s, "fam_1"), {
+      familyId: "fam_1",
+      text: "Grace and I met at the county fair.",
+      year: "1968",
+      question: "How did you meet?",
+    });
+    assert.ok(s.map.has(DEMO_DRAFT_KEY), "reading must not remove it (a state initializer may run twice)");
+  });
+
+  test("it becomes a carry the form reads back", () => {
+    const session = memoryStorage();
+    saveCarry(session, demoDraftCarry(on, withDraft(), "fam_1"));
+    const back = readCarry(session, "fam_1");
+    assert.equal(back.text, draft.text);
+    assert.equal(back.year, "1968");
+    assert.equal(back.question, "How did you meet?");
+  });
+
+  test("without the param (or any other value) nothing is read", () => {
+    const s = withDraft();
+    for (const q of ["family=fam_1", "family=fam_1&demoDraft=0", "family=fam_1&demoDraft=true", ""]) {
+      assert.equal(demoDraftCarry(new URLSearchParams(q), s, "fam_1"), null, q);
+    }
+    assert.equal(demoDraftCarry(null, s, "fam_1"), null);
+  });
+
+  test("no family, no storage, blocked storage: null", () => {
+    assert.equal(demoDraftCarry(on, withDraft(), null), null);
+    assert.equal(demoDraftCarry(on, withDraft(), ""), null);
+    assert.equal(demoDraftCarry(on, null, "fam_1"), null);
+    assert.equal(demoDraftCarry(on, throwing, "fam_1"), null);
+  });
+
+  test("missing, unreadable or story-less drafts: null", () => {
+    assert.equal(demoDraftCarry(on, memoryStorage(), "fam_1"), null);
+    for (const bad of ["", "{", "null", "[]", "42", '"text"', JSON.stringify({ year: 1968 }), JSON.stringify({ text: "   " }), JSON.stringify({ text: 7 })]) {
+      assert.equal(demoDraftCarry(on, withDraft(bad), "fam_1"), null, bad);
+    }
+  });
+
+  test("year: a number or digit string is kept, anything else is dropped; a missing question is empty", () => {
+    const carry = (year) => demoDraftCarry(on, withDraft(JSON.stringify({ text: "x", year })), "fam_1");
+    assert.equal(carry(1968).year, "1968");
+    assert.equal(carry(" 2004 ").year, "2004");
+    assert.equal(carry("nineteen").year, "");
+    assert.equal(carry(12345).year, "");
+    assert.equal(carry(undefined).year, "");
+    assert.equal(carry(1968).question, "");
+  });
+
+  test("dropDemoDraft removes the key and survives blocked storage", () => {
+    const s = withDraft();
+    s.removeItem = (k) => void s.map.delete(k);
+    dropDemoDraft(s);
+    assert.equal(s.map.has(DEMO_DRAFT_KEY), false);
+    dropDemoDraft(null);
+    dropDemoDraft({ removeItem() { throw new Error("SecurityError"); } });
   });
 });

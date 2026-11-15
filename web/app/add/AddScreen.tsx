@@ -34,7 +34,10 @@ import { PaperCard } from "@/components/flow/PaperCard";
 import { SessionGate, type SessionValue } from "@/components/flow/SessionGate";
 import {
   addedFromQuery,
+  demoDraftCarry,
+  dropDemoDraft,
   familyChoice,
+  localStore,
   findMomentFamily,
   loadSentDraft,
   loadTelling,
@@ -42,6 +45,7 @@ import {
   readAddQuery,
   retryHref,
   runHref,
+  saveCarry,
 } from "@/components/flow/addPage";
 import type { MemoryRunTelling } from "@/components/flow/MemoryRun";
 import { hrefs, recallFamily, rememberFamily } from "@/components/flow/session";
@@ -140,6 +144,15 @@ export function AddScreen() {
   const added = addedFromQuery(params);
   const questionId = questionIdFromQuery(params);
   const loadingKind = runId ? "run" : memoryId ? "second" : "new";
+  // ?demoDraft=1 (the /demo control page): its prepared telling becomes the form's carry, then its key goes.
+  const [demo] = useState(() => {
+    const carry = demoDraftCarry(params, localStore(), familyId);
+    if (carry) saveCarry(sessionStore(), carry);
+    return carry !== null;
+  });
+  useEffect(() => {
+    if (demo) dropDemoDraft(localStore());
+  }, [demo]);
   return (
     <SessionGate requireFamily loading={<AddLoading kind={loadingKind} />}>
       {(session) => (

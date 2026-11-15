@@ -1057,3 +1057,66 @@ export function knownMoment<M>(
   if (kept.has(id)) return kept.get(id) as M | null;
   return fresh ? null : undefined;
 }
+
+// --- A prepared telling from the demo control page --------------------------
+//
+// /demo writes a prepared telling to localStorage under DEMO_DRAFT_KEY and
+// opens /add?family=<fid>&demoDraft=1. Only with that param does the add page
+// read it, hand it to the form as a carry (saveCarry above, so the form starts
+// from it the way it starts from a trip to the add-relative page), and then
+// remove the key.
+
+/** localStorage key the demo control page writes its prepared telling to. */
+export const DEMO_DRAFT_KEY = "stitch.demo.draft";
+
+/**
+ * The carry for family `familyId`'s form from the demo draft, or null when
+ * the query has no `demoDraft=1`, there is no family, or the draft is missing,
+ * unreadable or has no story. Reading leaves the key in place (React may run
+ * a state initializer twice); the page removes it afterwards.
+ */
+export function demoDraftCarry(
+  params: Pick<URLSearchParams, "get"> | null,
+  storage: Pick<Storage, "getItem"> | null,
+  familyId: string | null,
+): CarriedStory | null {
+  if (!params || params.get("demoDraft") !== "1" || !storage || !familyId) return null;
+  let raw: string | null;
+  try {
+    raw = storage.getItem(DEMO_DRAFT_KEY);
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "string" || !raw) return null;
+  let o: unknown;
+  try {
+    o = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof o !== "object" || o === null || Array.isArray(o)) return null;
+  const d = o as Record<string, unknown>;
+  if (typeof d.text !== "string" || !d.text.trim()) return null;
+  const rawYear = typeof d.year === "number" ? String(d.year) : typeof d.year === "string" ? d.year.trim() : "";
+  const year = /^\d{1,4}$/.test(rawYear) ? rawYear : "";
+  const question = typeof d.question === "string" ? d.question.trim() : "";
+  return { familyId, text: d.text, year, question };
+}
+
+/** Removes the demo draft (it has been handed to the form). */
+export function dropDemoDraft(storage: Pick<Storage, "removeItem"> | null): void {
+  try {
+    storage?.removeItem(DEMO_DRAFT_KEY);
+  } catch {
+    // Blocked storage: nothing was read from it either.
+  }
+}
+
+/** window.localStorage, or null where it is missing or blocked. */
+export function localStore(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+}
