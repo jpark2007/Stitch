@@ -90,7 +90,7 @@ uv run uvicorn main:app --reload
 
 # Web (http://localhost:3000), in a second terminal
 cd web
-npm install
+npm ci                               # not npm install: npm 10 rewrites the lockfile
 npm run dev
 ```
 
@@ -102,7 +102,7 @@ Keep this list current as features land: how to open it and everything that can 
 
 ```bash
 cd api && uv run python -m seed.serve   # API on http://localhost:8000, seeded with the Mao family
-cd web && npm run dev                   # second terminal
+cd web && npm ci && npm run dev         # second terminal (npm ci only the first time)
 ```
 
 Open **http://localhost:3000**, not `127.0.0.1:3000`, because the session cookie won't cross between them. Sign in with `david@demo.stitch`, `ana@demo.stitch` or `sam@demo.stitch`, all with the password `stitch-demo`. Add `?demo=1` to `/`, `/people/<id>` or `/threads` to see a second, local demo family without signing in.
