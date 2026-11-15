@@ -10,7 +10,7 @@ import { PHOTO_TYPES, MAX_PHOTO_BYTES, ProtocolError, linkCode, parseMessage, pa
 type Obj = Record<string, any>;
 const fail = (message = "Invalid Photon Beta event"): never => { throw new ProtocolError(422, message); };
 const transient = (error: unknown): boolean => error instanceof ProtocolError
-  ? error.status === 408 || error.status === 429 || error.status >= 500
+  ? error.status === 404 || error.status === 408 || error.status === 429 || error.status >= 500
   : error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name);
 function object(value: unknown): Obj { if (!value || typeof value !== "object" || Array.isArray(value)) fail(); return value as Obj; }
 function id(value: unknown, prefix: string): string { if (typeof value !== "string" || !new RegExp(`^pho_${prefix}_[0-7][0-9a-hjkmnp-tv-z]{25}$`).test(value)) return fail(); return value; }
@@ -41,6 +41,16 @@ export function betaConfig(env: NodeJS.ProcessEnv): BetaConfig {
 
 export type Proof = { projectId: string; spaceId: string; humanId: string; handle: string; agentId: string; agentHandle: string };
 export type Event = { id: string; messageId: string; proof: Proof; parts: Obj[] };
+/** Advisory priority/diagnostic only: never substitutes for API consent handling. */
+export function isStopEvent(event: Event): boolean {
+  return event.parts.some(part => part.type === "text" && /^(STOP|STOPALL|UNSUBSCRIBE)(?:\b|$)/i.test(
+    part.text.normalize("NFKC").replace(/[\p{Cf}\u3164\u115f\u1160\uffa0\u034f]/gu, "").trim().replace(/^[\p{P}\p{S}\s]+/u, "")));
+}
+
+class LocalApiError extends ProtocolError {
+  endpoint: string;
+  constructor(endpoint: string, status: number) { super(status, "Local Channels API rejected request"); this.endpoint = endpoint; }
+}
 function party(value: unknown, project: string, kind: string): Obj {
   const p = object(value);
   id(p.id, "usr"); bound(p.handle);
@@ -137,9 +147,12 @@ export class BetaBridge {
       const row = this.store.next(); if (!row) return;
       let retrySafe = true;
       let routeId: string | undefined;
+      let isStop = false;
+      const diagnostic = () => `event=${/^pho_evt_[0-7][0-9a-hjkmnp-tv-z]{25}$/.test(row.id) ? row.id : "invalid"} isSTOP=${isStop}`;
       try {
         const signal = AbortSignal.timeout(60_000);
         const event = parseBetaEvent(JSON.parse(row.body), projectId, row.id, agentHandle), p = event.proof;
+        isStop = isStopEvent(event);
         routeId = p.spaceId;
         await this.api.verify(p, signal);
         for (const [index, part] of event.parts.entries()) {
@@ -150,10 +163,10 @@ export class BetaBridge {
             const code = linkCode(part.text);
             if (code !== null) {
               retrySafe = false; // One-use proof: a lost ACK cannot be replayed.
-              const receipt = await this.client.post("/internal/channels/enroll", { ...common, spaceKind: "direct", code });
+              const receipt = await this.postApi("/internal/channels/enroll", { ...common, spaceKind: "direct", code });
               if (object(receipt.body).status !== "active") fail("Enrollment outcome uncertain");
             } else {
-              const receipt = await this.client.post("/internal/channels/inbound", { ...common, text: part.text });
+              const receipt = await this.postApi("/internal/channels/inbound", { ...common, text: part.text });
               if (receipt.status !== 202 || object(receipt.body).accepted !== true) fail("Inbox outcome uncertain");
             }
           } else {
@@ -164,7 +177,7 @@ export class BetaBridge {
             if (mime !== meta.contentType || raw.length !== meta.sizeBytes) fail("Photon attachment mismatch");
             await this.api.verify(p, signal);
             retrySafe = false; // Photo storage may have an uncertain external effect.
-            const receipt = await this.client.post("/internal/channels/inbound-photo", parsePhoto({ ...common, attachmentId: part.attachmentId, mimeType: meta.contentType, dataBase64: raw.toString("base64") }));
+            const receipt = await this.postApi("/internal/channels/inbound-photo", parsePhoto({ ...common, attachmentId: part.attachmentId, mimeType: meta.contentType, dataBase64: raw.toString("base64") }));
             if (receipt.status !== 202 || object(receipt.body).accepted !== true) fail("Photo receipt outcome uncertain");
           }
           retrySafe = false; // A failed local checkpoint also stays uncertain.
@@ -174,17 +187,20 @@ export class BetaBridge {
         this.store.finish(row.id, "done");
         // Route cache availability must not prevent or undo consent commands.
         try { this.store.saveRoute(p.spaceId, p); }
-        catch { console.warn("Photon reply route unavailable; inbound receipt completed."); }
+        catch { console.warn(`Photon reply route unavailable; inbound receipt completed. ${diagnostic()}`); }
       } catch (error) {
-        if (error instanceof ProtocolError && [403, 404].includes(error.status)) {
+        // Local 404 is ambiguous (unknown contact OR unmounted/disabled router).
+        // Never treat it, or any Photon REST error, as proof of consent refusal.
+        if (error instanceof LocalApiError && (error.status === 403
+            || (error.endpoint === "/internal/channels/enroll" && error.status === 400))) {
           this.store.finish(row.id, "done");
           if (routeId) this.store.forgetRoute(routeId);
-          console.warn("Photon event refused; private payload removed.");
+          console.warn(`Photon event refused; private payload removed. ${diagnostic()}`);
         } else if (retrySafe && transient(error) && this.store.retry(row.id)) {
-          console.warn("Photon event deferred for bounded retry.");
+          console.warn(`Photon event deferred for bounded retry. ${diagnostic()}`);
         } else {
           this.store.finish(row.id, "blocked");
-          console.warn("Photon event blocked; retries exhausted or outcome uncertain. Inspect ledger and apply unresolved STOP in settings.");
+          console.warn(`Photon event blocked; retries exhausted or outcome uncertain. Inspect ledger and apply unresolved STOP in settings. ${diagnostic()}`);
         }
       }
     } finally { this.running = false; }
@@ -193,9 +209,13 @@ export class BetaBridge {
     this.sending++;
     try { await this.sendReserved(message); } finally { this.sending--; }
   }
+  private async postApi(path: Parameters<ApiClient["post"]>[0], body: Parameters<ApiClient["post"]>[1]) {
+    try { return await this.client.post(path, body); }
+    catch (error) { if (error instanceof ProtocolError) throw new LocalApiError(path, error.status); throw error; }
+  }
   private async authorize(handle: string): Promise<void> {
-    const response = await this.client.post("/internal/channels/authorize", { provider: "imessage", senderId: handle });
-    if (response.status !== 200 || object(response.body).allowed !== true) throw new ProtocolError(403, "Contact authorization unavailable");
+    const response = await this.postApi("/internal/channels/authorize", { provider: "imessage", senderId: handle });
+    if (response.status !== 200 || object(response.body).allowed !== true) throw new ProtocolError(502, "Contact authorization unavailable");
   }
   private async sendReserved(message: Outbound): Promise<void> {
     parseMessage(message, false);
@@ -238,8 +258,8 @@ export function createBetaWebhook(config: BetaConfig, store: BetaStore): Server 
       for (const key of ["webhook-id", "webhook-timestamp", "webhook-signature"]) { const value = request.headers[key]; if (typeof value !== "string") throw new ProtocolError(400, "Invalid webhook signature"); headers[key] = value; }
       let event: unknown;
       try { event = verifier.verify(raw, headers); } catch { throw new ProtocolError(400, "Invalid webhook signature"); }
-      parseBetaEvent(event, config.projectId, headers["webhook-id"], config.agentHandle);
-      store.accept(headers["webhook-id"], raw.toString("utf8"));
+      const parsed = parseBetaEvent(event, config.projectId, headers["webhook-id"], config.agentHandle);
+      store.accept(headers["webhook-id"], raw.toString("utf8"), isStopEvent(parsed));
       response.writeHead(204).end();
     } catch (error) { const status = error instanceof ProtocolError ? error.status : 503; response.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "Photon webhook not accepted" })); }
     finally { clearTimeout(deadline); }

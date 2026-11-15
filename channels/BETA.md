@@ -71,17 +71,26 @@ be owned by the process user with no group/world permissions. SQLite uses full
 synchronous writes and a rollback journal. Events are reserved before API effects;
 queued rows resume after restart, but crashed processing/blocked rows never auto-retry.
 Transient verification, read-only preflight and idempotent text-inbox failures retry
-at most six total attempts, with durable 1/2/4/8/16-second backoff. Successful parts
+at most eight total attempts, with durable 5/15/30/60/120/240/480-second backoff
+(15 minutes 50 seconds of waiting, plus request time). Successful parts
 are checkpointed before proceeding, preserving their original message IDs. A lost
 LINK or photo-storage acknowledgement is uncertain and never automatically retried.
-Exhausted retries remain blocked and produce a generic operator warning; **STOP is
+Exhausted retries remain blocked and produce an operator warning containing only
+the validated event ID and an advisory `isSTOP` flag; **STOP is
 not guaranteed delivered**. Inspect the ledger/API receipts and apply an unresolved
 STOP through the authenticated settings page. Do not reset the batch blindly.
 
 Completed event bodies are removed immediately; their hashes remain for seven days
 after completion (the four-day provider retry horizon plus a safety margin). After
-that local deduplication horizon, completed IDs may be accepted again. Refusals with
-403/404 also remove the body immediately and invalidate any cached reply route.
+that local deduplication horizon, completed IDs may be accepted again. A local
+Channels API 403 consent refusal or `/enroll` 400 rejected proof removes the body
+immediately and invalidates any cached reply route. An invalid LINK therefore does
+not occupy active blocked capacity indefinitely. Photon REST errors never qualify
+as local consent refusals: Photon 403 keeps the private event blocked for operator
+repair; safe pre-effect Photon 404 requests retry. Local API 404 also retains its
+payload and retries safe idempotent inbound requests: the bridge cannot distinguish
+an unknown contact from a disabled/unmounted router using its status-only error
+contract. This intentionally prefers bounded retention over silently losing STOP.
 Other unfinished payloads expire seven days after receipt; their identity and blocked
 state remain so uncertainty cannot be erased into a replay. Cached routes expire
 after 30 days without a successfully forwarded inbound event. Route-cache capacity
@@ -108,12 +117,27 @@ by the API's family purge hook.
 
 Webhook bodies are capped at 64 KiB, with an absolute ten-second upload deadline,
 five-second header timeout, one-second connection checks and at most 64 simultaneous
-connections. Queues retain at most 10,000 active events (queued/processing/blocked)
-and 10,000 reply identities, with 1,000 verified routes and a 64 MiB SQLite page
-ceiling. Completed-event hashes do not consume active capacity; pruning runs during
-queue activity, including idle drain checks. Uncertain event/reply identities are
-never pruned. Capacity still fails closed if active work, reply identities or disk
-storage exhausts these bounds; operators must reconcile rather than delete the ledger.
+connections. Queues retain at most 10,000 active events (queued/processing, plus
+blocked events with a nonempty body), 50,000 total event identities and 16 MiB of
+retained event bodies. Empty blocked tombstones and completed hashes do not consume
+active capacity, but remain within the separate identity bound. Duplicates and
+content conflicts are checked before capacity: a full ledger still deduplicates
+known identical deliveries and rejects changed content without new storage.
+
+Signed opt-out-shaped events have reserved headroom: ordinary events stop at 9,900
+active events, 49,000 total identities or 15 MiB of bodies. The remaining 100 active
+slots, 1,000 identities and 1 MiB are reserved for normalized STOP/STOPALL/UNSUBSCRIBE
+prefixes, and eligible opt-outs drain before ordinary work. This is priority only;
+the existing API decides consent semantics and still checks identity. No unexpired
+completed hash or uncertain identity is evicted to admit new work. Reserves are
+finite and can also fill; callers then receive 503 rather than a false ACK. Monitor
+and reconcile before saturation; this is not an unlimited anti-abuse guarantee.
+
+The separate limits of 10,000 reply identities, 1,000 verified routes and a 64 MiB
+SQLite page ceiling remain. Pruning runs during queue activity, including idle
+drain checks. Uncertain event/reply identities are never pruned. Already oversized
+legacy ledgers may require operator maintenance. Disk exhaustion still fails closed;
+operators must reconcile rather than delete the ledger or shorten replay protection.
 Each event has at most 10 parts and 8,000 total text bytes. REST JSON is bounded to
 256 KiB; attachment data to 20 MiB; REST/download deadlines are 15 seconds. A drain
 starts no new part after its 60-second deadline. An already started local API call

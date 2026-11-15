@@ -7,8 +7,8 @@ import { createServer } from "node:http";
 import { connect } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { Webhook } from "standardwebhooks";
-import { betaConfig, BetaApi, BetaBridge, createBetaWebhook, parseBetaEvent, type BetaConfig } from "../src/beta.ts";
-import { BetaStore, EVENT_RETENTION_MS, ROUTE_RETENTION_MS, MAX_EVENT_ATTEMPTS } from "../src/beta-store.ts";
+import { betaConfig, BetaApi, BetaBridge, createBetaWebhook, parseBetaEvent, isStopEvent, type BetaConfig } from "../src/beta.ts";
+import { BetaStore, digest, EVENT_RETENTION_MS, ROUTE_RETENTION_MS, MAX_EVENT_ATTEMPTS, EVENT_RETRY_DELAYS_MS, MAX_RETAINED_EVENTS, RESERVED_STOP_IDENTITIES, MAX_PENDING_BODY_BYTES } from "../src/beta-store.ts";
 import { ApiClient, createSendServer } from "../src/bridge.ts";
 import { Authenticator, signedHeaders, ProtocolError } from "../src/protocol.ts";
 
@@ -255,10 +255,10 @@ test("STOP survives transient verification and idempotent inbox failures with du
   await new BetaBridge(f.store, api, client).drain(projectId, agentHandle);
   assert.equal(posts, 0); assert.equal(f.store.next(), undefined);
   assert.equal(f.restart().accept(e.id, raw), false);
-  now += 1000;
+  now += EVENT_RETRY_DELAYS_MS[0];
   await new BetaBridge(f.store, api, client).drain(projectId, agentHandle);
   assert.equal(posts, 1); assert.equal(f.store.next(), undefined);
-  now += 2000;
+  now += EVENT_RETRY_DELAYS_MS[1];
   await new BetaBridge(f.restart(), api, client).drain(projectId, agentHandle);
   assert.equal(posts, 2);
   assert.equal(f.store.counts().find(row => row.state === "done")?.count, 1);
@@ -270,7 +270,7 @@ test("retry exhaustion remains blocked and deduped across restart", async t => {
   const api = new BetaApi(config, async () => { calls++; throw new TypeError("network unavailable"); });
   const client = { post: async () => { throw new Error("must not forward"); } };
   for (let i = 0; i < MAX_EVENT_ATTEMPTS + 2; i++) {
-    await new BetaBridge(f.store, api, client).drain(projectId, agentHandle); now += 60_000;
+    await new BetaBridge(f.store, api, client).drain(projectId, agentHandle); now += 3_600_000;
   }
   assert.equal(calls, MAX_EVENT_ATTEMPTS);
   assert.equal(f.restart().next(), undefined);
@@ -285,7 +285,7 @@ test("completed parts are checkpointed before retrying a later idempotent text",
     if (path.endsWith("/inbound") && textFailures-- > 0) throw new ProtocolError(502, "lost ACK");
     return { status: 202, body: { accepted: true } }; } };
   await new BetaBridge(f.store, a.api, client).drain(projectId, agentHandle);
-  now += 1000;
+  now += EVENT_RETRY_DELAYS_MS[0];
   await new BetaBridge(f.restart(), a.api, client).drain(projectId, agentHandle);
   assert.equal(calls.filter(path => path.endsWith("inbound-photo")).length, 1);
   assert.equal(calls.filter(path => path.endsWith("/inbound")).length, 2);
@@ -324,7 +324,7 @@ test("event capacity counts active work; done hashes survive retry horizon then 
 
 test("active queue still fails closed at capacity, without deleting uncertain rows", t => {
   const f = fixture(t); f.store.close(); const db = new DatabaseSync(join(f.dir, "state.sqlite"));
-  db.exec("BEGIN"); const insert = db.prepare("INSERT INTO events (id,hash,body,state,created,updated) VALUES (?,?,'','blocked',?,?)");
+  db.exec("BEGIN"); const insert = db.prepare("INSERT INTO events (id,hash,body,state,created,updated) VALUES (?,?,'private','blocked',?,?)");
   for (let i = 0; i < 10_000; i++) insert.run(`uncertain-${i}`, "hash", Date.now(), Date.now());
   db.exec("COMMIT"); db.close(); f.restart();
   assert.throws(() => f.store.accept("new", "STOP"), /maintenance/);
@@ -344,7 +344,7 @@ test("legacy ledger migration preserves crashed processing and reply uncertainty
   assert.equal(store.accept("new", "synthetic"), true);
 });
 
-test("403/404 remove refused payloads immediately; blocked payloads and routes expire", async t => {
+test("local403 removes refused payloads; ambiguous404 and blocked payloads expire later", async t => {
   let now = Date.now(); const f = fixture(t, () => now), a = apiFixture();
   for (const [i, status] of [403, 404, 422].entries()) {
     const e = event(); e.id = ident("evt", i + 1); f.store.accept(e.id, JSON.stringify(e));
@@ -352,7 +352,7 @@ test("403/404 remove refused payloads immediately; blocked payloads and routes e
   }
   f.store.saveRoute(dm.id, parseBetaEvent(event(), projectId, ident("evt"), agentHandle).proof);
   f.store.close(); let db = new DatabaseSync(join(f.dir, "state.sqlite"));
-  assert.equal(db.prepare("SELECT count(*) AS n FROM events WHERE body!=''").get()!.n, 1); db.close(); f.restart();
+  assert.equal(db.prepare("SELECT count(*) AS n FROM events WHERE body!=''").get()!.n, 2); db.close(); f.restart();
   now += ROUTE_RETENTION_MS + 1; f.store.prune(); assert.equal(f.store.route(dm.id), undefined);
   f.store.close(); db = new DatabaseSync(join(f.dir, "state.sqlite"));
   assert.equal(db.prepare("SELECT body,state FROM events").get()!.body, "");
@@ -390,4 +390,124 @@ test("webhook bounds simultaneous connections and absolute slow upload duration"
   });
   assert.ok(performance.now() - started < 12_000);
   assert.deepEqual(f.store.counts(), []);
+});
+
+test("Photon403 keeps STOP blocked with private body and safe event diagnostics", async t => {
+  const f = fixture(t), e = event(); e.data.object.content.text = "STOP";
+  const logs: string[] = []; t.mock.method(console, "warn", (line: string) => logs.push(line));
+  f.store.accept(e.id, JSON.stringify(e), true);
+  let posts = 0;
+  await new BetaBridge(f.store, new BetaApi(config, async () => new Response("", { status: 403 })), {
+    post: async () => { posts++; return { status: 202, body: { accepted: true } }; },
+  }).drain(projectId, agentHandle);
+  assert.equal(posts, 0);
+  assert.equal(f.store.counts().find(row => row.state === "blocked")?.count, 1);
+  f.store.close(); const db = new DatabaseSync(join(f.dir, "state.sqlite"));
+  assert.equal(db.prepare("SELECT body FROM events").get()!.body, JSON.stringify(e)); db.close();
+  assert.ok(logs.some(line => line.includes(e.id) && line.includes("isSTOP=true")));
+  assert.ok(logs.every(line => !line.includes(human.handle) && !line.includes(agentHandle) && !line.includes(secret)));
+});
+
+test("Photon404 retries safely and later forwards STOP", async t => {
+  let now = Date.now(); const f = fixture(t, () => now), e = event(), a = apiFixture();
+  e.data.object.content.text = "STOP"; f.store.accept(e.id, JSON.stringify(e), true);
+  let unavailable = true, posts = 0;
+  const api = new BetaApi(config, async (url, init) => unavailable ? new Response("", { status: 404 }) : a.fetcher(url, init));
+  const client = { post: async () => { posts++; return { status: 202, body: { accepted: true } }; } };
+  await new BetaBridge(f.store, api, client).drain(projectId, agentHandle);
+  assert.equal(posts, 0); assert.equal(f.store.counts().find(row => row.state === "queued")?.count, 1);
+  unavailable = false; now += EVENT_RETRY_DELAYS_MS[0];
+  await new BetaBridge(f.restart(), api, client).drain(projectId, agentHandle);
+  assert.equal(posts, 1); assert.equal(f.store.counts().find(row => row.state === "done")?.count, 1);
+});
+
+test("real local unmounted-router404 preserves STOP until router returns", async t => {
+  let now = Date.now(), mounted = false; const f = fixture(t, () => now), e = event(), a = apiFixture();
+  e.data.object.content.text = "STOP"; f.store.accept(e.id, JSON.stringify(e), true);
+  const server = createServer(async (request, response) => {
+    for await (const _ of request) { /* drain only this synthetic request */ }
+    response.writeHead(mounted ? 202 : 404, { "content-type": "application/json" }).end(JSON.stringify(mounted ? { accepted: true } : { detail: "Not Found" }));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); t.after(() => server.close());
+  const client = new ApiClient(`http://127.0.0.1:${(server.address() as any).port}`, "local-secret-".repeat(4), { attempts: 1 });
+  await new BetaBridge(f.store, a.api, client).drain(projectId, agentHandle);
+  assert.equal(f.store.counts().find(row => row.state === "queued")?.count, 1);
+  mounted = true; now += EVENT_RETRY_DELAYS_MS[0];
+  await new BetaBridge(f.restart(), a.api, client).drain(projectId, agentHandle);
+  assert.equal(f.store.counts().find(row => row.state === "done")?.count, 1);
+});
+
+test("invalid enrollment400 becomes a scrubbed receipt rather than blocked active work", async t => {
+  const f = fixture(t), e = event(), a = apiFixture();
+  e.data.object.content.text = "LINK " + "a".repeat(43); f.store.accept(e.id, JSON.stringify(e));
+  await new BetaBridge(f.store, a.api, { post: async path => {
+    assert.equal(path, "/internal/channels/enroll"); throw new ProtocolError(400, "invalid proof");
+  } }).drain(projectId, agentHandle);
+  assert.equal(f.store.counts().find(row => row.state === "done")?.count, 1);
+  assert.equal(f.restart().accept(e.id, JSON.stringify(e)), false);
+  f.store.close(); const db = new DatabaseSync(join(f.dir, "state.sqlite"));
+  assert.equal(db.prepare("SELECT body FROM events").get()!.body, ""); db.close();
+});
+
+test("ten thousand empty blocked tombstones no longer deny or delay a STOP", t => {
+  const f = fixture(t); f.store.close(); const db = new DatabaseSync(join(f.dir, "state.sqlite"));
+  db.exec("BEGIN"); const insert = db.prepare("INSERT INTO events (id,hash,body,state,created,updated) VALUES (?,?,'','blocked',?,?)");
+  for (let i = 0; i < 10_000; i++) insert.run(`empty-${i}`, digest("original"), Date.now(), Date.now());
+  db.exec("COMMIT"); db.close(); f.restart();
+  assert.equal(f.store.accept("ordinary", "story"), true);
+  assert.equal(f.store.accept("stop", "STOP", true), true);
+  assert.equal(f.store.next()!.id, "stop");
+  assert.equal(f.store.accept("empty-0", "original"), false, "uncertainty still dedupes");
+});
+
+test("retained receipt cap reserves signed STOP space and dedupes before rejecting new work", async t => {
+  const f = fixture(t); f.store.close(); const db = new DatabaseSync(join(f.dir, "state.sqlite"));
+  db.exec("BEGIN"); const insert = db.prepare("INSERT INTO events (id,hash,body,state,created,updated) VALUES (?,?,'','done',?,?)");
+  for (let i = 0; i < MAX_RETAINED_EVENTS - RESERVED_STOP_IDENTITIES; i++) insert.run(`done-${i}`, digest("original"), Date.now(), Date.now());
+  db.exec("COMMIT"); db.close(); f.restart();
+  assert.throws(() => f.store.accept("new-story", "story"), /maintenance/);
+  assert.equal(f.store.accept("done-0", "original"), false);
+  assert.throws(() => f.store.accept("done-0", "changed"), /conflict/);
+  const server = createBetaWebhook(config, f.store);
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); t.after(() => server.close());
+  const e = event(); e.data.object.content.text = "STOP";
+  const raw = JSON.stringify(e), now = new Date();
+  const response = await fetch(`http://127.0.0.1:${(server.address() as any).port}/photon/webhook`, {
+    method: "POST", body: raw, headers: { "content-type": "application/json", "webhook-id": e.id,
+      "webhook-timestamp": String(Math.floor(now.getTime() / 1000)), "webhook-signature": new Webhook(secret).sign(e.id, now, raw) },
+  });
+  assert.equal(response.status, 204);
+  assert.equal(f.store.next()!.id, e.id);
+  assert.equal(f.store.counts().find(row => row.state === "done")?.count, MAX_RETAINED_EVENTS - RESERVED_STOP_IDENTITIES);
+});
+
+test("full retention bound refuses even new STOP but preserves dedup until seven-day expiry", t => {
+  let now = Date.now(); const f = fixture(t, () => now); f.store.close();
+  const db = new DatabaseSync(join(f.dir, "state.sqlite")); db.exec("BEGIN");
+  const insert = db.prepare("INSERT INTO events (id,hash,body,state,created,updated) VALUES (?,?,'','done',?,?)");
+  for (let i = 0; i < MAX_RETAINED_EVENTS; i++) insert.run(`done-${i}`, digest("original"), now, now);
+  db.exec("COMMIT"); db.close(); f.restart();
+  assert.throws(() => f.store.accept("new-stop", "STOP", true), /maintenance/);
+  assert.equal(f.store.accept("done-0", "original"), false);
+  now += EVENT_RETENTION_MS + 1;
+  assert.equal(f.store.accept("new-stop", "STOP", true), true);
+});
+
+test("queued byte budget reserves bounded headroom for opt-out and never evicts", t => {
+  const f = fixture(t); f.store.close(); const db = new DatabaseSync(join(f.dir, "state.sqlite"));
+  db.prepare("INSERT INTO events (id,hash,body,state,created,updated) VALUES ('large','hash',?,'blocked',?,?)")
+    .run("x".repeat(MAX_PENDING_BODY_BYTES - 1024 * 1024), Date.now(), Date.now()); db.close(); f.restart();
+  assert.throws(() => f.store.accept("ordinary", "story"), /maintenance/);
+  assert.equal(f.store.accept("stop", "STOP", true), true);
+  assert.throws(() => f.store.accept("too-large", "x".repeat(1024 * 1024), true), /maintenance/);
+});
+
+test("retry schedule lasts minutes and opt-out priority is advisory and normalized", () => {
+  assert.ok(EVENT_RETRY_DELAYS_MS.reduce((sum, delay) => sum + delay, 0) >= 15 * 60_000);
+  for (const text of ["STOP", "ＳＴＯＰ!", "STOP\u200b", "Unsubscribe please", "STOPALL"]) {
+    const e = event(); e.data.object.content.text = text;
+    assert.equal(isStopEvent(parseBetaEvent(e, projectId, e.id, agentHandle)), true);
+  }
+  const e = event(); e.data.object.content.text = "I stopped by Grandma's";
+  assert.equal(isStopEvent(parseBetaEvent(e, projectId, e.id, agentHandle)), false);
 });
