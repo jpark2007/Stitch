@@ -11,6 +11,21 @@ const client = createCallsClient(API_BASE_URL);
 const errorMessage = (e: unknown) => e instanceof CallSettingsError ? e.message : "We could not confirm that request. Please try again.";
 
 export function CallInterviews(props: { familyId: string; personId: string; personName: string }) {
+  if (process.env.NEXT_PUBLIC_STITCH_CALL_AUTO === "1") {
+    const phoneNumber = process.env.NEXT_PUBLIC_STITCH_CALL_NUMBER || "+12292875827";
+    return (
+      <section aria-labelledby="call-interviews-title" className="space-y-5 border-t border-rule pt-7">
+        <div>
+          <p className="mb-2 text-sm font-semibold uppercase tracking-wider text-accent-deep">Your voice, your story</p>
+          <h2 id="call-interviews-title" className="font-display text-2xl">Call interviews</h2>
+        </div>
+        <p className="text-ink-soft">Call and tell your story. In this demo, calls attach to Rick Macosko’s story.</p>
+        <ButtonLink href={`tel:${phoneNumber}`}>Call {phoneNumber}</ButtonLink>
+        <p className="text-ink-soft">After hanging up, open Add a memory while signed in as Rick to continue your story.</p>
+        <ButtonLink variant="secondary" href={`/add?family=${encodeURIComponent(props.familyId)}`}>Add a memory</ButtonLink>
+      </section>
+    );
+  }
   // Changing identity destroys every local secret, edit and in-flight request.
   return <CallPanel key={`${props.familyId}:${props.personId}`} {...props} />;
 }

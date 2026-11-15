@@ -22,6 +22,27 @@ export interface Enrollment {
   instruction: string;
 }
 
+export interface TestPromptResult {
+  status: "sent" | "pending" | "uncertain";
+  duplicate: boolean;
+}
+
+export function storedTestPromptRequestId(storage: Pick<Storage, "getItem" | "setItem">, key: string, generate: () => string): string {
+  const requestId = storage.getItem(key) || generate();
+  // Do not hand the caller an ID until it can survive a page refresh.
+  storage.setItem(key, requestId);
+  return requestId;
+}
+
+export function parseTestPromptResult(value: unknown): TestPromptResult {
+  if (!value || typeof value !== "object") throw new Error("Invalid test prompt response");
+  const result = value as Record<string, unknown>;
+  if (!["sent", "pending", "uncertain"].includes(String(result.status)) || typeof result.duplicate !== "boolean") {
+    throw new Error("Invalid test prompt response");
+  }
+  return { status: result.status as TestPromptResult["status"], duplicate: result.duplicate };
+}
+
 export function preferencesFor(contact: ChannelContact | null): Preferences {
   return {
     timezone: contact?.timezone ?? "America/New_York",

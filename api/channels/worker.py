@@ -11,6 +11,7 @@ from uuid import uuid4
 from db import contacts, conversations, question_bank
 from agent.conversation.agent import ConversationAgent, ModelCallLimitReached
 from agent.conversation.service import ConversationService, ModelConfigurationUnavailable
+from .prompts import call_invitation, prompt_text
 
 
 class ChannelWorker:
@@ -247,7 +248,7 @@ class ChannelWorker:
                     notice = question_bank.reserve_notification(self.db, family, contact_id,
                         question, route(), self.now())
                     if notice:
-                        queue([question["text"]], notification=notice)
+                        queue([prompt_text(question["text"])], notification=notice)
                         deliver()
             return 0, sent
         for receipt in batch:
@@ -309,7 +310,8 @@ class ChannelWorker:
                     "STOP, STOPALL or UNSUBSCRIBE ends messages. CANCEL, END and QUIT also opt out "
                     "unless a studio question is pending. Rejoin through notification settings with a fresh LINK code. "
                     "HELP shows these instructions.") if command == "HELP" else
-                   "Live calls are not configured. You can continue by text; voice notes require enabled transcription."])
+                   (f"{call_invitation()} Reply STOP to stop messages." if call_invitation() else
+                    "Live calls are not configured. You can continue by text; voice notes require enabled transcription.")])
             deliver()
         elif typed_control and command == "NEW":
             try:

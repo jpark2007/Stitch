@@ -4,6 +4,7 @@ import os
 import re
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -97,6 +98,17 @@ class Empty(StrictModel):
     pass
 
 
+class TestPromptRequest(StrictModel):
+    requestId: str
+
+    @field_validator("requestId")
+    @classmethod
+    def request_id(cls, value):
+        if len(value) != 36 or str(UUID(value)) != value:
+            raise ValueError("Use a canonical UUID")
+        return value
+
+
 def public_contact(row: dict | None) -> dict | None:
     if row is None:
         return None
@@ -144,3 +156,19 @@ def update_preferences(person_id: str, body: PreferencesPatch, access: FamilyAcc
 def stop_contact(person_id: str, body: Empty, access: FamilyAccess = Depends(family_member), db=Depends(get_db)):
     row = operation(contacts.stop_settings_contact, db, access.family_id, person_id, access.user.id)
     return {"contact": public_contact(row)}
+
+
+@router.post("/people/{person_id}/contact/test-prompt")
+def test_prompt(person_id: str, body: TestPromptRequest,
+                access: FamilyAccess = Depends(family_member), db=Depends(get_db)):
+    from .outbound import BridgeSender
+    from .prompts import TestPromptError, send_test_prompt
+    try:
+        sender = BridgeSender()
+    except ValueError:
+        raise HTTPException(503, "Messaging bridge is not configured") from None
+    try:
+        return operation(send_test_prompt, db, access.family_id, person_id,
+                         access.user.id, body.requestId, sender)
+    except TestPromptError as exc:
+        raise HTTPException(exc.status, exc.message) from None

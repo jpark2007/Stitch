@@ -7,7 +7,7 @@ registerHooks({ resolve(specifier, context, next) {
   return next(specifier, context);
 } });
 const { createSettingsClient, ChannelSettingsError } = await import("./client.ts");
-const { preferencesFor, preferenceError, validHandle, parseContact, statusDescription } = await import("./settings.ts");
+const { preferencesFor, preferenceError, validHandle, parseContact, statusDescription, storedTestPromptRequestId } = await import("./settings.ts");
 const prefs = { timezone: "America/New_York", cadenceDays: 7, quietHours: { start: "21:00", end: "08:00" } };
 const contact = { personId: "dad", provider: "imessage", handle: "+12125550123", status: "pending", ...prefs };
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
@@ -75,4 +75,67 @@ test("caller cancellation stays identifiable and does not retry", async () => {
   const abort = new DOMException("Aborted", "AbortError");
   const c = createSettingsClient("", async () => { throw abort; });
   await assert.rejects(c.get("f", "dad", controller.signal), e => e === abort);
+});
+
+test("test prompt uses a stable caller-supplied request id and validates delivery state", async () => {
+  const requests = [];
+  const requestId = "dd514390-3a97-4e6b-9576-2dd5e40500ac";
+  let result = { status: "uncertain", duplicate: false };
+  const c = createSettingsClient("", async (url, init) => {
+    requests.push({ url, init });
+    return json(result);
+  });
+  assert.deepEqual(await c.testPrompt("f/name", "p/name", requestId), result);
+  result = { status: "sent", duplicate: true };
+  assert.deepEqual(await c.testPrompt("f/name", "p/name", requestId), result);
+  assert.equal(requests.length, 2);
+  for (const { url, init } of requests) {
+    assert.equal(url, "/families/f%2Fname/channels/people/p%2Fname/contact/test-prompt");
+    assert.equal(init.method, "POST");
+    assert.equal(init.credentials, "include");
+    assert.deepEqual(JSON.parse(init.body), { requestId });
+  }
+  for (const invalid of [{ status: "delivered", duplicate: false }, { status: "sent" }, null]) {
+    await assert.rejects(createSettingsClient("", async () => json(invalid)).testPrompt("f", "p", requestId), ChannelSettingsError);
+  }
+});
+
+test("test prompt network ambiguity never triggers an automatic resend", async () => {
+  let attempts = 0;
+  const c = createSettingsClient("", async () => { attempts++; throw new Error("network lost"); });
+  await assert.rejects(c.testPrompt("f", "p", "dd514390-3a97-4e6b-9576-2dd5e40500ac"), ChannelSettingsError);
+  assert.equal(attempts, 1);
+});
+
+test("failed request-id storage blocks repeated sends until persistence succeeds", async () => {
+  let writable = false;
+  let stored = null;
+  let requestId = null;
+  const posts = [];
+  const storage = {
+    getItem: () => stored,
+    setItem: (_key, value) => {
+      if (!writable) throw new DOMException("Full", "QuotaExceededError");
+      stored = value;
+    },
+  };
+  const c = createSettingsClient("", async (_url, init) => {
+    assert.equal(JSON.parse(init.body).requestId, stored);
+    posts.push(init);
+    return json({ status: "uncertain", duplicate: false });
+  });
+  async function attempt() {
+    requestId ??= storedTestPromptRequestId(storage, "request", () => "dd514390-3a97-4e6b-9576-2dd5e40500ac");
+    await c.testPrompt("f", "p", requestId);
+  }
+  await assert.rejects(attempt(), { name: "QuotaExceededError" });
+  await assert.rejects(attempt(), { name: "QuotaExceededError" });
+  assert.equal(requestId, null);
+  assert.equal(posts.length, 0);
+  writable = true;
+  await attempt();
+  requestId = null; // Reload after an uncertain response.
+  await attempt();
+  assert.equal(posts.length, 2);
+  assert.equal(posts[0].body, posts[1].body);
 });
