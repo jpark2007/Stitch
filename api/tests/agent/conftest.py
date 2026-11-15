@@ -1,6 +1,6 @@
-"""Agent tests never see a developer's Higgsfield settings or image-provider choice.
+"""Agent tests never see a developer's Higgsfield or Cloudflare settings or image-provider choice.
 
-Without this, a HIGGSFIELD_API_KEY or IMAGE_PROVIDER exported in the shell would switch the
+Without this, a HIGGSFIELD_API_KEY, the CLOUDFLARE_* pair or IMAGE_PROVIDER exported in the shell would switch the
 image provider under tests written for the OpenAI-compatible adapter or for placeholder art.
 Tests that want them set them with monkeypatch.
 """
@@ -21,6 +21,11 @@ IMAGE_PROVIDER_ENVS = (
     "HIGGSFIELD_IMAGE_MODEL",
     "HIGGSFIELD_STYLE_SUFFIX",
     "HIGGSFIELD_RESULT_HOSTS",
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_API_TOKEN",
+    "CLOUDFLARE_API_URL",
+    "CLOUDFLARE_IMAGE_MODEL",
+    "CLOUDFLARE_STYLE_SUFFIX",
 )
 
 
