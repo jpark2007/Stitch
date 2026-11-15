@@ -18,6 +18,7 @@ from .models import MAX_BODY_BYTES, MAX_PHOTO_BODY_BYTES, WHITESPACE
 
 MAX_SKEW_SECONDS = 300
 BODY_READ_SECONDS = 30
+SMALL_BODY_READ_SECONDS = 2
 MAX_ACTIVE_BODIES = 4
 # Per API process (not fleet-wide). A threading gate works across TestClient
 # event loops as well as production, and rejects instead of queueing large bodies.
@@ -79,8 +80,9 @@ async def authenticated_body(request: Request) -> bytes:
     # Query strings are not part of this protocol and must not acquire unsigned meaning.
     if request.url.query:
         raise HTTPException(400, "Query parameters are not supported")
-    limit = MAX_PHOTO_BODY_BYTES if request.url.path in {
-        "/internal/channels/inbound-photo", "/internal/channels/inbound-voice"} else MAX_BODY_BYTES
+    is_media = request.url.path in {
+        "/internal/channels/inbound-photo", "/internal/channels/inbound-voice"}
+    limit = MAX_PHOTO_BODY_BYTES if is_media else MAX_BODY_BYTES
     headers = request.headers
     timestamp = headers.get("x-channels-timestamp", "")
     nonce = headers.get("x-channels-nonce", "")
@@ -100,7 +102,7 @@ async def authenticated_body(request: Request) -> bytes:
         expected_length = int(lengths[0])
         if expected_length > limit:
             raise HTTPException(413, "Message is too large")
-    if not _body_slots.acquire(blocking=False):
+    if is_media and not _body_slots.acquire(blocking=False):
         raise HTTPException(503, "Channel request capacity exceeded", headers={"Retry-After": "1"})
     try:
         digest = hmac.new(secret, _prefix(request.method, request.url.path, timestamp, nonce), hashlib.sha256)
@@ -112,7 +114,7 @@ async def authenticated_body(request: Request) -> bytes:
                 digest.update(chunk)
                 raw.write(chunk)
             try:
-                async with asyncio.timeout(BODY_READ_SECONDS):
+                async with asyncio.timeout(BODY_READ_SECONDS if is_media else SMALL_BODY_READ_SECONDS):
                     async for chunk in request.stream():
                         size += len(chunk)
                         if size > limit:
@@ -138,4 +140,5 @@ async def authenticated_body(request: Request) -> bytes:
             raise HTTPException(409, "Channel request already received")
         return body
     finally:
-        _body_slots.release()
+        if is_media:
+            _body_slots.release()

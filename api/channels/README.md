@@ -44,6 +44,25 @@ or change `main.py`. Jonah owns mounting, middleware, startup and purge hooks.
 
 ## Protocol
 
+### Opt-out commands and intake capacity
+
+Whole-message `STOP`, `STOPALL`, and `UNSUBSCRIBE` always revoke consent, even
+while a studio question is pending. `CANCEL`, `END`, and `QUIT` also opt out when
+none of the sender's matching contacts has a pending studio question; otherwise
+they remain ordinary replies, subject to the usual identity and consent checks.
+This also applies to photo captions before decoding or storage. Commands accept
+case/compatibility-letter variants, surrounding punctuation/emoji, and the suffixes
+`please`, `thanks`, or `thank you`; narrative sentences do not trigger opt-out.
+Rejoin through notification settings with a fresh enrollment `LINK` code. The
+worker's `HELP` reply lists these rules. Revocation does not depend on delivery of
+a confirmation message; stopped contacts cannot receive normal worker replies.
+
+Only the exact photo and voice intake paths share the four-slot, 30-second body
+read gate. Small signed routes, including text/STOP, authorization, enrollment,
+and ticks, have a two-second body read deadline and do not acquire media slots.
+Syntactically valid but unauthenticated slow media uploads therefore cannot
+occupy the small-route capacity. Exact byte limits and HMAC checks still apply.
+
 `POST /internal/channels/inbound` receives exactly:
 
 ```json
