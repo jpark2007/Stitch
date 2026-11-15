@@ -47,6 +47,16 @@ interface Print {
   font: string;
   x: number;
   y: number;
+  /** Where the canvas's origin was moved to when it was drawn (translations summed, rotations left out). */
+  at: { x: number; y: number };
+}
+/** A rounded rectangle traced (a teller label's card), centred on `at` as drawTellerLabels draws it. */
+interface Card {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  at: { x: number; y: number };
 }
 interface Rect {
   fill: unknown;
@@ -58,7 +68,7 @@ interface Rect {
 }
 
 /** Everything drawn on any canvas since the last reset. */
-const drawn = { texts: [] as Print[], rects: [] as Rect[], at: { x: 0, y: 0 } };
+const drawn = { texts: [] as Print[], rects: [] as Rect[], cards: [] as Card[], at: { x: 0, y: 0 } };
 
 const noop = () => undefined;
 const gradient = () => ({ addColorStop: noop });
@@ -84,6 +94,9 @@ class FakeCanvas {
 }
 
 function fakeContext(canvas: FakeCanvas) {
+  // The origin, moved by translate and kept by save/restore (rotations are small, and left out).
+  let origin = { x: 0, y: 0 };
+  const saved: { x: number; y: number }[] = [];
   const state: Record<string | symbol, unknown> = {
     canvas,
     font: "10px sans-serif",
@@ -93,13 +106,23 @@ function fakeContext(canvas: FakeCanvas) {
       return { width: text.length * size * 0.5, actualBoundingBoxRight: size * 0.5 };
     },
     fillText(text: string, x: number, y: number) {
-      drawn.texts.push({ text, font: String(state.font), x, y });
+      drawn.texts.push({ text, font: String(state.font), x, y, at: { ...origin } });
+    },
+    roundRect(x: number, y: number, w: number, h: number) {
+      drawn.cards.push({ x, y, w, h, at: { ...origin } });
+    },
+    save() {
+      saved.push(origin);
+    },
+    restore() {
+      origin = saved.pop() ?? { x: 0, y: 0 };
     },
     fillRect(_x: number, _y: number, w: number, h: number) {
       drawn.rects.push({ fill: state.fillStyle, w, h, cx: drawn.at.x, cy: drawn.at.y });
     },
     translate(x: number, y: number) {
-      drawn.at = { x, y };
+      origin = { x: origin.x + x, y: origin.y + y };
+      drawn.at = origin;
     },
     createLinearGradient: gradient,
     createRadialGradient(_x0: number, _y0: number, r0: number, _x1: number, _y1: number, r1: number) {
@@ -266,6 +289,7 @@ describe("layoutStory", () => {
 const reset = () => {
   drawn.texts.length = 0;
   drawn.rects.length = 0;
+  drawn.cards.length = 0;
 };
 const prints = () => drawn.rects.filter((r) => r.fill === PHOTO_FILL);
 
@@ -482,5 +506,202 @@ describe("photo sizing", () => {
     assert.deepEqual(art.photoWidths(500, []), []);
     const { boxes } = await drawPrints([]);
     assert.equal(boxes.length, 0);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Tellings' labels beside the photos                                        */
+/* ------------------------------------------------------------------------ */
+
+// Demo morning: on a moment told by two people the labels stood between the
+// words and the photo, which got a strip ~330 px wide, and the playing
+// label's ribbon hung onto the photo's tape. With photos the labels now
+// stand in a column beside them; the labels still answer clicks where drawn.
+
+type Labels = typeof import("./labelArt");
+const labelArt: Labels = await import("./labelArt.ts" as string);
+
+const WEDDING = "Spring 1944. Hal had three days of shore leave, and Evelyn had an armful of white roses. Four sailors in dress blues, one bride, and a whole sack of rice.";
+const two = [
+  { id: "harold", name: "Harold Macosko", color: "#34465c" },
+  { id: "evelyn", name: "Evelyn Macosko", color: "#b2473a" },
+];
+const three = [...two, { id: "jenna", name: "Jenna", color: "#5a7a4a" }];
+
+interface Box {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+}
+const overlaps = (a: Box, b: Box) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+/**
+ * A label and what reaches past its card: the tape over its top right corner
+ * (to ~34 px above it), the playing one's ribbon (56 px in from its right,
+ * or in a column its left, leaning).
+ */
+const labelReach = (r: { x: number; y: number; w: number; h: number }, on: boolean, column: boolean): [string, Box][] => {
+  // A column's labels may be drawn smaller, everything on them with them.
+  const k = r.h / 150;
+  const rx = column ? r.x + 56 * k : r.x + r.w - 56 * k;
+  return [
+    ["card", { x0: r.x - 4, x1: r.x + r.w + 4, y0: r.y - 4, y1: r.y + r.h + 4 }],
+    ["tape", { x0: r.x + r.w - 90 * k, x1: r.x + r.w + 22 * k, y0: r.y - 36 * k, y1: r.y + 4 }],
+    ...(on ? [["ribbon", { x0: rx - 24 * k, x1: rx + 24 * k, y0: r.y + r.h, y1: r.y + r.h + labelArt.RIBBON_HANG * k }] as [string, Box]] : []),
+  ];
+};
+/** A print with its tape and lean. */
+const printReach = (p: { w: number; h: number; cx: number; cy: number }): Box => ({ x0: p.cx - p.w / 2 - 12, x1: p.cx + p.w / 2 + 12, y0: p.cy - p.h / 2 - 18, y1: p.cy + p.h / 2 + 12 });
+
+/** Draw a two-telling page; its prints, labels (as returned and as drawn), and where the words end. */
+async function drawTold(photos: BookPhoto[], text = WEDDING, tellings = two, active = "harold") {
+  reset();
+  const page = await art.drawStoryPage(spread(text, 0, { photos, tellings, tellers: tellings.map((t) => t.name) }), 2, fonts, 30, active);
+  const words = drawn.texts.filter((t) => /px serif$/.test(t.font) && !/^italic/.test(t.font));
+  const wordsEnd = Math.max(...words.map((t) => t.y));
+  const prompt = drawn.texts.find((t) => t.text === "Who’s telling?");
+  // The labels' cards (150 tall), not other rounded things on the page.
+  return { page, prints: prints(), cards: drawn.cards.filter((c) => c.h === 150), words, wordsEnd, prompt };
+}
+
+describe("tellings beside the photos", () => {
+  it("prints one landscape photo larger than above the labels, beside them", async () => {
+    for (const text of [SHORT, WEDDING, story(200)]) {
+      const { page, prints: [p], wordsEnd } = await drawTold([shot(4 / 3)], text);
+      assert.ok(p, `${text.length} characters: no print`);
+      // As drawn before: the labels between the words and the print.
+      const l = layout(text, 1, art.storyTailHeight({ tellings: two }));
+      const [before] = art.photoWidths(art.photoRoom(1, bottom(l, art.storyTailHeight({ tellings: two }))), [4 / 3], [false]);
+      assert.ok(p.w >= before * 1.08, `${text.length} characters: ${p.w} wide, ${before} before`);
+      // Beside the column: the whole measure the narrowest column leaves (a
+      // landscape is as wide as it can be; the room is taller than it needs).
+      assert.ok(p.w >= 440, `${text.length} characters: only ${p.w} wide`);
+      assert.equal(page.labels.length, 2);
+      // The labels stand in a column to the right of the print, one under the other.
+      const [a, b] = page.labels;
+      assert.ok(b.y >= a.y + a.h + (labelArt.RIBBON_HANG * a.h) / 150, "the playing ribbon reaches the next label");
+      // Drawn no smaller than a name still reads at.
+      assert.ok(a.h >= 150 * labelArt.COLUMN_SCALE_MIN && a.h <= 150);
+      for (const r of page.labels) assert.ok(r.x >= p.cx + p.w / 2 + 24, `label at ${r.x}, the print to ${p.cx + p.w / 2}`);
+      assert.ok(p.cy - p.h / 2 > wordsEnd + 30);
+    }
+  });
+
+  it("prints one portrait photo as large as a one-telling page does", async () => {
+    for (const aspect of [3 / 4, 2 / 3, 0.25]) {
+      const one = (await drawPrints([shot(aspect)])).boxes[0];
+      const { prints: [p] } = await drawTold([shot(aspect)], SHORT);
+      assert.ok(p.w >= one.w, `${aspect}: ${p.w} wide beside the labels, ${one.w} on a one-telling page`);
+    }
+  });
+
+  it("returns the labels where it draws them, so clicks find them", async () => {
+    for (const active of ["harold", "evelyn"]) {
+      for (const photos of [[], [shot(4 / 3)], [shot(3 / 4), shot(4 / 3, "the lake")]]) {
+        const { page, cards } = await drawTold(photos, WEDDING, two, active);
+        assert.equal(cards.length, 2);
+        // Without photos the words and labels are drawn on a layer, then set lower on the page.
+        const dy = photos.length ? 0 : page.labels[0].y + page.labels[0].h / 2 - cards[0].at.y;
+        assert.ok(dy >= 0);
+        page.labels.forEach((r, i) => {
+          // drawTellerLabels draws each card centred on its rect.
+          const c = cards[i];
+          assert.ok(Math.abs(c.at.x - (r.x + r.w / 2)) < 1 && Math.abs(c.at.y + dy - (r.y + r.h / 2)) < 1, `card ${i} at ${c.at.x},${c.at.y}, rect ${JSON.stringify(r)}`);
+          // Its whole label, drawn at the rect's size (a column's may be smaller).
+          assert.ok(Math.abs((c.w * r.h) / c.h - r.w) < 0.01, `card ${c.w}×${c.h}, rect ${r.w}×${r.h}`);
+          // A click on its middle chooses it; one on the next label's middle, the next.
+          assert.equal(labelArt.labelUnder(page.labels, r.x + r.w / 2, r.y + r.h / 2)?.id, r.id);
+          assert.equal(labelArt.labelUnder(page.labels, r.x + 4, r.y + r.h - 4)?.id, r.id);
+        });
+      }
+    }
+  });
+
+  it("does not choose a telling for a click on the photo or between the labels", async () => {
+    const { page, prints: [p] } = await drawTold([shot(4 / 3)]);
+    assert.equal(labelArt.labelUnder(page.labels, p.cx, p.cy), null);
+    const [a, b] = page.labels;
+    assert.equal(labelArt.labelUnder(page.labels, a.x + a.w / 2, (a.y + a.h + b.y) / 2), null);
+  });
+
+  it("overlaps nothing: words, note, labels, ribbon, tape, prints, page number, at any length", async () => {
+    const sets = [[shot(4 / 3)], [shot(3 / 4)], [shot(16 / 9, "the steps")], [shot(4 / 3), shot(4 / 3)], [shot(3 / 4), shot(4 / 3, "the lake")], [shot(0.25), shot(4)]];
+    for (const n of [0, 20, 150, 300, 500, 800, 1200]) {
+      for (const photos of sets) {
+        for (const [tellings, active] of [[two, "harold"], [two, "evelyn"], [three, "evelyn"], [three, "jenna"]] as const) {
+          const text = n === 20 ? SHORT : story(n);
+          const { page, prints: ps, wordsEnd, prompt } = await drawTold(photos, text, tellings, active);
+          const what = `${n} characters, ${tellings.length} tellings, ${photos.length} photo(s) ${photos.map((ph) => ph.aspect).join("/")}`;
+          const column = page.labels.length > 1 && page.labels[1].y > page.labels[0].y;
+          const things: [string, Box][] = [
+            ...page.labels.flatMap((r) => labelReach(r, r.id === active, column).map(([k, b]): [string, Box] => [`${r.id}'s ${k}`, b])),
+            ...ps.map((p, i): [string, Box] => [`print ${i}`, printReach(p)]),
+          ];
+          if (prompt) {
+            // The words: the stand-in sets text half an em a character, wider
+            // than the hand's ~170 px; set right, they keep to PROMPT_MAX_W.
+            const w = Math.min(labelArt.PROMPT_MAX_W, prompt.text.length * 19);
+            things.push(["note", { x0: prompt.at.x - 4, x1: prompt.at.x + w + 4, y0: prompt.at.y - 36, y1: prompt.at.y + 12 }]);
+          }
+          for (let i = 0; i < things.length; i++) {
+            for (let j = i + 1; j < things.length; j++) {
+              // A label's own card, tape and ribbon do touch. In rows (as
+              // before, unchanged) a third label's tape reaches the first's card.
+              const label = (k: number) => things[k][0].includes("'");
+              if (label(i) && label(j) && (!column || things[i][0].split("'")[0] === things[j][0].split("'")[0])) continue;
+              assert.ok(!overlaps(things[i][1], things[j][1]), `${what}: ${things[i][0]} on ${things[j][0]} ${JSON.stringify(things[i][1])} ${JSON.stringify(things[j][1])}`);
+            }
+            // Under the words, and on the page above its number (left, at the foot).
+            assert.ok(things[i][1].y0 > wordsEnd + 8, `${what}: ${things[i][0]} at ${things[i][1].y0} on the words (${wordsEnd})`);
+            assert.ok(things[i][1].y1 <= 1300 - 80 && things[i][1].x1 <= 1000 - 100 + 10, `${what}: ${things[i][0]} runs to ${JSON.stringify(things[i][1])}`);
+            const number: Box = { x0: 90, x1: 140, y0: 1196, y1: 1232 };
+            assert.ok(!overlaps(things[i][1], number), `${what}: ${things[i][0]} on the page number`);
+          }
+          for (const p of ps) assert.ok(p.w >= art.PHOTO_MIN_W, `${what}: a ${p.w}-wide print`);
+        }
+      }
+    }
+  });
+
+  it("fits two photos beside the labels, each still a good size", async () => {
+    for (const photos of [[shot(4 / 3), shot(4 / 3)], [shot(3 / 4), shot(4 / 3, "the lake")]]) {
+      const { page, prints: ps } = await drawTold(photos, WEDDING);
+      assert.equal(ps.length, 2, "both photos kept");
+      for (const p of ps) assert.ok(p.w >= 200, `a ${p.w}-wide print`);
+      // Beside: the labels to the right of both prints.
+      for (const r of page.labels) for (const p of ps) assert.ok(r.x >= p.cx + p.w / 2 + 20);
+    }
+  });
+
+  it("sets the labels above, as before, when the column has no room", async () => {
+    // Under longer words a column of three does not fit, where one of two still does.
+    assert.equal(art.tellingsBeside(700, [4 / 3], [false], 3), null);
+    assert.ok(art.tellingsBeside(700, [4 / 3], [false], 2));
+    const { page } = await drawTold([shot(4 / 3)], story(260), three);
+    // In rows of two: the first two side by side.
+    assert.equal(page.labels[0].y, page.labels[1].y);
+    // Three short words: the column fits, the third label under the second.
+    const short = await drawTold([shot(4 / 3)], SHORT, three);
+    assert.ok(short.page.labels[2].y > short.page.labels[1].y && short.page.labels[1].y > short.page.labels[0].y);
+  });
+
+  it("leaves pages with one telling, or no photo, as they were", async () => {
+    // Two tellings, no photo: the labels side by side under the words.
+    const { page } = await drawTold([], WEDDING);
+    assert.equal(page.labels[0].y, page.labels[1].y);
+    assert.ok(page.labels[1].x > page.labels[0].x + page.labels[0].w);
+    assert.deepEqual(page.labels, labelArt.layoutTellerLabels(two, 100, 762, page.labels[0].y));
+    // One telling: no labels, the "as told by" line, the photo across the measure.
+    assert.equal(art.tellingsBeside(560, [4 / 3], [false], 1), null);
+    assert.equal(art.tellingsBeside(560, [], [], 2), null);
+    reset();
+    const one = await art.drawStoryPage(spread(SHORT, 0, { photos: [shot(4 / 3)], tellers: ["Harold"] }), 2, fonts, 30);
+    assert.deepEqual(one.labels, []);
+    assert.ok(drawn.texts.some((t) => t.text === "— as told by Harold"));
+  });
+
+  it("draws no \"as told by\" line beside the labels", async () => {
+    await drawTold([shot(4 / 3)]);
+    assert.ok(!drawn.texts.some((t) => /as told by/.test(t.text)));
   });
 });

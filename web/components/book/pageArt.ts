@@ -5,7 +5,20 @@
  */
 
 import { ACCENT, canvas, drawGutterStitches, drawStitchLine, INK, INK_FAINT, INK_SOFT, paper, setSpacing, wrap, type Ctx, type PageFonts } from "./paperArt";
-import { drawLabelsPrompt, drawPullTabPrint, drawPuppetAvatar, drawTellerLabels, layoutTellerLabels, tellerLabelsHeight, type LabelRect } from "./labelArt";
+import {
+  drawLabelsPrompt,
+  drawPullTabPrint,
+  drawPuppetAvatar,
+  drawTellerLabels,
+  COLUMN_SCALE_MIN,
+  layoutTellerColumn,
+  layoutTellerLabels,
+  RIBBON_HANG,
+  tellerColumnHeight,
+  tellerColumnWidth,
+  tellerLabelsHeight,
+  type LabelRect,
+} from "./labelArt";
 import { drawPhoto, withPrintAspect } from "./photoArt";
 import type { BookCover, BookSpread } from "./types";
 
@@ -79,8 +92,10 @@ export async function drawStoryPage(
     tail: storyTailHeight(spread),
     photos: taped.map((p) => photoAspect(p.aspect)),
     captions: taped.map((p) => Boolean(p.caption)),
+    labels: tellings.length,
   });
   const photos = taped.slice(0, plan.photos);
+  const prints = photos.map((p) => ({ aspect: photoAspect(p.aspect), caption: Boolean(p.caption) }));
   // Without photos the words sit on their own layer, to be set in the
   // page's optical middle rather than hung from its head.
   const layer = photos.length ? null : canvas(W, H);
@@ -139,14 +154,19 @@ export async function drawStoryPage(
   if (text && body.length < 2) y += lead * (2 - body.length);
 
   let labels: LabelRect[] = [];
-  if (tellings.length > 1) {
+  // With photos, the labels stand beside them when they fit there, so the
+  // photos keep the whole space under the words (drawn with them, below).
+  const beside = tellings.length > 1 ? tellingsBeside(y, prints.map((p) => p.aspect), prints.map((p) => p.caption), tellings.length) : null;
+  if (tellings.length > 1 && !beside) {
     // One taped label per telling, to hear the same scene told another way.
     y += 58;
     y += drawLabelsPrompt(ctx, left + 4, y, fonts, seed + 40) + 16;
     labels = layoutTellerLabels(tellings, left + 4, width - 8, y);
     drawTellerLabels(ctx, tellings, labels, active, fonts, seed + 50);
     y += tellerLabelsHeight(tellings.length) + 6;
-  } else if (spread.tellers?.length) {
+    // Photos under them start below the playing label's ribbon.
+    if (photos.length) y += RIBBON_CLEAR;
+  } else if (spread.tellers?.length && !beside) {
     y += 14;
     ctx.fillStyle = INK_FAINT;
     ctx.font = `500 38px ${fonts.hand}`;
@@ -168,9 +188,23 @@ export async function drawStoryPage(
   // Photos, taped into the space that is left (layoutStory kept only those
   // at least PHOTO_MIN_W wide in it), each as large as its share of it
   // allows; prints that do not fill its height are set in its middle.
+  if (beside) {
+    // Tilted a little, as before: one a touch, a pair each its own way.
+    const angles = beside.prints.length === 1 ? [-0.03] : [-0.04, 0.05];
+    const tapes = ["top", "corners"] as const;
+    for (const [i, at] of beside.prints.entries()) {
+      await drawPhoto(ctx, photos[i], at.x, at.y, at.w, angles[i], seed + 1 + i, fonts, tapes[i]);
+    }
+    // "Who's telling?", and the labels stacked under it, beside the photos.
+    const { x, w, scale, top, labels: first } = beside.column;
+    drawLabelsPrompt(ctx, x + w - 10, top, fonts, seed + 40, "right");
+    labels = layoutTellerColumn(tellings, x, first, scale);
+    drawTellerLabels(ctx, tellings, labels, active, fonts, seed + 50, "left");
+    pageNumber(pageCtx, page, "left", fonts);
+    return { canvas: c, labels };
+  }
   const top = photoTop(y);
   const room = photoRoom(photos.length, y);
-  const prints = photos.map((p) => ({ aspect: photoAspect(p.aspect), caption: Boolean(p.caption) }));
   const [w0, w1] = photoWidths(room, prints.map((p) => p.aspect), prints.map((p) => p.caption));
   if (photos.length === 1) {
     const dy = Math.max(0, Math.round((room - printHeight(w0, prints[0].aspect, prints[0].caption)) / 2));
@@ -293,6 +327,115 @@ export function photoWidths(room: number, aspects: readonly number[], captions: 
   return [];
 }
 
+/* Tellings' labels beside the photos ------------------------------------- */
+
+/** Between the photos' space and the labels' column, page px (clear of a print's lean and tape). */
+const COLUMN_GAP = 36;
+/** Under the note in the column: the first label's corner tape reaches up into it, clear of the words. */
+const COLUMN_PROMPT_GAP = 32;
+/**
+ * Between two photos stacked, or side by side, beside the labels: the
+ * second's corner tape and lean reach about 35 px up into it.
+ */
+const PAIR_SPACE = 44;
+/** The lowest a print or a label reaches when the labels stand beside the photos. */
+const BESIDE_FOOT = PAGE_PX_H - 150;
+/**
+ * More room between labels and the photos under them, so the playing label's
+ * ribbon (RIBBON_HANG) ends above a print's tape rather than on it.
+ */
+const RIBBON_CLEAR = RIBBON_HANG - 34;
+
+/** A print placed on the page: its top-left corner and width, page px (drawPhoto). */
+export interface PrintPlace {
+  x: number;
+  y: number;
+  w: number;
+}
+
+/**
+ * The photos with the tellings' labels beside them: the prints on the left,
+ * as large as the space under the words allows (fitPrint), and the "Who's
+ * telling?" note with the labels stacked in a column on the right.
+ */
+export interface BesidePlan {
+  prints: PrintPlace[];
+  /**
+   * The labels' column: its left edge, width and the labels' scale
+   * (layoutTellerColumn), the note's top (its words end at the column's
+   * right, less 10), and the first label's top.
+   */
+  column: { x: number; w: number; scale: number; top: number; labels: number };
+}
+
+/** The note over the labels and the labels themselves at `scale`, stacked: their height. */
+function columnHeight(labels: number, scale: number) {
+  return PROMPT_H + COLUMN_PROMPT_GAP + tellerColumnHeight(labels, scale);
+}
+
+/**
+ * The widest two prints, one width, stacked with PAIR_SPACE between them fit
+ * in `room` and at most `maxW` wide.
+ */
+function fitStack(room: number, maxW: number, aspects: readonly number[], captions: readonly boolean[]): number {
+  const tall = (w: number) => printHeight(w, aspects[0], captions[0]) + printHeight(w, aspects[1], captions[1]);
+  const per = aspects.reduce((sum, a, i) => sum + 0.9 / a + 0.1 + (captions[i] ? 0.17 : 0), 0);
+  let w = Math.floor(Math.min(maxW, (room - PAIR_SPACE) / per));
+  while (w > 0 && tall(w) > room - PAIR_SPACE) w--;
+  return w;
+}
+
+/**
+ * Lay a page's photos out beside its tellings' labels, for words ending at
+ * `y`: one photo sized by the whole space's height and the measure the
+ * column leaves it (the labels drawn smaller, down to COLUMN_SCALE_MIN, for
+ * a wide photo; full size beside a tall one), or two, stacked or side by
+ * side, whichever prints them larger. Null when the column does not fit
+ * under the words, or a print would be narrower than PHOTO_MIN_W: the
+ * labels then go above the photos, as before.
+ */
+export function tellingsBeside(y: number, aspects: readonly number[], captions: readonly boolean[], labels: number): BesidePlan | null {
+  const n = Math.min(2, aspects.length);
+  if (n === 0 || labels < 2) return null;
+  const top = photoTop(y);
+  const room = BESIDE_FOOT - top;
+  if (room < columnHeight(labels, COLUMN_SCALE_MIN)) return null;
+  const cap = (i: number) => captions[i] ?? false;
+  const left = 96;
+  const roomFor = (w: number, i: number) => printHeight(w, aspects[i], cap(i));
+  const prints: PrintPlace[] = [];
+  let scale = COLUMN_SCALE_MIN;
+  if (n === 1) {
+    const w = fitPrint(room, PHOTO_MEASURE - COLUMN_GAP - tellerColumnWidth(COLUMN_SCALE_MIN), aspects[0], cap(0));
+    // The labels as large as the print leaves them room for, beside and under it.
+    const wide = (PHOTO_MEASURE - COLUMN_GAP - w - tellerColumnWidth(0)) / (tellerColumnWidth(1) - tellerColumnWidth(0));
+    scale = Math.max(COLUMN_SCALE_MIN, Math.min(1, Math.floor(wide * 100) / 100));
+    while (scale > COLUMN_SCALE_MIN && columnHeight(labels, scale) > room) scale = Math.max(COLUMN_SCALE_MIN, Math.round(scale * 100 - 1) / 100);
+    const space = PHOTO_MEASURE - COLUMN_GAP - tellerColumnWidth(scale);
+    prints.push({ x: left + Math.max(0, (space - w) / 2), y: top + Math.max(0, Math.round((room - roomFor(w, 0)) / 2)), w });
+  } else {
+    const space = PHOTO_MEASURE - COLUMN_GAP - tellerColumnWidth(scale);
+    // Stacked, one width, the second set right; or side by side, the second set lower.
+    const stacked = fitStack(room, space - 40, aspects.slice(0, 2), [cap(0), cap(1)]);
+    const half = (space - PAIR_SPACE) / 2;
+    const drop = pairDrop(room);
+    const side = [fitPrint(room, half, aspects[0], cap(0)), fitPrint(room - drop, half, aspects[1], cap(1))];
+    if (stacked >= Math.min(...side)) {
+      const [h0, h1] = [roomFor(stacked, 0), roomFor(stacked, 1)];
+      const y0 = top + Math.max(0, Math.round((room - h0 - PAIR_SPACE - h1) / 2));
+      prints.push({ x: left - 6, y: y0, w: stacked }, { x: left + space - stacked, y: y0 + h0 + PAIR_SPACE, w: stacked });
+    } else {
+      const tall = Math.max(roomFor(side[0], 0), drop + roomFor(side[1], 1));
+      const y0 = top + Math.max(0, Math.round((room - tall) / 2));
+      prints.push({ x: left - 6, y: y0, w: side[0] }, { x: left + space - side[1], y: y0 + drop, w: side[1] });
+    }
+  }
+  if (prints.some((p) => !(p.w >= PHOTO_MIN_W))) return null;
+  const colW = tellerColumnWidth(scale);
+  const colTop = top + Math.max(0, Math.round((room - columnHeight(labels, scale)) / 2));
+  return { prints, column: { x: PAGE_PX_W - 134 - colW, w: colW, scale, top: colTop, labels: colTop + PROMPT_H + COLUMN_PROMPT_GAP } };
+}
+
 /** How far the tellers' line, or the tellings' labels, run below the words. */
 export function storyTailHeight(spread: Pick<BookSpread, "tellings" | "tellers">): number {
   const tellings = spread.tellings ?? [];
@@ -334,6 +477,11 @@ export interface StoryLayoutOptions {
   photos: readonly number[];
   /** Whether each photo is captioned (a captioned print is taller), same order. */
   captions?: readonly boolean[];
+  /**
+   * How many tellings' labels the page has (two or more: the labels stand
+   * beside the photos when they fit there, tellingsBeside, else above them).
+   */
+  labels?: number;
 }
 
 function setBody(ctx: Ctx, text: string, fonts: PageFonts, width: number, [size, lead]: readonly [number, number], tidy: boolean): StoryBody {
@@ -387,10 +535,15 @@ export function layoutStory(ctx: Ctx, text: string, fonts: PageFonts, o: StoryLa
   const cut = text.length > TEXT_CAP;
   const words = cut ? text.slice(0, TEXT_CAP) : text;
   const sizes = words.length < 150 ? [SHORT_SIZE, ...BODY_SIZES] : BODY_SIZES;
+  const labels = o.labels ?? 0;
   const fits = (b: StoryBody, n: number) => {
     const end = o.top + b.height + o.tail;
     if (n === 0) return end <= TEXT_FOOT;
-    return photoWidths(photoRoom(n, end), o.photos.slice(0, n), o.captions?.slice(0, n)).every((w) => w >= PHOTO_MIN_W);
+    const aspects = o.photos.slice(0, n);
+    const captions = o.captions?.slice(0, n) ?? [];
+    if (tellingsBeside(o.top + b.height, aspects, captions, labels)) return true;
+    const clear = labels > 1 ? RIBBON_CLEAR : 0;
+    return photoWidths(photoRoom(n, end + clear), aspects, captions).every((w) => w >= PHOTO_MIN_W);
   };
   if (!cut) {
     for (let n = Math.min(2, o.photos.length); n >= 0; n--) {
