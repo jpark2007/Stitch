@@ -525,6 +525,68 @@ def test_b_image_budget_used_up_mid_run_makes_the_rest_placeholder_art(studios: 
     assert all("image budget for this run is used up (2 images)" in r["note"] for r in placeholder)
 
 
+# --------------------------------------------------------------------------- (b2) set layer art off
+
+
+def test_b_art_layers_off_draws_props_only_and_keeps_the_budget_for_them(
+    studios: Callable[..., Studio], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from agent.tools.art import LAYERS_OFF_NOTE
+
+    monkeypatch.setenv("STITCH_ART_LAYERS", "off")
+    limits = RunLimits.from_env()
+    assert limits.art_layers is False
+    model = CountingImageModel()
+    # Built the way agent.production builds real art.
+    art = ArtService(
+        model, FakeBackgroundRemover(), max_images_per_run=limits.max_images_per_run,
+        layers_enabled=limits.art_layers,
+    )
+    s = studios(art=art)
+    caplog.set_level("INFO", logger="agent.tools.art")
+    run_id, events = s.drive()
+    s.saved(run_id, events)
+
+    # One image call, for the prop; none for the three layers, and only the prop is counted.
+    assert len(model.calls) == 1 and "This image is a prop." in model.calls[0]
+    assert not any("layer of a set." in call for call in model.calls)
+    assert art.images_used(run_id) == 1 and art.images_left(run_id) == limits.max_images_per_run - 1
+    (prop,) = s.new_props()
+    assert prop.art.get("body") is not None
+    (set_def,) = s.new_sets()
+    assert sorted(layer.depth for layer in set_def.layers) == [0, 1, 2]
+    assert all(layer.art is None and layer.color for layer in set_def.layers)
+    layers = json_results(s.tools.of("generate_set_layer"))
+    assert len(layers) == 3  # one call per layer: the note stops any retry
+    assert all(r["art"] == "placeholder" and r["note"] == LAYERS_OFF_NOTE for r in layers)
+    (prop_result,) = json_results(s.tools.of("generate_prop"))
+    assert prop_result["art"] == "generated" and "note" not in prop_result
+    # Not a failure: no warning, and at most one INFO line for the run.
+    art_records = [r for r in caplog.records if r.name == "agent.tools.art"]
+    assert not [r for r in art_records if r.levelname == "WARNING"]
+    assert len([r for r in art_records if "STITCH_ART_LAYERS=off" in r.getMessage()]) == 1
+
+
+def test_b_art_layers_on_or_unset_draws_every_layer(
+    studios: Callable[..., Studio], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STITCH_ART_LAYERS", "ON")
+    assert RunLimits.from_env().art_layers is True
+    monkeypatch.delenv("STITCH_ART_LAYERS")
+    limits = RunLimits.from_env()
+    assert limits.art_layers is True
+    model = CountingImageModel()
+    art = ArtService(model, FakeBackgroundRemover(), layers_enabled=limits.art_layers)
+    s = studios(art=art)
+    run_id, events = s.drive()
+    s.saved(run_id, events)
+
+    assert len(model.calls) == 4  # the prop and three layers, as before the switch existed
+    (set_def,) = s.new_sets()
+    assert all(layer.art is not None for layer in set_def.layers)
+    assert all("note" not in r for r in json_results(s.tools.of("generate_set_layer")))
+
+
 # --------------------------------------------------------------------------- (c) cutout down
 
 

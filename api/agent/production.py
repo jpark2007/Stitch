@@ -61,6 +61,8 @@ Time and cost limits (agent.guards.RunLimits; a bad value warns and keeps the de
                                across resumes and a restart (600, at least 100); past it the run
                                ends with an error event
     STITCH_MAX_IMAGES_PER_RUN  image generations per run (24); 0: placeholder art only
+    STITCH_ART_LAYERS          "on" (default) or "off": off draws only props, parts and states;
+                               every set layer is a placeholder color layer, no image call
     STITCH_MAX_GRAPH_STEPS     steps per studio graph stream (1000, at least 50;
                                studio.thread_config): not a per-run cap, each resume streams
                                again, and sub-agents keep deepagents' own limit
@@ -244,7 +246,17 @@ def _art_service(limits: RunLimits, usage: RunUsage) -> tuple[ArtService, str]:
     if image_model is None:
         # placeholder art; cut_out of uploaded photos still works
         return ArtService(None, remover, usage=usage), label
-    return ArtService(image_model, remover, max_images_per_run=limits.max_images_per_run, usage=usage), label
+    # STITCH_ART_LAYERS=off: make_layer gives placeholder layers (one INFO line per run).
+    return (
+        ArtService(
+            image_model,
+            remover,
+            max_images_per_run=limits.max_images_per_run,
+            usage=usage,
+            layers_enabled=limits.art_layers,
+        ),
+        label,
+    )
 
 
 def production_services() -> Services:

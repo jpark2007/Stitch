@@ -15,7 +15,8 @@ they return ``None`` and callers fall back to the placeholder path (``art: null`
 with a ``color`` from ``placeholder_color``), so a story can always be staged. The same
 happens once a run has used its image budget (``max_images_per_run``, from
 ``agent.guards.RunLimits``): the cap never fails a run, it only makes the rest of its art
-placeholder art.
+placeholder art. With ``layers_enabled`` False (env STITCH_ART_LAYERS=off) set layers are always
+placeholder layers and only props, parts and states are generated.
 
 The look itself is defined in exactly one place:
 ``agent/skills/popup-style/style_prompt.txt`` (``STYLE_PROMPT``).
@@ -48,6 +49,7 @@ import json
 import logging
 import math
 import re
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -415,6 +417,14 @@ def budget_note(max_images: int, thing: str) -> str:
     return f"image budget for this run is used up ({max_images} {images}); {thing} uses placeholder art"
 
 
+LAYERS_OFF_NOTE = (
+    "painted set layers are switched off (STITCH_ART_LAYERS=off): this layer is saved as a flat "
+    "placeholder color layer, and that is final. Do not call generate_set_layer for this layer again; "
+    "go on with the other layers and marks as usual"
+)
+"""What a set layer tool result says when ``ArtService.layers_enabled`` is False."""
+
+
 class ArtService:
     """Image model + background removal. Returns ``None`` (placeholder path) instead of raising.
 
@@ -441,6 +451,7 @@ class ArtService:
         *,
         max_images_per_run: int | None = None,
         usage: RunUsage | None = None,
+        layers_enabled: bool = True,
     ) -> None:
         if max_images_per_run is not None and max_images_per_run < 0:
             raise ValueError("max_images_per_run must be >= 0 or None")
@@ -448,6 +459,11 @@ class ArtService:
         self.remover = remover
         self.max_images_per_run = max_images_per_run
         self.usage = usage if usage is not None else RunUsage(keep=BUDGET_RUNS_KEPT)
+        self.layers_enabled = layers_enabled
+        """False (STITCH_ART_LAYERS=off): ``make_layer`` always returns ``None`` without calling
+        the image model or counting an image; ``make_cutout`` and ``cut_out`` are unaffected."""
+        self._layers_off_logged: set[str | None] = set()
+        self._layers_off_lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -480,6 +496,16 @@ class ArtService:
                 run_id, cap,
             )
         return taken
+
+    def _log_layers_off(self, run_id: str | None) -> None:
+        """One INFO line per run (bounded like the usage registry) saying set layers are placeholders."""
+        with self._layers_off_lock:
+            if run_id in self._layers_off_logged:
+                return
+            if len(self._layers_off_logged) >= BUDGET_RUNS_KEPT:
+                self._layers_off_logged.clear()
+            self._layers_off_logged.add(run_id)
+        log.info("set layer art is off (STITCH_ART_LAYERS=off); run %s gets placeholder set layers", run_id)
 
     def make_cutout(
         self,
@@ -528,9 +554,15 @@ class ArtService:
         percent of the canvas height) is appended to ``prompt`` before generating.
 
         A spent image budget for ``run_id`` also returns ``None`` (see the class docstring).
+
+        With ``layers_enabled`` False (STITCH_ART_LAYERS=off) every layer returns ``None`` at once:
+        no model call, nothing counted, no failure logged (one INFO line per run).
         """
         if layer not in ("back", "middle", "front"):
             raise ValueError("layer must be 'back', 'middle' or 'front'")
+        if not self.layers_enabled:
+            self._log_layers_off(run_id)
+            return None
         if self.image_model is None or (layer != "back" and self.remover is None):
             return None
         if not self._take_image(run_id):

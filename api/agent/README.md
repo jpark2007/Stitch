@@ -50,6 +50,7 @@ Put the variables in `api/.env`. The API (`main.load_env_files`) reads `api/.env
 | `IMAGE_API_KEY` | art | none | Placeholder art |
 | `IMAGE_API_URL` | art | `https://api.openai.com/v1` | |
 | `IMAGE_MODEL` | art | `gpt-image-1` | |
+| `STITCH_ART_LAYERS` | art | `on` | `off`: only props, parts and states are generated; every set layer is a flat placeholder color layer (no image call, not counted in `STITCH_MAX_IMAGES_PER_RUN`). Any other value warns and means `on` |
 | `ELEVENLABS_API_KEY` | tts | none | Silent narration with estimated word timings |
 | `ELEVENLABS_MODEL` | tts | `eleven_multilingual_v2` | |
 | `ELEVENLABS_VOICES` | tts | none | Every voice uses the default voice. Format: `voice_a=<id>,voice_b=<id>` (the studio asks for `voice_a` to `voice_d`) |
