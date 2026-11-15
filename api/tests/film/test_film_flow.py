@@ -103,7 +103,8 @@ def test_uploaded_photos_become_a_ready_offline_film(env):
     assert film.status == "ready", film.error
     assert film.audio is None  # offline: silent, with estimated word timings
     assert film.words and film.title.strip()
-    assert_well_cut(film.shots, film.beats, film.words, film.duration, set(ids.values()))
+    sources = {ids[name]: data for name, data in picked}
+    assert_well_cut(film.shots, film.beats, film.words, film.duration, set(ids.values()), sources)
 
     shown = [names[s.photo_id] for s in film.shots]
     # The story asks for about 10 shots, and there are exactly 10 different scenes: every one

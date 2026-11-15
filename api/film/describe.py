@@ -8,7 +8,8 @@ any failure falls back to `FakeDescriber` for that photo only.
 
 `FakeDescriber` is deterministic and offline: a mood from the dominant color (Pillow), a
 centre focus, quality from contrast. It knows nothing about the content, so its caption,
-people and setting are empty: the film shows no caption rather than a made-up one.
+people and setting are empty (the film shows no caption rather than a made-up one) and it
+gives no "scene" label (the optional key the plan uses to leave out repeated moments).
 """
 
 from __future__ import annotations
@@ -36,12 +37,16 @@ This is one photo from a family's set of pictures of a single event. Describe it
 narrated film made from the photos. Reply with ONLY a JSON object, no other text, exactly:
 
 {"caption": "<at most 8 words: what is happening, plain and warm>",
+ "scene": "<2 to 5 lowercase words naming the moment: who, doing what, where>",
  "people": ["<each visible person as seen, e.g. 'a girl in a red coat'>"],
  "setting": "<where it is, e.g. 'a lake dock at dusk'>",
  "mood": "<one or two words>",
  "focus": [<u>, <v>],
  "quality": <0 to 1>}
 
+scene is a short, plain, generic label of the moment shown, e.g. "family at dinner table",
+"kids in the lake", "cutting the birthday cake". Use the simplest common words, no names, no
+colours or camera details, so that two photos of the same moment get the same label.
 focus is the point of interest as fractions across (u) and down (v) the photo, 0 to 1:
 usually the face or the action. quality is how usable the photo is: 1 for a sharp, well lit,
 well framed photo, near 0 for a blurred, dark or accidental one.
@@ -161,12 +166,20 @@ def _fraction(value: Any) -> float | None:
     return max(0.0, min(1.0, float(value)))
 
 
+MAX_SCENE_CHARS = 60
+
+
 def normalize(raw: dict, fallback: dict) -> dict:
-    """A Describer dict from a parsed reply: every key present and well typed, `fallback` fills gaps."""
+    """A Describer dict from a parsed reply: every key present and well typed, `fallback` fills
+    gaps. The optional "scene" is kept (lower case, at most MAX_SCENE_CHARS) when the reply
+    has one as text; otherwise it is whatever `fallback` has, or absent."""
     out = dict(fallback)
     caption = _clean_str(raw.get("caption"))
     if caption is not None:
         out["caption"] = short_caption(caption) or ""
+    scene = _clean_str(raw.get("scene"), MAX_SCENE_CHARS)
+    if scene is not None:
+        out["scene"] = scene.lower()
     people = raw.get("people")
     if isinstance(people, list):
         out["people"] = [p for p in (_clean_str(x, 80) for x in people) if p][:12]
@@ -225,6 +238,7 @@ __all__ = [
     "DESCRIBE_EDGE",
     "DESCRIBE_PROMPT",
     "MAX_CAPTION_WORDS",
+    "MAX_SCENE_CHARS",
     "FakeDescriber",
     "ModelDescriber",
     "blank_description",

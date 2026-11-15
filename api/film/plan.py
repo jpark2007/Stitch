@@ -8,27 +8,42 @@
 - a beat with no narration hands its photos to the beat before it (or after, if first);
   a beat with narration but no photos hands its narration on the same way;
 - photos the editor left out are added to the beat whose photos are nearest in capture
-  order, at their capture-order place;
+  order, at their capture-order place: all of them when no shot count is wanted, else only
+  up to the wanted count (best quality first) and never one that repeats a used photo's
+  scene (see below);
 - captions are cut to MAX_CAPTION_WORDS words; a missing one is the photo's description;
 - more than MAX_EDITOR_BEATS beats, or narration far past the film's length, is rejected.
 
 Anything malformed, an editor that raises, or no editor at all gives `fallback_plan`:
 photos in chronological order, the story's sentences (trimmed to MAX_NARRATION_WORDS by
 `trim_story`) spread over evenly sized beats, captions from the descriptions.
+
+The film is described with a few more photos than it wants shots (selection.candidate_count)
+so repeats can be left out. With a wanted shot count, both plans keep at most that many
+photos (`trim_to`), dropping first a photo whose scene label (`scene_key` of the describer's
+"scene") equals that of an earlier kept photo taken within SAME_SCENE_SECONDS (or when either
+time is unknown), then the lowest-quality photos (never the film's first or last photo while
+another can go). Trimming never takes a beat's only photo.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from film.describe import extract_json_object, short_caption
-from film.selection import MAX_NARRATION_WORDS, word_count
+from film.selection import MAX_NARRATION_WORDS, target_count, word_count
 from film.types import Editor, Story
 
 log = logging.getLogger(__name__)
+
+SAME_SCENE_SECONDS = 600.0
+"""Two photos with the same scene label this close in time (or with unknown times) are one moment."""
+_ARTICLES = frozenset({"a", "an", "the"})
 
 MIN_BEATS = 3
 MAX_BEATS = 6
@@ -146,6 +161,117 @@ def split_counts(total: int, weights: list[float]) -> list[int]:
     return counts
 
 
+# ------------------------------------------------------------------ leaving repeats out
+
+
+def scene_key(value: Any) -> str:
+    """A describer's scene label made comparable: lower case, words only, no articles."""
+    if not isinstance(value, str):
+        return ""
+    return " ".join(w for w in re.findall(r"[a-z0-9]+", value.lower()) if w not in _ARTICLES)
+
+
+def _taken(photo: dict) -> datetime | None:
+    raw = photo.get("takenAt")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def same_moment(a: dict, b: dict) -> bool:
+    """True when two described photos carry the same scene label and were taken within
+    SAME_SCENE_SECONDS of each other (or either time is unknown)."""
+    key = scene_key(a.get("scene"))
+    if not key or key != scene_key(b.get("scene")):
+        return False
+    ta, tb = _taken(a), _taken(b)
+    if ta is None or tb is None:
+        return True
+    try:
+        return abs((ta - tb).total_seconds()) <= SAME_SCENE_SECONDS
+    except TypeError:  # one aware, one naive: unknown, so treated as close
+        return True
+
+
+def _quality(photo: dict) -> float:
+    q = photo.get("quality", 0.5)
+    return float(q) if isinstance(q, (int, float)) and not isinstance(q, bool) else 0.5
+
+
+def scene_repeats(photos: list[dict]) -> list[str]:
+    """Ids of the photos (in the given capture order) that repeat the moment of an earlier
+    photo that is not itself a repeat."""
+    kept: list[dict] = []
+    repeats: list[str] = []
+    for p in photos:
+        if any(same_moment(k, p) for k in kept):
+            repeats.append(p["id"])
+        else:
+            kept.append(p)
+    return repeats
+
+
+def trim_to(beats: list[PlanBeat], photos: list[dict], wanted: int) -> None:
+    """Drop shots (in place) until at most `wanted` remain (see the module docstring).
+
+    `photos` are the described photos in capture order. A beat's only photo is never taken.
+    """
+    index = {p["id"]: i for i, p in enumerate(photos)}
+    by_id = {p["id"]: p for p in photos}
+
+    def total() -> int:
+        return sum(len(b.shots) for b in beats)
+
+    def beat_of(pid: str) -> PlanBeat | None:
+        return next((b for b in beats if any(s.photo_id == pid for s in b.shots)), None)
+
+    def drop(pid: str) -> bool:
+        beat = beat_of(pid)
+        if beat is None or len(beat.shots) < 2:
+            return False
+        beat.shots = [s for s in beat.shots if s.photo_id != pid]
+        return True
+
+    if total() <= wanted:
+        return
+    shown = sorted({s.photo_id for b in beats for s in b.shots}, key=lambda pid: index[pid])
+    for pid in reversed(scene_repeats([by_id[i] for i in shown])):
+        if total() <= wanted:
+            return
+        if drop(pid):
+            log.info("film plan: leaving out %s, the same moment as an earlier photo", pid)
+    ends = {shown[0], shown[-1]}
+    while total() > wanted:
+        movable = [(b, s.photo_id) for b in beats if len(b.shots) > 1 for s in b.shots]
+        if not movable:
+            return
+        inner = [m for m in movable if m[1] not in ends] or movable
+        beat, pid = min(inner, key=lambda m: (_quality(by_id[m[1]]), -len(m[0].shots), -index[m[1]]))
+        drop(pid)
+
+
+def merge_empty_beats(beats: list[PlanBeat]) -> list[PlanBeat]:
+    """Beats without photos hand their narration to the beat before them (or after, if
+    first), the same rule validate_plan applies to an editor's beat with no photos."""
+    out: list[PlanBeat] = []
+    pending: list[str] = []
+    for b in beats:
+        if not b.shots:
+            if out:
+                out[-1].narration = f"{out[-1].narration} {b.narration}".strip()
+            else:
+                pending.append(b.narration)
+            continue
+        if pending:
+            b.narration = " ".join([*pending, b.narration]).strip()
+            pending = []
+        out.append(b)
+    return out
+
+
 # ------------------------------------------------------------------ fallback
 
 
@@ -154,8 +280,14 @@ def beat_count(words: int, n_sentences: int, n_photos: int) -> int:
     return max(1, min(MAX_BEATS, want, n_sentences, n_photos))
 
 
-def fallback_plan(story: Story, photos: list[dict]) -> list[PlanBeat]:
-    """Chronological photos under the story's sentences, spread over evenly sized beats."""
+def fallback_plan(story: Story, photos: list[dict], wanted: int | None = None) -> list[PlanBeat]:
+    """Chronological photos under the story's sentences, spread over evenly sized beats.
+    With `wanted`, at most that many photos (trim_to's order of leaving out)."""
+    if wanted is not None and len(photos) > wanted:
+        whole = [PlanBeat("", "", [PlanShot(p["id"], None) for p in photos])]
+        trim_to(whole, photos, max(1, wanted))
+        keep = {s.photo_id for s in whole[0].shots}
+        photos = [p for p in photos if p["id"] in keep]
     lines = trim_story(story.text)
     words = [max(1, word_count(s)) for s in lines]
     n = beat_count(sum(words), len(lines), len(photos))
@@ -181,8 +313,9 @@ def _photo_id(shot: dict) -> Any:
     return None
 
 
-def validate_plan(raw: Any, photos: list[dict]) -> list[PlanBeat] | None:
-    """The editor's plan made safe (see the module docstring), or None when it is unusable."""
+def validate_plan(raw: Any, photos: list[dict], wanted: int | None = None) -> list[PlanBeat] | None:
+    """The editor's plan made safe (see the module docstring), or None when it is unusable.
+    `wanted` is the film's shot count; None keeps every photo."""
     if not isinstance(raw, dict) or not isinstance(raw.get("beats"), list):
         return None
     if not raw["beats"] or len(raw["beats"]) > MAX_EDITOR_BEATS:
@@ -231,10 +364,31 @@ def validate_plan(raw: Any, photos: list[dict]) -> list[PlanBeat] | None:
         if not b.title:
             b.title = title_from(b.narration)
     placed = [[index[s.photo_id] for s in b.shots] for b in out]  # the editor's own choices
-    for p in photos:
-        if p["id"] not in used:
-            _add_by_capture(out, placed, PlanShot(p["id"], described[p["id"]]), index)
+    for p in _left_out(photos, used, wanted):
+        _add_by_capture(out, placed, PlanShot(p["id"], described[p["id"]]), index)
+    if wanted is not None:
+        trim_to(out, photos, max(1, wanted))
     return out
+
+
+def _left_out(photos: list[dict], used: set[str], wanted: int | None) -> list[dict]:
+    """The photos the editor left out that go back in: all of them when no count is wanted;
+    else, up to the wanted count, the best (then earliest) that do not repeat the moment of a
+    photo already in."""
+    missing = [p for p in photos if p["id"] not in used]
+    if wanted is None:
+        return missing
+    room = wanted - len(used)
+    if room <= 0:
+        return []
+    inside = [p for p in photos if p["id"] in used]
+    back: list[dict] = []
+    for p in sorted(missing, key=lambda p: -_quality(p)):  # stable: earliest first on a tie
+        if len(back) == room:
+            break
+        if not any(same_moment(q, p) for q in inside + back):
+            back.append(p)
+    return back
 
 
 def _add_by_capture(beats: list[PlanBeat], placed: list[list[int]], shot: PlanShot, index: dict[str, int]) -> None:
@@ -265,10 +419,20 @@ Rules:
   feeling or a detail the story does not state. Keep all the narration under 300 words.
 - Use every photo at most once, by its exact id. Put each photo under the beat it shows.
   Keep photos in the order they were taken unless the story clearly tells events in another
-  order. Use most of the photos.
+  order.
+- Use about wantedShots photos in all, never more. There are a few spare photos on purpose:
+  it is fine, and expected, to leave photos out.
+- Never show the same moment twice. When two photos show the same moment, pose or scene (the
+  same "scene", or the same people in the same place a few minutes apart, even from another
+  angle), use only the better one: the higher "quality", the clearer view of the people.
 - A caption is a short handwritten note for the photo, at most 8 words, drawn from the
   story and what the photo shows. Do not guess who people are unless the story says so.
 """
+
+
+def wanted_shots(story: Story, photos: list[dict]) -> int:
+    """The shots the film wants: selection.target_count of the story, at most the photos."""
+    return min(len(photos), target_count(story.text))
 
 
 def editor_request(story: Story, photos: list[dict]) -> str:
@@ -277,14 +441,17 @@ def editor_request(story: Story, photos: list[dict]) -> str:
         "year": story.year,
         "people": story.people,
         "story": story.text,
+        "wantedShots": wanted_shots(story, photos),
         "photos": [
             {
                 "id": p["id"],
                 "takenAt": p.get("takenAt"),
                 "caption": p.get("caption"),
+                "scene": p.get("scene") or None,
                 "people": p.get("people"),
                 "setting": p.get("setting"),
                 "mood": p.get("mood"),
+                "quality": p.get("quality"),
             }
             for p in photos
         ],
@@ -326,8 +493,9 @@ class ModelEditor:
             return None
 
 
-def make_plan(story: Story, photos: list[dict], editor: Editor | None) -> list[PlanBeat]:
-    """The editor's plan when it gives a usable one, else the deterministic fallback."""
+def make_plan(story: Story, photos: list[dict], editor: Editor | None, wanted: int | None = None) -> list[PlanBeat]:
+    """The editor's plan when it gives a usable one, else the deterministic fallback. With
+    `wanted` (the film's shot count), at most that many photos are kept (trim_to)."""
     if editor is not None:
         try:
             raw = editor.plan(story, photos)
@@ -335,17 +503,18 @@ def make_plan(story: Story, photos: list[dict], editor: Editor | None) -> list[P
             log.warning("film plan: the editor raised (%s); using the fallback plan", type(exc).__name__)
             raw = None
         if raw is not None:
-            beats = validate_plan(raw, photos)
+            beats = validate_plan(raw, photos, wanted)
             if beats:
                 return beats
             log.info("film plan: the editor's plan was unusable; using the fallback plan")
-    return fallback_plan(story, photos)
+    return fallback_plan(story, photos, wanted)
 
 
 __all__ = [
     "EDITOR_SYSTEM",
     "MAX_BEATS",
     "MIN_BEATS",
+    "SAME_SCENE_SECONDS",
     "ModelEditor",
     "PlanBeat",
     "PlanShot",
@@ -353,10 +522,16 @@ __all__ = [
     "editor_request",
     "fallback_plan",
     "make_plan",
+    "merge_empty_beats",
     "reply_text",
+    "same_moment",
+    "scene_key",
+    "scene_repeats",
     "sentences",
     "split_counts",
     "title_from",
     "trim_story",
+    "trim_to",
     "validate_plan",
+    "wanted_shots",
 ]

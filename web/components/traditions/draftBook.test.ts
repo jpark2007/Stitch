@@ -12,7 +12,7 @@ import type { Tradition } from "@/lib/types";
 
 // By computed paths, so the type check reads them as the app does (no ".ts").
 const paths = ["./traditionBook.ts", "./openAt.ts", "../book/types.ts"];
-const { DRAFT_TRADITION_ID, draftSpread, draftTradition, traditionSpread, variantIn }: typeof import("./traditionBook") =
+const { DRAFT_TRADITION_ID, draftSpread, draftTradition, draftVariant, traditionSpread, variantIn }: typeof import("./traditionBook") =
   await import(paths[0]);
 const { openAtTradition, traditionHref, traditionParam, traditionSpreadAt }: typeof import("./openAt") = await import(paths[1]);
 const { spreadDate }: typeof import("../book/types") = await import(paths[2]);
@@ -148,6 +148,30 @@ describe("variantIn: which of its kind's kits it gets", () => {
   it("does not count itself when it is already in the list", () => {
     const self = saved({ id: "a", category: "food", startedYear: 1950 });
     assert.equal(variantIn(book, self), 0);
+  });
+});
+
+describe("draftVariant: the kit held from the draft through the saved beat", () => {
+  // An exact twin already in the book: same title, year and kind.
+  const twin = saved({ id: "tr-tamales", category: "food", title: "Tamales", startedYear: 1962 });
+  const page: Page = { ...BLANK, title: "Tamales", category: "food", when: { kind: "yearly" }, startedYear: 1962 };
+  // A real new id that sorts before the twin's ("6…" < "t…"), where the draft id sorted after it.
+  const real = saved({ id: "6af8eb30e9cf7cb6adb72361", category: "food", title: "Tamales", startedYear: 1962 });
+
+  it("the saved one's own place would differ from the draft's (the swap this prevents)", () => {
+    assert.equal(variantIn([twin], draftTradition(page)), 1);
+    assert.equal(variantIn([twin], real), 0);
+  });
+
+  it("keeps the draft's variant once saved", () => {
+    assert.equal(draftVariant([twin], page), 1);
+    assert.equal(draftVariant([twin], page, real), 1);
+  });
+
+  it("goes by the saved one only without a draft, and is 0 without either or a kind", () => {
+    assert.equal(draftVariant([twin], null, real), 0);
+    assert.equal(draftVariant([twin], null, null), 0);
+    assert.equal(draftVariant([twin], { ...page, category: null }), 0);
   });
 });
 
