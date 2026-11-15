@@ -425,6 +425,114 @@ export function traditionSpread(tradition: Tradition, keepers: readonly Traditio
   };
 }
 
+/* ------------------------------------------------------------------------ */
+/* A tradition being written (/traditions/new)                              */
+/* ------------------------------------------------------------------------ */
+
+/** The spread id of a tradition not saved yet. */
+export const DRAFT_TRADITION_ID = "traditions:draft";
+
+/**
+ * What a tradition being written has so far: a Tradition whose kind and
+ * category may not be picked yet, and whose year may not be one.
+ */
+export interface TraditionDraftPage {
+  title: string;
+  description: string;
+  category: Tradition["category"] | null;
+  when: { kind: TraditionWhen["kind"] | null; label?: string | null; month?: number | null };
+  participantIds: readonly string[];
+  /** Ids the options' photoUrl knows the draft's photos by. */
+  photoIds: readonly string[];
+  startedYear: number | null;
+}
+
+/**
+ * BookSpread.year is a number printed as text where no dateLine is given;
+ * a page with nothing to date leaves the line blank (not "0"). This empty
+ * value prints as nothing and reads as undated (spreadDate); nothing in the
+ * book does arithmetic on it. (The same as /add's draft page.)
+ */
+const NO_YEAR = "" as unknown as number;
+
+/** The draft as the Tradition it will be saved as (its blanks filled the way the saved one never has them). */
+export function draftTradition(draft: TraditionDraftPage, id: string = DRAFT_TRADITION_ID): Tradition {
+  const when: TraditionWhen = { kind: draft.when.kind ?? "occasional" };
+  if (draft.when.label) when.label = draft.when.label;
+  if (draft.when.month) when.month = draft.when.month;
+  return {
+    id,
+    familyId: "",
+    title: draft.title,
+    description: draft.description,
+    category: draft.category ?? "other",
+    when,
+    participantIds: [...draft.participantIds],
+    photoIds: [...draft.photoIds],
+    startedYear: draft.startedYear,
+    createdBy: "",
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+/**
+ * The story page of a tradition being written, printed by the book's own
+ * builder (traditionSpread) so it is the page the book will show once it is
+ * saved, with only what is not given yet left blank instead of filled in:
+ *
+ * - no name yet: no title (not "A family tradition");
+ * - no "how often" yet: no line over the title (not "Now and then"), and no
+ *   story made up from it ("Every year, Rosa keeps it going.") until there
+ *   is one; a story typed is printed as it will be;
+ * - no kind yet: the right page keeps its pencilled "the pop-up rises
+ *   here" marks; once there is one, it is printed plain for the kit.
+ */
+export function draftSpread(draft: TraditionDraftPage, keepers: readonly TraditionPerson[], options: TraditionBookOptions = {}): BookSpread {
+  const tradition = draftTradition(draft);
+  const spread = traditionSpread(tradition, keepers, options);
+  const named = draft.title.trim() !== "";
+  const timed = draft.when.kind !== null;
+  const told = draft.description.trim() !== "";
+  const { dateLine, stage, ...rest } = spread;
+  return {
+    ...rest,
+    title: named ? spread.title : "",
+    year: timed ? spread.year : NO_YEAR,
+    ...(timed ? { dateLine } : {}),
+    text: told || timed ? spread.text : "",
+    ...(draft.category ? { stage } : {}),
+  };
+}
+
+/**
+ * Which of its category's kits a tradition gets in the book (traditionBook's
+ * `variant`): its place, in book order, among the family's traditions of the
+ * same category.
+ */
+export function variantIn(traditions: readonly Tradition[], tradition: Tradition): number {
+  const all = orderTraditions([...traditions.filter((t) => t.id !== tradition.id), tradition]);
+  let n = 0;
+  for (const t of all) {
+    if (t.id === tradition.id) return n;
+    if (t.category === tradition.category) n++;
+  }
+  return 0;
+}
+
+/**
+ * The kit variant the book beside the form stands for a tradition being
+ * written: the draft's place among the family's traditions, and the same
+ * once it is saved. A saved one's real id can sort it on either side of an
+ * exact twin (same title, year and kind) that the draft id did not, which
+ * would swap the kit while the page shows it saved; the draft's is held.
+ * The saved one's own only when there is no draft to go by.
+ */
+export function draftVariant(traditions: readonly Tradition[], draft: TraditionDraftPage | null, saved: Tradition | null = null): number {
+  if (draft?.category) return variantIn(traditions, draftTradition(draft));
+  return saved ? variantIn(traditions, saved) : 0;
+}
+
 /** The closing spread: "To be continued", and a few of the family's puppets side by side. */
 export function traditionsEnd(keepers: readonly TraditionPerson[]): BookSpread {
   return {

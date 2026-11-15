@@ -281,3 +281,72 @@ test("traditionSubmitErrorMessage: never blames the person, always says the draf
   assert.equal(traditionSubmitErrorMessage({ status: 400, detail: "  " }), TRADITION_SUBMIT_ERRORS.server);
   for (const msg of Object.values(TRADITION_SUBMIT_ERRORS)) assert.match(msg, /still here/);
 });
+
+// ---------------------------------------------------------------------------
+// The page in the book beside the form
+
+const { traditionDraftIsBlank, traditionDraftPage } = await import("../traditionForm.ts");
+
+test("traditionDraftIsBlank: only the author ticked is still blank; anything else is not", () => {
+  const d = emptyTraditionDraft("me");
+  assert.equal(traditionDraftIsBlank(d, "me"), true);
+  assert.equal(traditionDraftIsBlank(emptyTraditionDraft(null), null), true);
+  assert.equal(traditionDraftIsBlank({ ...d, title: "  " }, "me"), true, "whitespace is nothing");
+  assert.equal(traditionDraftIsBlank({ ...d, title: "Pancakes" }, "me"), false);
+  assert.equal(traditionDraftIsBlank({ ...d, description: "x" }, "me"), false);
+  assert.equal(traditionDraftIsBlank({ ...d, category: "food" }, "me"), false);
+  assert.equal(traditionDraftIsBlank({ ...d, kind: "weekly" }, "me"), false);
+  assert.equal(traditionDraftIsBlank({ ...d, label: "Sundays" }, "me"), false);
+  assert.equal(traditionDraftIsBlank({ ...d, startedYear: "19" }, "me"), false);
+  assert.equal(traditionDraftIsBlank(d, "me", 1), false, "a photo");
+  assert.equal(traditionDraftIsBlank({ ...d, participantIds: [] }, "me"), false, "the author unticked");
+  assert.equal(traditionDraftIsBlank({ ...d, participantIds: ["me", "ana"] }, "me"), false);
+});
+
+test("traditionDraftPage: trimmed as it is sent, nobody keeping a blank form", () => {
+  const blank = traditionDraftPage(emptyTraditionDraft("me"), "me");
+  assert.deepEqual(blank, {
+    title: "",
+    description: "",
+    category: null,
+    when: { kind: null, label: null, month: null },
+    participantIds: [],
+    photoIds: [],
+    startedYear: null,
+  });
+  const page = traditionDraftPage(
+    {
+      ...emptyTraditionDraft("me"),
+      title: "  Tamales ",
+      description: " The kitchen. ",
+      category: "food",
+      kind: "yearly",
+      label: " Christmas Eve ",
+      month: "12",
+      participantIds: ["me", "ana", "me", ""],
+      startedYear: "1962",
+    },
+    "me",
+    ["p0", "p1"],
+  );
+  assert.deepEqual(page, {
+    title: "Tamales",
+    description: "The kitchen.",
+    category: "food",
+    when: { kind: "yearly", label: "Christmas Eve", month: 12 },
+    participantIds: ["me", "ana"],
+    photoIds: ["p0", "p1"],
+    startedYear: 1962,
+  });
+});
+
+test("traditionDraftPage: a month only where it makes sense, a year only once it is a whole valid one", () => {
+  const d = { ...emptyTraditionDraft(null), title: "x", month: "7" };
+  assert.equal(traditionDraftPage({ ...d, kind: "weekly" }, null).when.month, null);
+  assert.equal(traditionDraftPage({ ...d, kind: "seasonal" }, null).when.month, 7);
+  assert.equal(traditionDraftPage({ ...d, kind: "yearly", month: "" }, null).when.month, null);
+  for (const typing of ["1", "19", "196", "1700", "9999", "abcd", " "]) {
+    assert.equal(traditionDraftPage({ ...d, startedYear: typing }, null).startedYear, null, typing);
+  }
+  assert.equal(traditionDraftPage({ ...d, startedYear: " 1962 " }, null).startedYear, 1962);
+});

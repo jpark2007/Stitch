@@ -4,9 +4,18 @@ from datetime import timedelta
 
 from PIL import Image
 
-from film_images import T0, blurred, encode, event, photo, scene
+from film_images import T0, blurred, encode, event, photo, scene, subject_moved
 from film.ingest import hamming, ingest
-from film.selection import MAX_SHOTS, MIN_SHOTS, clusters, select, target_count
+from film.selection import (
+    MAX_CHANGED_CELLS,
+    MAX_SHOTS,
+    MIN_SHOTS,
+    changed_cells,
+    clusters,
+    looks_alike,
+    select,
+    target_count,
+)
 from film.types import SourcePhoto
 
 
@@ -64,18 +73,33 @@ def _pair(dx: int, gap: timedelta | None):
     return ingest([photo("a", base, taken=T0), photo("b", moved, taken=None if gap is None else T0 + gap)])
 
 
-def test_capture_times_tighten_or_loosen_the_duplicate_rule():
-    # A bigger move (hash distance 11..20) is one shot only inside a burst.
-    burst = _pair(60, timedelta(seconds=1))
+def _moved_pair(gap: timedelta | None):
+    """A frame and the next one with someone stepping into the middle third of it."""
+    return ingest([photo("a", scene(9), taken=T0), photo("b", subject_moved(9), taken=None if gap is None else T0 + gap)])
+
+
+def test_a_reframed_copy_is_one_shot_whatever_the_capture_times():
+    # The camera moved 5%, 8% or 9% (hash distance up to 20): the same picture at any time,
+    # or none. (Once, more than 10 minutes apart this was two shots: a wrong or re-saved EXIF
+    # time let the same picture into the film twice.)
+    for dx in (32, 50, 60):
+        near = _pair(dx, timedelta(minutes=2))
+        assert 4 < hamming(near[0].dhash, near[1].dhash) <= 20
+        assert changed_cells(*near) <= MAX_CHANGED_CELLS
+        for gap in (timedelta(seconds=1), timedelta(minutes=2), timedelta(hours=3), timedelta(days=400), None):
+            pair = _pair(dx, gap)
+            assert looks_alike(*pair) and len(clusters(pair)) == 1, (dx, gap)
+
+
+def test_a_burst_loosens_the_rule_but_only_a_burst():
+    # A third of the frame changed (hash distance 11..20, many changed cells): one shot
+    # inside a burst, two moments otherwise.
+    burst = _moved_pair(timedelta(seconds=1))
     assert 10 < hamming(burst[0].dhash, burst[1].dhash) <= 20
+    assert changed_cells(*burst) > 3 * MAX_CHANGED_CELLS
     assert len(clusters(burst)) == 1
-    assert len(clusters(_pair(60, timedelta(minutes=2)))) == 2
-    assert len(clusters(_pair(60, None))) == 2
-    # A small move (distance 7..10) is a duplicate nearby in time, two moments hours apart.
-    near = _pair(50, timedelta(minutes=2))
-    assert 6 < hamming(near[0].dhash, near[1].dhash) <= 10
-    assert len(clusters(near)) == 1
-    assert len(clusters(_pair(50, timedelta(hours=3)))) == 2
+    assert len(clusters(_moved_pair(timedelta(seconds=30)))) == 2
+    assert len(clusters(_moved_pair(None))) == 2
 
 
 def test_target_count_scales_with_story_and_is_clamped():
@@ -96,12 +120,14 @@ def test_select_spreads_over_the_whole_event_not_the_first_photos():
     assert ids == sorted(ids, key=lambda i: [p.id for p in photos].index(i))
 
 
-def test_never_more_than_the_distinct_photos_and_at_least_three():
+def test_never_more_than_the_distinct_photos_even_when_that_is_one():
     distinct = event(4)
     chosen = select(ingest(distinct), " ".join(["word"] * 300))
     assert len(chosen) == 4
+    # Eight frames of one shot are one photo. (This used to top up to three with copies of
+    # it; a film must never show the same picture twice, so now it is one.)
     same = [photo(f"d{i}", scene(42), taken=T0 + timedelta(seconds=i)) for i in range(8)]
-    assert len(select(ingest(same), "We went.")) == 3
+    assert len(select(ingest(same), "We went.")) == 1
 
 
 def test_encode_helper_round_trips_exif():

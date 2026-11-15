@@ -14,7 +14,8 @@
  *   /traditions?demo=1           the demo family's traditions, read-only
  *
  * The book routes' query works here too (readBookQuery): ?state, ?spread,
- * ?turn, ?focus, ?still, ?debug. Signed out, no family yet, no traditions
+ * ?turn, ?focus, ?still, ?debug; and ?tradition=<id> (or ?memory=<id>)
+ * opens it at that tradition's spread (openAt.ts). Signed out, no family yet, no traditions
  * yet, a family that is not the user's, Stitch out of reach (the demo, with
  * a note) and errors each get the book routes' paper sheet (BookSheet).
  */
@@ -32,6 +33,7 @@ import { hrefs, rememberFamily } from "@/components/flow/session";
 import type { FamilySummary } from "@/lib/types";
 import { kitFor, kitSpecs } from "./kitArt";
 import { loadTraditionsPage, type TraditionsShown } from "./load";
+import { openAtTradition, traditionParam } from "./openAt";
 import type { TraditionBook } from "./traditionBook";
 
 // three.js needs the browser: the book and its kits load on the client only.
@@ -61,6 +63,8 @@ export function TraditionsScreen({ search }: { search: Search }) {
   const { family, demo } = query;
   const run = useCallback((signal: AbortSignal) => loadTraditionsPage({ family, demo }, signal), [family, demo]);
   const { value: shown, retry } = useBookLoad(`traditions|${family ?? ""}|${demo ? 1 : 0}`, run, keepShown);
+  // ?tradition=<id> (as /traditions/new lands here) opens the book at that tradition.
+  const at = traditionParam({ tradition: search.tradition, memory: search.memory });
 
   if (!shown) return <BookLoading />;
   const back = demo ? DEMO_TREE : TREE;
@@ -74,6 +78,7 @@ export function TraditionsScreen({ search }: { search: Search }) {
           families={shown.families}
           canAdd={shown.canAdd}
           initial={query.initial}
+          at={at}
           still={query.still}
           debug={query.debug}
           back={shown.demo === "chosen" ? DEMO_TREE : TREE}
@@ -218,6 +223,8 @@ interface BookViewProps {
   families: FamilySummary[];
   canAdd: boolean;
   initial: ReturnType<typeof readBookQuery>["initial"];
+  /** ?tradition=: the tradition to open at, when the book has it. */
+  at: string | null;
   still: boolean;
   debug: boolean;
   back: { href: string; label: string };
@@ -228,8 +235,10 @@ function TraditionsBookView(props: BookViewProps) {
   // The book a mount opens with is the book it keeps: a reload that prints
   // the same pages (same key) must not reprint them.
   const [book] = useState(props.book);
-  const { familyId, families, canAdd, initial, still, debug, back, note } = props;
+  const { familyId, families, canAdd, still, debug, back, note } = props;
   const spreads = book.spreads;
+  // ?tradition=<id>: open at that tradition's spread, when the book has it.
+  const [initial] = useState(() => openAtTradition(props.initial, spreads, props.at));
 
   const [view, setView] = useState<BookView>(() => ({
     opened: initial.state === "open" || (initial.state !== "closed" && initial.spread != null),

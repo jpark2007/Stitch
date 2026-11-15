@@ -1,5 +1,5 @@
 """Narrate and time: one track with pauses, shots cut on words, bounds kept by moving,
-dropping or (last resort) repeating photos."""
+dropping or holding photos longer (never by showing one twice)."""
 
 import io
 import wave
@@ -10,7 +10,7 @@ from film_checks import assert_well_cut
 from agent.tools.narration import FakeTTS
 from film.narrate import BEAT_PAUSE, LEAD_IN, TTSNarrator, silent_narration
 from film.plan import PlanBeat, PlanShot
-from film.timing import MAX_SHOT, MIN_SHOT, TAIL, check_narration, time_film
+from film.timing import LONG_HOLD, MAX_SHOT, MIN_SHOT, SNAP, TAIL, check_narration, time_film
 from film.types import Narration
 
 
@@ -96,13 +96,34 @@ def test_when_no_beat_has_room_the_lowest_quality_photos_are_dropped():
     assert shown == sorted(shown)
 
 
-def test_long_narration_with_few_photos_repeats_rather_than_holding_past_max():
-    plan = [beat(words(120), "a", "b")]
+def test_long_narration_with_few_photos_holds_them_longer_and_never_repeats_one():
+    # (This used to show a photo again rather than hold past MAX_SHOT. A film never shows
+    # the same photo twice: each is held longer instead, sharing the beat evenly.)
+    plan = [beat(words(100), "a", "b")]
     narration = silent_narration([plan[0].narration])
     cut = time_film(plan, narration, describe("a", "b"))
     assert_well_cut(cut.shots, cut.beats, cut.words, cut.duration, {"a", "b"})
-    assert len(cut.shots) >= cut.duration / MAX_SHOT
-    assert sum(s.caption is not None for s in cut.shots) == 2  # a repeat carries no caption
+    assert [s.photo_id for s in cut.shots] == ["a", "b"]
+    assert all(MAX_SHOT < s.duration <= LONG_HOLD for s in cut.shots)
+    assert abs(cut.shots[0].duration - cut.shots[1].duration) <= 2 * SNAP
+
+
+def test_photos_too_few_for_their_beats_go_where_they_are_needed_most():
+    # One photo each for a short and a long beat, two to spare: both spares go to the long one.
+    plan = [beat(words(10), "a"), beat(words(80), "b", "c", "d")]
+    cut = time_film(plan, silent_narration([b.narration for b in plan]), describe(*"abcd"))
+    assert_well_cut(cut.shots, cut.beats, cut.words, cut.duration, set("abcd"))
+    assert [s.beat for s in cut.shots] == [0, 1, 1, 1]
+    assert max(s.duration for s in cut.shots) > MAX_SHOT
+
+
+def test_a_beat_that_would_hold_a_photo_past_long_hold_shares_its_neighbours_photos():
+    # The second beat's one photo would be held about 29 s: the beats merge and share both.
+    plan = [beat(words(8), "a", title="One"), beat(words(90), "b", title="Two")]
+    cut = time_film(plan, silent_narration([b.narration for b in plan]), describe("a", "b"))
+    assert_well_cut(cut.shots, cut.beats, cut.words, cut.duration, {"a", "b"})
+    assert [b.title for b in cut.beats] == ["One"] and [s.photo_id for s in cut.shots] == ["a", "b"]
+    assert all(s.duration <= LONG_HOLD for s in cut.shots)
 
 
 def test_a_beat_too_short_for_a_shot_merges_into_the_next():
