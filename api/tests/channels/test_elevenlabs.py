@@ -199,7 +199,7 @@ def test_signature_before_json_strict_header_and_body_bound(stack):
     assert client.post(HOOK, content=raw, headers=signed(raw)).status_code == 400
 
 
-@pytest.mark.parametrize("variant", ["assistant_code", "conflicting", "repeat", "redacted", "long", "empty", "wrong_agent", "unfinished", "words"])
+@pytest.mark.parametrize("variant", ["assistant_code", "conflicting", "only_repeat", "redacted", "long", "empty", "wrong_agent", "unfinished", "words"])
 def test_ambiguous_untrusted_or_unbounded_transcript_rejected(stack, variant):
     client, db = stack
     code = pair(client)
@@ -209,7 +209,7 @@ def test_ambiguous_untrusted_or_unbounded_transcript_rejected(stack, variant):
     if variant == "conflicting":
         different = str((int(code[0]) + 1) % 10) + code[1:]
         data["transcript"].append({"role": "user", "message": "STITCH " + different})
-    if variant == "repeat": data["transcript"][2]["message"] = "my code was " + code
+    if variant == "only_repeat": data["transcript"][2]["message"] = " ".join(code) + "."
     if variant == "redacted": data["transcript"][0]["message"] = None
     if variant == "long": data["transcript"][2]["message"] = "中" * 20001
     if variant == "empty": data["transcript"][2]["message"] = " "
@@ -392,14 +392,57 @@ def test_no_homophones_fullwidth_arithmetic_or_narrative(marker):
     assert elevenlabs.pairing_marker(marker) is None
 
 
-@pytest.mark.parametrize("repeat", [
-    "My code was one two three four five six.", "验证码是一二三四五六。",
-    "Again: 123-456", "Again: 1 two 三 4 five 六", "Again: １２３４５６",
+@pytest.mark.parametrize("repeat,kept", [
+    ("My code was one two three four five six.", "My code was [code]."),
+    ("验证码是一二三四五六。", "验证码是[code]。"),
+    ("Again: 123-456", "Again: [code]"), ("Again: 1 two 三 4 five 六", "Again: [code]"),
+    ("Again: １２３４５６", "Again: [code]"), ("Twice: 123456 123456, then ７ apples", "Twice: [code], then ７ apples"),
 ])
-def test_recognized_code_variants_in_prose_are_not_persisted(repeat):
-    payload = event("123456", text=repeat)
-    with pytest.raises(HTTPException):
-        elevenlabs.transcript(json.dumps(payload).encode(), frozenset({"agent_test"}))
+def test_recognized_code_variants_in_prose_are_not_persisted(repeat, kept):
+    payload = event("123456", text="We made dumplings.\n" + repeat)
+    result = elevenlabs.transcript(json.dumps(payload, ensure_ascii=False).encode(), frozenset({"agent_test"}))
+    assert result[3] == "We made dumplings.\n" + kept
+
+
+@pytest.mark.parametrize("story", [
+    "In 1314 the bridge was built.", "她生于一九三一四年。", "Call 555-314-0000, or room ３１４５.",
+    "I was three, one of four children.", "The marker [code] is ordinary text.",
+])
+def test_longer_numbers_containing_the_code_digits_stay_in_the_story(story):
+    payload = event("314", text=story)
+    result = elevenlabs.transcript(json.dumps(payload, ensure_ascii=False).encode(), frozenset({"agent_test"}))
+    assert result[3] == story
+
+
+def test_turn_holding_only_the_code_is_dropped_and_the_story_kept():
+    payload = event("314", text="We made dumplings.")
+    payload["data"]["transcript"].extend([{"role": "user", "message": "3 1 4."},
+                                          {"role": "user", "message": "三一四"}])
+    result = elevenlabs.transcript(json.dumps(payload, ensure_ascii=False).encode(), frozenset({"agent_test"}))
+    assert result[3] == "We made dumplings."
+
+
+def test_one_account_cannot_reserve_codes_without_bound_across_families(stack):
+    client, db = stack
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    now -= timedelta(seconds=int(now.timestamp()) % 900)  # start of a fifteen-minute window
+    families = [("demo_family", "dad"), ("other_family", "other_dad")]
+    family = db.families.find_one({"_id": "demo_family"})
+    family["_id"] = "other_family"
+    db.families.insert_one(family)
+    person = db.people.find_one({"_id": "dad"})
+    person.update(_id="other_dad", familyId="other_family")
+    db.people.insert_one(person)
+    for index in range(conversations.CALL_ISSUES_PER_ACTOR):
+        family, person = families[index % 2]
+        conversations.create_call_pairing(db, family, person, "demo_user_david", now=now + timedelta(seconds=7 * index))
+    for family, person in families:
+        with pytest.raises(conversations.CallRateLimited) as limited:
+            conversations.create_call_pairing(db, family, person, "demo_user_david", now=now + timedelta(seconds=800))
+        assert limited.value.retry_after == 900
+    assert db.channelMessages.count_documents({"kind": "call-code-reservation"}) == conversations.CALL_ISSUES_PER_ACTOR
+    assert conversations.create_call_pairing(db, "demo_family", "mom", "demo_user_ana", now=now + timedelta(seconds=800))
+    assert conversations.create_call_pairing(db, "demo_family", "dad", "demo_user_david", now=now + timedelta(seconds=900))
 
 
 @pytest.mark.parametrize("legacy", ["123456", "123456789012"])
@@ -567,5 +610,7 @@ def test_fullwidth_copy_of_three_digit_code_cannot_leak_in_story(stack):
     client, db = stack
     code = pair(client)
     fullwidth = code.translate(str.maketrans("0123456789", "０１２３４５６７８９"))
-    assert deliver(client, event(code, text="My code was " + fullwidth)).status_code == 400
-    assert db.channelMessages.count_documents({"kind": "call-draft"}) == 0
+    assert deliver(client, event(code, text="My code was " + fullwidth + ", and we had 12 dumplings")).status_code == 200
+    draft = db.channelMessages.find_one({"kind": "call-draft"})
+    assert draft["text"] == "My code was [code], and we had 12 dumplings"
+    assert code not in draft["text"] and fullwidth not in draft["text"]

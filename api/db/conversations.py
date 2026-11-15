@@ -18,6 +18,9 @@ def contact_proof(contact: dict) -> dict | None:
             ("handle", "channel", "spaceId", "spaceKind", "verifiedAt", "optInAt")}
 
 
+CALL_ISSUES_PER_ACTOR = 20 # per fifteen-minute window, across every family
+
+
 class CallConflict(ValueError):
     pass
 
@@ -63,6 +66,10 @@ def create_call_pairing(db, family_id: str, person_id: str, actor_id: str, *, no
     now = now or datetime.now(timezone.utc)
     key = "call-pairing:" + conversation_key(family_id, person_id)
     call_attempt(db, "issue", family_id, family_id=family_id, now=now)
+    # Each issue reserves one of only 1000 codes for fifteen minutes, and the
+    # per-family limit alone lets one account with many families hold most of
+    # them. Two adjacent windows bound one account to 2 * limit live codes.
+    call_attempt(db, "issue-actor", actor_id, limit=CALL_ISSUES_PER_ACTOR, now=now, window_seconds=900)
     previous = db.channelMessages.find_one({"_id": key, "familyId": family_id}, {"tokenHash": 1})
     for _ in range(5):
         code = f"{secrets.randbelow(10**3):03d}"
