@@ -520,6 +520,19 @@ export function variantIn(traditions: readonly Tradition[], tradition: Tradition
   return 0;
 }
 
+/**
+ * The kit variant the book beside the form stands for a tradition being
+ * written: the draft's place among the family's traditions, and the same
+ * once it is saved. A saved one's real id can sort it on either side of an
+ * exact twin (same title, year and kind) that the draft id did not, which
+ * would swap the kit while the page shows it saved; the draft's is held.
+ * The saved one's own only when there is no draft to go by.
+ */
+export function draftVariant(traditions: readonly Tradition[], draft: TraditionDraftPage | null, saved: Tradition | null = null): number {
+  if (draft?.category) return variantIn(traditions, draftTradition(draft));
+  return saved ? variantIn(traditions, saved) : 0;
+}
+
 /** The closing spread: "To be continued", and a few of the family's puppets side by side. */
 export function traditionsEnd(keepers: readonly TraditionPerson[]): BookSpread {
   return {

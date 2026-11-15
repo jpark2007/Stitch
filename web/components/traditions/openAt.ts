@@ -13,7 +13,7 @@
  * none, leaves the view as it was. ?memory= is read the same way, so the
  * book routes' own link works here too.
  *
- * Pure, no imports (openAt.test.ts).
+ * Pure, no imports (tested in draftBook.test.ts).
  */
 
 const enc = encodeURIComponent;

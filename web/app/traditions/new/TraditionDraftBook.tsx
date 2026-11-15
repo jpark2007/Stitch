@@ -28,8 +28,10 @@ import { CATEGORY_OPTIONS, traditionDraftPage, type TraditionDraft } from "@/com
 import { kitFor, kitSpecs } from "@/components/traditions/kitArt";
 import { drawKeepersSnapshot } from "@/components/traditions/snapshot";
 import {
+  DRAFT_TRADITION_ID,
   draftSpread,
   draftTradition,
+  draftVariant,
   keepersOf,
   peopleById,
   traditionSpread,
@@ -135,9 +137,9 @@ export function TraditionDraftBook(props: TraditionDraftBookProps) {
     [keeperIds, known],
   );
 
-  const tradition = useMemo(() => saved ?? (page ? draftTradition(page) : null), [saved, page]);
   const category = saved ? saved.category : (page?.category ?? null);
-  const variant = useMemo(() => (tradition && category ? variantIn(existing, tradition) : 0), [existing, tradition, category]);
+  // The draft's kit, held through the saved beat (draftVariant).
+  const variant = useMemo(() => (category ? draftVariant(existing, page, saved) : 0), [existing, page, saved, category]);
 
   const spread = useMemo<BookSpread | null>(() => {
     const options: TraditionBookOptions = {
@@ -146,7 +148,9 @@ export function TraditionDraftBook(props: TraditionDraftBookProps) {
     if (saved) {
       // The page as saved: its photos are the ones just sent, printed from here.
       options.photoUrl = (id) => prints[saved.photoIds.indexOf(id)]?.url ?? null;
-      return traditionSpread(saved, keepers, options);
+      // Under the draft's spread id still: the book keeps the stage standing
+      // in the slot (a new id would mount it afresh, and the kit rise again).
+      return { ...traditionSpread(saved, keepers, options), id: DRAFT_TRADITION_ID };
     }
     if (!page) return null;
     options.photoUrl = (id) => prints[photoIds.indexOf(id)]?.url ?? null;

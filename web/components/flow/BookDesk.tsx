@@ -201,13 +201,15 @@ export function BookPanel(props: {
  * Book3D (and its loading table) size themselves to the viewport
  * (h-[100dvh]); inside the box they fill the box instead. One spread has no
  * pages to dot through, so its dots are left out, and nothing plays, so there
- * is no mute button.
+ * is no mute button. The book lies open and is not to be clicked: its
+ * "click the book to open it" line (faded out, but still read aloud) goes.
  */
 const BOX_CSS = `
 [data-book-box] > div,
 [data-book-box] [class~="h-[100dvh]"],
 [data-book-box] [class~="min-h-[100dvh]"] { height: 100% !important; min-height: 0 !important; }
 [data-book-box] nav[aria-label="Spreads"] { display: none; }
+[data-book-box] p[class~="bottom-[9vh]"] { display: none; }
 [data-book-box] header button[aria-label="Mute sound"],
 [data-book-box] header button[aria-label="Turn sound on"] { display: none; }
 `;

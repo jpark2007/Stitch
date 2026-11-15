@@ -157,6 +157,8 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
   // Photos already uploaded by an earlier try, so saving again after an
   // error does not upload them twice.
   const uploaded = useRef(new Map<File, string>());
+  // Set once the tradition is saved: the form on this page is spent.
+  const spent = useRef(false);
 
   // The book beside the form reads what the form holds, and the tradition
   // once saved, itself: a keystroke re-renders the book alone, not the page.
@@ -180,16 +182,45 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
         photoIds.push(id);
       }
       const created = await api.createTradition(fid, toCreateTraditionRequest(draft, photoIds));
+      spent.current = true;
       // Beside the form, the book shows the page as saved a moment first
       // (not on a phone, which has no book, nor under reduced motion).
       if (wide && !reduced) {
         saved.set(created);
         await new Promise((resolve) => window.setTimeout(resolve, SAVED_BEAT_MS));
       }
-      router.push(traditionHref(fid, created.id));
+      // Replaced, not pushed: Back from the book goes to wherever the person
+      // was before the form, not to a form already sent.
+      router.replace(traditionHref(fid, created.id));
     },
     [api, fid, router, wide, reduced, saved],
   );
+
+  // A form sent is spent. Should this page be shown again all the same (the
+  // router keeps a page alive while it is away; the browser's back-forward
+  // cache keeps a whole one), it comes back as a fresh form with a blank page
+  // in the book, not "Saving…" and "It's in the book." for ever.
+  const [round, setRound] = useState(0);
+  const fresh = useCallback(() => {
+    if (!spent.current) return;
+    spent.current = false;
+    uploaded.current.clear();
+    saved.set(null);
+    input.set(null);
+    setRound((n) => n + 1);
+  }, [saved, input]);
+  useEffect(() => {
+    // Shown again from the back-forward cache.
+    const onShow = (e: PageTransitionEvent) => {
+      if (e.persisted) fresh();
+    };
+    window.addEventListener("pageshow", onShow);
+    // Put away (the page left, kept alive or not): ready for its return.
+    return () => {
+      window.removeEventListener("pageshow", onShow);
+      fresh();
+    };
+  }, [fresh]);
 
   const familyName = family?.name ?? null;
   const owner = useMemo(
@@ -242,7 +273,7 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
 
   const book = (
     <TraditionDraftBook
-      key={fid}
+      key={`${fid}#${round}`}
       owner={owner}
       cover={cover}
       people={status.persons}
@@ -256,7 +287,7 @@ function NewTraditionFlow(props: { session: SessionValue; familyId: string | nul
     <BookDesk mode="write" book={book} label={BOOK_LABEL}>
       <FlowPage title={TITLE} lede={lede} back={back} width="wide" heading="quiet">
         <AddTraditionForm
-          key={fid}
+          key={`${fid}#${round}`}
           people={status.people}
           selfPersonId={family.personId ?? null}
           onSubmit={onSubmit}

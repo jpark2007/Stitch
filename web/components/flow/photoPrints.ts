@@ -41,8 +41,17 @@ export type PhotoPrint = { url: string; aspect: number };
 const NO_PRINTS: PhotoPrint[] = [];
 
 /**
+ * Print URLs let go of: revoked a beat after their effect ends. A page kept
+ * alive and shown again (Back to it) renders before its effect makes new
+ * prints; it must not hand the book these.
+ */
+const spent = new Set<string>();
+
+/**
  * The page's prints of the first `max` photos, in order (ones that cannot be
- * read are left out). The same array until the photos change.
+ * read are left out). The same array until the photos change, or until the
+ * prints are let go of (the page left), when it is none until they are made
+ * again.
  */
 export function usePhotoPrints(files: readonly File[], max = 2): PhotoPrint[] {
   const [prints, setPrints] = useState<{ files: readonly File[]; out: PhotoPrint[] }>({ files: [], out: NO_PRINTS });
@@ -62,9 +71,13 @@ export function usePhotoPrints(files: readonly File[], max = 2): PhotoPrint[] {
     });
     return () => {
       live = false;
+      for (const u of urls) spent.add(u);
       // Revoked a beat later: the book may still be printing the page with them.
+      // (They stay in `spent`: a few short strings for the page's life.)
       window.setTimeout(() => urls.forEach((u) => URL.revokeObjectURL(u)), 4000);
     };
   }, [files, max]);
-  return prints.files === files ? prints.out : NO_PRINTS;
+  // Read on render, after the effect that may have let them go: never hand
+  // out a print that is gone or going.
+  return prints.files === files && !prints.out.some((p) => spent.has(p.url)) ? prints.out : NO_PRINTS;
 }

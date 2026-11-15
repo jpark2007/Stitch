@@ -80,7 +80,8 @@ export function DraftKit({ category, variant, keepers, reveal, view, size, reduc
 
   useFrame((_, delta) => {
     // A slow frame moves it on as far as the time says; the first frame after a still spell does not jump.
-    const dt = Math.min(delta, 1 / 10);    if (reduced) {
+    const dt = Math.min(delta, 1 / 10);
+    if (reduced) {
       rise.current = 1;
       life.current = 0;
       return;
@@ -104,8 +105,12 @@ export function DraftKit({ category, variant, keepers, reveal, view, size, reduc
     if (moving) invalidate();
   });
 
+  // The people fold first and rise last (the pop-up's order); folded flat
+  // toward the reader they would lie under the set like figures upside
+  // down, so they are hidden until they stand up (hideFolded).
   return (
     <TraditionStage
+      hideFolded
       category={shown.category}
       variant={shown.variant}
       keepers={keepers}
