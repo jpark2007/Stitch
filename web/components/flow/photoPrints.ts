@@ -3,8 +3,8 @@
 // Photo files as the book prints them: each shrunk once to a small image
 // (big enough for the print, small enough to redraw fast) and handed to the
 // book as blob: URLs this hook owns, revoked when the photos change and when
-// the book goes. Shared by the "add" pages' books (BookDesk.tsx); /add's
-// CraftingBook has its own copy, to move here.
+// the book goes. Shared by the "add" pages' books (/add's CraftingBook and
+// /traditions/new's TraditionDraftBook).
 import { useEffect, useState } from "react";
 
 /** Longest side of a photo as printed on the page, px. */

@@ -10,6 +10,7 @@ import { Button } from "@/components/flow/Button";
 import { SelectField, TextField } from "@/components/flow/Field";
 import { FormError } from "@/components/flow/FormError";
 import { ChannelSettingsError, createSettingsClient } from "./client";
+import { CallInterviews } from "./CallInterviews";
 import { preferenceError, preferencesFor, statusDescription, validHandle } from "./settings";
 import type { ChannelContact, Enrollment, Preferences } from "./settings";
 
@@ -26,7 +27,7 @@ function SettingsScreen() {
   const router = useRouter();
   const requested = search.get("family");
   const family = requested ? me.families.find(f => f.id === requested) : me.families[0];
-  return <FlowPage title="Stories by message" width="wide"
+  return <FlowPage title="Stories by message & phone" width="wide"
     back={{ href: family ? `/families/${encodeURIComponent(family.id)}/settings` : "/", label: "Family settings" }}
     lede="Let family stories begin with a message. Each person chooses whether to take part.">
     {me.families.length > 1 && <div className="mb-7"><SelectField label="Family" value={family?.id ?? ""}
@@ -67,6 +68,7 @@ function FamilyContacts({ family }: { family: FamilySummary }) {
       {people.map(p => <option key={p.id} value={p.id}>{p.name}{p.userId === me.user.id ? " (you)" : ""}</option>)}
     </SelectField> : <p className="font-display text-xl">{person?.name}’s messaging account</p>}
     {person && <ContactPanel key={person.id} familyId={family.id} person={person} />}
+    {person?.userId === me.user.id && <CallInterviews familyId={family.id} personId={person.id} personName={person.name} />}
   </div>;
 }
 

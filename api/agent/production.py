@@ -10,16 +10,23 @@ the agent, so the API needs no startup hook. Each service is picked from env var
     MONGODB_URI            checkpoints, /memories/ and the run records on MongoDB
                            (studio.mongo_persistence), so runs survive a restart; unset, or
                            STITCH_FAKE_DB truthy: in memory, and runs are lost on restart
-    IMAGE_PROVIDER         "higgsfield" or "openai" picks the image provider; unset: Higgsfield
-                           when HIGGSFIELD_API_KEY is set, else OpenAI when IMAGE_API_KEY is
-                           set, else placeholder art (null art + color); an unknown value warns
-                           and uses that default rule (agent.adapters.image_provider). The
-                           services line names it: art=higgsfield, art=openai, art=placeholder
+    IMAGE_PROVIDER         "higgsfield", "cloudflare" or "openai" picks the image provider;
+                           unset: Higgsfield when HIGGSFIELD_API_KEY is set, else Cloudflare
+                           when CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are both set,
+                           else OpenAI when IMAGE_API_KEY is set, else placeholder art (null
+                           art + color); an unknown value warns and uses that default rule
+                           (agent.adapters.image_provider). The services line names it:
+                           art=higgsfield, art=cloudflare, art=openai, art=placeholder
     HIGGSFIELD_API_KEY     Higgsfield art (HiggsfieldImageModel): the key ID, with
     HIGGSFIELD_API_SECRET  its secret (or id:secret in the key); HIGGSFIELD_API_URL,
                            HIGGSFIELD_IMAGE_MODEL, HIGGSFIELD_STYLE_SUFFIX and
                            HIGGSFIELD_RESULT_HOSTS are optional (agent/adapters/higgsfield.py);
                            a missing secret or unknown model logs an error, placeholder art
+    CLOUDFLARE_ACCOUNT_ID  Cloudflare Workers AI art (CloudflareImageModel): the account ID
+    CLOUDFLARE_API_TOKEN   and an API token with Workers AI Read and Edit; CLOUDFLARE_API_URL,
+                           CLOUDFLARE_IMAGE_MODEL and CLOUDFLARE_STYLE_SUFFIX are optional
+                           (agent/adapters/cloudflare.py); a bad account ID, token or unknown
+                           model logs an error, placeholder art
     IMAGE_API_KEY          OpenAI-compatible art (OpenAIImageModel; IMAGE_API_URL, IMAGE_MODEL)
     ELEVENLABS_API_KEY     real narration voices; unset: FakeTTS (silent audio, real timings)
     STITCH_WEB_URL         render_frames screenshots the web /render/[memoryId] page with
@@ -91,11 +98,13 @@ from agent import studio
 from agent.adapters import (
     AlphaAwareRemover,
     AnthropicVision,
+    CloudflareImageModel,
     ElevenLabsTTS,
     HiggsfieldImageModel,
     OpenAIImageModel,
     choose_image_provider,
 )
+from agent.adapters.cloudflare import config_problem as cloudflare_config_problem
 from agent.adapters.higgsfield import config_problem as higgsfield_config_problem
 from agent.adapters.image_provider import PROVIDER_ENV
 from agent.guards import RunLimits, RunUsage, env_value
@@ -209,7 +218,13 @@ def _image_model() -> tuple[ImageModel | None, str]:
         if problem:
             logger.error("image art: Higgsfield is selected but %s; using placeholder art", problem)
             return None, "placeholder"
-    build = HiggsfieldImageModel if choice.provider == "higgsfield" else OpenAIImageModel
+    if choice.provider == "cloudflare":
+        problem = cloudflare_config_problem()
+        if problem:
+            logger.error("image art: Cloudflare is selected but %s; using placeholder art", problem)
+            return None, "placeholder"
+    builders = {"higgsfield": HiggsfieldImageModel, "cloudflare": CloudflareImageModel}
+    build = builders.get(choice.provider, OpenAIImageModel)
     try:
         return build(), choice.provider
     except Exception as exc:  # noqa: BLE001 - e.g. a non-ASCII character pasted into a key: degrade, never stop
@@ -223,7 +238,7 @@ def _image_model() -> tuple[ImageModel | None, str]:
 
 
 def _art_service(limits: RunLimits, usage: RunUsage) -> tuple[ArtService, str]:
-    """The art service and its label: 'higgsfield', 'openai' or 'placeholder'."""
+    """The art service and its label: 'higgsfield', 'cloudflare', 'openai' or 'placeholder'."""
     remover = AlphaAwareRemover()
     image_model, label = _image_model()
     if image_model is None:

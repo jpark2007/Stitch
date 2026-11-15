@@ -35,12 +35,16 @@ export const FIELD_LABEL_CLASS = "block text-[0.9375rem] leading-snug font-mediu
  * A details row: from sm up, the label in a narrow left column and the
  * control beside it, every row's label column the same width so the controls
  * line up; on a phone the label sits on its own line above. Labels sit level
- * with the first 44px line of their control.
+ * with the first 44px line of their control. In a narrow column that is a
+ * size container (the book desk's writing beside its book, under 34rem) the
+ * label sits above, as on a phone; with no container (every other page) the
+ * container rules never apply.
  */
-export const FIELD_ROW_CLASS = "sm:grid sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-start sm:gap-x-6";
+export const FIELD_ROW_CLASS =
+  "sm:grid sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-start sm:gap-x-6 @max-[34rem]:grid-cols-1 @max-[34rem]:gap-y-1";
 
 /** A label in a details row's left column. */
-export const FIELD_ROW_LABEL_CLASS = `${FIELD_LABEL_CLASS} sm:flex sm:min-h-11 sm:items-center`;
+export const FIELD_ROW_LABEL_CLASS = `${FIELD_LABEL_CLASS} sm:flex sm:min-h-11 sm:items-center @max-[34rem]:min-h-0`;
 
 /** The quiet "(optional)" after a label. */
 export const FIELD_OPTIONAL_CLASS = "ml-1.5 font-normal text-ink-soft";

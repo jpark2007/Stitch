@@ -24,8 +24,10 @@ cut to DETAIL_CHARS.
   messages.create with max_tokens=1 on the studio model (so billing and credit are checked).
 - Image API, by the provider agent.production picks (IMAGE_PROVIDER, agent.adapters.image_provider):
   Higgsfield: POST {HIGGSFIELD_API_URL}/estimate/{HIGGSFIELD_IMAGE_MODEL} with a minimal body (a
-  price estimate: no image is generated); OpenAI-compatible: GET {IMAGE_API_URL}/models/{IMAGE_MODEL}
-  (no generation, no cost).
+  price estimate: no image is generated); Cloudflare: GET {CLOUDFLARE_API_URL}/accounts/{id}/ai/models/search
+  for the configured model (a model listing: proves the token, the account and the model; no
+  image, no Neurons); OpenAI-compatible: GET {IMAGE_API_URL}/models/{IMAGE_MODEL} (no generation,
+  no cost).
 - ElevenLabs: GET /v1/voices/{id} for the default voice and each mapped voice.
 - MongoDB: a ping with serverSelectionTimeoutMS=5000 (the family database, unless STITCH_FAKE_DB).
 - Render page (STITCH_WEB_URL set): agent.tools.frames.probe_render_page. 'contract' passes;
@@ -59,6 +61,7 @@ import httpx
 from dotenv import load_dotenv
 
 from agent import guards
+from agent.adapters import cloudflare as cf_adapter
 from agent.adapters import higgsfield as hf_adapter
 from agent.adapters import image_provider
 from agent.adapters import images as images_adapter
@@ -100,6 +103,8 @@ SECRET_ENVS: tuple[str, ...] = (
     images_adapter.API_KEY_ENV,
     hf_adapter.API_KEY_ENV,
     hf_adapter.API_SECRET_ENV,
+    cf_adapter.TOKEN_ENV,
+    cf_adapter.ACCOUNT_ENV,
     tts_adapter.API_KEY_ENV,
     "MONGODB_URI",
     "MONGODB_URI_TEST",
@@ -137,6 +142,11 @@ ENV_NAMES: tuple[str, ...] = (
     hf_adapter.MODEL_ENV,
     hf_adapter.STYLE_ENV,
     hf_adapter.RESULT_HOSTS_ENV,
+    cf_adapter.ACCOUNT_ENV,
+    cf_adapter.TOKEN_ENV,
+    cf_adapter.URL_ENV,
+    cf_adapter.MODEL_ENV,
+    cf_adapter.STYLE_ENV,
     images_adapter.API_KEY_ENV,
     images_adapter.URL_ENV,
     images_adapter.MODEL_ENV,
@@ -646,9 +656,11 @@ def _image_url(env: Mapping[str, str]) -> str:
 
 
 def art_label(env: Mapping[str, str]) -> str:
-    """agent.production's art label: 'higgsfield', 'openai' or 'placeholder' (same rule)."""
+    """agent.production's art label: 'higgsfield', 'cloudflare', 'openai' or 'placeholder' (same rule)."""
     choice = image_provider.choose_image_provider(env)
     if choice.provider == "higgsfield" and hf_adapter.config_problem(env):
+        return "placeholder"
+    if choice.provider == "cloudflare" and cf_adapter.config_problem(env):
         return "placeholder"
     return choice.provider
 
@@ -870,6 +882,46 @@ def _hf_vars(env: Mapping[str, str], selected: bool) -> list[VarReport]:
     return [key, secret, url, model, style, hosts_var]
 
 
+def _demote(var: VarReport, problem: str, severity: str) -> None:
+    var.problem, var.severity = problem, severity
+    var.shown = var.shown.replace(", format ok", "")
+
+
+def _cf_vars(env: Mapping[str, str], selected: bool) -> list[VarReport]:
+    """The Cloudflare variables: account ID and token as length and format only, the rest shown."""
+    severity = "error" if selected else "warning"
+    account = _secret_var(env, cf_adapter.ACCOUNT_ENV)
+    account_value = _stripped(env, cf_adapter.ACCOUNT_ENV)
+    if account_value and not account.problem:
+        if problem := cf_adapter.account_problem(account_value):
+            _demote(account, problem, severity)
+        elif cf_adapter.account_looks_unusual(account_value):
+            _demote(account, "Cloudflare account IDs are 32 lowercase hex characters; check it was copied whole", "warning")
+    token = _secret_var(env, cf_adapter.TOKEN_ENV)
+    token_value = _stripped(env, cf_adapter.TOKEN_ENV)
+    if token_value and not token.problem and (problem := cf_adapter.token_problem(token_value)):
+        _demote(token, problem, severity)
+    if bool(account_value) != bool(token_value):
+        missing = account if not account_value else token
+        other = cf_adapter.TOKEN_ENV if not account_value else cf_adapter.ACCOUNT_ENV
+        missing.problem = f"needed with {other} (both come from the dashboard: Workers AI, Use REST API)"
+        missing.severity = severity
+    url = _url_var(env, cf_adapter.URL_ENV, cf_adapter.DEFAULT_URL)
+    if url.set and not url.problem and (problem := cf_adapter.url_problem(cf_adapter.configured_base_url(env))):
+        url.problem, url.severity = problem, severity
+    model = _model_var(env, cf_adapter.MODEL_ENV, cf_adapter.DEFAULT_MODEL)
+    if model.set and not model.problem and cf_adapter.configured_model(env) not in cf_adapter.MODELS:
+        model.problem = f"not a supported model; use one of: {', '.join(cf_adapter.MODELS)}"
+        model.severity = severity
+    style_raw = env.get(cf_adapter.STYLE_ENV)
+    if style_raw is None or not style_raw.strip():
+        style = VarReport(cf_adapter.STYLE_ENV, False, _unset(style_raw, repr(cf_adapter.DEFAULT_STYLE_SUFFIX)))
+    else:
+        suffix = cf_adapter.configured_style_suffix(env)
+        style = VarReport(cf_adapter.STYLE_ENV, True, repr(_cut(suffix, 120)) if suffix else "none (no suffix)")
+    return [account, token, url, model, style]
+
+
 def _openai_vars(env: Mapping[str, str]) -> list[VarReport]:
     effective_url = _image_url(env)
     openai_default = effective_url == images_adapter.DEFAULT_URL.rstrip("/")
@@ -890,10 +942,18 @@ def _openai_vars(env: Mapping[str, str]) -> list[VarReport]:
 def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceReport:
     choice = image_provider.choose_image_provider(env)
     hf_selected = choice.provider == "higgsfield"
+    cf_selected = choice.provider == "cloudflare" or (
+        (_stripped(env, image_provider.PROVIDER_ENV) or "").lower() == "cloudflare"
+    )
     report = ServiceReport(
         "art",
         labels["art"],
-        [_provider_var(env, choice), *_hf_vars(env, hf_selected), *_openai_vars(env)],
+        [
+            _provider_var(env, choice),
+            *_hf_vars(env, hf_selected),
+            *_cf_vars(env, cf_selected),
+            *_openai_vars(env),
+        ],
     )
     budget = RunLimits.from_env(env).max_images_per_run
     budget_fallback = (
@@ -914,6 +974,23 @@ def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceRep
             "the docs do not name the host results are served from: a result on a host outside "
             f"{hf_adapter.RESULT_HOSTS_ENV}'s list is refused (the error names the host to add)"
         )
+    elif labels["art"] == "cloudflare":
+        model = cf_adapter.configured_model(env)
+        url = redact_url(cf_adapter.configured_base_url(env))
+        report.summary = (
+            f"generated prop and set art on Cloudflare Workers AI ({model} at {url}), at most {budget} image(s) a run"
+        )
+        report.fallback = (
+            f"{budget_fallback}; and for every image once the account's free 10,000 Neurons a day are used "
+            "up (Workers AI error 3036), until they reset at 00:00 UTC"
+        )
+        if model == cf_adapter.DEFAULT_MODEL:
+            report.notes.append(
+                "a 1024x1024 image on flux-2-klein-4b costs about 104 Neurons (4 output tiles at 26.05), so the "
+                "free allowance draws about 96 a day (see agent/README.md)"
+            )
+        if not cf_adapter.MODELS[model].references:
+            report.notes.append(f"{model} takes no reference image: references are ignored")
     elif labels["art"] == "openai":
         model = _image_model(env)
         report.summary = (
@@ -924,6 +1001,11 @@ def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceRep
         # The key or model variable above carries the error.
         problem = hf_adapter.config_problem(env)
         report.summary = f"Higgsfield is selected ({choice.reason}) but {problem}: placeholder art"
+        report.fallback = FALLBACKS["art"]
+    elif choice.provider == "cloudflare":
+        # The account, token, URL or model variable above carries the error.
+        problem = cf_adapter.config_problem(env)
+        report.summary = f"Cloudflare is selected ({choice.reason}) but {problem}: placeholder art"
         report.fallback = FALLBACKS["art"]
     else:
         report.summary = f"placeholder art ({choice.reason})"
@@ -1189,7 +1271,51 @@ def art_label_reason(env: Mapping[str, str]) -> str:
     choice = image_provider.choose_image_provider(env)
     if choice.provider == "higgsfield":
         return hf_adapter.config_problem(env) or choice.reason
+    if choice.provider == "cloudflare":
+        return cf_adapter.config_problem(env) or choice.reason
     return choice.reason
+
+
+def _live_cloudflare(http: httpx.Client, env: Mapping[str, str], guarded: Any) -> LiveResult:
+    """GET /accounts/{id}/ai/models/search?search=<model>: proves the token (Workers AI Read), the
+    account and that the model is offered, with no generation (no Neurons)."""
+    creds = cf_adapter.credentials(env)
+    model = cf_adapter.configured_model(env)
+    if creds is None or cf_adapter.config_problem(env):
+        return LiveResult("skipped", "fix the Cloudflare errors above first")
+    account, token = creds
+    base = cf_adapter.configured_base_url(env)
+    short = model.rsplit("/", 1)[-1]
+
+    def search() -> tuple[str, str]:
+        # No redirects: the token must only ever go to the configured API host.
+        response = http.get(
+            f"{base}{cf_adapter.search_path(account)}",
+            params={"search": short, "per_page": 50},
+            headers=cf_adapter.authorization(token),
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            try:
+                body = response.text
+            except Exception:  # noqa: BLE001 - a body that cannot be read is just not shown
+                body = ""
+            raise _HTTPFail(f"HTTP {response.status_code}: {body}")
+        try:
+            result = response.json().get("result")
+        except Exception:  # noqa: BLE001
+            result = None
+        names = {item.get("name") for item in result if isinstance(item, dict)} if isinstance(result, list) else set()
+        if model in names:
+            return "pass", f"200, {model} is offered (a model listing: no image generated)"
+        if names:
+            # The search answer's fields are not documented: a miss is a warning, not a failure.
+            return "warn", f"200, but {model} is not among the {len(names)} model(s) the search returned"
+        return "pass", "200 (a model listing: no image generated; the answer listed no model names to check)"
+
+    ok, answer = guarded(search)
+    status, text = answer if ok else ("fail", answer)
+    return LiveResult(status, f"GET /accounts/<{cf_adapter.ACCOUNT_ENV}>/ai/models/search: {text}")
 
 
 def _live_higgsfield(http: httpx.Client, env: Mapping[str, str], guarded: Any) -> LiveResult:
@@ -1242,6 +1368,8 @@ def _live_http(by_name: dict[str, ServiceReport], env: Mapping[str, str], seams:
         art_mode = by_name["art"].mode
         if art_mode == "higgsfield":
             by_name["art"].live = _live_higgsfield(http, env, guarded)
+        elif art_mode == "cloudflare":
+            by_name["art"].live = _live_cloudflare(http, env, guarded)
         elif art_mode != "openai" or art_key is None:
             by_name["art"].live = LiveResult("skipped", f"placeholder art ({art_label_reason(env)})")
         else:

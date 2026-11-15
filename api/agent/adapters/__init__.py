@@ -3,7 +3,9 @@
 - ``AnthropicVision``: ``agent.tools.photos.VisionModel`` (Claude vision).
 - ``OpenAIImageModel``: ``agent.tools.art.ImageModel`` (an OpenAI-compatible images API).
 - ``HiggsfieldImageModel``: ``agent.tools.art.ImageModel`` (the Higgsfield API: submit, poll,
-  download). ``choose_image_provider`` picks between the two (``IMAGE_PROVIDER``).
+  download).
+- ``CloudflareImageModel``: ``agent.tools.art.ImageModel`` (Cloudflare Workers AI, one synchronous
+  call). ``choose_image_provider`` picks among the three (``IMAGE_PROVIDER``).
 - ``ElevenLabsTTS``: ``agent.tools.narration.TTS`` (speech with word timings).
 - ``AlphaAwareRemover``: ``agent.tools.art.BackgroundRemover`` (local, Pillow only).
 
@@ -26,6 +28,11 @@ docstring has the details):
                        each call min(30 s, time left), connect  key) and only when the wait fits
                        min(10 s, time left); download checked   the deadline; never after a
                        between chunks                           request id
+    CloudflareImage-   120 s for the whole generate (every      2, only for no connection, HTTP
+    Model              attempt and wait); each call min(90 s,   408, a 429 that is not the daily
+                       time left), connect min(10 s, time       allowance, or 5xx, and only when
+                       left); the answer checked between        the wait fits the deadline
+                       chunks
     ElevenLabsTTS     30 s read/write, 10 s connect            2, same rules
 
 Every wait before a retry is capped at ``images.MAX_BACKOFF_S`` (8 s), whatever the provider's
@@ -40,6 +47,7 @@ timings (``agent.tools.narration``), a photo or frame critique skipped
 with no network; when it raises, the cutout is a placeholder too.
 """
 
+from agent.adapters.cloudflare import CloudflareImageModel
 from agent.adapters.cutout import AlphaAwareRemover
 from agent.adapters.higgsfield import HiggsfieldImageModel
 from agent.adapters.image_provider import ImageProviderChoice, choose_image_provider
@@ -50,6 +58,7 @@ from agent.adapters.vision import AnthropicVision
 __all__ = [
     "AlphaAwareRemover",
     "AnthropicVision",
+    "CloudflareImageModel",
     "ElevenLabsTTS",
     "HiggsfieldImageModel",
     "ImageProviderChoice",

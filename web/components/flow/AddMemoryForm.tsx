@@ -402,6 +402,8 @@ export function AddMemoryForm(props: {
           {secondTellingOf ? null : (
             <PersonPicker
               layout="row"
+              // Names with their thread dot, as the tradition form sets them (light, on the book desk's table).
+              appearance="plain"
               legend="Who was there?"
               people={people}
               value={draft.participantIds}
