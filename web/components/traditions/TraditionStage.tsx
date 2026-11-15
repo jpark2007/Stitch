@@ -59,7 +59,17 @@ export interface TraditionStageProps {
   view: { readonly current: number };
   /** The slot, world units [width, depth]. */
   size: readonly [number, number];
+  /**
+   * Hide each person while they lie folded flat (before they rise, after
+   * they fold): seen from above, a puppet folded toward the reader reads as
+   * a figure upside down. For a kit raised and folded in front of the reader
+   * (the book beside the add-a-tradition form); off by default.
+   */
+  hideFolded?: boolean;
 }
+
+/** How far a person has risen before they show, with hideFolded. */
+const SHOW_FROM = 0.55;
 
 /** The page's centre line in slot space (the slot sits toward the fore-edge). */
 const CENTRE_X = PAGE_W / 2 - STAGE_SLOT.x;
@@ -82,7 +92,7 @@ function placementOf(kit: Kit, i: number, count: number): PiecePlacement {
   return { height: p.height, x: p.x, z: p.z, yaw: p.yaw ?? 0, order: i, count, vfold: p.vfold ?? 0 };
 }
 
-export function TraditionStage({ category, variant = 0, keepers, reveal, view, size }: TraditionStageProps) {
+export function TraditionStage({ category, variant = 0, keepers, reveal, view, size, hideFolded = false }: TraditionStageProps) {
   const kit = kitFor(category, variant);
   const standing = keepers.slice(0, Math.min(MAX_STANDING, kit.stand.length));
   // Every piece and puppet rises in turn: the kit back to front, then the people.
@@ -128,6 +138,7 @@ export function TraditionStage({ category, variant = 0, keepers, reveal, view, s
             order={kit.pieces.length + i}
             count={count}
             phase={i * 2.1}
+            hideFolded={hideFolded}
           />
         ))}
       </PopUp>
@@ -156,7 +167,21 @@ function KeepDrawing({ reveal, view }: { reveal: { readonly current: number }; v
  * flat on the page toward the reader, standing once the kit has stood.
  * Facing the middle of the scene, with a slow breath of a sway.
  */
-function Keeper({ person, at, order, count, phase }: { person: TraditionPerson; at: readonly [number, number]; order: number; count: number; phase: number }) {
+function Keeper({
+  person,
+  at,
+  order,
+  count,
+  phase,
+  hideFolded,
+}: {
+  person: TraditionPerson;
+  at: readonly [number, number];
+  order: number;
+  count: number;
+  phase: number;
+  hideFolded: boolean;
+}) {
   const { rise } = usePopUp();
   const now = useStageTime();
   const hinge = useRef<Group>(null);
@@ -172,6 +197,7 @@ function Keeper({ person, at, order, count, phase }: { person: TraditionPerson; 
     const r = rise(order, count, t, 0.8);
     const g = hinge.current;
     if (g) {
+      if (hideFolded) g.visible = r >= SHOW_FROM;
       g.rotation.x = Math.min(1, 1 - r) * (Math.PI / 2);
       g.position.y = 0.004 * (1 - Math.min(1, r));
     }

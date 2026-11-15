@@ -4,6 +4,7 @@
 // lands. Erasable TypeScript only.
 // The one runtime import (./validation) is extensionless for the Next build;
 // __tests__/traditionForm.test.mjs adds a resolve hook so `node --test` finds it.
+import type { TraditionDraftPage } from "@/components/traditions/traditionBook";
 import type { CreateTraditionRequest, TraditionWhen } from "@/lib/types";
 import { mergeServerErrors, validateYear, type FieldErrors } from "./validation";
 
@@ -223,6 +224,59 @@ export function toCreateTraditionRequest(d: TraditionDraft, photoIds: readonly s
   const year = d.startedYear.trim();
   if (year) body.startedYear = Number(year);
   return body;
+}
+
+// ---------------------------------------------------------------------------
+// The page in the book beside the form
+
+/**
+ * Whether the form still holds only what it started with (the author ticked
+ * under "Who takes part?", nothing else): the book beside it shows a blank
+ * page, not a snapshot of the author alone.
+ */
+export function traditionDraftIsBlank(d: TraditionDraft, selfPersonId: string | null, photoCount = 0): boolean {
+  const start = selfPersonId ? [selfPersonId] : [];
+  const people = uniqueIds(d.participantIds);
+  return (
+    !d.title.trim() &&
+    !d.description.trim() &&
+    !d.category &&
+    !d.kind &&
+    !d.label.trim() &&
+    !d.startedYear.trim() &&
+    photoCount === 0 &&
+    people.length === start.length &&
+    people.every((id, i) => id === start[i])
+  );
+}
+
+/**
+ * The draft as the book's builder reads a tradition being written
+ * (traditionBook.ts draftSpread): trimmed as it will be sent, a month only
+ * where one makes sense, a year only once it is a whole, valid one (not "19"
+ * on the way to "1962"), and nobody keeping it while the form is blank.
+ * `photoIds` name the photos for the builder's photoUrl.
+ */
+export function traditionDraftPage(
+  d: TraditionDraft,
+  selfPersonId: string | null,
+  photoIds: readonly string[] = [],
+): TraditionDraftPage {
+  const year = d.startedYear.trim();
+  const blank = traditionDraftIsBlank(d, selfPersonId, photoIds.length);
+  return {
+    title: d.title.trim(),
+    description: d.description.trim(),
+    category: d.category,
+    when: {
+      kind: d.kind,
+      label: d.label.trim() || null,
+      month: monthMakesSense(d.kind) ? monthNumber(d.month) : null,
+    },
+    participantIds: blank ? [] : uniqueIds(d.participantIds),
+    photoIds,
+    startedYear: /^\d{4}$/.test(year) && !validateYear(year, { min: START_YEAR_MIN }) ? Number(year) : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
