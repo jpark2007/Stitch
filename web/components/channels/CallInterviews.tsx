@@ -98,7 +98,7 @@ function CallPanel({ familyId, personId, personName }: { familyId: string; perso
       {!pairing && <><p className="text-sm leading-relaxed">Create a code to save your spoken words as a private draft. You review it before adding anything to your family book.</p>
         <Button busy={busy} onClick={() => void act("pair")}>Agree and create call code</Button></>}
       {pairing && <div className="space-y-4">
-        <p className="text-sm">At the start, say <strong>“STITCH”</strong>, then read these {pairing.code.replaceAll("-", "").length === 6 ? "six" : "twelve"} digits <strong>one at a time</strong>:</p>
+        <p className="text-sm">At the start, say <strong>“STITCH”</strong>, then read these {pairing.code.length === 3 ? "three" : pairing.code.replaceAll("-", "").length === 6 ? "six" : "twelve"} digits <strong>one at a time</strong>:</p>
         <code className="block select-all break-words font-mono text-2xl tracking-wider sm:text-3xl"><span aria-hidden="true">STITCH {pairing.code}</span><span className="sr-only">STITCH {pairing.code.replaceAll("-", "").split("").join(" ")}</span></code>
         <p className="text-sm text-ink-soft">Read the digits in English or Chinese. Then tell your story.</p>
         {pairing.phoneNumber ? <a className={`inline-flex min-h-11 items-center justify-center rounded-card bg-accent-deep px-5 py-2.5 font-semibold text-paper-light ${FOCUS_RING}`} href={`tel:${pairing.phoneNumber}`}>Call {pairing.phoneNumber}</a>
