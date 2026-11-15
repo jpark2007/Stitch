@@ -49,6 +49,23 @@ def configuration() -> Configuration:
     return Configuration(secret.encode(), agents, number)
 
 
+def auto_target() -> tuple[str, str, int] | None:
+    """The demo host's one teller: STITCH_CHANNELS_CALL_AUTO=<familyId>:<personId>:<year>.
+
+    Unset (the default) keeps spoken codes and private drafts. Set, every signed
+    call from an allowed agent becomes that person's memory in that year with no
+    code and no review, so anyone who reaches the number adds to their book. It
+    is for a supervised demo only.
+    """
+    raw = os.getenv("STITCH_CHANNELS_CALL_AUTO")
+    if not raw:
+        return None
+    match = re.fullmatch(r"([A-Za-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64}):([0-9]{4})", raw)
+    if not match:
+        raise HTTPException(503, "Call interviews are not configured")
+    return match[1], match[2], int(match[3])
+
+
 def signature_fields(header: str | None, *, now=None) -> tuple[str, str]:
     if not isinstance(header, str) or len(header) > 256:
         raise HTTPException(401, "Invalid webhook authentication")
@@ -114,7 +131,8 @@ def without_code(message: str, code: str) -> str | None:
     return kept if kept.replace(CODE_MARKER, "").strip(PAIRING_EDGE_PUNCTUATION + " \t\r\n") else None
 
 
-def transcript(raw: bytes, allowed_agents: frozenset[str]) -> tuple[str, str, str, str, int | None]:
+def transcript(raw: bytes, allowed_agents: frozenset[str], *,
+               require_code: bool = True) -> tuple[str, str, str | None, str, int | None]:
     try:
         event = json.loads(raw.decode("utf-8"), object_pairs_hook=_object,
                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Invalid JSON")))
@@ -143,6 +161,12 @@ def transcript(raw: bytes, allowed_agents: frozenset[str]) -> tuple[str, str, st
                 pairing.append(marker)
             else:
                 users.append(message)
+        if not require_code:
+            # Automatic mode: a code spoken out of habit is dropped, never needed.
+            text = "\n".join(users)
+            if not text.strip() or len(text) > MAX_TEXT:
+                raise ValueError()
+            return agent, conversation_id, None, text, None
         if not pairing or len(set(pairing)) != 1:
             raise ValueError()
         code = pairing[0]
@@ -158,6 +182,27 @@ def transcript(raw: bytes, allowed_agents: frozenset[str]) -> tuple[str, str, st
         return agent, conversation_id, code, text, call_started_at
     except (ValueError, KeyError, TypeError, UnicodeError, RecursionError):
         raise HTTPException(400, "Call transcript or pairing unavailable") from None
+
+
+def start_automatic_add(db, agent: str, conversation_id: str, target: tuple[str, str, int],
+                        text: str, content_hash: str) -> None:
+    """Start the studio run for one call exactly once; a provider retry starts nothing."""
+    family_id, person_id, year = target
+    row = conversations.begin_auto_call(db, agent, conversation_id, family_id, person_id, content_hash)
+    if row is None:
+        return
+    try:
+        import schemas
+        from agent.runs import start_run
+        run_id = start_run(family_id, row["actorId"], person_id,
+                           schemas.SubmitMemoryFields(text=text, year=year, channel="voice"), [])
+        if not isinstance(run_id, str) or not run_id:
+            raise RuntimeError("No run id")
+    except Exception:
+        # Free the call so the provider's retry can start it; log no transcript.
+        conversations.abandon_auto_call(db, row["_id"], family_id)
+        raise HTTPException(503, "Call interviews are not configured") from None
+    conversations.finish_auto_call(db, row["_id"], family_id, run_id)
 
 
 @router.post("/elevenlabs/post-call")
@@ -183,7 +228,22 @@ async def post_call(request: Request):
         raise HTTPException(408, "Webhook read timed out") from None
     body = bytes(raw)
     verify_signature(body, header, config.secret)
-    agent, conversation_id, code, text, call_started_at = transcript(body, config.agents)
+    target = auto_target()
+    agent, conversation_id, code, text, call_started_at = transcript(
+        body, config.agents, require_code=target is None)
+    if target is not None:
+        if getattr(request.app.state, "agent_mode", None) == "off":
+            raise HTTPException(503, "Call interviews are not configured")
+        try:
+            await run_in_threadpool(start_automatic_add, get_db(), agent, conversation_id,
+                                    target, text, hashlib.sha256(body).hexdigest())
+        except LookupError:
+            raise HTTPException(503, "Call interviews are not configured") from None
+        except conversations.CallConflict:
+            raise HTTPException(409, "Call binding unavailable") from None
+        except conversations.CallRateLimited as exc:
+            raise HTTPException(429, "Try again shortly", headers={"Retry-After": str(exc.retry_after)}) from None
+        return {"received": True}
     try:
         def accept():
             return conversations.accept_call_transcript(get_db(), agent, conversation_id,

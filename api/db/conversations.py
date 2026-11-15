@@ -19,6 +19,7 @@ def contact_proof(contact: dict) -> dict | None:
 
 
 CALL_ISSUES_PER_ACTOR = 20 # per fifteen-minute window, across every family
+CALL_AUTO_PER_WINDOW = 10  # automatic demo adds per fifteen minutes, whole deployment
 
 
 class CallConflict(ValueError):
@@ -186,6 +187,58 @@ def accept_call_transcript(db, agent_id: str, conversation_id: str, code: str,
                                       {"$set": {"status": "revoked"}, "$unset": {"text": ""}})
         raise
     return False
+
+
+def begin_auto_call(db, agent_id: str, conversation_id: str, family_id: str, person_id: str,
+                    content_hash: str, *, now=None) -> dict | None:
+    """Reserve one provider call for the demo host's configured teller.
+
+    Returns the reservation when a run must be started, None for a repeat of a
+    call already taken. The person must be linked to a current member; the run
+    is started as that user. No transcript is stored here.
+    """
+    now = now or datetime.now(timezone.utc)
+    key = "call-run:" + hashlib.sha256(json.dumps([agent_id, conversation_id], separators=(",", ":")).encode()).hexdigest()
+    existing = db.channelMessages.find_one({"_id": key, "kind": "call-run"})
+    if existing:
+        if existing.get("contentHash") != content_hash:
+            raise CallConflict("Call identity conflict")
+        return None
+    call_attempt(db, "auto-bind", "elevenlabs", limit=CALL_AUTO_PER_WINDOW, now=now, window_seconds=900)
+    person = db.people.find_one({"_id": person_id, "familyId": family_id}, {"userId": 1})
+    actor_id = (person or {}).get("userId")
+    if not isinstance(actor_id, str) or not actor_id:
+        raise LookupError("Call person unavailable")
+    row = {"_id": key, "kind": "call-run", "familyId": family_id,
+           **call_person_proof(db, family_id, person_id, actor_id),
+           "contentHash": content_hash, "status": "starting", "createdAt": now}
+    try:
+        db.channelMessages.insert_one(row)
+    except DuplicateKeyError:
+        return None
+    return row
+
+
+def finish_auto_call(db, key: str, family_id: str, run_id: str) -> None:
+    db.channelMessages.update_one({"_id": key, "kind": "call-run", "familyId": family_id, "status": "starting"},
+                                  {"$set": {"status": "started", "runId": run_id}})
+
+
+def abandon_auto_call(db, key: str, family_id: str) -> None:
+    db.channelMessages.delete_one({"_id": key, "kind": "call-run", "familyId": family_id, "status": "starting"})
+
+
+def latest_call_run(db, family_id: str, actor_id: str) -> dict | None:
+    """The newest run a call started for this user's own person, if they still hold it."""
+    rows = db.channelMessages.find({"kind": "call-run", "familyId": family_id,
+                                    "actorId": actor_id, "status": "started"}).sort("createdAt", -1).limit(1)
+    for row in rows:
+        try:
+            _call_proof_current(db, row)
+        except LookupError:
+            return None
+        return row
+    return None
 
 
 def list_call_drafts(db, family_id: str, actor_id: str) -> list[dict]:
