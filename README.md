@@ -75,6 +75,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how it is built and [DESIGN.md](DESIG
 
 ## Running locally
 
+Just want to see the demo? Skip to **Start the offline demo** under [Using the app](#using-the-app); it needs no MongoDB or API keys.
+
 Requires Node 20+, Python 3.12+, and [uv](https://docs.astral.sh/uv/).
 
 ```bash
@@ -129,7 +131,7 @@ Open **http://localhost:3000**, not `127.0.0.1:3000`, because the session cookie
 
 **Ask the family (`/ask`).** Type a question or pick a suggestion. The answer opens on the page it comes from, and the closest other pages are listed below it. `?q=` makes a question shareable, for example `/ask?q=how did mom and dad meet`.
 
-**Add a memory (`/add`).** Pick a question or tell any story, then add a year, photos and who was there. **Save this memory** and watch the studio's plan tick through as it turns the memory into a scene. If it asks a follow-up question ("Who else was there that day?"), answer it and the run carries on. In the offline demo the run is scripted.
+**Add a memory (`/add`).** Pick a question or tell any story, then add a year, photos and who was there. **Save this memory** and watch the studio's plan tick through as it turns the memory into a scene. If it asks a follow-up question ("Who else was there that day?"), answer it and the run carries on. It then pauses once more at **The things in your story**: rename or remove anything it got wrong, then press **Looks good, keep going**. In the offline demo the run is scripted.
 
 **Films (`/films`).** The family's photo films. **Make a film** starts a new one.
 
