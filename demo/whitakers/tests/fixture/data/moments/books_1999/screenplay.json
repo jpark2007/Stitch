@@ -1,0 +1,183 @@
+{
+  "memoryId": "books_1999",
+  "cast": [
+    "dev",
+    "cleo"
+  ],
+  "props": [
+    "tester_books"
+  ],
+  "shots": [
+    {
+      "id": "s1",
+      "set": "tester_steps",
+      "marks": {
+        "steps_left": [
+          0.2,
+          0.0
+        ],
+        "steps_foot": [
+          0.5,
+          0.0
+        ],
+        "steps_top": [
+          0.6,
+          0.3
+        ],
+        "curb": [
+          0.9,
+          0.0
+        ]
+      },
+      "start": {
+        "dev": {
+          "at": "offstage_left",
+          "facing": "right"
+        },
+        "cleo": {
+          "at": "steps_top",
+          "holding": "tester_books",
+          "facing": "left"
+        }
+      },
+      "camera": [
+        {
+          "t": 0,
+          "move": "wide"
+        },
+        {
+          "t": 5.5,
+          "move": "dolly_to",
+          "target": "cleo",
+          "dur": 3
+        }
+      ],
+      "actions": [
+        {
+          "t": 0,
+          "who": "dev",
+          "do": "enter",
+          "from": "offstage_left",
+          "to": "steps_left"
+        },
+        {
+          "t": 3.25,
+          "who": "cleo",
+          "do": "drop",
+          "what": "tester_books",
+          "id": "drop"
+        },
+        {
+          "t": 3.6,
+          "who": "dev",
+          "do": "walk_to",
+          "to": "steps_foot"
+        },
+        {
+          "t": 5.5,
+          "who": "dev",
+          "do": "pick_up",
+          "what": "tester_books"
+        },
+        {
+          "t": 6.6,
+          "who": "dev",
+          "do": "hand_to",
+          "what": "tester_books",
+          "to": "cleo",
+          "id": "hand_back"
+        },
+        {
+          "t": 7.7,
+          "who": "cleo",
+          "do": "pose",
+          "pose": "bow_head"
+        }
+      ],
+      "narration": [
+        {
+          "t": 0,
+          "text": "I saw her at the top of the porch steps…",
+          "source": "telling:dev:s2"
+        },
+        {
+          "t": 2.5,
+          "text": "…and then she dropped every single library book.",
+          "source": "telling:dev:s3",
+          "cue": "drop",
+          "cueWord": "dropped"
+        },
+        {
+          "t": 6.35,
+          "text": "I handed them back, and she wouldn't even look at me.",
+          "source": "telling:dev:s4",
+          "cue": "hand_back",
+          "cueWord": "handed"
+        }
+      ],
+      "transition": "fold",
+      "pageText": "One spring day in 1999, a stack of library books fell on the porch steps."
+    }
+  ],
+  "narrations": {
+    "cleo": {
+      "s1": [
+        {
+          "t": 0,
+          "text": "I was carrying far too many library books.",
+          "source": "telling:cleo:s1"
+        },
+        {
+          "t": 2.0,
+          "text": "And of course they went everywhere, right in front of him.",
+          "source": "telling:cleo:s2",
+          "cue": "drop",
+          "cueWord": "everywhere"
+        },
+        {
+          "t": 6.35,
+          "text": "He handed them back so carefully. I couldn't look up.",
+          "source": "telling:cleo:s3",
+          "cue": "hand_back",
+          "cueWord": "handed"
+        }
+      ]
+    }
+  },
+  "interactions": [
+    {
+      "id": "drop_books",
+      "kind": "pull_tab",
+      "label": "Pull to drop the books",
+      "shot": "s1",
+      "page": "stage",
+      "at": [
+        0.85,
+        0.82
+      ],
+      "drives": {
+        "type": "scrub",
+        "from": 3.25,
+        "to": 3.55,
+        "targets": [
+          "prop:tester_books",
+          "puppet:cleo"
+        ]
+      }
+    }
+  ],
+  "explanations": [
+    {
+      "target": "puppet:dev",
+      "text": "Dev was visiting a friend next door."
+    },
+    {
+      "target": "puppet:cleo",
+      "text": "Cleo had borrowed far too many books."
+    },
+    {
+      "target": "prop:tester_books",
+      "text": "The library books Cleo dropped."
+    }
+  ]
+}
