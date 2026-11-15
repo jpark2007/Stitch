@@ -119,7 +119,7 @@ html:has([data-desk]) body { background-color: transparent; }
   box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.55), 0 0 0 1px rgb(243 230 207 / 0.28);
 }
 [data-desk-writing] ${FIELD}:hover { box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.55), 0 0 0 1px rgb(243 230 207 / 0.5); }
-[data-desk-writing] ${FIELD}:focus { outline: none; box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.55), 0 0 0 2px #f2b394; }
+[data-desk-writing] ${FIELD}:focus { outline: 2px solid #f2b394; outline-offset: 0; box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.55); }
 [data-desk-writing] ${FIELD}[aria-invalid="true"] { box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.55), 0 0 0 1.5px #ffab95; }
 
 [data-desk] [data-flow-page] { padding-left: 1rem; padding-right: 1rem; }

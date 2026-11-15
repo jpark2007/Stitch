@@ -553,7 +553,9 @@ function ChoiceLine<T extends string>(props: {
                     aria-invalid={error && i === 0 ? true : undefined}
                     onChange={() => onChange(o.value)}
                   />
-                  <ChosenText checked={checked}>{o.label}</ChosenText>
+                  <ChosenText checked={checked} text={o.label}>
+                    {o.label}
+                  </ChosenText>
                 </label>
               </li>
             );
