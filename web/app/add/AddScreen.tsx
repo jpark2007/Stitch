@@ -14,6 +14,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { loadMomentPage } from "@/app/memories/[id]/moment";
+import { BookDesk, useWideDesk } from "@/components/flow/BookDesk";
 import { ButtonLink } from "@/components/flow/Button";
 import { CraftingBook, EMPTY_PAGE, type CraftInput, type DraftPage } from "@/components/flow/CraftingBook";
 import {
@@ -46,7 +47,6 @@ import type { MemoryRunTelling } from "@/components/flow/MemoryRun";
 import { hrefs, recallFamily, rememberFamily } from "@/components/flow/session";
 import { isApiError, isMockMode } from "@/lib/api";
 
-import { AddDesk, useWideDesk } from "./AddDesk";
 import { AddForm, AddLoadFailed, LOAD_ERROR, messageOf, type FormPreview, type StartedRun } from "./AddForm";
 import { AddRun } from "./AddRun";
 import {
@@ -70,9 +70,9 @@ const BOOK_LABEL = "Your book";
 export function AddLoading(props: { kind?: "new" | "second" | "run" }) {
   const { kind = "new" } = props;
   return (
-    <AddDesk mode={kind === "run" ? "run" : "write"} book={null}>
+    <BookDesk mode={kind === "run" ? "run" : "write"} book={null} label={BOOK_LABEL}>
       <AddLoadingPage kind={kind} />
-    </AddDesk>
+    </BookDesk>
   );
 }
 
@@ -433,8 +433,8 @@ function AddFlow(props: {
   }
 
   return (
-    <AddDesk mode={run ? "run" : "write"} book={family && fid ? book : null}>
+    <BookDesk mode={run ? "run" : "write"} book={family && fid ? book : null} label={BOOK_LABEL}>
       {content}
-    </AddDesk>
+    </BookDesk>
   );
 }

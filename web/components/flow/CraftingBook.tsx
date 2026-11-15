@@ -19,9 +19,13 @@
 // One WebGL canvas at a time: the crafting book unmounts before the moment's
 // book mounts. In mock mode there is no saved scene to play, so the crafted
 // page stays.
+//
+// The box it lies in, its caption and the page's keys are the desk's
+// (BookDesk.tsx, shared with the tradition book); its photos print through
+// photoPrints.ts.
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import type { BookControls } from "@/components/book/Book3D";
 import type { BookShown } from "@/components/book/moment/MomentBook";
@@ -31,6 +35,7 @@ import type { StageSlotArgs } from "@/components/book/StoryPage";
 import type { BookCover, BookPhoto, BookSpread } from "@/components/book/types";
 import { preloadScene } from "@/components/stage/play";
 
+import { BookPanel, TableNote, useDebounced, usePrefersReducedMotion } from "./BookDesk";
 import { FOCUS_RING } from "./Button";
 import { warmCraftPieces } from "./craftPieces";
 import {
@@ -48,17 +53,7 @@ import {
   type CraftScene,
   type Watch,
 } from "./crafting";
-
-const TABLE_BG = "#1a110b";
-
-/** A quiet line on the table while a book is brought out. */
-function TableNote({ children }: { children: ReactNode }) {
-  return (
-    <div className="grid h-full w-full place-items-center" style={{ background: TABLE_BG }}>
-      <p className="font-hand text-2xl text-[#f3e6cf]/55">{children}</p>
-    </div>
-  );
-}
+import { usePhotoPrints } from "./photoPrints";
 
 // three.js needs the browser: the books load on the client only.
 const Book3D = dynamic(() => import("@/components/book/Book3D").then((m) => m.Book3D), {
@@ -109,91 +104,6 @@ export interface CraftingBookProps {
   } | null;
   /** "side": the panel beside the page (desktop). "preview": a small still picture in the page (a phone). */
   placement: "side" | "preview";
-}
-
-const subscribeMotion = (cb: () => void) => {
-  const m = window.matchMedia("(prefers-reduced-motion: reduce)");
-  m.addEventListener("change", cb);
-  return () => m.removeEventListener("change", cb);
-};
-const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-export function usePrefersReducedMotion(): boolean {
-  return useSyncExternalStore(subscribeMotion, reducedMotion, () => false);
-}
-
-/** The latest value, `ms` after it last changed (at once when `ms` is 0). */
-function useDebounced<T>(value: T, ms: number): T {
-  const [shown, setShown] = useState(value);
-  useEffect(() => {
-    if (ms <= 0) return;
-    const t = window.setTimeout(() => setShown(value), ms);
-    return () => window.clearTimeout(t);
-  }, [value, ms]);
-  return ms <= 0 ? value : shown;
-}
-
-/** Longest side of a photo as printed on the page, px: big enough for the print, small enough to redraw fast. */
-const PHOTO_PX = 640;
-const shrunk = new WeakMap<File, Promise<{ blob: Blob; aspect: number } | null>>();
-
-/** A photo file as a small image for the page (made once per file; the blob goes when the file does). */
-function shrinkPhoto(file: File): Promise<{ blob: Blob; aspect: number } | null> {
-  let hit = shrunk.get(file);
-  if (!hit) {
-    hit = (async () => {
-      try {
-        const bitmap = await createImageBitmap(file);
-        const s = Math.min(1, PHOTO_PX / Math.max(bitmap.width, bitmap.height));
-        const w = Math.max(1, Math.round(bitmap.width * s));
-        const h = Math.max(1, Math.round(bitmap.height * s));
-        const c = document.createElement("canvas");
-        c.width = w;
-        c.height = h;
-        c.getContext("2d")?.drawImage(bitmap, 0, 0, w, h);
-        bitmap.close();
-        const blob = await new Promise<Blob | null>((r) => c.toBlob(r, "image/jpeg", 0.85));
-        return blob ? { blob, aspect: Math.min(1.6, Math.max(0.7, w / h)) } : null;
-      } catch {
-        return null;
-      }
-    })();
-    shrunk.set(file, hit);
-  }
-  return hit;
-}
-
-type Print = { url: string; aspect: number };
-const NO_PRINTS: Print[] = [];
-
-/**
- * The page's prints of the photos, in order (missing ones left out), as
- * blob: URLs this hook owns: revoked when the photos change and when the book
- * goes.
- */
-function usePhotoPrints(files: readonly File[]): Print[] {
-  const [prints, setPrints] = useState<{ files: readonly File[]; out: Print[] }>({ files: [], out: NO_PRINTS });
-  useEffect(() => {
-    let live = true;
-    const urls: string[] = [];
-    Promise.all(files.slice(0, 2).map(shrinkPhoto)).then((all) => {
-      if (!live) return;
-      const out = all
-        .filter((p): p is { blob: Blob; aspect: number } => p !== null)
-        .map((p) => {
-          const url = URL.createObjectURL(p.blob);
-          urls.push(url);
-          return { url, aspect: p.aspect };
-        });
-      setPrints({ files, out: out.length ? out : NO_PRINTS });
-    });
-    return () => {
-      live = false;
-      // Revoked a beat later: the book may still be printing the page with them.
-      window.setTimeout(() => urls.forEach((u) => URL.revokeObjectURL(u)), 4000);
-    };
-  }, [files]);
-  return prints.files === files ? prints.out : NO_PRINTS;
 }
 
 const castCards = new Map<string, string>();
@@ -401,40 +311,11 @@ export function CraftingBook({ owner, page: pageWatch, run, placement }: Craftin
     controls?.setFocus(look);
   }, [controls, look]);
 
-  // The page's keys stay the page's. Book3D listens on the window for the
-  // arrows, PageUp/PageDown, Space, Enter and Escape (to turn and open its
-  // pages) and cancels their default action; on /add they must scroll the
-  // page and press the focused button as anywhere else. This listener runs
-  // after React's own (at its root) and before the window's, so it stops
-  // only the book's. The made moment's book is held the same way: on this
+  // The page's keys stay the page's (BookPanel keeps the book's window key
+  // handlers off them). The made moment's book is held the same way: on this
   // page its two spreads are not worth losing the keyboard's scrolling for,
   // and its tellings and pull tabs keep their own focusable controls.
-  useEffect(() => {
-    const keep = (e: KeyboardEvent) => {
-      if (BOOK_KEYS.has(e.key)) e.stopPropagation();
-    };
-    document.addEventListener("keydown", keep);
-    return () => document.removeEventListener("keydown", keep);
-  }, []);
 
-  // The canvas says nothing to assistive tech (the caption does): hide each
-  // one the books draw into, as it appears.
-  const boxRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const box = boxRef.current;
-    if (!box) return;
-    const hide = () =>
-      box.querySelectorAll("canvas:not([aria-hidden])").forEach((c) => {
-        c.setAttribute("aria-hidden", "true");
-        c.setAttribute("tabindex", "-1");
-      });
-    hide();
-    const mo = new MutationObserver(hide);
-    mo.observe(box, { childList: true, subtree: true });
-    return () => mo.disconnect();
-  }, []);
-
-  const preview = placement === "preview";
   // Built only when what it shows changes, so a keystroke that does not
   // reprint the page does not render (or draw) the book at all.
   const book = useMemo(
@@ -466,91 +347,37 @@ export function CraftingBook({ owner, page: pageWatch, run, placement }: Craftin
     [playing, moment, back, spreads, cover, initial, renderStage],
   );
 
-  const caption = scene ? scene.caption : null;
   const done = scene?.stage === "done" && scene.memoryId;
   return (
-    <div
-      className={`flex w-full flex-col ${preview ? "overflow-hidden rounded-paper shadow-lift" : "h-full justify-center"}`}
-      style={preview ? { background: TABLE_BG } : undefined}
-      data-crafting-stage={scene?.stage ?? "writing"}
-    >
-      <div
-        className={`relative w-full overflow-hidden ${preview ? "aspect-[4/3]" : "aspect-square max-h-[calc(100dvh-9rem)]"}`}
-        style={{ background: TABLE_BG }}
-      >
-        <style href="stitch-crafting-book" precedence="default">
-          {BOX_CSS}
-        </style>
-        <div
-          ref={boxRef}
-          data-craft-box={preview ? "preview" : "side"}
-          // Nothing plays until the made moment does: no mute button till then.
-          data-craft-quiet={playing ? undefined : ""}
-          // A preview is a picture: nothing in it to reach or press.
-          inert={preview}
-          className="absolute inset-0"
-        >
-          {book}
-        </div>
-        {/* The table runs on past the picture's edges. */}
-        <div aria-hidden className="pointer-events-none absolute inset-0" style={EDGES} />
-      </div>
-      <div className={`flex flex-col items-center px-6 text-center ${preview ? "min-h-[4.75rem] pt-1 pb-3" : "min-h-[7rem] pt-1"}`}>
-        {run ? (
-          <p
-            role="status"
-            aria-live="polite"
-            className={`font-hand leading-tight text-balance text-[#f3e6cf]/90 ${preview ? "text-[1.35rem]" : "text-[1.75rem]"}`}
-          >
-            {caption}
-          </p>
-        ) : (
-          <p className={`font-hand leading-tight text-[#f3e6cf]/55 ${preview ? "text-xl" : "text-2xl"}`}>
-            your page fills in as you write
-          </p>
-        )}
-        {scene?.note ? <p className="mt-1 text-sm leading-snug text-[#f3e6cf]/65">{scene.note}</p> : null}
-        {/* The way into the page is the feed's one button; under the book, only the way back to the teller's book. */}
-        {done && run ? (
+    <BookPanel
+      placement={placement}
+      stage={scene?.stage ?? "writing"}
+      // The run's progress line is the screen reader's news; the hint while writing only sits there.
+      live={run !== null}
+      quiet={run === null}
+      caption={run ? (scene ? scene.caption : null) : "your page fills in as you write"}
+      note={scene?.note || null}
+      // Nothing plays until the made moment does: no mute button till then.
+      sound={playing}
+      after={
+        // The way into the page is the feed's one button; under the book, only the way back to the teller's book.
+        done && run ? (
           <Link
             href={bookHref}
             className={`mt-2 inline-flex min-h-11 items-center rounded-paper px-1 text-[0.95rem] font-medium text-[#f3e6cf]/85 underline decoration-1 underline-offset-[0.25em] hover:decoration-2 ${FOCUS_RING}`}
           >
             Back to your book
           </Link>
-        ) : null}
-      </div>
-    </div>
+        ) : null
+      }
+    >
+      {book}
+    </BookPanel>
   );
 }
-
-/*
- * The book on /add lies in a box on the page, not across the whole window as
- * on the book routes: Book3D (and MomentBook's loading table) size themselves
- * to the viewport (h-[100dvh]), so inside the box they fill the box instead.
- * One spread has no pages to dot through, so its dots are left out. A preview
- * (a phone) has nothing to press, and the page scrolls over it.
- */
-const BOX_CSS = `
-[data-craft-box] > div,
-[data-craft-box] [class~="h-[100dvh]"],
-[data-craft-box] [class~="min-h-[100dvh]"] { height: 100% !important; min-height: 0 !important; }
-[data-craft-box] nav[aria-label="Spreads"] { display: none; }
-[data-craft-box="preview"] { pointer-events: none; }
-[data-craft-box="preview"] header { display: none; }
-[data-craft-quiet] header button[aria-label="Mute sound"],
-[data-craft-quiet] header button[aria-label="Turn sound on"] { display: none; }
-`;
-
-/** The keys Book3D's window listener turns and opens its pages with (Book3D.tsx, onKey). */
-const BOOK_KEYS = new Set(["ArrowRight", "ArrowLeft", "PageDown", "PageUp", "Escape", "Enter", " "]);
 
 /** The made moment opens on its spread; its scene's own camera leans into the pop-up. */
 const MOMENT_OPEN = { state: "open", spread: 1 } as const;
 
 const NO_SUBSCRIBE = () => () => {};
 const NO_INPUT = () => null;
-
-const EDGES = {
-  background: `linear-gradient(to bottom, ${TABLE_BG} 0%, transparent 9%, transparent 90%, ${TABLE_BG} 100%), linear-gradient(to right, ${TABLE_BG} 0%, transparent 7%, transparent 93%, ${TABLE_BG} 100%)`,
-} as const;
