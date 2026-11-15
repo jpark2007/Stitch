@@ -94,16 +94,19 @@ function CallPanel({ familyId, personId, personName }: { familyId: string; perso
       <p className="mt-2 font-medium">{personName} · linked to your account</p>
       <p className="mt-2 text-sm leading-relaxed text-ink-soft">Tell your story by phone, then review your words here. Calls are separate from iMessage; no messaging opt-in is needed.</p></div>
     {!unavailable && <div className="space-y-4 rounded-paper border border-rule bg-paper-deep p-4 sm:p-5">
-      <h3 className="font-display text-xl">Start with a private code</h3>
-      <p className="text-sm leading-relaxed">By creating a code, you agree to save your spoken words as a private draft for review. Nothing is added to the family book automatically.</p>
-      <Button busy={busy} onClick={() => void act("pair")}>{pairing ? "Replace call code" : "Agree and create call code"}</Button>
-      {pairing && <div className="space-y-3 border-t border-rule pt-4">
-        <p className="text-sm">At the start of the call, say <strong>“STITCH” followed by these twelve digits</strong>, one digit at a time:</p>
-        <code className="block select-all break-words font-mono text-xl tracking-wider sm:text-2xl">STITCH {pairing.code}</code>
-        <p className="text-sm text-ink-soft">Use once, before {new Date(pairing.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" })}. Keep this code private. Replacing it cancels the previous unused code.</p>
-        {pairing.phoneNumber ? <a className={`inline-flex min-h-11 items-center font-semibold text-accent-deep underline ${FOCUS_RING}`} href={`tel:${pairing.phoneNumber}`}>Call {pairing.phoneNumber}</a>
+      <h3 className="font-display text-xl">{pairing ? "Your code for this call" : "Start with a private code"}</h3>
+      {!pairing && <><p className="text-sm leading-relaxed">Create a code to save your spoken words as a private draft. You review it before adding anything to your family book.</p>
+        <Button busy={busy} onClick={() => void act("pair")}>Agree and create call code</Button></>}
+      {pairing && <div className="space-y-4">
+        <p className="text-sm">At the start, say <strong>“STITCH”</strong>, then read these {pairing.code.replaceAll("-", "").length === 6 ? "six" : "twelve"} digits <strong>one at a time</strong>:</p>
+        <code className="block select-all break-words font-mono text-2xl tracking-wider sm:text-3xl"><span aria-hidden="true">STITCH {pairing.code}</span><span className="sr-only">STITCH {pairing.code.replaceAll("-", "").split("").join(" ")}</span></code>
+        <p className="text-sm text-ink-soft">Read the digits in English or Chinese. Then tell your story.</p>
+        {pairing.phoneNumber ? <a className={`inline-flex min-h-11 items-center justify-center rounded-card bg-accent-deep px-5 py-2.5 font-semibold text-paper-light ${FOCUS_RING}`} href={`tel:${pairing.phoneNumber}`}>Call {pairing.phoneNumber}</a>
           : <p className="text-sm">Ask your family organizer for the Stitch interview number.</p>}
-        <p className="text-sm text-ink-soft">After you hang up, return here and refresh your drafts. A draft can take a little time to arrive.</p>
+        <p className="text-sm text-ink-soft">Keep it private · use once · expires {new Date(pairing.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" })}.</p>
+        <p className="text-sm text-ink-soft">After the call, refresh your drafts below. Your words may take a moment to arrive.</p>
+        <Button variant="quiet" busy={busy} onClick={() => void act("pair")}>Replace call code</Button>
+        <p className="text-sm text-ink-soft">Replacing this code cancels the unused one above.</p>
       </div>}
     </div>}
     <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-display text-xl">Your call drafts</h3><Button ref={refreshButton} variant="secondary" disabled={busy} onClick={() => void act("refresh")}>Refresh drafts</Button></div>

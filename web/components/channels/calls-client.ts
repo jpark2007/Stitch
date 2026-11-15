@@ -39,7 +39,7 @@ export function createCallsClient(baseUrl: string, fetcher: typeof fetch = fetch
   return {
     async pair(fid: string, pid: string, signal?: AbortSignal): Promise<CallPairing> {
       const d = (await request(fid, `people/${encodeURIComponent(pid)}/call-pairing`, "POST", signal))!;
-      if (typeof d.code !== "string" || !/^\d{4}-\d{4}-\d{4}$/.test(d.code) || d.personId !== pid || !date(d.expiresAt)
+      if (typeof d.code !== "string" || !/^(?:\d{3}-\d{3}|\d{4}-\d{4}-\d{4})$/.test(d.code) || d.personId !== pid || !date(d.expiresAt)
           || typeof d.instruction !== "string" || !(d.phoneNumber === null || (typeof d.phoneNumber === "string" && /^\+[1-9]\d{7,14}$/.test(d.phoneNumber)))) throw new CallSettingsError(0);
       return { code: d.code, expiresAt: d.expiresAt, personId: pid, instruction: d.instruction, phoneNumber: d.phoneNumber };
     },

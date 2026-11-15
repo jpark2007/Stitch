@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createCallsClient, CallSettingsError } from "./calls-client.ts";
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status });
-const pairing = { code: "1234-5678-9012", personId: "p/name", expiresAt: "2030-01-01T00:00:00Z", instruction: "Say STITCH", phoneNumber: "+12292875827" };
+const pairing = { code: "012-345", personId: "p/name", expiresAt: "2030-01-01T00:10:00Z", instruction: "Say STITCH", phoneNumber: "+12292875827" };
 const draft = { id: "draft/one", personId: "p/name", createdAt: "2026-11-15T00:00:00Z", text: "小时候，奶奶教我包饺子。" };
 
 test("pairing uses cookie-authenticated no-store POST and keeps code out of URL", async () => {
@@ -37,10 +37,16 @@ test("delete uses encoded ID and accepts an empty 204 response", async () => {
 });
 
 test("malformed pairing cannot inject a phone link or wrong identity", async () => {
-  for (const bad of [{ phoneNumber: "javascript:alert(1)" }, { code: "1234" }, { expiresAt: "invalid" }, { personId: "other" }]) {
+  for (const bad of [{ phoneNumber: "javascript:alert(1)" }, ...["1234", "123456", "12-3456", "123-4567", "１２３-４５６"].map(code => ({ code })), { expiresAt: "invalid" }, { personId: "other" }]) {
     const c = createCallsClient("", async () => json({ ...pairing, ...bad }));
     await assert.rejects(c.pair("f", "p/name"), CallSettingsError);
   }
+});
+
+test("legacy twelve-digit tickets keep their server-provided expiry", async () => {
+  const legacy = { ...pairing, code: "0123-4567-8901", expiresAt: "2030-01-01T01:00:00Z" };
+  const c = createCallsClient("", async () => json(legacy));
+  assert.deepEqual(await c.pair("f", "p/name"), legacy);
 });
 
 test("errors are bounded UI messages without leaking response content", async () => {
