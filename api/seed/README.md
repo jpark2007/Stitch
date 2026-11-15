@@ -87,6 +87,9 @@ on code changes under `api/`). `--help` lists them.
   `Port 3000 is in use ..., using available port 3001 instead`. The API only allows
   `localhost:3000` and `127.0.0.1:3000`; stop the other web server, or allow the new
   origin: `STITCH_CORS_ORIGINS=http://localhost:3000,http://localhost:3001 uv run python -m seed.serve`.
+- **Run the web app on another port on purpose**: `npm run dev -- -p 3011` in `web/` with
+  `NEXT_PUBLIC_API_URL` pointing at the API (e.g. `NEXT_PUBLIC_API_URL=http://localhost:8001`),
+  and start the API with `STITCH_CORS_ORIGINS=http://localhost:3011` so it allows that origin.
 - **It never needs MongoDB, Docker or keys.** It sets `STITCH_FAKE_DB=1` and leaves
   `STITCH_AGENT` alone, so runs are scripted even when a `.env` holds an
   `ANTHROPIC_API_KEY` (set `STITCH_AGENT=real` yourself to try the model studio on the
@@ -153,7 +156,8 @@ The stage demo starts with a full tree and books. `seed/demo.py` creates the dem
 - Seven moments from 1958 to 2019, every one with a **compiled scene** (screenplay and
   timeline), so every book opens on playable pages. They are listed in
   [The scenes](#the-scenes) below.
-- The props and sets those scenes use, all with placeholder art (`art` null, a `color`).
+- The props and sets those scenes use, with placeholder art (`art` null, a `color`) unless
+  a hand-made image is in `seed/demo_family/art/` (see [Hand-made art](#hand-made-art)).
 - Open questions that ask a participant who has not told a moment yet for their version,
   and one general prompt. See [Demo accounts and their questions](#demo-accounts-and-their-questions).
 - Five traditions for the Book of Family Traditions (`GET /families/demo_family/traditions`,
@@ -276,6 +280,7 @@ Everything the scenes are made of is plain JSON in `seed/demo_family/`:
 | `<memoryId>.screenplay.json` | One hand-authored `Screenplay` per moment (`api/screenplay/schema.py`; conventions in `shared/CONTRACTS.md`). `sample_hymn_books.screenplay.json` is a copy of `web/public/samples/hymn_books.screenplay.json`; adjust the copy here, never the sample. |
 | `props.json` | The family's props (`schemas.Prop`): size, aspect, anchor, grip, sockets (seats, table tops, the car's `driver`, `passenger` and `back_seat`), parts (spinning wheels, a pot lid) and states. |
 | `sets.json` | The family's sets (`schemas.SetDef`): paper layers and named marks `[u, h]`. |
+| `art/` | Optional hand-made PNGs for those props and set layers (see [Hand-made art](#hand-made-art)). Empty: every prop and layer draws its placeholder. |
 
 The moments' titles, years, participants and tellings, and the seeded questions, are in
 `seed/demo.py` (`EXTRA_MEMORIES`, `DEMO_QUESTIONS`; the hymn-book memory comes from the
@@ -346,6 +351,31 @@ that turns to day once the 1958 rain has passed, and dusk falling on the 2019 pa
 Nothing authored is ever left out of the stored screenplay. An effect that cannot be
 placed (say `at` names someone not on stage) fails the seed like any other `CompileError`.
 `test_seed_scenes.py` checks that every authored effect is in the stored timeline.
+
+### Hand-made art
+
+Drop PNGs into `seed/demo_family/art/`, bake them once from `api/`, and commit the baked
+PNGs with `art.json`:
+
+```sh
+uv run python -m seed.demo --bake-art
+```
+
+Names: `<propId>.png` for a prop's body, `<propId>.<artKey>.png` for its other art keys (a
+part such as `green_sedan.wheel.png`, or the art a state switches to such as
+`black_umbrella.open.png`), and `<setId>.back.png` / `.middle.png` / `.front.png` for set
+layers; the full rules are in [`demo_family/art/README.md`](demo_family/art/README.md). The
+bake cuts each file out like studio art, rewrites it in place in final form and records
+its slot, size and a sha256 in `art/art.json`. Art never changes a prop's rig: a body
+image is placed, unscaled, on a transparent canvas of the prop's authored aspect
+(bottom-aligned, centred), so a much wider or taller drawing sits small in its box and the
+scenes stage exactly as authored. It reports files it cannot use (and symlinks), and exits
+1 if there were any. The next seed (`seed.serve` start, or `python -m seed.demo --reset`)
+reads only `art.json` and the bytes (no image work, nothing from `agent/`), stores each
+file as a `cutout` under a fixed media id (`seed.demo.demo_art_media_id`) and draws it
+instead of the placeholder. A PNG that was not baked or changed since is a warning naming
+it and the bake command, and keeps its placeholder; nothing stops the seed.
+`tests/data/test_seed_demo_art.py` covers it.
 
 ## Preflight a real MongoDB
 

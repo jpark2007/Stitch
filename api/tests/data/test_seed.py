@@ -32,6 +32,29 @@ SAMPLE = schemas.MemoryResponse.model_validate_json(
 SAMPLE_RAW = json.loads((REPO_DIR / "web/public/samples/hymn_books.memory.json").read_text())
 
 
+def same_but_art(stored: schemas.Prop | schemas.SetDef, authored: schemas.Prop | schemas.SetDef) -> bool:
+    """`stored` equals `authored` except for what a baked image in seed/demo_family/art/ sets:
+    art refs (the keys stay, and each ref set is that file's fixed id,
+    seed.demo.demo_art_media_id). Art never changes a prop's rig."""
+    if isinstance(stored, schemas.Prop):
+        for key, ref in stored.art.items():
+            assert ref is None or ref == media_db.media_ref(demo.demo_art_media_id(stored.id, key)), (stored.id, key)
+        exclude = {"art"}
+        return (sorted(stored.art) == sorted(authored.art)
+                and stored.model_dump(exclude=exclude) == authored.model_dump(exclude=exclude))
+    names = {0: "back", 1: "middle", 2: "front"}
+    for layer in stored.layers:
+        assert layer.art is None or layer.art == media_db.media_ref(
+            demo.demo_art_media_id(stored.id, names[int(layer.depth)])), (stored.id, layer.depth)
+    exclude = {"layers": {"__all__": {"art"}}}
+    return stored.model_dump(exclude=exclude) == authored.model_dump(exclude=exclude)
+
+
+def demo_media_count() -> int:
+    """The demo family's media: two photos plus one cutout per usable file in the art folder."""
+    return len(demo.DEMO_PHOTO_IDS) + len(demo.load_demo_data().art)
+
+
 def counts(db) -> dict[str, int]:
     return {name: db[name].count_documents({}) for name in sorted(db.list_collection_names())}
 
@@ -227,15 +250,18 @@ def test_sample_props_and_sets_are_in_the_demo_family(seeded):
     assert [s.id for s in sets] == ["church_steps_1988"] and sets[0].family_id == DEMO_FAMILY_ID
     want_prop = SAMPLE.props[0].model_copy(update={"family_id": DEMO_FAMILY_ID})
     want_set = SAMPLE.sets[0].model_copy(update={"family_id": DEMO_FAMILY_ID})
-    assert props[0] == want_prop and sets[0] == want_set
+    assert same_but_art(props[0], want_prop) and same_but_art(sets[0], want_set)
 
 
 def test_every_prop_and_set_file_entry_is_in_the_demo_family(seeded):
     mdb, _ = seeded
     stored_props = {p.id: p for p in props_db.list_props(mdb, DEMO_FAMILY_ID)}
     stored_sets = {s.id: s for s in props_db.list_sets(mdb, DEMO_FAMILY_ID)}
-    assert stored_props == {p.id: p for p in demo.load_props()}
-    assert stored_sets == {s.id: s for s in demo.load_sets()}
+    authored_props = {p.id: p for p in demo.load_props()}
+    authored_sets = {s.id: s for s in demo.load_sets()}
+    assert set(stored_props) == set(authored_props) and set(stored_sets) == set(authored_sets)
+    assert all(same_but_art(p, authored_props[i]) for i, p in stored_props.items())
+    assert all(same_but_art(s, authored_sets[i]) for i, s in stored_sets.items())
     used_props = {pid for m in memories_db.get_memories(mdb, DEMO_FAMILY_ID, list(demo.DEMO_MEMORY_IDS))
                   for pid in m.prop_ids}
     used_sets = {sid for m in memories_db.get_memories(mdb, DEMO_FAMILY_ID, list(demo.DEMO_MEMORY_IDS))
@@ -543,7 +569,7 @@ def test_reset_rebuilds_without_touching_other_families(seeded):
     trip = memories_db.get_memory(mdb, DEMO_FAMILY_ID, "demo_green_sedan_trip")
     for pid in (pid for t in trip.tellings for pid in t.photo_ids):
         assert media_db.media_exists(mdb, DEMO_FAMILY_ID, pid)
-    assert mdb[media_db.INLINE].count_documents({"metadata.familyId": DEMO_FAMILY_ID}) == 2
+    assert mdb[media_db.INLINE].count_documents({"metadata.familyId": DEMO_FAMILY_ID}) == demo_media_count()
 
 
 def _non_demo_snapshot(mdb, other_family: str) -> dict[str, list]:
@@ -578,7 +604,7 @@ def test_reset_twice_is_idempotent_and_leaves_other_data_alone(seeded):
     assert demo_ids() == ids_first
     assert mdb.questions.count_documents({"familyId": DEMO_FAMILY_ID}) == len(demo.DEMO_QUESTIONS)
     assert mdb.users.count_documents({"_id": {"$in": list(demo.DEMO_USER_IDS)}}) == 3
-    assert mdb[media_db.INLINE].count_documents({"metadata.familyId": DEMO_FAMILY_ID}) == 2
+    assert mdb[media_db.INLINE].count_documents({"metadata.familyId": DEMO_FAMILY_ID}) == demo_media_count()
     assert _non_demo_snapshot(mdb, other_family) == before
     assert users_db.get_user(mdb, other_user) is not None
 
