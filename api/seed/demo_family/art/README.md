@@ -1,9 +1,16 @@
 # Demo art
 
-Hand-made images for the demo family's props and sets. The seed (`seed/demo.py`,
-`load_demo_art`) picks up every PNG here; anything without a file keeps its placeholder
-(`art: null` and its `color`). With only this README here, the seed is exactly as it was
-without the folder.
+Hand-made images for the demo family's props and sets. Add PNGs here, then bake them once
+from `api/`:
+
+```sh
+uv run python -m seed.demo --bake-art
+```
+
+and commit the baked PNGs together with `art.json`. The seed (`seed/demo.py`,
+`load_demo_art`) only reads what the bake recorded; anything without a baked file keeps its
+placeholder (`art: null` and its `color`). With only this README here, the seed is exactly
+as it was without the folder.
 
 ## Names
 
@@ -26,16 +33,17 @@ covers parts and states alike. A key that is not in the prop's `art` map is skip
 to `props.json` first). `<propId>.body.png` also works for the body; giving both is a
 warning and the first name in sorted order wins.
 
-Names are case sensitive and use the `.png` extension only. Other files are skipped with a
-warning (this README, `.gitkeep` and `.DS_Store` are ignored silently).
+Names are case sensitive and use the `.png` extension only. Other files are reported
+(this README, `art.json`, `.gitkeep` and `.DS_Store` are ignored).
 
-## How each file is processed
+## What the bake does
 
-The same way the studio treats generated art:
+`--bake-art` processes each new or changed image the way the studio treats generated art,
+and **rewrites the file in place** in that final form:
 
 - **Props, parts and state art**: the white background touching the border is removed
   (an image that already has transparency is kept as it is), then the image is cropped to
-  its opaque shape. A body image sets the prop's `aspect` (width / height of the crop,
+  its opaque shape. A body image gives the prop its `aspect` (width / height of the crop,
   clamped to 0.5 to 2.5 like a photo swap) and its `anchor` (bottom center of the shape).
   Parts are placed by the `at` fractions in `props.json`, so draw the body so they line up.
 - **Back layers**: scaled evenly to the layer's frame (2048 px wide, height from the layer
@@ -44,23 +52,24 @@ The same way the studio treats generated art:
 - **Middle and front layers**: fitted the same way (e.g. 2048x464 or 2048x192), with the
   white background removed and no crop to the shape.
 
-Each result is stored as a `cutout` with a fixed media id derived from the file name, so
-every reset gives the same ids.
+It then writes `art.json`: for every usable file its slot (`prop` + `artKey`, or `set` +
+`layer`), pixel size, a body's `aspect` and `anchor`, and the `sha256` of the final PNG.
+Baking again skips files that already match their entry, so it changes nothing twice.
+Keep your originals elsewhere if you want to re-edit them.
 
-A file is skipped with a warning naming it, and its prop or layer keeps the placeholder,
+Last, it compiles every demo scene with the baked art. A body image whose aspect or anchor
+would stop a scene compiling is reported (with the scene and the compile error), and the
+seed draws that prop's placeholder body instead.
+
+The bake reports a file and gives it no entry (its prop or layer keeps the placeholder)
 when its name matches no prop, set, art key or layer; it is not a readable image; it has
-more than 16,000,000 pixels; it has no opaque pixels after the cut-out; or a body image's
-aspect or anchor would stop a demo scene compiling (the warning names the scene and the
-compile error). None of these stops the seed.
+more than 16,000,000 pixels; nothing is opaque after the cut-out; or the result is over the
+media size limit. It exits 1 when anything was reported, else 0.
 
-## Keep starts fast
+## What the seed does
 
-Save images with transparency (RGBA PNG). A white background is flood-filled away on
-every start, which takes about half a second per image. After adding white-background
-files, run once from `api/`:
-
-```sh
-uv run python -m seed.demo --cut-out-art
-```
-
-It rewrites those files with the background made transparent (back layers are left alone).
+Each start, the seed reads `art.json` and the PNG bytes only (no image processing), stores
+each file as a `cutout` with a fixed media id derived from its name (the same on every
+reset), and sets its prop or layer. A PNG with no entry, or edited since it was baked (its
+sha256 differs), keeps the placeholder with one warning naming the files and the bake
+command. None of this stops the seed.

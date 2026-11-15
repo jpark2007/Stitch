@@ -87,6 +87,9 @@ on code changes under `api/`). `--help` lists them.
   `Port 3000 is in use ..., using available port 3001 instead`. The API only allows
   `localhost:3000` and `127.0.0.1:3000`; stop the other web server, or allow the new
   origin: `STITCH_CORS_ORIGINS=http://localhost:3000,http://localhost:3001 uv run python -m seed.serve`.
+- **Run the web app on another port on purpose**: `npm run dev -- -p 3011` in `web/` with
+  `NEXT_PUBLIC_API_URL` pointing at the API (e.g. `NEXT_PUBLIC_API_URL=http://localhost:8001`),
+  and start the API with `STITCH_CORS_ORIGINS=http://localhost:3011` so it allows that origin.
 - **It never needs MongoDB, Docker or keys.** It sets `STITCH_FAKE_DB=1` and leaves
   `STITCH_AGENT` alone, so runs are scripted even when a `.env` holds an
   `ANTHROPIC_API_KEY` (set `STITCH_AGENT=real` yourself to try the model studio on the
@@ -351,19 +354,25 @@ placed (say `at` names someone not on stage) fails the seed like any other `Comp
 
 ### Hand-made art
 
-Drop PNGs into `seed/demo_family/art/` and the next seed (`seed.serve` start, or
-`python -m seed.demo --reset`) draws them instead of the placeholders: `<propId>.png` for a
-prop's body, `<propId>.<artKey>.png` for its other art keys (a part such as
-`green_sedan.wheel.png`, or the art a state switches to such as `black_umbrella.open.png`),
-and `<setId>.back.png` / `.middle.png` / `.front.png` for set layers. The full rules are in
-[`demo_family/art/README.md`](demo_family/art/README.md). Each file is cut out like studio
-art and stored as a `cutout` under a fixed media id (`seed.demo.demo_art_media_id`); a body
-image also sets the prop's aspect and anchor, and the scenes are compiled with them. A file
-that cannot be used (unknown name, not an image, too big, nothing opaque, or a body whose
-shape would stop a scene compiling) is a warning naming it, and that prop or layer keeps its
-placeholder; it never stops the seed. Images saved with transparency cost about 30 ms each
-at start; a white background is removed on every start (about 0.5 s each), so run
-`uv run python -m seed.demo --cut-out-art` once to save them with transparency.
+Drop PNGs into `seed/demo_family/art/`, bake them once from `api/`, and commit the baked
+PNGs with `art.json`:
+
+```sh
+uv run python -m seed.demo --bake-art
+```
+
+Names: `<propId>.png` for a prop's body, `<propId>.<artKey>.png` for its other art keys (a
+part such as `green_sedan.wheel.png`, or the art a state switches to such as
+`black_umbrella.open.png`), and `<setId>.back.png` / `.middle.png` / `.front.png` for set
+layers; the full rules are in [`demo_family/art/README.md`](demo_family/art/README.md). The
+bake cuts each file out like studio art, rewrites it in place in final form and records
+its slot, size, a body's aspect and anchor, and a sha256 in `art/art.json`. It reports
+files it cannot use and bodies whose shape would stop a demo scene compiling, and exits 1
+if there were any. The next seed (`seed.serve` start, or `python -m seed.demo --reset`)
+reads only `art.json` and the bytes (no image work, nothing from `agent/`), stores each
+file as a `cutout` under a fixed media id (`seed.demo.demo_art_media_id`) and draws it
+instead of the placeholder. A PNG that was not baked or changed since is a warning naming
+it and the bake command, and keeps its placeholder; nothing stops the seed.
 `tests/data/test_seed_demo_art.py` covers it.
 
 ## Preflight a real MongoDB
