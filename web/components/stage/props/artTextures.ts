@@ -18,6 +18,16 @@
 
 import { ClampToEdgeWrapping, NoColorSpace, SRGBColorSpace, Texture } from "three";
 
+/**
+ * The family's own media comes from the API on another port, behind the session
+ * cookie, so it is fetched with credentials (the API answers with the exact origin
+ * and Allow-Credentials). Anything else stays anonymous, which a CDN without
+ * credentialed CORS still serves.
+ */
+function artCrossOrigin(url: string): "use-credentials" | "anonymous" {
+  return /\/families\/[^/]+\/media\//.test(url) ? "use-credentials" : "anonymous";
+}
+
 /** Largest side kept, in px. Prop art is never shown bigger than this. */
 const MAX_SIDE = 2048;
 /** How far (px) edge colours are bled outward. */
@@ -119,7 +129,7 @@ export function acquireArt(url: string): ArtEntry {
   slots.set(url, slot);
 
   const img = new Image();
-  img.crossOrigin = "anonymous";
+  img.crossOrigin = artCrossOrigin(url);
   img.decoding = "async";
   img.src = url;
   img
