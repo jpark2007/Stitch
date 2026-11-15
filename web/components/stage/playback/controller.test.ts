@@ -380,3 +380,185 @@ test("unknown interactions are ignored", () => {
   player.releaseInteraction("nope");
   assert.equal(player.getStatus().scrubbing, false);
 });
+
+// ------------------------------------------------------------------ effects a pull tab replays
+
+/** A wedding: confetti thrown during the hug the tab replays, steam all along, smoke later. */
+const wedding: Timeline = {
+  duration: 10,
+  tracks: [{ target: "puppet:mom", channel: "root.position", keys: [[0, [0, 0, 0.5]], [10, [1, 0, 0.5]]] }],
+  effects: [
+    { t: 3, kind: "confetti", dur: 2 },
+    { t: 0, kind: "steam", dur: 10 },
+    { t: 3.5, kind: "time_of_day", dur: 1, value: "dusk" },
+    { t: 8, kind: "smoke", dur: 1 },
+    { t: 2, kind: "smoke", dur: 1 },
+  ],
+  interactions: [
+    { id: "hug", kind: "pull_tab", label: "Pull for the hug", at: [0, 0], drives: { type: "scrub", from: 2, to: 5, targets: ["puppet:mom"] } },
+  ],
+};
+const CONFETTI = 0;
+const CANDLES = 4;
+
+test("pulling a tab past its effect throws it from the pull, for its whole run", () => {
+  const { player, clock } = setup({}, wedding);
+  player.seek(7);
+  const fx = player.frame.effects[CONFETTI];
+  assert.equal(fx.replaying, false);
+  assert.equal(fx.progress, 1, "the scene threw it long ago");
+
+  player.holdInteraction("hug", 0.2);
+  assert.equal(fx.replaying, false, "the tab has not reached it yet (t=2.6)");
+  player.holdInteraction("hug", 0.5);
+  assert.equal(fx.replaying, true, "reached at t=3.5");
+  assert.equal(fx.time, 3, "it starts from its own start, not where the tab is");
+  assert.equal(fx.active, true);
+  assert.equal(fx.progress, 0);
+
+  clock.advance(1);
+  close(player.time, 7, "the scene holds while the tab is held");
+  close(fx.time, 4);
+  close(fx.progress, 0.5);
+
+  player.releaseInteraction("hug");
+  clock.advance(0.5);
+  assert.equal(fx.replaying, true, "letting go does not cut it short");
+  close(fx.time, 4.5);
+
+  clock.advance(1);
+  assert.equal(fx.active, false, "done after its duration");
+  assert.equal(fx.progress, 1);
+  clock.advance(30);
+  close(fx.time, 3 + 2 + 8, "its clock stops once the particles have landed");
+  const v = player.frameVersion;
+  clock.advance(1);
+  assert.equal(player.frameVersion, v, "a finished replay does not keep the frame changing");
+});
+
+test("an effect at the tab's start goes as soon as the pull starts", () => {
+  const { player } = setup({}, wedding);
+  player.seek(9);
+  player.holdInteraction("hug", 0);
+  const fx = player.frame.effects[CANDLES];
+  assert.equal(fx.replaying, true, "smoke at the tab's from");
+  assert.equal(fx.time, 2);
+  assert.equal(player.frame.effects[CONFETTI].replaying, false);
+});
+
+test("pulling again throws it again; within a pull it takes going back before it", () => {
+  const { player, clock } = setup({}, wedding);
+  player.seek(7);
+  const fx = player.frame.effects[CONFETTI];
+  player.holdInteraction("hug", 1);
+  clock.advance(1);
+  close(fx.time, 4);
+
+  player.holdInteraction("hug", 0.4); // t=3.2: a wobble back past it, not before it
+  player.holdInteraction("hug", 0.6);
+  clock.advance(0);
+  close(fx.time, 4, "no rethrow on a wobble");
+
+  player.holdInteraction("hug", 0.2); // t=2.6: back before it
+  close(fx.time, 4, "going back alone does not throw it");
+  player.holdInteraction("hug", 0.5);
+  close(fx.time, 3, "forward past it again rethrows");
+
+  clock.advance(1.5);
+  player.releaseInteraction("hug");
+  close(fx.time, 4.5);
+  player.holdInteraction("hug", 0.9);
+  close(fx.time, 3, "a new pull throws it again");
+});
+
+test("only the tab's own effects replay; the rest stay on scene time", () => {
+  const { player, clock } = setup({}, wedding);
+  assert.deepEqual(player.compiled.interaction("hug")!.effects, [CONFETTI, CANDLES]);
+  player.seek(6);
+  player.holdInteraction("hug", 1);
+  clock.advance(1);
+  const f = player.frame;
+  assert.equal(f.effects[1].replaying, false, "steam from t=0 is not the tab's");
+  assert.equal(f.effects[2].replaying, false, "time of day never replays");
+  assert.equal(f.effects[3].replaying, false, "smoke after the tab's window");
+  assert.equal(f.effects[1].time, 6);
+  assert.equal(f.timeOfDay, "dusk");
+  close(f.timeOfDayMix, 1);
+});
+
+test("without a pull, effects play exactly as the timeline says", () => {
+  const { player, clock } = setup({}, wedding);
+  const reference = compileTimeline(wedding);
+  const ref = reference.createFrame();
+  player.play();
+  for (let i = 0; i < 40; i++) {
+    clock.advance(0.25);
+    reference.sample(player.time, ref);
+    player.frame.effects.forEach((fx, k) => {
+      assert.equal(fx.replaying, false);
+      assert.equal(fx.time, player.time);
+      assert.equal(fx.active, ref.effects[k].active, `effect ${k} at ${player.time}`);
+      close(fx.progress, ref.effects[k].progress, `effect ${k} at ${player.time}`);
+    });
+  }
+});
+
+test("the scene playing into a replayed effect takes it back", () => {
+  const { player, clock } = setup({}, wedding);
+  player.seek(1);
+  player.holdInteraction("hug", 0.5);
+  const fx = player.frame.effects[CONFETTI];
+  assert.equal(fx.replaying, true);
+  player.releaseInteraction("hug");
+  player.play();
+  clock.advance(1.5);
+  close(player.time, 2.5);
+  assert.equal(fx.replaying, true, "the scene has not reached it yet");
+  close(fx.time, 4.5);
+  clock.advance(1);
+  close(player.time, 3.5);
+  assert.equal(fx.replaying, false, "the scene threw it itself, as it always does");
+  close(fx.time, 3.5);
+  close(fx.progress, 0.25);
+});
+
+test("seek, a restart and a loop put replayed effects back on scene time", () => {
+  const { player, clock } = setup({}, wedding);
+  const fx = player.frame.effects[CONFETTI];
+  player.seek(7);
+  player.holdInteraction("hug", 1);
+  player.releaseInteraction("hug");
+  player.seek(8);
+  assert.equal(fx.replaying, false, "seek");
+
+  player.seek(10);
+  player.holdInteraction("hug", 1);
+  player.releaseInteraction("hug");
+  assert.equal(fx.replaying, true);
+  player.play(); // ended: starts over from 0
+  clock.advance(0);
+  assert.equal(fx.replaying, false, "restart");
+  assert.equal(fx.progress, 0);
+
+  player.setLoop(true);
+  player.seek(9);
+  player.pause();
+  player.holdInteraction("hug", 1);
+  player.releaseInteraction("hug");
+  player.play();
+  clock.advance(1.5);
+  close(player.time, 0.5);
+  assert.equal(fx.replaying, false, "loop");
+});
+
+test("a replay runs at the scene's rate", () => {
+  const { player, clock } = setup({ rate: 2 }, wedding);
+  player.seek(7);
+  player.holdInteraction("hug", 1);
+  clock.advance(0.5);
+  const fx = player.frame.effects[CONFETTI];
+  close(fx.time, 4);
+  player.setRate(1);
+  clock.advance(0.5);
+  close(fx.time, 4.5, "a rate change keeps the replay where it was");
+});

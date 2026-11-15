@@ -102,10 +102,18 @@ export interface CameraFrame {
 export interface EffectFrame {
   /** The timeline entry, by reference */
   readonly effect: TimelineEffect;
-  /** t <= now < t + dur */
+  /** t <= time < t + dur */
   active: boolean;
   /** 0..1 through the effect while active; 0 before, 1 after */
   progress: number;
+  /**
+   * The effect's own clock, seconds on the timeline: scene time, or, while a
+   * pull tab replays it (`replaying`), effect.t plus the time since the pull
+   * reached it. Particles play from this.
+   */
+  time: number;
+  /** A pull tab is replaying it (SampleOptions.effectClock) */
+  replaying: boolean;
 }
 
 export interface NarrationFrame {
@@ -182,6 +190,12 @@ export interface CompiledInteraction {
   readonly part: string | null;
   readonly channel: "rot" | "offset";
   readonly range: readonly [number, number];
+  /**
+   * scrub: indices into Timeline.effects that play when the tab is pulled:
+   * every effect but time_of_day whose t lies in from..to. Pulling the tab
+   * past one replays it from its start (PlaybackController); empty otherwise.
+   */
+  readonly effects: readonly number[];
 }
 
 /** A drive being held at some travel. `value` is 0..1 along the tab or slider. */
@@ -195,4 +209,10 @@ export interface SampleOptions {
   narrator?: string | null;
   /** Drives being held right now (pull tabs, sliders) */
   interactions?: readonly InteractionInput[];
+  /**
+   * Per Timeline.effects entry (same index), the effect's own time while a
+   * pull tab replays it, or NaN to follow scene time. Shorter arrays leave
+   * the rest at scene time.
+   */
+  effectClock?: Float64Array | null;
 }

@@ -12,6 +12,8 @@
  *   __stitchMoment.tellers()     each teller label's centre on screen, by teller id (the open spread)
  *   __stitchMoment.shot()        the shot on stage now (id), or null
  *   __stitchMoment.held(id)      the value an interaction is held at, or null
+ *   __stitchMoment.effects()     each Timeline.effects entry now: kind, t, its clock (time), active,
+ *                                and whether a pull tab is replaying it
  *
  * The page installs it (installMomentProbe); each pull tab registers where
  * it is (registerTabProbe); the book reports its labels (__stitchBook.labels).
@@ -36,6 +38,14 @@ export interface TabPoint extends ScreenPoint {
   out: number;
 }
 
+export interface EffectState {
+  kind: string;
+  t: number;
+  time: number;
+  active: boolean;
+  replaying: boolean;
+}
+
 export interface MomentProbe {
   time(): number;
   narrator(): string | null;
@@ -45,6 +55,7 @@ export interface MomentProbe {
   tellers(): Record<string, ScreenPoint>;
   shot(): string | null;
   held(id: string): number | null;
+  effects(): EffectState[];
 }
 
 declare global {
@@ -78,6 +89,14 @@ export function installMomentProbe(controller: PlaybackController): () => void {
     tellers: () => window.__stitchBook?.labels?.() ?? {},
     shot: () => controller.frame.shot?.id ?? null,
     held: (id) => controller.heldValue(id),
+    effects: () =>
+      controller.frame.effects.map((fx) => ({
+        kind: fx.effect.kind,
+        t: fx.effect.t,
+        time: fx.time,
+        active: fx.active,
+        replaying: fx.replaying,
+      })),
   };
   window.__stitchMoment = probe;
   return () => {
