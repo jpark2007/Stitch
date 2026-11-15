@@ -941,6 +941,14 @@ class Candidate:
     keyword: float = 0.0  # the keyword (or vector-only) part of score
     person: float = 0.0  # _person_score, before PERSON_WEIGHT
     coverage: float = 0.0  # share of the query's word weight this memory matches
+    # _person_score over the mentions that are not the asker themself ("I", "me", "my
+    # wedding"), set by rank_memories. None (a Candidate built elsewhere) means `person`.
+    person_other: float | None = None
+
+    @property
+    def named_person(self) -> float:
+        """The person score that comes from people other than the asker (see person_other)."""
+        return self.person if self.person_other is None else self.person_other
 
 
 @dataclass
@@ -968,14 +976,20 @@ class Ranking:
         True only when its score is at least CONFIDENT_MIN_SCORE and at least CONFIDENT_RATIO
         times the runner-up's (no runner-up counts as 0), and none of these hold:
         - a kinship word in the question named nobody (the people may be the wrong ones);
-        - the top match is keyword-only and covers under CONFIDENT_MIN_COVERAGE of the
-          query's word weight (words matching no memory count at the highest weight);
+        - the top match takes in nobody the question named other than the asker
+          (named_person is 0: keyword-only, or people only through "I"/"me"/"my <thing>")
+          and covers under CONFIDENT_MIN_COVERAGE of the query's word weight (words
+          matching no memory count at the highest weight). The asker is in many of the
+          family's memories, so their presence alone is no evidence: "what was my first
+          job" asked by David is not confidently "Sam's first bike" just because David is
+          in it. A name that equals the asker ("who taught Sam ..." asked by Sam) is a
+          real mention, not the asker's self mention;
         - the top match is person-only (no keyword overlap) and is the only candidate.
         """
         if not self.candidates or self.unresolved:
             return False
         first = self.candidates[0]
-        if first.person <= 0 and first.coverage < CONFIDENT_MIN_COVERAGE:
+        if first.named_person <= 0 and first.coverage < CONFIDENT_MIN_COVERAGE:
             return False
         if first.keyword <= 0 and len(self.candidates) == 1:
             return False
@@ -986,15 +1000,21 @@ class Ranking:
         """Keep the search result even when the model says no candidate relates.
 
         True when the ranking is confident, or the top candidate takes in people the
-        question named (person > 0), or it has a full keyword match (keyword >= 1.0).
-        The model can miss a page it was shown (it returned null for Rosa and Joseph's
-        wedding on "where did grandpa and grandma meet"); a match this concrete is better
-        than "no one has told that story".
+        question named other than the asker themself (named_person > 0), or it has a full
+        keyword match (keyword >= 1.0). The model can miss a page it was shown (it returned
+        null for Rosa and Joseph's wedding on "where did grandpa and grandma meet"); a match
+        this concrete is better than "no one has told that story". The asker's own presence
+        is not that concrete: Sam asking "what did I eat at christmas" is in many pages.
+        It is when the question's words back it up: the asker is in the top memory
+        (person > 0) and it covers at least CONFIDENT_MIN_COVERAGE of the query's word
+        weight (Lily asking "my gown" keeps Lily's graduation; "when I got married", with
+        no word matched, does not).
         """
         if not self.candidates:
             return False
         first = self.candidates[0]
-        return self.confident() or first.person > 0 or first.keyword >= 1.0
+        return (self.confident() or first.named_person > 0 or first.keyword >= 1.0
+                or (first.person > 0 and first.coverage >= CONFIDENT_MIN_COVERAGE))
 
     def best(self, memory_id: str | None = None, confident: bool | None = None) -> schemas.AskBest | None:
         """AskBest for memory_id (default: the top candidate), or None when there is none."""
@@ -1092,8 +1112,9 @@ def rank_memories(
     for doc in sorted(vector_docs or [], key=lambda d: -float(d.get("score") or 0.0)):
         vscores.setdefault(str(doc["_id"]), round(float(doc.get("score") or 0.0), 9))
     vrank = {mid: rank for rank, mid in enumerate(vscores)}
+    others = [m for m in mentions if m.relation != "self"]
 
-    scored: list[tuple[float, int, int, str, dict, tuple[float, float, float]]] = []
+    scored: list[tuple[float, int, int, str, dict, tuple[float, float, float, float]]] = []
     for doc, title, body in indexed:
         memory_id = str(doc["_id"])
         keyword = coverage = 0.0
@@ -1109,14 +1130,15 @@ def rank_memories(
         participants = {str(p) for p in doc.get("participantIds") or []}
         tellers = {str((t or {}).get("authorId")) for t in doc.get("tellings") or [] if (t or {}).get("authorId")}
         person = _person_score(participants, tellers, mentions)
+        person_other = _person_score(participants, tellers, others)
         score = round(keyword + PERSON_WEIGHT * person, 9)
         if score > 0:
             scored.append((-score, vrank.get(memory_id, len(vrank)), _year_key(doc), memory_id, doc,
-                           (keyword, person, coverage)))
+                           (keyword, person, coverage, person_other)))
     scored.sort(key=lambda item: item[:4])
 
     candidates = []
-    for neg_score, _, _, memory_id, doc, (keyword, person, coverage) in scored[:limit]:
+    for neg_score, _, _, memory_id, doc, (keyword, person, coverage, person_other) in scored[:limit]:
         year = doc.get("year") if isinstance(doc.get("year"), int) else None
         candidates.append(Candidate(
             memory_id=memory_id,
@@ -1131,6 +1153,7 @@ def rank_memories(
             keyword=keyword,
             person=person,
             coverage=coverage,
+            person_other=person_other,
         ))
     return Ranking(candidates, mentions, unresolved)
 
