@@ -511,3 +511,38 @@ test("retry schedule lasts minutes and opt-out priority is advisory and normaliz
   const e = event(); e.data.object.content.text = "I stopped by Grandma's";
   assert.equal(isStopEvent(parseBetaEvent(e, projectId, e.id, agentHandle)), false);
 });
+
+test("saturated signed webhook admits API-equivalent emoji and invisible opt-outs", async t => {
+  const f = fixture(t), a = apiFixture(); f.store.close();
+  const db = new DatabaseSync(join(f.dir, "state.sqlite")); db.exec("BEGIN");
+  const insert = db.prepare("INSERT INTO events (id,hash,body,state,created,updated) VALUES (?,?,'private','blocked',?,?)");
+  for (let i = 0; i < 9900; i++) insert.run(`busy-${i}`, "hash", Date.now(), Date.now());
+  db.exec("COMMIT"); db.close(); f.restart();
+  const server = createBetaWebhook(config, f.store);
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); t.after(() => server.close());
+  const url = `http://127.0.0.1:${(server.address() as any).port}/photon/webhook`;
+  let serial = 0; const forwarded: string[] = [];
+  const bridge = new BetaBridge(f.store, a.api, { post: async (path, body: any) => {
+    assert.equal(path, "/internal/channels/inbound"); forwarded.push(body.text);
+    return { status: 202, body: { accepted: true } };
+  } });
+  async function send(text: string) {
+    const e = event(); e.id = ident("evt", ++serial); e.data.object.id = ident("msg", serial); e.data.object.content.text = text;
+    const raw = JSON.stringify(e), now = new Date();
+    return fetch(url, { method: "POST", body: raw, headers: { "content-type": "application/json", "webhook-id": e.id,
+      "webhook-timestamp": String(Math.floor(now.getTime() / 1000)), "webhook-signature": new Webhook(secret).sign(e.id, now, raw) } });
+  }
+  const variants = ["STOP", "❤️ STOP", "S\uFE0FTOP", "S\uFE00TOP", "S\u{E0100}TOP", "S\u{E01EF}TOP",
+    "ＳＴＯＰ!", "S\u200bTOP", "STOP\u3164", "STOP\u115f", "STOP\u1160", "STOP\uffa0", "STOP\u034f",
+    "❤️ unsubscribe, thank you!", "STOPALL thanks", "\u001cSTOP please\u001f", "\u0085STOP thanks\u0085"];
+  for (const text of variants) {
+    assert.equal((await send(text)).status, 204, JSON.stringify(text));
+    await bridge.drain(projectId, agentHandle);
+  }
+  assert.deepEqual(forwarded, variants, "priority normalization must not modify forwarded text");
+  for (const text of ["Ordinary story", "I told him to STOP", "STOP tomorrow", "S\u0301TOP", "CANCEL"]) {
+    assert.equal((await send(text)).status, 503, JSON.stringify(text));
+  }
+  assert.equal(f.store.counts().find(row => row.state === "blocked")?.count, 9900);
+  assert.equal(f.store.counts().find(row => row.state === "done")?.count, variants.length);
+});

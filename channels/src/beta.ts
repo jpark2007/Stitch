@@ -43,8 +43,16 @@ export type Proof = { projectId: string; spaceId: string; humanId: string; handl
 export type Event = { id: string; messageId: string; proof: Proof; parts: Obj[] };
 /** Advisory priority/diagnostic only: never substitutes for API consent handling. */
 export function isStopEvent(event: Event): boolean {
-  return event.parts.some(part => part.type === "text" && /^(STOP|STOPALL|UNSUBSCRIBE)(?:\b|$)/i.test(
-    part.text.normalize("NFKC").replace(/[\p{Cf}\u3164\u115f\u1160\uffa0\u034f]/gu, "").trim().replace(/^[\p{P}\p{S}\s]+/u, "")));
+  return event.parts.some(part => {
+    if (part.type !== "text") return false;
+    // Match the API's unconditional command normalization. Emoji variation
+    // selectors must disappear before punctuation/symbol token separation.
+    const tokens = part.text.normalize("NFKC").toLowerCase()
+      .replace(/[\p{Cf}\u034f\u115f\u1160\ufe00-\ufe0f\u{e0100}-\u{e01ef}]/gu, "")
+      .replace(/[\p{P}\p{S}]/gu, " ").split(/[\s\u001c-\u001f\u0085]+/u).filter(Boolean);
+    return ["stop", "stopall", "unsubscribe"].includes(tokens[0])
+      && ["", "please", "thanks", "thank you"].includes(tokens.slice(1).join(" "));
+  });
 }
 
 class LocalApiError extends ProtocolError {
