@@ -41,6 +41,9 @@ def world(mdb):
     fam.add_member(mdb, "fam_a", "u3")
     fam.create_family(mdb, name="B", creator_user_id="u_b", family_id="fam_b")
     fam.add_member(mdb, "fam_b", "u2")
+    # Real accounts: the Channels lookups refuse a contact whose linked account is missing.
+    for uid in ("u_admin", "u2", "u3", "u_b"):
+        users_db.create_user(mdb, email=f"{uid}@example.com", password_hash="x", name=uid, user_id=uid)
     mdb.people.insert_many([
         {"_id": "p_admin", "familyId": "fam_a", "userId": "u_admin", "name": "Rosa"},
         {"_id": "p_a", "familyId": "fam_a", "userId": "u2", "name": "David"},
@@ -138,6 +141,34 @@ def test_last_admin_and_not_a_member_leave_contacts_untouched(world):
     assert _all(world) == before
 
 
+def test_a_retry_after_a_failed_stop_finishes_the_removal(world, monkeypatch):
+    real = fam.stop_member_contacts
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            raise RuntimeError("connection reset")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(fam, "stop_member_contacts", flaky)
+    keep = _snapshot(world, "c_a_u3", "c_a_unlinked", "c_b_active")
+
+    with pytest.raises(RuntimeError):
+        fam.remove_member(world, "fam_a", "u2")
+    assert fam.get_member_role(world, "fam_a", "u2") is None  # membership already pulled
+    assert world.contacts.find_one({"_id": "c_a_active"})["status"] == "active"
+
+    assert fam.remove_member(world, "fam_a", "u2") is False  # not a member any more
+    after = {d["_id"]: d for d in world.contacts.find()}
+    for cid in ("c_a_active", "c_a_pending", "c_a_by_admin"):  # admin-created one too
+        _assert_stopped(after[cid])
+    for cid, doc in keep.items():
+        assert after[cid] == doc, cid
+    with pytest.raises(PermissionError):
+        contacts_db.resolve_contact(world, "imessage", "+15550000001")
+
+
 def test_an_already_stopped_contact_keeps_its_stopped_at_but_loses_consent(world):
     earlier = datetime(2026, 1, 1, tzinfo=UTC)
     world.contacts.update_one({"_id": "c_a_active"}, {"$set": {"status": "stopped", "stoppedAt": earlier}})
@@ -200,10 +231,9 @@ def test_stop_member_contacts_refuses_blank_ids(world, family_id, user_id):
 
 
 def test_deleting_an_account_stops_its_contacts_in_every_family(world):
-    users_db.create_user(world, email="dave@example.com", password_hash="x", name="u2", user_id="u2")
     keep = _snapshot(world, "c_a_u3", "c_a_unlinked", "c_a_by_admin")
 
-    assert users_db.delete_users(world, emails=["DAVE@example.com"], user_ids=[]) == 1
+    assert users_db.delete_users(world, emails=["U2@Example.com"], user_ids=[]) == 1
 
     after = {d["_id"]: d for d in world.contacts.find()}
     for cid in ("c_a_active", "c_a_pending", "c_b_active"):
@@ -213,6 +243,16 @@ def test_deleting_an_account_stops_its_contacts_in_every_family(world):
         assert after[cid] == doc, cid
     with pytest.raises(PermissionError):
         contacts_db.resolve_contact(world, "imessage", "+15550000005")
+
+
+@pytest.mark.parametrize("bare", ["u2", b"u2"])
+def test_a_bare_string_is_refused_not_iterated(world, bare):
+    before = _all(world)
+    with pytest.raises(TypeError):
+        fam.stop_user_contacts(world, bare)
+    with pytest.raises(TypeError):
+        fam.stop_member_contacts(world, "fam_a", "u3", bare)
+    assert _all(world) == before
 
 
 def test_delete_users_with_nothing_to_match_touches_no_contacts(world):

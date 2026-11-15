@@ -283,8 +283,13 @@ def remove_member(db: Database, family_id: str, user_id: str) -> bool:
 
     Their Stitch Channels contacts in this family (linked to their account, or created for
     their person) are stopped too; contacts in their other families are untouched.
-    False if the user is not a member. LastAdmin when removing the only admin. In both
-    cases nothing is written, contacts included.
+
+    False if the user is not a member. Even then, any of the user's contacts in this family
+    that are not stopped yet are stopped (a no-op normally). That makes a retry finish the job
+    after a partial failure: the writes are membership pull, contact stop, person unclaim, so
+    if the stop fails the membership is gone but the person is still linked, and the retry
+    finds and stops both kinds of contact. LastAdmin when removing the only admin; that path
+    writes nothing, contacts included.
     """
     result = db.families.update_one(
         {
@@ -300,14 +305,19 @@ def remove_member(db: Database, family_id: str, user_id: str) -> bool:
     if result.matched_count == 0:
         if db.families.count_documents({"_id": family_id, "members.userId": user_id}, limit=1):
             raise LastAdmin(f"{user_id} is the only admin of {family_id}")
+        # Not a member: finish a removal whose contact stop failed earlier (normally a no-op).
+        if isinstance(family_id, str) and family_id.strip() and isinstance(user_id, str) and user_id.strip():
+            stop_member_contacts(db, family_id, user_id, _claimed_person_ids(db, family_id, user_id))
         return False
-    person_ids = [
-        p["_id"] for p in db.people.find({"familyId": family_id, "userId": user_id}, {"_id": 1})
-    ]
+    # Texts from their phone must stop reaching this family the moment they leave it. Stopped
+    # before the unclaim, so a retry after a failure here can still find their person.
+    stop_member_contacts(db, family_id, user_id, _claimed_person_ids(db, family_id, user_id))
     db.people.update_many({"familyId": family_id, "userId": user_id}, {"$set": {"userId": None}})
-    # Texts from their phone must stop reaching this family the moment they leave it.
-    stop_member_contacts(db, family_id, user_id, person_ids)
     return True
+
+
+def _claimed_person_ids(db: Database, family_id: str, user_id: str) -> list[str]:
+    return [p["_id"] for p in db.people.find({"familyId": family_id, "userId": user_id}, {"_id": 1})]
 
 
 # ------------------------------------------------------------------- channels contacts
@@ -368,6 +378,8 @@ def stop_member_contacts(
     if not isinstance(user_id, str) or not user_id.strip():
         raise ValueError("user_id is required")
     owners: list[dict[str, Any]] = [{"userId": user_id}]
+    if isinstance(person_ids, (str, bytes)):  # would iterate character by character
+        raise TypeError("person_ids must be a sequence of ids, not a string")
     pids = [p for p in dict.fromkeys(person_ids) if isinstance(p, str) and p]
     if pids:
         owners.append({"personId": {"$in": pids}})
@@ -383,6 +395,8 @@ def stop_user_contacts(
     is deleted). Blank ids are ignored, so an empty list never widens the filter. Returns
     the number stopped.
     """
+    if isinstance(user_ids, (str, bytes)):  # would iterate character by character
+        raise TypeError("user_ids must be a sequence of ids, not a string")
     ids = [u for u in dict.fromkeys(user_ids) if isinstance(u, str) and u.strip()]
     if not ids:
         return 0
