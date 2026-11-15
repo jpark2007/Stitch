@@ -406,6 +406,10 @@ CASES: dict[tuple[str, str], Builder] = {
         "json": {"kind": "answer", "text": "yes"},
     },
     ("GET", "/families/{fid}/questions"): lambda f, w: {"url": f"/families/{f}/questions"},
+    ("POST", "/families/{fid}/questions"): lambda f, w: {
+        "url": f"/families/{f}/questions",
+        "json": {"personId": w.elder.id, "text": "An outsider's question?"},
+    },
     ("POST", "/families/{fid}/ask"): lambda f, w: {"url": f"/families/{f}/ask", "json": {"query": "hymn books"}},
     ("GET", "/families/{fid}/traditions"): lambda f, w: {"url": f"/families/{f}/traditions"},
     ("POST", "/families/{fid}/traditions"): lambda f, w: {
@@ -803,6 +807,13 @@ CROSS_REF_CASES: list[CrossRef] = [
         lambda e: f"/families/{e.a.fid}/traditions/{e.a.tradition_id}",
         lambda e: {"json": {"photoIds": [f"media/{e.b.media_id}"]}},
         400,
+    ),
+    CrossRef(
+        "ask a question: personId of B's person",
+        "POST",
+        lambda e: f"/families/{e.a.fid}/questions",
+        lambda e: {"json": {"personId": e.b.elder.id, "text": "How did you meet?"}},
+        404,
     ),
     CrossRef(
         "add film: photoIds with one of B's media",

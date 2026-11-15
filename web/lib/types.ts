@@ -153,6 +153,12 @@ export interface CreateFilmRequest {
   participantIds?: string[];
 }
 
+/** POST /families/{fid}/questions -> 201 Question: ask a person in the family a question (it joins their open questions). Any member may ask. `text` is 1-300 characters after trimming (422 when broken); `personId` must be a person in this family (404 otherwise). */
+export interface CreateQuestionRequest {
+  personId: string;
+  text: string;
+}
+
 /** POST /families/{fid}/traditions. Bounds (422 when broken): title 1-200 characters after trimming; description at most 5,000 (may be empty); when.label at most 100; when.month 1-12; at most 100 participantIds and 10 photoIds; startedYear from 1800 to this year. */
 export interface CreateTraditionRequest {
   title: string;
