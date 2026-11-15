@@ -190,14 +190,16 @@ def test_signature_before_json_strict_header_and_body_bound(stack):
     assert client.post(HOOK, content=raw, headers=signed(raw)).status_code == 413
 
 
-@pytest.mark.parametrize("variant", ["assistant_code", "double", "repeat", "redacted", "long", "empty", "wrong_agent", "unfinished", "words"])
+@pytest.mark.parametrize("variant", ["assistant_code", "conflicting", "repeat", "redacted", "long", "empty", "wrong_agent", "unfinished", "words"])
 def test_ambiguous_untrusted_or_unbounded_transcript_rejected(stack, variant):
     client, db = stack
     code = pair(client)
     payload = event(code)
     data = payload["data"]
     if variant == "assistant_code": data["transcript"][0]["role"] = "agent"
-    if variant == "double": data["transcript"].append(data["transcript"][0])
+    if variant == "conflicting":
+        different = str((int(code[0]) + 1) % 10) + code[1:]
+        data["transcript"].append({"role": "user", "message": "STITCH " + different})
     if variant == "repeat": data["transcript"][2]["message"] = "my code was " + code
     if variant == "redacted": data["transcript"][0]["message"] = None
     if variant == "long": data["transcript"][2]["message"] = "中" * 20001
@@ -294,6 +296,7 @@ def test_atomic_family_burst_capacity(stack):
 @pytest.mark.parametrize("marker", [
     "STITCH 1234-5678-9012.", "Stitch, 1234 5678 9012!", "STITCH:123456789012",
     "“STITCH 123456789012。”", "STITCH：1234-5678-9012。", '“STITCH” 123456789012.',
+    "STITCH one two three four five six seven eight nine zero one two.",
 ])
 def test_standalone_pairing_accepts_bounded_asr_punctuation(marker):
     payload = event("123456789012")
@@ -305,7 +308,6 @@ def test_standalone_pairing_accepts_bounded_asr_punctuation(marker):
 
 @pytest.mark.parametrize("marker", [
     "My code is STITCH 123456789012.", "STITCH 123456789012 is my code.",
-    "STITCH one two three four five six seven eight nine zero one two.",
     "STITCH 12345678901.", "STITCH 1234567890123.", "!" * 97 + "STITCH 123456789012",
     "STITCH123456789012.", "STITCH 123456789012. STITCH 123456789012.",
 ])
@@ -330,3 +332,120 @@ def test_pairing_unique_sparse_index_restarts_with_existing_receipts(stack):
     from pymongo.errors import DuplicateKeyError
     with pytest.raises(DuplicateKeyError):
         db.channelMessages.insert_one({"kind": "call-pairing", "tokenHash": pairing["tokenHash"]})
+
+
+def test_new_pairing_is_six_digits_and_expires_in_ten_minutes(stack):
+    client, db = stack
+    code = pair(client)
+    assert len(code) == 7 and code[3] == "-" and code.replace("-", "").isascii()
+    assert code.replace("-", "").isdecimal()
+    ticket = db.channelMessages.find_one({"kind": "call-pairing"})
+    assert ticket["expireAt"] - ticket["createdAt"] == timedelta(minutes=10)
+    with pytest.raises(LookupError):
+        conversations.accept_call_transcript(db, "agent_test", "late", code.replace("-", ""),
+                                           "story", "late_hash", now=ticket["expireAt"])
+
+
+@pytest.mark.parametrize("marker", [
+    "STITCH 123-456.", "Stitch: one two three four five six.",
+    "STITCH 一二三四五六。", "STITCH 一两三四五六", "STITCH 1 two 三 4 five 六",
+])
+def test_six_digits_exact_english_chinese_and_identical_repetition(marker):
+    payload = event("123456")
+    payload["data"]["transcript"].extend([
+        {"role": "user", "message": marker},
+        {"role": "agent", "message": "STITCH 654321"},
+    ])
+    result = elevenlabs.transcript(json.dumps(payload).encode(), frozenset({"agent_test"}))
+    assert result[2] == "123456"
+    assert result[3] == payload["data"]["transcript"][2]["message"]
+
+
+@pytest.mark.parametrize("marker", [
+    "STITCH zero zero one two three four", "STITCH 零〇一二三四",
+])
+def test_leading_zero_digit_normalization(marker):
+    assert elevenlabs.pairing_marker(marker) == "001234"
+
+
+@pytest.mark.parametrize("marker", [
+    "STITCH oh one two three four five", "STITCH １２３４５６", "STITCH twenty three four five six",
+    "STITCH 一百二十三四五六", "STITCH onetwothreefourfivesix", "STITCH 12345", "STITCH 1234567",
+    "my STITCH one two three four five six", "STITCH one two three four five six please",
+])
+def test_no_homophones_fullwidth_arithmetic_or_narrative(marker):
+    assert elevenlabs.pairing_marker(marker) is None
+
+
+@pytest.mark.parametrize("repeat", [
+    "My code was one two three four five six.", "验证码是一二三四五六。",
+    "Again: 123-456", "Again: 1 two 三 4 five 六",
+])
+def test_recognized_code_variants_in_prose_are_not_persisted(repeat):
+    payload = event("123456", text=repeat)
+    with pytest.raises(HTTPException):
+        elevenlabs.transcript(json.dumps(payload).encode(), frozenset({"agent_test"}))
+
+
+def test_legacy_unexpired_twelve_digit_ticket_is_read_only_compatible(stack):
+    client, db = stack
+    pair(client)
+    db.channelMessages.update_one({"kind": "call-pairing"},
+                                  {"$set": {"tokenHash": conversations.call_code_hash("123456789012")}})
+    assert deliver(client, event("1234-5678-9012")).status_code == 200
+    assert len(client.post(PAIR, json={}).json()["code"]) == 7
+
+
+def test_global_candidate_limit_spans_call_ids_and_replay_bypasses_it(stack, monkeypatch):
+    client, db = stack
+    code = pair(client)
+    now = datetime.now(timezone.utc)
+    attempt = conversations.call_attempt
+    def fixed_window(*args, **kwargs):
+        kwargs["now"] = now
+        return attempt(*args, **kwargs)
+    monkeypatch.setattr(conversations, "call_attempt", fixed_window)
+    assert deliver(client, event(code)).status_code == 200  # Counts one candidate.
+    for index in range(49):
+        with pytest.raises(LookupError):
+            conversations.accept_call_transcript(db, "agent_test", f"guess_{index}", "000000000000",
+                                               "story", "hash", now=now)
+    response = deliver(client, event("000000000000", "guess_over_limit"))
+    assert response.status_code == 429 and response.headers["retry-after"] == "600"
+    assert deliver(client, event(code)).status_code == 200
+    draft = client.get(BASE + "/call-drafts").json()["drafts"][0]
+    assert client.delete(BASE + "/call-drafts/" + draft["id"]).status_code == 204
+    assert deliver(client, event(code)).status_code == 200
+    now += timedelta(minutes=10)
+    with pytest.raises(LookupError):
+        conversations.accept_call_transcript(db, "agent_test", "next_window", "000000000000",
+                                           "story", "hash", now=now)
+
+
+def test_global_candidate_limit_is_atomic_for_concurrent_calls(stack):
+    client, db = stack
+    now = datetime.now(timezone.utc)
+    def guess(index):
+        try:
+            conversations.accept_call_transcript(db, "agent_test", f"concurrent_guess_{index}",
+                                               "000000000000", "story", "hash", now=now)
+        except LookupError:
+            return "checked"
+        except conversations.CallRateLimited:
+            return "throttled"
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(guess, range(80)))
+    assert results.count("checked") == 50 and results.count("throttled") == 30
+
+
+def test_signed_http_repeated_english_and_chinese_codes_bind_one_private_draft(stack):
+    client, db = stack
+    code = pair(client).replace("-", "")
+    english = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+    chinese = "零一二三四五六七八九"
+    payload = event(code, text="这是一段中文回忆。")
+    payload["data"]["transcript"][0]["message"] = "STITCH " + " ".join(english[int(digit)] for digit in code)
+    payload["data"]["transcript"].append({"role": "user", "message": "STITCH " + "".join(chinese[int(digit)] for digit in code)})
+    assert deliver(client, payload).status_code == 200
+    drafts = client.get(BASE + "/call-drafts").json()["drafts"]
+    assert len(drafts) == 1 and drafts[0]["text"] == "这是一段中文回忆。"

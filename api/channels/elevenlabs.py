@@ -19,6 +19,11 @@ MAX_BODY = 256 * 1024
 READ_TIMEOUT = 2.0
 MAX_TEXT = 20_000
 PAIRING_EDGE_PUNCTUATION = ".,!?;:…\"'“”‘’()[]{}<>，。！？：；、（）【】"
+DIGIT_WORDS = dict(zip(("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"), "0123456789"))
+DIGIT_WORDS.update(dict(zip("零〇一二两三四五六七八九", "001223456789")))
+DIGIT_TOKEN = r"(?:[0-9零〇一二两三四五六七八九]|(?<![A-Za-z])(?:zero|one|two|three|four|five|six|seven|eight|nine)(?![A-Za-z]))"
+DIGIT_SEQUENCE = re.compile(DIGIT_TOKEN + r"(?:[ \t,，、-]*" + DIGIT_TOKEN + r")*", re.IGNORECASE)
+DIGIT_PART = re.compile(DIGIT_TOKEN, re.IGNORECASE)
 router = APIRouter()
 
 
@@ -67,6 +72,24 @@ def _object(pairs):
     return result
 
 
+def normalized_digits(sequence: str) -> str:
+    return "".join(DIGIT_WORDS.get(match[0].lower(), match[0]) for match in DIGIT_PART.finditer(sequence))
+
+
+def pairing_marker(message: str) -> str | None:
+    """Exact standalone digit tokens only; never infer a number from narrative."""
+    marker = message.strip()
+    if len(marker) > 96:
+        return None
+    marker = marker.strip(PAIRING_EDGE_PUNCTUATION).strip()
+    match = re.fullmatch(r"STITCH[ \t:：,，\"'“”‘’]{1,8}(.+)", marker, re.IGNORECASE)
+    if match and DIGIT_SEQUENCE.fullmatch(match[1]):
+        digits = normalized_digits(match[1])
+        if len(digits) in {6, 12}:  # Read compatibility for unexpired legacy tickets.
+            return digits
+    return None
+
+
 def transcript(raw: bytes, allowed_agents: frozenset[str]) -> tuple[str, str, str, str]:
     try:
         event = json.loads(raw.decode("utf-8"), object_pairs_hook=_object,
@@ -91,25 +114,17 @@ def transcript(raw: bytes, allowed_agents: frozenset[str]) -> tuple[str, str, st
             if not isinstance(message, str):
                 raise ValueError()  # Redacted/null user content cannot prove pairing.
             message.encode("utf-8")
-            # ASR commonly adds a comma after STITCH and a final full stop. Only
-            # bounded punctuation at marker boundaries is tolerated, never words
-            # extracted from a longer sentence or number-word guessing.
-            marker = message.strip()
-            marker = marker.strip(PAIRING_EDGE_PUNCTUATION).strip() if len(marker) <= 96 else ""
-            match = re.fullmatch(r"STITCH[ \t:：,，\"'“”‘’]{1,8}([0-9][0-9 \t-]{10,34}[0-9])",
-                                 marker, re.IGNORECASE)
-            if match:
-                digits = re.sub(r"[ \t-]", "", match[1])
-                if len(digits) != 12:
-                    raise ValueError()
-                pairing.append(digits)
+            marker = pairing_marker(message)
+            if marker is not None:
+                pairing.append(marker)
             else:
                 users.append(message)
-        if len(pairing) != 1:
+        if not pairing or len(set(pairing)) != 1:
             raise ValueError()
         code = pairing[0]
         # Never retain the numeric secret if the caller repeats it in a sentence.
-        if any(code in re.sub(r"\D", "", message) for message in users):
+        if any(code in normalized_digits(sequence[0]) for message in users
+               for sequence in DIGIT_SEQUENCE.finditer(message)):
             raise ValueError()
         text = "\n".join(users)
         if not text.strip() or len(text) > MAX_TEXT:
@@ -152,6 +167,6 @@ async def post_call(request: Request):
         raise HTTPException(400, "Call pairing unavailable") from None
     except conversations.CallConflict:
         raise HTTPException(409, "Call binding unavailable") from None
-    except conversations.CallRateLimited:
-        raise HTTPException(429, "Try again shortly", headers={"Retry-After": "60"}) from None
+    except conversations.CallRateLimited as exc:
+        raise HTTPException(429, "Try again shortly", headers={"Retry-After": str(exc.retry_after)}) from None
     return {"received": True}

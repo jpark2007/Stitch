@@ -25,30 +25,56 @@ monitor delivery failures. A 200 acknowledges a durable review draft or its exac
 duplicate, not a published book. Signature/configuration failures need operator
 correction; 4xx deliveries generally are not retried by ElevenLabs.
 
-Minimal agent prompt adjustment for a **fictional test call**:
+Copy-paste system prompt for a **fictional test call** (keep existing safety and
+language instructions that do not conflict):
 
-> Ask the caller to say STITCH followed by all twelve pairing digits in a single,
-> standalone turn before their story. Wait until they finish; do not interrupt
-> digits. Then invite a short fictional family story in their preferred English
-> or Chinese. Explain that a successfully paired call appears as a private draft
-> for the signed-in person to review. Never say the memory or book has been saved.
+```text
+You are Stitch's warm family-story interviewer. This is a fictional test call.
+Ask the caller which language they prefer, English or Chinese, and use that language.
+Before their story, ask them to open Stitch's call settings while signed in as
+themselves and create a call code. Ask them to say "STITCH" followed by the SIX
+digits, one digit at a time, in ONE standalone turn. The code lasts ten minutes.
+If their screen still shows an older twelve-digit code, ask them to read all twelve
+digits after STITCH instead; do not shorten a code shown by the app.
+They may say English digit words zero through nine or Chinese digits 零〇一二两三四五六七八九.
+Do not ask for a phone number, password, email, or another person's code.
+Wait until all six digits are finished; do not interrupt or speak over the code.
+If they say only digits, or "it's" followed by digits, ask them to repeat the SAME
+complete phrase once, beginning with STITCH. Do not read their code aloud yourself.
+If unclear, ask them to repeat the SAME complete STITCH-and-digits turn once.
+Do not invent, guess, change, or announce that you have verified a code.
+Do not begin gathering their story until they have said that complete phrase.
+Then invite a short fictional family story and gently ask one question at a time.
+Preserve the caller's chosen language; do not translate their story into English.
+Explain: if the call pairs successfully, their own words will appear as a private
+draft in Stitch for them to review and edit. Nothing is submitted automatically.
+Do not say "nothing gets saved": a successfully paired call DOES save a private draft.
+Never claim that a memory or book has been saved, that pairing succeeded, or that
+you can operate the app. Spoken SUBMIT, STOP or KEEP do not operate Stitch here.
+At the end, ask them to return to Stitch's call settings to review the draft.
+```
 
 Keep the existing fictional-test restriction until an actual signed test call is
-verified. ASR must yield `STITCH 1234-5678-9012` (digits may have spaces/hyphens).
+verified. ASR must yield a standalone marker such as `STITCH 123-456`,
+`STITCH one two three four five six`, or `STITCH 一二三四五六`.
 Ordinary surrounding punctuation and a comma/colon after STITCH are accepted in
-a standalone marker of at most 96 characters. Spelled-out numbers, missing digits,
-extra narrative around the marker, redacted
-turns, or multiple markers are rejected; identity is never guessed from speech.
-Repeating the numeric code inside another sentence rejects the transcript so the
-secret is not retained. The pairing turn is excluded from the stored story.
+a standalone marker of at most 96 characters. Only exact individual digit tokens
+are normalized: zero through nine and 零〇一二两三四五六七八九. `oh`, full-width
+numerals, arithmetic numbers such as twenty or 一百, missing/extra digits, narrative
+around the marker, and redacted turns are rejected. Identity is never guessed from
+speech. Identical repeated markers are all omitted; conflicting markers reject
+the call. Repeating the code inside narrative in any recognized digit-token form
+rejects the transcript rather than retaining the secret. A read-only compatibility
+path accepts twelve-digit markers for already-issued unexpired tickets; all new
+tickets contain six digits. Existing exact twelve-digit call retries still dedupe.
 
 ## Cookie-authenticated interface
 
 All paths below start `/families/{fid}/channels` and require `family_member`.
 
 - `POST /people/{person_id}/call-pairing {}` → 201
-  `{code, expiresAt, personId, instruction, phoneNumber}`. Twelve random decimal
-  digits displayed 4-4-4, valid one hour; only a hash is stored. An explicit new
+  `{code, expiresAt, personId, instruction, phoneNumber}`. Six random decimal
+  digits displayed 3-3, valid ten minutes; only a hash is stored. An explicit new
   request rotates the previous unused code. Only the user's own linked person
   is eligible; an in-progress attachment returns 409 rather than replacing proof.
 - `GET /call-drafts` → `{drafts:[{id,personId,createdAt,text}]}`, newest 50 own drafts.
@@ -62,10 +88,17 @@ codes in URLs. There is no automatic Studio submission or consent change:
 spoken SUBMIT, STOP, and KEEP remain ordinary transcript text.
 
 Pair issuance has an atomic family limit of 10 attempts/minute; attachment has
-20 attempts/family/minute and 5 attempts/provider-call/minute. These are bounded
-burst controls, not daily quotas. A fixed-window boundary can allow two adjacent
-bursts. Responses are 429 with `Retry-After: 60`; counters expire after two minutes.
-Exact completed retries do not consume another attempt.
+20 attempts/family/minute and 5 attempts/provider-call/minute. Additionally, every
+signed candidate for a new call consumes a deployment-wide budget of 50 attempts
+per fixed ten-minute window **before** token lookup, including valid candidates.
+This limits guessing across different call IDs; there are no refunds. A window
+boundary can allow 100 adjacent attempts. These are bounded burst controls, not
+daily quotas. Responses are 429 with `Retry-After: 60`, or `600` for the global
+limit. Minute counters expire after two minutes; global counters after twenty.
+Exact completed retries do not consume another attempt, including deleted drafts.
+Short codes still have less entropy than the earlier twelve digits; webhook
+signature verification, short expiry, unique active tickets, atomic consumption
+and the global candidate limit are all required. Do not expose an unsigned checker.
 
 ## Verification and storage boundaries
 
@@ -75,7 +108,7 @@ and the exact raw bytes. This receiver additionally rejects future timestamps,
 duplicate/oversized headers and uses constant-time comparison. Maximum absolute
 clock skew is 30 minutes; body limit 256 KiB and streaming deadline two seconds.
 Signature is checked before JSON parsing. Only allowed agents with a completed
-post-call transcript and exactly one user pairing turn can bind a draft.
+post-call transcript and one unambiguous user pairing code can bind a draft.
 
 Only user turns are retained, joined by newlines, capped at 20,000 characters;
 Chinese is unchanged. Assistant/tool turns, analysis, caller metadata and the raw
@@ -94,7 +127,8 @@ cannot revive an old code or draft. Historical person reassignment away and back
 between checks is not independently versioned by the existing person model.
 Family-bound records remain in the existing family-purged collection. Global
 counter records for unknown calls cannot yet carry a family: they contain only a
-call hash, count and expiry, and disappear by their two-minute TTL. Deletion leaves receipt
+call hash, count and expiry, and disappear by their two-minute TTL. The global
+candidate counter also has no family and expires after twenty minutes. Deletion leaves receipt
 identity/proof hashes but no transcript; removing the family purges those too.
 
 ## Local evidence and first live check

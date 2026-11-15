@@ -23,21 +23,23 @@ class CallConflict(ValueError):
 
 
 class CallRateLimited(ValueError):
-    pass
+    def __init__(self, retry_after=60):
+        super().__init__("Try again shortly")
+        self.retry_after = retry_after
 
 
-def call_attempt(db, scope: str, identity: str, *, family_id=None, limit=10, now=None):
-    """Atomic minute windows, TTL cleanup; no transcript, token or caller retained."""
+def call_attempt(db, scope: str, identity: str, *, family_id=None, limit=10, now=None, window_seconds=60):
+    """Atomic fixed windows, TTL cleanup; no transcript, token or caller retained."""
     now = now or datetime.now(timezone.utc)
-    window = int(now.timestamp()) // 60
+    window = int(now.timestamp()) // window_seconds
     key = "call-rate:" + hashlib.sha256(f"{scope}:{identity}:{window}".encode()).hexdigest()
     try:
         row = db.channelMessages.find_one_and_update(
             {"_id": key, "count": {"$lt": limit}},
             {"$inc": {"count": 1}, "$setOnInsert": {"kind": "call-rate", "familyId": family_id,
-                "expireAt": now + timedelta(minutes=2)}}, upsert=True, return_document=ReturnDocument.AFTER)
+                "expireAt": now + timedelta(seconds=window_seconds * 2)}}, upsert=True, return_document=ReturnDocument.AFTER)
     except DuplicateKeyError:
-        raise CallRateLimited("Try again shortly") from None
+        raise CallRateLimited(window_seconds) from None
     return row
 
 
@@ -62,9 +64,9 @@ def create_call_pairing(db, family_id: str, person_id: str, actor_id: str, *, no
     key = "call-pairing:" + conversation_key(family_id, person_id)
     call_attempt(db, "issue", family_id, family_id=family_id, now=now)
     for _ in range(5):
-        code = f"{secrets.randbelow(10**12):012d}"
+        code = f"{secrets.randbelow(10**6):06d}"
         fields = {"kind": "call-pairing", "familyId": family_id, **proof, "tokenHash": call_code_hash(code),
-                  "state": "pending", "createdAt": now, "expireAt": now + timedelta(hours=1)}
+                  "state": "pending", "createdAt": now, "expireAt": now + timedelta(minutes=10)}
         try:
             row = db.channelMessages.find_one_and_update(
                 {"_id": key, "familyId": family_id, "state": {"$ne": "claiming"}},
@@ -110,6 +112,10 @@ def accept_call_transcript(db, agent_id: str, conversation_id: str, code: str,
             raise CallConflict("Call binding unavailable")
     else:
         call_attempt(db, "bind", key, limit=5, now=now)
+        # Shorter codes need a deployment-wide bound across provider call IDs.
+        # Count every candidate before looking it up, including successful ones;
+        # no refunds/racy distinction between guessed and valid codes.
+        call_attempt(db, "global-bind", "elevenlabs", limit=50, now=now, window_seconds=600)
         pairing = db.channelMessages.find_one({"kind": "call-pairing", "tokenHash": token_hash,
             "state": "pending", "expireAt": {"$gt": now}})
         if pairing is None:

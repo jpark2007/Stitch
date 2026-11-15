@@ -28,8 +28,8 @@ def operation(function, *args):
         raise HTTPException(404, "Not found") from None
     except conversations.CallConflict:
         raise HTTPException(409, "Call pairing unavailable") from None
-    except conversations.CallRateLimited:
-        raise HTTPException(429, "Try again shortly", headers={"Retry-After": "60"}) from None
+    except conversations.CallRateLimited as exc:
+        raise HTTPException(429, "Try again shortly", headers={"Retry-After": str(exc.retry_after)}) from None
 
 
 def public_draft(row):
@@ -39,10 +39,10 @@ def public_draft(row):
 @router.post("/people/{person_id}/call-pairing", status_code=201)
 def create_pairing(person_id: str, body: Empty, access: FamilyAccess = Depends(family_member), db=Depends(get_db)):
     row, code = operation(conversations.create_call_pairing, db, access.family_id, person_id, access.user.id)
-    displayed = "-".join(code[index:index+4] for index in range(0, 12, 4))
+    displayed = code[:3] + "-" + code[3:]
     return {"code": displayed, "expiresAt": row["expireAt"], "personId": person_id,
         "phoneNumber": configuration().phone_number,
-        "instruction": "Read STITCH followed by these twelve digits as one turn at the start of your call. Your words become a private draft for your review; nothing is submitted automatically."}
+        "instruction": "Read STITCH followed by these six digits as one turn at the start of your call, one digit at a time in English or Chinese. This code expires in ten minutes. Your words become a private draft for your review; nothing is submitted automatically."}
 
 
 @router.get("/call-drafts")
