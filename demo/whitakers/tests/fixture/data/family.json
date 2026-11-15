@@ -1,0 +1,73 @@
+{
+  "family": {
+    "id": "testers",
+    "name": "The Testers"
+  },
+  "accounts": [
+    {
+      "email": "cleo@testers.example",
+      "password": "tester-pass",
+      "name": "Cleo Tester",
+      "personId": "cleo",
+      "role": "admin"
+    },
+    {
+      "email": "dev@testers.example",
+      "password": "tester-pass",
+      "name": "Dev Tester",
+      "personId": "dev",
+      "role": "member"
+    }
+  ],
+  "people": [
+    {
+      "id": "cleo",
+      "name": "Cleo",
+      "born": 1965,
+      "parents": [
+        "ada",
+        "ben"
+      ],
+      "color": "#3d7ea6",
+      "item": "red scarf",
+      "build": "average",
+      "notes": "talks with her hands"
+    },
+    {
+      "id": "ada",
+      "name": "Ada",
+      "born": 1940,
+      "color": "#a6553d",
+      "item": "reading glasses",
+      "build": "short"
+    },
+    {
+      "id": "ben",
+      "name": "Ben",
+      "born": 1938,
+      "died": 2010,
+      "spouses": [
+        "ada"
+      ],
+      "build": "tall"
+    },
+    {
+      "id": "dev",
+      "name": "Dev",
+      "born": 1972,
+      "spouses": [
+        "cleo"
+      ],
+      "color": "#5a9e4b",
+      "item": "denim jacket",
+      "build": "tall"
+    }
+  ],
+  "questions": [
+    {
+      "personId": "dev",
+      "text": "What do you remember about the tamales?",
+      "memoryId": "tamales_1975"
+    }
+  ]
+}

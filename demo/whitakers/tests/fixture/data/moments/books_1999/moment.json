@@ -1,0 +1,20 @@
+{
+  "title": "The library books",
+  "year": 1999,
+  "tellings": [
+    {
+      "teller": "dev",
+      "text": "I saw her at the top of the porch steps and she dropped every book.",
+      "order": 1
+    },
+    {
+      "teller": "cleo",
+      "text": "I was carrying far too many library books.",
+      "order": 2,
+      "photos": [
+        "porch.png",
+        "kitchen.png"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "title": "Tamales at Ada's",
+  "year": 1975,
+  "place": "Ada's kitchen",
+  "tellings": [
+    {
+      "teller": "cleo",
+      "question": "What were Sundays like?",
+      "text": "Every Sunday Ada made tamales and I spread the masa. Ben ate the lumpy ones.",
+      "photos": [
+        "kitchen.png"
+      ]
+    }
+  ],
+  "reuse": {
+    "screenplay": "demo_sunday_tamales",
+    "cast": {
+      "mom": "cleo",
+      "grandma_carmen": "ada",
+      "grandpa_luis": "ben"
+    }
+  }
+}
