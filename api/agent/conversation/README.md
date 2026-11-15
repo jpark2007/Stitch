@@ -54,8 +54,9 @@ coroutine from the module-level studio API cannot accidentally be stored as an I
 builds `create_deep_agent` lazily at construction, using `studio.make_model()`
 unless a model is injected. Imports make no provider call. `invoke(text)` fixes
 the LangGraph thread ID to the family/contact and sets a recursion bound of 64.
-The model-call budget is persisted in the family-scoped conversation document;
-callbacks count nested/subagent and summarization calls too. Consent is checked
+Each invocation allows at most 32 model calls by default; callbacks count nested/subagent
+and summarization calls too. The family-scoped modelCalls field is cumulative telemetry,
+not a lifetime or daily quota. Consent is checked
 before each model call and again before returning output. The model receives no
 tools for changing family/person/principal/run IDs or for direct outbound delivery.
 
@@ -82,7 +83,7 @@ There is one active draft/run per family/contact. Trusted worker
 fully drained outbox/relay, no pending/uncertain answer or submission, and the
 current durable worker reservation. It archives the last ten run summaries, clears
 the completed draft/run, and increments the thread generation. It never resets
-the lifetime model-call budget and is not exposed to the model. Typed NEW and the
+cumulative model-call telemetry and is not exposed to the model. Typed NEW and the
 eligible manual scheduler use the same gate. Question selection is immutable within
 a draft, preserving a scheduled second-telling target. A durable compare-and-set
 prevents concurrent duplicate submissions.
@@ -103,3 +104,7 @@ review remain separate prerequisites for mounting Channels in the main app.
 From `api/`: `uv run pytest tests/channels/test_conversation.py -q`.
 Tests use mongomock, an injected fake studio, and the real Deep Agent graph with
 the repository's `ScriptedChatModel`. No credentials or live model calls are used.
+
+Missing production model configuration is checked before saving input or reserving
+a studio submission. Combined draft text/photos are validated before mutation.
+Known configuration/input failures preserve the draft and return a fixed reply.
