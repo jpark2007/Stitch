@@ -29,8 +29,15 @@ A run is bounded in these ways, each read from the environment by ``RunLimits.fr
     STITCH_RUN_TIMEOUT_S        seconds of running time one run may take in all (default 1200);
                                 time spent waiting on the teller's answer does not count.
                                 Parsed here; enforced by the run manager (agent/runs.py).
+    STITCH_ART_LAYERS           "on" (default) or "off", any case. Off: set layers are never
+                                painted by the image model; every layer is a flat placeholder
+                                color layer, with no image call and nothing counted against the
+                                image budget. Props, parts, states and cut-outs of uploaded photos
+                                are unaffected. Enforced by ``ArtService.make_layer``
+                                (``layers_enabled``).
 
-A blank, unparsable or out-of-range value never stops the API: it logs one warning naming the
+A blank, unparsable or out-of-range value (for STITCH_ART_LAYERS: anything but on or off) never
+stops the API: it logs one warning naming the
 variable and the default is used. The warning is logged once per (variable, value) in a
 process, since the limits are read again on every run.
 
@@ -67,6 +74,7 @@ ENV_MODEL_TIMEOUT_S = "STITCH_MODEL_TIMEOUT_S"
 ENV_MODEL_MAX_RETRIES = "STITCH_MODEL_MAX_RETRIES"
 ENV_RUN_TIMEOUT_S = "STITCH_RUN_TIMEOUT_S"
 ENV_MAX_MODEL_CALLS = "STITCH_MAX_MODEL_CALLS"
+ENV_ART_LAYERS = "STITCH_ART_LAYERS"
 
 MIN_GRAPH_STEPS = 50
 """Below this a normal run cannot finish (the studio and its sub-agents take dozens of steps)."""
@@ -119,6 +127,25 @@ def _parse_float(raw: str) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def parse_switch(raw: str | None) -> bool | None:
+    """An on/off switch value: 'on' -> True, 'off' -> False (stripped, any case); else None."""
+    if raw is None:
+        return None
+    return {"on": True, "off": False}.get(raw.strip().lower())
+
+
+def _read_switch(env: Mapping[str, str], name: str, default: bool) -> bool:
+    """An on/off switch from ``env``; unset is ``default``, any other value warns once and keeps it."""
+    raw = env.get(name)
+    if raw is None:
+        return default
+    value = parse_switch(raw)
+    if value is None:
+        _warn_once(name, raw, "'on' or 'off'", "on" if default else "off")
+        return default
+    return value
+
+
 @dataclass(frozen=True)
 class RunLimits:
     """The time and cost limits of one run (see the module docstring for the env vars)."""
@@ -134,6 +161,9 @@ class RunLimits:
     compile and checker rounds and a second telling, while a looping sub-agent (which no step
     limit stops: see the module docstring) is stopped after at most 600 calls instead of running
     until STITCH_RUN_TIMEOUT_S."""
+    art_layers: bool = True
+    """STITCH_ART_LAYERS: False ("off") draws every set layer as a placeholder color layer without
+    calling the image model; props, parts and states are still generated."""
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> RunLimits:
@@ -173,6 +203,7 @@ class RunLimits:
                 ENV_MAX_MODEL_CALLS, "max_model_calls", _parse_int, lambda v: v >= MIN_MODEL_CALLS,
                 f"a whole number >= {MIN_MODEL_CALLS}",
             ),
+            art_layers=_read_switch(env, ENV_ART_LAYERS, defaults["art_layers"]),
         )
 
     def label(self) -> str:

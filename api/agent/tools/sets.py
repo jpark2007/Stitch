@@ -32,7 +32,9 @@ and the tool result reports the id actually used.
 Image budget: each layer drawn counts against the run's image budget
 (`ArtService.max_images_per_run`, keyed by the run id). Once it is spent the layer is saved
 with placeholder art (null art + color), the call still succeeds, and the result carries a
-`note` saying the budget is used up.
+`note` saying the budget is used up. With set layer art switched off (STITCH_ART_LAYERS=off,
+`ArtService.layers_enabled` False) no layer is drawn or counted: each is saved with
+placeholder art and the result's `note` says that is final, so the set designer does not retry.
 
 The family store failing mid-run never ends the run: a failed search, photo read or set save
 answers `error: ... (<ExceptionType>) ...; try again ...` (nothing is saved; the exception's
@@ -56,7 +58,7 @@ from langchain_core.tools import BaseTool, tool
 
 from agent.repo import AgentRepo
 from agent.run_info import RunInfo
-from agent.tools.art import ArtService, budget_note, build_art_prompt, placeholder_color
+from agent.tools.art import LAYERS_OFF_NOTE, ArtService, budget_note, build_art_prompt, placeholder_color
 from agent.tools.claims import claim_id, owner_of, release_claim
 from agent.tools.family import era_for_year
 from schemas import SetDef, SetLayer
@@ -347,7 +349,10 @@ def make_set_tools(repo: AgentRepo, run: RunInfo, art: ArtService) -> list[BaseT
             "marks": saved.marks,
             "art": "generated" if art_ref is not None else "placeholder",
         }
-        if cutout is None and art.images_left(run.run_id) == 0:
+        if cutout is None and not getattr(art, "layers_enabled", True):
+            # STITCH_ART_LAYERS=off: the placeholder is the intended layer, not a failure to retry.
+            result["note"] = LAYERS_OFF_NOTE
+        elif cutout is None and art.images_left(run.run_id) == 0:
             # The run's image budget is spent (not a failed call): say so, so the agent does not retry.
             result["note"] = budget_note(art.max_images_per_run or 0, f"the {layer} layer of {saved.name}")
         return json.dumps(result, ensure_ascii=False)

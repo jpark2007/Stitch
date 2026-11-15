@@ -150,6 +150,7 @@ ENV_NAMES: tuple[str, ...] = (
     images_adapter.API_KEY_ENV,
     images_adapter.URL_ENV,
     images_adapter.MODEL_ENV,
+    guards.ENV_ART_LAYERS,
     tts_adapter.API_KEY_ENV,
     tts_adapter.MODEL_ENV,
     tts_adapter.VOICES_ENV,
@@ -939,6 +940,24 @@ def _openai_vars(env: Mapping[str, str]) -> list[VarReport]:
     ]
 
 
+def _art_layers_var(env: Mapping[str, str]) -> VarReport:
+    """STITCH_ART_LAYERS: on (default) or off; any other value warns and means on (RunLimits)."""
+    name = guards.ENV_ART_LAYERS
+    raw = env.get(name)
+    if raw is None:
+        return VarReport(name, False, "unset (default: on, set layers are painted)")
+    value = guards.parse_switch(raw)
+    if value is None:
+        return VarReport(
+            name,
+            True,
+            f"set ({len(raw)} chars), using the default on",
+            f"{_cut(raw, 40)!r} is not 'on' or 'off'; set layers stay on",
+            "warning",
+        )
+    return VarReport(name, True, "on" if value else "off (set layers are placeholder layers)")
+
+
 def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceReport:
     choice = image_provider.choose_image_provider(env)
     hf_selected = choice.provider == "higgsfield"
@@ -953,9 +972,16 @@ def _art_report(env: Mapping[str, str], labels: Mapping[str, str]) -> ServiceRep
             *_hf_vars(env, hf_selected),
             *_cf_vars(env, cf_selected),
             *_openai_vars(env),
+            _art_layers_var(env),
         ],
     )
-    budget = RunLimits.from_env(env).max_images_per_run
+    run_limits = RunLimits.from_env(env)
+    budget = run_limits.max_images_per_run
+    if not run_limits.art_layers:
+        report.notes.append(
+            f"{guards.ENV_ART_LAYERS}=off: only props, parts and states are generated; every set layer is a "
+            "flat placeholder color layer (no image call, not counted in the image budget)"
+        )
     budget_fallback = (
         f"{FALLBACKS['art']}, for one prop or layer when its generation fails, and for the rest of a run once "
         f"it has used its image budget ({guards.ENV_MAX_IMAGES_PER_RUN}={budget})"
