@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
+import mongomock
 import pytest
 from PIL import Image
 
@@ -18,6 +19,7 @@ from agent.adapters import HiggsfieldImageModel, OpenAIImageModel, choose_image_
 from agent.adapters import higgsfield as hf
 from agent.adapters import images as images_mod
 from agent.tools.art import ArtService, CanvasSizer, ImageModel
+from db import client as db_client
 
 KEY_ID = "hfKEYid-0123456789abcdef"
 SECRET = "hfSECRET-fedcba9876543210-secret"
@@ -523,10 +525,32 @@ def test_provider_selection_for_every_combination(provider: str | None, has_hf: 
     assert preflight.modes(env, compiler="FakeCompiler")["art"] == expected
 
 
+def _no_real_mongo_client(*_args: Any, **_kwargs: Any) -> Any:
+    raise AssertionError("a real MongoClient was constructed; the family database must be mongomock here")
+
+
+@pytest.fixture(autouse=True)
+def _mongomock_family_db(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """production_services() opens the family database (MongoRepo(db_client.get_db())): a mongomock
+    one, never the process-wide real MongoClient, whose background monitor thread would keep trying
+    localhost:27017 and trip a later test's socket spy (test_agent_preflight's no_network)."""
+    monkeypatch.setattr(db_client, "MongoClient", _no_real_mongo_client)
+    db_client.set_db(mongomock.MongoClient(tz_aware=True)[db_client.MONGODB_DB])
+    yield
+    db_client.set_db(None)
+
+
 def _production_env(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> Any:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     monkeypatch.setenv("STITCH_FAKE_DB", "1")
-    for name in ("IMAGE_API_KEY", "ELEVENLABS_API_KEY", "MONGODB_URI", "STITCH_WEB_URL"):
+    for name in (
+        "IMAGE_API_KEY",
+        "ELEVENLABS_API_KEY",
+        "MONGODB_URI",
+        "STITCH_WEB_URL",
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_API_TOKEN",
+    ):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
