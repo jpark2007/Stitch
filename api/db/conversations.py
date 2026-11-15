@@ -23,21 +23,23 @@ class CallConflict(ValueError):
 
 
 class CallRateLimited(ValueError):
-    pass
+    def __init__(self, retry_after=60):
+        super().__init__("Try again shortly")
+        self.retry_after = retry_after
 
 
-def call_attempt(db, scope: str, identity: str, *, family_id=None, limit=10, now=None):
-    """Atomic minute windows, TTL cleanup; no transcript, token or caller retained."""
+def call_attempt(db, scope: str, identity: str, *, family_id=None, limit=10, now=None, window_seconds=60):
+    """Atomic fixed windows, TTL cleanup; no transcript, token or caller retained."""
     now = now or datetime.now(timezone.utc)
-    window = int(now.timestamp()) // 60
+    window = int(now.timestamp()) // window_seconds
     key = "call-rate:" + hashlib.sha256(f"{scope}:{identity}:{window}".encode()).hexdigest()
     try:
         row = db.channelMessages.find_one_and_update(
             {"_id": key, "count": {"$lt": limit}},
             {"$inc": {"count": 1}, "$setOnInsert": {"kind": "call-rate", "familyId": family_id,
-                "expireAt": now + timedelta(minutes=2)}}, upsert=True, return_document=ReturnDocument.AFTER)
+                "expireAt": now + timedelta(seconds=window_seconds * 2)}}, upsert=True, return_document=ReturnDocument.AFTER)
     except DuplicateKeyError:
-        raise CallRateLimited("Try again shortly") from None
+        raise CallRateLimited(window_seconds) from None
     return row
 
 
@@ -61,10 +63,22 @@ def create_call_pairing(db, family_id: str, person_id: str, actor_id: str, *, no
     now = now or datetime.now(timezone.utc)
     key = "call-pairing:" + conversation_key(family_id, person_id)
     call_attempt(db, "issue", family_id, family_id=family_id, now=now)
+    previous = db.channelMessages.find_one({"_id": key, "familyId": family_id}, {"tokenHash": 1})
     for _ in range(5):
-        code = f"{secrets.randbelow(10**12):012d}"
-        fields = {"kind": "call-pairing", "familyId": family_id, **proof, "tokenHash": call_code_hash(code),
-                  "state": "pending", "createdAt": now, "expireAt": now + timedelta(hours=1)}
+        code = f"{secrets.randbelow(10**3):03d}"
+        token_hash = call_code_hash(code)
+        if previous and previous.get("tokenHash") == token_hash:
+            continue  # A visible replacement must not silently reuse the old code.
+        fields = {"kind": "call-pairing", "familyId": family_id, **proof, "tokenHash": token_hash,
+                  "state": "pending", "createdAt": now, "expireAt": now + timedelta(minutes=15)}
+        try:
+            # Keep a code unavailable through its original expiry even when its
+            # person's ticket is rotated or consumed. Otherwise a late call could
+            # attach to someone newly assigned the same short numeric code.
+            db.channelMessages.insert_one({"_id": "call-code:" + token_hash,
+                "kind": "call-code-reservation", "familyId": family_id, "expireAt": fields["expireAt"]})
+        except DuplicateKeyError:
+            continue
         try:
             row = db.channelMessages.find_one_and_update(
                 {"_id": key, "familyId": family_id, "state": {"$ne": "claiming"}},
@@ -87,8 +101,18 @@ def _call_proof_current(db, row):
         raise LookupError("Call authority changed")
 
 
+def _call_start_matches(pairing, code, call_started_at, now):
+    if len(code) != 3:
+        return  # Already-issued legacy tickets keep their original protocol.
+    if (type(call_started_at) is not int
+            or call_started_at < int(pairing["createdAt"].timestamp())
+            or call_started_at >= pairing["expireAt"].timestamp()
+            or call_started_at > now.timestamp() or now >= pairing["expireAt"]):
+        raise LookupError("Call pairing unavailable")
+
+
 def accept_call_transcript(db, agent_id: str, conversation_id: str, code: str,
-                           text: str, content_hash: str, *, now=None) -> bool:
+                           text: str, content_hash: str, *, now=None, call_started_at=None) -> bool:
     """Provider discovery uses only the secret token; no input family/person is trusted.
 
     A unique call reservation precedes ticket consumption. Binding is resumable only
@@ -110,11 +134,16 @@ def accept_call_transcript(db, agent_id: str, conversation_id: str, code: str,
             raise CallConflict("Call binding unavailable")
     else:
         call_attempt(db, "bind", key, limit=5, now=now)
+        # Shorter codes need a deployment-wide bound across provider call IDs.
+        # Count every candidate before looking it up, including successful ones;
+        # no refunds/racy distinction between guessed and valid codes.
+        call_attempt(db, "global-bind", "elevenlabs", limit=5, now=now, window_seconds=900)
         pairing = db.channelMessages.find_one({"kind": "call-pairing", "tokenHash": token_hash,
             "state": "pending", "expireAt": {"$gt": now}})
         if pairing is None:
             raise LookupError("Call pairing unavailable")
         _call_proof_current(db, pairing)
+        _call_start_matches(pairing, code, call_started_at, now)
         call_attempt(db, "family-bind", pairing["familyId"], family_id=pairing["familyId"], limit=20, now=now)
         row = {"_id": key, "kind": "call-draft", "status": "binding", "familyId": pairing["familyId"],
             **{name: pairing[name] for name in ("actorId", "personId", "membershipJoinedAt")},
@@ -122,7 +151,8 @@ def accept_call_transcript(db, agent_id: str, conversation_id: str, code: str,
         try:
             db.channelMessages.insert_one(row)
         except DuplicateKeyError:
-            return accept_call_transcript(db, agent_id, conversation_id, code, text, content_hash, now=now)
+            return accept_call_transcript(db, agent_id, conversation_id, code, text, content_hash,
+                                          now=now, call_started_at=call_started_at)
     family_id = row["familyId"]
     claimed = db.channelMessages.find_one_and_update({"kind": "call-pairing", "familyId": family_id,
         "tokenHash": token_hash, "state": "pending", "expireAt": {"$gt": now},
@@ -136,6 +166,7 @@ def accept_call_transcript(db, agent_id: str, conversation_id: str, code: str,
                                       {"$set": {"status": "rejected"}})
         raise CallConflict("Call pairing is no longer available")
     _call_proof_current(db, row)
+    _call_start_matches(claimed, code, call_started_at, now)
     db.channelMessages.update_one({"_id": key, "familyId": family_id, "status": "binding"},
                                   {"$set": {"status": "ready", "text": text}})
     db.channelMessages.update_one({"kind": "call-pairing", "familyId": family_id,

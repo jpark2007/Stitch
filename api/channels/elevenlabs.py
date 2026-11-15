@@ -19,6 +19,12 @@ MAX_BODY = 256 * 1024
 READ_TIMEOUT = 2.0
 MAX_TEXT = 20_000
 PAIRING_EDGE_PUNCTUATION = ".,!?;:…\"'“”‘’()[]{}<>，。！？：；、（）【】"
+DIGIT_WORDS = dict(zip(("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"), "0123456789"))
+DIGIT_WORDS.update(dict(zip("零〇一二两三四五六七八九", "001223456789")))
+DIGIT_TOKEN = r"(?:[0-9零〇一二两三四五六七八九]|(?<![A-Za-z])(?:zero|one|two|three|four|five|six|seven|eight|nine)(?![A-Za-z]))"
+DIGIT_SEQUENCE = re.compile(DIGIT_TOKEN + r"(?:[ \t,，、-]*" + DIGIT_TOKEN + r")*", re.IGNORECASE)
+DIGIT_PART = re.compile(DIGIT_TOKEN, re.IGNORECASE)
+PRIVACY_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 router = APIRouter()
 
 
@@ -67,7 +73,25 @@ def _object(pairs):
     return result
 
 
-def transcript(raw: bytes, allowed_agents: frozenset[str]) -> tuple[str, str, str, str]:
+def normalized_digits(sequence: str) -> str:
+    return "".join(DIGIT_WORDS.get(match[0].lower(), match[0]) for match in DIGIT_PART.finditer(sequence))
+
+
+def pairing_marker(message: str) -> str | None:
+    """Exact standalone digit tokens only; never infer a number from narrative."""
+    marker = message.strip()
+    if len(marker) > 96:
+        return None
+    marker = marker.strip(PAIRING_EDGE_PUNCTUATION).strip()
+    match = re.fullmatch(r"STITCH[ \t:：,，\"'“”‘’]{1,8}(.+)", marker, re.IGNORECASE)
+    if match and DIGIT_SEQUENCE.fullmatch(match[1]):
+        digits = normalized_digits(match[1])
+        if len(digits) in {3, 6, 12}:  # Read compatibility for unexpired legacy tickets.
+            return digits
+    return None
+
+
+def transcript(raw: bytes, allowed_agents: frozenset[str]) -> tuple[str, str, str, str, int | None]:
     try:
         event = json.loads(raw.decode("utf-8"), object_pairs_hook=_object,
                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Invalid JSON")))
@@ -91,31 +115,29 @@ def transcript(raw: bytes, allowed_agents: frozenset[str]) -> tuple[str, str, st
             if not isinstance(message, str):
                 raise ValueError()  # Redacted/null user content cannot prove pairing.
             message.encode("utf-8")
-            # ASR commonly adds a comma after STITCH and a final full stop. Only
-            # bounded punctuation at marker boundaries is tolerated, never words
-            # extracted from a longer sentence or number-word guessing.
-            marker = message.strip()
-            marker = marker.strip(PAIRING_EDGE_PUNCTUATION).strip() if len(marker) <= 96 else ""
-            match = re.fullmatch(r"STITCH[ \t:：,，\"'“”‘’]{1,8}([0-9][0-9 \t-]{10,34}[0-9])",
-                                 marker, re.IGNORECASE)
-            if match:
-                digits = re.sub(r"[ \t-]", "", match[1])
-                if len(digits) != 12:
-                    raise ValueError()
-                pairing.append(digits)
+            marker = pairing_marker(message)
+            if marker is not None:
+                pairing.append(marker)
             else:
                 users.append(message)
-        if len(pairing) != 1:
+        if not pairing or len(set(pairing)) != 1:
             raise ValueError()
         code = pairing[0]
         # Never retain the numeric secret if the caller repeats it in a sentence.
-        if any(code in re.sub(r"\D", "", message) for message in users):
+        if any(code in normalized_digits(sequence[0]) for message in users
+               for sequence in DIGIT_SEQUENCE.finditer(message.translate(PRIVACY_DIGITS))):
             raise ValueError()
         text = "\n".join(users)
         if not text.strip() or len(text) > MAX_TEXT:
             raise ValueError()
-        return agent, conversation_id, code, text
-    except (ValueError, KeyError, TypeError, UnicodeError):
+        call_started_at = None
+        if len(code) == 3:
+            metadata = data.get("metadata")
+            if not isinstance(metadata, dict) or type(metadata.get("start_time_unix_secs")) is not int:
+                raise ValueError()
+            call_started_at = metadata["start_time_unix_secs"]
+        return agent, conversation_id, code, text, call_started_at
+    except (ValueError, KeyError, TypeError, UnicodeError, RecursionError):
         raise HTTPException(400, "Call transcript or pairing unavailable") from None
 
 
@@ -142,16 +164,16 @@ async def post_call(request: Request):
         raise HTTPException(408, "Webhook read timed out") from None
     body = bytes(raw)
     verify_signature(body, header, config.secret)
-    agent, conversation_id, code, text = transcript(body, config.agents)
+    agent, conversation_id, code, text, call_started_at = transcript(body, config.agents)
     try:
         def accept():
             return conversations.accept_call_transcript(get_db(), agent, conversation_id,
-                                                       code, text, hashlib.sha256(body).hexdigest())
+                code, text, hashlib.sha256(body).hexdigest(), call_started_at=call_started_at)
         await run_in_threadpool(accept)
     except LookupError:
         raise HTTPException(400, "Call pairing unavailable") from None
     except conversations.CallConflict:
         raise HTTPException(409, "Call binding unavailable") from None
-    except conversations.CallRateLimited:
-        raise HTTPException(429, "Try again shortly", headers={"Retry-After": "60"}) from None
+    except conversations.CallRateLimited as exc:
+        raise HTTPException(429, "Try again shortly", headers={"Retry-After": str(exc.retry_after)}) from None
     return {"received": True}
