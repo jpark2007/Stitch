@@ -2,7 +2,7 @@
 
 **A pop-up storybook of your family, made from everyone's memories.**
 
-Every family member adds photos and answers to questions like *"How did you meet Mom?"* or *"What was your first house like?"*. Stitch turns each answer into an animated page of a handmade pop-up book. You turn the paper page, the scenery rises off the paper, and the memory plays out: little paper puppets of the people who were there walk, hug and hand each other things, the camera glides through the scene, and the story is narrated in the teller's own words.
+Every family member adds photos and answers to questions like *"How did you meet Mom?"* or *"What was your first house like?"*. Stitch turns each answer into an animated page of a handmade pop-up book, preserving every memory. You turn the paper page, the scenery rises off the paper, and the memory plays out: little paper puppets of the people who were there walk, hug and hand each other things, the camera glides through the scene, and the story is narrated in the teller's own words.
 
 Built at HackPrinceton Fall 2026.
 
