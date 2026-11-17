@@ -10,13 +10,19 @@ the agent, so the API needs no startup hook. Each service is picked from env var
     MONGODB_URI            checkpoints, /memories/ and the run records on MongoDB
                            (studio.mongo_persistence), so runs survive a restart; unset, or
                            STITCH_FAKE_DB truthy: in memory, and runs are lost on restart
-    IMAGE_PROVIDER         "higgsfield", "cloudflare" or "openai" picks the image provider;
-                           unset: Higgsfield when HIGGSFIELD_API_KEY is set, else Cloudflare
-                           when CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are both set,
-                           else OpenAI when IMAGE_API_KEY is set, else placeholder art (null
-                           art + color); an unknown value warns and uses that default rule
+    IMAGE_PROVIDER         "higgsfield", "cloudflare", "openai" or "claude" picks the image
+                           provider; unset: Higgsfield when HIGGSFIELD_API_KEY is set, else
+                           Cloudflare when CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are
+                           both set, else OpenAI when IMAGE_API_KEY is set, else placeholder
+                           art (null art + color); Claude only when named (never by the unset
+                           rule); an unknown value warns and uses that default rule
                            (agent.adapters.image_provider). The services line names it:
-                           art=higgsfield, art=cloudflare, art=openai, art=placeholder
+                           art=higgsfield, art=cloudflare, art=openai, art=claude,
+                           art=placeholder
+    STITCH_ART_MODEL       IMAGE_PROVIDER=claude (ClaudeSvgImageModel: Claude writes SVG, rendered
+    STITCH_ART_EFFORT      locally with resvg): the model (default the studio's) and the effort
+                           (low, medium, high, xhigh or max; default medium; another value warns
+                           and uses medium); the key is ANTHROPIC_API_KEY
     HIGGSFIELD_API_KEY     Higgsfield art (HiggsfieldImageModel): the key ID, with
     HIGGSFIELD_API_SECRET  its secret (or id:secret in the key); HIGGSFIELD_API_URL,
                            HIGGSFIELD_IMAGE_MODEL, HIGGSFIELD_STYLE_SUFFIX and
@@ -100,6 +106,7 @@ from agent import studio
 from agent.adapters import (
     AlphaAwareRemover,
     AnthropicVision,
+    ClaudeSvgImageModel,
     CloudflareImageModel,
     ElevenLabsTTS,
     HiggsfieldImageModel,
@@ -225,7 +232,11 @@ def _image_model() -> tuple[ImageModel | None, str]:
         if problem:
             logger.error("image art: Cloudflare is selected but %s; using placeholder art", problem)
             return None, "placeholder"
-    builders = {"higgsfield": HiggsfieldImageModel, "cloudflare": CloudflareImageModel}
+    builders = {
+        "higgsfield": HiggsfieldImageModel,
+        "cloudflare": CloudflareImageModel,
+        "claude": ClaudeSvgImageModel,
+    }
     build = builders.get(choice.provider, OpenAIImageModel)
     try:
         return build(), choice.provider
@@ -240,7 +251,7 @@ def _image_model() -> tuple[ImageModel | None, str]:
 
 
 def _art_service(limits: RunLimits, usage: RunUsage) -> tuple[ArtService, str]:
-    """The art service and its label: 'higgsfield', 'cloudflare', 'openai' or 'placeholder'."""
+    """The art service and its label: 'higgsfield', 'cloudflare', 'openai', 'claude' or 'placeholder'."""
     remover = AlphaAwareRemover()
     image_model, label = _image_model()
     if image_model is None:

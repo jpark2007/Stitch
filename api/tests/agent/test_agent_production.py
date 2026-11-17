@@ -19,7 +19,7 @@ from pymongo.errors import ConfigurationError, OperationFailure, ServerSelection
 
 import schemas
 from agent import production, runs, studio, wiring
-from agent.adapters import AlphaAwareRemover, AnthropicVision, ElevenLabsTTS, OpenAIImageModel
+from agent.adapters import AlphaAwareRemover, AnthropicVision, ClaudeSvgImageModel, ElevenLabsTTS, OpenAIImageModel
 from agent.mongo_repo import MongoRepo
 from agent.tools.frames import FakeFrameRenderer, PlaywrightFrameRenderer
 from agent.run_info import RunInfo
@@ -139,6 +139,39 @@ def test_without_art_and_speech_keys_they_are_placeholder_and_fake(
     assert isinstance(svc.art.remover, AlphaAwareRemover)  # cut_out of uploaded photos still works
     assert svc.labels["tts"] == "fake" and isinstance(svc.tts, FakeTTS)
     assert no_network == []
+
+
+def test_image_provider_claude_draws_art_with_claude(monkeypatch: pytest.MonkeyPatch, no_network: list[Any]) -> None:
+    dummy_keys(monkeypatch)  # IMAGE_API_KEY is set too: the explicit choice wins
+    monkeypatch.setenv("IMAGE_PROVIDER", "claude")
+    svc = production.production_services()
+    assert svc.labels["art"] == "claude"
+    assert isinstance(svc.art.image_model, ClaudeSvgImageModel)
+    assert isinstance(svc.art.remover, AlphaAwareRemover)
+    assert "art=claude" in production.describe(svc)
+    assert no_network == []
+
+
+def test_claude_art_is_never_chosen_without_image_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    dummy_keys(monkeypatch, art=False)
+    monkeypatch.delenv("IMAGE_PROVIDER", raising=False)
+    svc = production.production_services()
+    assert svc.labels["art"] == "placeholder" and svc.art.image_model is None
+
+
+def test_a_claude_art_model_that_cannot_be_built_is_placeholder_art(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    dummy_keys(monkeypatch)
+    monkeypatch.setenv("IMAGE_PROVIDER", "claude")
+
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise ValueError("bad sk-ant-dummy")
+
+    monkeypatch.setattr(production, "ClaudeSvgImageModel", broken)
+    svc = production.production_services()
+    assert svc.labels["art"] == "placeholder"
+    assert "sk-ant-dummy" not in caplog.text
 
 
 def test_mongodb_uri_uses_mongo_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
