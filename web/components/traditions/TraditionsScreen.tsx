@@ -81,7 +81,7 @@ export function TraditionsScreen({ search }: { search: Search }) {
           at={at}
           still={query.still}
           debug={query.debug}
-          back={shown.demo === "chosen" ? DEMO_TREE : TREE}
+          back={family ? { href: `/?family=${enc(family)}`, label: "Family tree" } : shown.demo === "chosen" ? DEMO_TREE : TREE}
           note={shown.demo ? <DemoNote why={shown.demo} onRetry={retry} /> : null}
         />
       );

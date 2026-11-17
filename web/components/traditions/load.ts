@@ -30,6 +30,7 @@ import type { FamilySummary, Person, Tradition } from "@/lib/types";
 import { demoTraditionsBook } from "./demoBook";
 import { drawKeepersSnapshot } from "./snapshot";
 import { traditionBook, type TraditionBook } from "./traditionBook";
+import maoDemo from "./maoDemo.json";
 
 /** Why the demo family is showing: chosen (?demo=1), or Stitch out of reach. */
 export type TraditionsDemo = "chosen" | "offline";
@@ -149,6 +150,21 @@ interface FamilyData {
 
 /** What /traditions shows, for its query. Rejects only when aborted. */
 export async function loadTraditionsPage(scope: TraditionsScope, signal: AbortSignal): Promise<TraditionsShown> {
+  if (process.env.NEXT_PUBLIC_STITCH_MAO_TRADITION_DEMO === "1" && scope.family === "macoskos") {
+    const fonts = await loadPageFonts();
+    if (signal.aborted) throw new DOMException("aborted", "AbortError");
+    const traditions = maoDemo.traditions as Tradition[];
+    const people = maoDemo.people as Person[];
+    return {
+      kind: "book",
+      key: bookKey("mao-example", traditions, people),
+      book: bind(traditions, people, "The Maos · example", fonts),
+      familyId: null,
+      families: [],
+      canAdd: false,
+      demo: "chosen",
+    };
+  }
   if (scope.demo) return demoBook("chosen", signal);
   // The user's families, for the switcher: /me is asked once by resolveBook.
   let families: FamilySummary[] = [];

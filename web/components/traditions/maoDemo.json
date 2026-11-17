@@ -1,0 +1,103 @@
+{
+  "traditions": [
+    {
+      "id": "tamales_christmas_eve",
+      "familyId": "demo_family",
+      "title": "Tamales on Christmas Eve",
+      "description": "Every Christmas Eve the whole kitchen turns into an assembly line. Rosa spreads the masa, Luis folds, and the kids are in charge of the corn husks until they're old enough to be trusted with the filling. We eat the first batch standing up, straight out of the pot.",
+      "category": "food",
+      "when": {
+        "kind": "yearly",
+        "label": "Christmas Eve",
+        "month": 12
+      },
+      "participantIds": [
+        "grandma_rosa",
+        "grandpa_luis",
+        "dad",
+        "mom",
+        "lily",
+        "sam"
+      ],
+      "photoIds": [],
+      "startedYear": 1962,
+      "createdBy": "",
+      "createdAt": "2026-11-15T11:04:52.355000Z",
+      "updatedAt": "2026-11-15T11:04:52.355000Z"
+    }
+  ],
+  "people": [
+    {
+      "id": "grandpa_luis",
+      "familyId": "demo_family",
+      "name": "Luis",
+      "character": {
+        "color": "#d9973a",
+        "item": "straw hat",
+        "build": "tall",
+        "itemPropId": "luis_straw_hat",
+        "notes": "stands very straight, hands clasped behind his back"
+      }
+    },
+    {
+      "id": "grandma_rosa",
+      "familyId": "demo_family",
+      "name": "Rosa",
+      "character": {
+        "color": "#c77d9b",
+        "item": "pearl necklace",
+        "build": "small",
+        "itemPropId": null,
+        "notes": "small quick steps, always humming"
+      }
+    },
+    {
+      "id": "dad",
+      "familyId": "demo_family",
+      "name": "David",
+      "character": {
+        "color": "#3f6fb5",
+        "item": "blue flat cap",
+        "build": "tall",
+        "itemPropId": null,
+        "notes": null
+      }
+    },
+    {
+      "id": "mom",
+      "familyId": "demo_family",
+      "name": "Ana",
+      "character": {
+        "color": "#c0504d",
+        "item": "red scarf",
+        "build": "average",
+        "itemPropId": null,
+        "notes": null
+      }
+    },
+    {
+      "id": "sam",
+      "familyId": "demo_family",
+      "name": "Sam",
+      "character": {
+        "color": "#2f8f8a",
+        "item": "baseball cap",
+        "build": "average",
+        "itemPropId": "sam_cap",
+        "notes": "bounces on his toes when he talks"
+      }
+    },
+    {
+      "id": "lily",
+      "familyId": "demo_family",
+      "name": "Lily",
+      "character": {
+        "color": "#e0b84f",
+        "item": "yellow raincoat",
+        "build": "small",
+        "itemPropId": null,
+        "notes": "walks briskly, always a step ahead"
+      }
+    }
+  ]
+}
